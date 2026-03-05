@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { MonitorEventSchema, type MonitorEvent } from "../monitor/events";
 import {
   AgentTypeSchema,
   HubMessageSchema,
@@ -115,6 +117,12 @@ export class HubServer {
       }
 
       const parsed = JSON.parse(raw) as unknown;
+      const monitorEvent = MonitorEventSchema.safeParse(parsed);
+      if (monitorEvent.success) {
+        await this.handleMonitorEvent(monitorEvent.data);
+        return null;
+      }
+
       message = this.normalizeIncomingMessage(parsed);
       const result = await this.router.route(message);
       const validatedResult = HubResultSchema.parse(result);
@@ -162,6 +170,119 @@ export class HubServer {
       }
       return fallbackResult;
     }
+  }
+
+  private async handleMonitorEvent(event: MonitorEvent): Promise<void> {
+    this.log.info(
+      {
+        trace_id: event.trace_id,
+        thread_id: event.thread_id,
+        event_type: event.event_type,
+        monitor_mode: event.monitor_mode,
+        agent_status: event.agent_status,
+        missed_heartbeats: event.missed_heartbeats,
+        sse_reconnect_count: event.sse_reconnect_count
+      },
+      "Monitor event received by hub"
+    );
+
+    if (event.event_type === "status_changed" && event.agent_status) {
+      this.router.setInstanceStatus(event.thread_id, event.agent_status);
+    }
+    if (event.event_type === "agent_error" || event.event_type === "sse_reconnect_failed") {
+      this.router.setInstanceStatus(event.thread_id, "error");
+    }
+
+    if (!this.shouldSendMonitorAlert(event)) {
+      return;
+    }
+
+    const chatTargets = this.router.getAttachedSessionsForThread(event.thread_id);
+    if (chatTargets.length === 0) {
+      this.log.warn(
+        {
+          trace_id: event.trace_id,
+          thread_id: event.thread_id,
+          event_type: event.event_type
+        },
+        "Monitor alert skipped because no session is attached to thread"
+      );
+      return;
+    }
+
+    const traceId = event.trace_id ?? randomUUID();
+    const source = this.router.resolveSourceForThread(event.thread_id);
+    const content = this.formatMonitorAlert(event, traceId);
+    for (const chatId of chatTargets) {
+      await this.resultSender
+        .sendResult(
+          {
+            trace_id: traceId,
+            thread_id: event.thread_id,
+            source,
+            status: "error",
+            content,
+            attachments: [],
+            timestamp: new Date().toISOString()
+          },
+          {
+            channel: "telegram",
+            chat_id: chatId
+          }
+        )
+        .catch((error) => {
+          this.log.error(
+            {
+              trace_id: traceId,
+              thread_id: event.thread_id,
+              target: chatId,
+              event_type: event.event_type,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Failed to deliver monitor alert to Telegram"
+          );
+        });
+    }
+  }
+
+  private shouldSendMonitorAlert(event: MonitorEvent): boolean {
+    if (event.event_type === "agent_error" || event.event_type === "sse_reconnect_failed") {
+      return true;
+    }
+    if (event.event_type === "heartbeat_missed") {
+      return (event.missed_heartbeats ?? 0) === config.HEARTBEAT_MISSED_THRESHOLD;
+    }
+    return false;
+  }
+
+  private formatMonitorAlert(event: MonitorEvent, traceId: string): string {
+    const lines = [
+      `Monitor alert: ${event.event_type}`,
+      `thread=${event.thread_id}`,
+      `trace=${traceId}`,
+      `mode=${event.monitor_mode}`
+    ];
+
+    if (event.agent_status) {
+      lines.push(`agent_status=${event.agent_status}`);
+    }
+    if (event.missed_heartbeats !== undefined) {
+      lines.push(`missed_heartbeats=${event.missed_heartbeats}`);
+    }
+    if (event.sse_reconnect_count !== undefined) {
+      lines.push(`sse_reconnect_count=${event.sse_reconnect_count}`);
+    }
+    if (event.error) {
+      lines.push(`error=${event.error}`);
+    }
+
+    if (event.event_type === "agent_error") {
+      lines.push("Recommended action: /status or /restart");
+    } else if (event.event_type === "sse_reconnect_failed") {
+      lines.push("Monitor switched to heartbeat fallback");
+    }
+
+    return lines.join("\n");
   }
 
   private normalizeIncomingMessage(payload: unknown): HubMessage {

@@ -142,6 +142,21 @@ export class InstanceManager {
     const sanitizedSession = this.sanitizeSession(session);
     const previous = this.sessionThreadBySession.get(sanitizedSession) ?? null;
     this.sessionThreadBySession.delete(sanitizedSession);
+
+    const instance = previous ? this.registry.get(previous) : null;
+    this.log.info(
+      {
+        operation: "detach",
+        session: sanitizedSession,
+        thread_id: previous,
+        pid: instance?.pid ?? null,
+        socket_path: instance?.socket_path ?? null,
+        prev_status: instance?.status ?? null,
+        next_status: instance?.status ?? null
+      },
+      "Session detached from agent instance"
+    );
+
     return previous;
   }
 
@@ -151,6 +166,16 @@ export class InstanceManager {
       return null;
     }
     return this.sessionThreadBySession.get(normalized) ?? null;
+  }
+
+  getSessionsForThread(threadId: string): string[] {
+    const sessions: string[] = [];
+    for (const [session, boundThreadId] of this.sessionThreadBySession.entries()) {
+      if (boundThreadId === threadId) {
+        sessions.push(session);
+      }
+    }
+    return sessions;
   }
 
   async restart(threadId: string): Promise<string> {

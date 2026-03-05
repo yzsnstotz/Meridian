@@ -1,6 +1,7 @@
 import { createLogger } from "../logger";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import {
+  AgentInstanceStatusSchema,
   AgentTypeSchema,
   HubMessageSchema,
   HubResultSchema,
@@ -62,37 +63,50 @@ export class HubRouter {
 
   async route(rawMessage: HubMessage): Promise<HubResult> {
     const message = HubMessageSchema.parse(rawMessage);
+    const startedAt = Date.now();
     this.log.info(
       {
         trace_id: message.trace_id,
         thread_id: message.thread_id,
+        actor_id: message.actor_id,
         intent: message.intent,
-        target: message.target
+        target: message.target,
+        dispatch_status: "ok"
       },
       "Routing HubMessage"
     );
 
     try {
       const result = await this.routeByIntent(message);
+      const latencyMs = Date.now() - startedAt;
       this.log.info(
         {
           trace_id: message.trace_id,
           thread_id: message.thread_id,
+          actor_id: message.actor_id,
           intent: message.intent,
+          target: message.target,
+          dispatch_status: "ok",
+          result_status: result.status,
           status: result.status,
-          target: message.target
+          latency_ms: latencyMs
         },
         "Hub routing complete"
       );
       return result;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const latencyMs = Date.now() - startedAt;
       this.log.error(
         {
           trace_id: message.trace_id,
           thread_id: message.thread_id,
+          actor_id: message.actor_id,
           intent: message.intent,
           target: message.target,
+          dispatch_status: "failed",
+          result_status: "error",
+          latency_ms: latencyMs,
           err: errorMessage
         },
         "Hub routing failed"
@@ -288,6 +302,22 @@ export class HubRouter {
     }
 
     return resolveSourceFromTarget(message.target);
+  }
+
+  resolveSourceForThread(threadId: string): AgentType {
+    return this.registry.get(threadId)?.agent_type ?? "codex";
+  }
+
+  setInstanceStatus(threadId: string, status: string): void {
+    const parsed = AgentInstanceStatusSchema.safeParse(status);
+    if (!parsed.success) {
+      return;
+    }
+    this.registry.setStatus(threadId, parsed.data);
+  }
+
+  getAttachedSessionsForThread(threadId: string): string[] {
+    return this.instanceManager.getSessionsForThread(threadId);
   }
 
   private extractContent(response: Record<string, unknown>): string {
