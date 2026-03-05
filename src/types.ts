@@ -47,7 +47,8 @@ export const HubPayloadSchema = z.object({
   content: z.string(),
   attachments: z.array(FileAttachmentSchema).default([]),
   raw_message_id: z.string().min(1).optional(),
-  reply_to: z.string().nullable().optional()
+  reply_to: z.string().nullable().optional(),
+  spawn_dir: z.string().min(1).optional()
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;
 
@@ -80,6 +81,7 @@ export const AgentInstanceSchema = z.object({
   agent_type: AgentTypeSchema,
   mode: BridgeModeSchema,
   socket_path: z.string().min(1),
+  working_dir: z.string().min(1).optional(),
   pid: z.number().int().nonnegative(),
   tmux_pane: z.string().nullable(),
   status: AgentInstanceStatusSchema,

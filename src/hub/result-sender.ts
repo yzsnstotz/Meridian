@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import https from "node:https";
 
@@ -36,7 +35,7 @@ export class ResultSender {
     const textBody = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
-      await this.sendLongTextAsFile(replyChannel.chat_id, textBody, result, replyToMessageId);
+      await this.sendLongTextInChunks(replyChannel.chat_id, textBody, replyToMessageId);
     } else {
       await this.sendText(replyChannel.chat_id, textBody, replyToMessageId);
     }
@@ -57,22 +56,41 @@ export class ResultSender {
     );
   }
 
-  private async sendLongTextAsFile(
+  private async sendLongTextInChunks(
     chatId: string,
     content: string,
-    result: HubResult,
     replyToMessageId?: number
   ): Promise<void> {
-    const filename = `${result.thread_id}-${result.trace_id}.txt`;
-    const tempPath = path.join(os.tmpdir(), `hub-result-${randomUUID()}.txt`);
-    await fs.promises.writeFile(tempPath, content, "utf8");
-
-    try {
-      const caption = `Result too long; attached as file (${result.status})`.slice(0, TELEGRAM_CAPTION_LIMIT);
-      await this.sendDocument(chatId, tempPath, filename, caption, replyToMessageId);
-    } finally {
-      await fs.promises.unlink(tempPath).catch(() => undefined);
+    const chunks = this.splitTextForTelegram(content);
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index] ?? "";
+      await this.sendText(chatId, chunk, index === 0 ? replyToMessageId : undefined);
     }
+  }
+
+  private splitTextForTelegram(content: string): string[] {
+    const chunks: string[] = [];
+    let remaining = content;
+
+    while (remaining.length > TELEGRAM_TEXT_LIMIT) {
+      let splitIndex = remaining.lastIndexOf("\n", TELEGRAM_TEXT_LIMIT);
+      if (splitIndex < Math.floor(TELEGRAM_TEXT_LIMIT * 0.5)) {
+        splitIndex = TELEGRAM_TEXT_LIMIT;
+      }
+
+      const chunk = remaining.slice(0, splitIndex).trimEnd();
+      if (chunk.length > 0) {
+        chunks.push(chunk);
+      }
+
+      remaining = remaining.slice(splitIndex).trimStart();
+    }
+
+    if (remaining.length > 0) {
+      chunks.push(remaining);
+    }
+
+    return chunks;
   }
 
   private async sendText(chatId: string, text: string, replyToMessageId?: number): Promise<void> {

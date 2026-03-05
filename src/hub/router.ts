@@ -25,6 +25,8 @@ interface AgentMessageSnapshot {
   content: string;
 }
 
+const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
+
 export interface HubRouterOptions {
   clientFactory?: (threadId: string) => AgentClient;
   instanceManager?: InstanceManager;
@@ -165,14 +167,17 @@ export class HubRouter {
   }
 
   private handleList(message: HubMessage): HubResult {
-    const instances = this.instanceManager.list();
+    const instances = this.instanceManager
+      .list()
+      .filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
     const content = instances.length === 0 ? "No active agent instances." : JSON.stringify(instances, null, 2);
     return this.buildResult(message, "success", this.resolveResultSource(message), content);
   }
 
   private async handleSpawn(message: HubMessage): Promise<HubResult> {
     const type = AgentTypeSchema.parse(message.target);
-    const threadId = await this.instanceManager.spawn(type, message.mode);
+    const spawnDir = message.payload.spawn_dir?.trim() || undefined;
+    const threadId = await this.instanceManager.spawn(type, message.mode, spawnDir);
     this.instanceManager.attach(threadId, message.reply_channel.chat_id);
     const spawned = this.registry.get(threadId);
     const content =
@@ -306,7 +311,8 @@ export class HubRouter {
 
     try {
       const messages = await client.getMessages();
-      return this.extractLatestAgentMessage(messages);
+      const snapshots = this.extractAgentMessageSnapshots(messages);
+      return snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
     } catch {
       return null;
     }
@@ -322,26 +328,29 @@ export class HubRouter {
 
     const maxAttempts = 40;
     const delayMs = 500;
-    let candidate: AgentMessageSnapshot | null = null;
+    let candidate: string | null = null;
+    let candidateTail: string | null = null;
     let stablePolls = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const messages = await client.getMessages();
-        const latest = this.extractLatestAgentMessage(messages);
+        const snapshots = this.extractAgentMessageSnapshots(messages);
+        const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
+        const combinedReply = this.combineNewAgentReplySnapshots(snapshots, previousSnapshot);
 
-        if (latest && this.isNewAgentReply(latest, previousSnapshot)) {
-          const changedCandidate =
-            !candidate || latest.id !== candidate.id || latest.content !== candidate.content;
+        if (latest && combinedReply && this.isNewAgentReply(latest, previousSnapshot)) {
+          const changedCandidate = candidate !== combinedReply;
           if (changedCandidate) {
-            candidate = latest;
+            candidate = combinedReply;
+            candidateTail = latest.content;
             stablePolls = 0;
           } else {
             stablePolls += 1;
           }
 
-          if (candidate && !this.isTransientTerminalFrame(candidate.content) && stablePolls >= 2) {
-            return candidate.content;
+          if (candidate && candidateTail && !this.isTransientTerminalFrame(candidateTail) && stablePolls >= 2) {
+            return candidate;
           }
         }
       } catch {
@@ -353,11 +362,11 @@ export class HubRouter {
       });
     }
 
-    if (candidate && !this.isTransientTerminalFrame(candidate.content)) {
-      return candidate.content;
+    if (candidate && candidateTail && !this.isTransientTerminalFrame(candidateTail)) {
+      return candidate;
     }
 
-    return candidate?.content ?? null;
+    return candidate;
   }
 
   private async resolveFallbackRunContent(
@@ -423,10 +432,10 @@ export class HubRouter {
     return false;
   }
 
-  private extractLatestAgentMessage(
+  private extractAgentMessageSnapshots(
     messages: Record<string, unknown>[]
-  ): AgentMessageSnapshot | null {
-    let winner: AgentMessageSnapshot | null = null;
+  ): AgentMessageSnapshot[] {
+    const snapshots: AgentMessageSnapshot[] = [];
     let fallbackCounter = 0;
 
     for (const message of messages) {
@@ -454,12 +463,42 @@ export class HubRouter {
             ? Number(message.id)
             : fallbackCounter;
 
-      if (!winner || idCandidate > winner.id) {
-        winner = { id: idCandidate, content };
+      snapshots.push({ id: idCandidate, content });
+    }
+
+    snapshots.sort((left, right) => left.id - right.id);
+    return snapshots;
+  }
+
+  private combineNewAgentReplySnapshots(
+    snapshots: AgentMessageSnapshot[],
+    previous: AgentMessageSnapshot | null
+  ): string | null {
+    if (snapshots.length === 0) {
+      return null;
+    }
+
+    if (!previous) {
+      return snapshots[snapshots.length - 1]?.content ?? null;
+    }
+
+    const newSegments: string[] = [];
+    for (const snapshot of snapshots) {
+      if (snapshot.id > previous.id) {
+        newSegments.push(snapshot.content);
+        continue;
+      }
+
+      if (snapshot.id === previous.id && snapshot.content !== previous.content) {
+        newSegments.push(snapshot.content);
       }
     }
 
-    return winner;
+    if (newSegments.length === 0) {
+      return null;
+    }
+
+    return newSegments.join("\n\n");
   }
 
   private formatRunContent(threadId: string, content: string): string {

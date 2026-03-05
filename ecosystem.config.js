@@ -18,7 +18,8 @@ const baseApp = {
     NODE_ENV: "production",
     LOG_LEVEL: process.env.LOG_LEVEL || "info",
     LOG_DIR,
-    HUB_SOCKET_PATH
+    HUB_SOCKET_PATH,
+    AGENT_WORKDIR: process.env.AGENT_WORKDIR
   }
 };
 

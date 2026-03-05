@@ -34,6 +34,7 @@ export interface SessionBinding {
 export interface InstanceManagerOptions {
   agentapiBinPath?: string;
   logDir?: string;
+  agentWorkdir?: string;
   spawnFn?: SpawnFn;
   execSyncFn?: ExecSyncFn;
   portAllocator?: PortAllocator;
@@ -58,11 +59,13 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 ]);
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
+const DEFAULT_AGENT_WORKDIR = process.env.AGENT_WORKDIR ?? process.cwd();
 
 export class InstanceManager {
   private readonly log = createLogger("instance_mgr");
   private readonly agentapiBinPath: string;
   private readonly logDir: string;
+  private readonly agentWorkdir: string;
   private readonly spawnFn: SpawnFn;
   private readonly execSyncFn: ExecSyncFn;
   private readonly portAllocator: PortAllocator;
@@ -83,6 +86,7 @@ export class InstanceManager {
   ) {
     this.agentapiBinPath = options.agentapiBinPath ?? path.resolve(process.cwd(), "bin/agentapi");
     this.logDir = options.logDir ?? DEFAULT_LOG_DIR;
+    this.agentWorkdir = this.resolveWorkdir(options.agentWorkdir ?? DEFAULT_AGENT_WORKDIR);
     this.spawnFn = options.spawnFn ?? spawn;
     this.execSyncFn = options.execSyncFn ?? execSync;
     this.portAllocator = options.portAllocator ?? (() => this.allocateAvailablePort());
@@ -95,8 +99,8 @@ export class InstanceManager {
     this.paneBridgeUsePtyWrapper = options.paneBridgeUsePtyWrapper ?? false;
   }
 
-  async spawn(type: AgentType, mode: BridgeMode): Promise<string> {
-    return await this.spawnWithRetry(type, mode);
+  async spawn(type: AgentType, mode: BridgeMode, workingDirectory?: string): Promise<string> {
+    return await this.spawnWithRetry(type, mode, undefined, workingDirectory);
   }
 
   async kill(threadId: string): Promise<void> {
@@ -157,7 +161,7 @@ export class InstanceManager {
 
     const previousStatus = existing.status;
     await this.killInternal(threadId, true);
-    const restartedThreadId = await this.spawnWithRetry(existing.agent_type, existing.mode, threadId);
+    const restartedThreadId = await this.spawnWithRetry(existing.agent_type, existing.mode, threadId, existing.working_dir);
     const current = this.registry.get(restartedThreadId);
 
     this.log.info(
@@ -188,7 +192,7 @@ export class InstanceManager {
     const previousStatus = existing.status;
     const previousType = existing.agent_type;
     await this.killInternal(threadId, true);
-    const restartedThreadId = await this.spawnWithRetry(nextType, existing.mode, threadId);
+    const restartedThreadId = await this.spawnWithRetry(nextType, existing.mode, threadId, existing.working_dir);
     const current = this.registry.get(restartedThreadId);
 
     this.log.info(
@@ -247,12 +251,17 @@ export class InstanceManager {
     return this.registry.list();
   }
 
-  private async spawnWithRetry(type: AgentType, mode: BridgeMode, threadIdOverride?: string): Promise<string> {
+  private async spawnWithRetry(
+    type: AgentType,
+    mode: BridgeMode,
+    threadIdOverride?: string,
+    workingDirectory?: string
+  ): Promise<string> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
       try {
-        return await this.spawnInternal(type, mode, threadIdOverride);
+        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory);
       } catch (error) {
         lastError = error;
         if (!this.shouldRetrySpawn(error) || attempt >= this.spawnAttempts) {
@@ -294,9 +303,15 @@ export class InstanceManager {
     );
   }
 
-  private async spawnInternal(type: AgentType, mode: BridgeMode, threadIdOverride?: string): Promise<string> {
+  private async spawnInternal(
+    type: AgentType,
+    mode: BridgeMode,
+    threadIdOverride?: string,
+    workingDirectory?: string
+  ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const port = await this.portAllocator();
+    const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
     const socketPath = this.formatAgentEndpoint(port);
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
     const args = this.buildSpawnArgs(type, port);
@@ -312,6 +327,7 @@ export class InstanceManager {
           mode,
           thread_id: threadId,
           socket_path: socketPath,
+          working_directory: spawnWorkdir,
           command: paneLaunch.command,
           args: paneLaunch.args,
           pane_bridge_use_pty_wrapper: this.paneBridgeUsePtyWrapper,
@@ -323,7 +339,8 @@ export class InstanceManager {
       const child = this.spawnFn(paneLaunch.command, paneLaunch.args, {
         detached: false,
         stdio,
-        env: childEnv
+        env: childEnv,
+        cwd: spawnWorkdir
       });
 
       if (!child.pid) {
@@ -346,6 +363,7 @@ export class InstanceManager {
         agent_type: type,
         mode,
         socket_path: socketPath,
+        working_dir: spawnWorkdir,
         pid: child.pid,
         tmux_pane: tmuxSession,
         status: "idle",
@@ -390,6 +408,7 @@ export class InstanceManager {
         mode,
         thread_id: threadId,
         socket_path: socketPath,
+        working_directory: spawnWorkdir,
         command: this.agentapiBinPath,
         args,
         pane_bridge_use_pty_wrapper: this.paneBridgeUsePtyWrapper,
@@ -401,7 +420,8 @@ export class InstanceManager {
     const child = this.spawnFn(this.agentapiBinPath, args, {
       detached: false,
       stdio,
-      env: childEnv
+      env: childEnv,
+      cwd: spawnWorkdir
     });
 
     if (!child.pid) {
@@ -424,6 +444,7 @@ export class InstanceManager {
       agent_type: type,
       mode,
       socket_path: socketPath,
+      working_dir: spawnWorkdir,
       pid: child.pid,
       tmux_pane: tmuxSession,
       status: "idle",
@@ -578,7 +599,8 @@ export class InstanceManager {
       }
 
       const nextStatus: AgentInstanceStatus = code === 0 || signal === "SIGTERM" ? "stopped" : "error";
-      this.registry.setStatus(threadId, nextStatus);
+      this.registry.unregister(threadId);
+      this.clearSessionBindingsForThread(threadId);
 
       this.log.warn(
         {
@@ -589,7 +611,8 @@ export class InstanceManager {
           exit_code: code,
           signal,
           prev_status: instance.status,
-          next_status: nextStatus
+          next_status: nextStatus,
+          removed_from_registry: true
         },
         "Agent process exited"
       );
@@ -666,7 +689,31 @@ export class InstanceManager {
         stdio: "ignore"
       }
     );
-    void threadId;
+    this.enableTmuxPaneLogging(threadId, tmuxSession);
+  }
+
+  private enableTmuxPaneLogging(threadId: string, tmuxSession: string): void {
+    try {
+      fs.mkdirSync(this.logDir, { recursive: true });
+      const paneLogPath = path.join(this.logDir, `pane-${threadId}.log`);
+      const pipeCommand = `cat >> ${paneLogPath}`;
+      this.execSyncFn(
+        `tmux pipe-pane -o -t ${this.shellEscape(tmuxSession)} ${this.shellEscape(pipeCommand)}`,
+        {
+          stdio: "ignore"
+        }
+      );
+    } catch (error) {
+      this.log.warn(
+        {
+          operation: "pane_log_pipe_failed",
+          thread_id: threadId,
+          tmux_session: tmuxSession,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Failed to enable tmux pane log capture"
+      );
+    }
   }
 
   private formatAgentEndpoint(port: number): string {
@@ -812,6 +859,26 @@ export class InstanceManager {
       throw new Error(`Invalid session id: ${value}`);
     }
     return value;
+  }
+
+  private resolveWorkdir(candidate: string): string {
+    const normalized = candidate.trim();
+    if (!normalized) {
+      throw new Error("Agent working directory cannot be empty");
+    }
+
+    const resolved = path.resolve(normalized);
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(resolved);
+    } catch {
+      throw new Error(`Agent working directory does not exist: ${resolved}`);
+    }
+
+    if (!stats.isDirectory()) {
+      throw new Error(`Agent working directory is not a directory: ${resolved}`);
+    }
+    return resolved;
   }
 
   private toKnownStatus(candidate: unknown): AgentInstanceStatus | null {
