@@ -1,0 +1,13 @@
+/var/log/hub/*.log {
+  daily
+  rotate 30
+  compress
+  delaycompress
+  missingok
+  notifempty
+  postrotate
+    pm2 reload calling-hub --silent || true
+    pm2 reload calling-interface --silent || true
+    pm2 reload calling-monitor --silent || true
+  endscript
+}

@@ -1,0 +1,40 @@
+name: meridian
+
+x-meridian-common: &meridian-common
+  build:
+    context: .
+    target: runtime
+  image: meridian-runtime:local
+  env_file:
+    - .env
+  environment:
+    NODE_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    LOG_DIR: /var/log/hub
+    HUB_SOCKET_PATH: /tmp/hub-socks/hub-core.sock
+  volumes:
+    - /tmp/hub-socks:/tmp/hub-socks
+    - /var/log/hub:/var/log/hub
+  restart: unless-stopped
+
+services:
+  hub:
+    <<: *meridian-common
+    container_name: meridian-hub
+    command: ["node", "dist/hub/index.js"]
+
+  interface:
+    <<: *meridian-common
+    container_name: meridian-interface
+    command: ["node", "dist/interface/index.js"]
+    depends_on:
+      - hub
+
+  monitor:
+    <<: *meridian-common
+    container_name: meridian-monitor
+    command: ["node", "dist/monitor/index.js"]
+    depends_on:
+      - hub
+    profiles:
+      - monitor

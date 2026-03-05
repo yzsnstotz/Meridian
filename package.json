@@ -1,0 +1,39 @@
+{
+  "name": "meridian",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Meridian Phase 0 calling hub",
+  "engines": {
+    "node": "^22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start:hub": "tsx src/hub/index.ts",
+    "start:interface": "tsx src/interface/index.ts",
+    "start:monitor": "tsx src/monitor/index.ts",
+    "test": "node --test --import tsx src/**/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --check ."
+  },
+  "dependencies": {
+    "@grammyjs/types": "^3.23.0",
+    "dotenv": "^17.2.3",
+    "eventsource": "^4.0.0",
+    "grammy": "^1.41.1",
+    "pino": "^10.1.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
+    "eslint": "^9.38.0",
+    "eslint-config-prettier": "^10.1.8",
+    "pino-pretty": "^13.1.2",
+    "prettier": "^3.6.2",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
