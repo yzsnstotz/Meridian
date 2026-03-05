@@ -24,6 +24,7 @@ const envSchema = z.object({
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
   HEARTBEAT_MISSED_THRESHOLD: z.coerce.number().int().positive().default(3),
   LOG_DIR: z.string().default("/var/log/hub"),
+  AGENT_WORKDIR: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),

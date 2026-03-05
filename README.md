@@ -4,6 +4,7 @@
 1. Open `@BotFather` in Telegram and run `/newbot`.
 1. Save the generated token and set `TELEGRAM_BOT_TOKEN` in `.env`.
 1. Set your Telegram user id in `ALLOWED_USER_IDS`.
+1. Optional: set `AGENT_WORKDIR` in `.env` to choose the default repo directory for `/spawn`.
 1. Configure slash commands in `@BotFather` with `/setcommands`:
 
 ```text
@@ -13,6 +14,12 @@ status - Get current instance status
 attach - Attach this chat to a thread
 list - List active instances
 help - Show command usage
+```
+
+`/spawn` supports an optional directory argument:
+
+```text
+/spawn type=codex mode=pane_bridge dir=/absolute/path/to/repo
 ```
 
 ## Local Development

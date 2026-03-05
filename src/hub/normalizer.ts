@@ -6,6 +6,7 @@ interface ParsedIntent {
   intent: Intent;
   target: string;
   threadId: string;
+  spawnDir: string | null;
   mode: BridgeMode;
   payloadContent: string;
 }
@@ -17,7 +18,7 @@ export interface NormalizerContext {
 }
 
 const AGENT_TYPE_SET = new Set(["claude", "codex", "gemini", "cursor"]);
-const ARG_KEYS = new Set(["type", "mode", "thread"]);
+const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo"]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   const normalized = rawArgs.replace(/[＝:：]/g, "=").replace(/\s*=\s*/g, "=").trim();
@@ -67,6 +68,7 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       intent: "run",
       target: fallbackThreadId || "active",
       threadId: fallbackThreadId || "unbound",
+      spawnDir: null,
       mode: "bridge",
       payloadContent: trimmed
     };
@@ -88,6 +90,7 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
         intent: "spawn",
         target: type,
         threadId,
+        spawnDir: args.dir?.trim() || args.repo?.trim() || null,
         mode: resolveMode(args.mode),
         payloadContent: rawArgs
       };
@@ -95,17 +98,17 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
 
     case "/kill": {
       const threadId = requireThreadId(args, fallbackThreadId, "/kill");
-      return { intent: "kill", target: threadId, threadId, mode: "bridge", payloadContent: rawArgs };
+      return { intent: "kill", target: threadId, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
     }
 
     case "/status": {
       const threadId = requireThreadId(args, fallbackThreadId, "/status");
-      return { intent: "status", target: threadId, threadId, mode: "bridge", payloadContent: rawArgs };
+      return { intent: "status", target: threadId, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
     }
 
     case "/attach": {
       const threadId = requireThreadId(args, fallbackThreadId, "/attach");
-      return { intent: "attach", target: threadId, threadId, mode: "bridge", payloadContent: rawArgs };
+      return { intent: "attach", target: threadId, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
     }
 
     case "/model": {
@@ -114,7 +117,7 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       if (!AGENT_TYPE_SET.has(type)) {
         throw new Error("model type must be one of claude|codex|gemini|cursor");
       }
-      return { intent: "switch_model", target: type, threadId, mode: "bridge", payloadContent: rawArgs };
+      return { intent: "switch_model", target: type, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
     }
 
     case "/list":
@@ -122,6 +125,7 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
         intent: "list",
         target: "all",
         threadId: "global",
+        spawnDir: null,
         mode: "bridge",
         payloadContent: ""
       };
@@ -148,7 +152,8 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
       content: parsed.payloadContent || event.content,
       attachments: event.attachments,
       raw_message_id: event.raw_message_id,
-      reply_to: event.reply_to
+      reply_to: event.reply_to,
+      spawn_dir: parsed.spawnDir ?? undefined
     },
     mode: parsed.mode,
     reply_channel: {

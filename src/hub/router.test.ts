@@ -72,6 +72,44 @@ test("HubRouter handles list intent", async () => {
   assert.match(result.content, /No active agent instances/);
 });
 
+test("HubRouter list omits stopped instances", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61001",
+    pid: 10,
+    tmux_pane: "agent_codex_01",
+    status: "stopped",
+    created_at: new Date().toISOString()
+  });
+  registry.register({
+    thread_id: "codex_02",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61002",
+    pid: 11,
+    tmux_pane: "agent_codex_02",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await router.route(baseMessage({ intent: "list", target: "all", thread_id: "global" }));
+  assert.equal(result.status, "success");
+  assert.match(result.content, /codex_02/);
+  assert.doesNotMatch(result.content, /codex_01/);
+});
+
 test("HubRouter returns error result when target thread is missing", async () => {
   const router = new HubRouter(new InstanceRegistry(), {
     clientFactory: () => ({
@@ -176,4 +214,55 @@ test("HubRouter waits past transient spinner frames and returns stabilized reply
 
   assert.equal(result.status, "success");
   assert.equal(result.content, `[thread=gemini_01]\n${finalFrame}`);
+});
+
+test("HubRouter combines multi-part agent replies after run", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61234",
+    pid: 101,
+    tmux_pane: "agent_codex_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let callCount = 0;
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return [{ id: 1, role: "agent", content: "old response" }];
+        }
+        if (callCount <= 3) {
+          return [
+            { id: 1, role: "agent", content: "old response" },
+            { id: 2, role: "agent", content: "part one" }
+          ];
+        }
+        return [
+          { id: 1, role: "agent", content: "old response" },
+          { id: 2, role: "agent", content: "part one" },
+          { id: 3, role: "agent", content: "part two" }
+        ];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      thread_id: "codex_01",
+      target: "codex_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "[thread=codex_01]\npart one\n\npart two");
 });

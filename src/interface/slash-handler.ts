@@ -1,6 +1,6 @@
 import type { BridgeMode, Intent } from "../types";
 
-type SlashIntent = Intent | "help";
+type SlashIntent = Intent | "help" | "restart";
 type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
 
 export interface ParsedSlashCommand {
@@ -8,6 +8,7 @@ export interface ParsedSlashCommand {
   shouldForward: boolean;
   target: string;
   threadId: string | null;
+  spawnDir: string | null;
   mode: BridgeMode;
   payloadContent: string;
   picker: PickerIntent | null;
@@ -15,7 +16,8 @@ export interface ParsedSlashCommand {
 
 const HELP_MESSAGE = [
   "Available commands:",
-  "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge>",
+  "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge> [dir=<absolute_path>]",
+  "/restart",
   "/kill thread=<thread_id>",
   "/status thread=<thread_id>",
   "/attach thread=<thread_id>",
@@ -27,7 +29,7 @@ const HELP_MESSAGE = [
 
 const ALLOWED_AGENT_TYPES = new Set(["claude", "codex", "gemini", "cursor"]);
 const ALT_SLASH_PREFIXES = new Set(["／", "⁄", "∕"]);
-const ARG_KEYS = new Set(["type", "mode", "thread"]);
+const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo"]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   if (!rawArgs.trim()) {
@@ -102,6 +104,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       shouldForward: true,
       target: "active",
       threadId: null,
+      spawnDir: null,
       mode: "bridge",
       payloadContent: content,
       picker: null
@@ -125,6 +128,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: true,
         target: rawType,
         threadId: args.thread ?? null,
+        spawnDir: args.dir?.trim() || args.repo?.trim() || null,
         mode: parseMode(args.mode),
         payloadContent: rawArgs,
         picker: rawArgs.trim().length === 0 ? "spawn" : null
@@ -138,6 +142,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: true,
         target: threadId ?? "active",
         threadId,
+        spawnDir: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: threadId ? null : "kill"
@@ -151,6 +156,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: true,
         target: threadId,
         threadId,
+        spawnDir: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null
@@ -164,6 +170,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: true,
         target: threadId ?? "active",
         threadId,
+        spawnDir: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: threadId ? null : "attach"
@@ -179,6 +186,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
           shouldForward: true,
           target: type || "codex",
           threadId,
+          spawnDir: null,
           mode: "bridge",
           payloadContent: rawArgs,
           picker: "switch_model"
@@ -191,6 +199,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: true,
         target: resolvedType,
         threadId,
+        spawnDir: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null
@@ -203,6 +212,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: true,
         target: "all",
         threadId: null,
+        spawnDir: null,
         mode: "bridge",
         payloadContent: "",
         picker: null
@@ -214,6 +224,19 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         shouldForward: false,
         target: "none",
         threadId: null,
+        spawnDir: null,
+        mode: "bridge",
+        payloadContent: "",
+        picker: null
+      };
+
+    case "/restart":
+      return {
+        intent: "restart",
+        shouldForward: false,
+        target: "none",
+        threadId: null,
+        spawnDir: null,
         mode: "bridge",
         payloadContent: "",
         picker: null

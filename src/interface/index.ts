@@ -1,4 +1,7 @@
+import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { AgentInstanceSchema, type AgentInstance, type AgentType, type HubMessage, type Intent } from "../types";
@@ -12,6 +15,22 @@ import { getHelpMessage, parseSlashCommand, type ParsedSlashCommand } from "./sl
 const interfaceLog = createLogger("interface");
 const SPAWN_TYPES: AgentType[] = ["claude", "codex", "gemini", "cursor"];
 const CALLBACK_PREFIX = "pk";
+const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
+const SPAWN_DIR_ROOT = "/Users/yzliu/work";
+const SPAWN_DIR_MAX_BUTTONS = 24;
+const SPAWN_DIR_SESSION_TTL_MS = 15 * 60 * 1000;
+
+interface SpawnDirectorySession {
+  sessionId: string;
+  chatId: string;
+  type: AgentType;
+  mode: "bridge" | "pane_bridge";
+  currentDir: string;
+  entries: string[];
+  createdAtMs: number;
+}
+
+const spawnDirectorySessions = new Map<string, SpawnDirectorySession>();
 
 function isAgentType(value: string): value is AgentType {
   return SPAWN_TYPES.includes(value as AgentType);
@@ -45,8 +64,8 @@ function toHubMessage(
     throw new Error("Cannot build HubMessage from empty payload");
   }
 
-  if (parsedCommand.intent === "help") {
-    throw new Error("help command should not be forwarded");
+  if (parsedCommand.intent === "help" || parsedCommand.intent === "restart") {
+    throw new Error(`${parsedCommand.intent} command should not be forwarded`);
   }
 
   const threadId = resolveThreadId(parsedCommand, payload.event.reply_to);
@@ -63,7 +82,8 @@ function toHubMessage(
       content: parsedCommand.payloadContent || payload.event.content,
       attachments: payload.event.attachments,
       raw_message_id: payload.event.raw_message_id,
-      reply_to: payload.event.reply_to
+      reply_to: payload.event.reply_to,
+      spawn_dir: parsedCommand.spawnDir ?? undefined
     },
     mode: parsedCommand.mode,
     suppress_reply: false,
@@ -82,6 +102,7 @@ function buildActionHubMessage(params: {
   threadId: string;
   target: string;
   mode?: "bridge" | "pane_bridge";
+  spawnDir?: string;
   suppressReply?: boolean;
 }): HubMessage {
   return {
@@ -94,7 +115,8 @@ function buildActionHubMessage(params: {
       content: "",
       attachments: [],
       raw_message_id: params.messageId,
-      reply_to: null
+      reply_to: null,
+      spawn_dir: params.spawnDir
     },
     mode: params.mode ?? "bridge",
     suppress_reply: params.suppressReply ?? false,
@@ -121,6 +143,139 @@ function buildSpawnModeKeyboard(type: AgentType): InlineKeyboard {
   keyboard.text("bridge", `${CALLBACK_PREFIX}:spawn_mode:${type}:bridge`);
   keyboard.text("pane_bridge", `${CALLBACK_PREFIX}:spawn_mode:${type}:pane_bridge`);
   return keyboard;
+}
+
+function sanitizeCallbackToken(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
+}
+
+function normalizeSpawnDirectory(candidate: string): string | null {
+  const resolvedRoot = path.resolve(SPAWN_DIR_ROOT);
+  const resolvedCandidate = path.resolve(candidate);
+  if (
+    resolvedCandidate !== resolvedRoot &&
+    !resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
+  ) {
+    return null;
+  }
+  return resolvedCandidate;
+}
+
+function listDirectoriesUnder(currentDir: string): string[] {
+  const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, SPAWN_DIR_MAX_BUTTONS);
+}
+
+function pruneSpawnDirectorySessions(): void {
+  const now = Date.now();
+  for (const [sessionId, session] of spawnDirectorySessions.entries()) {
+    if (now - session.createdAtMs > SPAWN_DIR_SESSION_TTL_MS) {
+      spawnDirectorySessions.delete(sessionId);
+    }
+  }
+}
+
+function buildSpawnDirectoryKeyboard(session: SpawnDirectorySession): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  keyboard.text("Use This Folder", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:select`).row();
+  if (path.resolve(session.currentDir) !== path.resolve(SPAWN_DIR_ROOT)) {
+    keyboard.text("Up", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:up`).row();
+  }
+
+  for (let index = 0; index < session.entries.length; index += 1) {
+    const entryName = session.entries[index];
+    keyboard
+      .text(entryName, `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:open:${index}`)
+      .row();
+  }
+
+  keyboard.text("Cancel", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:cancel`);
+  return keyboard;
+}
+
+function buildSpawnDirectoryPrompt(session: SpawnDirectorySession): string {
+  return [
+    `Provider: ${session.type}`,
+    `Mode: ${session.mode}`,
+    `Root: ${SPAWN_DIR_ROOT}`,
+    `Current: ${session.currentDir}`,
+    session.entries.length === 0 ? "No child folders. Choose Use This Folder or Up." : "Choose a folder:"
+  ].join("\n");
+}
+
+function beginSpawnDirectorySession(
+  chatId: string,
+  type: AgentType,
+  mode: "bridge" | "pane_bridge"
+): SpawnDirectorySession {
+  const initialDir = normalizeSpawnDirectory(SPAWN_DIR_ROOT);
+  if (!initialDir || !fs.existsSync(initialDir) || !fs.statSync(initialDir).isDirectory()) {
+    throw new Error(`Spawn root directory is unavailable: ${SPAWN_DIR_ROOT}`);
+  }
+
+  const sessionId = sanitizeCallbackToken(randomUUID().slice(0, 8));
+  const session: SpawnDirectorySession = {
+    sessionId,
+    chatId,
+    type,
+    mode,
+    currentDir: initialDir,
+    entries: listDirectoriesUnder(initialDir),
+    createdAtMs: Date.now()
+  };
+  spawnDirectorySessions.set(sessionId, session);
+  return session;
+}
+
+function refreshSpawnDirectorySession(session: SpawnDirectorySession): void {
+  const normalized = normalizeSpawnDirectory(session.currentDir);
+  if (!normalized || !fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
+    throw new Error(`Directory is unavailable: ${session.currentDir}`);
+  }
+  session.currentDir = normalized;
+  session.entries = listDirectoriesUnder(normalized);
+  session.createdAtMs = Date.now();
+}
+
+function getSpawnDirectorySession(sessionId: string, chatId: string): SpawnDirectorySession {
+  pruneSpawnDirectorySessions();
+  const session = spawnDirectorySessions.get(sessionId);
+  if (!session) {
+    throw new Error("Spawn directory picker expired. Run /spawn again.");
+  }
+  if (session.chatId !== chatId) {
+    throw new Error("Spawn directory picker does not belong to this chat.");
+  }
+  return session;
+}
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+async function handleRestartCommand(ctx: Context): Promise<void> {
+  const projectRoot = process.cwd();
+  const scriptPath = path.resolve(projectRoot, "rebuild-restart.sh");
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`Restart script not found: ${scriptPath}`);
+  }
+
+  const restartLogPath = path.join("/tmp", `meridian-restart-${Date.now()}.log`);
+  await ctx.reply(`Restarting services via rebuild script. Log: ${restartLogPath}`);
+
+  setTimeout(() => {
+    const command = `/bin/bash ${shellEscape(scriptPath)} > ${shellEscape(restartLogPath)} 2>&1`;
+    const child = spawnProcess("/bin/zsh", ["-lc", command], {
+      cwd: projectRoot,
+      detached: true,
+      stdio: "ignore"
+    });
+    child.unref();
+  }, 250);
 }
 
 function buildThreadPickerKeyboard(instances: AgentInstance[], action: "attach" | "kill" | "model_thread"): InlineKeyboard {
@@ -161,7 +316,7 @@ async function requestLiveInstances(chatId: string, messageId?: string): Promise
 
   const parsed = JSON.parse(response.content) as unknown;
   const instances = AgentInstanceSchema.array().parse(parsed);
-  return instances.filter((instance) => instance.status !== "stopped");
+  return instances.filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
 }
 
 async function presentPickerFlow(
@@ -245,18 +400,83 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
       await ctx.answerCallbackQuery({ text: "Invalid spawn option" });
       return true;
     }
-    await sendHubMessage(
-      buildActionHubMessage({
-        chatId,
-        messageId: callbackMessageId,
-        intent: "spawn",
-        threadId: "pending",
-        target: type,
-        mode
-      })
-    );
-    await ctx.editMessageText(`Spawning ${type} (${mode})...`);
+    const session = beginSpawnDirectorySession(chatId, type, mode);
+    await ctx.editMessageText(buildSpawnDirectoryPrompt(session), {
+      reply_markup: buildSpawnDirectoryKeyboard(session)
+    });
     await ctx.answerCallbackQuery();
+    return true;
+  }
+
+  if (action === "spawn_dir" && parts[2] && parts[3]) {
+    const sessionId = parts[2];
+    const operation = parts[3];
+    const session = getSpawnDirectorySession(sessionId, chatId);
+
+    if (operation === "cancel") {
+      spawnDirectorySessions.delete(sessionId);
+      await ctx.editMessageText("Spawn cancelled.");
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+
+    if (operation === "select") {
+      await sendHubMessage(
+        buildActionHubMessage({
+          chatId,
+          messageId: callbackMessageId,
+          intent: "spawn",
+          threadId: "pending",
+          target: session.type,
+          mode: session.mode,
+          spawnDir: session.currentDir
+        })
+      );
+      spawnDirectorySessions.delete(sessionId);
+      await ctx.editMessageText(`Spawning ${session.type} (${session.mode}) in ${session.currentDir}...`);
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+
+    if (operation === "up") {
+      const parent = normalizeSpawnDirectory(path.join(session.currentDir, ".."));
+      if (!parent) {
+        await ctx.answerCallbackQuery({ text: "Already at root" });
+        return true;
+      }
+      session.currentDir = parent;
+      refreshSpawnDirectorySession(session);
+      await ctx.editMessageText(buildSpawnDirectoryPrompt(session), {
+        reply_markup: buildSpawnDirectoryKeyboard(session)
+      });
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+
+    if (operation === "open" && parts[4]) {
+      const index = Number(parts[4]);
+      if (!Number.isInteger(index) || index < 0 || index >= session.entries.length) {
+        await ctx.answerCallbackQuery({ text: "Invalid folder option" });
+        return true;
+      }
+
+      const selected = session.entries[index];
+      const nextDir = normalizeSpawnDirectory(path.join(session.currentDir, selected));
+      if (!nextDir || !fs.existsSync(nextDir) || !fs.statSync(nextDir).isDirectory()) {
+        await ctx.answerCallbackQuery({ text: "Folder is no longer available" });
+        return true;
+      }
+
+      session.currentDir = nextDir;
+      refreshSpawnDirectorySession(session);
+      await ctx.editMessageText(buildSpawnDirectoryPrompt(session), {
+        reply_markup: buildSpawnDirectoryKeyboard(session)
+      });
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+
+    await ctx.answerCallbackQuery({ text: "Unsupported directory action" });
     return true;
   }
 
@@ -328,6 +548,11 @@ bot.on("message", async (ctx) => {
       },
       "InboundUIEvent received"
     );
+
+    if (parsedCommand.intent === "restart") {
+      await handleRestartCommand(ctx);
+      return;
+    }
 
     if (!parsedCommand.shouldForward || parsedCommand.intent === "help") {
       await ctx.reply(getHelpMessage());
