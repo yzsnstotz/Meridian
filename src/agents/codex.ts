@@ -13,11 +13,10 @@ export const codexAgentConfig: CodexAgentConfig = {
   command: CODEX_CLI_COMMAND
 };
 
-export function buildCodexSpawnArgs(mode: BridgeMode, tmuxSession: string | null): string[] {
-  const args = ["server", `--type=${codexAgentConfig.type}`];
-  if (mode === "pane_bridge" && tmuxSession) {
-    args.push(`--tmux-session=${tmuxSession}`);
-  }
+export function buildCodexSpawnArgs(mode: BridgeMode, tmuxSession: string | null, port: number): string[] {
+  void mode;
+  void tmuxSession;
+  const args = ["server", `--type=${codexAgentConfig.type}`, `--port=${port}`];
   args.push("--", codexAgentConfig.command);
   return args;
 }

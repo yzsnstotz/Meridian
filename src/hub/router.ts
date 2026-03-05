@@ -17,6 +17,12 @@ interface AgentClient {
   disconnect: () => void;
   sendMessage: (content: string, attachments: HubMessage["payload"]["attachments"]) => Promise<Record<string, unknown>>;
   getStatus: () => Promise<Record<string, unknown>>;
+  getMessages?: () => Promise<Record<string, unknown>[]>;
+}
+
+interface AgentMessageSnapshot {
+  id: number;
+  content: string;
 }
 
 export interface HubRouterOptions {
@@ -124,13 +130,19 @@ export class HubRouter {
     await client.connect(instance.socket_path);
 
     try {
+      const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
       const response = await client.sendMessage(message.payload.content, message.payload.attachments);
       this.registry.setStatus(instance.thread_id, "running");
+      const agentReply = await this.waitForAgentReply(client, previousSnapshot);
+      const content = this.formatRunContent(
+        instance.thread_id,
+        agentReply ?? (await this.resolveFallbackRunContent(client, response))
+      );
       return this.buildResult(
         message,
         "success",
         instance.agent_type,
-        this.extractContent(response),
+        content,
         instance.thread_id
       );
     } finally {
@@ -256,6 +268,173 @@ export class HubRouter {
     }
 
     return JSON.stringify(response, null, 2);
+  }
+
+  private async getLatestAgentMessageSnapshot(client: AgentClient): Promise<AgentMessageSnapshot | null> {
+    if (!client.getMessages) {
+      return null;
+    }
+
+    try {
+      const messages = await client.getMessages();
+      return this.extractLatestAgentMessage(messages);
+    } catch {
+      return null;
+    }
+  }
+
+  private async waitForAgentReply(
+    client: AgentClient,
+    previousSnapshot: AgentMessageSnapshot | null
+  ): Promise<string | null> {
+    if (!client.getMessages) {
+      return null;
+    }
+
+    const maxAttempts = 40;
+    const delayMs = 500;
+    let candidate: AgentMessageSnapshot | null = null;
+    let stablePolls = 0;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const messages = await client.getMessages();
+        const latest = this.extractLatestAgentMessage(messages);
+
+        if (latest && this.isNewAgentReply(latest, previousSnapshot)) {
+          const changedCandidate =
+            !candidate || latest.id !== candidate.id || latest.content !== candidate.content;
+          if (changedCandidate) {
+            candidate = latest;
+            stablePolls = 0;
+          } else {
+            stablePolls += 1;
+          }
+
+          if (candidate && !this.isTransientTerminalFrame(candidate.content) && stablePolls >= 2) {
+            return candidate.content;
+          }
+        }
+      } catch {
+        return null;
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs);
+      });
+    }
+
+    if (candidate && !this.isTransientTerminalFrame(candidate.content)) {
+      return candidate.content;
+    }
+
+    return candidate?.content ?? null;
+  }
+
+  private async resolveFallbackRunContent(
+    client: AgentClient,
+    response: Record<string, unknown>
+  ): Promise<string> {
+    const extracted = this.extractContent(response);
+    if (extracted.trim().length > 0 && !this.isTransportAckResponse(response)) {
+      return extracted;
+    }
+
+    const latestSnapshot = await this.getLatestAgentMessageSnapshot(client);
+    if (latestSnapshot?.content) {
+      if (this.isTransientTerminalFrame(latestSnapshot.content)) {
+        return extracted;
+      }
+      return latestSnapshot.content;
+    }
+
+    return extracted;
+  }
+
+  private isTransportAckResponse(response: Record<string, unknown>): boolean {
+    const ok = response.ok;
+    const content = response.content;
+    const message = response.message;
+    return ok === true && typeof content !== "string" && typeof message !== "string";
+  }
+
+  private isNewAgentReply(
+    latest: AgentMessageSnapshot,
+    previous: AgentMessageSnapshot | null
+  ): boolean {
+    if (!previous) {
+      return true;
+    }
+
+    return latest.id > previous.id || latest.content !== previous.content;
+  }
+
+  private isTransientTerminalFrame(content: string): boolean {
+    const normalized = content.toLowerCase();
+    const hints = [
+      "waiting for auth",
+      "do you trust the files in this folder",
+      "gemini cli is restarting to apply the trust changes",
+      "skip the next speaker check for faster responses",
+      "see full, untruncated responses",
+      "let node.js auto-configure memory",
+      "(esc to cancel"
+    ];
+
+    for (const hint of hints) {
+      if (normalized.includes(hint)) {
+        return true;
+      }
+    }
+
+    if (/[\u2800-\u28ff]/.test(content) && normalized.includes("esc to cancel")) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private extractLatestAgentMessage(
+    messages: Record<string, unknown>[]
+  ): AgentMessageSnapshot | null {
+    let winner: AgentMessageSnapshot | null = null;
+    let fallbackCounter = 0;
+
+    for (const message of messages) {
+      fallbackCounter += 1;
+      const role = typeof message.role === "string" ? message.role : "";
+      if (role !== "agent") {
+        continue;
+      }
+
+      const contentCandidate =
+        typeof message.content === "string"
+          ? message.content
+          : typeof message.message === "string"
+            ? message.message
+            : "";
+      const content = contentCandidate.trim();
+      if (!content) {
+        continue;
+      }
+
+      const idCandidate =
+        typeof message.id === "number" && Number.isFinite(message.id)
+          ? message.id
+          : Number.isFinite(Number(message.id))
+            ? Number(message.id)
+            : fallbackCounter;
+
+      if (!winner || idCandidate > winner.id) {
+        winner = { id: idCandidate, content };
+      }
+    }
+
+    return winner;
+  }
+
+  private formatRunContent(threadId: string, content: string): string {
+    return `[thread=${threadId}]\n${content}`;
   }
 
   private buildResult(

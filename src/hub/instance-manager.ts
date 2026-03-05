@@ -1,5 +1,6 @@
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 
 import { buildClaudeSpawnArgs } from "../agents/claude";
@@ -11,9 +12,10 @@ import { InstanceRegistry } from "./registry";
 
 type SpawnFn = typeof spawn;
 type ExecSyncFn = typeof execSync;
+type PortAllocator = () => Promise<number>;
 
 interface StatusClient {
-  connect: (socketPath: string) => Promise<void>;
+  connect: (endpoint: string) => Promise<void>;
   disconnect: () => void;
   getStatus: () => Promise<Record<string, unknown>>;
 }
@@ -34,8 +36,10 @@ export interface InstanceManagerOptions {
   logDir?: string;
   spawnFn?: SpawnFn;
   execSyncFn?: ExecSyncFn;
+  portAllocator?: PortAllocator;
   clientFactory?: (threadId: string) => StatusClient;
   now?: () => Date;
+  paneBridgeUsePtyWrapper?: boolean;
 }
 
 const SESSION_THREAD_PLACEHOLDERS = new Set(["active", "all", "global", "pending", "unbound", "none"]);
@@ -61,11 +65,17 @@ export class InstanceManager {
   private readonly logDir: string;
   private readonly spawnFn: SpawnFn;
   private readonly execSyncFn: ExecSyncFn;
+  private readonly portAllocator: PortAllocator;
   private readonly clientFactory: (threadId: string) => StatusClient;
   private readonly now: () => Date;
+  private readonly paneBridgeUsePtyWrapper: boolean;
   private readonly children = new Map<string, ChildProcess>();
   private readonly agentLogFdByThread = new Map<string, number>();
   private readonly sessionThreadBySession = new Map<string, string>();
+  private readonly startupAttempts = 180;
+  private readonly startupDelayMs = 250;
+  private readonly spawnAttempts = 3;
+  private readonly spawnRetryDelayMs = 500;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -75,16 +85,18 @@ export class InstanceManager {
     this.logDir = options.logDir ?? DEFAULT_LOG_DIR;
     this.spawnFn = options.spawnFn ?? spawn;
     this.execSyncFn = options.execSyncFn ?? execSync;
+    this.portAllocator = options.portAllocator ?? (() => this.allocateAvailablePort());
     this.clientFactory =
       options.clientFactory ??
       ((threadId: string) => {
         return new AgentAPIClient({ threadId });
       });
     this.now = options.now ?? (() => new Date());
+    this.paneBridgeUsePtyWrapper = options.paneBridgeUsePtyWrapper ?? false;
   }
 
   async spawn(type: AgentType, mode: BridgeMode): Promise<string> {
-    return await this.spawnInternal(type, mode);
+    return await this.spawnWithRetry(type, mode);
   }
 
   async kill(threadId: string): Promise<void> {
@@ -145,7 +157,7 @@ export class InstanceManager {
 
     const previousStatus = existing.status;
     await this.killInternal(threadId, true);
-    const restartedThreadId = await this.spawnInternal(existing.agent_type, existing.mode, threadId);
+    const restartedThreadId = await this.spawnWithRetry(existing.agent_type, existing.mode, threadId);
     const current = this.registry.get(restartedThreadId);
 
     this.log.info(
@@ -202,37 +214,177 @@ export class InstanceManager {
     return this.registry.list();
   }
 
+  private async spawnWithRetry(type: AgentType, mode: BridgeMode, threadIdOverride?: string): Promise<string> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
+      try {
+        return await this.spawnInternal(type, mode, threadIdOverride);
+      } catch (error) {
+        lastError = error;
+        if (!this.shouldRetrySpawn(error) || attempt >= this.spawnAttempts) {
+          throw error;
+        }
+
+        this.log.warn(
+          {
+            operation: "spawn_retry",
+            thread_id: threadIdOverride ?? null,
+            agent_type: type,
+            mode,
+            attempt,
+            max_attempts: this.spawnAttempts,
+            err: error instanceof Error ? error.message : String(error)
+          },
+          "Retrying agent spawn after transient readiness failure"
+        );
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, this.spawnRetryDelayMs);
+        });
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private shouldRetrySpawn(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const message = error.message;
+    return (
+      message.includes("Agent instance failed readiness check") ||
+      message.includes("Failed to connect to agentapi") ||
+      message.includes("Failed to call GET /status") ||
+      message.includes("connect ECONNREFUSED")
+    );
+  }
+
   private async spawnInternal(type: AgentType, mode: BridgeMode, threadIdOverride?: string): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
-    const socketPath = `/tmp/agentapi-${threadId}.sock`;
+    const port = await this.portAllocator();
+    const socketPath = this.formatAgentEndpoint(port);
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
-    const args = this.buildSpawnArgs(type, mode, tmuxSession);
-
-    await fs.promises.unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-    });
+    const args = this.buildSpawnArgs(type, port);
+    const childEnv = this.buildChildEnv();
 
     if (tmuxSession) {
-      this.execSyncFn(`tmux new-session -d -s ${tmuxSession}`, {
-        stdio: "ignore"
+      this.safeKillTmuxSession(tmuxSession);
+      const stdio = this.buildSpawnStdio(threadId);
+      const paneLaunch = this.wrapWithPseudoTerminal(this.agentapiBinPath, args, this.paneBridgeUsePtyWrapper);
+      this.log.info(
+        {
+          operation: "spawn_launch",
+          mode,
+          thread_id: threadId,
+          socket_path: socketPath,
+          command: paneLaunch.command,
+          args: paneLaunch.args,
+          pane_bridge_use_pty_wrapper: this.paneBridgeUsePtyWrapper,
+          child_path: this.summarizePath(childEnv.PATH),
+          stdio_mode: stdio === "inherit" ? "inherit" : "redirected"
+        },
+        "Launching agent instance process"
+      );
+      const child = this.spawnFn(paneLaunch.command, paneLaunch.args, {
+        detached: false,
+        stdio,
+        env: childEnv
       });
+
+      if (!child.pid) {
+        throw new Error(`Failed to spawn agentapi process for thread_id=${threadId}`);
+      }
+
+      this.log.info(
+        {
+          operation: "spawn_pid",
+          mode,
+          thread_id: threadId,
+          socket_path: socketPath,
+          pid: child.pid
+        },
+        "Spawned agent instance process"
+      );
+
+      const instance: AgentInstance = {
+        thread_id: threadId,
+        agent_type: type,
+        mode,
+        socket_path: socketPath,
+        pid: child.pid,
+        tmux_pane: tmuxSession,
+        status: "idle",
+        created_at: this.now().toISOString()
+      };
+
+      this.registry.register(instance);
+      this.children.set(threadId, child);
+      this.watchChildProcess(threadId, child);
+      try {
+        await this.assertAgentReady(threadId, socketPath);
+        this.spawnInTmuxSession(
+          threadId,
+          tmuxSession,
+          this.buildAgentAttachCliArgs(socketPath)
+        );
+      } catch (error) {
+        await this.killInternal(threadId, false).catch(() => undefined);
+        throw error;
+      }
+      this.log.info(
+        {
+          operation: "spawn",
+          mode,
+          thread_id: threadId,
+          pid: child.pid,
+          socket_path: socketPath,
+          tmux_pane: tmuxSession,
+          prev_status: null,
+          next_status: "idle"
+        },
+        "Agent instance spawned"
+      );
+
+      return threadId;
     }
 
     const stdio = this.buildSpawnStdio(threadId);
+    this.log.info(
+      {
+        operation: "spawn_launch",
+        mode,
+        thread_id: threadId,
+        socket_path: socketPath,
+        command: this.agentapiBinPath,
+        args,
+        pane_bridge_use_pty_wrapper: this.paneBridgeUsePtyWrapper,
+        child_path: this.summarizePath(childEnv.PATH),
+        stdio_mode: stdio === "inherit" ? "inherit" : "redirected"
+      },
+      "Launching agent instance process"
+    );
     const child = this.spawnFn(this.agentapiBinPath, args, {
       detached: false,
       stdio,
-      env: {
-        ...process.env,
-        AGENTAPI_SOCKET_PATH: socketPath
-      }
+      env: childEnv
     });
 
     if (!child.pid) {
       throw new Error(`Failed to spawn agentapi process for thread_id=${threadId}`);
     }
+
+    this.log.info(
+      {
+        operation: "spawn_pid",
+        mode,
+        thread_id: threadId,
+        socket_path: socketPath,
+        pid: child.pid
+      },
+      "Spawned agent instance process"
+    );
 
     const instance: AgentInstance = {
       thread_id: threadId,
@@ -248,6 +400,7 @@ export class InstanceManager {
     this.registry.register(instance);
     this.children.set(threadId, child);
     this.watchChildProcess(threadId, child);
+    await this.assertAgentReady(threadId, socketPath);
 
     this.log.info(
       {
@@ -266,10 +419,71 @@ export class InstanceManager {
     return threadId;
   }
 
+  private async assertAgentReady(threadId: string, endpoint: string): Promise<void> {
+    let lastError: string | null = null;
+
+    for (let attempt = 0; attempt < this.startupAttempts; attempt += 1) {
+      const child = this.children.get(threadId);
+      if (!child || !this.isChildRunning(child)) {
+        const exitCode = child?.exitCode ?? null;
+        const signal = child?.signalCode ?? null;
+        this.log.warn(
+          {
+            operation: "readiness_child_not_running",
+            thread_id: threadId,
+            endpoint,
+            attempt,
+            exit_code: exitCode,
+            signal
+          },
+          "Agent process is not running during readiness check"
+        );
+        lastError = `agentapi process exited before readiness check succeeded (exit_code=${exitCode}, signal=${signal})`;
+        break;
+      }
+
+      const client = this.clientFactory(threadId);
+      try {
+        await client.connect(endpoint);
+        await client.getStatus();
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (attempt === 0) {
+          this.log.warn(
+            {
+              operation: "readiness_probe_failed",
+              thread_id: threadId,
+              endpoint,
+              attempt,
+              err: lastError
+            },
+            "Initial readiness probe failed"
+          );
+        }
+      } finally {
+        client.disconnect();
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, this.startupDelayMs);
+      });
+    }
+
+    await this.killInternal(threadId, false).catch(() => undefined);
+    throw new Error(
+      `Agent instance failed readiness check for thread_id=${threadId}: ${lastError ?? "unknown startup error"}`
+    );
+  }
+
   private async killInternal(threadId: string, preserveBindings: boolean): Promise<void> {
     const instance = this.registry.get(threadId);
     if (!instance) {
       throw new Error(`Cannot kill; thread_id=${threadId} is not registered`);
+    }
+
+    if (instance.tmux_pane) {
+      this.safeKillTmuxSession(instance.tmux_pane);
     }
 
     const child = this.children.get(threadId);
@@ -291,11 +505,13 @@ export class InstanceManager {
       }
     }
 
-    await fs.promises.unlink(instance.socket_path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-    });
+    if (instance.socket_path.startsWith("/")) {
+      await fs.promises.unlink(instance.socket_path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      });
+    }
 
     this.children.delete(threadId);
     this.releaseAgentLogFd(threadId);
@@ -384,24 +600,87 @@ export class InstanceManager {
     return `${type}_${String(maxIndex + 1).padStart(2, "0")}`;
   }
 
-  private buildSpawnArgs(type: AgentType, mode: BridgeMode, tmuxSession: string | null): string[] {
+  private buildSpawnArgs(type: AgentType, port: number): string[] {
     if (type === "codex") {
-      return buildCodexSpawnArgs(mode, tmuxSession);
+      return buildCodexSpawnArgs("bridge", null, port);
     }
     if (type === "claude") {
-      return buildClaudeSpawnArgs(mode, tmuxSession);
+      return buildClaudeSpawnArgs("bridge", null, port);
     }
 
-    const args = ["server", `--type=${type}`];
-    if (mode === "pane_bridge" && tmuxSession) {
-      args.push(`--tmux-session=${tmuxSession}`);
-    }
+    const args = ["server", `--type=${type}`, `--port=${port}`];
     args.push("--", AGENT_COMMAND_BY_TYPE[type]);
     return args;
   }
 
+  private buildAgentAttachCliArgs(url: string): string[] {
+    return [this.agentapiBinPath, "attach", `--url=${url}`];
+  }
+
+  private spawnInTmuxSession(
+    threadId: string,
+    tmuxSession: string,
+    commandParts: string[]
+  ): void {
+    const command = commandParts
+      .map((part) => this.shellEscape(part))
+      .join(" ");
+    const fullCommand = command;
+
+    this.execSyncFn(
+      `tmux new-session -d -s ${this.shellEscape(tmuxSession)} ${this.shellEscape(fullCommand)}`,
+      {
+        stdio: "ignore"
+      }
+    );
+    void threadId;
+  }
+
+  private formatAgentEndpoint(port: number): string {
+    return `http://127.0.0.1:${port}`;
+  }
+
+  private async allocateAvailablePort(): Promise<number> {
+    return await new Promise<number>((resolve, reject) => {
+      const server = net.createServer();
+      server.unref();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          server.close(() => reject(new Error("Failed to allocate localhost port")));
+          return;
+        }
+
+        const { port } = address;
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(port);
+        });
+      });
+    });
+  }
+
+  private shellEscape(value: string): string {
+    return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  }
+
+  private safeKillTmuxSession(sessionName: string): void {
+    try {
+      this.execSyncFn(`tmux kill-session -t ${this.shellEscape(sessionName)}`, {
+        stdio: "ignore"
+      });
+    } catch {
+      // Session may already be gone; cleanup continues below.
+    }
+  }
+
   private buildSpawnStdio(threadId: string): "inherit" | ["ignore", number, number] {
-    if (DEFAULT_NODE_ENV !== "production") {
+    const shouldRedirectLogs = DEFAULT_NODE_ENV === "production" || Boolean(process.env.PM2_HOME);
+    if (!shouldRedirectLogs) {
       return "inherit";
     }
 
@@ -410,6 +689,63 @@ export class InstanceManager {
     const fd = fs.openSync(agentLogPath, "a");
     this.agentLogFdByThread.set(threadId, fd);
     return ["ignore", fd, fd];
+  }
+
+  private buildChildEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.TMUX;
+    const home = env.HOME ?? process.env.HOME;
+    if (home) {
+      const fnmAliasBin = path.join(home, ".local", "share", "fnm", "aliases", "default", "bin");
+      if (fs.existsSync(fnmAliasBin)) {
+        env.PATH = this.prependPathEntry(env.PATH, fnmAliasBin);
+      }
+    }
+    return env;
+  }
+
+  private isChildRunning(child: ChildProcess): boolean {
+    if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+      return false;
+    }
+    return true;
+  }
+
+  private prependPathEntry(currentPath: string | undefined, entry: string): string {
+    const segments = (currentPath ?? "")
+      .split(path.delimiter)
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (!segments.includes(entry)) {
+      segments.unshift(entry);
+    }
+    return segments.join(path.delimiter);
+  }
+
+  private summarizePath(currentPath: string | undefined): string[] {
+    if (!currentPath) {
+      return [];
+    }
+    return currentPath
+      .split(path.delimiter)
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .slice(0, 6);
+  }
+
+  private wrapWithPseudoTerminal(
+    command: string,
+    args: string[],
+    enabled: boolean
+  ): { command: string; args: string[] } {
+    if (!enabled) {
+      return { command, args };
+    }
+
+    return {
+      command: "script",
+      args: ["-q", "/dev/null", command, ...args]
+    };
   }
 
   private releaseAgentLogFd(threadId: string): void {

@@ -23,16 +23,27 @@ const HELP_MESSAGE = [
 ].join("\n");
 
 const ALLOWED_AGENT_TYPES = new Set(["claude", "codex", "gemini", "cursor"]);
+const ALT_SLASH_PREFIXES = new Set(["／", "⁄", "∕"]);
+const ARG_KEYS = new Set(["type", "mode", "thread"]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   if (!rawArgs.trim()) {
     return {};
   }
 
+  const normalized = rawArgs.replace(/[＝:：]/g, "=").replace(/\s*=\s*/g, "=").trim();
   const args: Record<string, string> = {};
-  for (const token of rawArgs.trim().split(/\s+/)) {
+  const tokens = normalized.split(/\s+/);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
     const separatorIndex = token.indexOf("=");
     if (separatorIndex < 0) {
+      const next = tokens[index + 1];
+      const keyCandidate = token.trim().toLowerCase();
+      if (ARG_KEYS.has(keyCandidate) && next && !next.includes("=")) {
+        args[keyCandidate] = next.trim();
+        index += 1;
+      }
       continue;
     }
 
@@ -69,7 +80,7 @@ export function getHelpMessage(): string {
 }
 
 export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
-  const content = rawContent.trim();
+  const content = normalizeCommandPrefix(rawContent.trim());
 
   if (!content.startsWith("/")) {
     return {
@@ -163,4 +174,17 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
     default:
       throw new Error(`Unsupported command: ${command}. Use /help for usage.`);
   }
+}
+
+function normalizeCommandPrefix(content: string): string {
+  if (!content) {
+    return content;
+  }
+
+  const first = content[0];
+  if (first === "/" || !ALT_SLASH_PREFIXES.has(first)) {
+    return content;
+  }
+
+  return `/${content.slice(1)}`;
 }

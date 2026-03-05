@@ -95,7 +95,7 @@ async function createAgentApiServer(
 }
 
 test("connect + sendMessage + getStatus over unix socket", async () => {
-  const seenMessages: Array<{ content: string; attachments: Array<{ path: string }> }> = [];
+  const seenMessages: Array<{ content: string; type: string }> = [];
 
   const server = await createAgentApiServer((request, body, response) => {
     if (request.method === "GET" && request.url === "/status") {
@@ -105,7 +105,7 @@ test("connect + sendMessage + getStatus over unix socket", async () => {
     }
 
     if (request.method === "POST" && request.url === "/message") {
-      seenMessages.push(JSON.parse(body) as { content: string; attachments: Array<{ path: string }> });
+      seenMessages.push(JSON.parse(body) as { content: string; type: string });
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true }));
       return;
@@ -126,8 +126,8 @@ test("connect + sendMessage + getStatus over unix socket", async () => {
     const messageResult = await client.sendMessage("hello from test", [{ path: "/tmp/demo.txt" }]);
     assert.equal(messageResult.ok, true);
     assert.equal(seenMessages.length, 1);
-    assert.equal(seenMessages[0]?.content, "hello from test");
-    assert.equal(seenMessages[0]?.attachments[0]?.path, "/tmp/demo.txt");
+    assert.equal(seenMessages[0]?.type, "user");
+    assert.match(seenMessages[0]?.content ?? "", /^hello from test/);
 
     client.disconnect();
   } finally {
@@ -234,4 +234,92 @@ test("errors include thread_id and socketPath context", async () => {
       error.message.includes("thread_id=ctx_thread") &&
       error.message.includes(`socketPath=${missingSocket}`)
   );
+});
+
+test("sendMessage falls back to raw payload when user payload is rejected", async () => {
+  const receivedBodies: Array<Record<string, unknown>> = [];
+  let messageCalls = 0;
+
+  const server = await createAgentApiServer((request, body, response) => {
+    if (request.method === "GET" && request.url === "/status") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "stable" }));
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/message") {
+      messageCalls += 1;
+      receivedBodies.push(JSON.parse(body) as Record<string, unknown>);
+      if (messageCalls === 1) {
+        response.writeHead(422, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "invalid request" }));
+      } else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true }));
+      }
+      return;
+    }
+
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+
+  try {
+    const client = new AgentAPIClient({ threadId: "fallback_thread" });
+    await client.connect(server.socketPath);
+
+    const result = await client.sendMessage("run this");
+    assert.equal(result.ok, true);
+    assert.equal(messageCalls, 2);
+    assert.deepEqual(receivedBodies[0], { content: "run this", type: "user" });
+    assert.deepEqual(receivedBodies[1], { content: "run this\n", type: "raw" });
+
+    client.disconnect();
+  } finally {
+    await server.close();
+  }
+});
+
+test("sendMessage falls back to raw payload on HTTP 500", async () => {
+  const receivedBodies: Array<Record<string, unknown>> = [];
+  let messageCalls = 0;
+
+  const server = await createAgentApiServer((request, body, response) => {
+    if (request.method === "GET" && request.url === "/status") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "stable" }));
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/message") {
+      messageCalls += 1;
+      receivedBodies.push(JSON.parse(body) as Record<string, unknown>);
+      if (messageCalls === 1) {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "internal" }));
+      } else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true }));
+      }
+      return;
+    }
+
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+
+  try {
+    const client = new AgentAPIClient({ threadId: "fallback_500_thread" });
+    await client.connect(server.socketPath);
+
+    const result = await client.sendMessage("retry on 500");
+    assert.equal(result.ok, true);
+    assert.equal(messageCalls, 2);
+    assert.deepEqual(receivedBodies[0], { content: "retry on 500", type: "user" });
+    assert.deepEqual(receivedBodies[1], { content: "retry on 500\n", type: "raw" });
+
+    client.disconnect();
+  } finally {
+    await server.close();
+  }
 });
