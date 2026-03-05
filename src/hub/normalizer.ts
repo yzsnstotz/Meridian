@@ -108,6 +108,15 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       return { intent: "attach", target: threadId, threadId, mode: "bridge", payloadContent: rawArgs };
     }
 
+    case "/model": {
+      const threadId = requireThreadId(args, fallbackThreadId, "/model");
+      const type = (args.type ?? "").trim().toLowerCase();
+      if (!AGENT_TYPE_SET.has(type)) {
+        throw new Error("model type must be one of claude|codex|gemini|cursor");
+      }
+      return { intent: "switch_model", target: type, threadId, mode: "bridge", payloadContent: rawArgs };
+    }
+
     case "/list":
       return {
         intent: "list",

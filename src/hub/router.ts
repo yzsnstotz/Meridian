@@ -118,6 +118,8 @@ export class HubRouter {
         return await this.handleKill(message);
       case "attach":
         return this.handleAttach(message);
+      case "switch_model":
+        return await this.handleSwitchModel(message);
       default:
         return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
     }
@@ -201,6 +203,19 @@ export class HubRouter {
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }
 
+  private async handleSwitchModel(message: HubMessage): Promise<HubResult> {
+    const threadId = this.resolveThreadIdFromThread(message);
+    this.resolveInstance(threadId);
+    const nextType = AgentTypeSchema.parse(message.target);
+    const switchedThreadId = await this.instanceManager.switchModel(threadId, nextType);
+    const switched = this.registry.get(switchedThreadId);
+    const content =
+      switched === undefined
+        ? `Switched ${threadId} to ${nextType}`
+        : JSON.stringify({ thread_id: switchedThreadId, instance: switched }, null, 2);
+    return this.buildResult(message, "success", nextType, content, switchedThreadId);
+  }
+
   private resolveInstance(threadId: string): AgentInstance {
     const instance = this.registry.get(threadId);
     if (!instance) {
@@ -211,6 +226,20 @@ export class HubRouter {
 
   private resolveThreadId(message: HubMessage): string {
     const explicitThread = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id);
+    if (explicitThread) {
+      return explicitThread;
+    }
+
+    const attachedThread = this.instanceManager.getAttachedThread(message.reply_channel.chat_id);
+    if (attachedThread) {
+      return attachedThread;
+    }
+
+    throw new Error(`No thread is attached for session=${message.reply_channel.chat_id}`);
+  }
+
+  private resolveThreadIdFromThread(message: HubMessage): string {
+    const explicitThread = this.extractConcreteThreadId(message.thread_id);
     if (explicitThread) {
       return explicitThread;
     }

@@ -175,6 +175,39 @@ export class InstanceManager {
     return restartedThreadId;
   }
 
+  async switchModel(threadId: string, nextType: AgentType): Promise<string> {
+    const existing = this.registry.get(threadId);
+    if (!existing) {
+      throw new Error(`Cannot switch model; thread_id=${threadId} is not registered`);
+    }
+
+    if (existing.agent_type === nextType) {
+      return threadId;
+    }
+
+    const previousStatus = existing.status;
+    const previousType = existing.agent_type;
+    await this.killInternal(threadId, true);
+    const restartedThreadId = await this.spawnWithRetry(nextType, existing.mode, threadId);
+    const current = this.registry.get(restartedThreadId);
+
+    this.log.info(
+      {
+        operation: "switch_model",
+        thread_id: restartedThreadId,
+        from_agent_type: previousType,
+        to_agent_type: nextType,
+        pid: current?.pid ?? null,
+        socket_path: current?.socket_path ?? null,
+        prev_status: previousStatus,
+        next_status: current?.status ?? "idle"
+      },
+      "Agent instance model switched"
+    );
+
+    return restartedThreadId;
+  }
+
   async status(threadId: string): Promise<InstanceStatus> {
     const instance = this.registry.get(threadId);
     if (!instance) {

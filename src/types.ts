@@ -3,7 +3,7 @@ import { z } from "zod";
 export const ChannelSchema = z.enum(["telegram"]);
 export type Channel = z.infer<typeof ChannelSchema>;
 
-export const IntentSchema = z.enum(["run", "spawn", "kill", "status", "attach", "list"]);
+export const IntentSchema = z.enum(["run", "spawn", "kill", "status", "attach", "list", "switch_model"]);
 export type Intent = z.infer<typeof IntentSchema>;
 
 export const BridgeModeSchema = z.enum(["bridge", "pane_bridge"]);
@@ -59,7 +59,8 @@ export const HubMessageSchema = z.object({
   target: z.string().min(1),
   payload: HubPayloadSchema,
   mode: BridgeModeSchema,
-  reply_channel: ReplyChannelSchema
+  reply_channel: ReplyChannelSchema,
+  suppress_reply: z.boolean().optional()
 });
 export type HubMessage = z.infer<typeof HubMessageSchema>;
 

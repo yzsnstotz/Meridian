@@ -1,6 +1,7 @@
 import type { BridgeMode, Intent } from "../types";
 
 type SlashIntent = Intent | "help";
+type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
 
 export interface ParsedSlashCommand {
   intent: SlashIntent;
@@ -9,6 +10,7 @@ export interface ParsedSlashCommand {
   threadId: string | null;
   mode: BridgeMode;
   payloadContent: string;
+  picker: PickerIntent | null;
 }
 
 const HELP_MESSAGE = [
@@ -17,6 +19,7 @@ const HELP_MESSAGE = [
   "/kill thread=<thread_id>",
   "/status thread=<thread_id>",
   "/attach thread=<thread_id>",
+  "/model thread=<thread_id> type=<claude|codex|gemini|cursor>",
   "/list",
   "/help",
   "Free text messages are treated as run intent."
@@ -75,6 +78,17 @@ function requireThreadId(args: Record<string, string>, commandName: string): str
   return thread.trim();
 }
 
+function requireModelType(args: Record<string, string>, commandName: string): string {
+  const type = (args.type ?? "").trim().toLowerCase();
+  if (!type) {
+    throw new Error(`${commandName} requires type=<claude|codex|gemini|cursor>`);
+  }
+  if (!ALLOWED_AGENT_TYPES.has(type)) {
+    throw new Error(`${commandName} type must be one of claude|codex|gemini|cursor`);
+  }
+  return type;
+}
+
 export function getHelpMessage(): string {
   return HELP_MESSAGE;
 }
@@ -89,7 +103,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       target: "active",
       threadId: null,
       mode: "bridge",
-      payloadContent: content
+      payloadContent: content,
+      picker: null
     };
   }
 
@@ -111,19 +126,21 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         target: rawType,
         threadId: args.thread ?? null,
         mode: parseMode(args.mode),
-        payloadContent: rawArgs
+        payloadContent: rawArgs,
+        picker: rawArgs.trim().length === 0 ? "spawn" : null
       };
     }
 
     case "/kill": {
-      const threadId = requireThreadId(args, "/kill");
+      const threadId = args.thread?.trim() || null;
       return {
         intent: "kill",
         shouldForward: true,
-        target: threadId,
+        target: threadId ?? "active",
         threadId,
         mode: "bridge",
-        payloadContent: rawArgs
+        payloadContent: rawArgs,
+        picker: threadId ? null : "kill"
       };
     }
 
@@ -135,19 +152,48 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         target: threadId,
         threadId,
         mode: "bridge",
-        payloadContent: rawArgs
+        payloadContent: rawArgs,
+        picker: null
       };
     }
 
     case "/attach": {
-      const threadId = requireThreadId(args, "/attach");
+      const threadId = args.thread?.trim() || null;
       return {
         intent: "attach",
         shouldForward: true,
-        target: threadId,
+        target: threadId ?? "active",
         threadId,
         mode: "bridge",
-        payloadContent: rawArgs
+        payloadContent: rawArgs,
+        picker: threadId ? null : "attach"
+      };
+    }
+
+    case "/model": {
+      const threadId = args.thread?.trim() || null;
+      const type = (args.type ?? "").trim().toLowerCase();
+      if (!threadId || !type) {
+        return {
+          intent: "switch_model",
+          shouldForward: true,
+          target: type || "codex",
+          threadId,
+          mode: "bridge",
+          payloadContent: rawArgs,
+          picker: "switch_model"
+        };
+      }
+
+      const resolvedType = requireModelType(args, "/model");
+      return {
+        intent: "switch_model",
+        shouldForward: true,
+        target: resolvedType,
+        threadId,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null
       };
     }
 
@@ -158,7 +204,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         target: "all",
         threadId: null,
         mode: "bridge",
-        payloadContent: ""
+        payloadContent: "",
+        picker: null
       };
 
     case "/help":
@@ -168,7 +215,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         target: "none",
         threadId: null,
         mode: "bridge",
-        payloadContent: ""
+        payloadContent: "",
+        picker: null
       };
 
     default:
