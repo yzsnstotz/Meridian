@@ -714,7 +714,18 @@ export class InstanceManager {
         stdio: "ignore"
       }
     );
+    this.configureTmuxSession(tmuxSession);
     this.enableTmuxPaneLogging(threadId, tmuxSession);
+  }
+
+  private configureTmuxSession(tmuxSession: string): void {
+    // Keep deep scrollback and enable wheel scrolling for attached viewers.
+    this.execSyncFn(`tmux set-option -t ${this.shellEscape(tmuxSession)} history-limit 200000`, {
+      stdio: "ignore"
+    });
+    this.execSyncFn(`tmux set-option -t ${this.shellEscape(tmuxSession)} mouse on`, {
+      stdio: "ignore"
+    });
   }
 
   private enableTmuxPaneLogging(threadId: string, tmuxSession: string): void {
