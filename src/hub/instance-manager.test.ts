@@ -212,6 +212,35 @@ test("attach + status + list + kill + restart lifecycle", async () => {
   assert.equal(manager.getAttachedThread("chat-1"), null);
 });
 
+test("switchModel keeps thread id and updates agent type", async () => {
+  const registry = new InstanceRegistry();
+  let spawnCounter = 0;
+
+  const manager = new InstanceManager(registry, {
+    portAllocator: async () => 5400 + spawnCounter,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCounter += 1;
+      return new FakeChildProcess(6400 + spawnCounter) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "pane_bridge");
+  const switchedThread = await manager.switchModel(threadId, "gemini");
+  const switched = registry.get(switchedThread);
+
+  assert.equal(switchedThread, threadId);
+  assert.equal(switched?.thread_id, threadId);
+  assert.equal(switched?.agent_type, "gemini");
+  assert.equal(switched?.mode, "pane_bridge");
+
+  await manager.kill(threadId);
+});
+
 test("spawn fails fast when child already exited before readiness polling", async () => {
   const registry = new InstanceRegistry();
   let connectCalls = 0;

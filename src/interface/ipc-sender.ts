@@ -1,7 +1,7 @@
 import { config } from "../config";
 import { createLogger } from "../logger";
-import { sendIpcMessage } from "../shared/ipc";
-import type { HubMessage } from "../types";
+import { sendIpcMessage, sendIpcRequest } from "../shared/ipc";
+import { HubResultSchema, type HubMessage, type HubResult } from "../types";
 
 const interfaceLog = createLogger("interface");
 
@@ -16,4 +16,9 @@ export async function sendHubMessage(message: HubMessage): Promise<void> {
     },
     "HubMessage forwarded to hub socket"
   );
+}
+
+export async function requestHubMessage(message: HubMessage): Promise<HubResult> {
+  const response = await sendIpcRequest<HubMessage, HubResult>(config.HUB_SOCKET_PATH, message);
+  return HubResultSchema.parse(response);
 }

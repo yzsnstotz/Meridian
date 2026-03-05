@@ -49,7 +49,7 @@ export class HubServer {
 
     await this.removeStaleSocket();
 
-    this.server = net.createServer((socket) => {
+    this.server = net.createServer({ allowHalfOpen: true }, (socket) => {
       socket.setEncoding("utf8");
       let raw = "";
 
@@ -58,7 +58,23 @@ export class HubServer {
       });
 
       socket.on("end", () => {
-        void this.handleRawPayload(raw);
+        void this.handleRawPayload(raw)
+          .then((result) => {
+            if (!socket.writable) {
+              return;
+            }
+            if (result) {
+              socket.end(JSON.stringify(result));
+              return;
+            }
+            socket.end();
+          })
+          .catch((error) => {
+            this.log.error({ trace_id: null, thread_id: null, err: String(error) }, "Hub socket response failed");
+            if (socket.writable) {
+              socket.end();
+            }
+          });
       });
 
       socket.on("error", (error) => {
@@ -90,7 +106,7 @@ export class HubServer {
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server stopped");
   }
 
-  private async handleRawPayload(raw: string): Promise<void> {
+  private async handleRawPayload(raw: string): Promise<HubResult | null> {
     let message: HubMessage | null = null;
 
     try {
@@ -102,7 +118,10 @@ export class HubServer {
       message = this.normalizeIncomingMessage(parsed);
       const result = await this.router.route(message);
       const validatedResult = HubResultSchema.parse(result);
-      await this.resultSender.sendResult(validatedResult, message.reply_channel);
+      if (!message.suppress_reply) {
+        await this.resultSender.sendResult(validatedResult, message.reply_channel);
+      }
+      return validatedResult;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
@@ -116,7 +135,7 @@ export class HubServer {
       );
 
       if (!message) {
-        return;
+        return null;
       }
 
       const fallbackResult: HubResult = HubResultSchema.parse({
@@ -129,16 +148,19 @@ export class HubServer {
         timestamp: new Date().toISOString()
       });
 
-      await this.resultSender.sendResult(fallbackResult, message.reply_channel).catch((sendError) => {
-        this.log.error(
-          {
-            trace_id: message?.trace_id ?? null,
-            thread_id: message?.thread_id ?? null,
-            err: sendError instanceof Error ? sendError.message : String(sendError)
-          },
-          "Failed to deliver fallback HubResult"
-        );
-      });
+      if (!message.suppress_reply) {
+        await this.resultSender.sendResult(fallbackResult, message.reply_channel).catch((sendError) => {
+          this.log.error(
+            {
+              trace_id: message?.trace_id ?? null,
+              thread_id: message?.thread_id ?? null,
+              err: sendError instanceof Error ? sendError.message : String(sendError)
+            },
+            "Failed to deliver fallback HubResult"
+          );
+        });
+      }
+      return fallbackResult;
     }
   }
 
