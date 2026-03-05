@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { config } from "../config";
 import {
   AgentAPIClient,
@@ -57,6 +59,8 @@ export interface MonitorManagerOptions {
 }
 
 const DEFAULT_SSE_RECONNECT_ATTEMPTS = 3;
+const UUID_V4_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class MonitorManager {
   private readonly log = getMonitorLogger();
@@ -105,7 +109,7 @@ export class MonitorManager {
           return;
         }
         task.sseReconnectCount = context.attempts;
-        void this.switchToHeartbeat(task, "SSE reconnect attempts exhausted", context.errorSummary);
+        void this.switchToHeartbeat(task, "SSE reconnect attempts exhausted", context.errorSummary, true);
       }
     };
 
@@ -236,7 +240,12 @@ export class MonitorManager {
     );
   }
 
-  private async switchToHeartbeat(task: MonitorTask, reason: string, errorMessage?: string): Promise<void> {
+  private async switchToHeartbeat(
+    task: MonitorTask,
+    reason: string,
+    errorMessage?: string,
+    emitReconnectFailedEvent = false
+  ): Promise<void> {
     if (!task.active || task.mode === "heartbeat") {
       return;
     }
@@ -259,7 +268,14 @@ export class MonitorManager {
       "Switching monitor mode from SSE to heartbeat"
     );
 
-    if (errorMessage) {
+    if (errorMessage && emitReconnectFailedEvent) {
+      await this.emitEvent(task, "sse_reconnect_failed", {
+        error: errorMessage,
+        details: {
+          reason: "sse_reconnect_exhausted"
+        }
+      });
+    } else if (errorMessage) {
       await this.emitEvent(task, "agent_error", {
         error: errorMessage,
         details: {
@@ -383,7 +399,7 @@ export class MonitorManager {
     }
 
     const event = MonitorEventSchema.parse({
-      trace_id: null,
+      trace_id: this.resolveTraceId(fields),
       thread_id: task.instance.thread_id,
       event_type: eventType,
       monitor_mode: task.mode,
@@ -395,7 +411,7 @@ export class MonitorManager {
       error: fields.error
     });
 
-    const severity = this.resolveSeverity(eventType);
+    const severity = this.resolveSeverity(event);
     this.log[severity](
       {
         trace_id: event.trace_id,
@@ -428,14 +444,53 @@ export class MonitorManager {
     }
   }
 
-  private resolveSeverity(eventType: MonitorEventType): "info" | "warn" | "error" {
-    if (eventType === "heartbeat_missed") {
+  private resolveSeverity(event: MonitorEvent): "info" | "warn" | "error" | "fatal" {
+    if (event.event_type === "sse_reconnect_failed") {
+      return "fatal";
+    }
+    if (event.event_type === "heartbeat_missed") {
+      if ((event.missed_heartbeats ?? 0) >= this.heartbeatMissedThreshold) {
+        return "error";
+      }
       return "warn";
     }
-    if (eventType === "agent_error") {
+    if (event.event_type === "agent_error") {
       return "error";
     }
     return "info";
+  }
+
+  private resolveTraceId(fields: Partial<MonitorEvent>): string | null {
+    const directTraceId = this.asUuid(fields.trace_id);
+    if (directTraceId) {
+      return directTraceId;
+    }
+
+    const detailTraceId = this.extractTraceIdFromDetails(fields.details);
+    if (detailTraceId) {
+      return detailTraceId;
+    }
+
+    return randomUUID();
+  }
+
+  private extractTraceIdFromDetails(details: MonitorEvent["details"]): string | null {
+    if (!details) {
+      return null;
+    }
+    const traceIdCandidate = details.trace_id;
+    return this.asUuid(typeof traceIdCandidate === "string" ? traceIdCandidate : null);
+  }
+
+  private asUuid(value: string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim();
+    if (!UUID_V4_REGEX.test(trimmed)) {
+      return null;
+    }
+    return trimmed;
   }
 
   private extractEventType(

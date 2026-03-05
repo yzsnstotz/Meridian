@@ -4,7 +4,8 @@ export const MonitorEventTypeSchema = z.enum([
   "task_completed",
   "status_changed",
   "heartbeat_missed",
-  "agent_error"
+  "agent_error",
+  "sse_reconnect_failed"
 ]);
 export type MonitorEventType = z.infer<typeof MonitorEventTypeSchema>;
 
