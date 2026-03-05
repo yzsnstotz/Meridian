@@ -20,11 +20,10 @@ export function buildClaudeCliArgs(allowedTools: readonly string[] = claudeAgent
   return [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
 }
 
-export function buildClaudeSpawnArgs(mode: BridgeMode, tmuxSession: string | null): string[] {
-  const args = ["server", `--type=${claudeAgentConfig.type}`];
-  if (mode === "pane_bridge" && tmuxSession) {
-    args.push(`--tmux-session=${tmuxSession}`);
-  }
+export function buildClaudeSpawnArgs(mode: BridgeMode, tmuxSession: string | null, port: number): string[] {
+  void mode;
+  void tmuxSession;
+  const args = ["server", `--type=${claudeAgentConfig.type}`, `--port=${port}`];
   args.push("--", ...buildClaudeCliArgs());
   return args;
 }

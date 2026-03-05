@@ -14,10 +14,9 @@ export const geminiAgentConfig: GeminiAgentConfig = {
 };
 
 export function buildGeminiSpawnArgs(mode: BridgeMode, tmuxSession: string | null): string[] {
+  void mode;
+  void tmuxSession;
   const args = ["server", `--type=${geminiAgentConfig.type}`];
-  if (mode === "pane_bridge" && tmuxSession) {
-    args.push(`--tmux-session=${tmuxSession}`);
-  }
   args.push("--", geminiAgentConfig.command);
   return args;
 }

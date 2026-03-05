@@ -92,6 +92,9 @@ start_with_pm2() {
   if ! command -v pm2 >/dev/null 2>&1; then
     return 1
   fi
+  if ! pm2 ping >/dev/null 2>&1; then
+    return 1
+  fi
   if [[ ! -f "${ROOT_DIR}/ecosystem.config.js" ]]; then
     return 1
   fi
@@ -102,7 +105,7 @@ start_with_pm2() {
   log "Starting Meridian with PM2"
   (
     cd "${ROOT_DIR}"
-    pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null
+    pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null 2>&1
   )
   return 0
 }
@@ -124,6 +127,26 @@ start_with_npm() {
   )
 }
 
+start_with_node_dist() {
+  if ! command -v node >/dev/null 2>&1; then
+    return 1
+  fi
+  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" ]]; then
+    return 1
+  fi
+
+  mkdir -p "${RUNTIME_LOG_DIR}"
+  log "Starting Meridian with node dist entrypoints (logs in ${RUNTIME_LOG_DIR})"
+
+  (
+    cd "${ROOT_DIR}"
+    nohup node dist/hub/index.js >"${RUNTIME_LOG_DIR}/hub.log" 2>&1 &
+    nohup node dist/interface/index.js >"${RUNTIME_LOG_DIR}/interface.log" 2>&1 &
+    nohup node dist/monitor/index.js >"${RUNTIME_LOG_DIR}/monitor.log" 2>&1 &
+  )
+  return 0
+}
+
 log "Stopping existing Meridian processes"
 stop_pm2_apps
 
@@ -140,6 +163,8 @@ rm -f /tmp/agentapi-*.sock >/dev/null 2>&1 || true
 if start_with_pm2; then
   log "Restart complete (PM2 mode)"
   pm2 status calling-hub calling-interface calling-monitor || true
+elif start_with_node_dist; then
+  log "Restart complete (node dist mode)"
 else
   start_with_npm
   log "Restart complete (npm mode)"

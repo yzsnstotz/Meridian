@@ -17,12 +17,22 @@ export interface NormalizerContext {
 }
 
 const AGENT_TYPE_SET = new Set(["claude", "codex", "gemini", "cursor"]);
+const ARG_KEYS = new Set(["type", "mode", "thread"]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
+  const normalized = rawArgs.replace(/[＝:：]/g, "=").replace(/\s*=\s*/g, "=").trim();
   const args: Record<string, string> = {};
-  for (const token of rawArgs.trim().split(/\s+/)) {
+  const tokens = normalized ? normalized.split(/\s+/) : [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
     const separatorIndex = token.indexOf("=");
     if (separatorIndex < 0) {
+      const next = tokens[index + 1];
+      const keyCandidate = token.trim().toLowerCase();
+      if (ARG_KEYS.has(keyCandidate) && next && !next.includes("=")) {
+        args[keyCandidate] = next.trim();
+        index += 1;
+      }
       continue;
     }
     const key = token.slice(0, separatorIndex).toLowerCase();
