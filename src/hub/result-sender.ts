@@ -8,7 +8,67 @@ import { createLogger } from "../logger";
 import { HubResultSchema, ReplyChannelSchema, type HubResult, type ReplyChannel } from "../types";
 
 const TELEGRAM_TEXT_LIMIT = 4096;
+const TELEGRAM_SAFE_TEXT_LIMIT = 3500;
 const TELEGRAM_CAPTION_LIMIT = 1024;
+const TELEGRAM_CHUNK_DELAY_MS = 250;
+const TELEGRAM_MAX_SEND_ATTEMPTS = 5;
+const TELEGRAM_RETRY_BACKOFF_BASE_MS = 500;
+const TELEGRAM_RETRY_BACKOFF_MAX_MS = 8000;
+
+interface TelegramApiResponseBody {
+  ok?: boolean;
+  description?: string;
+  parameters?: {
+    retry_after?: number;
+  };
+}
+
+class TelegramApiError extends Error {
+  constructor(
+    message: string,
+    readonly endpoint: string,
+    readonly statusCode: number | undefined,
+    readonly retryAfterSeconds: number | undefined
+  ) {
+    super(message);
+    this.name = "TelegramApiError";
+  }
+}
+
+export function splitTextForTelegram(content: string, limit = TELEGRAM_SAFE_TEXT_LIMIT): string[] {
+  if (limit <= 0) {
+    throw new Error(`Invalid Telegram chunk limit: ${limit}`);
+  }
+
+  if (content.length === 0) {
+    return [];
+  }
+
+  const chunks: string[] = [];
+  let offset = 0;
+
+  while (offset < content.length) {
+    const remaining = content.length - offset;
+    if (remaining <= limit) {
+      chunks.push(content.slice(offset));
+      break;
+    }
+
+    const window = content.slice(offset, offset + limit);
+    let splitIndex = window.lastIndexOf("\n");
+    if (splitIndex <= Math.floor(limit * 0.5)) {
+      splitIndex = limit;
+    }
+    if (splitIndex <= 0) {
+      splitIndex = Math.min(limit, remaining);
+    }
+
+    chunks.push(content.slice(offset, offset + splitIndex));
+    offset += splitIndex;
+  }
+
+  return chunks;
+}
 
 export interface ResultSenderOptions {
   botToken?: string;
@@ -35,14 +95,17 @@ export class ResultSender {
     const textBody = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
-      await this.sendLongTextInChunks(replyChannel.chat_id, textBody, replyToMessageId);
+      await this.sendLongTextInChunks(replyChannel.chat_id, textBody, replyToMessageId, {
+        traceId: result.trace_id,
+        threadId: result.thread_id
+      });
     } else {
-      await this.sendText(replyChannel.chat_id, textBody, replyToMessageId);
+      await this.sendTextWithRetry(replyChannel.chat_id, textBody, replyToMessageId);
     }
 
     for (const attachment of result.attachments) {
       const filename = attachment.filename ?? path.basename(attachment.path);
-      await this.sendDocument(replyChannel.chat_id, attachment.path, filename, undefined, replyToMessageId);
+      await this.sendDocumentWithRetry(replyChannel.chat_id, attachment.path, filename, undefined, replyToMessageId);
     }
 
     this.log.info(
@@ -59,38 +122,113 @@ export class ResultSender {
   private async sendLongTextInChunks(
     chatId: string,
     content: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    context?: {
+      traceId: string;
+      threadId: string;
+    }
   ): Promise<void> {
-    const chunks = this.splitTextForTelegram(content);
+    const chunks = splitTextForTelegram(content);
+    this.log.info(
+      {
+        trace_id: context?.traceId ?? null,
+        thread_id: context?.threadId ?? null,
+        chat_id: chatId,
+        chunk_count: chunks.length,
+        total_characters: content.length
+      },
+      "Sending long Telegram reply in chunks"
+    );
+
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index] ?? "";
-      await this.sendText(chatId, chunk, index === 0 ? replyToMessageId : undefined);
+      await this.sendTextWithRetry(chatId, chunk, index === 0 ? replyToMessageId : undefined);
+      if (index < chunks.length - 1) {
+        await this.delay(TELEGRAM_CHUNK_DELAY_MS);
+      }
     }
   }
 
-  private splitTextForTelegram(content: string): string[] {
-    const chunks: string[] = [];
-    let remaining = content;
+  private async sendTextWithRetry(chatId: string, text: string, replyToMessageId?: number): Promise<void> {
+    await this.withTelegramRetry(
+      () => this.sendText(chatId, text, replyToMessageId),
+      "sendMessage"
+    );
+  }
 
-    while (remaining.length > TELEGRAM_TEXT_LIMIT) {
-      let splitIndex = remaining.lastIndexOf("\n", TELEGRAM_TEXT_LIMIT);
-      if (splitIndex < Math.floor(TELEGRAM_TEXT_LIMIT * 0.5)) {
-        splitIndex = TELEGRAM_TEXT_LIMIT;
+  private async sendDocumentWithRetry(
+    chatId: string,
+    filePath: string,
+    filename: string,
+    caption?: string,
+    replyToMessageId?: number
+  ): Promise<void> {
+    await this.withTelegramRetry(
+      () => this.sendDocument(chatId, filePath, filename, caption, replyToMessageId),
+      "sendDocument"
+    );
+  }
+
+  private async withTelegramRetry(
+    operation: () => Promise<void>,
+    endpoint: "sendMessage" | "sendDocument"
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= TELEGRAM_MAX_SEND_ATTEMPTS; attempt += 1) {
+      try {
+        await operation();
+        return;
+      } catch (error) {
+        const retryDelayMs = this.resolveRetryDelay(error, attempt);
+        if (retryDelayMs === null || attempt >= TELEGRAM_MAX_SEND_ATTEMPTS) {
+          throw error;
+        }
+        this.log.warn(
+          {
+            trace_id: null,
+            thread_id: null,
+            endpoint,
+            attempt,
+            retry_delay_ms: retryDelayMs,
+            err: error instanceof Error ? error.message : String(error)
+          },
+          "Telegram delivery failed, retrying"
+        );
+        await this.delay(retryDelayMs);
       }
+    }
+  }
 
-      const chunk = remaining.slice(0, splitIndex).trimEnd();
-      if (chunk.length > 0) {
-        chunks.push(chunk);
+  private resolveRetryDelay(error: unknown, attempt: number): number | null {
+    const jitterMs = Math.floor(Math.random() * 200);
+    const exponentialBackoffMs = Math.min(
+      TELEGRAM_RETRY_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+      TELEGRAM_RETRY_BACKOFF_MAX_MS
+    );
+
+    if (error instanceof TelegramApiError) {
+      if (error.retryAfterSeconds && error.retryAfterSeconds > 0) {
+        return error.retryAfterSeconds * 1000 + 200;
       }
-
-      remaining = remaining.slice(splitIndex).trimStart();
+      if (error.statusCode === 429 || (error.statusCode !== undefined && error.statusCode >= 500)) {
+        return exponentialBackoffMs + jitterMs;
+      }
+      return null;
     }
 
-    if (remaining.length > 0) {
-      chunks.push(remaining);
+    if (error && typeof error === "object") {
+      const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+      if (code === "ETIMEDOUT" || code === "ECONNRESET" || code === "ECONNREFUSED" || code === "EAI_AGAIN") {
+        return exponentialBackoffMs + jitterMs;
+      }
     }
 
-    return chunks;
+    return null;
+  }
+
+  private async delay(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 
   private async sendText(chatId: string, text: string, replyToMessageId?: number): Promise<void> {
@@ -181,23 +319,48 @@ export class ResultSender {
             responseBody += chunk;
           });
           response.on("end", () => {
-            if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
-              reject(
-                new Error(
-                  `Telegram API ${endpoint} failed with status=${response.statusCode}: ${responseBody}`
-                )
-              );
-              return;
-            }
-
             try {
-              const parsed = JSON.parse(responseBody) as { ok?: boolean; description?: string };
+              const parsed = JSON.parse(responseBody) as TelegramApiResponseBody;
+              const retryAfterSeconds = parsed.parameters?.retry_after;
+              const statusCode = response.statusCode;
+
+              if ((statusCode ?? 500) < 200 || (statusCode ?? 500) >= 300) {
+                reject(
+                  new TelegramApiError(
+                    `Telegram API ${endpoint} failed with status=${statusCode}: ${parsed.description ?? "unknown error"}`,
+                    endpoint,
+                    statusCode,
+                    retryAfterSeconds
+                  )
+                );
+                return;
+              }
+
               if (parsed.ok !== true) {
-                reject(new Error(`Telegram API ${endpoint} returned ok=false: ${parsed.description ?? "unknown"}`));
+                reject(
+                  new TelegramApiError(
+                    `Telegram API ${endpoint} returned ok=false: ${parsed.description ?? "unknown"}`,
+                    endpoint,
+                    statusCode,
+                    retryAfterSeconds
+                  )
+                );
                 return;
               }
               resolve();
             } catch (error) {
+              const statusCode = response.statusCode;
+              if ((statusCode ?? 500) >= 500) {
+                reject(
+                  new TelegramApiError(
+                    `Telegram API ${endpoint} returned non-JSON body (status=${statusCode})`,
+                    endpoint,
+                    statusCode,
+                    undefined
+                  )
+                );
+                return;
+              }
               reject(
                 new Error(
                   `Telegram API ${endpoint} returned non-JSON body: ${
