@@ -1,4 +1,4 @@
-import { spawn as spawnProcess } from "node:child_process";
+import { spawn as spawnProcess, spawnSync as spawnSyncProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -257,6 +257,30 @@ function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function launchRestartViaTmux(projectRoot: string, scriptPath: string, restartLogPath: string): boolean {
+  const sessionName = `meridian_restart_${Date.now()}`;
+  const tmuxCommand = `/bin/bash ${shellEscape(scriptPath)} > ${shellEscape(restartLogPath)} 2>&1`;
+  const launched = spawnSyncProcess("tmux", ["new-session", "-d", "-s", sessionName, tmuxCommand], {
+    cwd: projectRoot,
+    stdio: "ignore"
+  });
+  if (launched.error || launched.status !== 0) {
+    interfaceLog.warn(
+      {
+        session: sessionName,
+        status: launched.status,
+        signal: launched.signal,
+        error: launched.error?.message
+      },
+      "Failed to launch restart in tmux"
+    );
+    return false;
+  }
+
+  interfaceLog.info({ session: sessionName, log_path: restartLogPath }, "Restart launched via tmux");
+  return true;
+}
+
 async function handleRestartCommand(ctx: Context): Promise<void> {
   const projectRoot = process.cwd();
   const scriptPath = path.resolve(projectRoot, "rebuild-restart.sh");
@@ -267,15 +291,21 @@ async function handleRestartCommand(ctx: Context): Promise<void> {
   const restartLogPath = path.join("/tmp", `meridian-restart-${Date.now()}.log`);
   await ctx.reply(`Restarting services via rebuild script. Log: ${restartLogPath}`);
 
-  setTimeout(() => {
-    const command = `/bin/bash ${shellEscape(scriptPath)} > ${shellEscape(restartLogPath)} 2>&1`;
-    const child = spawnProcess("/bin/zsh", ["-lc", command], {
-      cwd: projectRoot,
-      detached: true,
-      stdio: "ignore"
-    });
-    child.unref();
-  }, 250);
+  // Launch through tmux first so the restart process is owned by tmux server
+  // instead of the calling-interface process tree.
+  if (launchRestartViaTmux(projectRoot, scriptPath, restartLogPath)) {
+    return;
+  }
+
+  // Launch through a short-lived shell that backgrounds the real restart process.
+  // Fallback path when tmux is unavailable.
+  const command = `nohup /bin/bash ${shellEscape(scriptPath)} > ${shellEscape(restartLogPath)} 2>&1 < /dev/null &`;
+  const launcher = spawnProcess("/bin/zsh", ["-lc", command], {
+    cwd: projectRoot,
+    detached: true,
+    stdio: "ignore"
+  });
+  launcher.unref();
 }
 
 function buildThreadPickerKeyboard(instances: AgentInstance[], action: "attach" | "kill" | "model_thread"): InlineKeyboard {
