@@ -207,10 +207,22 @@ export class HubRouter {
   }
 
   private handleList(message: HubMessage): HubResult {
+    const requestSessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     const instances = this.instanceManager
       .list()
       .filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
-    const content = instances.length === 0 ? "No active agent instances." : JSON.stringify(instances, null, 2);
+    const listedInstances = instances.map((instance) => {
+      const attachment = this.instanceManager.getThreadAttachment(instance.thread_id);
+      const attachable = this.instanceManager.isThreadAttachableBySession(instance.thread_id, requestSessionId);
+      return {
+        ...instance,
+        attached: attachment.sessions.length > 0,
+        attached_sessions: attachment.sessions,
+        attached_interface: attachment.interface_id,
+        attachable
+      };
+    });
+    const content = listedInstances.length === 0 ? "No active agent instances." : JSON.stringify(listedInstances, null, 2);
     return this.buildResult(message, "success", this.resolveResultSource(message), content);
   }
 

@@ -272,6 +272,37 @@ test("switchModel keeps thread id and updates agent type", async () => {
   await manager.kill(threadId);
 });
 
+test("attach enforces single interface owner per thread", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    portAllocator: async () => 6201,
+    spawnFn: ((_: string, _args: string[]) => {
+      return new FakeChildProcess(7201) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  manager.attach(threadId, "777:chat-a");
+
+  const attachment = manager.getThreadAttachment(threadId);
+  assert.equal(attachment.interface_id, "777");
+  assert.deepEqual(attachment.sessions, ["777:chat-a"]);
+  assert.equal(manager.isThreadAttachableBySession(threadId, "777:chat-b"), true);
+  assert.equal(manager.isThreadAttachableBySession(threadId, "888:chat-z"), false);
+
+  manager.attach(threadId, "777:chat-b");
+  assert.deepEqual(manager.getSessionsForThread(threadId).sort(), ["777:chat-a", "777:chat-b"]);
+
+  assert.throws(() => manager.attach(threadId, "888:chat-z"), /already attached to interface=777/);
+
+  await manager.kill(threadId);
+});
+
 test("spawn fails fast when child already exited before readiness polling", async () => {
   const registry = new InstanceRegistry();
   let connectCalls = 0;

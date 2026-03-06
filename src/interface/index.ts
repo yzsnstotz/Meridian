@@ -18,6 +18,8 @@ const CALLBACK_PREFIX = "pk";
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
 const SPAWN_DIR_ROOT = "/Users/yzliu/work";
 const SPAWN_DIR_MAX_BUTTONS = 24;
+const BROWSE_ROOT = process.cwd();
+const BROWSE_MAX_BUTTONS = 24;
 const SPAWN_DIR_SESSION_TTL_MS = 15 * 60 * 1000;
 
 interface SpawnDirectorySession {
@@ -33,8 +35,29 @@ interface SpawnDirectorySession {
   awaitingFolderName: boolean;
 }
 
+interface BrowseEntry {
+  name: string;
+  type: "directory" | "file";
+}
+
+interface BrowseSession {
+  sessionId: string;
+  botId: string;
+  chatId: string;
+  currentDir: string;
+  entries: BrowseEntry[];
+  createdAtMs: number;
+  pickerMessageId: string | null;
+}
+
 const spawnDirectorySessions = new Map<string, SpawnDirectorySession>();
+const browseSessions = new Map<string, BrowseSession>();
 type SendMessageExtra = Parameters<Context["api"]["sendMessage"]>[2];
+
+interface LiveInstanceCandidate {
+  instance: AgentInstance;
+  attachable: boolean;
+}
 
 function isAgentType(value: string): value is AgentType {
   return SPAWN_TYPES.includes(value as AgentType);
@@ -68,7 +91,7 @@ function toHubMessage(
     throw new Error("Cannot build HubMessage from empty payload");
   }
 
-  if (parsedCommand.intent === "help" || parsedCommand.intent === "restart") {
+  if (parsedCommand.intent === "help" || parsedCommand.intent === "restart" || parsedCommand.intent === "browse") {
     throw new Error(`${parsedCommand.intent} command should not be forwarded`);
   }
 
@@ -179,11 +202,49 @@ function listDirectoriesUnder(currentDir: string): string[] {
     .slice(0, SPAWN_DIR_MAX_BUTTONS);
 }
 
+function normalizeBrowsePath(candidate: string): string | null {
+  const resolvedRoot = path.resolve(BROWSE_ROOT);
+  const resolvedCandidate = path.resolve(candidate);
+  if (
+    resolvedCandidate !== resolvedRoot &&
+    !resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
+  ) {
+    return null;
+  }
+  return resolvedCandidate;
+}
+
+function listBrowseEntriesUnder(currentDir: string): BrowseEntry[] {
+  const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() || entry.isFile())
+    .map((entry): BrowseEntry => ({
+      name: entry.name,
+      type: entry.isDirectory() ? "directory" : "file"
+    }))
+    .sort((left, right) => {
+      if (left.type !== right.type) {
+        return left.type === "directory" ? -1 : 1;
+      }
+      return left.name.localeCompare(right.name);
+    })
+    .slice(0, BROWSE_MAX_BUTTONS);
+}
+
 function pruneSpawnDirectorySessions(): void {
   const now = Date.now();
   for (const [sessionId, session] of spawnDirectorySessions.entries()) {
     if (now - session.createdAtMs > SPAWN_DIR_SESSION_TTL_MS) {
       spawnDirectorySessions.delete(sessionId);
+    }
+  }
+}
+
+function pruneBrowseSessions(): void {
+  const now = Date.now();
+  for (const [sessionId, session] of browseSessions.entries()) {
+    if (now - session.createdAtMs > SPAWN_DIR_SESSION_TTL_MS) {
+      browseSessions.delete(sessionId);
     }
   }
 }
@@ -222,6 +283,34 @@ function buildSpawnDirectoryPrompt(session: SpawnDirectorySession): string {
     .join("\n");
 }
 
+function buildBrowseKeyboard(session: BrowseSession): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  keyboard.text("Use This Folder", `${CALLBACK_PREFIX}:browse_dir:${session.sessionId}:select`).row();
+  if (path.resolve(session.currentDir) !== path.resolve(BROWSE_ROOT)) {
+    keyboard.text("Up", `${CALLBACK_PREFIX}:browse_dir:${session.sessionId}:up`).row();
+  }
+
+  for (let index = 0; index < session.entries.length; index += 1) {
+    const entry = session.entries[index];
+    const label = `${entry.type === "directory" ? "[D]" : "[F]"} ${entry.name}`;
+    const action = entry.type === "directory" ? "open" : "pick";
+    keyboard.text(label, `${CALLBACK_PREFIX}:browse_dir:${session.sessionId}:${action}:${index}`).row();
+  }
+
+  keyboard.text("Cancel", `${CALLBACK_PREFIX}:browse_dir:${session.sessionId}:cancel`);
+  return keyboard;
+}
+
+function buildBrowsePrompt(session: BrowseSession): string {
+  return [
+    `Browse Root: ${BROWSE_ROOT}`,
+    `Current: ${session.currentDir}`,
+    session.entries.length === 0
+      ? "No files/folders here. Choose Use This Folder or Up."
+      : "Choose a folder to enter, or choose a file to send its exact path."
+  ].join("\n");
+}
+
 function beginSpawnDirectorySession(
   botId: string,
   chatId: string,
@@ -250,6 +339,26 @@ function beginSpawnDirectorySession(
   return session;
 }
 
+function beginBrowseSession(botId: string, chatId: string): BrowseSession {
+  const initialDir = normalizeBrowsePath(BROWSE_ROOT);
+  if (!initialDir || !fs.existsSync(initialDir) || !fs.statSync(initialDir).isDirectory()) {
+    throw new Error(`Browse root directory is unavailable: ${BROWSE_ROOT}`);
+  }
+
+  const sessionId = sanitizeCallbackToken(randomUUID().slice(0, 8));
+  const session: BrowseSession = {
+    sessionId,
+    botId,
+    chatId,
+    currentDir: initialDir,
+    entries: listBrowseEntriesUnder(initialDir),
+    createdAtMs: Date.now(),
+    pickerMessageId: null
+  };
+  browseSessions.set(sessionId, session);
+  return session;
+}
+
 function refreshSpawnDirectorySession(session: SpawnDirectorySession): void {
   const normalized = normalizeSpawnDirectory(session.currentDir);
   if (!normalized || !fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
@@ -257,6 +366,16 @@ function refreshSpawnDirectorySession(session: SpawnDirectorySession): void {
   }
   session.currentDir = normalized;
   session.entries = listDirectoriesUnder(normalized);
+  session.createdAtMs = Date.now();
+}
+
+function refreshBrowseSession(session: BrowseSession): void {
+  const normalized = normalizeBrowsePath(session.currentDir);
+  if (!normalized || !fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
+    throw new Error(`Directory is unavailable: ${session.currentDir}`);
+  }
+  session.currentDir = normalized;
+  session.entries = listBrowseEntriesUnder(normalized);
   session.createdAtMs = Date.now();
 }
 
@@ -375,6 +494,18 @@ function getSpawnDirectorySession(sessionId: string, botId: string, chatId: stri
   return session;
 }
 
+function getBrowseSession(sessionId: string, botId: string, chatId: string): BrowseSession {
+  pruneBrowseSessions();
+  const session = browseSessions.get(sessionId);
+  if (!session) {
+    throw new Error("Browse picker expired. Run /browse again.");
+  }
+  if (session.botId !== botId || session.chatId !== chatId) {
+    throw new Error("Browse picker does not belong to this chat.");
+  }
+  return session;
+}
+
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
@@ -447,7 +578,7 @@ function buildModelTypeKeyboard(threadId: string): InlineKeyboard {
   return keyboard;
 }
 
-async function requestLiveInstances(botId: string, chatId: string, messageId?: string): Promise<AgentInstance[]> {
+async function requestLiveInstances(botId: string, chatId: string, messageId?: string): Promise<LiveInstanceCandidate[]> {
   const response = await requestHubMessage(
     buildActionHubMessage({
       botId,
@@ -468,8 +599,22 @@ async function requestLiveInstances(botId: string, chatId: string, messageId?: s
   }
 
   const parsed = JSON.parse(response.content) as unknown;
-  const instances = AgentInstanceSchema.array().parse(parsed);
-  return instances.filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
+  if (!Array.isArray(parsed)) {
+    throw new Error("Invalid /list payload: expected an array");
+  }
+
+  const candidates = parsed.map((raw): LiveInstanceCandidate => {
+    const instance = AgentInstanceSchema.parse(raw);
+    const attachable =
+      typeof raw === "object" &&
+      raw !== null &&
+      "attachable" in raw &&
+      typeof (raw as { attachable?: unknown }).attachable === "boolean"
+        ? ((raw as { attachable: boolean }).attachable)
+        : true;
+    return { instance, attachable };
+  });
+  return candidates.filter(({ instance }) => LIVE_INSTANCE_STATUSES.has(instance.status));
 }
 
 async function presentPickerFlow(
@@ -493,22 +638,29 @@ async function presentPickerFlow(
       return;
     }
 
-    const instances = await requestLiveInstances(payload.botId, chatId, messageId);
-    if (instances.length === 0) {
+    const candidates = await requestLiveInstances(payload.botId, chatId, messageId);
+    if (candidates.length === 0) {
       await reply("No active live threads found. Use /spawn first.");
       return;
     }
 
     if (parsedCommand.picker === "attach") {
-      await reply("Choose thread to attach:", { reply_markup: buildThreadPickerKeyboard(instances, "attach") });
+      const attachableInstances = candidates.filter((candidate) => candidate.attachable).map((candidate) => candidate.instance);
+      if (attachableInstances.length === 0) {
+        await reply("No attachable live threads found for this bot.");
+        return;
+      }
+      await reply("Choose thread to attach:", { reply_markup: buildThreadPickerKeyboard(attachableInstances, "attach") });
       return;
     }
     if (parsedCommand.picker === "kill") {
-      await reply("Choose thread to kill:", { reply_markup: buildThreadPickerKeyboard(instances, "kill") });
+      await reply("Choose thread to kill:", { reply_markup: buildThreadPickerKeyboard(candidates.map((candidate) => candidate.instance), "kill") });
       return;
     }
 
-    await reply("Choose thread to switch model:", { reply_markup: buildThreadPickerKeyboard(instances, "model_thread") });
+    await reply("Choose thread to switch model:", {
+      reply_markup: buildThreadPickerKeyboard(candidates.map((candidate) => candidate.instance), "model_thread")
+    });
     return;
   }
 }
@@ -650,6 +802,84 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     return true;
   }
 
+  if (action === "browse_dir" && parts[2] && parts[3]) {
+    const sessionId = parts[2];
+    const operation = parts[3];
+    const session = getBrowseSession(sessionId, botId, chatId);
+    session.pickerMessageId = callbackMessageId ?? session.pickerMessageId;
+
+    if (operation === "cancel") {
+      browseSessions.delete(sessionId);
+      await ctx.editMessageText("Browse cancelled.");
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+
+    if (operation === "select") {
+      browseSessions.delete(sessionId);
+      await ctx.editMessageText(`Selected folder path:\n${session.currentDir}`);
+      await ctx.answerCallbackQuery({ text: "Path sent" });
+      return true;
+    }
+
+    if (operation === "up") {
+      const parent = normalizeBrowsePath(path.join(session.currentDir, ".."));
+      if (!parent) {
+        await ctx.answerCallbackQuery({ text: "Already at browse root" });
+        return true;
+      }
+      session.currentDir = parent;
+      refreshBrowseSession(session);
+      await ctx.editMessageText(buildBrowsePrompt(session), {
+        reply_markup: buildBrowseKeyboard(session)
+      });
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+
+    if ((operation === "open" || operation === "pick") && parts[4]) {
+      const index = Number(parts[4]);
+      if (!Number.isInteger(index) || index < 0 || index >= session.entries.length) {
+        await ctx.answerCallbackQuery({ text: "Invalid browse option" });
+        return true;
+      }
+
+      const selected = session.entries[index];
+      const selectedPath = normalizeBrowsePath(path.join(session.currentDir, selected.name));
+      if (!selectedPath || !fs.existsSync(selectedPath)) {
+        await ctx.answerCallbackQuery({ text: "Path is no longer available" });
+        return true;
+      }
+
+      const selectedStats = fs.statSync(selectedPath);
+      if (operation === "open") {
+        if (selected.type !== "directory" || !selectedStats.isDirectory()) {
+          await ctx.answerCallbackQuery({ text: "Not a folder" });
+          return true;
+        }
+        session.currentDir = selectedPath;
+        refreshBrowseSession(session);
+        await ctx.editMessageText(buildBrowsePrompt(session), {
+          reply_markup: buildBrowseKeyboard(session)
+        });
+        await ctx.answerCallbackQuery();
+        return true;
+      }
+
+      if (selected.type !== "file" || !selectedStats.isFile()) {
+        await ctx.answerCallbackQuery({ text: "Not a file" });
+        return true;
+      }
+      browseSessions.delete(sessionId);
+      await ctx.editMessageText(`Selected file path:\n${selectedPath}`);
+      await ctx.answerCallbackQuery({ text: "Path sent" });
+      return true;
+    }
+
+    await ctx.answerCallbackQuery({ text: "Unsupported browse action" });
+    return true;
+  }
+
   if ((action === "attach" || action === "kill") && parts[2]) {
     const threadId = parts[2];
     await sendHubMessage(
@@ -736,6 +966,15 @@ for (const { bot } of botRuntimes) {
 
       if (parsedCommand.intent === "restart") {
         await handleRestartCommand(ctx);
+        return;
+      }
+
+      if (parsedCommand.intent === "browse") {
+        const session = beginBrowseSession(parsedPayload.botId, parsedPayload.chatId);
+        const message = await ctx.reply(buildBrowsePrompt(session), {
+          reply_markup: buildBrowseKeyboard(session)
+        });
+        session.pickerMessageId = String(message.message_id);
         return;
       }
 

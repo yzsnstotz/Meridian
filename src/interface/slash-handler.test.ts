@@ -94,6 +94,13 @@ test("parseSlashCommand parses /restart as local command", () => {
   assert.equal(parsed.shouldForward, false);
 });
 
+test("parseSlashCommand parses /browse as local command", () => {
+  const parsed = parseSlashCommand("/browse");
+  assert.equal(parsed.intent, "browse");
+  assert.equal(parsed.shouldForward, false);
+  assert.equal(parsed.picker, null);
+});
+
 test("parseSlashCommand parses /update on with interval and thread", () => {
   const parsed = parseSlashCommand("/update on thread=codex_01 interval=45");
   assert.equal(parsed.intent, "monitor_update");
