@@ -1,6 +1,6 @@
 import type { BridgeMode, Intent } from "../types";
 
-type SlashIntent = Intent | "help" | "restart";
+type SlashIntent = Intent | "help" | "restart" | "browse";
 type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
 
 export interface ParsedSlashCommand {
@@ -20,6 +20,7 @@ const HELP_MESSAGE = [
   "Available commands:",
   "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge> [dir=<absolute_path>]",
   "/restart",
+  "/browse",
   "/kill thread=<thread_id>",
   "/status thread=<thread_id>",
   "/attach thread=<thread_id>",
@@ -343,6 +344,20 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
     case "/restart":
       return {
         intent: "restart",
+        shouldForward: false,
+        target: "none",
+        threadId: null,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: "",
+        picker: null
+      };
+
+    case "/browse":
+      return {
+        intent: "browse",
         shouldForward: false,
         target: "none",
         threadId: null,

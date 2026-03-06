@@ -31,6 +31,11 @@ export interface SessionBinding {
   previous_thread_id: string | null;
 }
 
+export interface ThreadAttachment {
+  sessions: string[];
+  interface_id: string | null;
+}
+
 export interface InstanceManagerOptions {
   agentapiBinPath?: string;
   logDir?: string;
@@ -114,6 +119,14 @@ export class InstanceManager {
       throw new Error(`Cannot attach session; thread_id=${threadId} is not registered`);
     }
 
+    const currentAttachment = this.getThreadAttachment(threadId);
+    const incomingInterfaceId = this.extractInterfaceIdFromSession(sanitizedSession);
+    if (currentAttachment.interface_id && currentAttachment.interface_id !== incomingInterfaceId) {
+      throw new Error(
+        `Cannot attach session; thread_id=${threadId} is already attached to interface=${currentAttachment.interface_id}`
+      );
+    }
+
     const previousThreadId = this.sessionThreadBySession.get(sanitizedSession) ?? null;
     this.sessionThreadBySession.set(sanitizedSession, threadId);
 
@@ -176,6 +189,25 @@ export class InstanceManager {
       }
     }
     return sessions;
+  }
+
+  getThreadAttachment(threadId: string): ThreadAttachment {
+    const sessions = this.getSessionsForThread(threadId);
+    const interfaceIds = new Set<string>();
+    for (const session of sessions) {
+      interfaceIds.add(this.extractInterfaceIdFromSession(session));
+    }
+    const interfaceId = interfaceIds.size > 0 ? Array.from(interfaceIds.values())[0] ?? null : null;
+    return { sessions, interface_id: interfaceId };
+  }
+
+  isThreadAttachableBySession(threadId: string, session: string): boolean {
+    const currentAttachment = this.getThreadAttachment(threadId);
+    if (!currentAttachment.interface_id) {
+      return true;
+    }
+    const incomingInterfaceId = this.extractInterfaceIdFromSession(this.sanitizeSession(session));
+    return currentAttachment.interface_id === incomingInterfaceId;
   }
 
   async restart(threadId: string): Promise<string> {
@@ -888,6 +920,19 @@ export class InstanceManager {
         this.sessionThreadBySession.delete(session);
       }
     }
+  }
+
+  private extractInterfaceIdFromSession(session: string): string {
+    const separatorIndex = session.indexOf(":");
+    if (separatorIndex <= 0) {
+      return "legacy";
+    }
+
+    const maybeBotId = session.slice(0, separatorIndex);
+    if (/^\d+$/.test(maybeBotId)) {
+      return maybeBotId;
+    }
+    return "legacy";
   }
 
   private sanitizeSession(session: string): string {

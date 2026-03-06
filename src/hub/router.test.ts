@@ -489,6 +489,128 @@ test("HubRouter stores attach bindings with bot-aware session key", async () => 
   assert.deepEqual(router.getAttachedSessionsForThread("codex_01"), ["777:100"]);
 });
 
+test("HubRouter list includes attachment owner and attachability by bot interface", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const ownerAttachResult = await router.route(
+    baseMessage({
+      intent: "attach",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+  assert.equal(ownerAttachResult.status, "success");
+
+  const ownerListResult = await router.route(
+    baseMessage({
+      intent: "list",
+      target: "all",
+      thread_id: "global",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+  assert.equal(ownerListResult.status, "success");
+  const ownerList = JSON.parse(ownerListResult.content) as Array<Record<string, unknown>>;
+  assert.equal(ownerList[0]?.attached, true);
+  assert.equal(ownerList[0]?.attached_interface, "777");
+  assert.equal(ownerList[0]?.attachable, true);
+
+  const otherListResult = await router.route(
+    baseMessage({
+      intent: "list",
+      target: "all",
+      thread_id: "global",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "200",
+        bot_id: "888"
+      }
+    })
+  );
+  assert.equal(otherListResult.status, "success");
+  const otherList = JSON.parse(otherListResult.content) as Array<Record<string, unknown>>;
+  assert.equal(otherList[0]?.attached, true);
+  assert.equal(otherList[0]?.attached_interface, "777");
+  assert.equal(otherList[0]?.attachable, false);
+});
+
+test("HubRouter rejects cross-interface attach for already attached thread", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const firstAttachResult = await router.route(
+    baseMessage({
+      intent: "attach",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+  assert.equal(firstAttachResult.status, "success");
+
+  const crossInterfaceAttachResult = await router.route(
+    baseMessage({
+      intent: "attach",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "200",
+        bot_id: "888"
+      }
+    })
+  );
+  assert.equal(crossInterfaceAttachResult.status, "error");
+  assert.match(crossInterfaceAttachResult.content, /already attached to interface=777/);
+});
+
 test("HubRouter builds monitor progress result from latest agent output", async () => {
   const registry = new InstanceRegistry();
   registry.register({
