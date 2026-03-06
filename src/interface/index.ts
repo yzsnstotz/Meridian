@@ -28,6 +28,8 @@ interface SpawnDirectorySession {
   currentDir: string;
   entries: string[];
   createdAtMs: number;
+  pickerMessageId: string | null;
+  awaitingFolderName: boolean;
 }
 
 const spawnDirectorySessions = new Map<string, SpawnDirectorySession>();
@@ -83,7 +85,9 @@ function toHubMessage(
       attachments: payload.event.attachments,
       raw_message_id: payload.event.raw_message_id,
       reply_to: payload.event.reply_to,
-      spawn_dir: parsedCommand.spawnDir ?? undefined
+      spawn_dir: parsedCommand.spawnDir ?? undefined,
+      monitor_updates_enabled: parsedCommand.monitorUpdatesEnabled ?? undefined,
+      monitor_updates_interval_sec: parsedCommand.monitorUpdateIntervalSec ?? undefined
     },
     mode: parsedCommand.mode,
     suppress_reply: false,
@@ -182,6 +186,7 @@ function pruneSpawnDirectorySessions(): void {
 function buildSpawnDirectoryKeyboard(session: SpawnDirectorySession): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   keyboard.text("Use This Folder", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:select`).row();
+  keyboard.text("Create Folder", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:create`).row();
   if (path.resolve(session.currentDir) !== path.resolve(SPAWN_DIR_ROOT)) {
     keyboard.text("Up", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:up`).row();
   }
@@ -203,8 +208,13 @@ function buildSpawnDirectoryPrompt(session: SpawnDirectorySession): string {
     `Mode: ${session.mode}`,
     `Root: ${SPAWN_DIR_ROOT}`,
     `Current: ${session.currentDir}`,
+    session.awaitingFolderName
+      ? "Create folder mode: send the new folder name in chat, or send 'cancel'."
+      : "",
     session.entries.length === 0 ? "No child folders. Choose Use This Folder or Up." : "Choose a folder:"
-  ].join("\n");
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
 
 function beginSpawnDirectorySession(
@@ -225,7 +235,9 @@ function beginSpawnDirectorySession(
     mode,
     currentDir: initialDir,
     entries: listDirectoriesUnder(initialDir),
-    createdAtMs: Date.now()
+    createdAtMs: Date.now(),
+    pickerMessageId: null,
+    awaitingFolderName: false
   };
   spawnDirectorySessions.set(sessionId, session);
   return session;
@@ -239,6 +251,108 @@ function refreshSpawnDirectorySession(session: SpawnDirectorySession): void {
   session.currentDir = normalized;
   session.entries = listDirectoriesUnder(normalized);
   session.createdAtMs = Date.now();
+}
+
+function findPendingFolderCreateSession(chatId: string): SpawnDirectorySession | null {
+  pruneSpawnDirectorySessions();
+
+  let latest: SpawnDirectorySession | null = null;
+  for (const session of spawnDirectorySessions.values()) {
+    if (session.chatId !== chatId || !session.awaitingFolderName) {
+      continue;
+    }
+    if (!latest || session.createdAtMs > latest.createdAtMs) {
+      latest = session;
+    }
+  }
+  return latest;
+}
+
+function validateNewDirectoryName(rawName: string): string {
+  const name = rawName.trim();
+  if (name.length === 0) {
+    throw new Error("Folder name cannot be empty.");
+  }
+  if (name === "." || name === "..") {
+    throw new Error("Folder name cannot be . or ..");
+  }
+  if (name.includes("/") || name.includes("\\")) {
+    throw new Error("Folder name cannot include path separators.");
+  }
+  return name;
+}
+
+async function refreshSpawnDirectoryPickerMessage(ctx: Context, session: SpawnDirectorySession): Promise<void> {
+  if (!session.pickerMessageId) {
+    return;
+  }
+
+  const messageId = Number(session.pickerMessageId);
+  if (!Number.isInteger(messageId)) {
+    return;
+  }
+
+  try {
+    await ctx.api.editMessageText(session.chatId, messageId, buildSpawnDirectoryPrompt(session), {
+      reply_markup: buildSpawnDirectoryKeyboard(session)
+    });
+  } catch (error) {
+    interfaceLog.warn(
+      { err: error instanceof Error ? error.message : String(error), picker_message_id: session.pickerMessageId },
+      "Failed to refresh spawn directory picker message"
+    );
+  }
+}
+
+async function maybeHandleSpawnDirectoryCreateInput(
+  ctx: Context,
+  chatId: string,
+  rawInput: string,
+  reply: (text: string) => Promise<unknown>
+): Promise<boolean> {
+  const session = findPendingFolderCreateSession(chatId);
+  if (!session) {
+    return false;
+  }
+
+  const input = rawInput.trim();
+  if (!input) {
+    await reply("Folder name is empty. Send a folder name, or send 'cancel'.");
+    return true;
+  }
+  if (input.startsWith("/") && input !== "/cancel") {
+    return false;
+  }
+
+  if (input === "/cancel" || input.toLowerCase() === "cancel") {
+    session.awaitingFolderName = false;
+    session.createdAtMs = Date.now();
+    await refreshSpawnDirectoryPickerMessage(ctx, session);
+    await reply("Folder creation cancelled.");
+    return true;
+  }
+
+  const name = validateNewDirectoryName(input);
+  const candidateDir = normalizeSpawnDirectory(path.join(session.currentDir, name));
+  if (!candidateDir) {
+    throw new Error("Folder path is outside the allowed spawn root.");
+  }
+
+  if (fs.existsSync(candidateDir)) {
+    const stats = fs.statSync(candidateDir);
+    if (!stats.isDirectory()) {
+      throw new Error("A file with that name already exists.");
+    }
+  } else {
+    fs.mkdirSync(candidateDir);
+  }
+
+  session.currentDir = candidateDir;
+  session.awaitingFolderName = false;
+  refreshSpawnDirectorySession(session);
+  await refreshSpawnDirectoryPickerMessage(ctx, session);
+  await reply(`Using folder: ${session.currentDir}`);
+  return true;
 }
 
 function getSpawnDirectorySession(sessionId: string, chatId: string): SpawnDirectorySession {
@@ -431,6 +545,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
       return true;
     }
     const session = beginSpawnDirectorySession(chatId, type, mode);
+    session.pickerMessageId = callbackMessageId ?? null;
     await ctx.editMessageText(buildSpawnDirectoryPrompt(session), {
       reply_markup: buildSpawnDirectoryKeyboard(session)
     });
@@ -442,6 +557,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     const sessionId = parts[2];
     const operation = parts[3];
     const session = getSpawnDirectorySession(sessionId, chatId);
+    session.pickerMessageId = callbackMessageId ?? session.pickerMessageId;
 
     if (operation === "cancel") {
       spawnDirectorySessions.delete(sessionId);
@@ -451,6 +567,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     }
 
     if (operation === "select") {
+      session.awaitingFolderName = false;
       await sendHubMessage(
         buildActionHubMessage({
           chatId,
@@ -469,6 +586,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     }
 
     if (operation === "up") {
+      session.awaitingFolderName = false;
       const parent = normalizeSpawnDirectory(path.join(session.currentDir, ".."));
       if (!parent) {
         await ctx.answerCallbackQuery({ text: "Already at root" });
@@ -483,7 +601,18 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
       return true;
     }
 
+    if (operation === "create") {
+      session.awaitingFolderName = true;
+      session.createdAtMs = Date.now();
+      await ctx.editMessageText(buildSpawnDirectoryPrompt(session), {
+        reply_markup: buildSpawnDirectoryKeyboard(session)
+      });
+      await ctx.answerCallbackQuery({ text: "Send folder name in chat" });
+      return true;
+    }
+
     if (operation === "open" && parts[4]) {
+      session.awaitingFolderName = false;
       const index = Number(parts[4]);
       if (!Number.isInteger(index) || index < 0 || index >= session.entries.length) {
         await ctx.answerCallbackQuery({ text: "Invalid folder option" });
@@ -564,6 +693,16 @@ bot.on("message", async (ctx) => {
   try {
     const parsedPayload = await parseTelegramMessage(ctx);
     if (!parsedPayload) {
+      return;
+    }
+
+    const consumedAsFolderCreate = await maybeHandleSpawnDirectoryCreateInput(
+      ctx,
+      parsedPayload.chatId,
+      parsedPayload.event.content,
+      (text) => ctx.reply(text)
+    );
+    if (consumedAsFolderCreate) {
       return;
     }
 

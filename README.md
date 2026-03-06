@@ -12,6 +12,8 @@ spawn - Spawn a new agent instance
 kill - Kill an existing instance
 status - Get current instance status
 attach - Attach this chat to a thread
+update - Toggle monitor progress updates for a thread
+mupdate - Send one manual progress update for a thread
 list - List active instances
 help - Show command usage
 ```
@@ -22,10 +24,25 @@ help - Show command usage
 /spawn type=codex mode=pane_bridge dir=/absolute/path/to/repo
 ```
 
+`/update` supports optional interval and explicit thread:
+
+```text
+/update on thread=codex_01 interval=30
+/update off thread=codex_01
+```
+
+`/mupdate` sends one immediate progress snapshot without enabling periodic updates:
+
+```text
+/mupdate
+/mupdate thread=codex_01
+```
+
 ## Local Development
 ```bash
 npm run start:hub
 npm run start:interface
+npm run start:monitor
 ```
 
 ## Deployment (T-11)

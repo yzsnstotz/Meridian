@@ -111,15 +111,16 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   assert.equal(instance?.tmux_pane, "agent_claude_01");
   assert.equal(instance?.pid, 2202);
   assert.equal(instance?.socket_path, "http://127.0.0.1:4303");
-  assert.equal(execCalls.length, 5);
+  assert.equal(execCalls.length, 6);
   assert.match(execCalls[0] ?? "", /tmux kill-session -t .*agent_claude_01/);
   assert.match(execCalls[1] ?? "", /tmux new-session -d -s .*agent_claude_01/);
   assert.match(execCalls[1] ?? "", /'attach'/);
   assert.match(execCalls[1] ?? "", /'--url=http:\/\/127.0.0.1:4303'/);
   assert.match(execCalls[2] ?? "", /tmux set-option -t .*agent_claude_01.* history-limit 200000/);
-  assert.match(execCalls[3] ?? "", /tmux set-option -t .*agent_claude_01.* mouse on/);
-  assert.match(execCalls[4] ?? "", /tmux pipe-pane -o -t .*agent_claude_01/);
-  assert.match(execCalls[4] ?? "", /pane-claude_01\.log/);
+  assert.match(execCalls[3] ?? "", /tmux set-window-option -t .*agent_claude_01.* alternate-screen off/);
+  assert.match(execCalls[4] ?? "", /tmux set-option -t .*agent_claude_01.* mouse on/);
+  assert.match(execCalls[5] ?? "", /tmux pipe-pane -o -t .*agent_claude_01/);
+  assert.match(execCalls[5] ?? "", /pane-claude_01\.log/);
   assert.equal(spawnCalls.length, 1);
   assert.equal(spawnCalls[0]?.command, "/Users/yzliu/work/Meridian/bin/agentapi");
   assert.deepEqual(spawnCalls[0]?.args, [

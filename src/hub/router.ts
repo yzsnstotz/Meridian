@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+
+import { config } from "../config";
 import { createLogger } from "../logger";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import {
@@ -26,6 +29,17 @@ interface AgentMessageSnapshot {
   content: string;
 }
 
+interface MonitorUpdateSubscription {
+  chatId: string;
+  intervalMs: number;
+  nextDispatchAtMs: number;
+}
+
+export interface MonitorUpdateDispatch {
+  threadId: string;
+  chatId: string;
+}
+
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
 
 export interface HubRouterOptions {
@@ -47,6 +61,7 @@ export class HubRouter {
   private readonly clientFactory: (threadId: string) => AgentClient;
   private readonly instanceManager: InstanceManager;
   private readonly now: () => Date;
+  private readonly monitorUpdateSubscriptionsByThread = new Map<string, Map<string, MonitorUpdateSubscription>>();
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -136,6 +151,10 @@ export class HubRouter {
         return this.handleAttach(message);
       case "switch_model":
         return await this.handleSwitchModel(message);
+      case "monitor_update":
+        return this.handleMonitorUpdate(message);
+      case "monitor_manual_update":
+        return await this.handleManualMonitorUpdate(message);
       default:
         return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
     }
@@ -235,6 +254,64 @@ export class HubRouter {
     return this.buildResult(message, "success", nextType, content, switchedThreadId);
   }
 
+  private handleMonitorUpdate(message: HubMessage): HubResult {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const chatId = message.reply_channel.chat_id;
+    const requestedIntervalSec = message.payload.monitor_updates_interval_sec;
+    const requestedEnabled = message.payload.monitor_updates_enabled;
+    const inferredEnabled = requestedEnabled ?? (requestedIntervalSec !== undefined ? true : undefined);
+    const existing = this.monitorUpdateSubscriptionsByThread.get(threadId)?.get(chatId) ?? null;
+
+    if (inferredEnabled === undefined) {
+      if (!existing) {
+        return this.buildResult(
+          message,
+          "success",
+          instance.agent_type,
+          `Monitor updates are OFF for thread=${threadId} chat=${chatId}.`,
+          threadId
+        );
+      }
+      return this.buildResult(
+        message,
+        "success",
+        instance.agent_type,
+        `Monitor updates are ON for thread=${threadId} chat=${chatId} interval=${Math.floor(existing.intervalMs / 1000)}s.`,
+        threadId
+      );
+    }
+
+    if (!inferredEnabled) {
+      this.deleteMonitorUpdateSubscription(threadId, chatId);
+      return this.buildResult(
+        message,
+        "success",
+        instance.agent_type,
+        `Monitor updates turned OFF for thread=${threadId} chat=${chatId}.`,
+        threadId
+      );
+    }
+
+    const existingIntervalSec = existing ? Math.floor(existing.intervalMs / 1000) : undefined;
+    const normalizedIntervalSec = this.normalizeMonitorUpdateIntervalSec(
+      requestedIntervalSec ?? existingIntervalSec
+    );
+    this.upsertMonitorUpdateSubscription(threadId, chatId, normalizedIntervalSec);
+    return this.buildResult(
+      message,
+      "success",
+      instance.agent_type,
+      `Monitor updates turned ON for thread=${threadId} chat=${chatId} interval=${normalizedIntervalSec}s.`,
+      threadId
+    );
+  }
+
+  private async handleManualMonitorUpdate(message: HubMessage): Promise<HubResult> {
+    const threadId = this.resolveThreadId(message);
+    return await this.buildProgressResultForThread(threadId, message.trace_id);
+  }
+
   private resolveInstance(threadId: string): AgentInstance {
     const instance = this.registry.get(threadId);
     if (!instance) {
@@ -308,8 +385,54 @@ export class HubRouter {
     return this.registry.get(threadId)?.agent_type ?? "codex";
   }
 
+  async buildCompletionResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
+    const instance = this.resolveInstance(threadId);
+    const client = this.clientFactory(instance.thread_id);
+    await client.connect(instance.socket_path);
+
+    try {
+      const content = await this.resolveCompletionContent(client, threadId);
+      return HubResultSchema.parse({
+        trace_id: traceId ?? randomUUID(),
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "success",
+        content,
+        attachments: [],
+        timestamp: this.now().toISOString()
+      });
+    } finally {
+      client.disconnect();
+    }
+  }
+
+  async buildProgressResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
+    const instance = this.resolveInstance(threadId);
+    const client = this.clientFactory(instance.thread_id);
+    await client.connect(instance.socket_path);
+
+    try {
+      const content = await this.resolveProgressContent(client, threadId);
+      return HubResultSchema.parse({
+        trace_id: traceId ?? randomUUID(),
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "partial",
+        content,
+        attachments: [],
+        timestamp: this.now().toISOString()
+      });
+    } finally {
+      client.disconnect();
+    }
+  }
+
   setInstanceStatus(threadId: string, status: string): void {
-    const parsed = AgentInstanceStatusSchema.safeParse(status);
+    const normalizedStatus = this.normalizeMonitorStatus(status);
+    if (!normalizedStatus) {
+      return;
+    }
+    const parsed = AgentInstanceStatusSchema.safeParse(normalizedStatus);
     if (!parsed.success) {
       return;
     }
@@ -318,6 +441,50 @@ export class HubRouter {
 
   getAttachedSessionsForThread(threadId: string): string[] {
     return this.instanceManager.getSessionsForThread(threadId);
+  }
+
+  getMonitorUpdateSubscribersForThread(threadId: string): string[] {
+    const subscriptions = this.monitorUpdateSubscriptionsByThread.get(threadId);
+    if (!subscriptions) {
+      return [];
+    }
+    return [...subscriptions.keys()];
+  }
+
+  collectDueMonitorUpdateDispatches(nowMs = Date.now()): MonitorUpdateDispatch[] {
+    const due: MonitorUpdateDispatch[] = [];
+    for (const [threadId, subscriptions] of this.monitorUpdateSubscriptionsByThread.entries()) {
+      const status = this.registry.get(threadId)?.status;
+      if (status !== "running") {
+        continue;
+      }
+
+      for (const subscription of subscriptions.values()) {
+        if (subscription.nextDispatchAtMs > nowMs) {
+          continue;
+        }
+        subscription.nextDispatchAtMs = nowMs + subscription.intervalMs;
+        due.push({
+          threadId,
+          chatId: subscription.chatId
+        });
+      }
+    }
+    return due;
+  }
+
+  forceMonitorUpdateDispatchNow(threadId: string, nowMs = Date.now()): void {
+    const subscriptions = this.monitorUpdateSubscriptionsByThread.get(threadId);
+    if (!subscriptions) {
+      return;
+    }
+    for (const subscription of subscriptions.values()) {
+      subscription.nextDispatchAtMs = nowMs;
+    }
+  }
+
+  isThreadRunning(threadId: string): boolean {
+    return this.registry.get(threadId)?.status === "running";
   }
 
   private extractContent(response: Record<string, unknown>): string {
@@ -332,6 +499,122 @@ export class HubRouter {
     }
 
     return JSON.stringify(response, null, 2);
+  }
+
+  private async resolveCompletionContent(client: AgentClient, threadId: string): Promise<string> {
+    if (!client.getMessages) {
+      return this.formatRunContent(threadId, "Task completed.");
+    }
+
+    try {
+      const messages = await client.getMessages();
+      const snapshots = this.extractAgentMessageSnapshots(messages);
+      const latest = this.pickLatestStableSnapshot(snapshots);
+      if (latest) {
+        return this.formatRunContent(threadId, latest.content);
+      }
+    } catch {
+      // Best effort only; monitor completion still returns an explicit result.
+    }
+
+    return this.formatRunContent(threadId, "Task completed.");
+  }
+
+  private async resolveProgressContent(client: AgentClient, threadId: string): Promise<string> {
+    if (!client.getMessages) {
+      return this.formatRunContent(threadId, "Task is running...");
+    }
+
+    try {
+      const messages = await client.getMessages();
+      const snapshots = this.extractAgentMessageSnapshots(messages);
+      const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
+      if (latest) {
+        return this.formatRunContent(threadId, latest.content);
+      }
+    } catch {
+      // Best effort only; interval updates continue on the next tick.
+    }
+
+    return this.formatRunContent(threadId, "Task is running...");
+  }
+
+  private pickLatestStableSnapshot(snapshots: AgentMessageSnapshot[]): AgentMessageSnapshot | null {
+    for (let index = snapshots.length - 1; index >= 0; index -= 1) {
+      const snapshot = snapshots[index];
+      if (!snapshot) {
+        continue;
+      }
+      if (!this.isTransientTerminalFrame(snapshot.content)) {
+        return snapshot;
+      }
+    }
+
+    return snapshots.length > 0 ? (snapshots[snapshots.length - 1] ?? null) : null;
+  }
+
+  private normalizeMonitorStatus(status: string): AgentInstance["status"] | null {
+    const normalized = status.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    if (normalized === "stable" || normalized === "done" || normalized === "completed") {
+      return "waiting";
+    }
+
+    if (
+      normalized === "idle" ||
+      normalized === "running" ||
+      normalized === "waiting" ||
+      normalized === "stopped" ||
+      normalized === "error"
+    ) {
+      return normalized;
+    }
+
+    return null;
+  }
+
+  private upsertMonitorUpdateSubscription(threadId: string, chatId: string, intervalSec: number): void {
+    let byChat = this.monitorUpdateSubscriptionsByThread.get(threadId);
+    if (!byChat) {
+      byChat = new Map<string, MonitorUpdateSubscription>();
+      this.monitorUpdateSubscriptionsByThread.set(threadId, byChat);
+    }
+
+    byChat.set(chatId, {
+      chatId,
+      intervalMs: intervalSec * 1000,
+      nextDispatchAtMs: this.now().getTime()
+    });
+  }
+
+  private deleteMonitorUpdateSubscription(threadId: string, chatId: string): void {
+    const byChat = this.monitorUpdateSubscriptionsByThread.get(threadId);
+    if (!byChat) {
+      return;
+    }
+
+    byChat.delete(chatId);
+    if (byChat.size === 0) {
+      this.monitorUpdateSubscriptionsByThread.delete(threadId);
+    }
+  }
+
+  private normalizeMonitorUpdateIntervalSec(candidate: number | undefined): number {
+    const fallback = config.MONITOR_UPDATE_DEFAULT_INTERVAL_SEC;
+    const raw = candidate ?? fallback;
+    const normalized = Math.floor(raw);
+    if (!Number.isFinite(normalized) || normalized <= 0) {
+      throw new Error("Monitor update interval must be a positive integer (seconds)");
+    }
+    if (normalized < config.MONITOR_UPDATE_MIN_INTERVAL_SEC || normalized > config.MONITOR_UPDATE_MAX_INTERVAL_SEC) {
+      throw new Error(
+        `Monitor update interval must be between ${config.MONITOR_UPDATE_MIN_INTERVAL_SEC} and ${config.MONITOR_UPDATE_MAX_INTERVAL_SEC} seconds`
+      );
+    }
+    return normalized;
   }
 
   private async getLatestAgentMessageSnapshot(client: AgentClient): Promise<AgentMessageSnapshot | null> {
