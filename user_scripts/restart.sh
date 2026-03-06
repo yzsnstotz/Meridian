@@ -2,14 +2,32 @@
 
 # Restart Meridian runtime:
 # - stop PM2 apps (if used)
-# - terminate Hub/Interface/Monitor and agentapi processes (best effort)
+# - terminate Hub/Interface/Monitor and optionally agentapi processes
 # - remove stale sockets
 # - start Hub + Interface + Monitor again
+# Usage:
+#   ./user_scripts/restart.sh
+#   ./user_scripts/restart.sh --keep-agents
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
+KEEP_AGENTS=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep-agents)
+      KEEP_AGENTS=1
+      shift
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: ./user_scripts/restart.sh [--keep-agents]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -21,6 +39,7 @@ fi
 LOG_DIR="${LOG_DIR:-/var/log/hub}"
 HUB_SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-core.sock}"
 RUNTIME_LOG_DIR="${MERIDIAN_RUNTIME_LOG_DIR:-${ROOT_DIR}/logs}"
+MERIDIAN_STATE_PATH="${MERIDIAN_STATE_PATH:-/tmp/meridian-state.json}"
 
 log() {
   printf '[restart] %s\n' "$1"
@@ -153,12 +172,22 @@ stop_pm2_apps
 kill_by_pattern "${ROOT_DIR}/src/hub/index.ts|${ROOT_DIR}/dist/hub/index.js|npm run start:hub" "hub"
 kill_by_pattern "${ROOT_DIR}/src/interface/index.ts|${ROOT_DIR}/dist/interface/index.js|npm run start:interface" "interface"
 kill_by_pattern "${ROOT_DIR}/src/monitor/index.ts|${ROOT_DIR}/dist/monitor/index.js|npm run start:monitor" "monitor"
-kill_by_pattern "agentapi( |$).*server|${ROOT_DIR}/bin/agentapi" "agentapi"
-cleanup_tmux_agent_sessions
+
+if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
+  log "Preserving existing agentapi processes, tmux agent sessions, and persisted hub state"
+else
+  kill_by_pattern "agentapi( |$).*server|${ROOT_DIR}/bin/agentapi" "agentapi"
+  cleanup_tmux_agent_sessions
+fi
 
 log "Cleaning stale sockets"
 rm -f "${HUB_SOCKET_PATH}" >/dev/null 2>&1 || true
-rm -f /tmp/agentapi-*.sock >/dev/null 2>&1 || true
+if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
+  log "Skipping agent socket cleanup because keep-agents mode is enabled"
+else
+  rm -f /tmp/agentapi-*.sock >/dev/null 2>&1 || true
+  rm -f "${MERIDIAN_STATE_PATH}" >/dev/null 2>&1 || true
+fi
 
 if start_with_pm2; then
   log "Restart complete (PM2 mode)"

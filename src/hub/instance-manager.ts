@@ -9,6 +9,7 @@ import { createLogger } from "../logger";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import type { AgentInstance, AgentInstanceStatus, AgentType, BridgeMode } from "../types";
 import { InstanceRegistry } from "./registry";
+import { buildPersistedHubState, type PersistedHubState } from "./state-store";
 
 type SpawnFn = typeof spawn;
 type ExecSyncFn = typeof execSync;
@@ -34,6 +35,11 @@ export interface SessionBinding {
 export interface ThreadAttachment {
   sessions: string[];
   interface_id: string | null;
+}
+
+export interface RehydrationResult {
+  restored_thread_ids: string[];
+  pruned_thread_ids: string[];
 }
 
 export interface InstanceManagerOptions {
@@ -234,6 +240,52 @@ export class InstanceManager {
     );
 
     return restartedThreadId;
+  }
+
+  snapshotState(): PersistedHubState {
+    return buildPersistedHubState(
+      this.now().toISOString(),
+      this.registry.list(),
+      Object.fromEntries(this.sessionThreadBySession.entries())
+    );
+  }
+
+  async rehydrateFromState(state: PersistedHubState): Promise<RehydrationResult> {
+    this.registry.clear();
+    this.children.clear();
+    this.sessionThreadBySession.clear();
+
+    const restoredThreadIds: string[] = [];
+    const prunedThreadIds: string[] = [];
+    const liveThreadIds = new Set<string>();
+
+    for (const persistedInstance of state.instances) {
+      const hydratedInstance = await this.rehydrateInstance(persistedInstance);
+      if (!hydratedInstance) {
+        prunedThreadIds.push(persistedInstance.thread_id);
+        continue;
+      }
+
+      this.registry.register(hydratedInstance);
+      restoredThreadIds.push(hydratedInstance.thread_id);
+      liveThreadIds.add(hydratedInstance.thread_id);
+    }
+
+    for (const [session, threadId] of Object.entries(state.session_bindings)) {
+      if (!liveThreadIds.has(threadId)) {
+        continue;
+      }
+      try {
+        this.sessionThreadBySession.set(this.sanitizeSession(session), threadId);
+      } catch {
+        // Ignore invalid persisted bindings and continue restoring the rest.
+      }
+    }
+
+    return {
+      restored_thread_ids: restoredThreadIds,
+      pruned_thread_ids: prunedThreadIds
+    };
   }
 
   async switchModel(threadId: string, nextType: AgentType): Promise<string> {
@@ -585,6 +637,33 @@ export class InstanceManager {
     throw new Error(
       `Agent instance failed readiness check for thread_id=${threadId}: ${lastError ?? "unknown startup error"}`
     );
+  }
+
+  private async rehydrateInstance(instance: AgentInstance): Promise<AgentInstance | null> {
+    const client = this.clientFactory(instance.thread_id);
+    try {
+      await client.connect(instance.socket_path);
+      const rawStatus = await client.getStatus();
+      const reportedStatus = this.toKnownStatus(rawStatus.status);
+      return {
+        ...instance,
+        status: reportedStatus ?? instance.status
+      };
+    } catch (error) {
+      this.log.warn(
+        {
+          operation: "rehydrate_probe_failed",
+          thread_id: instance.thread_id,
+          socket_path: instance.socket_path,
+          pid: instance.pid,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Skipping persisted agent instance because readiness probe failed"
+      );
+      return null;
+    } finally {
+      client.disconnect();
+    }
   }
 
   private async killInternal(threadId: string, preserveBindings: boolean): Promise<void> {

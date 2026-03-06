@@ -91,7 +91,7 @@ function toHubMessage(
     throw new Error("Cannot build HubMessage from empty payload");
   }
 
-  if (parsedCommand.intent === "help" || parsedCommand.intent === "restart" || parsedCommand.intent === "browse") {
+  if (parsedCommand.intent === "help" || parsedCommand.intent === "service_restart" || parsedCommand.intent === "browse") {
     throw new Error(`${parsedCommand.intent} command should not be forwarded`);
   }
 
@@ -534,24 +534,7 @@ function launchRestartViaTmux(projectRoot: string, scriptPath: string, restartLo
   return true;
 }
 
-async function handleRestartCommand(ctx: Context): Promise<void> {
-  const projectRoot = process.cwd();
-  const scriptPath = path.resolve(projectRoot, "rebuild-restart.sh");
-  if (!fs.existsSync(scriptPath)) {
-    throw new Error(`Restart script not found: ${scriptPath}`);
-  }
-
-  const restartLogPath = path.join("/tmp", `meridian-restart-${Date.now()}.log`);
-  await ctx.reply(`Restarting services via rebuild script. Log: ${restartLogPath}`);
-
-  // Launch through tmux first so the restart process is owned by tmux server
-  // instead of the calling-interface process tree.
-  if (launchRestartViaTmux(projectRoot, scriptPath, restartLogPath)) {
-    return;
-  }
-
-  // Launch through a short-lived shell that backgrounds the real restart process.
-  // Fallback path when tmux is unavailable.
+function launchRestartDetached(projectRoot: string, scriptPath: string, restartLogPath: string): void {
   const command = `nohup /bin/bash ${shellEscape(scriptPath)} > ${shellEscape(restartLogPath)} 2>&1 < /dev/null &`;
   const launcher = spawnProcess("/bin/zsh", ["-lc", command], {
     cwd: projectRoot,
@@ -561,7 +544,22 @@ async function handleRestartCommand(ctx: Context): Promise<void> {
   launcher.unref();
 }
 
-function buildThreadPickerKeyboard(instances: AgentInstance[], action: "attach" | "kill" | "model_thread"): InlineKeyboard {
+function buildRestartKeyboard(): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  keyboard.text("Restart Existing Thread", `${CALLBACK_PREFIX}:restart_menu:thread`).row();
+  keyboard.text("Restart Service Keep Agents", `${CALLBACK_PREFIX}:restart_service:keep_agents`).row();
+  keyboard.text("Rebuild & Restart Everything", `${CALLBACK_PREFIX}:restart_service:full_rebuild`);
+  return keyboard;
+}
+
+async function handleRestartCommand(ctx: Context): Promise<void> {
+  await ctx.reply("Choose restart action:", { reply_markup: buildRestartKeyboard() });
+}
+
+function buildThreadPickerKeyboard(
+  instances: AgentInstance[],
+  action: "attach" | "kill" | "model_thread" | "restart_thread"
+): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   for (const instance of instances) {
     const label = `${instance.thread_id} (${instance.agent_type}, ${instance.mode})`;
@@ -695,6 +693,43 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
       return true;
     }
     await ctx.editMessageText(`Provider: ${type}\nChoose mode:`, { reply_markup: buildSpawnModeKeyboard(type) });
+    await ctx.answerCallbackQuery();
+    return true;
+  }
+
+  if (action === "restart_menu" && parts[2] === "thread") {
+    const candidates = await requestLiveInstances(botId, chatId, callbackMessageId);
+    if (candidates.length === 0) {
+      await ctx.editMessageText("No active live threads found. Use /spawn first.");
+      await ctx.answerCallbackQuery();
+      return true;
+    }
+    await ctx.editMessageText("Choose thread to restart:", {
+      reply_markup: buildThreadPickerKeyboard(candidates.map((candidate) => candidate.instance), "restart_thread")
+    });
+    await ctx.answerCallbackQuery();
+    return true;
+  }
+
+  if (action === "restart_service" && parts[2]) {
+    const projectRoot = process.cwd();
+    const scriptName = parts[2] === "keep_agents" ? "user_scripts/restart_keep_agents.sh" : "rebuild-restart.sh";
+    const scriptPath = path.resolve(projectRoot, scriptName);
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`Restart script not found: ${scriptPath}`);
+    }
+
+    const logSuffix = parts[2] === "keep_agents" ? "keep-agents" : "full";
+    const restartLogPath = path.join("/tmp", `meridian-restart-${logSuffix}-${Date.now()}.log`);
+    const label =
+      parts[2] === "keep_agents"
+        ? "Restarting Meridian service and preserving live agents"
+        : "Rebuilding project and restarting everything";
+
+    await ctx.editMessageText(`${label}.\nLog: ${restartLogPath}`);
+    if (!launchRestartViaTmux(projectRoot, scriptPath, restartLogPath)) {
+      launchRestartDetached(projectRoot, scriptPath, restartLogPath);
+    }
     await ctx.answerCallbackQuery();
     return true;
   }
@@ -897,6 +932,23 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     return true;
   }
 
+  if (action === "restart_thread" && parts[2]) {
+    const threadId = parts[2];
+    await sendHubMessage(
+      buildActionHubMessage({
+        botId,
+        chatId,
+        messageId: callbackMessageId,
+        intent: "restart",
+        threadId,
+        target: threadId
+      })
+    );
+    await ctx.editMessageText(`Restarting ${threadId}...`);
+    await ctx.answerCallbackQuery();
+    return true;
+  }
+
   if (action === "model_thread" && parts[2]) {
     const threadId = parts[2];
     await ctx.editMessageText(`Thread: ${threadId}\nChoose provider:`, { reply_markup: buildModelTypeKeyboard(threadId) });
@@ -964,7 +1016,7 @@ for (const { bot } of botRuntimes) {
         "InboundUIEvent received"
       );
 
-      if (parsedCommand.intent === "restart") {
+      if (parsedCommand.intent === "service_restart") {
         await handleRestartCommand(ctx);
         return;
       }

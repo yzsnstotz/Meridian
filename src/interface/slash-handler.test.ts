@@ -90,7 +90,7 @@ test("parseSlashCommand keeps thread when /model omits type", () => {
 
 test("parseSlashCommand parses /restart as local command", () => {
   const parsed = parseSlashCommand("/restart");
-  assert.equal(parsed.intent, "restart");
+  assert.equal(parsed.intent, "service_restart");
   assert.equal(parsed.shouldForward, false);
 });
 

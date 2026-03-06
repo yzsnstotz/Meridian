@@ -30,6 +30,7 @@ const envSchema = z.object({
   MONITOR_UPDATE_MIN_INTERVAL_SEC: z.coerce.number().int().positive().default(5),
   MONITOR_UPDATE_MAX_INTERVAL_SEC: z.coerce.number().int().positive().default(600),
   LOG_DIR: z.string().default("/var/log/hub"),
+  MERIDIAN_STATE_PATH: z.string().default("/tmp/meridian-state.json"),
   AGENT_WORKDIR: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),

@@ -52,6 +52,7 @@ export class HubServer {
     }
 
     await this.removeStaleSocket();
+    await this.router.initialize();
 
     this.server = net.createServer({ allowHalfOpen: true }, (socket) => {
       socket.setEncoding("utf8");
