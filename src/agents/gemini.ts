@@ -13,10 +13,18 @@ export const geminiAgentConfig: GeminiAgentConfig = {
   command: GEMINI_CLI_COMMAND
 };
 
-export function buildGeminiSpawnArgs(mode: BridgeMode, tmuxSession: string | null): string[] {
+export function buildGeminiSpawnArgs(
+  mode: BridgeMode,
+  tmuxSession: string | null,
+  endpointFlag: string,
+  modelId?: string
+): string[] {
   void mode;
   void tmuxSession;
-  const args = ["server", `--type=${geminiAgentConfig.type}`];
+  const args = ["server", `--type=${geminiAgentConfig.type}`, endpointFlag];
   args.push("--", geminiAgentConfig.command);
+  if (modelId) {
+    args.push("--model", modelId);
+  }
   return args;
 }

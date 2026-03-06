@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meridian — Bridge</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div id="app" class="max-w-2xl mx-auto p-4 md:p-6">
+    <div id="no-token" class="hidden rounded-lg bg-amber-900/40 border border-amber-600/50 p-4 text-amber-200">
+      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open with <code class="bg-slate-800 px-1 rounded">?thread_id=xxx&token=YOUR_TOKEN</code>.
+    </div>
+
+    <div id="content" class="hidden">
+      <header class="mb-4">
+        <h1 class="text-lg font-semibold text-slate-100">Bridge instance</h1>
+        <p class="font-mono text-sm text-slate-400 mt-1" id="thread-label">—</p>
+      </header>
+
+      <section class="rounded-lg border border-slate-600 bg-slate-800/50 p-4 mb-4">
+        <h2 class="text-sm font-medium text-slate-300 mb-2">Metadata</h2>
+        <dl id="meta" class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+          <dt class="text-slate-500">thread_id</dt><dd class="font-mono" id="meta-thread">—</dd>
+          <dt class="text-slate-500">type</dt><dd id="meta-type">—</dd>
+          <dt class="text-slate-500">mode</dt><dd id="meta-mode">—</dd>
+          <dt class="text-slate-500">status</dt><dd id="meta-status">—</dd>
+          <dt class="text-slate-500">created_at</dt><dd id="meta-created">—</dd>
+        </dl>
+      </section>
+
+      <section class="rounded-lg border border-slate-600 bg-slate-800/50 p-4 mb-4">
+        <h2 class="text-sm font-medium text-slate-300 mb-2">Latest result</h2>
+        <pre id="latest-result" class="text-xs text-slate-300 bg-slate-900 rounded p-3 overflow-auto max-h-48 whitespace-pre-wrap">—</pre>
+      </section>
+
+      <section class="rounded-lg border border-slate-600 bg-slate-800/50 p-4 mb-4">
+        <label for="input-run" class="block text-sm font-medium text-slate-300 mb-2">Run command</label>
+        <div class="flex flex-col sm:flex-row gap-2">
+          <input type="text" id="input-run" placeholder="Enter instruction…" class="flex-1 px-3 py-2 rounded bg-slate-800 border border-slate-600 text-slate-100" />
+          <button type="button" id="btn-run" class="px-4 py-2 rounded bg-slate-600 hover:bg-slate-500 text-white font-medium">Run</button>
+        </div>
+      </section>
+
+      <div class="flex flex-wrap gap-2">
+        <button type="button" id="btn-kill" class="px-4 py-2 rounded bg-red-700 hover:bg-red-600 text-white font-medium">Kill</button>
+        <button type="button" id="btn-reboot" class="px-4 py-2 rounded bg-amber-700 hover:bg-amber-600 text-white font-medium">Reboot</button>
+      </div>
+    </div>
+
+    <div id="loading" class="text-slate-400 py-4">Loading…</div>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    (function () {
+      var threadId = (window.MeridianWeb.getQueryParams().thread_id || "").trim();
+      var noToken = document.getElementById("no-token");
+      var content = document.getElementById("content");
+      var loading = document.getElementById("loading");
+      var threadLabel = document.getElementById("thread-label");
+      var metaThread = document.getElementById("meta-thread");
+      var metaType = document.getElementById("meta-type");
+      var metaMode = document.getElementById("meta-mode");
+      var metaStatus = document.getElementById("meta-status");
+      var metaCreated = document.getElementById("meta-created");
+      var latestResult = document.getElementById("latest-result");
+      var inputRun = document.getElementById("input-run");
+      var btnRun = document.getElementById("btn-run");
+      var btnKill = document.getElementById("btn-kill");
+      var btnReboot = document.getElementById("btn-reboot");
+
+      function setMeta(inst) {
+        if (!inst) return;
+        threadLabel.textContent = inst.thread_id || "—";
+        metaThread.textContent = inst.thread_id || "—";
+        metaType.textContent = inst.agent_type || inst.type || "—";
+        metaMode.textContent = inst.mode || "—";
+        metaStatus.textContent = inst.status || "—";
+        metaCreated.textContent = inst.created_at ? new Date(inst.created_at).toLocaleString() : "—";
+      }
+
+      function runCommand() {
+        if (!window.MeridianWeb.ensureToken() || !threadId) return;
+        var cmd = (inputRun.value || "").trim();
+        if (!cmd) return;
+        window.MeridianWeb.fetchWithAuth("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, content: cmd })
+        })
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            latestResult.textContent = typeof data.content === "string" ? data.content : JSON.stringify(data, null, 2);
+          })
+          .catch(function (e) {
+            latestResult.textContent = "Error: " + (e && e.message ? e.message : "network");
+          });
+        inputRun.value = "";
+      }
+
+      function threadAction(intent) {
+        if (!window.MeridianWeb.ensureToken() || !threadId) return;
+        window.MeridianWeb.fetchWithAuth("/api/" + intent, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId })
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            if (intent === "kill") {
+              window.location.href = window.MeridianWeb.apiBase() + "/index.html?token=" + encodeURIComponent(window.MeridianWeb.getToken());
+            } else {
+              latestResult.textContent = "Reboot sent. " + (data.content || "");
+            }
+          });
+        });
+      }
+
+      if (!threadId || !window.MeridianWeb.ensureToken()) {
+        noToken.classList.remove("hidden");
+        content.classList.add("hidden");
+        loading.classList.add("hidden");
+      } else {
+        threadLabel.textContent = threadId;
+        setMeta({ thread_id: threadId, mode: "bridge", status: "—", created_at: null });
+        window.MeridianWeb.fetchWithAuth("/api/instances")
+          .then(function (res) { return res.ok ? res.json() : []; })
+          .then(function (list) {
+            var inst = (list || []).find(function (i) { return (i.thread_id || i.id) === threadId; });
+            if (inst) setMeta(inst);
+            loading.classList.add("hidden");
+            content.classList.remove("hidden");
+          })
+          .catch(function () {
+            loading.classList.add("hidden");
+            content.classList.remove("hidden");
+          });
+
+        btnRun.addEventListener("click", runCommand);
+        inputRun.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") runCommand();
+        });
+        btnKill.addEventListener("click", function () { threadAction("kill"); });
+        btnReboot.addEventListener("click", function () { threadAction("reboot"); });
+      }
+    })();
+  </script>
+</body>
+</html>

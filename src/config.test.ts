@@ -9,6 +9,8 @@ const REQUIRED_ENV = {
 const CONFIG_KEYS = [
   "TELEGRAM_BOT_TOKEN",
   "ALLOWED_USER_IDS",
+  "COORDINATOR_SOCKET_PATH",
+  "COORDINATOR_INTENTS",
   "WEBHOOK_URL",
   "WEBHOOK_PORT",
   "WEBHOOK_SECRET_TOKEN",
@@ -50,6 +52,8 @@ test("parseConfig applies v2 defaults for webhook and web GUI fields", async () 
     const { parseConfig } = await import("./config");
     const config = parseConfig(REQUIRED_ENV);
 
+    assert.equal(config.COORDINATOR_SOCKET_PATH, "");
+    assert.deepEqual(config.COORDINATOR_INTENTS, []);
     assert.equal(config.WEBHOOK_URL, "");
     assert.equal(config.WEBHOOK_PORT, 443);
     assert.equal(config.WEBHOOK_SECRET_TOKEN, "");
@@ -68,6 +72,8 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
     const { parseConfig } = await import("./config");
     const config = parseConfig({
       ...REQUIRED_ENV,
+      COORDINATOR_SOCKET_PATH: "/tmp/coordinator.sock",
+      COORDINATOR_INTENTS: "delegate, plan , review",
       WEBHOOK_URL: "https://bot.example.com/webhook",
       WEBHOOK_PORT: "8443",
       WEBHOOK_SECRET_TOKEN: "secret-token",
@@ -80,6 +86,8 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
       TLS_KEY_PATH: "/etc/ssl/private/gui.key"
     });
 
+    assert.equal(config.COORDINATOR_SOCKET_PATH, "/tmp/coordinator.sock");
+    assert.deepEqual(config.COORDINATOR_INTENTS, ["delegate", "plan", "review"]);
     assert.equal(config.WEBHOOK_URL, "https://bot.example.com/webhook");
     assert.equal(config.WEBHOOK_PORT, 8443);
     assert.equal(config.WEBHOOK_SECRET_TOKEN, "secret-token");

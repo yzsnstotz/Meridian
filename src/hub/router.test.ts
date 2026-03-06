@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { config } from "../config";
 import type { HubMessage } from "../types";
 import { InstanceRegistry } from "./registry";
 import { HubRouter } from "./router";
@@ -57,6 +58,45 @@ test("HubRouter routes run intent through AgentAPIClient", async () => {
   assert.equal(result.content, "[thread=codex_01]\ndone");
 });
 
+test("HubRouter forwards agent response files as HubResult attachments", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({
+        content: "done",
+        files: [
+          "/tmp/output.txt",
+          {
+            path: "/tmp/app.ts",
+            name: "app.ts",
+            mimeType: "text/plain"
+          }
+        ]
+      }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await router.route(baseMessage());
+  assert.deepEqual(result.attachments, [
+    { path: "/tmp/output.txt" },
+    { path: "/tmp/app.ts", filename: "app.ts", mime_type: "text/plain" }
+  ]);
+});
+
 test("HubRouter handles list intent", async () => {
   const router = new HubRouter(new InstanceRegistry(), {
     clientFactory: () => ({
@@ -111,6 +151,49 @@ test("HubRouter routes restart intent through InstanceManager", async () => {
 
   const result = await router.route(baseMessage({ intent: "restart", target: "codex_01" }));
   assert.equal(restartedThreadId, "codex_01");
+  assert.equal(result.status, "success");
+  assert.match(result.content, /codex_01/);
+});
+
+test("HubRouter routes reboot intent through InstanceManager.restart", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 10,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let rebootedThreadId = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    restart: async (threadId: string) => {
+      rebootedThreadId = threadId;
+      return threadId;
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(baseMessage({ intent: "reboot", target: "codex_01" }));
+  assert.equal(rebootedThreadId, "codex_01");
   assert.equal(result.status, "success");
   assert.match(result.content, /codex_01/);
 });
@@ -175,6 +258,129 @@ test("HubRouter routes terminal_input through InstanceManager", async () => {
   assert.equal(result.status, "success");
   assert.equal(result.source, "cursor");
   assert.equal(result.thread_id, "cursor_01");
+});
+
+test("HubRouter returns provider model catalog through InstanceManager", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    model_id: "gpt-5.4",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 20,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let listedThreadId = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    listModels: async (threadId: string) => {
+      listedThreadId = threadId;
+      return {
+        thread_id: threadId,
+        provider: "codex",
+        current_model_id: "gpt-5.4",
+        models: [
+          { id: "gpt-5.4", label: "GPT-5.4" },
+          { id: "codex-5.3-max", label: "Codex-5.3-Max" }
+        ]
+      };
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(baseMessage({ intent: "list_models", target: "codex_01" }));
+
+  assert.equal(listedThreadId, "codex_01");
+  assert.equal(result.status, "success");
+  assert.equal(result.source, "codex");
+  assert.match(result.content, /codex-5\.3-max/);
+});
+
+test("HubRouter switches provider model using payload content", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    model_id: "gpt-5",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 21,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let switchedThreadId = "";
+  let switchedModelId = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    switchModel: async (threadId: string, modelId: string) => {
+      switchedThreadId = threadId;
+      switchedModelId = modelId;
+      registry.register({
+        thread_id: threadId,
+        agent_type: "codex",
+        model_id: modelId,
+        mode: "bridge",
+        socket_path: "/tmp/agentapi-codex_01.sock",
+        pid: 22,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString()
+      });
+      return threadId;
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "switch_model",
+      target: "codex_01",
+      payload: {
+        content: "codex-5.3-max",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(switchedThreadId, "codex_01");
+  assert.equal(switchedModelId, "codex-5.3-max");
+  assert.equal(result.status, "success");
+  assert.equal(result.source, "codex");
+  assert.match(result.content, /codex-5\.3-max/);
 });
 
 test("HubRouter list omits stopped instances", async () => {
@@ -420,30 +626,48 @@ test("HubRouter builds completion result from latest stable agent message", asyn
   const spinnerFrame =
     "▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n" +
     " ⠋ Let Node.js auto-configure memory (settings.json)… (esc to cancel, 0s)";
+  const previousHost = config.WEB_GUI_HOST;
+  const previousPort = config.WEB_GUI_PORT;
+  const previousToken = config.WEB_GUI_TOKEN;
+  const previousHttps = config.WEB_GUI_HTTPS;
+  config.WEB_GUI_HOST = "gui.example.com";
+  config.WEB_GUI_PORT = 3000;
+  config.WEB_GUI_TOKEN = "secret-token";
+  config.WEB_GUI_HTTPS = false;
 
-  const router = new HubRouter(registry, {
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      sendMessage: async () => ({ ok: true }),
-      getStatus: async () => ({ status: "running" }),
-      getMessages: async () => [
-        { id: 1, role: "agent", content: "previous" },
-        { id: 2, role: "agent", content: spinnerFrame },
-        { id: 3, role: "agent", content: "final completion reply" }
-      ]
-    })
-  });
+  try {
+    const router = new HubRouter(registry, {
+      clientFactory: () => ({
+        connect: async () => undefined,
+        disconnect: () => undefined,
+        sendMessage: async () => ({ ok: true }),
+        getStatus: async () => ({ status: "running" }),
+        getMessages: async () => [
+          { id: 1, role: "agent", content: "previous" },
+          { id: 2, role: "agent", content: spinnerFrame },
+          { id: 3, role: "agent", content: "final completion reply" }
+        ]
+      })
+    });
 
-  const result = await router.buildCompletionResultForThread(
-    "codex_01",
-    "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
-  );
+    const result = await router.buildCompletionResultForThread(
+      "codex_01",
+      "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
+    );
 
-  assert.equal(result.status, "success");
-  assert.equal(result.source, "codex");
-  assert.equal(result.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
-  assert.equal(result.content, "[thread=codex_01]\nfinal completion reply");
+    assert.equal(result.status, "success");
+    assert.equal(result.source, "codex");
+    assert.equal(result.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+    assert.equal(result.content, "[thread=codex_01]\nfinal completion reply");
+    assert.deepEqual(result.telegram_inline_keyboard, {
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+    });
+  } finally {
+    config.WEB_GUI_HOST = previousHost;
+    config.WEB_GUI_PORT = previousPort;
+    config.WEB_GUI_TOKEN = previousToken;
+    config.WEB_GUI_HTTPS = previousHttps;
+  }
 });
 
 test("HubRouter enables and disables monitor updates via monitor_update intent", async () => {
@@ -592,6 +816,304 @@ test("HubRouter stores attach bindings with bot-aware session key", async () => 
 
   assert.equal(result.status, "success");
   assert.deepEqual(router.getAttachedSessionsForThread("codex_01"), ["777:100"]);
+});
+
+test("HubRouter includes attached chat and bot labels in thread command responses", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const attachResult = await router.route(
+    baseMessage({
+      intent: "attach",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "telegram:-10001",
+        bot_id: "777",
+        chat_name: "Ops Room",
+        bot_name: "@meridian_ops_bot"
+      }
+    })
+  );
+
+  assert.equal(attachResult.status, "success");
+  assert.match(attachResult.content, /Attached chat sessions:/);
+  assert.match(attachResult.content, /Ops Room via @meridian_ops_bot/);
+
+  const listResult = await router.route(
+    baseMessage({
+      intent: "list",
+      target: "all",
+      thread_id: "global",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "telegram:-10001",
+        bot_id: "777"
+      }
+    })
+  );
+
+  assert.equal(listResult.status, "success");
+  const listed = JSON.parse(listResult.content) as Array<Record<string, unknown>>;
+  const labels = listed[0]?.attached_labels as string[] | undefined;
+  assert.ok(Array.isArray(labels));
+  assert.match(labels?.[0] ?? "", /Ops Room via @meridian_ops_bot/);
+});
+
+test("HubRouter detaches the current session from its thread", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const attachResult = await router.route(
+    baseMessage({
+      intent: "attach",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+  assert.equal(attachResult.status, "success");
+
+  const detachResult = await router.route(
+    baseMessage({
+      intent: "detach",
+      target: "active",
+      thread_id: "active",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+  assert.equal(detachResult.status, "success");
+  assert.equal(detachResult.thread_id, "codex_01");
+  assert.deepEqual(router.getAttachedSessionsForThread("codex_01"), []);
+
+  const missingActiveResult = await router.route(
+    baseMessage({
+      intent: "run",
+      target: "active",
+      thread_id: "active",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+  assert.equal(missingActiveResult.status, "error");
+  assert.match(missingActiveResult.content, /No thread is attached/);
+});
+
+test("HubRouter returns a clickable Web GUI link", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const previousHost = config.WEB_GUI_HOST;
+  const previousPort = config.WEB_GUI_PORT;
+  const previousToken = config.WEB_GUI_TOKEN;
+  const previousHttps = config.WEB_GUI_HTTPS;
+  config.WEB_GUI_HOST = "gui.example.com";
+  config.WEB_GUI_PORT = 3000;
+  config.WEB_GUI_TOKEN = "secret-token";
+  config.WEB_GUI_HTTPS = false;
+
+  try {
+    const router = new HubRouter(registry, {
+      clientFactory: () => ({
+        connect: async () => undefined,
+        disconnect: () => undefined,
+        sendMessage: async () => ({ content: "unused" }),
+        getStatus: async () => ({ status: "running" })
+      })
+    });
+
+    const result = await router.route(
+      baseMessage({
+        intent: "gui",
+        target: "codex_01"
+      })
+    );
+
+    assert.equal(result.status, "success");
+    assert.equal(result.content, "http://gui.example.com:3000/?thread=codex_01&token=secret-token");
+  } finally {
+    config.WEB_GUI_HOST = previousHost;
+    config.WEB_GUI_PORT = previousPort;
+    config.WEB_GUI_TOKEN = previousToken;
+    config.WEB_GUI_HTTPS = previousHttps;
+  }
+});
+
+test("HubRouter attach result includes a Web GUI button when available", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const previousHost = config.WEB_GUI_HOST;
+  const previousPort = config.WEB_GUI_PORT;
+  const previousToken = config.WEB_GUI_TOKEN;
+  const previousHttps = config.WEB_GUI_HTTPS;
+  config.WEB_GUI_HOST = "gui.example.com";
+  config.WEB_GUI_PORT = 3000;
+  config.WEB_GUI_TOKEN = "secret-token";
+  config.WEB_GUI_HTTPS = false;
+
+  try {
+    const router = new HubRouter(registry, {
+      clientFactory: () => ({
+        connect: async () => undefined,
+        disconnect: () => undefined,
+        sendMessage: async () => ({ content: "unused" }),
+        getStatus: async () => ({ status: "running" })
+      })
+    });
+
+    const result = await router.route(
+      baseMessage({
+        intent: "attach",
+        target: "codex_01"
+      })
+    );
+
+    assert.deepEqual(result.telegram_inline_keyboard, {
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+    });
+  } finally {
+    config.WEB_GUI_HOST = previousHost;
+    config.WEB_GUI_PORT = previousPort;
+    config.WEB_GUI_TOKEN = previousToken;
+    config.WEB_GUI_HTTPS = previousHttps;
+  }
+});
+
+test("HubRouter spawn result includes a Web GUI button when available", async () => {
+  const registry = new InstanceRegistry();
+  let spawnedThreadId = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    spawn: async () => {
+      spawnedThreadId = "codex_01";
+      registry.register({
+        thread_id: "codex_01",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: "/tmp/agentapi-codex_01.sock",
+        pid: 101,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString()
+      });
+      return spawnedThreadId;
+    },
+    attach: () => ({ thread_id: "codex_01", session_id: "777:100" }),
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: ["777:100"], interface_id: "777" }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const previousHost = config.WEB_GUI_HOST;
+  const previousPort = config.WEB_GUI_PORT;
+  const previousToken = config.WEB_GUI_TOKEN;
+  const previousHttps = config.WEB_GUI_HTTPS;
+  config.WEB_GUI_HOST = "gui.example.com";
+  config.WEB_GUI_PORT = 3000;
+  config.WEB_GUI_TOKEN = "secret-token";
+  config.WEB_GUI_HTTPS = false;
+
+  try {
+    const router = new HubRouter(registry, {
+      instanceManager: fakeInstanceManager as never,
+      statePath: "/tmp/meridian-router-test-state.json"
+    });
+
+    const result = await router.route(
+      baseMessage({
+        intent: "spawn",
+        thread_id: "pending",
+        target: "codex",
+        reply_channel: {
+          channel: "telegram",
+          chat_id: "100",
+          bot_id: "777"
+        }
+      })
+    );
+
+    assert.equal(spawnedThreadId, "codex_01");
+    assert.deepEqual(result.telegram_inline_keyboard, {
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+    });
+  } finally {
+    config.WEB_GUI_HOST = previousHost;
+    config.WEB_GUI_PORT = previousPort;
+    config.WEB_GUI_TOKEN = previousToken;
+    config.WEB_GUI_HTTPS = previousHttps;
+  }
 });
 
 test("HubRouter list includes attachment owner and attachability by bot interface", async () => {

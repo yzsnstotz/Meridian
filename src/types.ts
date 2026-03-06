@@ -3,7 +3,7 @@ import { z } from "zod";
 export const ChannelSchema = z.enum(["telegram", "web"]);
 export type Channel = z.infer<typeof ChannelSchema>;
 
-export const IntentSchema = z.enum([
+export const BUILT_IN_INTENTS = [
   "run",
   "terminal_input",
   "spawn",
@@ -13,11 +13,16 @@ export const IntentSchema = z.enum([
   "status",
   "attach",
   "detach",
+  "gui",
   "list",
+  "list_models",
   "switch_model",
   "monitor_update",
   "monitor_manual_update"
-]);
+ ] as const;
+
+export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
+export const IntentSchema = z.union([BuiltInIntentSchema, z.string().min(1)]);
 export type Intent = z.infer<typeof IntentSchema>;
 
 export const BridgeModeSchema = z.enum(["bridge", "pane_bridge"]);
@@ -39,6 +44,22 @@ export const FileAttachmentSchema = z.object({
 });
 export type FileAttachment = z.infer<typeof FileAttachmentSchema>;
 
+export const TelegramInlineButtonSchema = z
+  .object({
+    text: z.string().min(1),
+    url: z.string().url().optional(),
+    callback_data: z.string().min(1).optional()
+  })
+  .refine((button) => (button.url ? !button.callback_data : Boolean(button.callback_data)), {
+    message: "telegram inline buttons must define exactly one of url or callback_data"
+  });
+export type TelegramInlineButton = z.infer<typeof TelegramInlineButtonSchema>;
+
+export const TelegramInlineKeyboardSchema = z.object({
+  inline_keyboard: z.array(z.array(TelegramInlineButtonSchema).min(1)).min(1)
+});
+export type TelegramInlineKeyboard = z.infer<typeof TelegramInlineKeyboardSchema>;
+
 export const InboundUIEventSchema = z.object({
   channel: ChannelSchema,
   raw_message_id: z.string().min(1),
@@ -59,7 +80,9 @@ export const ReplyChannelSchema = z.object({
   channel: ChannelSchema,
   chat_id: SessionChatIdSchema,
   message_id: z.string().min(1).optional(),
-  bot_id: z.string().regex(/^\d+$/).optional()
+  bot_id: z.string().regex(/^\d+$/).optional(),
+  chat_name: z.string().min(1).optional(),
+  bot_name: z.string().min(1).optional()
 });
 export type ReplyChannel = z.infer<typeof ReplyChannelSchema>;
 
@@ -103,6 +126,7 @@ export const HubResultSchema = z.object({
   status: HubResultStatusSchema,
   content: z.string(),
   attachments: z.array(FileAttachmentSchema).default([]),
+  telegram_inline_keyboard: TelegramInlineKeyboardSchema.optional(),
   timestamp: z.string().datetime()
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
@@ -138,6 +162,7 @@ export type MonitorEvent = z.infer<typeof MonitorEventSchema>;
 export const AgentInstanceSchema = z.object({
   thread_id: z.string().min(1),
   agent_type: AgentTypeSchema,
+  model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema,
   socket_path: z.string().min(1),
   working_dir: z.string().min(1).optional(),
@@ -167,11 +192,32 @@ export const PaneOutputChunkSchema = z.object({
 });
 export type PaneOutputChunk = z.infer<typeof PaneOutputChunkSchema>;
 
+export const PaneOutputNotAvailableSchema = z.object({
+  type: z.literal("not_available"),
+  thread_id: z.string().min(1),
+  reason: z.string().min(1)
+});
+export type PaneOutputNotAvailable = z.infer<typeof PaneOutputNotAvailableSchema>;
+
 export const PaneUnsubscribeRequestSchema = z.object({
   type: z.literal("unsubscribe_pane_output"),
   thread_id: z.string().min(1)
 });
 export type PaneUnsubscribeRequest = z.infer<typeof PaneUnsubscribeRequestSchema>;
+
+export const ProviderModelSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1)
+});
+export type ProviderModel = z.infer<typeof ProviderModelSchema>;
+
+export const ProviderModelCatalogSchema = z.object({
+  thread_id: z.string().min(1),
+  provider: AgentTypeSchema,
+  current_model_id: z.string().min(1).nullable().default(null),
+  models: z.array(ProviderModelSchema)
+});
+export type ProviderModelCatalog = z.infer<typeof ProviderModelCatalogSchema>;
 
 export const ServiceEndpointSchema = z.object({
   service: z.string().min(1).optional(),

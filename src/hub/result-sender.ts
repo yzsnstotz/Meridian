@@ -6,12 +6,17 @@ import https from "node:https";
 import { config } from "../config";
 import { createLogger } from "../logger";
 import { buildTelegramApprovalHint, isApprovalPrompt } from "../shared/approval";
-import { HubResultSchema, ReplyChannelSchema, type HubResult, type ReplyChannel } from "../types";
+import {
+  HubResultSchema,
+  ReplyChannelSchema,
+  type HubResult,
+  type ReplyChannel,
+  type TelegramInlineKeyboard
+} from "../types";
 
 const TELEGRAM_TEXT_LIMIT = 4096;
 const TELEGRAM_SAFE_TEXT_LIMIT = 3500;
 const TELEGRAM_CAPTION_LIMIT = 1024;
-const TELEGRAM_CHUNK_DELAY_MS = 250;
 const TELEGRAM_MAX_SEND_ATTEMPTS = 5;
 const TELEGRAM_RETRY_BACKOFF_BASE_MS = 500;
 const TELEGRAM_RETRY_BACKOFF_MAX_MS = 8000;
@@ -118,6 +123,10 @@ function resolveConfiguredBotTokens(): string[] {
   return tokens;
 }
 
+function resolveTelegramTargetChatId(chatId: string): string {
+  return chatId.startsWith("telegram:") ? chatId.slice("telegram:".length) : chatId;
+}
+
 export class ResultSender {
   private readonly log = createLogger("hub");
   private readonly defaultBotToken: string;
@@ -152,22 +161,24 @@ export class ResultSender {
 
     const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
+    const targetChatId = resolveTelegramTargetChatId(replyChannel.chat_id);
     const textBody = decorateTelegramResultText(result);
+    const replyMarkup = result.telegram_inline_keyboard;
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
-      await this.sendLongTextInChunks(botToken, replyChannel.chat_id, textBody, replyToMessageId, {
+      await this.sendContentAsFile(botToken, targetChatId, textBody, replyToMessageId, {
         traceId: result.trace_id,
         threadId: result.thread_id
-      });
+      }, replyMarkup);
     } else {
-      await this.sendTextWithRetry(botToken, replyChannel.chat_id, textBody, replyToMessageId);
+      await this.sendTextWithRetry(botToken, targetChatId, textBody, replyToMessageId, replyMarkup);
     }
 
     for (const attachment of result.attachments) {
       const filename = attachment.filename ?? path.basename(attachment.path);
       await this.sendDocumentWithRetry(
         botToken,
-        replyChannel.chat_id,
+        targetChatId,
         attachment.path,
         filename,
         undefined,
@@ -180,14 +191,14 @@ export class ResultSender {
         trace_id: result.trace_id,
         thread_id: result.thread_id,
         status: result.status,
-        target: replyChannel.chat_id,
+        target: targetChatId,
         bot_id: replyChannel.bot_id ?? extractBotIdFromToken(botToken)
       },
       "HubResult delivered to Telegram"
     );
   }
 
-  private async sendLongTextInChunks(
+  private async sendContentAsFile(
     botToken: string,
     chatId: string,
     content: string,
@@ -195,26 +206,33 @@ export class ResultSender {
     context?: {
       traceId: string;
       threadId: string;
-    }
+    },
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
-    const chunks = splitTextForTelegram(content);
+    const filePath = path.join("/tmp", `meridian-${context?.traceId ?? randomUUID()}.txt`);
     this.log.info(
       {
         trace_id: context?.traceId ?? null,
         thread_id: context?.threadId ?? null,
         chat_id: chatId,
-        chunk_count: chunks.length,
         total_characters: content.length
       },
-      "Sending long Telegram reply in chunks"
+      "Sending long Telegram reply as text attachment"
     );
 
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index] ?? "";
-      await this.sendTextWithRetry(botToken, chatId, chunk, index === 0 ? replyToMessageId : undefined);
-      if (index < chunks.length - 1) {
-        await this.delay(TELEGRAM_CHUNK_DELAY_MS);
-      }
+    await fs.promises.writeFile(filePath, content, "utf8");
+    try {
+      await this.sendDocumentWithRetry(
+        botToken,
+        chatId,
+        filePath,
+        path.basename(filePath),
+        undefined,
+        replyToMessageId,
+        replyMarkup
+      );
+    } finally {
+      await fs.promises.unlink(filePath).catch(() => undefined);
     }
   }
 
@@ -222,10 +240,11 @@ export class ResultSender {
     botToken: string,
     chatId: string,
     text: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
     await this.withTelegramRetry(
-      () => this.sendText(botToken, chatId, text, replyToMessageId),
+      () => this.sendText(botToken, chatId, text, replyToMessageId, replyMarkup),
       "sendMessage"
     );
   }
@@ -236,10 +255,11 @@ export class ResultSender {
     filePath: string,
     filename: string,
     caption?: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
     await this.withTelegramRetry(
-      () => this.sendDocument(botToken, chatId, filePath, filename, caption, replyToMessageId),
+      () => this.sendDocument(botToken, chatId, filePath, filename, caption, replyToMessageId, replyMarkup),
       "sendDocument"
     );
   }
@@ -306,13 +326,22 @@ export class ResultSender {
     });
   }
 
-  private async sendText(botToken: string, chatId: string, text: string, replyToMessageId?: number): Promise<void> {
+  private async sendText(
+    botToken: string,
+    chatId: string,
+    text: string,
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
+  ): Promise<void> {
     const payload: Record<string, unknown> = {
       chat_id: chatId,
       text
     };
     if (replyToMessageId) {
       payload.reply_to_message_id = replyToMessageId;
+    }
+    if (replyMarkup) {
+      payload.reply_markup = replyMarkup;
     }
 
     await this.postJson(botToken, "/sendMessage", payload);
@@ -324,7 +353,8 @@ export class ResultSender {
     filePath: string,
     filename: string,
     caption?: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
     const fileData = await fs.promises.readFile(filePath);
     const boundary = `----MeridianBoundary${randomUUID()}`;
@@ -336,6 +366,9 @@ export class ResultSender {
     }
     if (replyToMessageId) {
       parts.push(this.formField(boundary, "reply_to_message_id", String(replyToMessageId)));
+    }
+    if (replyMarkup) {
+      parts.push(this.formField(boundary, "reply_markup", JSON.stringify(replyMarkup)));
     }
     parts.push(this.formFile(boundary, "document", filename, fileData));
     parts.push(Buffer.from(`--${boundary}--\r\n`, "utf8"));

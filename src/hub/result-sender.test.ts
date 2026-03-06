@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { test } from "node:test";
 
-import { decorateTelegramResultText, splitTextForTelegram } from "./result-sender";
+import type { HubResult, ReplyChannel } from "../types";
+import { ResultSender, decorateTelegramResultText, splitTextForTelegram } from "./result-sender";
 
 test("splitTextForTelegram preserves content exactly", () => {
   const content = `header\n\n    indented line\n${"x".repeat(5000)}\nfooter`;
@@ -35,4 +37,135 @@ test("decorateTelegramResultText appends approval guidance for approval prompts"
 
   assert.match(text, /\/approve run thread=cursor_01/);
   assert.match(text, /reply to this message with exactly: y, allow, all, or n/i);
+});
+
+test("ResultSender strips telegram: prefix before sending to Telegram API", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: (
+      botToken: string,
+      chatId: string,
+      filePath: string,
+      filename: string,
+      caption?: string,
+      replyToMessageId?: number
+    ) => Promise<void>;
+  };
+  const sentChatIds: string[] = [];
+  sender.sendTextWithRetry = async (_botToken: string, chatId: string) => {
+    sentChatIds.push(chatId);
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  const result: HubResult = {
+    trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+    thread_id: "codex_01",
+    source: "codex",
+    status: "success",
+    content: "ok",
+    attachments: [],
+    timestamp: new Date().toISOString()
+  };
+  const replyChannel: ReplyChannel = {
+    channel: "telegram",
+    chat_id: "telegram:12345"
+  };
+
+  await sender.sendResult(result, replyChannel);
+  assert.deepEqual(sentChatIds, ["12345"]);
+});
+
+test("ResultSender sends oversized content as a temporary text file and removes it afterwards", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: (
+      botToken: string,
+      chatId: string,
+      filePath: string,
+      filename: string,
+      caption?: string,
+      replyToMessageId?: number
+    ) => Promise<void>;
+  };
+
+  let textSendCount = 0;
+  let capturedFilePath = "";
+  let capturedFilename = "";
+  let capturedContent = "";
+  sender.sendTextWithRetry = async () => {
+    textSendCount += 1;
+  };
+  sender.sendDocumentWithRetry = async (_botToken, chatId, filePath, filename) => {
+    assert.equal(chatId, "12345");
+    capturedFilePath = filePath;
+    capturedFilename = filename;
+    assert.ok(fs.existsSync(filePath));
+    capturedContent = fs.readFileSync(filePath, "utf8");
+  };
+
+  const traceId = "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8";
+  const result: HubResult = {
+    trace_id: traceId,
+    thread_id: "codex_01",
+    source: "codex",
+    status: "success",
+    content: "x".repeat(5000),
+    attachments: [],
+    timestamp: new Date().toISOString()
+  };
+
+  await sender.sendResult(result, {
+    channel: "telegram",
+    chat_id: "telegram:12345"
+  });
+
+  assert.equal(textSendCount, 0);
+  assert.equal(capturedFilename, `meridian-${traceId}.txt`);
+  assert.equal(capturedContent, decorateTelegramResultText(result));
+  assert.equal(fs.existsSync(capturedFilePath), false);
+});
+
+test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (
+      botToken: string,
+      chatId: string,
+      text: string,
+      replyToMessageId?: number,
+      replyMarkup?: Record<string, unknown>
+    ) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+  };
+
+  let capturedReplyMarkup: Record<string, unknown> | undefined;
+  sender.sendTextWithRetry = async (_botToken, _chatId, _text, _replyToMessageId, replyMarkup) => {
+    capturedReplyMarkup = replyMarkup;
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  await sender.sendResult(
+    {
+      trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+      thread_id: "codex_01",
+      source: "codex",
+      status: "success",
+      content: "ok",
+      attachments: [],
+      telegram_inline_keyboard: {
+        inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=codex_01" }]]
+      },
+      timestamp: new Date().toISOString()
+    },
+    {
+      channel: "telegram",
+      chat_id: "12345"
+    }
+  );
+
+  assert.deepEqual(capturedReplyMarkup, {
+    inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=codex_01" }]]
+  });
 });

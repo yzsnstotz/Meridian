@@ -10,9 +10,14 @@
 
 ```text
 spawn - Spawn a new agent instance
+restart - Rebuild and restart Meridian service
+browse - Browse repo and return exact file/folder path
 kill - Kill an existing instance
 status - Get current instance status
 attach - Attach this chat to a thread
+detach - Detach this chat from the active thread
+reboot - Restart an existing thread in place
+gui - Get the Web GUI link for a thread
 approve - Send approval input to a pane_bridge thread
 update - Toggle monitor progress updates for a thread
 mupdate - Send one manual progress update for a thread
@@ -24,6 +29,16 @@ help - Show command usage
 
 ```text
 /spawn type=codex mode=pane_bridge dir=/absolute/path/to/repo
+```
+
+`/detach`, `/reboot`, and `/gui` support thread-oriented control flows:
+
+```text
+/detach
+/detach thread=codex_01
+/reboot thread=codex_01
+/gui
+/gui thread=codex_01
 ```
 
 `/update` supports optional interval and explicit thread:
@@ -48,6 +63,41 @@ help - Show command usage
 /approve all thread=cursor_01
 /approve skip thread=cursor_01
 ```
+
+`/model` opens a Telegram picker that fetches the live model list for the thread's current provider:
+
+```text
+/model
+/model thread=codex_01
+```
+
+For `codex` threads, Meridian queries `codex app-server` first (uses Codex login/session auth), and only falls back to `OPENAI_API_KEY` if app-server model listing is unavailable.
+
+## Telegram Webhook Mode
+
+Leave `WEBHOOK_URL` empty to keep long polling. To enable webhook mode, set a public HTTPS URL that ends at the base webhook path, for example:
+
+```text
+WEBHOOK_URL=https://bot.example.com/webhook
+WEBHOOK_PORT=8080
+WEBHOOK_SECRET_TOKEN=replace-with-random-secret
+```
+
+Behavior:
+- Single bot: Meridian serves Telegram updates on `/webhook`.
+- Multiple bots via `TELEGRAM_BOT_TOKENS`: Meridian serves `/webhook/<bot_id>` per bot and registers each public URL automatically.
+- `WEBHOOK_SECRET_TOKEN` is forwarded to Telegram and verified by grammY on incoming requests.
+
+Deployment note: `WEBHOOK_PORT` is the local listener port. In production, terminate TLS and route the public webhook URL to this port through your reverse proxy or load balancer.
+
+Optional external service registration:
+
+```text
+COORDINATOR_SOCKET_PATH=/tmp/coordinator.sock
+COORDINATOR_INTENTS=delegate,plan,review
+```
+
+When both variables are set, the hub statically registers that socket and forwards the listed non-built-in intents there.
 
 ## Local Development
 ```bash

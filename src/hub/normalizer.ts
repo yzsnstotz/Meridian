@@ -33,7 +33,8 @@ const ARG_KEYS = new Set([
   "every",
   "sec",
   "seconds",
-  "action"
+  "action",
+  "model"
 ]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
@@ -60,6 +61,14 @@ function parseKeyValueArgs(rawArgs: string): Record<string, string> {
     args[key] = value;
   }
   return args;
+}
+
+function toCompositeChatId(channel: string, chatId: string): string {
+  return chatId.includes(":") ? chatId : `${channel}:${chatId}`;
+}
+
+function toDefaultActorId(event: InboundUIEvent): string {
+  return `${event.channel === "telegram" ? "tg" : event.channel}:${event.sender_id}`;
 }
 
 function resolveMode(mode: string | undefined): BridgeMode {
@@ -179,6 +188,20 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       };
     }
 
+    case "/info": {
+      const threadId = args.thread?.trim() || "";
+      return {
+        intent: "status",
+        target: threadId || "active",
+        threadId: threadId || "active",
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
+    }
+
     case "/attach": {
       const threadId = requireThreadId(args, fallbackThreadId, "/attach");
       return {
@@ -208,33 +231,20 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
     }
 
     case "/model": {
-      if (!args.thread && !args.type) {
-        return {
-          intent: "run",
-          target: fallbackThreadId || "active",
-          threadId: fallbackThreadId || "unbound",
-          spawnDir: null,
-          monitorUpdatesEnabled: null,
-          monitorUpdateIntervalSec: null,
-          mode: "bridge",
-          payloadContent: trimmed
-        };
-      }
-
       const threadId = requireThreadId(args, fallbackThreadId, "/model");
-      const type = (args.type ?? "").trim().toLowerCase();
-      if (!AGENT_TYPE_SET.has(type)) {
-        throw new Error("model type must be one of claude|codex|gemini|cursor");
+      const modelId = (args.model ?? "").trim();
+      if (!modelId) {
+        throw new Error("/model requires model=<provider_model_id> when sent as plain text");
       }
       return {
         intent: "switch_model",
-        target: type,
+        target: threadId,
         threadId,
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
         mode: "bridge",
-        payloadContent: rawArgs
+        payloadContent: modelId
       };
     }
 
@@ -313,7 +323,8 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
   return HubMessageSchema.parse({
     trace_id: randomUUID(),
     thread_id: parsed.threadId,
-    actor_id: context.actorId ?? "owner",
+    actor_id: context.actorId ?? toDefaultActorId(event),
+    idempotency_key: event.raw_message_id,
     intent: parsed.intent,
     target: parsed.target,
     payload: {
@@ -327,8 +338,8 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
     },
     mode: parsed.mode,
     reply_channel: {
-      channel: "telegram",
-      chat_id: context.chatId,
+      channel: event.channel,
+      chat_id: toCompositeChatId(event.channel, context.chatId),
       message_id: event.raw_message_id,
       bot_id: context.botId
     }

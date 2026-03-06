@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 
 import { InstanceManager } from "./instance-manager";
@@ -25,12 +27,26 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
+function socketPathForThread(threadId: string): string {
+  return path.join("/tmp", `agentapi-${threadId}.sock`);
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const socketModeOptions = {
+  agentapiSocketSupport: true,
+  agentapiAttachSocketSupport: true
+} as const;
+
 test("spawn registers instance and uses bridge args", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: Array<{ command: string; args: string[]; detached?: boolean }> = [];
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4101,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((command: string, args: string[], options?: { detached?: boolean }) => {
       spawnCalls.push({ command, args, detached: options?.detached });
       return new FakeChildProcess(1101) as never;
@@ -44,13 +60,73 @@ test("spawn registers instance and uses bridge args", async () => {
 
   const threadId = await manager.spawn("codex", "bridge");
   const instance = registry.get(threadId);
+  const socketPath = socketPathForThread(threadId);
 
   assert.equal(threadId, "codex_01");
-  assert.equal(instance?.socket_path, "http://127.0.0.1:4101");
+  assert.equal(instance?.socket_path, socketPath);
   assert.equal(instance?.pid, 1101);
   assert.equal(instance?.restart_safe, true);
   assert.equal(spawnCalls[0]?.detached, true);
-  assert.deepEqual(spawnCalls[0]?.args, ["server", "--type=codex", "--port=4101", "--", "codex"]);
+  assert.deepEqual(spawnCalls[0]?.args, ["server", "--type=codex", `--socket=${socketPath}`, "--", "codex"]);
+});
+
+test("spawn falls back to --port when server does not support --socket", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    agentapiSocketSupport: false,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1111) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  const instance = registry.get(threadId);
+  const portArg = spawnCalls[0]?.find((arg) => arg.startsWith("--port="));
+
+  assert.equal(threadId, "codex_01");
+  assert.match(portArg ?? "", /^--port=\d+$/);
+  assert.match(instance?.socket_path ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
+});
+
+test("spawn forwards selected model to provider CLI", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1102) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge", undefined, "gpt-5.4");
+
+  assert.equal(threadId, "codex_01");
+  assert.equal(registry.get(threadId)?.model_id, "gpt-5.4");
+  assert.deepEqual(spawnCalls[0], [
+    "server",
+    "--type=codex",
+    `--socket=${socketPathForThread(threadId)}`,
+    "--",
+    "codex",
+    "--model",
+    "gpt-5.4"
+  ]);
 });
 
 test("spawn claude bridge includes --allowedTools args", async () => {
@@ -58,7 +134,8 @@ test("spawn claude bridge includes --allowedTools args", async () => {
   const spawnCalls: string[][] = [];
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4202,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((_: string, args: string[]) => {
       spawnCalls.push(args);
       return new FakeChildProcess(1202) as never;
@@ -71,11 +148,12 @@ test("spawn claude bridge includes --allowedTools args", async () => {
   });
 
   const threadId = await manager.spawn("claude", "bridge");
+  const socketPath = socketPathForThread(threadId);
   assert.equal(threadId, "claude_01");
   assert.deepEqual(spawnCalls[0], [
     "server",
     "--type=claude",
-    "--port=4202",
+    `--socket=${socketPath}`,
     "--",
     "claude",
     "--allowedTools",
@@ -89,7 +167,8 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4303,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     paneBridgeUsePtyWrapper: false,
     execSyncFn: ((command: string) => {
       execCalls.push(command);
@@ -108,16 +187,17 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
 
   const threadId = await manager.spawn("claude", "pane_bridge");
   const instance = registry.get(threadId);
+  const socketPath = socketPathForThread(threadId);
 
   assert.equal(threadId, "claude_01");
   assert.equal(instance?.tmux_pane, "agent_claude_01");
   assert.equal(instance?.pid, 2202);
-  assert.equal(instance?.socket_path, "http://127.0.0.1:4303");
+  assert.equal(instance?.socket_path, socketPath);
   assert.equal(execCalls.length, 6);
   assert.match(execCalls[0] ?? "", /tmux kill-session -t .*agent_claude_01/);
   assert.match(execCalls[1] ?? "", /tmux new-session -d -s .*agent_claude_01/);
   assert.match(execCalls[1] ?? "", /'attach'/);
-  assert.match(execCalls[1] ?? "", /'--url=http:\/\/127.0.0.1:4303'/);
+  assert.match(execCalls[1] ?? "", new RegExp(`'--socket=${escapeForRegExp(socketPath)}'`));
   assert.match(execCalls[2] ?? "", /tmux set-option -t .*agent_claude_01.* history-limit 200000/);
   assert.match(execCalls[3] ?? "", /tmux set-window-option -t .*agent_claude_01.* alternate-screen off/);
   assert.match(execCalls[4] ?? "", /tmux set-option -t .*agent_claude_01.* mouse on/);
@@ -128,7 +208,7 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   assert.deepEqual(spawnCalls[0]?.args, [
     "server",
     "--type=claude",
-    "--port=4303",
+    `--socket=${socketPath}`,
     "--",
     "claude",
     "--allowedTools",
@@ -136,12 +216,42 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   ]);
 });
 
+test("pane_bridge uses attach --url when running in port mode", async () => {
+  const registry = new InstanceRegistry();
+  const execCalls: string[] = [];
+
+  const manager = new InstanceManager(registry, {
+    agentapiSocketSupport: false,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((_: string, _args: string[]) => {
+      return new FakeChildProcess(2212) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "pane_bridge");
+  const instance = registry.get(threadId);
+
+  assert.match(instance?.socket_path ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.match(execCalls[1] ?? "", /tmux new-session -d -s .*agent_codex_01/);
+  assert.match(execCalls[1] ?? "", /'attach'/);
+  assert.match(execCalls[1] ?? "", /'--url=http:\/\/127\.0\.0\.1:\d+'/);
+});
+
 test("sendTerminalInput forwards approval action to tmux pane", async () => {
   const registry = new InstanceRegistry();
   const execCalls: string[] = [];
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4304,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     execSyncFn: ((command: string) => {
       execCalls.push(command);
       return Buffer.from("");
@@ -171,7 +281,9 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
 test("sendTerminalInput rejects bridge threads", async () => {
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4305,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: (() => Buffer.from("")) as never,
     spawnFn: ((command: string, args: string[]) => {
       void command;
       void args;
@@ -198,7 +310,9 @@ test("spawn retries after transient readiness failure", async () => {
   let failReadiness = true;
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4400 + spawnCount,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: (() => Buffer.from("")) as never,
     spawnFn: ((command: string, args: string[]) => {
       void command;
       void args;
@@ -227,7 +341,7 @@ test("spawn retries after transient readiness failure", async () => {
   const threadId = await manager.spawn("gemini", "bridge");
   assert.equal(threadId, "gemini_01");
   assert.equal(spawnCount, 2);
-  assert.equal(registry.get(threadId)?.socket_path, "http://127.0.0.1:4401");
+  assert.equal(registry.get(threadId)?.socket_path, socketPathForThread(threadId));
 
   await manager.kill(threadId);
 });
@@ -237,7 +351,8 @@ test("spawn honors explicit working directory", async () => {
   let observedCwd: string | undefined;
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 4555,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((command: string, args: string[], options?: { cwd?: string }) => {
       void command;
       void args;
@@ -264,7 +379,8 @@ test("attach + status + list + kill + restart lifecycle", async () => {
   let spawnCounter = 0;
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 5000 + spawnCounter,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((command: string, args: string[]) => {
       void command;
       spawnCounter += 1;
@@ -306,11 +422,13 @@ test("attach + status + list + kill + restart lifecycle", async () => {
 
 test("rehydrateFromState restores live instances and session bindings", async () => {
   const registry = new InstanceRegistry();
+  const failingSocketPath = socketPathForThread("codex_02");
   const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
     clientFactory: (threadId: string) => ({
       connect: async (endpoint: string) => {
-        if (threadId === "codex_02" || endpoint.endsWith(":6502")) {
-          throw new Error("connect ECONNREFUSED 127.0.0.1:6502");
+        if (threadId === "codex_02" || endpoint === failingSocketPath) {
+          throw new Error(`connect ENOENT ${failingSocketPath}`);
         }
       },
       disconnect: () => undefined,
@@ -326,7 +444,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
         thread_id: "codex_01",
         agent_type: "codex",
         mode: "bridge",
-        socket_path: "http://127.0.0.1:6501",
+        socket_path: socketPathForThread("codex_01"),
         working_dir: "/tmp",
         pid: 6501,
         tmux_pane: null,
@@ -337,7 +455,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
         thread_id: "codex_02",
         agent_type: "codex",
         mode: "bridge",
-        socket_path: "http://127.0.0.1:6502",
+        socket_path: failingSocketPath,
         working_dir: "/tmp",
         pid: 6502,
         tmux_pane: null,
@@ -359,18 +477,20 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   assert.equal(manager.getAttachedThread("777:chat-b"), null);
 });
 
-test("switchModel keeps thread id and updates agent type", async () => {
+test("switchModel keeps thread id and updates selected model", async () => {
   const registry = new InstanceRegistry();
   let spawnCounter = 0;
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 5400 + spawnCounter,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((command: string, args: string[]) => {
       void command;
       void args;
       spawnCounter += 1;
       return new FakeChildProcess(6400 + spawnCounter) as never;
     }) as never,
+    execSyncFn: (() => Buffer.from("")) as never,
     clientFactory: () => ({
       connect: async () => undefined,
       disconnect: () => undefined,
@@ -378,22 +498,61 @@ test("switchModel keeps thread id and updates agent type", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "pane_bridge");
-  const switchedThread = await manager.switchModel(threadId, "gemini");
+  const threadId = await manager.spawn("codex", "pane_bridge", undefined, "gpt-5");
+  const switchedThread = await manager.switchModel(threadId, "codex-5.3-max");
   const switched = registry.get(switchedThread);
 
   assert.equal(switchedThread, threadId);
   assert.equal(switched?.thread_id, threadId);
-  assert.equal(switched?.agent_type, "gemini");
+  assert.equal(switched?.agent_type, "codex");
+  assert.equal(switched?.model_id, "codex-5.3-max");
   assert.equal(switched?.mode, "pane_bridge");
 
   await manager.kill(threadId);
 });
 
+test("listModels returns provider catalog and current selection", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    model_id: "gpt-5.4",
+    mode: "bridge",
+    socket_path: socketPathForThread("codex_01"),
+    pid: 100,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    modelCatalog: {
+      listModels: async () => ({
+        provider: "codex",
+        models: [
+          { id: "gpt-5.4", label: "GPT-5.4" },
+          { id: "codex-5.3-max", label: "Codex-5.3-Max" }
+        ]
+      })
+    } as never
+  });
+
+  const catalog = await manager.listModels("codex_01");
+
+  assert.equal(catalog.provider, "codex");
+  assert.equal(catalog.current_model_id, "gpt-5.4");
+  assert.deepEqual(catalog.models, [
+    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "codex-5.3-max", label: "Codex-5.3-Max" }
+  ]);
+});
+
 test("attach enforces single interface owner per thread", async () => {
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 6201,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((command: string, args: string[]) => {
       void command;
       void args;
@@ -428,7 +587,8 @@ test("spawn fails fast when child already exited before readiness polling", asyn
   let connectCalls = 0;
 
   const manager = new InstanceManager(registry, {
-    portAllocator: async () => 6303,
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
     spawnFn: ((command: string, args: string[]) => {
       void command;
       void args;
@@ -451,4 +611,32 @@ test("spawn fails fast when child already exited before readiness polling", asyn
     /exited before readiness check succeeded \(exit_code=1, signal=null\)/
   );
   assert.equal(connectCalls, 0);
+});
+
+test("kill removes the thread socket path", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      const socketArg = args.find((arg) => arg.startsWith("--socket="));
+      assert.ok(socketArg);
+      const socketPath = socketArg.slice("--socket=".length);
+      fs.writeFileSync(socketPath, "");
+      return new FakeChildProcess(9404) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  const socketPath = socketPathForThread(threadId);
+  assert.equal(fs.existsSync(socketPath), true);
+
+  await manager.kill(threadId);
+  assert.equal(fs.existsSync(socketPath), false);
 });

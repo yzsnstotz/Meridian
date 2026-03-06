@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meridian — Terminal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col">
+  <div id="app" class="flex flex-col max-w-6xl mx-auto w-full p-2 md:p-4 flex-1">
+    <div id="no-token" class="hidden rounded-lg bg-amber-900/40 border border-amber-600/50 p-4 text-amber-200">
+      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open with <code class="bg-slate-800 px-1 rounded">?thread_id=xxx&token=YOUR_TOKEN</code>.
+    </div>
+
+    <div id="content" class="hidden flex flex-col flex-1 min-h-0">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <span class="font-mono text-sm text-slate-400" id="thread-label">—</span>
+        <div class="flex-1"></div>
+        <input type="text" id="input-run" placeholder="Run command…" class="flex-1 min-w-[120px] max-w-md px-3 py-1.5 rounded bg-slate-800 border border-slate-600 text-slate-100 text-sm" />
+        <button type="button" id="btn-run" class="px-3 py-1.5 rounded bg-slate-600 hover:bg-slate-500 text-white text-sm">Run</button>
+        <button type="button" id="btn-kill" class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white text-sm">Kill</button>
+        <button type="button" id="btn-reboot" class="px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-600 text-white text-sm">Reboot</button>
+        <button type="button" id="btn-detach" class="px-3 py-1.5 rounded bg-slate-600 hover:bg-slate-500 text-white text-sm">Detach</button>
+      </div>
+      <div id="terminal-container" class="flex-1 rounded border border-slate-600 overflow-hidden min-h-[200px]">
+        <div id="terminal-not-available" class="hidden p-4 text-amber-200 bg-amber-900/30 rounded">
+          Pane output not available for this instance (bridge mode). Use bridge view or run commands below.
+        </div>
+        <div id="term" class="w-full h-full"></div>
+      </div>
+    </div>
+
+    <div id="loading" class="text-slate-400 py-4">Connecting…</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/addons/fit/fit.js"></script>
+  <script src="app.js"></script>
+  <script>
+    (function () {
+      var MAX_HISTORY_LINES = 10000;
+      var threadId = (window.MeridianWeb.getQueryParams().thread_id || "").trim();
+      var noToken = document.getElementById("no-token");
+      var content = document.getElementById("content");
+      var loading = document.getElementById("loading");
+      var threadLabel = document.getElementById("thread-label");
+      var inputRun = document.getElementById("input-run");
+      var btnRun = document.getElementById("btn-run");
+      var btnKill = document.getElementById("btn-kill");
+      var btnReboot = document.getElementById("btn-reboot");
+      var btnDetach = document.getElementById("btn-detach");
+      var termEl = document.getElementById("term");
+      var termNotAvailable = document.getElementById("terminal-not-available");
+
+      var term = null;
+      var historyBuffer = [];
+      var notAvailable = false;
+
+      function showState(hasToken, showContent, connecting) {
+        if (!hasToken || !threadId) {
+          noToken.classList.remove("hidden");
+          noToken.querySelector("code").textContent = "?thread_id=xxx&token=YOUR_TOKEN";
+          content.classList.add("hidden");
+          loading.classList.add("hidden");
+          return;
+        }
+        noToken.classList.add("hidden");
+        loading.classList.toggle("hidden", !connecting);
+        content.classList.toggle("hidden", connecting);
+        if (showContent) {
+          threadLabel.textContent = "thread: " + threadId;
+        }
+      }
+
+      function appendToTerminal(chunk) {
+        if (notAvailable) return;
+        if (term) {
+          term.write(chunk);
+        }
+        historyBuffer.push(chunk);
+        var lines = (historyBuffer.join("").match(/\n/g) || []).length;
+        if (lines > MAX_HISTORY_LINES) {
+          var remove = lines - MAX_HISTORY_LINES;
+          var idx = 0;
+          var count = 0;
+          for (var i = 0; i < historyBuffer.length; i++) {
+            var n = (historyBuffer[i].match(/\n/g) || []).length;
+            count += n;
+            if (count >= remove) {
+              idx = i + 1;
+              break;
+            }
+          }
+          historyBuffer = historyBuffer.slice(idx);
+        }
+      }
+
+      function runCommand(cmd) {
+        if (!window.MeridianWeb.ensureToken() || !threadId) return;
+        var body = JSON.stringify({ thread_id: threadId, content: cmd });
+        window.MeridianWeb.fetchWithAuth("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: body
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            if (!res.ok) appendToTerminal("\r\nError: " + (data.error || res.status) + "\r\n");
+          });
+        }).catch(function (e) {
+          appendToTerminal("\r\nError: " + (e && e.message ? e.message : "network") + "\r\n");
+        });
+      }
+
+      function threadAction(intent) {
+        if (!window.MeridianWeb.ensureToken() || !threadId) return;
+        window.MeridianWeb.fetchWithAuth("/api/" + intent, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId })
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            if (intent === "kill" || intent === "detach") {
+              window.location.href = window.MeridianWeb.apiBase() + "/index.html?token=" + encodeURIComponent(window.MeridianWeb.getToken());
+            }
+          });
+        });
+      }
+
+      if (!threadId || !window.MeridianWeb.ensureToken()) {
+        showState(false);
+      } else {
+        threadLabel.textContent = "thread: " + threadId;
+        var base = window.MeridianWeb.apiBase();
+        var protocol = base.indexOf("https") === 0 ? "wss" : "ws";
+        var wsBase = (protocol === "wss" ? base.replace(/^https/, "wss") : base.replace(/^http/, "ws"));
+        var token = window.MeridianWeb.getToken();
+        var wsUrl = wsBase.replace(/\/$/, "") + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + (token ? "&token=" + encodeURIComponent(token) : "");
+
+        term = new window.Terminal({
+          cursorBlink: true,
+          scrollback: MAX_HISTORY_LINES,
+          theme: { background: "#0f172a", foreground: "#e2e8f0" }
+        });
+        window.TerminalFit && window.TerminalFit.fit(term);
+        term.open(termEl);
+        term.onData(function (data) {
+          runCommand(data);
+        });
+
+        var ws = new WebSocket(wsUrl);
+        ws.onopen = function () {
+          loading.classList.add("hidden");
+          content.classList.remove("hidden");
+        };
+        ws.onmessage = function (ev) {
+          try {
+            var msg = JSON.parse(ev.data);
+            if (msg.type === "not_available") {
+              notAvailable = true;
+              termNotAvailable.classList.remove("hidden");
+              termEl.classList.add("hidden");
+              return;
+            }
+            if (msg.type === "pane_output" && msg.chunk != null) {
+              appendToTerminal(msg.chunk);
+            }
+          } catch (e) {}
+        };
+        ws.onerror = function () {
+          loading.textContent = "WebSocket error.";
+        };
+        ws.onclose = function () {
+          if (!notAvailable) {
+            loading.classList.remove("hidden");
+            loading.textContent = "Connection closed.";
+          }
+        };
+
+        btnRun.addEventListener("click", function () {
+          var cmd = (inputRun.value || "").trim();
+          if (cmd) {
+            runCommand(cmd);
+            inputRun.value = "";
+          }
+        });
+        inputRun.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") {
+            var cmd = (inputRun.value || "").trim();
+            if (cmd) {
+              runCommand(cmd);
+              inputRun.value = "";
+            }
+          }
+        });
+        btnKill.addEventListener("click", function () { threadAction("kill"); });
+        btnReboot.addEventListener("click", function () { threadAction("reboot"); });
+        btnDetach.addEventListener("click", function () { threadAction("detach"); });
+
+        window.addEventListener("resize", function () {
+          if (window.TerminalFit && term) window.TerminalFit.fit(term);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

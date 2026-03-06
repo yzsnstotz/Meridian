@@ -16,14 +16,26 @@ export const claudeAgentConfig: ClaudeAgentConfig = {
   allowedTools: DEFAULT_CLAUDE_ALLOWED_TOOLS
 };
 
-export function buildClaudeCliArgs(allowedTools: readonly string[] = claudeAgentConfig.allowedTools): string[] {
-  return [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
+export function buildClaudeCliArgs(
+  allowedTools: readonly string[] = claudeAgentConfig.allowedTools,
+  modelId?: string
+): string[] {
+  const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
+  if (modelId) {
+    args.push("--model", modelId);
+  }
+  return args;
 }
 
-export function buildClaudeSpawnArgs(mode: BridgeMode, tmuxSession: string | null, port: number): string[] {
+export function buildClaudeSpawnArgs(
+  mode: BridgeMode,
+  tmuxSession: string | null,
+  endpointFlag: string,
+  modelId?: string
+): string[] {
   void mode;
   void tmuxSession;
-  const args = ["server", `--type=${claudeAgentConfig.type}`, `--port=${port}`];
-  args.push("--", ...buildClaudeCliArgs());
+  const args = ["server", `--type=${claudeAgentConfig.type}`, endpointFlag];
+  args.push("--", ...buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId));
   return args;
 }

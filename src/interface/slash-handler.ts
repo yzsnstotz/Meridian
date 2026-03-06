@@ -15,19 +15,24 @@ export interface ParsedSlashCommand {
   mode: BridgeMode;
   payloadContent: string;
   picker: PickerIntent | null;
+  priority: number | null;
 }
 
 const HELP_MESSAGE = [
   "Available commands:",
   "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge> [dir=<absolute_path>]",
-  "/restart",
+  "/restart Rebuild and restart Meridian service",
   "/browse",
   "/kill thread=<thread_id>",
+  "/info",
   "/status thread=<thread_id>",
-  "/attach thread=<thread_id>",
+  "/attach [thread=<thread_id>]",
+  "/detach [thread=<thread_id>]",
+  "/reboot thread=<thread_id>",
+  "/gui [thread=<thread_id>]",
   "/approve <run|allow|all|skip> [thread=<thread_id>]",
   "/model",
-  "/model thread=<thread_id> type=<claude|codex|gemini|cursor>",
+  "/model [thread=<thread_id>]",
   "/update [on|off] [thread=<thread_id>] [interval=<seconds>]",
   "/mupdate [thread=<thread_id>]",
   "/list",
@@ -101,17 +106,6 @@ function requireThreadId(args: Record<string, string>, commandName: string): str
   return thread.trim();
 }
 
-function requireModelType(args: Record<string, string>, commandName: string): string {
-  const type = (args.type ?? "").trim().toLowerCase();
-  if (!type) {
-    throw new Error(`${commandName} requires type=<claude|codex|gemini|cursor>`);
-  }
-  if (!ALLOWED_AGENT_TYPES.has(type)) {
-    throw new Error(`${commandName} type must be one of claude|codex|gemini|cursor`);
-  }
-  return type;
-}
-
 function parseMonitorUpdateSwitch(value: string | undefined): boolean | null {
   if (!value) {
     return null;
@@ -165,7 +159,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       monitorUpdateIntervalSec: null,
       mode: "bridge",
       payloadContent: content,
-      picker: null
+      picker: null,
+      priority: null
     };
   }
 
@@ -191,7 +186,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: parseMode(args.mode),
         payloadContent: rawArgs,
-        picker: rawArgs.trim().length === 0 ? "spawn" : null
+        picker: rawArgs.trim().length === 0 ? "spawn" : null,
+        priority: null
       };
     }
 
@@ -207,7 +203,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: threadId ? null : "kill"
+        picker: threadId ? null : "kill",
+        priority: 0
       };
     }
 
@@ -223,9 +220,25 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: null
+        picker: null,
+        priority: null
       };
     }
+
+    case "/info":
+      return {
+        intent: "status",
+        shouldForward: true,
+        target: "active",
+        threadId: null,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
+      };
 
     case "/attach": {
       const threadId = args.thread?.trim() || null;
@@ -239,7 +252,59 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: threadId ? null : "attach"
+        picker: threadId ? null : "attach",
+        priority: null
+      };
+    }
+
+    case "/detach": {
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "detach",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
+      };
+    }
+
+    case "/reboot": {
+      const threadId = requireThreadId(args, "/reboot");
+      return {
+        intent: "reboot",
+        shouldForward: true,
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: 0
+      };
+    }
+
+    case "/gui": {
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "gui",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
       };
     }
 
@@ -255,55 +320,25 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: parseApprovalCommand(rawArgs, args, restTokens),
-        picker: null
+        picker: null,
+        priority: null
       };
     }
 
     case "/model": {
       const threadId = args.thread?.trim() || null;
-      const type = (args.type ?? "").trim().toLowerCase();
-      if (!threadId && !type) {
-        return {
-          intent: "run",
-          shouldForward: true,
-          target: "active",
-          threadId: null,
-          spawnDir: null,
-          monitorUpdatesEnabled: null,
-          monitorUpdateIntervalSec: null,
-          mode: "bridge",
-          payloadContent: content,
-          picker: null
-        };
-      }
-
-      if (!threadId || !type) {
-        return {
-          intent: "switch_model",
-          shouldForward: true,
-          target: type || "codex",
-          threadId,
-          spawnDir: null,
-          monitorUpdatesEnabled: null,
-          monitorUpdateIntervalSec: null,
-          mode: "bridge",
-          payloadContent: rawArgs,
-          picker: "switch_model"
-        };
-      }
-
-      const resolvedType = requireModelType(args, "/model");
       return {
         intent: "switch_model",
-        shouldForward: true,
-        target: resolvedType,
+        shouldForward: false,
+        target: threadId ?? "active",
         threadId,
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
         mode: "bridge",
-        payloadContent: rawArgs,
-        picker: null
+        payloadContent: "",
+        picker: "switch_model",
+        priority: null
       };
     }
 
@@ -334,7 +369,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: parsedIntervalSec,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: null
+        picker: null,
+        priority: null
       };
     }
 
@@ -350,7 +386,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: null
+        picker: null,
+        priority: null
       };
     }
 
@@ -365,7 +402,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     case "/help":
@@ -379,7 +417,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     case "/restart":
@@ -393,7 +432,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     case "/browse":
@@ -407,7 +447,8 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     default:

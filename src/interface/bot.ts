@@ -4,15 +4,19 @@ import { config } from "../config";
 
 const BOT_COMMANDS: BotCommand[] = [
   { command: "spawn", description: "Spawn a new agent instance" },
-  { command: "restart", description: "Restart a thread or Meridian service" },
+  { command: "restart", description: "Rebuild and restart Meridian service" },
   { command: "browse", description: "Browse repo and return exact file/folder path" },
   { command: "kill", description: "Kill an existing instance" },
+  { command: "info", description: "Show status of the thread attached to this chat" },
   { command: "status", description: "Get current instance status" },
   { command: "attach", description: "Attach this chat to a thread" },
+  { command: "detach", description: "Detach this chat from the active thread" },
+  { command: "reboot", description: "Restart an existing thread in place" },
+  { command: "gui", description: "Get the Web GUI link for a thread" },
   { command: "approve", description: "Send approval input to a pane_bridge thread" },
   { command: "update", description: "Toggle monitor progress updates for a thread" },
   { command: "mupdate", description: "Send one manual progress update for a thread" },
-  { command: "model", description: "Use provider model menu in active thread" },
+  { command: "model", description: "Switch the provider model in the active thread" },
   { command: "list", description: "List active instances" },
   { command: "help", description: "Show command usage" }
 ];

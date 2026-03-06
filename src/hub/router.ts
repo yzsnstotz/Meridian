@@ -3,18 +3,24 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config";
 import { createLogger } from "../logger";
 import { AgentAPIClient } from "../shared/agentapi-client";
+import { sendIpcRequest } from "../shared/ipc";
+import { buildWebGuiUrl, tryBuildGuiInlineKeyboard } from "../shared/telegram-controls";
 import {
+  BUILT_IN_INTENTS,
   AgentInstanceStatusSchema,
   AgentTypeSchema,
   HubMessageSchema,
   HubResultSchema,
   type AgentInstance,
   type AgentType,
+  type FileAttachment,
   type HubMessage,
-  type HubResult
+  type HubResult,
+  type ServiceEndpoint
 } from "../types";
 import { InstanceManager } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
+import { ServiceRegistry } from "./service-registry";
 import { loadPersistedHubState, savePersistedHubState } from "./state-store";
 
 interface AgentClient {
@@ -28,6 +34,14 @@ interface AgentClient {
 interface AgentMessageSnapshot {
   id: number;
   content: string;
+}
+
+interface SessionAttachmentMetadata {
+  channel: string;
+  chatId: string;
+  botId: string | null;
+  chatName: string | null;
+  botName: string | null;
 }
 
 interface MonitorUpdateSubscription {
@@ -55,7 +69,10 @@ export interface HubRouterOptions {
   instanceManager?: InstanceManager;
   now?: () => Date;
   statePath?: string;
+  serviceRegistry?: ServiceRegistry;
 }
+
+const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
 
 function resolveSourceFromTarget(target: string): AgentType {
   const candidate = AgentTypeSchema.safeParse(target);
@@ -71,7 +88,9 @@ export class HubRouter {
   private readonly instanceManager: InstanceManager;
   private readonly now: () => Date;
   private readonly statePath: string;
+  private readonly serviceRegistry: ServiceRegistry;
   private readonly monitorUpdateSubscriptionsByThread = new Map<string, Map<string, MonitorUpdateSubscription>>();
+  private readonly attachmentMetaBySession = new Map<string, SessionAttachmentMetadata>();
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -85,6 +104,7 @@ export class HubRouter {
     this.instanceManager = options.instanceManager ?? new InstanceManager(this.registry);
     this.now = options.now ?? (() => new Date());
     this.statePath = options.statePath ?? config.MERIDIAN_STATE_PATH;
+    this.serviceRegistry = options.serviceRegistry ?? new ServiceRegistry();
   }
 
   async initialize(): Promise<void> {
@@ -105,12 +125,15 @@ export class HubRouter {
 
   async route(rawMessage: HubMessage): Promise<HubResult> {
     const message = HubMessageSchema.parse(rawMessage);
+    this.pruneAttachmentMetadata();
     const startedAt = Date.now();
     this.log.info(
       {
         trace_id: message.trace_id,
         thread_id: message.thread_id,
         actor_id: message.actor_id,
+        span_id: message.span_id ?? null,
+        parent_span_id: message.parent_span_id ?? null,
         intent: message.intent,
         target: message.target,
         dispatch_status: "ok"
@@ -127,6 +150,8 @@ export class HubRouter {
           trace_id: message.trace_id,
           thread_id: message.thread_id,
           actor_id: message.actor_id,
+          span_id: message.span_id ?? null,
+          parent_span_id: message.parent_span_id ?? null,
           intent: message.intent,
           target: message.target,
           dispatch_status: "ok",
@@ -145,6 +170,8 @@ export class HubRouter {
           trace_id: message.trace_id,
           thread_id: message.thread_id,
           actor_id: message.actor_id,
+          span_id: message.span_id ?? null,
+          parent_span_id: message.parent_span_id ?? null,
           intent: message.intent,
           target: message.target,
           dispatch_status: "failed",
@@ -165,32 +192,49 @@ export class HubRouter {
   }
 
   private async routeByIntent(message: HubMessage): Promise<HubResult> {
-    switch (message.intent) {
-      case "run":
-        return await this.handleRun(message);
-      case "terminal_input":
-        return this.handleTerminalInput(message);
-      case "status":
-        return await this.handleStatus(message);
-      case "list":
-        return this.handleList(message);
-      case "spawn":
-        return await this.handleSpawn(message);
-      case "restart":
-        return await this.handleRestart(message);
-      case "kill":
-        return await this.handleKill(message);
-      case "attach":
-        return this.handleAttach(message);
-      case "switch_model":
-        return await this.handleSwitchModel(message);
-      case "monitor_update":
-        return this.handleMonitorUpdate(message);
-      case "monitor_manual_update":
-        return await this.handleManualMonitorUpdate(message);
-      default:
-        return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
+    if (this.isBuiltInIntent(message.intent)) {
+      switch (message.intent) {
+        case "run":
+          return await this.handleRun(message);
+        case "terminal_input":
+          return this.handleTerminalInput(message);
+        case "status":
+          return await this.handleStatus(message);
+        case "list":
+          return this.handleList(message);
+        case "list_models":
+          return await this.handleListModels(message);
+        case "spawn":
+          return await this.handleSpawn(message);
+        case "restart":
+          return await this.handleRestart(message);
+        case "kill":
+          return await this.handleKill(message);
+        case "attach":
+          return this.handleAttach(message);
+        case "detach":
+          return this.handleDetach(message);
+        case "reboot":
+          return await this.handleReboot(message);
+        case "gui":
+          return this.handleGui(message);
+        case "switch_model":
+          return await this.handleSwitchModel(message);
+        case "monitor_update":
+          return this.handleMonitorUpdate(message);
+        case "monitor_manual_update":
+          return await this.handleManualMonitorUpdate(message);
+        default:
+          return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
+      }
     }
+
+    const serviceEndpoint = this.serviceRegistry.resolve(message.intent);
+    if (serviceEndpoint) {
+      return await this.dispatchToService(serviceEndpoint, message);
+    }
+
+    return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
   }
 
   private async handleRun(message: HubMessage): Promise<HubResult> {
@@ -208,12 +252,14 @@ export class HubRouter {
         instance.thread_id,
         agentReply ?? (await this.resolveFallbackRunContent(client, response))
       );
+      const attachments = this.extractResultAttachments(response);
       return this.buildResult(
         message,
         "success",
         instance.agent_type,
         content,
-        instance.thread_id
+        instance.thread_id,
+        { attachments }
       );
     } finally {
       client.disconnect();
@@ -230,11 +276,12 @@ export class HubRouter {
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const status = await this.instanceManager.status(threadId);
+    const content = this.appendAttachmentSummary(JSON.stringify(status, null, 2), status.instance.thread_id);
     return this.buildResult(
       message,
       "success",
       status.instance.agent_type,
-      JSON.stringify(status, null, 2),
+      content,
       status.instance.thread_id
     );
   }
@@ -247,10 +294,12 @@ export class HubRouter {
     const listedInstances = instances.map((instance) => {
       const attachment = this.instanceManager.getThreadAttachment(instance.thread_id);
       const attachable = this.instanceManager.isThreadAttachableBySession(instance.thread_id, requestSessionId);
+      const attachedLabels = attachment.sessions.map((session) => this.describeAttachedSession(session));
       return {
         ...instance,
         attached: attachment.sessions.length > 0,
         attached_sessions: attachment.sessions,
+        attached_labels: attachedLabels,
         attached_interface: attachment.interface_id,
         attachable
       };
@@ -259,29 +308,47 @@ export class HubRouter {
     return this.buildResult(message, "success", this.resolveResultSource(message), content);
   }
 
+  private async handleListModels(message: HubMessage): Promise<HubResult> {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const catalog = await this.instanceManager.listModels(threadId);
+    return this.buildResult(message, "success", instance.agent_type, JSON.stringify(catalog, null, 2), threadId);
+  }
+
   private async handleSpawn(message: HubMessage): Promise<HubResult> {
     const type = AgentTypeSchema.parse(message.target);
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
     const threadId = await this.instanceManager.spawn(type, message.mode, spawnDir);
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
+    this.rememberAttachmentMetadata(sessionId, message);
     const spawned = this.registry.get(threadId);
-    const content =
+    const baseContent =
       spawned === undefined
         ? `Spawned ${type} instance: ${threadId}`
         : JSON.stringify({ thread_id: threadId, instance: spawned }, null, 2);
-    return this.buildResult(message, "success", type, content, threadId);
+    return this.buildResult(message, "success", type, this.appendAttachmentSummary(baseContent, threadId), threadId, {
+      telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId)
+    });
   }
 
   private async handleKill(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
+    const attachment = this.instanceManager.getThreadAttachment(threadId);
+    const attachmentSummary = this.buildAttachmentSummary(attachment.sessions);
     await this.instanceManager.kill(threadId);
+    for (const session of attachment.sessions) {
+      this.forgetAttachmentMetadata(session);
+    }
+    const content = attachmentSummary
+      ? `Agent instance ${threadId} killed\n\n${attachmentSummary}`
+      : `Agent instance ${threadId} killed`;
     return this.buildResult(
       message,
       "success",
       instance.agent_type,
-      `Agent instance ${threadId} killed`,
+      content,
       threadId
     );
   }
@@ -295,7 +362,13 @@ export class HubRouter {
       restarted === undefined
         ? `Restarted ${threadId}`
         : JSON.stringify({ thread_id: restartedThreadId, instance: restarted }, null, 2);
-    return this.buildResult(message, "success", instance.agent_type, content, restartedThreadId);
+    return this.buildResult(
+      message,
+      "success",
+      instance.agent_type,
+      this.appendAttachmentSummary(content, restartedThreadId),
+      restartedThreadId
+    );
   }
 
   private handleAttach(message: HubMessage): HubResult {
@@ -303,21 +376,86 @@ export class HubRouter {
     const instance = this.resolveInstance(threadId);
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     const binding = this.instanceManager.attach(threadId, sessionId);
-    const content = JSON.stringify(binding, null, 2);
+    this.rememberAttachmentMetadata(sessionId, message);
+    const content = this.appendAttachmentSummary(JSON.stringify(binding, null, 2), threadId);
+    return this.buildResult(message, "success", instance.agent_type, content, threadId, {
+      telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId)
+    });
+  }
+
+  private handleDetach(message: HubMessage): HubResult {
+    const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
+    const expectedThreadId = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id);
+    const attachedThreadId = this.instanceManager.getAttachedThread(sessionId);
+
+    if (!attachedThreadId) {
+      throw new Error(`No thread is attached for session=${message.reply_channel.chat_id}`);
+    }
+    if (expectedThreadId && attachedThreadId !== expectedThreadId) {
+      throw new Error(`Session is attached to ${attachedThreadId}, not ${expectedThreadId}`);
+    }
+
+    const detachedThreadId = this.instanceManager.detach(sessionId);
+    if (!detachedThreadId) {
+      throw new Error(`No thread is attached for session=${message.reply_channel.chat_id}`);
+    }
+    this.forgetAttachmentMetadata(sessionId);
+
+    const source = this.registry.get(detachedThreadId)?.agent_type ?? this.resolveResultSource(message);
+    return this.buildResult(
+      message,
+      "success",
+      source,
+      `Detached session from ${detachedThreadId}`,
+      detachedThreadId
+    );
+  }
+
+  private async handleReboot(message: HubMessage): Promise<HubResult> {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const rebootedThreadId = await this.instanceManager.restart(threadId);
+    const rebooted = this.registry.get(rebootedThreadId);
+    const content =
+      rebooted === undefined
+        ? `Rebooted ${threadId}`
+        : JSON.stringify({ thread_id: rebootedThreadId, instance: rebooted }, null, 2);
+    return this.buildResult(
+      message,
+      "success",
+      instance.agent_type,
+      this.appendAttachmentSummary(content, rebootedThreadId),
+      rebootedThreadId
+    );
+  }
+
+  private handleGui(message: HubMessage): HubResult {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const content = this.appendAttachmentSummary(buildWebGuiUrl(threadId), threadId);
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }
 
   private async handleSwitchModel(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadIdFromThread(message);
-    this.resolveInstance(threadId);
-    const nextType = AgentTypeSchema.parse(message.target);
-    const switchedThreadId = await this.instanceManager.switchModel(threadId, nextType);
+    const instance = this.resolveInstance(threadId);
+    const modelId = message.payload.content.trim();
+    if (!modelId) {
+      throw new Error("switch_model requires a provider model id");
+    }
+    const switchedThreadId = await this.instanceManager.switchModel(threadId, modelId);
     const switched = this.registry.get(switchedThreadId);
     const content =
       switched === undefined
-        ? `Switched ${threadId} to ${nextType}`
+        ? `Switched ${threadId} to model=${modelId}`
         : JSON.stringify({ thread_id: switchedThreadId, instance: switched }, null, 2);
-    return this.buildResult(message, "success", nextType, content, switchedThreadId);
+    return this.buildResult(
+      message,
+      "success",
+      instance.agent_type,
+      this.appendAttachmentSummary(content, switchedThreadId),
+      switchedThreadId
+    );
   }
 
   private handleMonitorUpdate(message: HubMessage): HubResult {
@@ -378,6 +516,92 @@ export class HubRouter {
   private async handleManualMonitorUpdate(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     return await this.buildProgressResultForThread(threadId, message.trace_id);
+  }
+
+  private pruneAttachmentMetadata(): void {
+    const activeSessions = new Set<string>();
+    for (const instance of this.registry.list()) {
+      const attachment = this.instanceManager.getThreadAttachment(instance.thread_id);
+      for (const session of attachment.sessions) {
+        activeSessions.add(session);
+      }
+    }
+
+    for (const session of this.attachmentMetaBySession.keys()) {
+      if (!activeSessions.has(session)) {
+        this.attachmentMetaBySession.delete(session);
+      }
+    }
+  }
+
+  private rememberAttachmentMetadata(sessionId: string, message: HubMessage): void {
+    this.attachmentMetaBySession.set(sessionId, {
+      channel: message.reply_channel.channel,
+      chatId: message.reply_channel.chat_id,
+      botId: message.reply_channel.bot_id ?? null,
+      chatName: message.reply_channel.chat_name?.trim() || null,
+      botName: message.reply_channel.bot_name?.trim() || null
+    });
+  }
+
+  private forgetAttachmentMetadata(sessionId: string): void {
+    this.attachmentMetaBySession.delete(sessionId);
+  }
+
+  private appendAttachmentSummary(content: string, threadId: string): string {
+    const attachment = this.instanceManager.getThreadAttachment(threadId);
+    const summary = this.buildAttachmentSummary(attachment.sessions);
+    if (!summary) {
+      return content;
+    }
+    return `${content}\n\n${summary}`;
+  }
+
+  private buildAttachmentSummary(sessions: string[]): string | null {
+    if (sessions.length === 0) {
+      return null;
+    }
+    const lines = ["Attached chat sessions:"];
+    for (const session of sessions) {
+      lines.push(`- ${this.describeAttachedSession(session)}`);
+    }
+    return lines.join("\n");
+  }
+
+  private describeAttachedSession(session: string): string {
+    const metadata = this.attachmentMetaBySession.get(session);
+    const parsed = this.parseSession(session);
+    const chatLabel = metadata?.chatName ?? parsed.chatId;
+    const botLabel = this.resolveBotLabel(metadata?.botName, metadata?.botId ?? parsed.botId);
+    if (botLabel) {
+      return `${chatLabel} via ${botLabel}`;
+    }
+    return chatLabel;
+  }
+
+  private parseSession(session: string): { botId: string | null; chatId: string } {
+    const separatorIndex = session.indexOf(":");
+    if (separatorIndex <= 0) {
+      return { botId: null, chatId: session };
+    }
+
+    const maybeBotId = session.slice(0, separatorIndex);
+    const rest = session.slice(separatorIndex + 1);
+    if (/^\d+$/.test(maybeBotId)) {
+      return { botId: maybeBotId, chatId: rest };
+    }
+    return { botId: null, chatId: session };
+  }
+
+  private resolveBotLabel(botName: string | null | undefined, botId: string | null): string | null {
+    const normalizedBotName = botName?.trim() ?? "";
+    if (normalizedBotName) {
+      return normalizedBotName.startsWith("@") ? normalizedBotName : `@${normalizedBotName}`;
+    }
+    if (botId) {
+      return `bot#${botId}`;
+    }
+    return null;
   }
 
   private resolveInstance(threadId: string): AgentInstance {
@@ -455,6 +679,22 @@ export class HubRouter {
     return this.registry.get(threadId)?.agent_type ?? "codex";
   }
 
+  resolveInstanceForThread(threadId: string): AgentInstance | null {
+    return this.registry.get(threadId) ?? null;
+  }
+
+  registerServiceEndpoint(endpoint: ServiceEndpoint): ServiceEndpoint {
+    return this.serviceRegistry.register(endpoint);
+  }
+
+  unregisterServiceEndpoint(serviceId: string): boolean {
+    return this.serviceRegistry.unregister(serviceId);
+  }
+
+  listServiceEndpoints(): ServiceEndpoint[] {
+    return this.serviceRegistry.list();
+  }
+
   async buildCompletionResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
     const instance = this.resolveInstance(threadId);
     const client = this.clientFactory(instance.thread_id);
@@ -469,6 +709,7 @@ export class HubRouter {
         status: "success",
         content,
         attachments: [],
+        telegram_inline_keyboard: tryBuildGuiInlineKeyboard(threadId),
         timestamp: this.now().toISOString()
       });
     } finally {
@@ -559,6 +800,20 @@ export class HubRouter {
     return this.registry.get(threadId)?.status === "running";
   }
 
+  private isBuiltInIntent(intent: string): boolean {
+    return BUILT_IN_INTENT_SET.has(intent);
+  }
+
+  private async dispatchToService(endpoint: ServiceEndpoint, message: HubMessage): Promise<HubResult> {
+    const childMessage = {
+      ...message,
+      parent_span_id: message.span_id,
+      span_id: randomUUID()
+    };
+    const response = await sendIpcRequest<HubMessage, HubResult>(endpoint.socket_path, childMessage);
+    return HubResultSchema.parse(response);
+  }
+
   private extractContent(response: Record<string, unknown>): string {
     const content = response.content;
     if (typeof content === "string" && content.trim().length > 0) {
@@ -571,6 +826,64 @@ export class HubRouter {
     }
 
     return JSON.stringify(response, null, 2);
+  }
+
+  private extractResultAttachments(response: Record<string, unknown>): FileAttachment[] {
+    const rawFiles = response.files;
+    if (!Array.isArray(rawFiles)) {
+      return [];
+    }
+
+    const attachments: FileAttachment[] = [];
+    for (const rawFile of rawFiles) {
+      if (typeof rawFile === "string") {
+        const normalizedPath = rawFile.trim();
+        if (!normalizedPath) {
+          continue;
+        }
+        attachments.push({
+          path: normalizedPath
+        });
+        continue;
+      }
+
+      if (!rawFile || typeof rawFile !== "object") {
+        continue;
+      }
+
+      const candidate = rawFile as Record<string, unknown>;
+      const normalizedPath =
+        typeof candidate.path === "string"
+          ? candidate.path.trim()
+          : typeof candidate.file_path === "string"
+            ? candidate.file_path.trim()
+            : typeof candidate.abspath === "string"
+              ? candidate.abspath.trim()
+              : "";
+      if (!normalizedPath) {
+        continue;
+      }
+
+      attachments.push({
+        path: normalizedPath,
+        filename:
+          typeof candidate.filename === "string"
+            ? candidate.filename.trim() || undefined
+            : typeof candidate.name === "string"
+              ? candidate.name.trim() || undefined
+              : typeof candidate.basename === "string"
+                ? candidate.basename.trim() || undefined
+                : undefined,
+        mime_type:
+          typeof candidate.mime_type === "string"
+            ? candidate.mime_type.trim() || undefined
+            : typeof candidate.mimeType === "string"
+              ? candidate.mimeType.trim() || undefined
+              : undefined
+      });
+    }
+
+    return attachments;
   }
 
   private async resolveCompletionContent(client: AgentClient, threadId: string): Promise<string> {
@@ -903,7 +1216,11 @@ export class HubRouter {
     status: HubResult["status"],
     source: AgentType,
     content: string,
-    threadIdOverride?: string
+    threadIdOverride?: string,
+    options?: {
+      attachments?: FileAttachment[];
+      telegramInlineKeyboard?: HubResult["telegram_inline_keyboard"];
+    }
   ): HubResult {
     return HubResultSchema.parse({
       trace_id: message.trace_id,
@@ -911,7 +1228,8 @@ export class HubRouter {
       source,
       status,
       content,
-      attachments: [],
+      attachments: options?.attachments ?? [],
+      telegram_inline_keyboard: options?.telegramInlineKeyboard,
       timestamp: this.now().toISOString()
     });
   }

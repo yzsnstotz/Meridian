@@ -4,6 +4,16 @@ import { z } from "zod";
 dotenv.config({ override: true });
 
 const optionalEnvString = () => z.string().default("");
+const envStringList = () =>
+  z
+    .string()
+    .default("")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    );
 
 const envBoolean = (defaultValue: boolean) =>
   z
@@ -43,6 +53,8 @@ const envSchema = z
     LOG_DIR: z.string().default("/var/log/hub"),
     MERIDIAN_STATE_PATH: z.string().default("/tmp/meridian-state.json"),
     AGENT_WORKDIR: z.string().optional(),
+    COORDINATOR_SOCKET_PATH: optionalEnvString(),
+    COORDINATOR_INTENTS: envStringList(),
     WEBHOOK_URL: optionalEnvString(),
     WEBHOOK_PORT: z.coerce.number().int().positive().default(443),
     WEBHOOK_SECRET_TOKEN: optionalEnvString(),

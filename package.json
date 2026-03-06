@@ -12,6 +12,7 @@
     "start:interface": "tsx src/interface/index.ts",
     "start:monitor": "tsx src/monitor/index.ts",
     "test": "node --test --import tsx src/**/*.test.ts",
+    "test:integration": "node --test --import tsx 'tests/integration/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint . --ext .ts",
     "format": "prettier --check ."

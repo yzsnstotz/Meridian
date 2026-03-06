@@ -2,19 +2,25 @@ import fs from "node:fs";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 
-import { config } from "../config";
+import { config, type AppConfig } from "../config";
 import { createLogger } from "../logger";
 import { MonitorEventSchema, type MonitorEvent } from "../monitor/events";
+import { buildAgentErrorInlineKeyboard } from "../shared/telegram-controls";
 import {
   AgentTypeSchema,
   HubMessageSchema,
   HubResultSchema,
   InboundUIEventSchema,
+  PaneSubscribeRequestSchema,
+  PaneUnsubscribeRequestSchema,
+  ServiceEndpointSchema,
+  type ServiceEndpoint,
   type AgentType,
   type HubMessage,
   type HubResult
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
+import { PaneBroadcaster } from "./pane-broadcaster";
 import { ResultSender } from "./result-sender";
 import { InstanceRegistry } from "./registry";
 import { HubRouter, type MonitorUpdateDispatch } from "./router";
@@ -29,21 +35,64 @@ export interface HubServerOptions {
   socketPath?: string;
   router?: HubRouter;
   resultSender?: ResultSender;
+  paneBroadcaster?: PaneBroadcaster;
+  staticServiceEndpoints?: ServiceEndpoint[];
 }
+
+export function resolveStaticServiceEndpoints(appConfig: AppConfig = config): ServiceEndpoint[] {
+  if (!appConfig.COORDINATOR_SOCKET_PATH || appConfig.COORDINATOR_INTENTS.length === 0) {
+    return [];
+  }
+
+  return [
+    ServiceEndpointSchema.parse({
+      service: "coordinator",
+      socket_path: appConfig.COORDINATOR_SOCKET_PATH,
+      intents: appConfig.COORDINATOR_INTENTS
+    })
+  ];
+}
+
+interface IdempotencyEntry {
+  result: HubResult;
+  expiresAt: number;
+}
+
+interface PriorityQueueItem {
+  priority: number;
+  sequence: number;
+  raw: string;
+  resolve: (result: HubResult | null) => void;
+  reject: (error: unknown) => void;
+}
+
+const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
+const IDEMPOTENCY_CLEANUP_INTERVAL_MS = 60 * 1000;
+const DEFAULT_PRIORITY = 5;
+const MONITOR_EVENT_PRIORITY = 7;
 
 export class HubServer {
   private readonly log = createLogger("hub");
   private readonly socketPath: string;
   private readonly router: HubRouter;
   private readonly resultSender: ResultSender;
+  private readonly paneBroadcaster: PaneBroadcaster;
+  private readonly staticServiceEndpoints: ServiceEndpoint[];
   private server: net.Server | null = null;
   private monitorProgressTimer: NodeJS.Timeout | null = null;
   private monitorProgressInFlight = false;
+  private readonly idempotencyCache = new Map<string, IdempotencyEntry>();
+  private idempotencyCleanupTimer: NodeJS.Timeout | null = null;
+  private readonly priorityQueue: PriorityQueueItem[] = [];
+  private priorityQueueSequence = 0;
+  private priorityQueueDraining = false;
 
   constructor(options: HubServerOptions = {}) {
     this.socketPath = options.socketPath ?? config.HUB_SOCKET_PATH;
     this.router = options.router ?? new HubRouter(new InstanceRegistry());
     this.resultSender = options.resultSender ?? new ResultSender();
+    this.paneBroadcaster = options.paneBroadcaster ?? new PaneBroadcaster();
+    this.staticServiceEndpoints = options.staticServiceEndpoints ?? resolveStaticServiceEndpoints();
   }
 
   async start(): Promise<void> {
@@ -53,26 +102,46 @@ export class HubServer {
 
     await this.removeStaleSocket();
     await this.router.initialize();
+    for (const endpoint of this.staticServiceEndpoints) {
+      this.router.registerServiceEndpoint(endpoint);
+    }
 
     this.server = net.createServer({ allowHalfOpen: true }, (socket) => {
       socket.setEncoding("utf8");
       let raw = "";
+      let pending = Promise.resolve();
 
       socket.on("data", (chunk: string) => {
         raw += chunk;
+        const frames = raw.split("\n");
+        raw = frames.pop() ?? "";
+        for (const frame of frames) {
+          const payload = frame.trim();
+          if (!payload) {
+            continue;
+          }
+          pending = pending
+            .then(() => this.handleSocketPayload(socket, payload, false))
+            .catch((error) => {
+              this.log.error({ trace_id: null, thread_id: null, err: String(error) }, "Hub socket frame failed");
+              if (socket.writable) {
+                socket.end();
+              }
+            });
+        }
       });
 
       socket.on("end", () => {
-        void this.handleRawPayload(raw)
-          .then((result) => {
-            if (!socket.writable) {
+        pending = pending
+          .then(async () => {
+            const payload = raw.trim();
+            if (!payload) {
+              if (socket.writable) {
+                socket.end();
+              }
               return;
             }
-            if (result) {
-              socket.end(JSON.stringify(result));
-              return;
-            }
-            socket.end();
+            await this.handleSocketPayload(socket, payload, true);
           })
           .catch((error) => {
             this.log.error({ trace_id: null, thread_id: null, err: String(error) }, "Hub socket response failed");
@@ -83,7 +152,12 @@ export class HubServer {
       });
 
       socket.on("error", (error) => {
+        this.paneBroadcaster.cleanupSocket(socket);
         this.log.error({ trace_id: null, thread_id: null, err: String(error) }, "Hub socket connection failed");
+      });
+
+      socket.on("close", () => {
+        this.paneBroadcaster.cleanupSocket(socket);
       });
     });
 
@@ -93,6 +167,7 @@ export class HubServer {
     });
 
     this.startMonitorProgressTicker();
+    this.startIdempotencyCleanup();
 
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server listening");
   }
@@ -110,8 +185,118 @@ export class HubServer {
     });
 
     this.stopMonitorProgressTicker();
+    this.stopIdempotencyCleanup();
+    this.paneBroadcaster.close();
     await fs.promises.unlink(this.socketPath).catch(() => undefined);
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server stopped");
+  }
+
+  private async handleSocketPayload(socket: net.Socket, raw: string, closeOnComplete: boolean): Promise<void> {
+    const parsed = JSON.parse(raw) as unknown;
+    const subscribeRequest = PaneSubscribeRequestSchema.safeParse(parsed);
+    if (subscribeRequest.success) {
+      const result = await this.paneBroadcaster.subscribe(
+        socket,
+        this.router.resolveInstanceForThread(subscribeRequest.data.thread_id),
+        subscribeRequest.data
+      );
+      if (result.kind === "not_available" && socket.writable) {
+        socket.end(JSON.stringify(result.payload));
+      }
+      return;
+    }
+
+    const unsubscribeRequest = PaneUnsubscribeRequestSchema.safeParse(parsed);
+    if (unsubscribeRequest.success) {
+      this.paneBroadcaster.unsubscribe(socket, unsubscribeRequest.data.thread_id);
+      if (closeOnComplete && socket.writable) {
+        socket.end();
+      } else if (socket.writable) {
+        socket.write('{"ok":true}\n');
+      }
+      return;
+    }
+
+    const result = await this.enqueueMessage(raw);
+    if (!socket.writable) {
+      return;
+    }
+    if (!result) {
+      if (closeOnComplete) {
+        socket.end();
+      }
+      return;
+    }
+    if (closeOnComplete) {
+      socket.end(JSON.stringify(result));
+      return;
+    }
+    socket.write(`${JSON.stringify(result)}\n`);
+  }
+
+  private enqueueMessage(raw: string): Promise<HubResult | null> {
+    const priority = this.extractPriorityFromRaw(raw);
+    return new Promise<HubResult | null>((resolve, reject) => {
+      const item: PriorityQueueItem = {
+        priority,
+        sequence: this.priorityQueueSequence++,
+        raw,
+        resolve,
+        reject
+      };
+
+      this.insertIntoQueue(item);
+      void this.drainPriorityQueue();
+    });
+  }
+
+  private insertIntoQueue(item: PriorityQueueItem): void {
+    let insertIndex = this.priorityQueue.length;
+    for (let i = 0; i < this.priorityQueue.length; i++) {
+      const existing = this.priorityQueue[i];
+      if (item.priority < existing.priority || (item.priority === existing.priority && item.sequence < existing.sequence)) {
+        insertIndex = i;
+        break;
+      }
+    }
+    this.priorityQueue.splice(insertIndex, 0, item);
+  }
+
+  private async drainPriorityQueue(): Promise<void> {
+    if (this.priorityQueueDraining) {
+      return;
+    }
+
+    this.priorityQueueDraining = true;
+    try {
+      while (this.priorityQueue.length > 0) {
+        const item = this.priorityQueue.shift()!;
+        try {
+          const result = await this.handleRawPayload(item.raw);
+          item.resolve(result);
+        } catch (error) {
+          item.reject(error);
+        }
+      }
+    } finally {
+      this.priorityQueueDraining = false;
+    }
+  }
+
+  private extractPriorityFromRaw(raw: string): number {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed.priority === "number" && Number.isInteger(parsed.priority)) {
+        return parsed.priority;
+      }
+      const monitorEvent = MonitorEventSchema.safeParse(parsed);
+      if (monitorEvent.success) {
+        return MONITOR_EVENT_PRIORITY;
+      }
+    } catch {
+      // Best-effort priority extraction
+    }
+    return DEFAULT_PRIORITY;
   }
 
   private async handleRawPayload(raw: string): Promise<HubResult | null> {
@@ -130,8 +315,16 @@ export class HubServer {
       }
 
       message = this.normalizeIncomingMessage(parsed);
+      this.injectSpanId(message);
+
+      const cachedResult = this.checkIdempotency(message);
+      if (cachedResult) {
+        return cachedResult;
+      }
+
       const result = await this.router.route(message);
       const validatedResult = HubResultSchema.parse(result);
+      this.cacheIdempotencyResult(message, validatedResult);
       if (!message.suppress_reply) {
         await this.resultSender.sendResult(validatedResult, message.reply_channel);
       }
@@ -239,6 +432,8 @@ export class HubServer {
             status: "error",
             content,
             attachments: [],
+            telegram_inline_keyboard:
+              event.event_type === "agent_error" ? buildAgentErrorInlineKeyboard(event.thread_id) : undefined,
             timestamp: new Date().toISOString()
           },
           {
@@ -496,6 +691,69 @@ export class HubServer {
       return parsed.data;
     }
     return "codex";
+  }
+
+  private injectSpanId(message: HubMessage): void {
+    if (!message.span_id) {
+      (message as Record<string, unknown>).span_id = randomUUID();
+    }
+  }
+
+  private checkIdempotency(message: HubMessage): HubResult | null {
+    const key = message.idempotency_key;
+    if (!key) {
+      return null;
+    }
+
+    const entry = this.idempotencyCache.get(key);
+    if (!entry || entry.expiresAt < Date.now()) {
+      return null;
+    }
+
+    this.log.info(
+      {
+        trace_id: message.trace_id,
+        thread_id: message.thread_id,
+        idempotency_key: key
+      },
+      "Duplicate message suppressed"
+    );
+    return entry.result;
+  }
+
+  private cacheIdempotencyResult(message: HubMessage, result: HubResult): void {
+    const key = message.idempotency_key;
+    if (!key) {
+      return;
+    }
+    this.idempotencyCache.set(key, {
+      result,
+      expiresAt: Date.now() + IDEMPOTENCY_TTL_MS
+    });
+  }
+
+  private startIdempotencyCleanup(): void {
+    if (this.idempotencyCleanupTimer) {
+      return;
+    }
+    this.idempotencyCleanupTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of this.idempotencyCache) {
+        if (entry.expiresAt < now) {
+          this.idempotencyCache.delete(key);
+        }
+      }
+    }, IDEMPOTENCY_CLEANUP_INTERVAL_MS);
+    this.idempotencyCleanupTimer.unref();
+  }
+
+  private stopIdempotencyCleanup(): void {
+    if (!this.idempotencyCleanupTimer) {
+      return;
+    }
+    clearInterval(this.idempotencyCleanupTimer);
+    this.idempotencyCleanupTimer = null;
+    this.idempotencyCache.clear();
   }
 
   private async removeStaleSocket(): Promise<void> {

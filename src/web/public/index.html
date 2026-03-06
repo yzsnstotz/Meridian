@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meridian — Instances</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div id="app" class="max-w-4xl mx-auto p-4 md:p-6">
+    <header class="mb-6">
+      <h1 class="text-xl md:text-2xl font-semibold text-slate-100">Meridian Instances</h1>
+      <p class="text-slate-400 text-sm mt-1">Agent instances overview</p>
+    </header>
+
+    <div id="no-token" class="hidden rounded-lg bg-amber-900/40 border border-amber-600/50 p-4 text-amber-200">
+      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open this page with <code class="bg-slate-800 px-1 rounded">?token=YOUR_TOKEN</code>.
+    </div>
+
+    <div id="content" class="hidden">
+      <div class="flex flex-wrap items-center gap-3 mb-4">
+        <button id="btn-spawn" type="button" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition">
+          Spawn (pane_bridge)
+        </button>
+        <span id="refresh-hint" class="text-slate-500 text-sm">Auto-refresh every 5s</span>
+      </div>
+      <div id="list" class="rounded-lg border border-slate-600 overflow-hidden">
+        <table class="w-full text-left">
+          <thead class="bg-slate-800 text-slate-300 text-sm">
+            <tr>
+              <th class="px-3 py-2">thread_id</th>
+              <th class="px-3 py-2 hidden sm:table-cell">type</th>
+              <th class="px-3 py-2">mode</th>
+              <th class="px-3 py-2">status</th>
+              <th class="px-3 py-2 hidden md:table-cell">created_at</th>
+            </tr>
+          </thead>
+          <tbody id="list-body" class="divide-y divide-slate-700">
+          </tbody>
+        </table>
+      </div>
+      <p id="empty-list" class="hidden text-slate-500 py-4 text-center">No active instances.</p>
+    </div>
+
+    <div id="loading" class="text-slate-400 py-4">Loading…</div>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    (function () {
+      var REFRESH_MS = 5000;
+      var listBody = document.getElementById("list-body");
+      var content = document.getElementById("content");
+      var noToken = document.getElementById("no-token");
+      var loading = document.getElementById("loading");
+      var emptyList = document.getElementById("empty-list");
+      var btnSpawn = document.getElementById("btn-spawn");
+
+      function showState(hasToken, showList, isEmpty) {
+        if (!hasToken) {
+          noToken.classList.remove("hidden");
+          content.classList.add("hidden");
+          loading.classList.add("hidden");
+          return;
+        }
+        noToken.classList.add("hidden");
+        loading.classList.add("hidden");
+        content.classList.remove("hidden");
+        if (showList) {
+          listBody.closest("div").classList.toggle("hidden", isEmpty);
+          emptyList.classList.toggle("hidden", !isEmpty);
+        }
+      }
+
+      function formatDate(s) {
+        if (!s) return "";
+        try {
+          var d = new Date(s);
+          return isNaN(d.getTime()) ? s : d.toLocaleString();
+        } catch (e) {
+          return s;
+        }
+      }
+
+      function openInstance(instance) {
+        var mode = (instance.mode || "").toLowerCase();
+        var threadId = instance.thread_id;
+        var base = window.MeridianWeb.apiBase();
+        var token = window.MeridianWeb.getToken();
+        var q = "?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token);
+        if (mode === "pane_bridge") {
+          window.location.href = base + "/terminal.html" + q;
+        } else {
+          window.location.href = base + "/bridge.html" + q;
+        }
+      }
+
+      function renderList(instances) {
+        listBody.innerHTML = "";
+        if (!instances || instances.length === 0) {
+          showState(true, true, true);
+          return;
+        }
+        showState(true, true, false);
+        instances.forEach(function (inst) {
+          var row = document.createElement("tr");
+          row.className = "hover:bg-slate-800/60 cursor-pointer transition";
+          row.setAttribute("data-thread-id", inst.thread_id);
+          row.innerHTML =
+            "<td class=\"px-3 py-2 font-mono text-sm\">" + escapeHtml(inst.thread_id) + "</td>" +
+            "<td class=\"px-3 py-2 hidden sm:table-cell\">" + escapeHtml(inst.agent_type || inst.type || "—") + "</td>" +
+            "<td class=\"px-3 py-2\">" + escapeHtml(inst.mode || "—") + "</td>" +
+            "<td class=\"px-3 py-2\">" + escapeHtml(inst.status || "—") + "</td>" +
+            "<td class=\"px-3 py-2 hidden md:table-cell text-slate-400 text-sm\">" + escapeHtml(formatDate(inst.created_at)) + "</td>";
+          row.addEventListener("click", function () {
+            openInstance(inst);
+          });
+          listBody.appendChild(row);
+        });
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return "";
+        var div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function fetchList() {
+        if (!window.MeridianWeb.ensureToken()) {
+          showState(false);
+          return;
+        }
+        window.MeridianWeb.fetchWithAuth("/api/instances")
+          .then(function (res) {
+            if (res.status === 401) {
+              showState(false);
+              return [];
+            }
+            return res.json();
+          })
+          .then(function (data) {
+            if (Array.isArray(data)) {
+              renderList(data);
+            } else {
+              renderList([]);
+            }
+          })
+          .catch(function () {
+            showState(true, true, true);
+            listBody.innerHTML = "";
+            emptyList.textContent = "Failed to load instances.";
+            emptyList.classList.remove("hidden");
+            listBody.closest("div").classList.add("hidden");
+          });
+      }
+
+      function spawn() {
+        if (!window.MeridianWeb.ensureToken()) {
+          showState(false);
+          return;
+        }
+        btnSpawn.disabled = true;
+        window.MeridianWeb.fetchWithAuth("/api/spawn", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "codex", mode: "pane_bridge" })
+        })
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (res.ok) {
+                fetchList();
+              } else {
+                alert(body.error || "Spawn failed");
+              }
+            });
+          })
+          .catch(function (e) {
+            alert("Spawn failed: " + (e && e.message ? e.message : "network error"));
+          })
+          .finally(function () {
+            btnSpawn.disabled = false;
+          });
+      }
+
+      btnSpawn.addEventListener("click", spawn);
+      fetchList();
+      setInterval(fetchList, REFRESH_MS);
+    })();
+  </script>
+</body>
+</html>

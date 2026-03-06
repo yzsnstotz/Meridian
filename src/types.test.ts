@@ -3,9 +3,12 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 import {
+  BuiltInIntentSchema,
   HubMessageSchema,
+  HubResultSchema,
   IntentSchema,
   MonitorEventSchema,
+  PaneOutputNotAvailableSchema,
   PaneOutputChunkSchema,
   PaneSubscribeRequestSchema,
   PaneUnsubscribeRequestSchema,
@@ -32,9 +35,11 @@ function buildHubMessage(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("IntentSchema includes detach and reboot", () => {
-  assert.equal(IntentSchema.parse("detach"), "detach");
-  assert.equal(IntentSchema.parse("reboot"), "reboot");
+test("IntentSchema includes detach, reboot, and gui", () => {
+  assert.equal(BuiltInIntentSchema.parse("detach"), "detach");
+  assert.equal(BuiltInIntentSchema.parse("reboot"), "reboot");
+  assert.equal(BuiltInIntentSchema.parse("gui"), "gui");
+  assert.equal(IntentSchema.parse("delegate"), "delegate");
 });
 
 test("HubMessageSchema preserves backward compatibility and applies priority default", () => {
@@ -91,6 +96,23 @@ test("MonitorEventSchema accepts optional span fields", () => {
   assert.equal(parsed.parent_span_id, parentSpanId);
 });
 
+test("HubResultSchema accepts optional Telegram inline keyboards", () => {
+  const parsed = HubResultSchema.parse({
+    trace_id: randomUUID(),
+    thread_id: "claude_01",
+    source: "codex",
+    status: "success",
+    content: "done",
+    attachments: [],
+    telegram_inline_keyboard: {
+      inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=claude_01" }]]
+    },
+    timestamp: new Date().toISOString()
+  });
+
+  assert.equal(parsed.telegram_inline_keyboard?.inline_keyboard[0]?.[0]?.text, "Open GUI");
+});
+
 test("pane IPC schemas parse subscribe, output, and unsubscribe messages", () => {
   assert.equal(
     PaneSubscribeRequestSchema.parse({
@@ -109,6 +131,15 @@ test("pane IPC schemas parse subscribe, output, and unsubscribe messages", () =>
       timestamp: new Date().toISOString()
     }).chunk,
     "hello"
+  );
+
+  assert.equal(
+    PaneOutputNotAvailableSchema.parse({
+      type: "not_available",
+      thread_id: "claude_01",
+      reason: "pane output is unavailable for bridge mode"
+    }).type,
+    "not_available"
   );
 
   assert.equal(
