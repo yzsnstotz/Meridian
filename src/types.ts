@@ -49,7 +49,8 @@ export type InboundUIEvent = z.infer<typeof InboundUIEventSchema>;
 export const ReplyChannelSchema = z.object({
   channel: ChannelSchema,
   chat_id: z.string().min(1),
-  message_id: z.string().min(1).optional()
+  message_id: z.string().min(1).optional(),
+  bot_id: z.string().regex(/^\d+$/).optional()
 });
 export type ReplyChannel = z.infer<typeof ReplyChannelSchema>;
 

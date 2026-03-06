@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
 import type { Context } from "grammy";
-import { config } from "../config";
 import type { FileAttachment, InboundUIEvent } from "../types";
 
 const ATTACHMENT_DIR = "/tmp/hub-attachments";
@@ -10,6 +9,7 @@ const FILENAME_SAFE_REGEX = /[^a-zA-Z0-9._-]/g;
 
 export interface ParsedInboundEvent {
   chatId: string;
+  botId: string;
   event: InboundUIEvent;
 }
 
@@ -82,6 +82,7 @@ function downloadFile(url: string, destinationPath: string, redirectCount = 0): 
 
 async function downloadTelegramAttachment(
   ctx: Context,
+  botToken: string,
   fileId: string,
   displayFilename: string,
   mimeType?: string
@@ -95,7 +96,7 @@ async function downloadTelegramAttachment(
   const safeDisplayFilename = sanitizeFilename(displayFilename);
   const persistedFilename = `${Date.now()}-${safeDisplayFilename}`;
   const destinationPath = path.join(ATTACHMENT_DIR, persistedFilename);
-  const url = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const url = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
   await downloadFile(url, destinationPath);
 
   return {
@@ -105,7 +106,7 @@ async function downloadTelegramAttachment(
   };
 }
 
-async function parsePhotoAttachment(ctx: Context, message: TelegramMessage): Promise<FileAttachment[]> {
+async function parsePhotoAttachment(ctx: Context, message: TelegramMessage, botToken: string): Promise<FileAttachment[]> {
   const photos = (message as { photo?: Array<{ file_id: string }> }).photo ?? [];
   if (!Array.isArray(photos) || photos.length === 0) {
     return [];
@@ -113,23 +114,27 @@ async function parsePhotoAttachment(ctx: Context, message: TelegramMessage): Pro
 
   const largestPhoto = photos[photos.length - 1];
   const displayFilename = `photo-${largestPhoto.file_id}.jpg`;
-  return [await downloadTelegramAttachment(ctx, largestPhoto.file_id, displayFilename, "image/jpeg")];
+  return [await downloadTelegramAttachment(ctx, botToken, largestPhoto.file_id, displayFilename, "image/jpeg")];
 }
 
-async function parseDocumentAttachment(ctx: Context, message: TelegramMessage): Promise<FileAttachment[]> {
+async function parseDocumentAttachment(
+  ctx: Context,
+  message: TelegramMessage,
+  botToken: string
+): Promise<FileAttachment[]> {
   const document = (message as { document?: { file_id: string; file_name?: string; mime_type?: string } }).document;
   if (!document) {
     return [];
   }
 
   const originalFilename = document.file_name && document.file_name.trim().length > 0 ? document.file_name : `file-${document.file_id}`;
-  return [await downloadTelegramAttachment(ctx, document.file_id, originalFilename, document.mime_type)];
+  return [await downloadTelegramAttachment(ctx, botToken, document.file_id, originalFilename, document.mime_type)];
 }
 
-async function parseAttachments(ctx: Context, message: TelegramMessage): Promise<FileAttachment[]> {
+async function parseAttachments(ctx: Context, message: TelegramMessage, botToken: string): Promise<FileAttachment[]> {
   const attachments: FileAttachment[] = [];
-  attachments.push(...(await parsePhotoAttachment(ctx, message)));
-  attachments.push(...(await parseDocumentAttachment(ctx, message)));
+  attachments.push(...(await parsePhotoAttachment(ctx, message, botToken)));
+  attachments.push(...(await parseDocumentAttachment(ctx, message, botToken)));
   return attachments;
 }
 
@@ -149,8 +154,11 @@ export async function parseTelegramMessage(ctx: Context): Promise<ParsedInboundE
     throw new Error("Telegram message missing sender id");
   }
 
+  const botToken = ctx.api.token;
+  const botId = String(ctx.me.id);
+
   const unixSeconds = typeof message.date === "number" ? message.date : Math.floor(Date.now() / 1000);
-  const attachments = await parseAttachments(ctx, message);
+  const attachments = await parseAttachments(ctx, message, botToken);
   const event: InboundUIEvent = {
     channel: "telegram",
     raw_message_id: String(message.message_id),
@@ -163,6 +171,7 @@ export async function parseTelegramMessage(ctx: Context): Promise<ParsedInboundE
 
   return {
     chatId: String(message.chat.id),
+    botId,
     event
   };
 }

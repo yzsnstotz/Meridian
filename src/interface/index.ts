@@ -7,7 +7,7 @@ import type { Context } from "grammy";
 import { AgentInstanceSchema, type AgentInstance, type AgentType, type HubMessage, type Intent } from "../types";
 import { createLogger } from "../logger";
 import { authMiddleware } from "./auth";
-import { bot, syncBotCommands } from "./bot";
+import { botRuntimes, syncBotCommands } from "./bot";
 import { requestHubMessage, sendHubMessage } from "./ipc-sender";
 import { parseTelegramMessage } from "./parser";
 import { getHelpMessage, parseSlashCommand, type ParsedSlashCommand } from "./slash-handler";
@@ -22,6 +22,7 @@ const SPAWN_DIR_SESSION_TTL_MS = 15 * 60 * 1000;
 
 interface SpawnDirectorySession {
   sessionId: string;
+  botId: string;
   chatId: string;
   type: AgentType;
   mode: "bridge" | "pane_bridge";
@@ -33,6 +34,7 @@ interface SpawnDirectorySession {
 }
 
 const spawnDirectorySessions = new Map<string, SpawnDirectorySession>();
+type SendMessageExtra = Parameters<Context["api"]["sendMessage"]>[2];
 
 function isAgentType(value: string): value is AgentType {
   return SPAWN_TYPES.includes(value as AgentType);
@@ -94,12 +96,14 @@ function toHubMessage(
     reply_channel: {
       channel: "telegram",
       chat_id: payload.chatId,
-      message_id: payload.event.raw_message_id
+      message_id: payload.event.raw_message_id,
+      bot_id: payload.botId
     }
   };
 }
 
 function buildActionHubMessage(params: {
+  botId: string;
   chatId: string;
   messageId?: string;
   intent: Intent;
@@ -127,7 +131,8 @@ function buildActionHubMessage(params: {
     reply_channel: {
       channel: "telegram",
       chat_id: params.chatId,
-      message_id: params.messageId
+      message_id: params.messageId,
+      bot_id: params.botId
     }
   };
 }
@@ -218,6 +223,7 @@ function buildSpawnDirectoryPrompt(session: SpawnDirectorySession): string {
 }
 
 function beginSpawnDirectorySession(
+  botId: string,
   chatId: string,
   type: AgentType,
   mode: "bridge" | "pane_bridge"
@@ -230,6 +236,7 @@ function beginSpawnDirectorySession(
   const sessionId = sanitizeCallbackToken(randomUUID().slice(0, 8));
   const session: SpawnDirectorySession = {
     sessionId,
+    botId,
     chatId,
     type,
     mode,
@@ -253,12 +260,12 @@ function refreshSpawnDirectorySession(session: SpawnDirectorySession): void {
   session.createdAtMs = Date.now();
 }
 
-function findPendingFolderCreateSession(chatId: string): SpawnDirectorySession | null {
+function findPendingFolderCreateSession(botId: string, chatId: string): SpawnDirectorySession | null {
   pruneSpawnDirectorySessions();
 
   let latest: SpawnDirectorySession | null = null;
   for (const session of spawnDirectorySessions.values()) {
-    if (session.chatId !== chatId || !session.awaitingFolderName) {
+    if (session.botId !== botId || session.chatId !== chatId || !session.awaitingFolderName) {
       continue;
     }
     if (!latest || session.createdAtMs > latest.createdAtMs) {
@@ -306,11 +313,12 @@ async function refreshSpawnDirectoryPickerMessage(ctx: Context, session: SpawnDi
 
 async function maybeHandleSpawnDirectoryCreateInput(
   ctx: Context,
+  botId: string,
   chatId: string,
   rawInput: string,
   reply: (text: string) => Promise<unknown>
 ): Promise<boolean> {
-  const session = findPendingFolderCreateSession(chatId);
+  const session = findPendingFolderCreateSession(botId, chatId);
   if (!session) {
     return false;
   }
@@ -355,13 +363,13 @@ async function maybeHandleSpawnDirectoryCreateInput(
   return true;
 }
 
-function getSpawnDirectorySession(sessionId: string, chatId: string): SpawnDirectorySession {
+function getSpawnDirectorySession(sessionId: string, botId: string, chatId: string): SpawnDirectorySession {
   pruneSpawnDirectorySessions();
   const session = spawnDirectorySessions.get(sessionId);
   if (!session) {
     throw new Error("Spawn directory picker expired. Run /spawn again.");
   }
-  if (session.chatId !== chatId) {
+  if (session.botId !== botId || session.chatId !== chatId) {
     throw new Error("Spawn directory picker does not belong to this chat.");
   }
   return session;
@@ -439,9 +447,10 @@ function buildModelTypeKeyboard(threadId: string): InlineKeyboard {
   return keyboard;
 }
 
-async function requestLiveInstances(chatId: string, messageId?: string): Promise<AgentInstance[]> {
+async function requestLiveInstances(botId: string, chatId: string, messageId?: string): Promise<AgentInstance[]> {
   const response = await requestHubMessage(
     buildActionHubMessage({
+      botId,
       chatId,
       messageId,
       intent: "list",
@@ -466,7 +475,7 @@ async function requestLiveInstances(chatId: string, messageId?: string): Promise
 async function presentPickerFlow(
   parsedCommand: ParsedSlashCommand,
   payload: NonNullable<Awaited<ReturnType<typeof parseTelegramMessage>>>,
-  reply: (text: string, extra?: Parameters<typeof bot.api.sendMessage>[2]) => Promise<unknown>
+  reply: (text: string, extra?: SendMessageExtra) => Promise<unknown>
 ): Promise<void> {
   const messageId = payload.event.raw_message_id;
   const chatId = payload.chatId;
@@ -484,7 +493,7 @@ async function presentPickerFlow(
       return;
     }
 
-    const instances = await requestLiveInstances(chatId, messageId);
+    const instances = await requestLiveInstances(payload.botId, chatId, messageId);
     if (instances.length === 0) {
       await reply("No active live threads found. Use /spawn first.");
       return;
@@ -511,6 +520,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
 
   const parts = data.split(":");
   const chatId = ctx.chat?.id ? String(ctx.chat.id) : null;
+  const botId = String(ctx.me.id);
   const callbackMessageId =
     "callbackQuery" in ctx && ctx.callbackQuery?.message && "message_id" in ctx.callbackQuery.message
       ? String(ctx.callbackQuery.message.message_id)
@@ -544,7 +554,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
       await ctx.answerCallbackQuery({ text: "Invalid spawn option" });
       return true;
     }
-    const session = beginSpawnDirectorySession(chatId, type, mode);
+    const session = beginSpawnDirectorySession(botId, chatId, type, mode);
     session.pickerMessageId = callbackMessageId ?? null;
     await ctx.editMessageText(buildSpawnDirectoryPrompt(session), {
       reply_markup: buildSpawnDirectoryKeyboard(session)
@@ -556,7 +566,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
   if (action === "spawn_dir" && parts[2] && parts[3]) {
     const sessionId = parts[2];
     const operation = parts[3];
-    const session = getSpawnDirectorySession(sessionId, chatId);
+    const session = getSpawnDirectorySession(sessionId, botId, chatId);
     session.pickerMessageId = callbackMessageId ?? session.pickerMessageId;
 
     if (operation === "cancel") {
@@ -570,6 +580,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
       session.awaitingFolderName = false;
       await sendHubMessage(
         buildActionHubMessage({
+          botId,
           chatId,
           messageId: callbackMessageId,
           intent: "spawn",
@@ -643,6 +654,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     const threadId = parts[2];
     await sendHubMessage(
       buildActionHubMessage({
+        botId,
         chatId,
         messageId: callbackMessageId,
         intent: action,
@@ -671,6 +683,7 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
     }
     await sendHubMessage(
       buildActionHubMessage({
+        botId,
         chatId,
         messageId: callbackMessageId,
         intent: "switch_model",
@@ -687,85 +700,104 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
   return true;
 }
 
-bot.use(authMiddleware);
+for (const { bot } of botRuntimes) {
+  bot.use(authMiddleware);
 
-bot.on("message", async (ctx) => {
-  try {
-    const parsedPayload = await parseTelegramMessage(ctx);
-    if (!parsedPayload) {
-      return;
+  bot.on("message", async (ctx) => {
+    try {
+      const parsedPayload = await parseTelegramMessage(ctx);
+      if (!parsedPayload) {
+        return;
+      }
+
+      const consumedAsFolderCreate = await maybeHandleSpawnDirectoryCreateInput(
+        ctx,
+        parsedPayload.botId,
+        parsedPayload.chatId,
+        parsedPayload.event.content,
+        (text) => ctx.reply(text)
+      );
+      if (consumedAsFolderCreate) {
+        return;
+      }
+
+      const parsedCommand = parseSlashCommand(parsedPayload.event.content);
+      interfaceLog.info(
+        {
+          channel: "telegram",
+          bot_id: parsedPayload.botId,
+          sender_id: parsedPayload.event.sender_id,
+          raw_message_id: Number(parsedPayload.event.raw_message_id),
+          intent: parsedCommand.intent,
+          auth_result: "allowed"
+        },
+        "InboundUIEvent received"
+      );
+
+      if (parsedCommand.intent === "restart") {
+        await handleRestartCommand(ctx);
+        return;
+      }
+
+      if (!parsedCommand.shouldForward || parsedCommand.intent === "help") {
+        await ctx.reply(getHelpMessage());
+        return;
+      }
+
+      if (parsedCommand.picker) {
+        await presentPickerFlow(parsedCommand, parsedPayload, (text, extra) => ctx.reply(text, extra));
+        return;
+      }
+
+      const hubMessage = toHubMessage(parsedCommand, parsedPayload);
+      await sendHubMessage(hubMessage);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      interfaceLog.error({ err: message }, "Failed to process Telegram message");
+      await ctx.reply(`Failed to process message: ${message}`);
     }
+  });
 
-    const consumedAsFolderCreate = await maybeHandleSpawnDirectoryCreateInput(
-      ctx,
-      parsedPayload.chatId,
-      parsedPayload.event.content,
-      (text) => ctx.reply(text)
-    );
-    if (consumedAsFolderCreate) {
-      return;
-    }
-
-    const parsedCommand = parseSlashCommand(parsedPayload.event.content);
-    interfaceLog.info(
-      {
-        channel: "telegram",
-        sender_id: parsedPayload.event.sender_id,
-        raw_message_id: Number(parsedPayload.event.raw_message_id),
-        intent: parsedCommand.intent,
-        auth_result: "allowed"
-      },
-      "InboundUIEvent received"
-    );
-
-    if (parsedCommand.intent === "restart") {
-      await handleRestartCommand(ctx);
-      return;
-    }
-
-    if (!parsedCommand.shouldForward || parsedCommand.intent === "help") {
-      await ctx.reply(getHelpMessage());
-      return;
-    }
-
-    if (parsedCommand.picker) {
-      await presentPickerFlow(parsedCommand, parsedPayload, (text, extra) => ctx.reply(text, extra));
-      return;
-    }
-
-    const hubMessage = toHubMessage(parsedCommand, parsedPayload);
-    await sendHubMessage(hubMessage);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    interfaceLog.error({ err: message }, "Failed to process Telegram message");
-    await ctx.reply(`Failed to process message: ${message}`);
-  }
-});
-
-bot.on("callback_query:data", async (ctx) => {
-  try {
-    const data = ctx.callbackQuery.data;
-    const handled = await handlePickerCallbackData(data, ctx);
-    if (!handled) {
-      await ctx.answerCallbackQuery({ text: "Unknown action" });
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    interfaceLog.error({ err: message }, "Failed to process callback query");
-    await ctx.answerCallbackQuery({ text: "Action failed" });
-  }
-});
-
-async function startInterface(): Promise<void> {
-  await syncBotCommands();
-  await bot.start({
-    onStart: (me) => {
-      interfaceLog.info({ bot_id: me.id, username: me.username }, "Telegram bot started with long polling");
+  bot.on("callback_query:data", async (ctx) => {
+    try {
+      const data = ctx.callbackQuery.data;
+      const handled = await handlePickerCallbackData(data, ctx);
+      if (!handled) {
+        await ctx.answerCallbackQuery({ text: "Unknown action" });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      interfaceLog.error({ err: message }, "Failed to process callback query");
+      await ctx.answerCallbackQuery({ text: "Action failed" });
     }
   });
 }
 
-process.once("SIGINT", () => bot.stop());
-process.once("SIGTERM", () => bot.stop());
+async function startInterface(): Promise<void> {
+  await syncBotCommands();
+  await Promise.all(
+    botRuntimes.map(({ bot, botId }) =>
+      bot.start({
+        onStart: (me) => {
+          interfaceLog.info(
+            { bot_id: botId, username: me.username, telegram_bot_id: me.id },
+            "Telegram bot started with long polling"
+          );
+        }
+      })
+    )
+  );
+}
+
+process.once("SIGINT", () => {
+  for (const { bot } of botRuntimes) {
+    bot.stop();
+  }
+});
+process.once("SIGTERM", () => {
+  for (const { bot } of botRuntimes) {
+    bot.stop();
+  }
+});
 
 void startInterface();

@@ -71,11 +71,14 @@ test("parseSlashCommand parses typed /model command", () => {
   assert.equal(parsed.picker, null);
 });
 
-test("parseSlashCommand marks /model without args as picker flow", () => {
+test("parseSlashCommand forwards bare /model as run intent", () => {
   const parsed = parseSlashCommand("/model");
-  assert.equal(parsed.intent, "switch_model");
+  assert.equal(parsed.intent, "run");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.target, "active");
   assert.equal(parsed.threadId, null);
-  assert.equal(parsed.picker, "switch_model");
+  assert.equal(parsed.payloadContent, "/model");
+  assert.equal(parsed.picker, null);
 });
 
 test("parseSlashCommand keeps thread when /model omits type", () => {

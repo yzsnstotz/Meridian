@@ -401,6 +401,94 @@ test("HubRouter enables and disables monitor updates via monitor_update intent",
   assert.deepEqual(router.getMonitorUpdateSubscribersForThread("codex_01"), []);
 });
 
+test("HubRouter keeps bot_id on monitor update dispatch targets", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => [{ id: 1, role: "agent", content: "current output" }]
+    })
+  });
+
+  const enableResult = await router.route(
+    baseMessage({
+      intent: "monitor_update",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      },
+      payload: {
+        content: "/update on interval=30",
+        attachments: [],
+        monitor_updates_enabled: true,
+        monitor_updates_interval_sec: 30
+      }
+    })
+  );
+
+  assert.equal(enableResult.status, "success");
+  assert.deepEqual(router.getMonitorUpdateSubscribersForThread("codex_01"), ["777:100"]);
+  const due = router.collectDueMonitorUpdateDispatches(Date.now());
+  assert.equal(due.length, 1);
+  assert.equal(due[0]?.threadId, "codex_01");
+  assert.equal(due[0]?.chatId, "100");
+  assert.equal(due[0]?.botId, "777");
+});
+
+test("HubRouter stores attach bindings with bot-aware session key", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "attach",
+      target: "codex_01",
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.deepEqual(router.getAttachedSessionsForThread("codex_01"), ["777:100"]);
+});
+
 test("HubRouter builds monitor progress result from latest agent output", async () => {
   const registry = new InstanceRegistry();
   registry.register({

@@ -68,6 +68,28 @@ test("normalizeInboundEvent parses /model command", () => {
   assert.equal(message.mode, "bridge");
 });
 
+test("normalizeInboundEvent forwards bare /model as run command", () => {
+  const message = normalizeInboundEvent(
+    {
+      channel: "telegram",
+      raw_message_id: "103a",
+      sender_id: 7,
+      content: "/model",
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      reply_to: "codex_01"
+    },
+    {
+      chatId: "67890"
+    }
+  );
+
+  assert.equal(message.intent, "run");
+  assert.equal(message.thread_id, "codex_01");
+  assert.equal(message.target, "codex_01");
+  assert.equal(message.payload.content, "/model");
+});
+
 test("normalizeInboundEvent parses /update command", () => {
   const message = normalizeInboundEvent(
     {
@@ -112,4 +134,25 @@ test("normalizeInboundEvent parses /mupdate command", () => {
   assert.equal(message.target, "codex_01");
   assert.equal(message.payload.monitor_updates_enabled, undefined);
   assert.equal(message.payload.monitor_updates_interval_sec, undefined);
+});
+
+test("normalizeInboundEvent preserves bot_id in reply channel when provided", () => {
+  const message = normalizeInboundEvent(
+    {
+      channel: "telegram",
+      raw_message_id: "106",
+      sender_id: 7,
+      content: "hello",
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      reply_to: null
+    },
+    {
+      chatId: "67890",
+      botId: "123456789"
+    }
+  );
+
+  assert.equal(message.reply_channel.chat_id, "67890");
+  assert.equal(message.reply_channel.bot_id, "123456789");
 });
