@@ -6,6 +6,7 @@ import path from "node:path";
 import { buildClaudeSpawnArgs } from "../agents/claude";
 import { buildCodexSpawnArgs } from "../agents/codex";
 import { createLogger } from "../logger";
+import { APPROVAL_HELP_TEXT, approvalActionToTmuxKeys, normalizeApprovalAction } from "../shared/approval";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import type { AgentInstance, AgentInstanceStatus, AgentType, BridgeMode } from "../types";
 import { InstanceRegistry } from "./registry";
@@ -241,6 +242,43 @@ export class InstanceManager {
     );
 
     return restartedThreadId;
+  }
+
+  sendTerminalInput(threadId: string, rawInput: string): string {
+    const instance = this.registry.get(threadId);
+    if (!instance) {
+      throw new Error(`Cannot send terminal input; thread_id=${threadId} is not registered`);
+    }
+
+    const action = normalizeApprovalAction(rawInput);
+    if (!action) {
+      throw new Error(`Unsupported terminal approval input. ${APPROVAL_HELP_TEXT}`);
+    }
+
+    if (instance.mode !== "pane_bridge" || !instance.tmux_pane) {
+      throw new Error(
+        `Thread ${threadId} is running in mode=${instance.mode}; /approve requires a pane_bridge thread with tmux.`
+      );
+    }
+
+    const keys = approvalActionToTmuxKeys(action);
+    const escapedKeys = keys.map((key) => this.shellEscape(key)).join(" ");
+    this.execSyncFn(`tmux send-keys -t ${this.shellEscape(instance.tmux_pane)} ${escapedKeys}`, {
+      stdio: "ignore"
+    });
+
+    this.log.info(
+      {
+        operation: "terminal_input",
+        thread_id: threadId,
+        tmux_pane: instance.tmux_pane,
+        approval_action: action,
+        keys
+      },
+      "Sent approval input to tmux pane"
+    );
+
+    return `Sent approval action '${action}' to ${threadId}.`;
   }
 
   snapshotState(): PersistedHubState {

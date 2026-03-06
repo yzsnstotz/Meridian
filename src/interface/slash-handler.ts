@@ -1,4 +1,5 @@
 import type { BridgeMode, Intent } from "../types";
+import { APPROVAL_HELP_TEXT, normalizeApprovalAction } from "../shared/approval";
 
 type SlashIntent = Intent | "help" | "service_restart" | "browse";
 type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
@@ -24,18 +25,32 @@ const HELP_MESSAGE = [
   "/kill thread=<thread_id>",
   "/status thread=<thread_id>",
   "/attach thread=<thread_id>",
+  "/approve <run|allow|all|skip> [thread=<thread_id>]",
   "/model",
   "/model thread=<thread_id> type=<claude|codex|gemini|cursor>",
   "/update [on|off] [thread=<thread_id>] [interval=<seconds>]",
   "/mupdate [thread=<thread_id>]",
   "/list",
   "/help",
+  APPROVAL_HELP_TEXT,
   "Free text messages are treated as run intent."
 ].join("\n");
 
 const ALLOWED_AGENT_TYPES = new Set(["claude", "codex", "gemini", "cursor"]);
 const ALT_SLASH_PREFIXES = new Set(["／", "⁄", "∕"]);
-const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo", "state", "interval", "every", "sec", "seconds"]);
+const ARG_KEYS = new Set([
+  "type",
+  "mode",
+  "thread",
+  "dir",
+  "repo",
+  "state",
+  "interval",
+  "every",
+  "sec",
+  "seconds",
+  "action"
+]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   if (!rawArgs.trim()) {
@@ -120,6 +135,16 @@ function parsePositiveInteger(value: string, field: string): number {
     throw new Error(`${field} must be a positive integer`);
   }
   return parsed;
+}
+
+function parseApprovalCommand(rawArgs: string, args: Record<string, string>, restTokens: string[]): string {
+  const bareAction = restTokens.find((token) => !token.includes("=")) ?? "";
+  const rawAction = (args.action ?? bareAction ?? rawArgs).trim();
+  const action = normalizeApprovalAction(rawAction);
+  if (!action) {
+    throw new Error(`/approve action is invalid. ${APPROVAL_HELP_TEXT}`);
+  }
+  return action;
 }
 
 export function getHelpMessage(): string {
@@ -215,6 +240,22 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         mode: "bridge",
         payloadContent: rawArgs,
         picker: threadId ? null : "attach"
+      };
+    }
+
+    case "/approve": {
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "terminal_input",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: parseApprovalCommand(rawArgs, args, restTokens),
+        picker: null
       };
     }
 

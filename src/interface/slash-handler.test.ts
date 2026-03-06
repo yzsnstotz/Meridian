@@ -50,6 +50,22 @@ test("parseSlashCommand marks /attach without thread as picker flow", () => {
   assert.equal(parsed.picker, "attach");
 });
 
+test("parseSlashCommand parses /approve with explicit thread", () => {
+  const parsed = parseSlashCommand("/approve allow thread=cursor_01");
+  assert.equal(parsed.intent, "terminal_input");
+  assert.equal(parsed.threadId, "cursor_01");
+  assert.equal(parsed.target, "cursor_01");
+  assert.equal(parsed.payloadContent, "allow");
+});
+
+test("parseSlashCommand normalizes /approve aliases", () => {
+  const parsed = parseSlashCommand("/approve y");
+  assert.equal(parsed.intent, "terminal_input");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.payloadContent, "run");
+});
+
 test("parseSlashCommand marks /kill without thread as picker flow", () => {
   const parsed = parseSlashCommand("/kill");
   assert.equal(parsed.intent, "kill");

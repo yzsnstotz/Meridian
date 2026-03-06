@@ -13,6 +13,7 @@ spawn - Spawn a new agent instance
 kill - Kill an existing instance
 status - Get current instance status
 attach - Attach this chat to a thread
+approve - Send approval input to a pane_bridge thread
 update - Toggle monitor progress updates for a thread
 mupdate - Send one manual progress update for a thread
 list - List active instances
@@ -37,6 +38,15 @@ help - Show command usage
 ```text
 /mupdate
 /mupdate thread=codex_01
+```
+
+`/approve` sends approval keystrokes into a `pane_bridge` tmux session:
+
+```text
+/approve run thread=cursor_01
+/approve allow thread=cursor_01
+/approve all thread=cursor_01
+/approve skip thread=cursor_01
 ```
 
 ## Local Development

@@ -5,6 +5,7 @@ import https from "node:https";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { buildTelegramApprovalHint, isApprovalPrompt } from "../shared/approval";
 import { HubResultSchema, ReplyChannelSchema, type HubResult, type ReplyChannel } from "../types";
 
 const TELEGRAM_TEXT_LIMIT = 4096;
@@ -68,6 +69,15 @@ export function splitTextForTelegram(content: string, limit = TELEGRAM_SAFE_TEXT
   }
 
   return chunks;
+}
+
+export function decorateTelegramResultText(result: HubResult): string {
+  const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
+  const baseText = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
+  if (!isApprovalPrompt(result.content)) {
+    return baseText;
+  }
+  return `${baseText}${buildTelegramApprovalHint(result.thread_id)}`;
 }
 
 export interface ResultSenderOptions {
@@ -142,8 +152,7 @@ export class ResultSender {
 
     const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
-    const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
-    const textBody = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
+    const textBody = decorateTelegramResultText(result);
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
       await this.sendLongTextInChunks(botToken, replyChannel.chat_id, textBody, replyToMessageId, {

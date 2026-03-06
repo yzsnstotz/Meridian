@@ -136,6 +136,62 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   ]);
 });
 
+test("sendTerminalInput forwards approval action to tmux pane", async () => {
+  const registry = new InstanceRegistry();
+  const execCalls: string[] = [];
+
+  const manager = new InstanceManager(registry, {
+    portAllocator: async () => 4304,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2203) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("cursor", "pane_bridge");
+  execCalls.length = 0;
+
+  const message = manager.sendTerminalInput(threadId, "allow");
+
+  assert.equal(message, `Sent approval action 'allow' to ${threadId}.`);
+  assert.equal(execCalls.length, 1);
+  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'Tab'/);
+});
+
+test("sendTerminalInput rejects bridge threads", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    portAllocator: async () => 4305,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2204) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("cursor", "bridge");
+
+  assert.throws(
+    () => manager.sendTerminalInput(threadId, "run"),
+    /\/approve requires a pane_bridge thread with tmux/
+  );
+});
+
 test("spawn retries after transient readiness failure", async () => {
   const registry = new InstanceRegistry();
   let spawnCount = 0;
@@ -143,7 +199,9 @@ test("spawn retries after transient readiness failure", async () => {
 
   const manager = new InstanceManager(registry, {
     portAllocator: async () => 4400 + spawnCount,
-    spawnFn: ((_: string, _args: string[]) => {
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
       spawnCount += 1;
       const child = new FakeChildProcess(2400 + spawnCount);
       if (spawnCount === 1) {
@@ -207,7 +265,8 @@ test("attach + status + list + kill + restart lifecycle", async () => {
 
   const manager = new InstanceManager(registry, {
     portAllocator: async () => 5000 + spawnCounter,
-    spawnFn: ((_: string, args: string[]) => {
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
       spawnCounter += 1;
       const typeArg = args.find((arg) => arg.startsWith("--type=")) ?? "--type=codex";
       const type = typeArg.split("=")[1] ?? "codex";
@@ -306,7 +365,9 @@ test("switchModel keeps thread id and updates agent type", async () => {
 
   const manager = new InstanceManager(registry, {
     portAllocator: async () => 5400 + spawnCounter,
-    spawnFn: ((_: string, args: string[]) => {
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
       spawnCounter += 1;
       return new FakeChildProcess(6400 + spawnCounter) as never;
     }) as never,
@@ -333,7 +394,9 @@ test("attach enforces single interface owner per thread", async () => {
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
     portAllocator: async () => 6201,
-    spawnFn: ((_: string, _args: string[]) => {
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
       return new FakeChildProcess(7201) as never;
     }) as never,
     clientFactory: () => ({
@@ -366,7 +429,9 @@ test("spawn fails fast when child already exited before readiness polling", asyn
 
   const manager = new InstanceManager(registry, {
     portAllocator: async () => 6303,
-    spawnFn: ((_: string, _args: string[]) => {
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
       const child = new FakeChildProcess(9303);
       child.exitCode = 1;
       child.signalCode = null;

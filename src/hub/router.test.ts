@@ -115,6 +115,68 @@ test("HubRouter routes restart intent through InstanceManager", async () => {
   assert.match(result.content, /codex_01/);
 });
 
+test("HubRouter routes terminal_input through InstanceManager", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "cursor_01",
+    agent_type: "cursor",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61011",
+    pid: 12,
+    tmux_pane: "agent_cursor_01",
+    status: "waiting",
+    created_at: new Date().toISOString()
+  });
+
+  let sentThreadId = "";
+  let sentInput = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    sendTerminalInput: (threadId: string, rawInput: string) => {
+      sentThreadId = threadId;
+      sentInput = rawInput;
+      return `Sent approval action '${rawInput}' to ${threadId}.`;
+    },
+    getAttachedThread: () => "cursor_01",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "terminal_input",
+      thread_id: "active",
+      target: "active",
+      payload: {
+        content: "run",
+        attachments: []
+      },
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100"
+      }
+    })
+  );
+
+  assert.equal(sentThreadId, "cursor_01");
+  assert.equal(sentInput, "run");
+  assert.equal(result.status, "success");
+  assert.equal(result.source, "cursor");
+  assert.equal(result.thread_id, "cursor_01");
+});
+
 test("HubRouter list omits stopped instances", async () => {
   const registry = new InstanceRegistry();
   registry.register({

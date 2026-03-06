@@ -1,15 +1,18 @@
 import { z } from "zod";
 
-export const ChannelSchema = z.enum(["telegram"]);
+export const ChannelSchema = z.enum(["telegram", "web"]);
 export type Channel = z.infer<typeof ChannelSchema>;
 
 export const IntentSchema = z.enum([
   "run",
+  "terminal_input",
   "spawn",
   "restart",
+  "reboot",
   "kill",
   "status",
   "attach",
+  "detach",
   "list",
   "switch_model",
   "monitor_update",
@@ -47,9 +50,14 @@ export const InboundUIEventSchema = z.object({
 });
 export type InboundUIEvent = z.infer<typeof InboundUIEventSchema>;
 
+export const CompositeChatIdSchema = z.string().regex(/^[a-z][a-z0-9_-]*:.+$/, "chat_id must use {channel}:{id} format");
+export const LegacyChatIdSchema = z.string().min(1).regex(/^[^:]+$/, "legacy chat_id cannot contain ':'");
+export const SessionChatIdSchema = z.union([CompositeChatIdSchema, LegacyChatIdSchema]);
+export type SessionChatId = z.infer<typeof SessionChatIdSchema>;
+
 export const ReplyChannelSchema = z.object({
   channel: ChannelSchema,
-  chat_id: z.string().min(1),
+  chat_id: SessionChatIdSchema,
   message_id: z.string().min(1).optional(),
   bot_id: z.string().regex(/^\d+$/).optional()
 });
@@ -66,10 +74,19 @@ export const HubPayloadSchema = z.object({
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;
 
+export const PrioritySchema = z.number().int().min(0).max(9);
+export type Priority = z.infer<typeof PrioritySchema>;
+
+export const OptionalUuidSchema = z.string().uuid().optional();
+
 export const HubMessageSchema = z.object({
   trace_id: z.string().uuid(),
   thread_id: z.string().min(1),
   actor_id: z.string().min(1),
+  idempotency_key: z.string().min(1).optional(),
+  priority: PrioritySchema.default(5),
+  span_id: OptionalUuidSchema,
+  parent_span_id: OptionalUuidSchema,
   intent: IntentSchema,
   target: z.string().min(1),
   payload: HubPayloadSchema,
@@ -77,7 +94,7 @@ export const HubMessageSchema = z.object({
   reply_channel: ReplyChannelSchema,
   suppress_reply: z.boolean().optional()
 });
-export type HubMessage = z.infer<typeof HubMessageSchema>;
+export type HubMessage = z.input<typeof HubMessageSchema>;
 
 export const HubResultSchema = z.object({
   trace_id: z.string().uuid(),
@@ -89,6 +106,34 @@ export const HubResultSchema = z.object({
   timestamp: z.string().datetime()
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
+
+export const MonitorEventTypeSchema = z.enum([
+  "task_completed",
+  "status_changed",
+  "heartbeat_missed",
+  "agent_error",
+  "sse_reconnect_failed"
+]);
+export type MonitorEventType = z.infer<typeof MonitorEventTypeSchema>;
+
+export const MonitorModeSchema = z.enum(["sse_hook", "heartbeat"]);
+export type MonitorMode = z.infer<typeof MonitorModeSchema>;
+
+export const MonitorEventSchema = z.object({
+  trace_id: z.string().uuid().nullable().default(null),
+  span_id: OptionalUuidSchema,
+  parent_span_id: OptionalUuidSchema,
+  thread_id: z.string().min(1),
+  event_type: MonitorEventTypeSchema,
+  monitor_mode: MonitorModeSchema,
+  timestamp: z.string().datetime(),
+  agent_status: z.string().optional(),
+  missed_heartbeats: z.number().int().nonnegative().optional(),
+  sse_reconnect_count: z.number().int().nonnegative().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+  error: z.string().optional()
+});
+export type MonitorEvent = z.infer<typeof MonitorEventSchema>;
 
 export const AgentInstanceSchema = z.object({
   thread_id: z.string().min(1),
@@ -103,3 +148,35 @@ export const AgentInstanceSchema = z.object({
   restart_safe: z.boolean().optional()
 });
 export type AgentInstance = z.infer<typeof AgentInstanceSchema>;
+
+export const PaneSubscribeRequestSchema = z.object({
+  type: z.literal("subscribe_pane_output"),
+  thread_id: z.string().min(1),
+  replay_lines: z.number().int().nonnegative().optional()
+});
+export type PaneSubscribeRequest = z.infer<typeof PaneSubscribeRequestSchema>;
+
+export const PaneOutputChunkSchema = z.object({
+  type: z.literal("pane_output"),
+  thread_id: z.string().min(1),
+  chunk: z.string(),
+  cursor: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime().optional(),
+  span_id: OptionalUuidSchema,
+  parent_span_id: OptionalUuidSchema
+});
+export type PaneOutputChunk = z.infer<typeof PaneOutputChunkSchema>;
+
+export const PaneUnsubscribeRequestSchema = z.object({
+  type: z.literal("unsubscribe_pane_output"),
+  thread_id: z.string().min(1)
+});
+export type PaneUnsubscribeRequest = z.infer<typeof PaneUnsubscribeRequestSchema>;
+
+export const ServiceEndpointSchema = z.object({
+  service: z.string().min(1).optional(),
+  socket_path: z.string().min(1),
+  intents: z.array(z.string().min(1)).default([]),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+export type ServiceEndpoint = z.infer<typeof ServiceEndpointSchema>;

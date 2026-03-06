@@ -6,6 +6,7 @@ import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { AgentInstanceSchema, type AgentInstance, type AgentType, type HubMessage, type Intent } from "../types";
 import { createLogger } from "../logger";
+import { normalizeApprovalAction } from "../shared/approval";
 import { authMiddleware } from "./auth";
 import { botRuntimes, syncBotCommands } from "./bot";
 import { requestHubMessage, sendHubMessage } from "./ipc-sender";
@@ -1003,7 +1004,22 @@ for (const { bot } of botRuntimes) {
         return;
       }
 
-      const parsedCommand = parseSlashCommand(parsedPayload.event.content);
+      const approvalReplyAction =
+        parsedPayload.event.reply_to !== null ? normalizeApprovalAction(parsedPayload.event.content) : null;
+      const parsedCommand = approvalReplyAction
+        ? {
+            intent: "terminal_input" as const,
+            shouldForward: true,
+            target: "active",
+            threadId: null,
+            spawnDir: null,
+            monitorUpdatesEnabled: null,
+            monitorUpdateIntervalSec: null,
+            mode: "bridge" as const,
+            payloadContent: approvalReplyAction,
+            picker: null
+          }
+        : parseSlashCommand(parsedPayload.event.content);
       interfaceLog.info(
         {
           channel: "telegram",

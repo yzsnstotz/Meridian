@@ -9,6 +9,7 @@ const BOT_COMMANDS: BotCommand[] = [
   { command: "kill", description: "Kill an existing instance" },
   { command: "status", description: "Get current instance status" },
   { command: "attach", description: "Attach this chat to a thread" },
+  { command: "approve", description: "Send approval input to a pane_bridge thread" },
   { command: "update", description: "Toggle monitor progress updates for a thread" },
   { command: "mupdate", description: "Send one manual progress update for a thread" },
   { command: "model", description: "Use provider model menu in active thread" },

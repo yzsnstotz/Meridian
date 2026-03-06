@@ -168,6 +168,8 @@ export class HubRouter {
     switch (message.intent) {
       case "run":
         return await this.handleRun(message);
+      case "terminal_input":
+        return this.handleTerminalInput(message);
       case "status":
         return await this.handleStatus(message);
       case "list":
@@ -216,6 +218,13 @@ export class HubRouter {
     } finally {
       client.disconnect();
     }
+  }
+
+  private handleTerminalInput(message: HubMessage): HubResult {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
+    return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }
 
   private async handleStatus(message: HubMessage): Promise<HubResult> {

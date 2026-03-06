@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { HubMessageSchema, type BridgeMode, type HubMessage, type InboundUIEvent, type Intent } from "../types";
+import { APPROVAL_HELP_TEXT, normalizeApprovalAction } from "../shared/approval";
 
 interface ParsedIntent {
   intent: Intent;
@@ -21,7 +22,19 @@ export interface NormalizerContext {
 }
 
 const AGENT_TYPE_SET = new Set(["claude", "codex", "gemini", "cursor"]);
-const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo", "state", "interval", "every", "sec", "seconds"]);
+const ARG_KEYS = new Set([
+  "type",
+  "mode",
+  "thread",
+  "dir",
+  "repo",
+  "state",
+  "interval",
+  "every",
+  "sec",
+  "seconds",
+  "action"
+]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   const normalized = rawArgs.replace(/[＝:：]/g, "=").replace(/\s*=\s*/g, "=").trim();
@@ -87,6 +100,16 @@ function requireThreadId(args: Record<string, string>, fallbackThreadId: string,
     throw new Error(`${command} requires thread=<thread_id>`);
   }
   return threadId;
+}
+
+function parseApprovalCommand(rawArgs: string, args: Record<string, string>, restTokens: string[]): string {
+  const bareAction = restTokens.find((token) => !token.includes("=")) ?? "";
+  const rawAction = (args.action ?? bareAction ?? rawArgs).trim();
+  const action = normalizeApprovalAction(rawAction);
+  if (!action) {
+    throw new Error(`/approve action is invalid. ${APPROVAL_HELP_TEXT}`);
+  }
+  return action;
 }
 
 function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
@@ -167,6 +190,20 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
         monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: rawArgs
+      };
+    }
+
+    case "/approve": {
+      const threadId = requireThreadId(args, fallbackThreadId, "/approve");
+      return {
+        intent: "terminal_input",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: parseApprovalCommand(rawArgs, args, restTokens)
       };
     }
 
