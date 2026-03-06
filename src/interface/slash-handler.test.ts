@@ -90,3 +90,30 @@ test("parseSlashCommand parses /restart as local command", () => {
   assert.equal(parsed.intent, "restart");
   assert.equal(parsed.shouldForward, false);
 });
+
+test("parseSlashCommand parses /update on with interval and thread", () => {
+  const parsed = parseSlashCommand("/update on thread=codex_01 interval=45");
+  assert.equal(parsed.intent, "monitor_update");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.threadId, "codex_01");
+  assert.equal(parsed.target, "codex_01");
+  assert.equal(parsed.monitorUpdatesEnabled, true);
+  assert.equal(parsed.monitorUpdateIntervalSec, 45);
+});
+
+test("parseSlashCommand parses /update off", () => {
+  const parsed = parseSlashCommand("/update off");
+  assert.equal(parsed.intent, "monitor_update");
+  assert.equal(parsed.monitorUpdatesEnabled, false);
+  assert.equal(parsed.monitorUpdateIntervalSec, null);
+});
+
+test("parseSlashCommand parses /mupdate with explicit thread", () => {
+  const parsed = parseSlashCommand("/mupdate thread=codex_01");
+  assert.equal(parsed.intent, "monitor_manual_update");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.threadId, "codex_01");
+  assert.equal(parsed.target, "codex_01");
+  assert.equal(parsed.monitorUpdatesEnabled, null);
+  assert.equal(parsed.monitorUpdateIntervalSec, null);
+});

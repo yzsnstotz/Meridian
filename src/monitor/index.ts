@@ -120,7 +120,7 @@ export async function startMonitorService(): Promise<void> {
 
   const syncTimer = setInterval(() => {
     void syncFromHub();
-  }, config.HEARTBEAT_INTERVAL_MS);
+  }, config.MONITOR_SYNC_INTERVAL_MS);
   void syncFromHub();
 
   const shutdown = (signal: NodeJS.Signals): void => {
@@ -137,6 +137,7 @@ export async function startMonitorService(): Promise<void> {
     {
       trace_id: null,
       thread_id: null,
+      monitor_sync_interval_ms: config.MONITOR_SYNC_INTERVAL_MS,
       heartbeat_interval_ms: config.HEARTBEAT_INTERVAL_MS,
       heartbeat_missed_threshold: config.HEARTBEAT_MISSED_THRESHOLD
     },

@@ -7,6 +7,8 @@ interface ParsedIntent {
   target: string;
   threadId: string;
   spawnDir: string | null;
+  monitorUpdatesEnabled: boolean | null;
+  monitorUpdateIntervalSec: number | null;
   mode: BridgeMode;
   payloadContent: string;
 }
@@ -18,7 +20,7 @@ export interface NormalizerContext {
 }
 
 const AGENT_TYPE_SET = new Set(["claude", "codex", "gemini", "cursor"]);
-const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo"]);
+const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo", "state", "interval", "every", "sec", "seconds"]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   const normalized = rawArgs.replace(/[＝:：]/g, "=").replace(/\s*=\s*/g, "=").trim();
@@ -53,6 +55,31 @@ function resolveMode(mode: string | undefined): BridgeMode {
   throw new Error("mode must be bridge or pane_bridge");
 }
 
+function parseMonitorUpdateSwitch(value: string | undefined): boolean | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "on") {
+    return true;
+  }
+  if (normalized === "off") {
+    return false;
+  }
+  throw new Error("/update state must be on or off");
+}
+
+function parsePositiveInteger(value: string, field: string): number {
+  if (!/^\d+$/.test(value.trim())) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  const parsed = Number(value.trim());
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function requireThreadId(args: Record<string, string>, fallbackThreadId: string, command: string): string {
   const threadId = args.thread?.trim() || fallbackThreadId;
   if (!threadId) {
@@ -69,6 +96,8 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       target: fallbackThreadId || "active",
       threadId: fallbackThreadId || "unbound",
       spawnDir: null,
+      monitorUpdatesEnabled: null,
+      monitorUpdateIntervalSec: null,
       mode: "bridge",
       payloadContent: trimmed
     };
@@ -91,6 +120,8 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
         target: type,
         threadId,
         spawnDir: args.dir?.trim() || args.repo?.trim() || null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
         mode: resolveMode(args.mode),
         payloadContent: rawArgs
       };
@@ -98,17 +129,44 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
 
     case "/kill": {
       const threadId = requireThreadId(args, fallbackThreadId, "/kill");
-      return { intent: "kill", target: threadId, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
+      return {
+        intent: "kill",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
     }
 
     case "/status": {
       const threadId = requireThreadId(args, fallbackThreadId, "/status");
-      return { intent: "status", target: threadId, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
+      return {
+        intent: "status",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
     }
 
     case "/attach": {
       const threadId = requireThreadId(args, fallbackThreadId, "/attach");
-      return { intent: "attach", target: threadId, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
+      return {
+        intent: "attach",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
     }
 
     case "/model": {
@@ -117,7 +175,64 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       if (!AGENT_TYPE_SET.has(type)) {
         throw new Error("model type must be one of claude|codex|gemini|cursor");
       }
-      return { intent: "switch_model", target: type, threadId, spawnDir: null, mode: "bridge", payloadContent: rawArgs };
+      return {
+        intent: "switch_model",
+        target: type,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
+    }
+
+    case "/update": {
+      const bareStateToken = restTokens.find((token) => {
+        const normalized = token.trim().toLowerCase();
+        return normalized === "on" || normalized === "off";
+      });
+      const parsedState = parseMonitorUpdateSwitch(args.state ?? bareStateToken);
+      const intervalCandidate =
+        args.interval ??
+        args.every ??
+        args.sec ??
+        args.seconds ??
+        restTokens.find((token) => /^\d+$/.test(token.trim()));
+      const parsedIntervalSec = intervalCandidate
+        ? parsePositiveInteger(intervalCandidate, "/update interval")
+        : null;
+      const threadId = args.thread?.trim() || fallbackThreadId;
+      if (!threadId) {
+        throw new Error("/update requires thread=<thread_id> when no active thread is bound");
+      }
+      return {
+        intent: "monitor_update",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: parsedState ?? (parsedIntervalSec ? true : null),
+        monitorUpdateIntervalSec: parsedIntervalSec,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
+    }
+
+    case "/mupdate": {
+      const threadId = args.thread?.trim() || fallbackThreadId;
+      if (!threadId) {
+        throw new Error("/mupdate requires thread=<thread_id> when no active thread is bound");
+      }
+      return {
+        intent: "monitor_manual_update",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
     }
 
     case "/list":
@@ -126,6 +241,8 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
         target: "all",
         threadId: "global",
         spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
         mode: "bridge",
         payloadContent: ""
       };
@@ -153,7 +270,9 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
       attachments: event.attachments,
       raw_message_id: event.raw_message_id,
       reply_to: event.reply_to,
-      spawn_dir: parsed.spawnDir ?? undefined
+      spawn_dir: parsed.spawnDir ?? undefined,
+      monitor_updates_enabled: parsed.monitorUpdatesEnabled ?? undefined,
+      monitor_updates_interval_sec: parsed.monitorUpdateIntervalSec ?? undefined
     },
     mode: parsed.mode,
     reply_channel: {

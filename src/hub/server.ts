@@ -17,7 +17,7 @@ import {
 import { normalizeInboundEvent } from "./normalizer";
 import { ResultSender } from "./result-sender";
 import { InstanceRegistry } from "./registry";
-import { HubRouter } from "./router";
+import { HubRouter, type MonitorUpdateDispatch } from "./router";
 
 interface InboundEnvelope {
   chatId?: string;
@@ -37,6 +37,8 @@ export class HubServer {
   private readonly router: HubRouter;
   private readonly resultSender: ResultSender;
   private server: net.Server | null = null;
+  private monitorProgressTimer: NodeJS.Timeout | null = null;
+  private monitorProgressInFlight = false;
 
   constructor(options: HubServerOptions = {}) {
     this.socketPath = options.socketPath ?? config.HUB_SOCKET_PATH;
@@ -89,6 +91,8 @@ export class HubServer {
       this.server?.listen(this.socketPath, () => resolve());
     });
 
+    this.startMonitorProgressTicker();
+
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server listening");
   }
 
@@ -104,6 +108,7 @@ export class HubServer {
       server.close((error) => (error ? reject(error) : resolve()));
     });
 
+    this.stopMonitorProgressTicker();
     await fs.promises.unlink(this.socketPath).catch(() => undefined);
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server stopped");
   }
@@ -188,6 +193,15 @@ export class HubServer {
 
     if (event.event_type === "status_changed" && event.agent_status) {
       this.router.setInstanceStatus(event.thread_id, event.agent_status);
+      if (this.router.isThreadRunning(event.thread_id)) {
+        this.router.forceMonitorUpdateDispatchNow(event.thread_id);
+      }
+    }
+    if (event.event_type === "task_completed") {
+      // Always stop periodic /update pushes once the task is complete.
+      this.router.setInstanceStatus(event.thread_id, "waiting");
+      await this.deliverMonitorCompletionResult(event);
+      return;
     }
     if (event.event_type === "agent_error" || event.event_type === "sse_reconnect_failed") {
       this.router.setInstanceStatus(event.thread_id, "error");
@@ -245,6 +259,58 @@ export class HubServer {
     }
   }
 
+  private async deliverMonitorCompletionResult(event: MonitorEvent): Promise<void> {
+    const chatTargets = this.collectMonitorCompletionTargets(event.thread_id);
+    if (chatTargets.length === 0) {
+      this.log.warn(
+        {
+          trace_id: event.trace_id,
+          thread_id: event.thread_id,
+          event_type: event.event_type
+        },
+        "Monitor completion skipped because no recipient is registered for thread"
+      );
+      return;
+    }
+
+    const traceId = event.trace_id ?? randomUUID();
+    let completionResult: HubResult;
+    try {
+      completionResult = await this.router.buildCompletionResultForThread(event.thread_id, traceId);
+    } catch (error) {
+      this.log.error(
+        {
+          trace_id: traceId,
+          thread_id: event.thread_id,
+          event_type: event.event_type,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Failed to build monitor completion result"
+      );
+      return;
+    }
+
+    for (const chatId of chatTargets) {
+      await this.resultSender
+        .sendResult(completionResult, {
+          channel: "telegram",
+          chat_id: chatId
+        })
+        .catch((error) => {
+          this.log.error(
+            {
+              trace_id: traceId,
+              thread_id: event.thread_id,
+              target: chatId,
+              event_type: event.event_type,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Failed to deliver monitor completion result to Telegram"
+          );
+        });
+    }
+  }
+
   private shouldSendMonitorAlert(event: MonitorEvent): boolean {
     if (event.event_type === "agent_error" || event.event_type === "sse_reconnect_failed") {
       return true;
@@ -283,6 +349,101 @@ export class HubServer {
     }
 
     return lines.join("\n");
+  }
+
+  private collectMonitorCompletionTargets(threadId: string): string[] {
+    const attachedSessions = this.router.getAttachedSessionsForThread(threadId);
+    const monitorSubscribers = this.router.getMonitorUpdateSubscribersForThread(threadId);
+    return [...new Set([...attachedSessions, ...monitorSubscribers])];
+  }
+
+  private startMonitorProgressTicker(): void {
+    if (this.monitorProgressTimer) {
+      return;
+    }
+    this.monitorProgressTimer = setInterval(() => {
+      void this.flushMonitorProgressUpdates();
+    }, config.MONITOR_PROGRESS_TICK_MS);
+    this.monitorProgressTimer.unref();
+  }
+
+  private stopMonitorProgressTicker(): void {
+    if (!this.monitorProgressTimer) {
+      return;
+    }
+    clearInterval(this.monitorProgressTimer);
+    this.monitorProgressTimer = null;
+  }
+
+  private async flushMonitorProgressUpdates(): Promise<void> {
+    if (this.monitorProgressInFlight) {
+      return;
+    }
+
+    this.monitorProgressInFlight = true;
+    try {
+      const dispatches = this.router.collectDueMonitorUpdateDispatches();
+      if (dispatches.length === 0) {
+        return;
+      }
+
+      const chatTargetsByThread = this.groupMonitorDispatchesByThread(dispatches);
+      for (const [threadId, chatTargets] of chatTargetsByThread.entries()) {
+        if (chatTargets.length === 0) {
+          continue;
+        }
+
+        const traceId = randomUUID();
+        let progressResult: HubResult;
+        try {
+          progressResult = await this.router.buildProgressResultForThread(threadId, traceId);
+        } catch (error) {
+          this.log.error(
+            {
+              trace_id: traceId,
+              thread_id: threadId,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Failed to build monitor progress result"
+          );
+          continue;
+        }
+
+        for (const chatId of chatTargets) {
+          await this.resultSender
+            .sendResult(progressResult, {
+              channel: "telegram",
+              chat_id: chatId
+            })
+            .catch((error) => {
+              this.log.error(
+                {
+                  trace_id: traceId,
+                  thread_id: threadId,
+                  target: chatId,
+                  err: error instanceof Error ? error.message : String(error)
+                },
+                "Failed to deliver monitor progress update to Telegram"
+              );
+            });
+        }
+      }
+    } finally {
+      this.monitorProgressInFlight = false;
+    }
+  }
+
+  private groupMonitorDispatchesByThread(dispatches: MonitorUpdateDispatch[]): Map<string, string[]> {
+    const byThread = new Map<string, string[]>();
+    for (const dispatch of dispatches) {
+      const existing = byThread.get(dispatch.threadId);
+      if (existing) {
+        existing.push(dispatch.chatId);
+        continue;
+      }
+      byThread.set(dispatch.threadId, [dispatch.chatId]);
+    }
+    return byThread;
   }
 
   private normalizeIncomingMessage(payload: unknown): HubMessage {

@@ -719,8 +719,12 @@ export class InstanceManager {
   }
 
   private configureTmuxSession(tmuxSession: string): void {
-    // Keep deep scrollback and enable wheel scrolling for attached viewers.
+    // Keep deep scrollback and disable alternate screen so attached viewers can
+    // reliably scroll older output from full-screen TUIs.
     this.execSyncFn(`tmux set-option -t ${this.shellEscape(tmuxSession)} history-limit 200000`, {
+      stdio: "ignore"
+    });
+    this.execSyncFn(`tmux set-window-option -t ${this.shellEscape(tmuxSession)} alternate-screen off`, {
       stdio: "ignore"
     });
     this.execSyncFn(`tmux set-option -t ${this.shellEscape(tmuxSession)} mouse on`, {

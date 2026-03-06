@@ -67,3 +67,49 @@ test("normalizeInboundEvent parses /model command", () => {
   assert.equal(message.target, "claude");
   assert.equal(message.mode, "bridge");
 });
+
+test("normalizeInboundEvent parses /update command", () => {
+  const message = normalizeInboundEvent(
+    {
+      channel: "telegram",
+      raw_message_id: "104",
+      sender_id: 7,
+      content: "/update on thread=codex_01 interval=30",
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      reply_to: null
+    },
+    {
+      chatId: "67890"
+    }
+  );
+
+  assert.equal(message.intent, "monitor_update");
+  assert.equal(message.thread_id, "codex_01");
+  assert.equal(message.target, "codex_01");
+  assert.equal(message.payload.monitor_updates_enabled, true);
+  assert.equal(message.payload.monitor_updates_interval_sec, 30);
+});
+
+test("normalizeInboundEvent parses /mupdate command", () => {
+  const message = normalizeInboundEvent(
+    {
+      channel: "telegram",
+      raw_message_id: "105",
+      sender_id: 7,
+      content: "/mupdate thread=codex_01",
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      reply_to: null
+    },
+    {
+      chatId: "67890"
+    }
+  );
+
+  assert.equal(message.intent, "monitor_manual_update");
+  assert.equal(message.thread_id, "codex_01");
+  assert.equal(message.target, "codex_01");
+  assert.equal(message.payload.monitor_updates_enabled, undefined);
+  assert.equal(message.payload.monitor_updates_interval_sec, undefined);
+});
