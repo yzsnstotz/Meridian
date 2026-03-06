@@ -1,6 +1,6 @@
 import type { BridgeMode, Intent } from "../types";
 
-type SlashIntent = Intent | "help" | "restart" | "browse";
+type SlashIntent = Intent | "help" | "service_restart" | "browse";
 type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
 
 export interface ParsedSlashCommand {
@@ -343,7 +343,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
 
     case "/restart":
       return {
-        intent: "restart",
+        intent: "service_restart",
         shouldForward: false,
         target: "none",
         threadId: null,

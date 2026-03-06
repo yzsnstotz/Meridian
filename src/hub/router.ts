@@ -15,6 +15,7 @@ import {
 } from "../types";
 import { InstanceManager } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
+import { loadPersistedHubState, savePersistedHubState } from "./state-store";
 
 interface AgentClient {
   connect: (socketPath: string) => Promise<void>;
@@ -53,6 +54,7 @@ export interface HubRouterOptions {
   clientFactory?: (threadId: string) => AgentClient;
   instanceManager?: InstanceManager;
   now?: () => Date;
+  statePath?: string;
 }
 
 function resolveSourceFromTarget(target: string): AgentType {
@@ -68,6 +70,7 @@ export class HubRouter {
   private readonly clientFactory: (threadId: string) => AgentClient;
   private readonly instanceManager: InstanceManager;
   private readonly now: () => Date;
+  private readonly statePath: string;
   private readonly monitorUpdateSubscriptionsByThread = new Map<string, Map<string, MonitorUpdateSubscription>>();
 
   constructor(
@@ -81,6 +84,23 @@ export class HubRouter {
       });
     this.instanceManager = options.instanceManager ?? new InstanceManager(this.registry);
     this.now = options.now ?? (() => new Date());
+    this.statePath = options.statePath ?? config.MERIDIAN_STATE_PATH;
+  }
+
+  async initialize(): Promise<void> {
+    const persistedState = loadPersistedHubState(this.statePath, this.now().toISOString());
+    const result = await this.instanceManager.rehydrateFromState(persistedState);
+    this.persistStateSafely();
+    this.log.info(
+      {
+        trace_id: null,
+        thread_id: null,
+        state_path: this.statePath,
+        restored_threads: result.restored_thread_ids,
+        pruned_threads: result.pruned_thread_ids
+      },
+      "Hub router state initialized"
+    );
   }
 
   async route(rawMessage: HubMessage): Promise<HubResult> {
@@ -100,6 +120,7 @@ export class HubRouter {
 
     try {
       const result = await this.routeByIntent(message);
+      this.persistStateSafely();
       const latencyMs = Date.now() - startedAt;
       this.log.info(
         {
@@ -133,6 +154,7 @@ export class HubRouter {
         },
         "Hub routing failed"
       );
+      this.persistStateSafely();
       return this.buildResult(
         message,
         "error",
@@ -152,6 +174,8 @@ export class HubRouter {
         return this.handleList(message);
       case "spawn":
         return await this.handleSpawn(message);
+      case "restart":
+        return await this.handleRestart(message);
       case "kill":
         return await this.handleKill(message);
       case "attach":
@@ -251,6 +275,18 @@ export class HubRouter {
       `Agent instance ${threadId} killed`,
       threadId
     );
+  }
+
+  private async handleRestart(message: HubMessage): Promise<HubResult> {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const restartedThreadId = await this.instanceManager.restart(threadId);
+    const restarted = this.registry.get(restartedThreadId);
+    const content =
+      restarted === undefined
+        ? `Restarted ${threadId}`
+        : JSON.stringify({ thread_id: restartedThreadId, instance: restarted }, null, 2);
+    return this.buildResult(message, "success", instance.agent_type, content, restartedThreadId);
   }
 
   private handleAttach(message: HubMessage): HubResult {
@@ -462,6 +498,7 @@ export class HubRouter {
       return;
     }
     this.registry.setStatus(threadId, parsed.data);
+    this.persistStateSafely();
   }
 
   getAttachedSessionsForThread(threadId: string): string[] {
@@ -868,5 +905,21 @@ export class HubRouter {
       attachments: [],
       timestamp: this.now().toISOString()
     });
+  }
+
+  private persistStateSafely(): void {
+    try {
+      savePersistedHubState(this.statePath, this.instanceManager.snapshotState());
+    } catch (error) {
+      this.log.warn(
+        {
+          trace_id: null,
+          thread_id: null,
+          state_path: this.statePath,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Failed to persist hub state"
+      );
+    }
   }
 }

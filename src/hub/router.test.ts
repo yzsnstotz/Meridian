@@ -72,6 +72,49 @@ test("HubRouter handles list intent", async () => {
   assert.match(result.content, /No active agent instances/);
 });
 
+test("HubRouter routes restart intent through InstanceManager", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "http://127.0.0.1:61010",
+    pid: 10,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let restartedThreadId = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    restart: async (threadId: string) => {
+      restartedThreadId = threadId;
+      return threadId;
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(baseMessage({ intent: "restart", target: "codex_01" }));
+  assert.equal(restartedThreadId, "codex_01");
+  assert.equal(result.status, "success");
+  assert.match(result.content, /codex_01/);
+});
+
 test("HubRouter list omits stopped instances", async () => {
   const registry = new InstanceRegistry();
   registry.register({

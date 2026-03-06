@@ -15,6 +15,10 @@ class FakeRouter {
   monitorSubscribersByThread = new Map<string, string[]>();
   dueDispatches: Array<{ threadId: string; chatId: string }> = [];
 
+  async initialize(): Promise<void> {
+    return;
+  }
+
   async route(rawMessage: unknown): Promise<HubResult> {
     void rawMessage;
     throw new Error("route() should not be called for monitor event payloads");

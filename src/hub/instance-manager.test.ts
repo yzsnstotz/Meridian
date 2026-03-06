@@ -243,6 +243,61 @@ test("attach + status + list + kill + restart lifecycle", async () => {
   assert.equal(manager.getAttachedThread("chat-1"), null);
 });
 
+test("rehydrateFromState restores live instances and session bindings", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    clientFactory: (threadId: string) => ({
+      connect: async (endpoint: string) => {
+        if (threadId === "codex_02" || endpoint.endsWith(":6502")) {
+          throw new Error("connect ECONNREFUSED 127.0.0.1:6502");
+        }
+      },
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "waiting" })
+    })
+  });
+
+  const result = await manager.rehydrateFromState({
+    version: 1,
+    updated_at: new Date().toISOString(),
+    instances: [
+      {
+        thread_id: "codex_01",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: "http://127.0.0.1:6501",
+        working_dir: "/tmp",
+        pid: 6501,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString()
+      },
+      {
+        thread_id: "codex_02",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: "http://127.0.0.1:6502",
+        working_dir: "/tmp",
+        pid: 6502,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString()
+      }
+    ],
+    session_bindings: {
+      "777:chat-a": "codex_01",
+      "777:chat-b": "codex_02"
+    }
+  });
+
+  assert.deepEqual(result.restored_thread_ids, ["codex_01"]);
+  assert.deepEqual(result.pruned_thread_ids, ["codex_02"]);
+  assert.equal(registry.list().length, 1);
+  assert.equal(registry.get("codex_01")?.status, "waiting");
+  assert.equal(manager.getAttachedThread("777:chat-a"), "codex_01");
+  assert.equal(manager.getAttachedThread("777:chat-b"), null);
+});
+
 test("switchModel keeps thread id and updates agent type", async () => {
   const registry = new InstanceRegistry();
   let spawnCounter = 0;

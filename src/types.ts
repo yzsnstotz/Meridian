@@ -6,6 +6,7 @@ export type Channel = z.infer<typeof ChannelSchema>;
 export const IntentSchema = z.enum([
   "run",
   "spawn",
+  "restart",
   "kill",
   "status",
   "attach",
