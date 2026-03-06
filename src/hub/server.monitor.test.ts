@@ -120,6 +120,33 @@ test("HubServer forwards task_completed monitor event to all attached sessions",
   assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "success"));
 });
 
+test("HubServer decodes bot-aware session targets for monitor completion delivery", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.attachedSessionsByThread.set("codex_01", ["777:chat-a"]);
+  const fakeResultSender = new FakeResultSender();
+
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender
+  });
+
+  const result = await (server as unknown as { handleRawPayload: (raw: string) => Promise<HubResult | null> })
+    .handleRawPayload(
+      JSON.stringify({
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        event_type: "task_completed",
+        monitor_mode: "sse_hook",
+        timestamp: new Date().toISOString()
+      })
+    );
+
+  assert.equal(result, null);
+  assert.equal(fakeResultSender.calls.length, 1);
+  assert.equal(fakeResultSender.calls[0]?.replyChannel.chat_id, "chat-a");
+  assert.equal(fakeResultSender.calls[0]?.replyChannel.bot_id, "777");
+});
+
 test("HubServer skips task_completed push when no session is attached", async () => {
   const fakeRouter = new FakeRouter();
   const fakeResultSender = new FakeResultSender();

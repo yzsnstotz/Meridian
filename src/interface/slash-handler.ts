@@ -23,6 +23,7 @@ const HELP_MESSAGE = [
   "/kill thread=<thread_id>",
   "/status thread=<thread_id>",
   "/attach thread=<thread_id>",
+  "/model",
   "/model thread=<thread_id> type=<claude|codex|gemini|cursor>",
   "/update [on|off] [thread=<thread_id>] [interval=<seconds>]",
   "/mupdate [thread=<thread_id>]",
@@ -219,6 +220,21 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
     case "/model": {
       const threadId = args.thread?.trim() || null;
       const type = (args.type ?? "").trim().toLowerCase();
+      if (!threadId && !type) {
+        return {
+          intent: "run",
+          shouldForward: true,
+          target: "active",
+          threadId: null,
+          spawnDir: null,
+          monitorUpdatesEnabled: null,
+          monitorUpdateIntervalSec: null,
+          mode: "bridge",
+          payloadContent: content,
+          picker: null
+        };
+      }
+
       if (!threadId || !type) {
         return {
           intent: "switch_model",

@@ -211,8 +211,8 @@ export class HubServer {
       return;
     }
 
-    const chatTargets = this.router.getAttachedSessionsForThread(event.thread_id);
-    if (chatTargets.length === 0) {
+    const sessionTargets = this.router.getAttachedSessionsForThread(event.thread_id);
+    if (sessionTargets.length === 0) {
       this.log.warn(
         {
           trace_id: event.trace_id,
@@ -227,7 +227,8 @@ export class HubServer {
     const traceId = event.trace_id ?? randomUUID();
     const source = this.router.resolveSourceForThread(event.thread_id);
     const content = this.formatMonitorAlert(event, traceId);
-    for (const chatId of chatTargets) {
+    for (const sessionTarget of sessionTargets) {
+      const replyTarget = this.parseReplyTarget(sessionTarget);
       await this.resultSender
         .sendResult(
           {
@@ -241,7 +242,8 @@ export class HubServer {
           },
           {
             channel: "telegram",
-            chat_id: chatId
+            chat_id: replyTarget.chatId,
+            bot_id: replyTarget.botId
           }
         )
         .catch((error) => {
@@ -249,7 +251,8 @@ export class HubServer {
             {
               trace_id: traceId,
               thread_id: event.thread_id,
-              target: chatId,
+              target: replyTarget.chatId,
+              bot_id: replyTarget.botId ?? null,
               event_type: event.event_type,
               err: error instanceof Error ? error.message : String(error)
             },
@@ -260,8 +263,8 @@ export class HubServer {
   }
 
   private async deliverMonitorCompletionResult(event: MonitorEvent): Promise<void> {
-    const chatTargets = this.collectMonitorCompletionTargets(event.thread_id);
-    if (chatTargets.length === 0) {
+    const sessionTargets = this.collectMonitorCompletionTargets(event.thread_id);
+    if (sessionTargets.length === 0) {
       this.log.warn(
         {
           trace_id: event.trace_id,
@@ -290,18 +293,21 @@ export class HubServer {
       return;
     }
 
-    for (const chatId of chatTargets) {
+    for (const sessionTarget of sessionTargets) {
+      const replyTarget = this.parseReplyTarget(sessionTarget);
       await this.resultSender
         .sendResult(completionResult, {
           channel: "telegram",
-          chat_id: chatId
+          chat_id: replyTarget.chatId,
+          bot_id: replyTarget.botId
         })
         .catch((error) => {
           this.log.error(
             {
               trace_id: traceId,
               thread_id: event.thread_id,
-              target: chatId,
+              target: replyTarget.chatId,
+              bot_id: replyTarget.botId ?? null,
               event_type: event.event_type,
               err: error instanceof Error ? error.message : String(error)
             },
@@ -388,8 +394,8 @@ export class HubServer {
       }
 
       const chatTargetsByThread = this.groupMonitorDispatchesByThread(dispatches);
-      for (const [threadId, chatTargets] of chatTargetsByThread.entries()) {
-        if (chatTargets.length === 0) {
+      for (const [threadId, targets] of chatTargetsByThread.entries()) {
+        if (targets.length === 0) {
           continue;
         }
 
@@ -409,18 +415,20 @@ export class HubServer {
           continue;
         }
 
-        for (const chatId of chatTargets) {
+        for (const target of targets) {
           await this.resultSender
             .sendResult(progressResult, {
               channel: "telegram",
-              chat_id: chatId
+              chat_id: target.chatId,
+              bot_id: target.botId
             })
             .catch((error) => {
               this.log.error(
                 {
                   trace_id: traceId,
                   thread_id: threadId,
-                  target: chatId,
+                  target: target.chatId,
+                  bot_id: target.botId ?? null,
                   err: error instanceof Error ? error.message : String(error)
                 },
                 "Failed to deliver monitor progress update to Telegram"
@@ -433,17 +441,32 @@ export class HubServer {
     }
   }
 
-  private groupMonitorDispatchesByThread(dispatches: MonitorUpdateDispatch[]): Map<string, string[]> {
-    const byThread = new Map<string, string[]>();
+  private groupMonitorDispatchesByThread(dispatches: MonitorUpdateDispatch[]): Map<string, MonitorUpdateDispatch[]> {
+    const byThread = new Map<string, MonitorUpdateDispatch[]>();
     for (const dispatch of dispatches) {
       const existing = byThread.get(dispatch.threadId);
       if (existing) {
-        existing.push(dispatch.chatId);
+        existing.push(dispatch);
         continue;
       }
-      byThread.set(dispatch.threadId, [dispatch.chatId]);
+      byThread.set(dispatch.threadId, [dispatch]);
     }
     return byThread;
+  }
+
+  private parseReplyTarget(session: string): { chatId: string; botId?: string } {
+    const separatorIndex = session.indexOf(":");
+    if (separatorIndex <= 0) {
+      return { chatId: session };
+    }
+    const candidateBotId = session.slice(0, separatorIndex);
+    if (!/^\d+$/.test(candidateBotId)) {
+      return { chatId: session };
+    }
+    return {
+      botId: candidateBotId,
+      chatId: session.slice(separatorIndex + 1)
+    };
   }
 
   private normalizeIncomingMessage(payload: unknown): HubMessage {

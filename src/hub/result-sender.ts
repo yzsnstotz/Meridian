@@ -72,14 +72,64 @@ export function splitTextForTelegram(content: string, limit = TELEGRAM_SAFE_TEXT
 
 export interface ResultSenderOptions {
   botToken?: string;
+  botTokens?: string[];
+}
+
+function extractBotIdFromToken(token: string): string {
+  const [rawBotId] = token.trim().split(":");
+  if (!rawBotId || !/^\d+$/.test(rawBotId)) {
+    throw new Error("Telegram bot token must use format '<bot_id>:<secret>'");
+  }
+  return rawBotId;
+}
+
+function parseAdditionalBotTokens(raw: string | undefined): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function resolveConfiguredBotTokens(): string[] {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+
+  for (const token of [config.TELEGRAM_BOT_TOKEN, ...parseAdditionalBotTokens(config.TELEGRAM_BOT_TOKENS)]) {
+    if (seen.has(token)) {
+      continue;
+    }
+    seen.add(token);
+    tokens.push(token);
+  }
+
+  return tokens;
 }
 
 export class ResultSender {
   private readonly log = createLogger("hub");
-  private readonly botToken: string;
+  private readonly defaultBotToken: string;
+  private readonly botTokenById: Map<string, string>;
 
   constructor(options: ResultSenderOptions = {}) {
-    this.botToken = options.botToken ?? config.TELEGRAM_BOT_TOKEN;
+    const tokens = options.botToken
+      ? [options.botToken]
+      : options.botTokens ?? resolveConfiguredBotTokens();
+    if (tokens.length === 0) {
+      throw new Error("At least one Telegram bot token is required");
+    }
+
+    this.defaultBotToken = tokens[0];
+    this.botTokenById = new Map<string, string>();
+    for (const token of tokens) {
+      const botId = extractBotIdFromToken(token);
+      if (this.botTokenById.has(botId)) {
+        throw new Error(`Duplicate Telegram bot_id detected in configured tokens: ${botId}`);
+      }
+      this.botTokenById.set(botId, token);
+    }
   }
 
   async sendResult(rawResult: HubResult, rawReplyChannel: ReplyChannel): Promise<void> {
@@ -90,22 +140,30 @@ export class ResultSender {
       throw new Error(`Unsupported reply channel: ${replyChannel.channel}`);
     }
 
+    const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
     const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
     const textBody = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
-      await this.sendLongTextInChunks(replyChannel.chat_id, textBody, replyToMessageId, {
+      await this.sendLongTextInChunks(botToken, replyChannel.chat_id, textBody, replyToMessageId, {
         traceId: result.trace_id,
         threadId: result.thread_id
       });
     } else {
-      await this.sendTextWithRetry(replyChannel.chat_id, textBody, replyToMessageId);
+      await this.sendTextWithRetry(botToken, replyChannel.chat_id, textBody, replyToMessageId);
     }
 
     for (const attachment of result.attachments) {
       const filename = attachment.filename ?? path.basename(attachment.path);
-      await this.sendDocumentWithRetry(replyChannel.chat_id, attachment.path, filename, undefined, replyToMessageId);
+      await this.sendDocumentWithRetry(
+        botToken,
+        replyChannel.chat_id,
+        attachment.path,
+        filename,
+        undefined,
+        replyToMessageId
+      );
     }
 
     this.log.info(
@@ -113,13 +171,15 @@ export class ResultSender {
         trace_id: result.trace_id,
         thread_id: result.thread_id,
         status: result.status,
-        target: replyChannel.chat_id
+        target: replyChannel.chat_id,
+        bot_id: replyChannel.bot_id ?? extractBotIdFromToken(botToken)
       },
       "HubResult delivered to Telegram"
     );
   }
 
   private async sendLongTextInChunks(
+    botToken: string,
     chatId: string,
     content: string,
     replyToMessageId?: number,
@@ -142,21 +202,27 @@ export class ResultSender {
 
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index] ?? "";
-      await this.sendTextWithRetry(chatId, chunk, index === 0 ? replyToMessageId : undefined);
+      await this.sendTextWithRetry(botToken, chatId, chunk, index === 0 ? replyToMessageId : undefined);
       if (index < chunks.length - 1) {
         await this.delay(TELEGRAM_CHUNK_DELAY_MS);
       }
     }
   }
 
-  private async sendTextWithRetry(chatId: string, text: string, replyToMessageId?: number): Promise<void> {
+  private async sendTextWithRetry(
+    botToken: string,
+    chatId: string,
+    text: string,
+    replyToMessageId?: number
+  ): Promise<void> {
     await this.withTelegramRetry(
-      () => this.sendText(chatId, text, replyToMessageId),
+      () => this.sendText(botToken, chatId, text, replyToMessageId),
       "sendMessage"
     );
   }
 
   private async sendDocumentWithRetry(
+    botToken: string,
     chatId: string,
     filePath: string,
     filename: string,
@@ -164,7 +230,7 @@ export class ResultSender {
     replyToMessageId?: number
   ): Promise<void> {
     await this.withTelegramRetry(
-      () => this.sendDocument(chatId, filePath, filename, caption, replyToMessageId),
+      () => this.sendDocument(botToken, chatId, filePath, filename, caption, replyToMessageId),
       "sendDocument"
     );
   }
@@ -231,7 +297,7 @@ export class ResultSender {
     });
   }
 
-  private async sendText(chatId: string, text: string, replyToMessageId?: number): Promise<void> {
+  private async sendText(botToken: string, chatId: string, text: string, replyToMessageId?: number): Promise<void> {
     const payload: Record<string, unknown> = {
       chat_id: chatId,
       text
@@ -240,10 +306,11 @@ export class ResultSender {
       payload.reply_to_message_id = replyToMessageId;
     }
 
-    await this.postJson("/sendMessage", payload);
+    await this.postJson(botToken, "/sendMessage", payload);
   }
 
   private async sendDocument(
+    botToken: string,
     chatId: string,
     filePath: string,
     filename: string,
@@ -266,7 +333,7 @@ export class ResultSender {
 
     const body = Buffer.concat(parts);
 
-    await this.postBuffer(`/sendDocument`, body, {
+    await this.postBuffer(botToken, `/sendDocument`, body, {
       "Content-Type": `multipart/form-data; boundary=${boundary}`
     });
   }
@@ -287,19 +354,20 @@ export class ResultSender {
     return Buffer.concat([header, content, footer]);
   }
 
-  private async postJson(endpoint: string, payload: Record<string, unknown>): Promise<void> {
+  private async postJson(botToken: string, endpoint: string, payload: Record<string, unknown>): Promise<void> {
     const body = Buffer.from(JSON.stringify(payload), "utf8");
-    await this.postBuffer(endpoint, body, {
+    await this.postBuffer(botToken, endpoint, body, {
       "Content-Type": "application/json"
     });
   }
 
   private async postBuffer(
+    botToken: string,
     endpoint: string,
     body: Buffer,
     headers: Record<string, string>
   ): Promise<void> {
-    const pathWithToken = `/bot${this.botToken}${endpoint}`;
+    const pathWithToken = `/bot${botToken}${endpoint}`;
 
     await new Promise<void>((resolve, reject) => {
       const request = https.request(
@@ -377,6 +445,17 @@ export class ResultSender {
       request.write(body);
       request.end();
     });
+  }
+
+  private resolveBotToken(botId: string | undefined): string {
+    if (botId) {
+      const token = this.botTokenById.get(botId);
+      if (token) {
+        return token;
+      }
+      this.log.warn({ bot_id: botId }, "Unknown reply_channel.bot_id, falling back to default bot");
+    }
+    return this.defaultBotToken;
   }
 
   private toMessageId(value: string | undefined): number | undefined {

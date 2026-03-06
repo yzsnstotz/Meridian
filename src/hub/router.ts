@@ -30,7 +30,9 @@ interface AgentMessageSnapshot {
 }
 
 interface MonitorUpdateSubscription {
+  sessionId: string;
   chatId: string;
+  botId?: string;
   intervalMs: number;
   nextDispatchAtMs: number;
 }
@@ -38,9 +40,14 @@ interface MonitorUpdateSubscription {
 export interface MonitorUpdateDispatch {
   threadId: string;
   chatId: string;
+  botId?: string;
 }
 
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
+
+function encodeSessionId(chatId: string, botId: string | undefined): string {
+  return botId ? `${botId}:${chatId}` : chatId;
+}
 
 export interface HubRouterOptions {
   clientFactory?: (threadId: string) => AgentClient;
@@ -211,7 +218,8 @@ export class HubRouter {
     const type = AgentTypeSchema.parse(message.target);
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
     const threadId = await this.instanceManager.spawn(type, message.mode, spawnDir);
-    this.instanceManager.attach(threadId, message.reply_channel.chat_id);
+    const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
+    this.instanceManager.attach(threadId, sessionId);
     const spawned = this.registry.get(threadId);
     const content =
       spawned === undefined
@@ -236,7 +244,8 @@ export class HubRouter {
   private handleAttach(message: HubMessage): HubResult {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
-    const binding = this.instanceManager.attach(threadId, message.reply_channel.chat_id);
+    const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
+    const binding = this.instanceManager.attach(threadId, sessionId);
     const content = JSON.stringify(binding, null, 2);
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }
@@ -258,10 +267,12 @@ export class HubRouter {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
     const chatId = message.reply_channel.chat_id;
+    const botId = message.reply_channel.bot_id;
+    const sessionId = encodeSessionId(chatId, botId);
     const requestedIntervalSec = message.payload.monitor_updates_interval_sec;
     const requestedEnabled = message.payload.monitor_updates_enabled;
     const inferredEnabled = requestedEnabled ?? (requestedIntervalSec !== undefined ? true : undefined);
-    const existing = this.monitorUpdateSubscriptionsByThread.get(threadId)?.get(chatId) ?? null;
+    const existing = this.monitorUpdateSubscriptionsByThread.get(threadId)?.get(sessionId) ?? null;
 
     if (inferredEnabled === undefined) {
       if (!existing) {
@@ -283,7 +294,7 @@ export class HubRouter {
     }
 
     if (!inferredEnabled) {
-      this.deleteMonitorUpdateSubscription(threadId, chatId);
+      this.deleteMonitorUpdateSubscription(threadId, sessionId);
       return this.buildResult(
         message,
         "success",
@@ -297,7 +308,7 @@ export class HubRouter {
     const normalizedIntervalSec = this.normalizeMonitorUpdateIntervalSec(
       requestedIntervalSec ?? existingIntervalSec
     );
-    this.upsertMonitorUpdateSubscription(threadId, chatId, normalizedIntervalSec);
+    this.upsertMonitorUpdateSubscription(threadId, sessionId, chatId, botId, normalizedIntervalSec);
     return this.buildResult(
       message,
       "success",
@@ -326,7 +337,8 @@ export class HubRouter {
       return explicitThread;
     }
 
-    const attachedThread = this.instanceManager.getAttachedThread(message.reply_channel.chat_id);
+    const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
+    const attachedThread = this.instanceManager.getAttachedThread(sessionId);
     if (attachedThread) {
       return attachedThread;
     }
@@ -340,7 +352,8 @@ export class HubRouter {
       return explicitThread;
     }
 
-    const attachedThread = this.instanceManager.getAttachedThread(message.reply_channel.chat_id);
+    const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
+    const attachedThread = this.instanceManager.getAttachedThread(sessionId);
     if (attachedThread) {
       return attachedThread;
     }
@@ -466,7 +479,8 @@ export class HubRouter {
         subscription.nextDispatchAtMs = nowMs + subscription.intervalMs;
         due.push({
           threadId,
-          chatId: subscription.chatId
+          chatId: subscription.chatId,
+          botId: subscription.botId
         });
       }
     }
@@ -576,27 +590,35 @@ export class HubRouter {
     return null;
   }
 
-  private upsertMonitorUpdateSubscription(threadId: string, chatId: string, intervalSec: number): void {
+  private upsertMonitorUpdateSubscription(
+    threadId: string,
+    sessionId: string,
+    chatId: string,
+    botId: string | undefined,
+    intervalSec: number
+  ): void {
     let byChat = this.monitorUpdateSubscriptionsByThread.get(threadId);
     if (!byChat) {
       byChat = new Map<string, MonitorUpdateSubscription>();
       this.monitorUpdateSubscriptionsByThread.set(threadId, byChat);
     }
 
-    byChat.set(chatId, {
+    byChat.set(sessionId, {
+      sessionId,
       chatId,
+      botId,
       intervalMs: intervalSec * 1000,
       nextDispatchAtMs: this.now().getTime()
     });
   }
 
-  private deleteMonitorUpdateSubscription(threadId: string, chatId: string): void {
+  private deleteMonitorUpdateSubscription(threadId: string, sessionId: string): void {
     const byChat = this.monitorUpdateSubscriptionsByThread.get(threadId);
     if (!byChat) {
       return;
     }
 
-    byChat.delete(chatId);
+    byChat.delete(sessionId);
     if (byChat.size === 0) {
       this.monitorUpdateSubscriptionsByThread.delete(threadId);
     }

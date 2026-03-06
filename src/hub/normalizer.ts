@@ -15,6 +15,7 @@ interface ParsedIntent {
 
 export interface NormalizerContext {
   chatId: string;
+  botId?: string;
   actorId?: string;
   defaultThreadId?: string;
 }
@@ -170,6 +171,19 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
     }
 
     case "/model": {
+      if (!args.thread && !args.type) {
+        return {
+          intent: "run",
+          target: fallbackThreadId || "active",
+          threadId: fallbackThreadId || "unbound",
+          spawnDir: null,
+          monitorUpdatesEnabled: null,
+          monitorUpdateIntervalSec: null,
+          mode: "bridge",
+          payloadContent: trimmed
+        };
+      }
+
       const threadId = requireThreadId(args, fallbackThreadId, "/model");
       const type = (args.type ?? "").trim().toLowerCase();
       if (!AGENT_TYPE_SET.has(type)) {
@@ -278,7 +292,8 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
     reply_channel: {
       channel: "telegram",
       chat_id: context.chatId,
-      message_id: event.raw_message_id
+      message_id: event.raw_message_id,
+      bot_id: context.botId
     }
   });
 }
