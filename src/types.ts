@@ -99,6 +99,7 @@ export const AgentInstanceSchema = z.object({
   pid: z.number().int().nonnegative(),
   tmux_pane: z.string().nullable(),
   status: AgentInstanceStatusSchema,
-  created_at: z.string().datetime()
+  created_at: z.string().datetime(),
+  restart_safe: z.boolean().optional()
 });
 export type AgentInstance = z.infer<typeof AgentInstanceSchema>;

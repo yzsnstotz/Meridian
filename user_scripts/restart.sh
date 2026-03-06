@@ -83,6 +83,11 @@ stop_pm2_apps() {
     return 0
   fi
 
+  if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
+    log "Skipping PM2 delete because keep-agents mode is enabled"
+    return 0
+  fi
+
   log "Stopping PM2 apps (if present)"
   pm2 delete calling-hub calling-interface calling-monitor >/dev/null 2>&1 || true
   pm2 delete ecosystem.config.js >/dev/null 2>&1 || true
@@ -119,6 +124,17 @@ start_with_pm2() {
   fi
   if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" ]]; then
     return 1
+  fi
+
+  if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
+    log "Reloading Meridian with PM2 (keep-agents mode)"
+    (
+      cd "${ROOT_DIR}"
+      pm2 reload ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null 2>&1 ||
+        pm2 restart calling-hub calling-interface calling-monitor --update-env >/dev/null 2>&1 ||
+        pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null 2>&1
+    )
+    return 0
   fi
 
   log "Starting Meridian with PM2"

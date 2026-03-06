@@ -27,12 +27,12 @@ class FakeChildProcess extends EventEmitter {
 
 test("spawn registers instance and uses bridge args", async () => {
   const registry = new InstanceRegistry();
-  const spawnCalls: Array<{ command: string; args: string[] }> = [];
+  const spawnCalls: Array<{ command: string; args: string[]; detached?: boolean }> = [];
 
   const manager = new InstanceManager(registry, {
     portAllocator: async () => 4101,
-    spawnFn: ((command: string, args: string[]) => {
-      spawnCalls.push({ command, args });
+    spawnFn: ((command: string, args: string[], options?: { detached?: boolean }) => {
+      spawnCalls.push({ command, args, detached: options?.detached });
       return new FakeChildProcess(1101) as never;
     }) as never,
     clientFactory: () => ({
@@ -48,6 +48,8 @@ test("spawn registers instance and uses bridge args", async () => {
   assert.equal(threadId, "codex_01");
   assert.equal(instance?.socket_path, "http://127.0.0.1:4101");
   assert.equal(instance?.pid, 1101);
+  assert.equal(instance?.restart_safe, true);
+  assert.equal(spawnCalls[0]?.detached, true);
   assert.deepEqual(spawnCalls[0]?.args, ["server", "--type=codex", "--port=4101", "--", "codex"]);
 });
 
