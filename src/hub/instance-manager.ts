@@ -71,6 +71,7 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
 const DEFAULT_AGENT_WORKDIR = process.env.AGENT_WORKDIR ?? process.cwd();
+type SpawnStdioMode = "inherit" | ["ignore", number, number];
 
 export class InstanceManager {
   private readonly log = createLogger("instance_mgr");
@@ -446,7 +447,7 @@ export class InstanceManager {
         "Launching agent instance process"
       );
       const child = this.spawnFn(paneLaunch.command, paneLaunch.args, {
-        detached: false,
+        detached: true,
         stdio,
         env: childEnv,
         cwd: spawnWorkdir
@@ -476,11 +477,13 @@ export class InstanceManager {
         pid: child.pid,
         tmux_pane: tmuxSession,
         status: "idle",
-        created_at: this.now().toISOString()
+        created_at: this.now().toISOString(),
+        restart_safe: true
       };
 
       this.registry.register(instance);
       this.children.set(threadId, child);
+      this.maybeUnrefChild(child, stdio);
       this.watchChildProcess(threadId, child);
       try {
         await this.assertAgentReady(threadId, socketPath);
@@ -527,7 +530,7 @@ export class InstanceManager {
       "Launching agent instance process"
     );
     const child = this.spawnFn(this.agentapiBinPath, args, {
-      detached: false,
+      detached: true,
       stdio,
       env: childEnv,
       cwd: spawnWorkdir
@@ -557,11 +560,13 @@ export class InstanceManager {
       pid: child.pid,
       tmux_pane: tmuxSession,
       status: "idle",
-      created_at: this.now().toISOString()
+      created_at: this.now().toISOString(),
+      restart_safe: true
     };
 
     this.registry.register(instance);
     this.children.set(threadId, child);
+    this.maybeUnrefChild(child, stdio);
     this.watchChildProcess(threadId, child);
     await this.assertAgentReady(threadId, socketPath);
 
@@ -909,7 +914,7 @@ export class InstanceManager {
     }
   }
 
-  private buildSpawnStdio(threadId: string): "inherit" | ["ignore", number, number] {
+  private buildSpawnStdio(threadId: string): SpawnStdioMode {
     const shouldRedirectLogs = DEFAULT_NODE_ENV === "production" || Boolean(process.env.PM2_HOME);
     if (!shouldRedirectLogs) {
       return "inherit";
@@ -920,6 +925,15 @@ export class InstanceManager {
     const fd = fs.openSync(agentLogPath, "a");
     this.agentLogFdByThread.set(threadId, fd);
     return ["ignore", fd, fd];
+  }
+
+  private maybeUnrefChild(child: ChildProcess, stdio: SpawnStdioMode): void {
+    if (stdio === "inherit") {
+      return;
+    }
+    if (typeof child.unref === "function") {
+      child.unref();
+    }
   }
 
   private buildChildEnv(): NodeJS.ProcessEnv {
