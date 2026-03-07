@@ -2,75 +2,272 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Meridian — Terminal</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Meridian Terminal — Coding Agent</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
-    .hidden { display: none !important; }
-    #app { display: flex; flex-direction: column; max-width: 72rem; margin: 0 auto; width: 100%; padding: 0.5rem 1rem; flex: 1; }
-    #no-token { border-radius: 0.5rem; background: rgba(120,53,15,0.4); border: 1px solid rgba(217,119,6,0.5); padding: 1rem; color: #fde68a; }
-    #no-token code { background: #1e293b; padding: 0 0.25rem; border-radius: 0.25rem; }
-    #content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
-    .mono { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.875rem; color: #94a3b8; }
-    .spacer { flex: 1; }
-    .toolbar input { flex: 1; min-width: 120px; max-width: 28rem; padding: 0.375rem 0.75rem; border-radius: 0.375rem; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; font-size: 0.875rem; }
-    .btn { padding: 0.375rem 0.75rem; border-radius: 0.375rem; border: none; font-weight: 500; cursor: pointer; color: #fff; font-size: 0.875rem; }
-    .btn-default { background: #475569; }
-    .btn-default:hover { background: #64748b; }
-    .btn-red { background: #b91c1c; }
-    .btn-red:hover { background: #dc2626; }
-    .btn-amber { background: #b45309; }
-    .btn-amber:hover { background: #d97706; }
-    #terminal-container { flex: 1; border-radius: 0.375rem; border: 1px solid #475569; overflow: hidden; min-height: 200px; position: relative; }
-    #terminal-not-available { padding: 1rem; color: #fde68a; background: rgba(120,53,15,0.3); border-radius: 0.375rem; }
-    #term { width: 100%; height: 100%; }
-    #loading { color: #94a3b8; padding: 1rem 0; }
+    :root {
+      --bg-color: #0f172a;
+      --surface-color: #1e293b;
+      --border-color: #334155;
+      --text-color: #e2e8f0;
+      --text-dim: #94a3b8;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --error-color: #ef4444;
+      --warning-color: #f59e0b;
+      --success-color: #10b981;
+    }
 
-    /* Minimal xterm styles — enough for the terminal to render without CDN */
-    .xterm { position: relative; user-select: none; }
-    .xterm.focus, .xterm:focus { outline: none; }
-    .xterm .xterm-helpers { position: absolute; top: 0; z-index: 5; }
-    .xterm .xterm-helper-textarea { padding: 0; border: 0; margin: 0; position: absolute; opacity: 0; left: -9999em; top: 0; width: 0; height: 0; z-index: -5; white-space: nowrap; overflow: hidden; resize: none; }
-    .xterm .xterm-rows { position: relative; }
-    .xterm .xterm-rows > div { white-space: nowrap; }
-    .xterm .xterm-screen { position: relative; }
-    .xterm .xterm-screen canvas { position: absolute; left: 0; top: 0; }
-    .xterm .xterm-viewport { background-color: #0f172a; overflow-y: scroll; cursor: default; position: absolute; right: 0; left: 0; top: 0; bottom: 0; }
-    .xterm .xterm-scroll-area { visibility: hidden; }
-    .xterm-char-measure-element { display: inline-block; visibility: hidden; position: absolute; top: 0; left: -9999em; line-height: normal; }
-    .xterm-cursor-layer { z-index: 3; }
-    .xterm-text-layer { z-index: 2; }
-    .xterm-selection-layer { z-index: 1; }
-    .xterm .xterm-cursor-block { outline: 1px solid #e2e8f0; outline-offset: -1px; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-color);
+      color: var(--text-color);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .hidden { display: none !important; }
+
+    header {
+      flex-shrink: 0;
+      background: var(--surface-color);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 10;
+    }
+
+    header h1 { font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread-badge { background: var(--bg-color); color: var(--accent-color); padding: 0.25rem 0.5rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.75rem; border: 1px solid var(--border-color); }
+
+    #main {
+      flex: 1;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    #terminal-container {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      background: #000;
+    }
+
+    #term { width: 100%; height: 100%; }
+
+    #input-zone {
+      flex-shrink: 0;
+      background: var(--surface-color);
+      border-top: 1px solid var(--border-color);
+      padding: 0.75rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding-bottom: env(safe-area-inset-bottom, 0.75rem);
+    }
+
+    .hints-row {
+      display: flex;
+      gap: 0.5rem;
+      overflow-x: auto;
+      padding-bottom: 0.25rem;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .hints-row::-webkit-scrollbar { display: none; }
+
+    .hint-btn {
+      flex-shrink: 0;
+      background: var(--bg-color);
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      padding: 0.375rem 0.75rem;
+      border-radius: 1rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+
+    .hint-btn:hover { background: var(--border-color); color: var(--text-color); }
+
+    .input-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-end;
+    }
+
+    .textarea-wrapper {
+      flex: 1;
+      position: relative;
+      background: var(--bg-color);
+      border: 1px solid var(--border-color);
+      border-radius: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      transition: border-color 0.2s;
+    }
+
+    .textarea-wrapper:focus-within { border-color: var(--accent-color); }
+
+    textarea {
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--text-color);
+      font-family: inherit;
+      font-size: 0.9375rem;
+      resize: none;
+      outline: none;
+      max-height: 120px;
+      line-height: 1.5;
+      padding: 0;
+      margin: 0;
+    }
+
+    .btn-send {
+      background: var(--accent-color);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 2.5rem;
+      height: 2.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: transform 0.1s, background-color 0.2s;
+    }
+
+    .btn-send:hover { background: var(--accent-hover); }
+    .btn-send:active { transform: scale(0.95); }
+    .btn-send svg { width: 1.25rem; height: 1.25rem; fill: currentColor; }
+
+    .toolbar-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .btn-action {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      padding: 0.375rem 0.5rem;
+      border-radius: 0.375rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+
+    .btn-action:hover { background: var(--border-color); color: var(--text-color); }
+    .btn-action.danger:hover { color: var(--error-color); border-color: var(--error-color); }
+
+    #loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+    }
+
+    .spinner {
+      width: 2rem;
+      height: 2rem;
+      border: 3px solid var(--border-color);
+      border-top-color: var(--accent-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #no-token-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--bg-color);
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      z-index: 100;
+    }
+
+    .card {
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 2rem;
+      max-width: 400px;
+      width: 100%;
+    }
+
+    .card h2 { margin-bottom: 1rem; color: var(--warning-color); }
+    .card code { display: block; background: var(--bg-color); padding: 1rem; border-radius: 0.5rem; margin: 1rem 0; font-size: 0.875rem; }
+
+    /* xterm adjustments */
+    .xterm-viewport::-webkit-scrollbar { width: 8px; }
+    .xterm-viewport::-webkit-scrollbar-track { background: var(--bg-color); }
+    .xterm-viewport::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
   </style>
 </head>
 <body>
-  <div id="app">
-    <div id="no-token" class="hidden">
-      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open with <code>?thread_id=xxx&token=YOUR_TOKEN</code>.
+  <div id="no-token-overlay" class="hidden">
+    <div class="card">
+      <h2>Access Token Required</h2>
+      <p>Please provide an access token to continue.</p>
+      <code>?thread_id=xxx&token=YOUR_TOKEN</code>
+    </div>
+  </div>
+
+  <header>
+    <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+    <div class="toolbar-actions">
+      <button id="btn-reboot" class="btn-action">Reboot</button>
+      <button id="btn-detach" class="btn-action">Detach</button>
+      <button id="btn-kill" class="btn-action danger">Kill</button>
+    </div>
+  </header>
+
+  <div id="main">
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+    </div>
+    
+    <div id="terminal-container">
+      <div id="term"></div>
     </div>
 
-    <div id="content" class="hidden">
-      <div class="toolbar">
-        <span class="mono" id="thread-label">—</span>
-        <div class="spacer"></div>
-        <input type="text" id="input-run" placeholder="Run command…" />
-        <button type="button" id="btn-run" class="btn btn-default">Run</button>
-        <button type="button" id="btn-kill" class="btn btn-red">Kill</button>
-        <button type="button" id="btn-reboot" class="btn btn-amber">Reboot</button>
-        <button type="button" id="btn-detach" class="btn btn-default">Detach</button>
+    <div id="input-zone">
+      <div class="hints-row">
+        <button class="hint-btn" data-cmd="ls -la">ls -la</button>
+        <button class="hint-btn" data-cmd="pwd">pwd</button>
+        <button class="hint-btn" data-cmd="git status">git status</button>
+        <button class="hint-btn" data-cmd="npm start">npm start</button>
+        <button class="hint-btn" data-cmd="npm run test">npm run test</button>
+        <button class="hint-btn" data-cmd="cat package.json">cat package.json</button>
+        <button class="hint-btn" data-cmd="ps aux">ps aux</button>
+        <button class="hint-btn" data-cmd="df -h">df -h</button>
       </div>
-      <div id="terminal-container">
-        <div id="terminal-not-available" class="hidden">
-          Pane output not available for this instance (bridge mode). Use bridge view or run commands below.
+      <div class="input-row">
+        <div class="textarea-wrapper">
+          <textarea id="input-run" rows="1" placeholder="Type a command..."></textarea>
         </div>
-        <div id="term"></div>
+        <button id="btn-send" class="btn-send" aria-label="Send">
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
       </div>
     </div>
-
-    <div id="loading">Connecting…</div>
   </div>
 
   <script>
@@ -142,37 +339,25 @@
     (function () {
       var MAX_HISTORY_LINES = 10000;
       var threadId = (window.MeridianWeb.getQueryParams().thread_id || "").trim();
-      var noToken = document.getElementById("no-token");
-      var content = document.getElementById("content");
-      var loading = document.getElementById("loading");
+      var noTokenOverlay = document.getElementById("no-token-overlay");
+      var loadingOverlay = document.getElementById("loading-overlay");
       var threadLabel = document.getElementById("thread-label");
       var inputRun = document.getElementById("input-run");
-      var btnRun = document.getElementById("btn-run");
+      var btnSend = document.getElementById("btn-send");
       var btnKill = document.getElementById("btn-kill");
       var btnReboot = document.getElementById("btn-reboot");
       var btnDetach = document.getElementById("btn-detach");
       var termEl = document.getElementById("term");
-      var termNotAvailable = document.getElementById("terminal-not-available");
 
       var term = null;
       var historyBuffer = [];
       var notAvailable = false;
 
-      function showState(hasToken, showContent, connecting) {
-        if (!hasToken || !threadId) {
-          noToken.classList.remove("hidden");
-          noToken.querySelector("code").textContent = "?thread_id=xxx&token=YOUR_TOKEN";
-          content.classList.add("hidden");
-          loading.classList.add("hidden");
-          return;
-        }
-        noToken.classList.add("hidden");
-        loading.classList.toggle("hidden", !connecting);
-        content.classList.toggle("hidden", connecting);
-        if (showContent) {
-          threadLabel.textContent = "thread: " + threadId;
-        }
-      }
+      // Auto-expand textarea
+      inputRun.addEventListener("input", function() {
+        this.style.height = "auto";
+        this.style.height = (this.scrollHeight) + "px";
+      });
 
       function appendToTerminal(chunk) {
         if (notAvailable) return;
@@ -215,6 +400,8 @@
 
       function threadAction(intent) {
         if (!window.MeridianWeb.ensureToken() || !threadId) return;
+        if (!confirm("Are you sure you want to " + intent + " this thread?")) return;
+        
         window.MeridianWeb.fetchWithAuth("/api/" + intent, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -229,9 +416,9 @@
       }
 
       if (!threadId || !window.MeridianWeb.ensureToken()) {
-        showState(false);
+        noTokenOverlay.classList.remove("hidden");
       } else {
-        threadLabel.textContent = "thread: " + threadId;
+        threadLabel.textContent = threadId;
         var base = window.MeridianWeb.apiBase();
         var protocol = base.indexOf("https") === 0 ? "wss" : "ws";
         var wsBase = (protocol === "wss" ? base.replace(/^https/, "wss") : base.replace(/^http/, "ws"));
@@ -242,16 +429,19 @@
           term = new window.Terminal({
             cursorBlink: true,
             scrollback: MAX_HISTORY_LINES,
-            theme: { background: "#0f172a", foreground: "#e2e8f0" }
+            theme: { background: "#000000", foreground: "#e2e8f0" },
+            fontSize: 14,
+            fontFamily: '"SF Mono", "Fira Code", monospace'
           });
           if (window.TerminalFit) window.TerminalFit.fit(term);
           term.open(termEl);
           term.onData(function (data) {
-            runCommand(data);
+            // Forward raw data if needed, but here we usually use the runCommand for input-run
+            // However, some might want to type directly in terminal
+            // For mobile, typing in terminal is hard, so we use the input zone
           });
         } else {
-          /* xterm didn't load — show raw text fallback */
-          termEl.style.cssText = "padding:0.75rem;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;overflow:auto;height:100%;color:#e2e8f0;";
+          termEl.style.cssText = "padding:1rem;font-family:monospace;font-size:0.875rem;white-space:pre-wrap;overflow:auto;height:100%;color:#e2e8f0;";
           var origAppend = appendToTerminal;
           appendToTerminal = function (chunk) {
             origAppend(chunk);
@@ -262,16 +452,14 @@
 
         var ws = new WebSocket(wsUrl);
         ws.onopen = function () {
-          loading.classList.add("hidden");
-          content.classList.remove("hidden");
+          loadingOverlay.classList.add("hidden");
         };
         ws.onmessage = function (ev) {
           try {
             var msg = JSON.parse(ev.data);
             if (msg.type === "not_available") {
               notAvailable = true;
-              termNotAvailable.classList.remove("hidden");
-              termEl.classList.add("hidden");
+              appendToTerminal("\r\n[Terminal not available in bridge mode]\r\n");
               return;
             }
             if (msg.type === "pane_output" && msg.chunk != null) {
@@ -280,31 +468,42 @@
           } catch (e) {}
         };
         ws.onerror = function () {
-          loading.textContent = "WebSocket error.";
+          loadingOverlay.innerHTML = "<div style='color:var(--error-color)'>WebSocket error.</div>";
         };
         ws.onclose = function () {
           if (!notAvailable) {
-            loading.classList.remove("hidden");
-            loading.textContent = "Connection closed.";
+            loadingOverlay.classList.remove("hidden");
+            loadingOverlay.innerHTML = "<div>Connection closed.</div>";
           }
         };
 
-        btnRun.addEventListener("click", function () {
+        function handleSend() {
           var cmd = (inputRun.value || "").trim();
           if (cmd) {
             runCommand(cmd);
             inputRun.value = "";
+            inputRun.style.height = "auto";
           }
-        });
+        }
+
+        btnSend.addEventListener("click", handleSend);
         inputRun.addEventListener("keydown", function (e) {
-          if (e.key === "Enter") {
-            var cmd = (inputRun.value || "").trim();
-            if (cmd) {
-              runCommand(cmd);
-              inputRun.value = "";
-            }
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
           }
         });
+
+        document.querySelectorAll(".hint-btn").forEach(function(btn) {
+          btn.addEventListener("click", function() {
+            var cmd = this.getAttribute("data-cmd");
+            inputRun.value = cmd;
+            inputRun.style.height = "auto";
+            inputRun.style.height = (inputRun.scrollHeight) + "px";
+            inputRun.focus();
+          });
+        });
+
         btnKill.addEventListener("click", function () { threadAction("kill"); });
         btnReboot.addEventListener("click", function () { threadAction("reboot"); });
         btnDetach.addEventListener("click", function () { threadAction("detach"); });
@@ -312,6 +511,11 @@
         window.addEventListener("resize", function () {
           if (window.TerminalFit && term) window.TerminalFit.fit(term);
         });
+        
+        // Initial fit
+        setTimeout(function() {
+          if (window.TerminalFit && term) window.TerminalFit.fit(term);
+        }, 100);
       }
     })();
     });

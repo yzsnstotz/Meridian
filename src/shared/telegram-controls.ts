@@ -26,8 +26,8 @@ export function parseHubActionCallbackData(
   return { intent, threadId };
 }
 
-export function buildWebGuiUrl(threadId: string): string {
-  const rawHost = config.WEB_GUI_HOST.trim();
+export function buildWebGuiUrl(threadId: string, hostPortOverride?: string): string {
+  const rawHost = (hostPortOverride ?? config.WEB_GUI_HOST).trim();
   if (!rawHost) {
     throw new Error("WEB_GUI_HOST is required for /gui");
   }
@@ -39,7 +39,7 @@ export function buildWebGuiUrl(threadId: string): string {
     (url.protocol === "https:" && config.WEB_GUI_PORT === 443) ||
     (url.protocol === "http:" && config.WEB_GUI_PORT === 80);
 
-  if (!url.port && !isDefaultPort) {
+  if (!url.port && !isDefaultPort && !hostPortOverride) {
     url.port = String(config.WEB_GUI_PORT);
   }
 
@@ -50,10 +50,13 @@ export function buildWebGuiUrl(threadId: string): string {
   return url.toString();
 }
 
-export function tryBuildGuiInlineKeyboard(threadId: string): TelegramInlineKeyboard | undefined {
+export function tryBuildGuiInlineKeyboard(
+  threadId: string,
+  hostPortOverride?: string
+): TelegramInlineKeyboard | undefined {
   try {
     return {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: buildWebGuiUrl(threadId) }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: buildWebGuiUrl(threadId, hostPortOverride) }]]
     };
   } catch {
     return undefined;

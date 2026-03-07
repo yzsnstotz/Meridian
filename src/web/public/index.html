@@ -2,76 +2,205 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Meridian — Instances</title>
   <style>
+    :root {
+      --bg-color: #0f172a;
+      --surface-color: #1e293b;
+      --border-color: #334155;
+      --text-color: #e2e8f0;
+      --text-dim: #94a3b8;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --success-color: #10b981;
+      --success-hover: #059669;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-color);
+      color: var(--text-color);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
     .hidden { display: none !important; }
-    #app { max-width: 56rem; margin: 0 auto; padding: 1rem 1.5rem; }
-    header { margin-bottom: 1.5rem; }
-    header h1 { font-size: 1.25rem; font-weight: 600; }
-    header p { color: #94a3b8; font-size: 0.875rem; margin-top: 0.25rem; }
-    #no-token { border-radius: 0.5rem; background: rgba(120,53,15,0.4); border: 1px solid rgba(217,119,6,0.5); padding: 1rem; color: #fde68a; }
-    #no-token code { background: #1e293b; padding: 0 0.25rem; border-radius: 0.25rem; }
-    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
-    .btn { padding: 0.5rem 1rem; border-radius: 0.5rem; border: none; font-weight: 500; cursor: pointer; color: #fff; font-size: 0.875rem; }
-    .btn-spawn { background: #059669; }
-    .btn-spawn:hover { background: #10b981; }
-    .hint { color: #64748b; font-size: 0.875rem; }
-    .table-wrap { border-radius: 0.5rem; border: 1px solid #475569; overflow: hidden; }
-    table { width: 100%; text-align: left; border-collapse: collapse; }
-    thead { background: #1e293b; color: #94a3b8; font-size: 0.875rem; }
-    th, td { padding: 0.5rem 0.75rem; }
-    tbody tr { border-top: 1px solid #334155; cursor: pointer; transition: background 0.15s; }
-    tbody tr:hover { background: rgba(30,41,59,0.6); }
-    .mono { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.875rem; }
-    .dim { color: #94a3b8; font-size: 0.875rem; }
-    #empty-list { color: #64748b; padding: 1rem 0; text-align: center; }
-    #loading { color: #94a3b8; padding: 1rem 0; }
-    @media (max-width: 640px) { .hide-sm { display: none; } }
-    @media (max-width: 768px) { .hide-md { display: none; } }
+
+    #app {
+      max-width: 64rem;
+      margin: 0 auto;
+      width: 100%;
+      padding: 1.5rem 1rem;
+    }
+
+    header {
+      margin-bottom: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    header h1 { font-size: 1.5rem; font-weight: 700; color: #fff; }
+    header p { color: var(--text-dim); font-size: 0.9375rem; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      gap: 1rem;
+    }
+
+    .btn {
+      padding: 0.625rem 1.25rem;
+      border-radius: 0.5rem;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.875rem;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .btn-spawn { background: var(--success-color); color: white; }
+    .btn-spawn:hover { background: var(--success-hover); }
+    .btn-spawn:active { transform: scale(0.98); }
+
+    .hint { color: var(--text-dim); font-size: 0.8125rem; }
+
+    .card-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1rem;
+    }
+
+    .instance-card {
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      border-radius: 0.75rem;
+      padding: 1.25rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .instance-card:hover { border-color: var(--accent-color); transform: translateY(-2px); }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .thread-id { font-family: monospace; font-weight: 600; font-size: 0.9375rem; color: var(--accent-color); }
+    
+    .status-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.375rem;
+      text-transform: uppercase;
+      background: var(--bg-color);
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+    }
+
+    .status-active { color: var(--success-color); border-color: var(--success-color); }
+
+    .card-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      font-size: 0.8125rem;
+    }
+
+    .data-item { display: flex; flex-direction: column; gap: 0.25rem; }
+    .data-label { color: var(--text-dim); font-size: 0.75rem; }
+    .data-value { font-weight: 500; }
+
+    .card-footer {
+      margin-top: auto;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      border-top: 1px solid var(--border-color);
+      padding-top: 0.75rem;
+    }
+
+    #empty-list {
+      text-align: center;
+      padding: 4rem 2rem;
+      background: var(--surface-color);
+      border: 1px dashed var(--border-color);
+      border-radius: 1rem;
+      color: var(--text-dim);
+    }
+
+    #loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4rem;
+      color: var(--text-dim);
+    }
+
+    #no-token {
+      background: rgba(120,53,15,0.4);
+      border: 1px solid rgba(217,119,6,0.5);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      color: #fde68a;
+      text-align: center;
+    }
+
+    #no-token code { display: block; background: var(--bg-color); padding: 0.75rem; border-radius: 0.375rem; margin-top: 1rem; font-family: monospace; }
+
+    @media (max-width: 640px) {
+      .card-list { grid-template-columns: 1fr; }
+      header h1 { font-size: 1.25rem; }
+    }
   </style>
 </head>
 <body>
   <div id="app">
     <header>
       <h1>Meridian Instances</h1>
-      <p>Agent instances overview</p>
+      <p>Active agents and coding sessions</p>
     </header>
 
     <div id="no-token" class="hidden">
-      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open this page with <code>?token=YOUR_TOKEN</code>.
+      Please provide an access token to view instances.<br>
+      <code>?token=YOUR_TOKEN</code>
     </div>
 
     <div id="content" class="hidden">
       <div class="toolbar">
-        <button id="btn-spawn" type="button" class="btn btn-spawn">Spawn (pane_bridge)</button>
-        <span id="refresh-hint" class="hint">Auto-refresh every 5s</span>
+        <button id="btn-spawn" type="button" class="btn btn-spawn">+ New Session</button>
+        <span id="refresh-hint" class="hint">Auto-refresh active</span>
       </div>
-      <div id="list" class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>thread_id</th>
-              <th class="hide-sm">type</th>
-              <th>mode</th>
-              <th>status</th>
-              <th class="hide-md">created_at</th>
-            </tr>
-          </thead>
-          <tbody id="list-body">
-          </tbody>
-        </table>
+      
+      <div id="list" class="card-list">
+        <!-- Cards injected here -->
       </div>
-      <p id="empty-list" class="hidden">No active instances.</p>
+      
+      <div id="empty-list" class="hidden">
+        <p>No active instances found.</p>
+        <p style="font-size: 0.8125rem; margin-top: 0.5rem;">Click "+ New Session" to spawn an agent.</p>
+      </div>
     </div>
 
-    <div id="loading">Loading…</div>
+    <div id="loading">
+      <span>Loading sessions...</span>
+    </div>
   </div>
 
   <script>
-    /* Meridian Web GUI — shared logic (inlined to avoid external script issues on mobile WebViews) */
+    /* Meridian Web GUI — shared logic (inlined) */
     (function () {
       "use strict";
       var STORAGE_KEY = "meridian_web_token";
@@ -115,7 +244,7 @@
   <script>
     (function () {
       var REFRESH_MS = 5000;
-      var listBody = document.getElementById("list-body");
+      var listEl = document.getElementById("list");
       var content = document.getElementById("content");
       var noToken = document.getElementById("no-token");
       var loading = document.getElementById("loading");
@@ -132,10 +261,8 @@
         noToken.classList.add("hidden");
         loading.classList.add("hidden");
         content.classList.remove("hidden");
-        if (showList) {
-          listBody.closest("div").classList.toggle("hidden", isEmpty);
-          emptyList.classList.toggle("hidden", !isEmpty);
-        }
+        listEl.classList.toggle("hidden", isEmpty);
+        emptyList.classList.toggle("hidden", !isEmpty);
       }
 
       function formatDate(s) {
@@ -162,25 +289,42 @@
       }
 
       function renderList(instances) {
-        listBody.innerHTML = "";
+        listEl.innerHTML = "";
         if (!instances || instances.length === 0) {
           showState(true, true, true);
           return;
         }
         showState(true, true, false);
         instances.forEach(function (inst) {
-          var row = document.createElement("tr");
-          row.setAttribute("data-thread-id", inst.thread_id);
-          row.innerHTML =
-            "<td class=\"mono\">" + escapeHtml(inst.thread_id) + "</td>" +
-            "<td class=\"hide-sm\">" + escapeHtml(inst.agent_type || inst.type || "\u2014") + "</td>" +
-            "<td>" + escapeHtml(inst.mode || "\u2014") + "</td>" +
-            "<td>" + escapeHtml(inst.status || "\u2014") + "</td>" +
-            "<td class=\"hide-md dim\">" + escapeHtml(formatDate(inst.created_at)) + "</td>";
-          row.addEventListener("click", function () {
+          var card = document.createElement("div");
+          card.className = "instance-card";
+          
+          var statusClass = inst.status === "running" ? "status-active" : "";
+          
+          card.innerHTML = `
+            <div class="card-header">
+              <span class="thread-id">${escapeHtml(inst.thread_id)}</span>
+              <span class="status-badge ${statusClass}">${escapeHtml(inst.status || "offline")}</span>
+            </div>
+            <div class="card-body">
+              <div class="data-item">
+                <span class="data-label">Type</span>
+                <span class="data-value">${escapeHtml(inst.agent_type || inst.type || "—")}</span>
+              </div>
+              <div class="data-item">
+                <span class="data-label">Mode</span>
+                <span class="data-value">${escapeHtml(inst.mode || "—")}</span>
+              </div>
+            </div>
+            <div class="card-footer">
+              <span>Created: ${escapeHtml(formatDate(inst.created_at))}</span>
+            </div>
+          `;
+          
+          card.addEventListener("click", function () {
             openInstance(inst);
           });
-          listBody.appendChild(row);
+          listEl.appendChild(card);
         });
       }
 
@@ -213,10 +357,7 @@
           })
           .catch(function () {
             showState(true, true, true);
-            listBody.innerHTML = "";
-            emptyList.textContent = "Failed to load instances.";
-            emptyList.classList.remove("hidden");
-            listBody.closest("div").classList.add("hidden");
+            listEl.innerHTML = "";
           });
       }
 

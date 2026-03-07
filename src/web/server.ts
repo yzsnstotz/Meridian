@@ -407,6 +407,7 @@ export class WebInterfaceServer {
   private async handleSpawnRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = spawnRequestBodySchema.parse(await this.readJsonBody(request));
+    const hostHeader = request.headers.host;
     const result = HubResultSchema.parse(
       await this.requestHub(
         this.buildHubMessage({
@@ -415,7 +416,8 @@ export class WebInterfaceServer {
           thread_id: "pending",
           target: body.type,
           content: "",
-          mode: body.mode
+          mode: body.mode,
+          guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined
         })
       )
     );
@@ -625,6 +627,7 @@ export class WebInterfaceServer {
     content: string;
     attachments?: FileAttachment[];
     mode?: "bridge" | "pane_bridge";
+    guiHostPortOverride?: string;
   }): HubMessage {
     return HubMessageSchema.parse({
       trace_id: randomUUID(),
@@ -635,7 +638,8 @@ export class WebInterfaceServer {
       payload: {
         content: params.content,
         attachments: params.attachments ?? [],
-        reply_to: null
+        reply_to: null,
+        ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride })
       },
       mode: params.mode ?? "bridge",
       suppress_reply: true,

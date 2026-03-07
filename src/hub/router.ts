@@ -328,7 +328,7 @@ export class HubRouter {
         ? `Spawned ${type} instance: ${threadId}`
         : JSON.stringify({ thread_id: threadId, instance: spawned }, null, 2);
     return this.buildResult(message, "success", type, this.appendAttachmentSummary(baseContent, threadId), threadId, {
-      telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId)
+      telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId, message.payload.gui_host_port_override)
     });
   }
 
@@ -379,7 +379,7 @@ export class HubRouter {
     this.rememberAttachmentMetadata(sessionId, message);
     const content = this.appendAttachmentSummary(JSON.stringify(binding, null, 2), threadId);
     return this.buildResult(message, "success", instance.agent_type, content, threadId, {
-      telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId)
+      telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId, message.payload.gui_host_port_override)
     });
   }
 
@@ -432,7 +432,10 @@ export class HubRouter {
   private handleGui(message: HubMessage): HubResult {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
-    const content = this.appendAttachmentSummary(buildWebGuiUrl(threadId), threadId);
+    const content = this.appendAttachmentSummary(
+      buildWebGuiUrl(threadId, message.payload.gui_host_port_override),
+      threadId
+    );
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }
 
