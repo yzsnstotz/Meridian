@@ -1272,6 +1272,97 @@ test("HubRouter builds monitor progress result from latest agent output", async 
   assert.equal(result.content, "[thread=codex_01]\nlive pane output");
 });
 
+test("HubRouter keeps the latest stable progress reply when the newest frame is transient", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 101,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const transientFrame =
+    "▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n" +
+    " ⠼ List your saved chat checkpoints with /chat list… (esc to cancel, 6s)";
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => [
+        { id: 1, role: "agent", content: "older output" },
+        { id: 2, role: "agent", content: "actual stable reply" },
+        { id: 3, role: "agent", content: transientFrame }
+      ]
+    })
+  });
+
+  const result = await router.buildProgressResultForThread(
+    "gemini_01",
+    "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
+  );
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.content, "[thread=gemini_01]\nactual stable reply");
+});
+
+test("HubRouter normalizes pane action-required frames into compact actionable content", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 101,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const actionRequiredFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Shell git status && git remote -v && git log -n 3 [current working direc… │",
+    "│                                                                              │",
+    "│ git status && git remote -v && git log -n 3                                  │",
+    "│ Allow execution of: 'git, git, git'?                                         │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => [{ id: 1, role: "agent", content: actionRequiredFrame }]
+    })
+  });
+
+  const result = await router.buildProgressResultForThread(
+    "gemini_01",
+    "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
+  );
+
+  assert.equal(result.status, "partial");
+  assert.match(result.content, /^\[thread=gemini_01\]\nWaiting for approval\.\.\./);
+  assert.match(result.content, /Run this command\?/);
+  assert.match(result.content, /git status && git remote -v && git log -n 3/);
+  assert.doesNotMatch(result.content, /╭|╰|│/);
+});
+
 test("HubRouter returns one-time manual monitor update without subscribing", async () => {
   const registry = new InstanceRegistry();
   registry.register({

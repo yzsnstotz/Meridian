@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
 import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { sendIpcRequest } from "../shared/ipc";
@@ -35,6 +36,7 @@ interface AgentClient {
 interface AgentMessageSnapshot {
   id: number;
   content: string;
+  kind: AgentOutputKind;
 }
 
 interface SessionAttachmentMetadata {
@@ -974,9 +976,7 @@ export class HubRouter {
       if (!snapshot) {
         continue;
       }
-      if (!this.isTransientTerminalFrame(snapshot.content)) {
-        return snapshot;
-      }
+      return snapshot;
     }
 
     return snapshots.length > 0 ? (snapshots[snapshots.length - 1] ?? null) : null;
@@ -1158,28 +1158,7 @@ export class HubRouter {
   }
 
   private isTransientTerminalFrame(content: string): boolean {
-    const normalized = content.toLowerCase();
-    const hints = [
-      "waiting for auth",
-      "do you trust the files in this folder",
-      "gemini cli is restarting to apply the trust changes",
-      "skip the next speaker check for faster responses",
-      "see full, untruncated responses",
-      "let node.js auto-configure memory",
-      "(esc to cancel"
-    ];
-
-    for (const hint of hints) {
-      if (normalized.includes(hint)) {
-        return true;
-      }
-    }
-
-    if (/[\u2800-\u28ff]/.test(content) && normalized.includes("esc to cancel")) {
-      return true;
-    }
-
-    return false;
+    return classifyAgentOutput(content).kind === "transient";
   }
 
   private extractAgentMessageSnapshots(
@@ -1201,8 +1180,9 @@ export class HubRouter {
           : typeof message.message === "string"
             ? message.message
             : "";
-      const content = contentCandidate.trim();
-      if (!content) {
+      const classified = classifyAgentOutput(contentCandidate);
+      const content = classified.text.trim();
+      if (!content || classified.kind === "transient") {
         continue;
       }
 
@@ -1213,7 +1193,7 @@ export class HubRouter {
             ? Number(message.id)
             : fallbackCounter;
 
-      snapshots.push({ id: idCandidate, content });
+      snapshots.push({ id: idCandidate, content, kind: classified.kind });
     }
 
     snapshots.sort((left, right) => left.id - right.id);
