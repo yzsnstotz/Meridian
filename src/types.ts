@@ -152,6 +152,8 @@ export const MonitorEventSchema = z.object({
   monitor_mode: MonitorModeSchema,
   timestamp: z.string().datetime(),
   agent_status: z.string().optional(),
+  agent_type: z.string().optional(),
+  last_known_pid: z.number().int().nonnegative().optional(),
   missed_heartbeats: z.number().int().nonnegative().optional(),
   sse_reconnect_count: z.number().int().nonnegative().optional(),
   details: z.record(z.string(), z.unknown()).optional(),

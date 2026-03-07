@@ -304,7 +304,7 @@ export class WebInterfaceServer {
 
   private async handleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const requestUrl = this.getRequestUrl(request);
-    if (!this.isAuthorized(request, requestUrl)) {
+    if (!this.isAuthorized(request, requestUrl) && !this.isPublicStaticAsset(requestUrl.pathname)) {
       this.respondUnauthorized(response, requestUrl.pathname.startsWith("/api/"));
       return;
     }
@@ -436,7 +436,12 @@ export class WebInterfaceServer {
       const stats = await fs.promises.stat(filePath);
       const finalPath = stats.isDirectory() ? path.join(filePath, "index.html") : filePath;
       const content = await fs.promises.readFile(finalPath);
-      response.writeHead(200, { "content-type": contentTypeForPath(finalPath) });
+      const ct = contentTypeForPath(finalPath);
+      const headers: Record<string, string> = { "content-type": ct };
+      if (ct.startsWith("text/html")) {
+        headers["cache-control"] = "no-store";
+      }
+      response.writeHead(200, headers);
       response.end(content);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -639,6 +644,11 @@ export class WebInterfaceServer {
         chat_id: `web:${params.sessionId}`
       }
     });
+  }
+
+  private isPublicStaticAsset(pathname: string): boolean {
+    const ext = path.extname(pathname).toLowerCase();
+    return [".html", ".js", ".css", ".svg", ".ico", ".txt"].includes(ext) || pathname === "/";
   }
 
   private isAuthorized(request: http.IncomingMessage, requestUrl: URL): boolean {

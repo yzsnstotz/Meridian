@@ -531,8 +531,18 @@ export class HubServer {
       `mode=${event.monitor_mode}`
     ];
 
+    if (event.agent_type) {
+      lines.push(`agent_type=${event.agent_type}`);
+    }
+    if (event.last_known_pid !== undefined) {
+      lines.push(`last_known_pid=${event.last_known_pid}`);
+    }
     if (event.agent_status) {
       lines.push(`agent_status=${event.agent_status}`);
+    }
+    const reason = event.details?.reason;
+    if (typeof reason === "string") {
+      lines.push(`reason=${reason}`);
     }
     if (event.missed_heartbeats !== undefined) {
       lines.push(`missed_heartbeats=${event.missed_heartbeats}`);

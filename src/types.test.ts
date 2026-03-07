@@ -96,6 +96,24 @@ test("MonitorEventSchema accepts optional span fields", () => {
   assert.equal(parsed.parent_span_id, parentSpanId);
 });
 
+test("MonitorEventSchema accepts optional agent_type and last_known_pid", () => {
+  const parsed = MonitorEventSchema.parse({
+    trace_id: randomUUID(),
+    thread_id: "claude_01",
+    event_type: "agent_error",
+    monitor_mode: "heartbeat",
+    timestamp: new Date().toISOString(),
+    agent_type: "claude",
+    last_known_pid: 64339,
+    error: "Heartbeat missed 3 consecutive checks",
+    details: { reason: "HEALTHCHECK_TIMEOUT_PID_GONE" }
+  });
+
+  assert.equal(parsed.agent_type, "claude");
+  assert.equal(parsed.last_known_pid, 64339);
+  assert.equal(parsed.details?.reason, "HEALTHCHECK_TIMEOUT_PID_GONE");
+});
+
 test("HubResultSchema accepts optional Telegram inline keyboards", () => {
   const parsed = HubResultSchema.parse({
     trace_id: randomUUID(),

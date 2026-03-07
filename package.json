@@ -7,10 +7,11 @@
     "node": "^22.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp -r src/web/public dist/web/public",
     "start:hub": "tsx src/hub/index.ts",
     "start:interface": "tsx src/interface/index.ts",
     "start:monitor": "tsx src/monitor/index.ts",
+    "start:web": "tsx src/web/server.ts",
     "test": "node --test --import tsx src/**/*.test.ts",
     "test:integration": "node --test --import tsx 'tests/integration/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json",

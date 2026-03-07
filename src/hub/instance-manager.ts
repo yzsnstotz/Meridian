@@ -830,9 +830,17 @@ export class InstanceManager {
         return;
       }
 
-      const nextStatus: AgentInstanceStatus = code === 0 || signal === "SIGTERM" ? "stopped" : "error";
-      this.registry.unregister(threadId);
-      this.clearSessionBindingsForThread(threadId);
+      const isGraceful = code === 0 || signal === "SIGTERM";
+      const nextStatus: AgentInstanceStatus = isGraceful ? "stopped" : "error";
+
+      if (isGraceful) {
+        this.registry.unregister(threadId);
+        this.clearSessionBindingsForThread(threadId);
+      } else {
+        // Crash: preserve instance and session bindings so the monitor service
+        // can detect the failure and deliver a Telegram alert before cleanup.
+        this.registry.setStatus(threadId, "error");
+      }
 
       this.log.warn(
         {
@@ -844,7 +852,7 @@ export class InstanceManager {
           signal,
           prev_status: instance.status,
           next_status: nextStatus,
-          removed_from_registry: true
+          removed_from_registry: isGraceful
         },
         "Agent process exited"
       );

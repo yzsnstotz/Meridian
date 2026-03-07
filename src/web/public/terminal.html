@@ -4,40 +4,141 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Meridian — Terminal</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
+    .hidden { display: none !important; }
+    #app { display: flex; flex-direction: column; max-width: 72rem; margin: 0 auto; width: 100%; padding: 0.5rem 1rem; flex: 1; }
+    #no-token { border-radius: 0.5rem; background: rgba(120,53,15,0.4); border: 1px solid rgba(217,119,6,0.5); padding: 1rem; color: #fde68a; }
+    #no-token code { background: #1e293b; padding: 0 0.25rem; border-radius: 0.25rem; }
+    #content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .mono { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.875rem; color: #94a3b8; }
+    .spacer { flex: 1; }
+    .toolbar input { flex: 1; min-width: 120px; max-width: 28rem; padding: 0.375rem 0.75rem; border-radius: 0.375rem; background: #1e293b; border: 1px solid #475569; color: #e2e8f0; font-size: 0.875rem; }
+    .btn { padding: 0.375rem 0.75rem; border-radius: 0.375rem; border: none; font-weight: 500; cursor: pointer; color: #fff; font-size: 0.875rem; }
+    .btn-default { background: #475569; }
+    .btn-default:hover { background: #64748b; }
+    .btn-red { background: #b91c1c; }
+    .btn-red:hover { background: #dc2626; }
+    .btn-amber { background: #b45309; }
+    .btn-amber:hover { background: #d97706; }
+    #terminal-container { flex: 1; border-radius: 0.375rem; border: 1px solid #475569; overflow: hidden; min-height: 200px; position: relative; }
+    #terminal-not-available { padding: 1rem; color: #fde68a; background: rgba(120,53,15,0.3); border-radius: 0.375rem; }
+    #term { width: 100%; height: 100%; }
+    #loading { color: #94a3b8; padding: 1rem 0; }
+
+    /* Minimal xterm styles — enough for the terminal to render without CDN */
+    .xterm { position: relative; user-select: none; }
+    .xterm.focus, .xterm:focus { outline: none; }
+    .xterm .xterm-helpers { position: absolute; top: 0; z-index: 5; }
+    .xterm .xterm-helper-textarea { padding: 0; border: 0; margin: 0; position: absolute; opacity: 0; left: -9999em; top: 0; width: 0; height: 0; z-index: -5; white-space: nowrap; overflow: hidden; resize: none; }
+    .xterm .xterm-rows { position: relative; }
+    .xterm .xterm-rows > div { white-space: nowrap; }
+    .xterm .xterm-screen { position: relative; }
+    .xterm .xterm-screen canvas { position: absolute; left: 0; top: 0; }
+    .xterm .xterm-viewport { background-color: #0f172a; overflow-y: scroll; cursor: default; position: absolute; right: 0; left: 0; top: 0; bottom: 0; }
+    .xterm .xterm-scroll-area { visibility: hidden; }
+    .xterm-char-measure-element { display: inline-block; visibility: hidden; position: absolute; top: 0; left: -9999em; line-height: normal; }
+    .xterm-cursor-layer { z-index: 3; }
+    .xterm-text-layer { z-index: 2; }
+    .xterm-selection-layer { z-index: 1; }
+    .xterm .xterm-cursor-block { outline: 1px solid #e2e8f0; outline-offset: -1px; }
+  </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col">
-  <div id="app" class="flex flex-col max-w-6xl mx-auto w-full p-2 md:p-4 flex-1">
-    <div id="no-token" class="hidden rounded-lg bg-amber-900/40 border border-amber-600/50 p-4 text-amber-200">
-      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open with <code class="bg-slate-800 px-1 rounded">?thread_id=xxx&token=YOUR_TOKEN</code>.
+<body>
+  <div id="app">
+    <div id="no-token" class="hidden">
+      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open with <code>?thread_id=xxx&token=YOUR_TOKEN</code>.
     </div>
 
-    <div id="content" class="hidden flex flex-col flex-1 min-h-0">
-      <div class="flex flex-wrap items-center gap-2 mb-2">
-        <span class="font-mono text-sm text-slate-400" id="thread-label">—</span>
-        <div class="flex-1"></div>
-        <input type="text" id="input-run" placeholder="Run command…" class="flex-1 min-w-[120px] max-w-md px-3 py-1.5 rounded bg-slate-800 border border-slate-600 text-slate-100 text-sm" />
-        <button type="button" id="btn-run" class="px-3 py-1.5 rounded bg-slate-600 hover:bg-slate-500 text-white text-sm">Run</button>
-        <button type="button" id="btn-kill" class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white text-sm">Kill</button>
-        <button type="button" id="btn-reboot" class="px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-600 text-white text-sm">Reboot</button>
-        <button type="button" id="btn-detach" class="px-3 py-1.5 rounded bg-slate-600 hover:bg-slate-500 text-white text-sm">Detach</button>
+    <div id="content" class="hidden">
+      <div class="toolbar">
+        <span class="mono" id="thread-label">—</span>
+        <div class="spacer"></div>
+        <input type="text" id="input-run" placeholder="Run command…" />
+        <button type="button" id="btn-run" class="btn btn-default">Run</button>
+        <button type="button" id="btn-kill" class="btn btn-red">Kill</button>
+        <button type="button" id="btn-reboot" class="btn btn-amber">Reboot</button>
+        <button type="button" id="btn-detach" class="btn btn-default">Detach</button>
       </div>
-      <div id="terminal-container" class="flex-1 rounded border border-slate-600 overflow-hidden min-h-[200px]">
-        <div id="terminal-not-available" class="hidden p-4 text-amber-200 bg-amber-900/30 rounded">
+      <div id="terminal-container">
+        <div id="terminal-not-available" class="hidden">
           Pane output not available for this instance (bridge mode). Use bridge view or run commands below.
         </div>
-        <div id="term" class="w-full h-full"></div>
+        <div id="term"></div>
       </div>
     </div>
 
-    <div id="loading" class="text-slate-400 py-4">Connecting…</div>
+    <div id="loading">Connecting…</div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/addons/fit/fit.js"></script>
-  <script src="app.js"></script>
   <script>
+    /* Meridian Web GUI — shared logic (inlined) */
+    (function () {
+      "use strict";
+      var STORAGE_KEY = "meridian_web_token";
+      function getQueryParams() {
+        var params = {};
+        var search = typeof window.location.search === "string" ? window.location.search.slice(1) : "";
+        search.split("&").forEach(function (pair) {
+          var i = pair.indexOf("=");
+          if (i > 0) params[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
+        });
+        return params;
+      }
+      function getToken() {
+        var q = getQueryParams();
+        if (q.token) return q.token.trim();
+        try { var t = sessionStorage.getItem(STORAGE_KEY); return t ? t.trim() : ""; } catch (e) { return ""; }
+      }
+      function setToken(token) {
+        try { if (token) sessionStorage.setItem(STORAGE_KEY, token); else sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      }
+      (function () { var q = getQueryParams(); if (q.token) setToken(q.token.trim()); })();
+      function apiBase() {
+        var origin = window.location.origin || "";
+        var p = (window.location.pathname || "/").replace(/\/[^/]*$/, "") || "/";
+        if (p === "/" && origin) return origin;
+        return origin + (p.endsWith("/") ? p.slice(0, -1) : p);
+      }
+      function fetchWithAuth(url, options) {
+        options = options || {};
+        var headers = options.headers || {};
+        if (typeof headers.append === "function" || Array.isArray(headers)) headers = {};
+        var token = getToken();
+        if (token) headers["Authorization"] = "Bearer " + token;
+        var u = url.indexOf("/") === 0 ? apiBase() + url : url;
+        return fetch(u, Object.assign({}, options, { headers: headers }));
+      }
+      function ensureToken() { return !!getToken(); }
+      window.MeridianWeb = { getToken: getToken, setToken: setToken, apiBase: apiBase, fetchWithAuth: fetchWithAuth, ensureToken: ensureToken, getQueryParams: getQueryParams };
+    })();
+  </script>
+  <script>
+    /* Lightweight xterm loader with timeout fallback */
+    (function () {
+      function boot() { document.dispatchEvent(new Event("meridian:ready")); }
+      function loadXtermCDN(cb) {
+        var js = document.createElement("script");
+        js.src = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js";
+        js.onload = function () {
+          var fit = document.createElement("script");
+          fit.src = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/addons/fit/fit.js";
+          fit.onload = cb;
+          fit.onerror = cb;
+          document.body.appendChild(fit);
+        };
+        js.onerror = cb;
+        document.body.appendChild(js);
+      }
+      var loaded = false;
+      loadXtermCDN(function () { loaded = true; boot(); });
+      setTimeout(function () { if (!loaded) { loaded = true; boot(); } }, 3000);
+    })();
+  </script>
+  <script>
+    document.addEventListener("meridian:ready", function () {
     (function () {
       var MAX_HISTORY_LINES = 10000;
       var threadId = (window.MeridianWeb.getQueryParams().thread_id || "").trim();
@@ -137,16 +238,27 @@
         var token = window.MeridianWeb.getToken();
         var wsUrl = wsBase.replace(/\/$/, "") + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + (token ? "&token=" + encodeURIComponent(token) : "");
 
-        term = new window.Terminal({
-          cursorBlink: true,
-          scrollback: MAX_HISTORY_LINES,
-          theme: { background: "#0f172a", foreground: "#e2e8f0" }
-        });
-        window.TerminalFit && window.TerminalFit.fit(term);
-        term.open(termEl);
-        term.onData(function (data) {
-          runCommand(data);
-        });
+        if (typeof window.Terminal === "function") {
+          term = new window.Terminal({
+            cursorBlink: true,
+            scrollback: MAX_HISTORY_LINES,
+            theme: { background: "#0f172a", foreground: "#e2e8f0" }
+          });
+          if (window.TerminalFit) window.TerminalFit.fit(term);
+          term.open(termEl);
+          term.onData(function (data) {
+            runCommand(data);
+          });
+        } else {
+          /* xterm didn't load — show raw text fallback */
+          termEl.style.cssText = "padding:0.75rem;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;overflow:auto;height:100%;color:#e2e8f0;";
+          var origAppend = appendToTerminal;
+          appendToTerminal = function (chunk) {
+            origAppend(chunk);
+            termEl.textContent += chunk;
+            termEl.scrollTop = termEl.scrollHeight;
+          };
+        }
 
         var ws = new WebSocket(wsUrl);
         ws.onopen = function () {
@@ -202,6 +314,7 @@
         });
       }
     })();
+    });
   </script>
 </body>
 </html>

@@ -640,3 +640,83 @@ test("kill removes the thread socket path", async () => {
   await manager.kill(threadId);
   assert.equal(fs.existsSync(socketPath), false);
 });
+
+test("crash exit preserves instance and session bindings for monitor alerting", async () => {
+  const registry = new InstanceRegistry();
+  const children = new Map<string, FakeChildProcess>();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      const child = new FakeChildProcess(9501);
+      children.set("claude_01", child);
+      return child as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("claude", "bridge");
+  manager.attach(threadId, "777:chat-a");
+  assert.equal(manager.getAttachedThread("777:chat-a"), threadId);
+
+  // Simulate crash (SIGKILL)
+  const child = children.get(threadId)!;
+  child.exitCode = null;
+  child.signalCode = "SIGKILL" as NodeJS.Signals;
+  child.emit("exit", null, "SIGKILL");
+
+  // Instance stays in registry with error status
+  assert.equal(registry.has(threadId), true);
+  assert.equal(registry.get(threadId)?.status, "error");
+
+  // Session bindings preserved for monitor alerting
+  assert.equal(manager.getAttachedThread("777:chat-a"), threadId);
+  assert.deepEqual(manager.getSessionsForThread(threadId), ["777:chat-a"]);
+
+  // Cleanup
+  await manager.kill(threadId);
+});
+
+test("graceful exit (SIGTERM) unregisters instance and clears session bindings", async () => {
+  const registry = new InstanceRegistry();
+  const children = new Map<string, FakeChildProcess>();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      const child = new FakeChildProcess(9502);
+      children.set("codex_01", child);
+      return child as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  manager.attach(threadId, "777:chat-b");
+
+  // Simulate graceful exit (SIGTERM from /kill)
+  const child = children.get(threadId)!;
+  child.exitCode = 0;
+  child.signalCode = "SIGTERM";
+  child.emit("exit", 0, "SIGTERM");
+
+  // Instance removed from registry
+  assert.equal(registry.has(threadId), false);
+
+  // Session bindings cleared
+  assert.equal(manager.getAttachedThread("777:chat-b"), null);
+});

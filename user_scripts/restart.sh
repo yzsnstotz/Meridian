@@ -89,7 +89,7 @@ stop_pm2_apps() {
   fi
 
   log "Stopping PM2 apps (if present)"
-  pm2 delete calling-hub calling-interface calling-monitor >/dev/null 2>&1 || true
+  pm2 delete calling-hub calling-interface calling-monitor calling-web >/dev/null 2>&1 || true
   pm2 delete ecosystem.config.js >/dev/null 2>&1 || true
 }
 
@@ -122,7 +122,7 @@ start_with_pm2() {
   if [[ ! -f "${ROOT_DIR}/ecosystem.config.js" ]]; then
     return 1
   fi
-  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" ]]; then
+  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" || ! -f "${ROOT_DIR}/dist/web/server.js" ]]; then
     return 1
   fi
 
@@ -130,9 +130,9 @@ start_with_pm2() {
     log "Reloading Meridian with PM2 (keep-agents mode)"
     (
       cd "${ROOT_DIR}"
-      pm2 reload ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null 2>&1 ||
-        pm2 restart calling-hub calling-interface calling-monitor --update-env >/dev/null 2>&1 ||
-        pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null 2>&1
+      pm2 reload ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1 ||
+        pm2 restart calling-hub calling-interface calling-monitor calling-web --update-env >/dev/null 2>&1 ||
+        pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
     )
     return 0
   fi
@@ -140,7 +140,7 @@ start_with_pm2() {
   log "Starting Meridian with PM2"
   (
     cd "${ROOT_DIR}"
-    pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor --update-env >/dev/null 2>&1
+    pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
   )
   return 0
 }
@@ -159,6 +159,7 @@ start_with_npm() {
     nohup npm run start:hub >"${RUNTIME_LOG_DIR}/hub.log" 2>&1 &
     nohup npm run start:interface >"${RUNTIME_LOG_DIR}/interface.log" 2>&1 &
     nohup npm run start:monitor >"${RUNTIME_LOG_DIR}/monitor.log" 2>&1 &
+    nohup npm run start:web >"${RUNTIME_LOG_DIR}/web.log" 2>&1 &
   )
 }
 
@@ -166,7 +167,7 @@ start_with_node_dist() {
   if ! command -v node >/dev/null 2>&1; then
     return 1
   fi
-  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" ]]; then
+  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" || ! -f "${ROOT_DIR}/dist/web/server.js" ]]; then
     return 1
   fi
 
@@ -178,6 +179,7 @@ start_with_node_dist() {
     nohup node dist/hub/index.js >"${RUNTIME_LOG_DIR}/hub.log" 2>&1 &
     nohup node dist/interface/index.js >"${RUNTIME_LOG_DIR}/interface.log" 2>&1 &
     nohup node dist/monitor/index.js >"${RUNTIME_LOG_DIR}/monitor.log" 2>&1 &
+    nohup node dist/web/server.js >"${RUNTIME_LOG_DIR}/web.log" 2>&1 &
   )
   return 0
 }
@@ -188,6 +190,7 @@ stop_pm2_apps
 kill_by_pattern "${ROOT_DIR}/src/hub/index.ts|${ROOT_DIR}/dist/hub/index.js|npm run start:hub" "hub"
 kill_by_pattern "${ROOT_DIR}/src/interface/index.ts|${ROOT_DIR}/dist/interface/index.js|npm run start:interface" "interface"
 kill_by_pattern "${ROOT_DIR}/src/monitor/index.ts|${ROOT_DIR}/dist/monitor/index.js|npm run start:monitor" "monitor"
+kill_by_pattern "${ROOT_DIR}/src/web/server.ts|${ROOT_DIR}/dist/web/server.js|npm run start:web" "web-gui"
 
 if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
   log "Preserving existing agentapi processes, tmux agent sessions, and persisted hub state"
@@ -207,7 +210,7 @@ fi
 
 if start_with_pm2; then
   log "Restart complete (PM2 mode)"
-  pm2 status calling-hub calling-interface calling-monitor || true
+  pm2 status calling-hub calling-interface calling-monitor calling-web || true
 elif start_with_node_dist; then
   log "Restart complete (node dist mode)"
 else
@@ -215,4 +218,4 @@ else
   log "Restart complete (npm mode)"
 fi
 
-log "Expected logs: ${LOG_DIR}/hub.log, ${LOG_DIR}/interface.log, ${LOG_DIR}/monitor.log (or ${RUNTIME_LOG_DIR} in npm mode)"
+log "Expected logs: ${LOG_DIR}/hub.log, ${LOG_DIR}/interface.log, ${LOG_DIR}/monitor.log, ${LOG_DIR}/web.log (or ${RUNTIME_LOG_DIR} in npm mode)"

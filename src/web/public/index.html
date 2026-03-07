@@ -4,48 +4,114 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Meridian — Instances</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    .hidden { display: none !important; }
+    #app { max-width: 56rem; margin: 0 auto; padding: 1rem 1.5rem; }
+    header { margin-bottom: 1.5rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    header p { color: #94a3b8; font-size: 0.875rem; margin-top: 0.25rem; }
+    #no-token { border-radius: 0.5rem; background: rgba(120,53,15,0.4); border: 1px solid rgba(217,119,6,0.5); padding: 1rem; color: #fde68a; }
+    #no-token code { background: #1e293b; padding: 0 0.25rem; border-radius: 0.25rem; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+    .btn { padding: 0.5rem 1rem; border-radius: 0.5rem; border: none; font-weight: 500; cursor: pointer; color: #fff; font-size: 0.875rem; }
+    .btn-spawn { background: #059669; }
+    .btn-spawn:hover { background: #10b981; }
+    .hint { color: #64748b; font-size: 0.875rem; }
+    .table-wrap { border-radius: 0.5rem; border: 1px solid #475569; overflow: hidden; }
+    table { width: 100%; text-align: left; border-collapse: collapse; }
+    thead { background: #1e293b; color: #94a3b8; font-size: 0.875rem; }
+    th, td { padding: 0.5rem 0.75rem; }
+    tbody tr { border-top: 1px solid #334155; cursor: pointer; transition: background 0.15s; }
+    tbody tr:hover { background: rgba(30,41,59,0.6); }
+    .mono { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.875rem; }
+    .dim { color: #94a3b8; font-size: 0.875rem; }
+    #empty-list { color: #64748b; padding: 1rem 0; text-align: center; }
+    #loading { color: #94a3b8; padding: 1rem 0; }
+    @media (max-width: 640px) { .hide-sm { display: none; } }
+    @media (max-width: 768px) { .hide-md { display: none; } }
+  </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
-  <div id="app" class="max-w-4xl mx-auto p-4 md:p-6">
-    <header class="mb-6">
-      <h1 class="text-xl md:text-2xl font-semibold text-slate-100">Meridian Instances</h1>
-      <p class="text-slate-400 text-sm mt-1">Agent instances overview</p>
+<body>
+  <div id="app">
+    <header>
+      <h1>Meridian Instances</h1>
+      <p>Agent instances overview</p>
     </header>
 
-    <div id="no-token" class="hidden rounded-lg bg-amber-900/40 border border-amber-600/50 p-4 text-amber-200">
-      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open this page with <code class="bg-slate-800 px-1 rounded">?token=YOUR_TOKEN</code>.
+    <div id="no-token" class="hidden">
+      Please provide an access token (<span lang="zh">请提供访问令牌</span>). Open this page with <code>?token=YOUR_TOKEN</code>.
     </div>
 
     <div id="content" class="hidden">
-      <div class="flex flex-wrap items-center gap-3 mb-4">
-        <button id="btn-spawn" type="button" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition">
-          Spawn (pane_bridge)
-        </button>
-        <span id="refresh-hint" class="text-slate-500 text-sm">Auto-refresh every 5s</span>
+      <div class="toolbar">
+        <button id="btn-spawn" type="button" class="btn btn-spawn">Spawn (pane_bridge)</button>
+        <span id="refresh-hint" class="hint">Auto-refresh every 5s</span>
       </div>
-      <div id="list" class="rounded-lg border border-slate-600 overflow-hidden">
-        <table class="w-full text-left">
-          <thead class="bg-slate-800 text-slate-300 text-sm">
+      <div id="list" class="table-wrap">
+        <table>
+          <thead>
             <tr>
-              <th class="px-3 py-2">thread_id</th>
-              <th class="px-3 py-2 hidden sm:table-cell">type</th>
-              <th class="px-3 py-2">mode</th>
-              <th class="px-3 py-2">status</th>
-              <th class="px-3 py-2 hidden md:table-cell">created_at</th>
+              <th>thread_id</th>
+              <th class="hide-sm">type</th>
+              <th>mode</th>
+              <th>status</th>
+              <th class="hide-md">created_at</th>
             </tr>
           </thead>
-          <tbody id="list-body" class="divide-y divide-slate-700">
+          <tbody id="list-body">
           </tbody>
         </table>
       </div>
-      <p id="empty-list" class="hidden text-slate-500 py-4 text-center">No active instances.</p>
+      <p id="empty-list" class="hidden">No active instances.</p>
     </div>
 
-    <div id="loading" class="text-slate-400 py-4">Loading…</div>
+    <div id="loading">Loading…</div>
   </div>
 
-  <script src="app.js"></script>
+  <script>
+    /* Meridian Web GUI — shared logic (inlined to avoid external script issues on mobile WebViews) */
+    (function () {
+      "use strict";
+      var STORAGE_KEY = "meridian_web_token";
+      function getQueryParams() {
+        var params = {};
+        var search = typeof window.location.search === "string" ? window.location.search.slice(1) : "";
+        search.split("&").forEach(function (pair) {
+          var i = pair.indexOf("=");
+          if (i > 0) params[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
+        });
+        return params;
+      }
+      function getToken() {
+        var q = getQueryParams();
+        if (q.token) return q.token.trim();
+        try { var t = sessionStorage.getItem(STORAGE_KEY); return t ? t.trim() : ""; } catch (e) { return ""; }
+      }
+      function setToken(token) {
+        try { if (token) sessionStorage.setItem(STORAGE_KEY, token); else sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      }
+      (function () { var q = getQueryParams(); if (q.token) setToken(q.token.trim()); })();
+      function apiBase() {
+        var origin = window.location.origin || "";
+        var p = (window.location.pathname || "/").replace(/\/[^/]*$/, "") || "/";
+        if (p === "/" && origin) return origin;
+        return origin + (p.endsWith("/") ? p.slice(0, -1) : p);
+      }
+      function fetchWithAuth(url, options) {
+        options = options || {};
+        var headers = options.headers || {};
+        if (typeof headers.append === "function" || Array.isArray(headers)) headers = {};
+        var token = getToken();
+        if (token) headers["Authorization"] = "Bearer " + token;
+        var u = url.indexOf("/") === 0 ? apiBase() + url : url;
+        return fetch(u, Object.assign({}, options, { headers: headers }));
+      }
+      function ensureToken() { return !!getToken(); }
+      window.MeridianWeb = { getToken: getToken, setToken: setToken, apiBase: apiBase, fetchWithAuth: fetchWithAuth, ensureToken: ensureToken, getQueryParams: getQueryParams };
+    })();
+  </script>
   <script>
     (function () {
       var REFRESH_MS = 5000;
@@ -104,14 +170,13 @@
         showState(true, true, false);
         instances.forEach(function (inst) {
           var row = document.createElement("tr");
-          row.className = "hover:bg-slate-800/60 cursor-pointer transition";
           row.setAttribute("data-thread-id", inst.thread_id);
           row.innerHTML =
-            "<td class=\"px-3 py-2 font-mono text-sm\">" + escapeHtml(inst.thread_id) + "</td>" +
-            "<td class=\"px-3 py-2 hidden sm:table-cell\">" + escapeHtml(inst.agent_type || inst.type || "—") + "</td>" +
-            "<td class=\"px-3 py-2\">" + escapeHtml(inst.mode || "—") + "</td>" +
-            "<td class=\"px-3 py-2\">" + escapeHtml(inst.status || "—") + "</td>" +
-            "<td class=\"px-3 py-2 hidden md:table-cell text-slate-400 text-sm\">" + escapeHtml(formatDate(inst.created_at)) + "</td>";
+            "<td class=\"mono\">" + escapeHtml(inst.thread_id) + "</td>" +
+            "<td class=\"hide-sm\">" + escapeHtml(inst.agent_type || inst.type || "\u2014") + "</td>" +
+            "<td>" + escapeHtml(inst.mode || "\u2014") + "</td>" +
+            "<td>" + escapeHtml(inst.status || "\u2014") + "</td>" +
+            "<td class=\"hide-md dim\">" + escapeHtml(formatDate(inst.created_at)) + "</td>";
           row.addEventListener("click", function () {
             openInstance(inst);
           });

@@ -289,6 +289,38 @@ test("HubServer adds reboot and kill buttons to agent_error alerts", async () =>
   });
 });
 
+test("HubServer monitor alert includes agent_type, last_known_pid, and reason", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.attachedSessionsByThread.set("claude_01", ["chat-a"]);
+  const fakeResultSender = new FakeResultSender();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender
+  });
+
+  await (server as unknown as { handleRawPayload: (raw: string) => Promise<HubResult | null> })
+    .handleRawPayload(
+      JSON.stringify({
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "claude_01",
+        event_type: "agent_error",
+        monitor_mode: "heartbeat",
+        timestamp: new Date().toISOString(),
+        agent_type: "claude",
+        last_known_pid: 64339,
+        error: "Heartbeat missed 3 consecutive checks",
+        details: { reason: "HEALTHCHECK_TIMEOUT_PID_GONE" }
+      })
+    );
+
+  assert.equal(fakeResultSender.calls.length, 1);
+  const content = fakeResultSender.calls[0]?.result.content ?? "";
+  assert.match(content, /agent_type=claude/);
+  assert.match(content, /last_known_pid=64339/);
+  assert.match(content, /reason=HEALTHCHECK_TIMEOUT_PID_GONE/);
+  assert.match(content, /thread=claude_01/);
+});
+
 test("resolveStaticServiceEndpoints returns coordinator registration only when fully configured", () => {
   const endpoints = resolveStaticServiceEndpoints({
     COORDINATOR_SOCKET_PATH: "/tmp/coordinator.sock",
