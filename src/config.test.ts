@@ -14,6 +14,8 @@ const CONFIG_KEYS = [
   "WEBHOOK_URL",
   "WEBHOOK_PORT",
   "WEBHOOK_SECRET_TOKEN",
+  "TELEGRAM_SUMMARY_ONLY",
+  "TELEGRAM_PUSH_WHITELIST_ONLY",
   "WEB_GUI_ENABLED",
   "WEB_GUI_PORT",
   "WEB_GUI_HOST",
@@ -57,6 +59,8 @@ test("parseConfig applies v2 defaults for webhook and web GUI fields", async () 
     assert.equal(config.WEBHOOK_URL, "");
     assert.equal(config.WEBHOOK_PORT, 443);
     assert.equal(config.WEBHOOK_SECRET_TOKEN, "");
+    assert.equal(config.TELEGRAM_SUMMARY_ONLY, true);
+    assert.equal(config.TELEGRAM_PUSH_WHITELIST_ONLY, true);
     assert.equal(config.WEB_GUI_ENABLED, false);
     assert.equal(config.WEB_GUI_PORT, 3000);
     assert.equal(config.WEB_GUI_HOST, "");
@@ -77,6 +81,8 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
       WEBHOOK_URL: "https://bot.example.com/webhook",
       WEBHOOK_PORT: "8443",
       WEBHOOK_SECRET_TOKEN: "secret-token",
+      TELEGRAM_SUMMARY_ONLY: "false",
+      TELEGRAM_PUSH_WHITELIST_ONLY: "false",
       WEB_GUI_ENABLED: "true",
       WEB_GUI_PORT: "3456",
       WEB_GUI_HOST: "gui.example.com",
@@ -91,6 +97,8 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
     assert.equal(config.WEBHOOK_URL, "https://bot.example.com/webhook");
     assert.equal(config.WEBHOOK_PORT, 8443);
     assert.equal(config.WEBHOOK_SECRET_TOKEN, "secret-token");
+    assert.equal(config.TELEGRAM_SUMMARY_ONLY, false);
+    assert.equal(config.TELEGRAM_PUSH_WHITELIST_ONLY, false);
     assert.equal(config.WEB_GUI_ENABLED, true);
     assert.equal(config.WEB_GUI_PORT, 3456);
     assert.equal(config.WEB_GUI_HOST, "gui.example.com");

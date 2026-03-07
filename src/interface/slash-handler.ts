@@ -33,6 +33,7 @@ const HELP_MESSAGE = [
   "/approve <run|allow|all|skip> [thread=<thread_id>]",
   "/model",
   "/model [thread=<thread_id>]",
+  "/detail [trace=<trace_id>] [thread=<thread_id>]",
   "/update [on|off] [thread=<thread_id>] [interval=<seconds>]",
   "/mupdate [thread=<thread_id>]",
   "/list",
@@ -338,6 +339,24 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         mode: "bridge",
         payloadContent: "",
         picker: "switch_model",
+        priority: null
+      };
+    }
+
+    case "/detail": {
+      const threadId = args.thread?.trim() || null;
+      const traceId = args.trace?.trim() || "";
+      return {
+        intent: "detail",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: traceId,
+        picker: null,
         priority: null
       };
     }

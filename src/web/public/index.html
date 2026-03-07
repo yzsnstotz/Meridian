@@ -2,329 +2,440 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Meridian — Instances</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Meridian — Hub</title>
+  <link rel="stylesheet" href="layout-base.css" />
   <style>
     :root {
-      --bg-color: #0f172a;
-      --surface-color: #1e293b;
-      --border-color: #334155;
-      --text-color: #e2e8f0;
+      --bg-color: #0b0f1a;
+      --surface-color: #161b2a;
+      --surface-hover: #1f2638;
+      --border-color: #2d3343;
+      --text-color: #f0f2f5;
       --text-dim: #94a3b8;
       --accent-color: #3b82f6;
       --accent-hover: #2563eb;
       --success-color: #10b981;
-      --success-hover: #059669;
+      --error-color: #ef4444;
+      --safe-area-inset-top: env(safe-area-inset-top, 0px);
+      --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg-color);
       color: var(--text-color);
-      min-height: 100vh;
       display: flex;
       flex-direction: column;
+      -webkit-tap-highlight-color: transparent;
     }
 
     .hidden { display: none !important; }
 
-    #app {
-      max-width: 64rem;
-      margin: 0 auto;
-      width: 100%;
-      padding: 1.5rem 1rem;
-    }
-
     header {
-      margin-bottom: 2rem;
+      padding: calc(1.5rem + var(--safe-area-inset-top)) 1.5rem 1.5rem;
+      background: var(--surface-color);
+      border-bottom: 1px solid var(--border-color);
       display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
+      justify-content: space-between;
+      align-items: center;
     }
 
-    header h1 { font-size: 1.5rem; font-weight: 700; color: #fff; }
-    header p { color: var(--text-dim); font-size: 0.9375rem; }
+    .header-info h1 { font-size: 1.25rem; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 0.5rem; }
+    .header-info p { color: var(--text-dim); font-size: 0.875rem; margin-top: 0.25rem; }
+
+    .badge-live {
+      font-size: 0.625rem;
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--success-color);
+      padding: 0.125rem 0.375rem;
+      border-radius: 1rem;
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    #app {
+      flex: 1;
+      padding: 1.5rem;
+      width: 100%;
+    }
 
     .toolbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 1.5rem;
-      gap: 1rem;
+      margin-bottom: 2rem;
     }
 
     .btn {
-      padding: 0.625rem 1.25rem;
-      border-radius: 0.5rem;
+      padding: 0.75rem 1.25rem;
+      border-radius: 0.75rem;
       border: none;
       font-weight: 600;
       cursor: pointer;
       font-size: 0.875rem;
-      transition: all 0.2s;
-      white-space: nowrap;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
     }
 
-    .btn-spawn { background: var(--success-color); color: white; }
-    .btn-spawn:hover { background: var(--success-hover); }
-    .btn-spawn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--accent-color); color: white; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+    .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .hint { color: var(--text-dim); font-size: 0.8125rem; }
-
-    .card-list {
+    .card-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 1rem;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.25rem;
     }
 
     .instance-card {
       background: var(--surface-color);
       border: 1px solid var(--border-color);
-      border-radius: 0.75rem;
+      border-radius: 1rem;
       padding: 1.25rem;
       cursor: pointer;
       transition: all 0.2s;
       display: flex;
       flex-direction: column;
       gap: 1rem;
+      position: relative;
+      overflow: hidden;
+      min-width: 0; /* Prevent overflow */
     }
 
-    .instance-card:hover { border-color: var(--accent-color); transform: translateY(-2px); }
+    .instance-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 2px;
+      background: var(--accent-color);
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
 
-    .card-header {
+    .instance-card:hover { border-color: var(--accent-color); transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+    .instance-card:hover::after { opacity: 1; }
+
+    .card-head {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
+      gap: 0.5rem;
     }
 
-    .thread-id { font-family: monospace; font-weight: 600; font-size: 0.9375rem; color: var(--accent-color); }
-    
-    .status-badge {
-      font-size: 0.75rem;
+    .thread-id {
+      font-family: "SF Mono", "Fira Code", monospace;
       font-weight: 600;
+      font-size: 0.8125rem;
+      color: var(--accent-color);
+      background: rgba(59, 130, 246, 0.1);
       padding: 0.25rem 0.5rem;
-      border-radius: 0.375rem;
-      text-transform: uppercase;
-      background: var(--bg-color);
-      border: 1px solid var(--border-color);
-      color: var(--text-dim);
+      border-radius: 0.5rem;
+      word-break: break-all;
+      white-space: normal;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .status-active { color: var(--success-color); border-color: var(--success-color); }
+    .status-dot {
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: var(--text-dim);
+      flex-shrink: 0;
+    }
+    .status-dot.active { background: var(--success-color); box-shadow: 0 0 8px var(--success-color); }
 
-    .card-body {
+    .card-secondary {
+      border-top: 1px dashed var(--border-color);
+      padding-top: 0.5rem;
+      margin-top: -0.25rem;
+    }
+    .card-secondary summary {
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      user-select: none;
+    }
+    .card-secondary-body {
+      margin-top: 0.5rem;
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 0.75rem;
-      font-size: 0.8125rem;
     }
-
-    .data-item { display: flex; flex-direction: column; gap: 0.25rem; }
-    .data-label { color: var(--text-dim); font-size: 0.75rem; }
-    .data-value { font-weight: 500; }
+    .detail-item { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+    .detail-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.025em; }
+    .detail-value { font-size: 0.875rem; font-weight: 500; color: #fff; word-break: break-all; white-space: normal; overflow: hidden; text-overflow: ellipsis; }
 
     .card-footer {
-      margin-top: auto;
-      font-size: 0.75rem;
-      color: var(--text-dim);
       border-top: 1px solid var(--border-color);
       padding-top: 0.75rem;
-    }
-
-    #empty-list {
-      text-align: center;
-      padding: 4rem 2rem;
-      background: var(--surface-color);
-      border: 1px dashed var(--border-color);
-      border-radius: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.75rem;
       color: var(--text-dim);
+      gap: 0.5rem;
     }
 
     #loading {
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 4rem;
+      padding: 5rem 2rem;
+      gap: 1rem;
       color: var(--text-dim);
     }
 
-    #no-token {
-      background: rgba(120,53,15,0.4);
-      border: 1px solid rgba(217,119,6,0.5);
-      border-radius: 0.75rem;
-      padding: 1.5rem;
-      color: #fde68a;
-      text-align: center;
+    .spinner {
+      width: 2.5rem;
+      height: 2.5rem;
+      border: 3px solid var(--border-color);
+      border-top-color: var(--accent-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
     }
 
-    #no-token code { display: block; background: var(--bg-color); padding: 0.75rem; border-radius: 0.375rem; margin-top: 1rem; font-family: monospace; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #empty-state {
+      text-align: center;
+      padding: 4rem 1.5rem;
+      background: var(--surface-color);
+      border: 1px dashed var(--border-color);
+      border-radius: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    #empty-state p { color: var(--text-dim); }
+
+    #auth-error {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      text-align: center;
+      color: #fca5a5;
+    }
+
+    #auth-error code {
+      display: block;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 0.75rem;
+      border-radius: 0.5rem;
+      margin-top: 1rem;
+      font-family: monospace;
+      color: #fff;
+      word-break: break-all;
+    }
+
+    /* Pull-to-refresh indicator */
+    .ptr-indicator {
+      text-align: center;
+      padding: 0;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s, padding 0.3s;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+    }
+    .ptr-indicator.active {
+      max-height: 3rem;
+      padding: 0.75rem;
+    }
+    .ptr-indicator .ptr-spinner {
+      display: inline-block;
+      width: 1.25rem;
+      height: 1.25rem;
+      border: 2px solid var(--border-color);
+      border-top-color: var(--accent-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      vertical-align: middle;
+      margin-right: 0.5rem;
+    }
+
+    /* Floating action button for mobile */
+    .fab {
+      display: none;
+      position: fixed;
+      bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+      right: 1.5rem;
+      width: 3.5rem;
+      height: 3.5rem;
+      border-radius: 50%;
+      background: var(--accent-color);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+      cursor: pointer;
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.2s, box-shadow 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .fab:active { transform: scale(0.92); }
+    .fab svg { width: 24px; height: 24px; }
 
     @media (max-width: 640px) {
-      .card-list { grid-template-columns: 1fr; }
-      header h1 { font-size: 1.25rem; }
+      #app { padding: 1rem; padding-bottom: 5rem; }
+      .card-grid { grid-template-columns: 1fr; gap: 0.75rem; }
+      header { padding: calc(1rem + var(--safe-area-inset-top)) 1rem 1rem; }
+      header h1 { font-size: 1.125rem; }
+      header p { font-size: 0.75rem; }
+      .toolbar { margin-bottom: 1rem; gap: 0.75rem; }
+      .toolbar .btn-primary { display: none; }
+      .fab { display: flex; }
+      .instance-card { padding: 1rem; border-radius: 0.75rem; }
+      .instance-card:hover { transform: none; }
+      .instance-card:active { transform: scale(0.98); background: var(--surface-hover); }
+      .card-head { gap: 0.375rem; }
+      .thread-id { font-size: 0.75rem; padding: 0.2rem 0.375rem; }
+      .detail-value { font-size: 0.875rem; }
+      .card-footer { padding-top: 0.625rem; }
+      #empty-state { padding: 3rem 1rem; border-radius: 1rem; }
     }
   </style>
 </head>
 <body>
-  <div id="app">
-    <header>
-      <h1>Meridian Instances</h1>
-      <p>Active agents and coding sessions</p>
-    </header>
+  <header>
+    <div class="header-info">
+      <h1>Meridian <span class="badge-live">Hub</span></h1>
+      <p>Manage active coding agents</p>
+    </div>
+  </header>
 
-    <div id="no-token" class="hidden">
-      Please provide an access token to view instances.<br>
+  <div id="app">
+    <div id="auth-error" class="hidden">
+      <p>Access token required to view instances.</p>
       <code>?token=YOUR_TOKEN</code>
     </div>
 
     <div id="content" class="hidden">
       <div class="toolbar">
-        <button id="btn-spawn" type="button" class="btn btn-spawn">+ New Session</button>
-        <span id="refresh-hint" class="hint">Auto-refresh active</span>
+        <button id="btn-spawn" class="btn btn-primary">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          New Session
+        </button>
+        <div id="refresh-indicator" style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.5rem;">
+          <div class="status-dot active"></div>
+          Live
+        </div>
       </div>
       
-      <div id="list" class="card-list">
+      <div id="grid" class="card-grid">
         <!-- Cards injected here -->
       </div>
       
-      <div id="empty-list" class="hidden">
-        <p>No active instances found.</p>
-        <p style="font-size: 0.8125rem; margin-top: 0.5rem;">Click "+ New Session" to spawn an agent.</p>
+      <div id="empty-state" class="hidden">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--border-color)"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+        <div>
+          <h3 style="margin-bottom: 0.5rem">No active sessions</h3>
+          <p>Spawn an agent to start coding.</p>
+        </div>
       </div>
     </div>
 
     <div id="loading">
-      <span>Loading sessions...</span>
+      <div class="spinner"></div>
+      <span>Fetching sessions...</span>
     </div>
   </div>
 
-  <script>
-    /* Meridian Web GUI — shared logic (inlined) */
-    (function () {
-      "use strict";
-      var STORAGE_KEY = "meridian_web_token";
-      function getQueryParams() {
-        var params = {};
-        var search = typeof window.location.search === "string" ? window.location.search.slice(1) : "";
-        search.split("&").forEach(function (pair) {
-          var i = pair.indexOf("=");
-          if (i > 0) params[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
-        });
-        return params;
-      }
-      function getToken() {
-        var q = getQueryParams();
-        if (q.token) return q.token.trim();
-        try { var t = sessionStorage.getItem(STORAGE_KEY); return t ? t.trim() : ""; } catch (e) { return ""; }
-      }
-      function setToken(token) {
-        try { if (token) sessionStorage.setItem(STORAGE_KEY, token); else sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-      }
-      (function () { var q = getQueryParams(); if (q.token) setToken(q.token.trim()); })();
-      function apiBase() {
-        var origin = window.location.origin || "";
-        var p = (window.location.pathname || "/").replace(/\/[^/]*$/, "") || "/";
-        if (p === "/" && origin) return origin;
-        return origin + (p.endsWith("/") ? p.slice(0, -1) : p);
-      }
-      function fetchWithAuth(url, options) {
-        options = options || {};
-        var headers = options.headers || {};
-        if (typeof headers.append === "function" || Array.isArray(headers)) headers = {};
-        var token = getToken();
-        if (token) headers["Authorization"] = "Bearer " + token;
-        var u = url.indexOf("/") === 0 ? apiBase() + url : url;
-        return fetch(u, Object.assign({}, options, { headers: headers }));
-      }
-      function ensureToken() { return !!getToken(); }
-      window.MeridianWeb = { getToken: getToken, setToken: setToken, apiBase: apiBase, fetchWithAuth: fetchWithAuth, ensureToken: ensureToken, getQueryParams: getQueryParams };
-    })();
-  </script>
+  <div id="ptr-indicator" class="ptr-indicator">
+    <span class="ptr-spinner"></span> Refreshing...
+  </div>
+
+  <button id="fab-spawn" class="fab" aria-label="New session">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+  </button>
+
+  <script src="app.js"></script>
   <script>
     (function () {
       var REFRESH_MS = 5000;
-      var listEl = document.getElementById("list");
-      var content = document.getElementById("content");
-      var noToken = document.getElementById("no-token");
-      var loading = document.getElementById("loading");
-      var emptyList = document.getElementById("empty-list");
+      var gridEl = document.getElementById("grid");
+      var contentEl = document.getElementById("content");
+      var authErrorEl = document.getElementById("auth-error");
+      var loadingEl = document.getElementById("loading");
+      var emptyStateEl = document.getElementById("empty-state");
       var btnSpawn = document.getElementById("btn-spawn");
 
-      function showState(hasToken, showList, isEmpty) {
-        if (!hasToken) {
-          noToken.classList.remove("hidden");
-          content.classList.add("hidden");
-          loading.classList.add("hidden");
-          return;
-        }
-        noToken.classList.add("hidden");
-        loading.classList.add("hidden");
-        content.classList.remove("hidden");
-        listEl.classList.toggle("hidden", isEmpty);
-        emptyList.classList.toggle("hidden", !isEmpty);
+      function showState(state) {
+        loadingEl.classList.toggle("hidden", state !== "loading");
+        authErrorEl.classList.toggle("hidden", state !== "unauthorized");
+        contentEl.classList.toggle("hidden", state !== "ready");
       }
 
       function formatDate(s) {
-        if (!s) return "";
+        if (!s) return "Just now";
         try {
           var d = new Date(s);
-          return isNaN(d.getTime()) ? s : d.toLocaleString();
-        } catch (e) {
-          return s;
-        }
+          if (isNaN(d.getTime())) return s;
+          var now = new Date();
+          var diff = (now - d) / 1000;
+          if (diff < 60) return "Just now";
+          if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+          if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+          return d.toLocaleDateString();
+        } catch (e) { return s; }
       }
 
-      function openInstance(instance) {
-        var mode = (instance.mode || "").toLowerCase();
-        var threadId = instance.thread_id;
-        var base = window.MeridianWeb.apiBase();
+      function openInstance(inst) {
         var token = window.MeridianWeb.getToken();
-        var q = "?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token);
-        if (mode === "pane_bridge") {
-          window.location.href = base + "/terminal.html" + q;
-        } else {
-          window.location.href = base + "/bridge.html" + q;
-        }
+        var q = "?thread_id=" + encodeURIComponent(inst.thread_id) + "&token=" + encodeURIComponent(token);
+        window.location.href = "terminal.html" + q;
       }
 
-      function renderList(instances) {
-        listEl.innerHTML = "";
+      function renderGrid(instances) {
+        gridEl.innerHTML = "";
         if (!instances || instances.length === 0) {
-          showState(true, true, true);
+          emptyStateEl.classList.remove("hidden");
           return;
         }
-        showState(true, true, false);
+        emptyStateEl.classList.add("hidden");
+        
         instances.forEach(function (inst) {
           var card = document.createElement("div");
           card.className = "instance-card";
           
-          var statusClass = inst.status === "running" ? "status-active" : "";
+          var isActive = inst.status === "running";
           
           card.innerHTML = `
-            <div class="card-header">
+            <div class="card-head">
               <span class="thread-id">${escapeHtml(inst.thread_id)}</span>
-              <span class="status-badge ${statusClass}">${escapeHtml(inst.status || "offline")}</span>
-            </div>
-            <div class="card-body">
-              <div class="data-item">
-                <span class="data-label">Type</span>
-                <span class="data-value">${escapeHtml(inst.agent_type || inst.type || "—")}</span>
-              </div>
-              <div class="data-item">
-                <span class="data-label">Mode</span>
-                <span class="data-value">${escapeHtml(inst.mode || "—")}</span>
-              </div>
+              <div class="status-dot ${isActive ? "active" : ""}"></div>
             </div>
             <div class="card-footer">
-              <span>Created: ${escapeHtml(formatDate(inst.created_at))}</span>
+              <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(inst.status || "offline")}</span>
+              <span>${escapeHtml(formatDate(inst.updated_at || inst.created_at))}</span>
             </div>
+            <details class="card-secondary">
+              <summary>More info</summary>
+              <div class="card-secondary-body">
+                <div class="detail-item">
+                  <span class="detail-label">Agent</span>
+                  <span class="detail-value">${escapeHtml(inst.agent_type || inst.type || "—")}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Mode</span>
+                  <span class="detail-value">${escapeHtml(inst.mode || "bridge")}</span>
+                </div>
+              </div>
+            </details>
           `;
           
-          card.addEventListener("click", function () {
-            openInstance(inst);
-          });
-          listEl.appendChild(card);
+          card.addEventListener("click", function () { openInstance(inst); });
+          gridEl.appendChild(card);
         });
       }
 
@@ -337,35 +448,29 @@
 
       function fetchList() {
         if (!window.MeridianWeb.ensureToken()) {
-          showState(false);
+          showState("unauthorized");
           return;
         }
         window.MeridianWeb.fetchWithAuth("/api/instances")
           .then(function (res) {
-            if (res.status === 401) {
-              showState(false);
-              return [];
-            }
+            if (res.status === 401) throw new Error("401");
             return res.json();
           })
           .then(function (data) {
-            if (Array.isArray(data)) {
-              renderList(data);
-            } else {
-              renderList([]);
-            }
+            showState("ready");
+            renderGrid(Array.isArray(data) ? data : []);
           })
-          .catch(function () {
-            showState(true, true, true);
-            listEl.innerHTML = "";
+          .catch(function (err) {
+            if (err.message === "401") showState("unauthorized");
+            else {
+              showState("ready");
+              renderGrid([]);
+            }
           });
       }
 
       function spawn() {
-        if (!window.MeridianWeb.ensureToken()) {
-          showState(false);
-          return;
-        }
+        if (!window.MeridianWeb.ensureToken()) return;
         btnSpawn.disabled = true;
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
@@ -374,22 +479,46 @@
         })
           .then(function (res) {
             return res.json().then(function (body) {
-              if (res.ok) {
-                fetchList();
-              } else {
-                alert(body.error || "Spawn failed");
-              }
+              if (res.ok) fetchList();
+              else alert(body.error || "Spawn failed");
             });
           })
-          .catch(function (e) {
-            alert("Spawn failed: " + (e && e.message ? e.message : "network error"));
-          })
-          .finally(function () {
-            btnSpawn.disabled = false;
-          });
+          .catch(function (e) { alert("Network error during spawn"); })
+          .finally(function () { btnSpawn.disabled = false; });
       }
 
       btnSpawn.addEventListener("click", spawn);
+
+      // FAB (mobile) triggers same spawn
+      var fabBtn = document.getElementById("fab-spawn");
+      if (fabBtn) fabBtn.addEventListener("click", spawn);
+
+      // Pull-to-refresh (mobile)
+      var ptrIndicator = document.getElementById("ptr-indicator");
+      var ptrStartY = 0;
+      var ptrActive = false;
+      document.addEventListener("touchstart", function(e) {
+        if (window.scrollY === 0) ptrStartY = e.touches[0].clientY;
+        else ptrStartY = 0;
+      }, { passive: true });
+      document.addEventListener("touchmove", function(e) {
+        if (ptrStartY && e.touches[0].clientY - ptrStartY > 60 && window.scrollY === 0) {
+          ptrActive = true;
+          if (ptrIndicator) ptrIndicator.classList.add("active");
+        }
+      }, { passive: true });
+      document.addEventListener("touchend", function() {
+        if (ptrActive) {
+          ptrActive = false;
+          fetchList();
+          if (navigator.vibrate) navigator.vibrate(10);
+          setTimeout(function() {
+            if (ptrIndicator) ptrIndicator.classList.remove("active");
+          }, 800);
+        }
+        ptrStartY = 0;
+      }, { passive: true });
+
       fetchList();
       setInterval(fetchList, REFRESH_MS);
     })();

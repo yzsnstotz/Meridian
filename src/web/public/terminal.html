@@ -2,51 +2,242 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Meridian Terminal — Coding Agent</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Meridian — Coding Agent</title>
+  <link rel="stylesheet" href="layout-base.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
   <style>
     :root {
-      --bg-color: #0f172a;
-      --surface-color: #1e293b;
-      --border-color: #334155;
-      --text-color: #e2e8f0;
+      --bg-color: #0b0f1a;
+      --sidebar-color: #111827;
+      --surface-color: #161b2a;
+      --surface-hover: #1f2638;
+      --border-color: #2d3343;
+      --text-color: #f0f2f5;
       --text-dim: #94a3b8;
       --accent-color: #3b82f6;
       --accent-hover: #2563eb;
-      --error-color: #ef4444;
-      --warning-color: #f59e0b;
       --success-color: #10b981;
+      --error-color: #ef4444;
+      --safe-area-inset-top: env(safe-area-inset-top, 0px);
+      --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg-color);
       color: var(--text-color);
       height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
     }
 
     .hidden { display: none !important; }
 
     header {
       flex-shrink: 0;
-      background: var(--surface-color);
+      background: var(--sidebar-color);
       border-bottom: 1px solid var(--border-color);
-      padding: 0.75rem 1rem;
+      padding: calc(0.5rem + var(--safe-area-inset-top)) 1rem 0.5rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      z-index: 10;
+      gap: 0.5rem;
+      z-index: 100;
     }
 
-    header h1 { font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .thread-badge { background: var(--bg-color); color: var(--accent-color); padding: 0.25rem 0.5rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.75rem; border: 1px solid var(--border-color); }
+    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+    .header-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+    .focus-toggle {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .focus-toggle.active {
+      color: var(--accent-color);
+      border-color: var(--accent-color);
+      background: rgba(59, 130, 246, 0.12);
+    }
+    .back-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 0.5rem; display: flex; border-radius: 0.375rem; touch-action: manipulation; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
+    .back-btn:hover { color: #fff; background: var(--surface-hover); }
+    
+    header h1 { font-size: 0.9375rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .thread-badge { background: var(--bg-color); color: var(--accent-color); padding: 0.125rem 0.375rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.75rem; border: 1px solid var(--border-color); word-break: break-all; }
 
-    #main {
+
+    #workspace {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+    }
+
+    /* Sidebar / File Explorer */
+    #sidebar {
+      width: 260px;
+      background: var(--sidebar-color);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      z-index: 200;
+    }
+
+    .sidebar-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 150;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .sidebar-overlay.open { display: block; opacity: 1; }
+
+    .sidebar-header {
+      padding: 0.75rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #file-tree {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+    }
+
+    .tree-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+      color: var(--text-dim);
+      word-break: break-all;
+      white-space: normal;
+      margin-bottom: 2px;
+    }
+
+    .tree-item:hover { background: var(--surface-color); color: #fff; }
+    .tree-item:active { background: var(--surface-hover); }
+    .tree-item.active { background: rgba(59, 130, 246, 0.1); color: var(--accent-color); }
+    .tree-item svg { flex-shrink: 0; width: 16px; height: 16px; }
+    .tree-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.5rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      color: var(--text-dim);
+      cursor: pointer;
+      user-select: none;
+    }
+    .tree-row:hover { background: var(--surface-color); color: #fff; }
+    .tree-row.active { background: rgba(59, 130, 246, 0.1); color: var(--accent-color); }
+    .tree-toggle {
+      width: 16px;
+      height: 16px;
+      border: none;
+      background: transparent;
+      color: inherit;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .tree-toggle:hover { background: rgba(148, 163, 184, 0.16); }
+    .tree-toggle-placeholder {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+    .tree-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+    .tree-node {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tree-children {
+      margin-left: 0.25rem;
+      padding-left: 0.35rem;
+      border-left: 1px dashed rgba(148, 163, 184, 0.25);
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 0.18s ease, opacity 0.18s ease;
+    }
+    .tree-children.open {
+      max-height: 1200px;
+      opacity: 1;
+    }
+
+    /* Main Area */
+    #main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: var(--bg-color);
+      position: relative;
+    }
+
+    .tabs {
+      height: 40px;
+      background: var(--sidebar-color);
+      display: flex;
+      border-bottom: 1px solid var(--border-color);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+
+    .tab {
+      padding: 0 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8125rem;
+      color: var(--text-dim);
+      border-right: 1px solid var(--border-color);
+      cursor: pointer;
+      word-break: break-all;
+      white-space: normal;
+      background: var(--sidebar-color);
+      transition: all 0.2s;
+    }
+
+    .tab:hover { color: #fff; }
+    .tab.active { background: var(--bg-color); color: #fff; box-shadow: inset 0 -2px 0 var(--accent-color); }
+
+    .view-container {
       flex: 1;
       position: relative;
       display: flex;
@@ -54,82 +245,70 @@
       min-height: 0;
     }
 
-    #terminal-container {
+    /* Editor View */
+    #editor-view {
       flex: 1;
-      overflow: hidden;
-      position: relative;
-      background: #000;
+      display: flex;
+      flex-direction: column;
+    }
+    #editor-content {
+      flex: 1;
+      background: transparent;
+      color: var(--text-color);
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 13px;
+      padding: 1rem;
+      border: none;
+      resize: none;
+      outline: none;
+      line-height: 1.6;
+      -webkit-overflow-scrolling: touch;
     }
 
-    #term { width: 100%; height: 100%; }
+    /* Terminal View */
+    #terminal-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      min-height: 0;
+    }
+    #term-container { flex: 1; min-height: 0; padding: 4px; }
 
+    /* Input Zone */
     #input-zone {
       flex-shrink: 0;
       background: var(--surface-color);
       border-top: 1px solid var(--border-color);
-      padding: 0.75rem 1rem;
+      padding: 0.75rem;
+      padding-bottom: calc(0.75rem + var(--safe-area-inset-bottom));
       display: flex;
       flex-direction: column;
       gap: 0.75rem;
-      padding-bottom: env(safe-area-inset-bottom, 0.75rem);
+      z-index: 100;
     }
 
-    .hints-row {
-      display: flex;
-      gap: 0.5rem;
-      overflow-x: auto;
-      padding-bottom: 0.25rem;
-      -webkit-overflow-scrolling: touch;
-    }
-
-    .hints-row::-webkit-scrollbar { display: none; }
-
-    .hint-btn {
-      flex-shrink: 0;
-      background: var(--bg-color);
-      border: 1px solid var(--border-color);
-      color: var(--text-dim);
-      padding: 0.375rem 0.75rem;
-      border-radius: 1rem;
-      font-size: 0.75rem;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: all 0.2s;
-    }
-
-    .hint-btn:hover { background: var(--border-color); color: var(--text-color); }
-
-    .input-row {
-      display: flex;
-      gap: 0.75rem;
-      align-items: flex-end;
-    }
-
+    .input-row { display: flex; gap: 0.5rem; align-items: flex-end; }
     .textarea-wrapper {
       flex: 1;
-      position: relative;
       background: var(--bg-color);
       border: 1px solid var(--border-color);
-      border-radius: 0.75rem;
-      padding: 0.5rem 0.75rem;
-      transition: border-color 0.2s;
+      border-radius: 1rem;
+      padding: 0.5rem 0.875rem;
+      display: flex;
+      align-items: center;
     }
-
-    .textarea-wrapper:focus-within { border-color: var(--accent-color); }
-
-    textarea {
+    textarea#cmd-input {
       width: 100%;
       background: transparent;
       border: none;
-      color: var(--text-color);
-      font-family: inherit;
+      color: #fff;
       font-size: 0.9375rem;
       resize: none;
       outline: none;
       max-height: 120px;
-      line-height: 1.5;
       padding: 0;
-      margin: 0;
+      line-height: 1.4;
     }
 
     .btn-send {
@@ -137,387 +316,1303 @@
       color: white;
       border: none;
       border-radius: 50%;
-      width: 2.5rem;
-      height: 2.5rem;
+      width: 2.75rem;
+      height: 2.75rem;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
       flex-shrink: 0;
-      transition: transform 0.1s, background-color 0.2s;
+      transition: transform 0.2s, background 0.2s;
     }
-
     .btn-send:hover { background: var(--accent-hover); }
     .btn-send:active { transform: scale(0.95); }
-    .btn-send svg { width: 1.25rem; height: 1.25rem; fill: currentColor; }
+    .btn-send { touch-action: manipulation; min-width: 44px; min-height: 44px; }
 
-    .toolbar-actions {
-      display: flex;
-      gap: 0.5rem;
+    /* Mobile Styles */
+    @media (max-width: 768px) {
+      header { padding: calc(0.5rem + var(--safe-area-inset-top)) 0.75rem 0.5rem; }
+      #sidebar {
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        transform: translateX(-100%);
+        box-shadow: 10px 0 30px rgba(0,0,0,0.5);
+      }
+      #sidebar.open { transform: translateX(0); }
+      
+      .header-right .btn-action { display: none; } /* Hide complex actions in header on mobile */
+      
+      .mobile-nav {
+        display: flex;
+        background: var(--sidebar-color);
+        border-top: 1px solid var(--border-color);
+        padding-bottom: var(--safe-area-inset-bottom);
+      }
+      .nav-item {
+        flex: 1;
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.625rem;
+        color: var(--text-dim);
+        cursor: pointer;
+        touch-action: manipulation;
+        min-height: 44px;
+        justify-content: center;
+      }
+      .nav-item.active { color: var(--accent-color); }
+      .nav-item svg { width: 22px; height: 22px; }
+      
+      #main-content .tabs { display: none; } /* Use bottom nav instead */
     }
 
-    .btn-action {
+    /* Header overflow menu (mobile: Reboot/Kill in dropdown) */
+    .header-overflow {
+      display: none;
+      position: relative;
+    }
+    .header-overflow .overflow-trigger {
       background: transparent;
-      border: 1px solid var(--border-color);
+      border: none;
       color: var(--text-dim);
-      padding: 0.375rem 0.5rem;
-      border-radius: 0.375rem;
-      font-size: 0.75rem;
       cursor: pointer;
+      padding: 0.5rem;
+      border-radius: 0.375rem;
+      touch-action: manipulation;
+      min-width: 44px;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      display: flex;
     }
-
-    .btn-action:hover { background: var(--border-color); color: var(--text-color); }
-    .btn-action.danger:hover { color: var(--error-color); border-color: var(--error-color); }
-
-    #loading-overlay {
+    .header-overflow .overflow-trigger:hover { color: #fff; background: var(--surface-hover); }
+    .header-overflow .overflow-dropdown {
       position: absolute;
-      inset: 0;
-      background: var(--bg-color);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 20;
-    }
-
-    .spinner {
-      width: 2rem;
-      height: 2rem;
-      border: 3px solid var(--border-color);
-      border-top-color: var(--accent-color);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    #no-token-overlay {
-      position: fixed;
-      inset: 0;
-      background: var(--bg-color);
-      padding: 2rem;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      z-index: 100;
-    }
-
-    .card {
+      top: 100%;
+      right: 0;
+      margin-top: 0.25rem;
       background: var(--surface-color);
       border: 1px solid var(--border-color);
-      border-radius: 1rem;
-      padding: 2rem;
-      max-width: 400px;
+      border-radius: 0.5rem;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+      min-width: 140px;
+      z-index: 1000;
+      display: none;
+    }
+    .header-overflow .overflow-dropdown.open { display: block; }
+    .header-overflow .overflow-dropdown button {
+      display: block;
       width: 100%;
+      padding: 0.75rem 1rem;
+      border: none;
+      background: none;
+      color: var(--text-color);
+      font-size: 0.875rem;
+      text-align: left;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .header-overflow .overflow-dropdown button:hover { background: var(--surface-hover); }
+    .header-overflow .overflow-dropdown button.kill { color: var(--error-color); }
+    @media (max-width: 768px) {
+      .header-overflow { display: flex; align-items: center; }
+      .header-right .btn-action { display: none; }
     }
 
-    .card h2 { margin-bottom: 1rem; color: var(--warning-color); }
-    .card code { display: block; background: var(--bg-color); padding: 1rem; border-radius: 0.5rem; margin: 1rem 0; font-size: 0.875rem; }
+    @media (min-width: 769px) {
+      .mobile-nav { display: none; }
+      #menu-toggle { display: none; }
+      .header-overflow { display: none; }
+      .header-right .btn-action { display: flex; }
+    }
 
-    /* xterm adjustments */
-    .xterm-viewport::-webkit-scrollbar { width: 8px; }
-    .xterm-viewport::-webkit-scrollbar-track { background: var(--bg-color); }
-    .xterm-viewport::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+    .spinner-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(11, 15, 26, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 300;
+    }
+    .spinner { width: 2.5rem; height: 2.5rem; border: 3px solid var(--border-color); border-top-color: var(--accent-color); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Chat View (mobile agent interaction) ── */
+    #chat-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-color);
+      min-height: 0;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      -webkit-overflow-scrolling: touch;
+      min-height: 80px;
+    }
+    .chat-messages-empty::after {
+      content: "Agent output will appear here. Send a message below or wait for pane output.";
+      display: block;
+      padding: 1rem;
+      color: var(--text-dim);
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+    .chat-bubble {
+      max-width: 92%;
+      padding: 0.625rem 0.875rem;
+      border-radius: 1rem;
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      word-break: break-word;
+      animation: chatFadeIn 0.15s ease;
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      background: var(--accent-color);
+      border-color: var(--accent-hover);
+      color: white;
+      border-bottom-right-radius: 0.25rem;
+      max-width: 80%;
+    }
+    .chat-bubble.agent {
+      align-self: flex-start;
+      border-bottom-left-radius: 0.25rem;
+    }
+    .chat-text {
+      white-space: pre-wrap;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+    .chat-summary-label {
+      font-size: 0.625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+      margin-bottom: 0.375rem;
+    }
+    .chat-details {
+      margin-top: 0.5rem;
+      border-top: 1px dashed var(--border-color);
+      padding-top: 0.5rem;
+    }
+    .chat-details summary {
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      user-select: none;
+    }
+    .chat-details-body {
+      margin-top: 0.5rem;
+      white-space: pre-wrap;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      line-height: 1.45;
+      color: var(--text-dim);
+      max-height: 220px;
+      overflow: auto;
+      padding-right: 0.125rem;
+    }
+    .chat-bubble.user .chat-text {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 0.875rem;
+      white-space: normal;
+    }
+    .chat-code {
+      background: #000;
+      border-radius: 0.5rem;
+      padding: 0.625rem;
+      overflow-x: auto;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      line-height: 1.4;
+      margin: 0.375rem 0;
+      -webkit-overflow-scrolling: touch;
+      position: relative;
+    }
+    .chat-code code {
+      color: var(--text-color);
+      white-space: pre;
+      display: block;
+    }
+    .chat-code .copy-btn {
+      position: absolute;
+      top: 0.25rem;
+      right: 0.25rem;
+      background: var(--surface-hover);
+      border: none;
+      color: var(--text-dim);
+      border-radius: 0.25rem;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.625rem;
+      cursor: pointer;
+    }
+    @media (hover: none) { .chat-code .copy-btn { opacity: 0.8; } }
+    .chat-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.625rem;
+    }
+    .chat-option-btn {
+      display: block;
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid var(--accent-color);
+      background: rgba(59, 130, 246, 0.08);
+      color: var(--accent-color);
+      border-radius: 0.75rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chat-option-btn:active { transform: scale(0.98); background: rgba(59, 130, 246, 0.18); }
+    .chat-option-btn.selected { background: var(--accent-color); color: white; border-color: var(--accent-color); }
+    .chat-option-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .chat-yn-options {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.625rem;
+    }
+    .chat-yn-btn {
+      flex: 1;
+      padding: 0.75rem;
+      border-radius: 0.75rem;
+      border: 1px solid var(--border-color);
+      background: var(--surface-hover);
+      color: var(--text-color);
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chat-yn-btn.yes { border-color: var(--success-color); color: var(--success-color); }
+    .chat-yn-btn.yes:active { background: rgba(16, 185, 129, 0.15); }
+    .chat-yn-btn.no { border-color: var(--error-color); color: var(--error-color); }
+    .chat-yn-btn.no:active { background: rgba(239, 68, 68, 0.15); }
+    .chat-yn-btn:active { transform: scale(0.97); }
+    .chat-yn-btn.selected { color: white; }
+    .chat-yn-btn.yes.selected { background: var(--success-color); border-color: var(--success-color); }
+    .chat-yn-btn.no.selected { background: var(--error-color); border-color: var(--error-color); }
+    .chat-yn-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .chat-typing {
+      align-self: flex-start;
+      padding: 0.5rem 0.875rem;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      display: none;
+    }
+    .chat-typing.active { display: flex; align-items: center; gap: 0.375rem; }
+    .typing-dots span {
+      display: inline-block;
+      width: 4px; height: 4px;
+      background: var(--text-dim);
+      border-radius: 50%;
+      animation: typingBounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typingBounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-4px); }
+    }
+    @keyframes chatFadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 768px) {
+      #terminal-view { display: none !important; }
+      #chat-view:not(.hidden) { display: flex; }
+      .header-right { gap: 0.25rem; }
+    }
+    @media (min-width: 769px) {
+      #chat-view { display: none !important; }
+    }
   </style>
 </head>
 <body>
-  <div id="no-token-overlay" class="hidden">
-    <div class="card">
-      <h2>Access Token Required</h2>
-      <p>Please provide an access token to continue.</p>
-      <code>?thread_id=xxx&token=YOUR_TOKEN</code>
-    </div>
-  </div>
-
   <header>
-    <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
-    <div class="toolbar-actions">
-      <button id="btn-reboot" class="btn-action">Reboot</button>
-      <button id="btn-detach" class="btn-action">Detach</button>
-      <button id="btn-kill" class="btn-action danger">Kill</button>
+    <div class="header-left">
+      <button class="back-btn" aria-label="Go back" onclick="location.href='index.html'"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></button>
+      <button id="menu-toggle" class="back-btn" aria-label="Toggle menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg></button>
+      <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+    </div>
+    <div class="header-right">
+      <div class="header-overflow">
+        <button type="button" class="overflow-trigger" id="overflow-menu-btn" aria-label="More actions" aria-haspopup="true" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
+        <div class="overflow-dropdown" id="overflow-dropdown">
+          <button type="button" id="overflow-reboot">Reboot</button>
+          <button type="button" class="kill" id="overflow-kill">Kill</button>
+        </div>
+      </div>
+      <button id="focus-toggle" class="focus-toggle active" type="button">Focus ON</button>
+      <button id="btn-reboot" class="btn-action" style="background:transparent;border:1px solid var(--border-color);color:var(--text-dim);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Reboot</button>
+      <button id="btn-kill" class="btn-action" style="background:transparent;border:1px solid var(--error-color);color:var(--error-color);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Kill</button>
+      <div id="agent-status" style="font-size: 0.75rem; color: var(--success-color); margin-left: 0.25rem; display: flex; align-items: center; gap: 0.375rem;">
+        <div style="width: 6px; height: 6px; background: currentColor; border-radius: 50%;"></div>
+        Live
+      </div>
     </div>
   </header>
 
-  <div id="main">
-    <div id="loading-overlay">
-      <div class="spinner"></div>
-    </div>
-    
-    <div id="terminal-container">
-      <div id="term"></div>
+  <div id="workspace">
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
+    <div id="sidebar">
+      <div class="sidebar-header">
+        Explorer
+        <button id="refresh-files" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+      </div>
+      <div id="file-tree">
+        <div class="tree-item" style="opacity: 0.5;">Loading files...</div>
+      </div>
     </div>
 
-    <div id="input-zone">
-      <div class="hints-row">
-        <button class="hint-btn" data-cmd="ls -la">ls -la</button>
-        <button class="hint-btn" data-cmd="pwd">pwd</button>
-        <button class="hint-btn" data-cmd="git status">git status</button>
-        <button class="hint-btn" data-cmd="npm start">npm start</button>
-        <button class="hint-btn" data-cmd="npm run test">npm run test</button>
-        <button class="hint-btn" data-cmd="cat package.json">cat package.json</button>
-        <button class="hint-btn" data-cmd="ps aux">ps aux</button>
-        <button class="hint-btn" data-cmd="df -h">df -h</button>
+    <div id="main-content">
+      <div class="tabs">
+        <div class="tab active" data-view="terminal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg> Terminal</div>
+        <div class="tab" data-view="editor"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg> Editor</div>
       </div>
-      <div class="input-row">
-        <div class="textarea-wrapper">
-          <textarea id="input-run" rows="1" placeholder="Type a command..."></textarea>
+
+      <div class="view-container">
+        <div id="terminal-view" class="view">
+          <div id="term-container"></div>
         </div>
-        <button id="btn-send" class="btn-send" aria-label="Send">
-          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-        </button>
+        <div id="editor-view" class="view hidden">
+          <div style="padding: 0.625rem 1rem; font-size: 0.75rem; color: var(--text-dim); background: var(--sidebar-color); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+            <span id="current-filename" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 1rem;">No file open</span>
+            <button id="btn-save" style="background: var(--accent-color); border:none; color:#fff; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor:pointer;" class="hidden">Save</button>
+          </div>
+          <textarea id="editor-content" placeholder="Select a file to edit..." readonly spellcheck="false"></textarea>
+        </div>
+        
+        <div id="chat-view" class="view">
+          <div id="chat-messages" class="chat-messages chat-messages-empty"></div>
+          <div id="chat-typing" class="chat-typing">
+            <div class="typing-dots"><span></span><span></span><span></span></div>
+            Agent is responding...
+          </div>
+        </div>
+
+        <div id="loading-overlay" class="spinner-overlay hidden">
+          <div class="spinner"></div>
+        </div>
+      </div>
+
+      <div id="input-zone">
+        <div class="input-row">
+          <div class="textarea-wrapper">
+            <textarea id="cmd-input" rows="1" placeholder="Ask agent or run command..." autocomplete="off"></textarea>
+          </div>
+          <button id="btn-send" class="btn-send" aria-label="Send">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
       </div>
     </div>
   </div>
 
+  <nav class="mobile-nav">
+    <div class="nav-item active" data-view="chat"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>Chat</div>
+    <div class="nav-item" data-view="editor"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>Editor</div>
+    <div class="nav-item" id="mobile-explorer-btn"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>Files</div>
+  </nav>
+
+  <script src="app.js"></script>
   <script>
-    /* Meridian Web GUI — shared logic (inlined) */
-    (function () {
-      "use strict";
-      var STORAGE_KEY = "meridian_web_token";
-      function getQueryParams() {
-        var params = {};
-        var search = typeof window.location.search === "string" ? window.location.search.slice(1) : "";
-        search.split("&").forEach(function (pair) {
-          var i = pair.indexOf("=");
-          if (i > 0) params[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
-        });
-        return params;
-      }
-      function getToken() {
-        var q = getQueryParams();
-        if (q.token) return q.token.trim();
-        try { var t = sessionStorage.getItem(STORAGE_KEY); return t ? t.trim() : ""; } catch (e) { return ""; }
-      }
-      function setToken(token) {
-        try { if (token) sessionStorage.setItem(STORAGE_KEY, token); else sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-      }
-      (function () { var q = getQueryParams(); if (q.token) setToken(q.token.trim()); })();
-      function apiBase() {
-        var origin = window.location.origin || "";
-        var p = (window.location.pathname || "/").replace(/\/[^/]*$/, "") || "/";
-        if (p === "/" && origin) return origin;
-        return origin + (p.endsWith("/") ? p.slice(0, -1) : p);
-      }
-      function fetchWithAuth(url, options) {
-        options = options || {};
-        var headers = options.headers || {};
-        if (typeof headers.append === "function" || Array.isArray(headers)) headers = {};
-        var token = getToken();
-        if (token) headers["Authorization"] = "Bearer " + token;
-        var u = url.indexOf("/") === 0 ? apiBase() + url : url;
-        return fetch(u, Object.assign({}, options, { headers: headers }));
-      }
-      function ensureToken() { return !!getToken(); }
-      window.MeridianWeb = { getToken: getToken, setToken: setToken, apiBase: apiBase, fetchWithAuth: fetchWithAuth, ensureToken: ensureToken, getQueryParams: getQueryParams };
-    })();
-  </script>
-  <script>
-    /* Lightweight xterm loader with timeout fallback */
+    /* Lightweight xterm loader */
     (function () {
       function boot() { document.dispatchEvent(new Event("meridian:ready")); }
-      function loadXtermCDN(cb) {
+      function loadXterm(cb) {
+        var done = false;
+        function finish() {
+          if (done) return;
+          done = true;
+          cb();
+        }
         var js = document.createElement("script");
         js.src = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js";
+        js.onerror = finish;
         js.onload = function () {
           var fit = document.createElement("script");
           fit.src = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/addons/fit/fit.js";
-          fit.onload = cb;
-          fit.onerror = cb;
+          fit.onload = finish;
+          fit.onerror = finish;
           document.body.appendChild(fit);
         };
-        js.onerror = cb;
         document.body.appendChild(js);
+        // Fallback: do not block the entire UI on CDN issues.
+        setTimeout(finish, 3000);
       }
-      var loaded = false;
-      loadXtermCDN(function () { loaded = true; boot(); });
-      setTimeout(function () { if (!loaded) { loaded = true; boot(); } }, 3000);
+      loadXterm(boot);
     })();
   </script>
   <script>
     document.addEventListener("meridian:ready", function () {
-    (function () {
-      var MAX_HISTORY_LINES = 10000;
-      var threadId = (window.MeridianWeb.getQueryParams().thread_id || "").trim();
-      var noTokenOverlay = document.getElementById("no-token-overlay");
-      var loadingOverlay = document.getElementById("loading-overlay");
-      var threadLabel = document.getElementById("thread-label");
-      var inputRun = document.getElementById("input-run");
+      var params = window.MeridianWeb.getQueryParams();
+      var threadId = params.thread_id;
+      var token = window.MeridianWeb.getToken();
+      
+      var termEl = document.getElementById("term-container");
+      var cmdInput = document.getElementById("cmd-input");
       var btnSend = document.getElementById("btn-send");
-      var btnKill = document.getElementById("btn-kill");
-      var btnReboot = document.getElementById("btn-reboot");
-      var btnDetach = document.getElementById("btn-detach");
-      var termEl = document.getElementById("term");
+      var fileTree = document.getElementById("file-tree");
+      var editorContent = document.getElementById("editor-content");
+      var currentFilename = document.getElementById("current-filename");
+      var btnSave = document.getElementById("btn-save");
+      var loadingOverlay = document.getElementById("loading-overlay");
+      var sidebar = document.getElementById("sidebar");
+      var sidebarOverlay = document.getElementById("sidebar-overlay");
 
-      var term = null;
-      var historyBuffer = [];
-      var notAvailable = false;
+      // ── Chat view state ──
+      var chatMessagesEl = document.getElementById("chat-messages");
+      var chatTypingEl = document.getElementById("chat-typing");
+      var chatBuffer = "";
+      var chatTimer = null;
+      var chatTypingTimer = null;
+      var chatAutoScroll = true;
+      var focusModeEnabled =
+        window.MeridianWeb && typeof window.MeridianWeb.getFocusModeEnabled === "function"
+          ? window.MeridianWeb.getFocusModeEnabled(true)
+          : true;
+      var focusToggleBtn = document.getElementById("focus-toggle");
+      var CHAT_FLUSH_WINDOW_MS = 1200;
+      var CHAT_COLLAPSE_LINE_LIMIT = 8;
+      var CHAT_COLLAPSE_CHAR_LIMIT = 400;
+      var SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+      var SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+      var EXPANDED_DIRS_STORAGE_KEY = "meridian_expanded_dirs:" + (threadId || "active");
+      var expandedDirs = new Set();
+      var fileTreeEntries = [];
+      var selectedFilePath = "";
 
-      // Auto-expand textarea
-      inputRun.addEventListener("input", function() {
-        this.style.height = "auto";
-        this.style.height = (this.scrollHeight) + "px";
-      });
+      function isMobile() { return window.innerWidth <= 768; }
 
-      function appendToTerminal(chunk) {
-        if (notAvailable) return;
-        if (term) {
-          term.write(chunk);
+      function stripAnsi(str) {
+        return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+                  .replace(/\x1b\][^\x07]*\x07/g, "")
+                  .replace(/\x1b[()][AB012]/g, "")
+                  .replace(/\r/g, "");
+      }
+
+      function detectOptions(text) {
+        if (!/(^|\n)\s*(Choose|Select)\s*:/i.test(text)) return [];
+        var lines = text.split("\n").filter(function(l) { return l.trim(); });
+        var opts = [];
+        var re1 = /^\s*(\d+)[.)]\s+(.+)$/;
+        var re2 = /^\s*\[(\d+)\]\s+(.+)$/;
+        for (var i = 0; i < lines.length; i++) {
+          var m = lines[i].match(re1) || lines[i].match(re2);
+          if (m) opts.push({ key: m[1], label: m[2].trim() });
         }
-        historyBuffer.push(chunk);
-        var lines = (historyBuffer.join("").match(/\n/g) || []).length;
-        if (lines > MAX_HISTORY_LINES) {
-          var remove = lines - MAX_HISTORY_LINES;
-          var idx = 0;
-          var count = 0;
-          for (var i = 0; i < historyBuffer.length; i++) {
-            var n = (historyBuffer[i].match(/\n/g) || []).length;
-            count += n;
-            if (count >= remove) {
-              idx = i + 1;
-              break;
-            }
+        return opts.length >= 2 ? opts : [];
+      }
+
+      function detectYesNo(text) {
+        return /(^|\n)\s*(Answer with|Please answer)\s+(y\/n|yes\/no)\b/i.test(text);
+      }
+
+      function detectApprovalPrompt(text) {
+        if (!text) return false;
+        return (
+          /(Action Required|waiting for approval)/i.test(text) &&
+          /(Allow once|Allow for this session|Run this command\?|Allow execution of)/i.test(text)
+        );
+      }
+
+      function isLowValueLine(line) {
+        var t = (line || "").trim();
+        if (!t) return true;
+        if (/^(heartbeat|typing)\b/i.test(t)) return true;
+        if (/^(status:\s*(running|idle|live)|connected|reconnecting)$/i.test(t)) return true;
+        if (/^(\$|>|#)\s*(pwd|ls|cd)\b/.test(t)) return true;
+        if (/^\/[\w./-]+$/.test(t) || /^\.\/[\w./-]+$/.test(t)) return true;
+        if (/^\[[0-9:. -]+\]/.test(t)) return true;
+        return false;
+      }
+
+      function extractSummaryBlocks(content) {
+        if (content.indexOf(SUMMARY_MARKER_BEGIN) < 0 || content.indexOf(SUMMARY_MARKER_END) < 0) {
+          return { summaries: [], residual: content };
+        }
+        var summaries = [];
+        var residual = "";
+        var cursor = 0;
+        while (cursor < content.length) {
+          var begin = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
+          if (begin < 0) {
+            residual += content.slice(cursor);
+            break;
           }
-          historyBuffer = historyBuffer.slice(idx);
+          residual += content.slice(cursor, begin);
+          var beginClose = content.indexOf("]]", begin);
+          if (beginClose < 0) {
+            residual += content.slice(begin);
+            break;
+          }
+          var end = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
+          if (end < 0) {
+            residual += content.slice(begin);
+            break;
+          }
+          var endClose = content.indexOf("]]", end);
+          if (endClose < 0) {
+            residual += content.slice(begin);
+            break;
+          }
+          var summary = content.slice(beginClose + 2, end).trim();
+          if (summary) summaries.push(summary);
+          cursor = endClose + 2;
         }
+        return { summaries: summaries, residual: residual };
       }
 
-      function runCommand(cmd) {
-        if (!window.MeridianWeb.ensureToken() || !threadId) return;
-        var body = JSON.stringify({ thread_id: threadId, content: cmd });
-        window.MeridianWeb.fetchWithAuth("/api/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: body
-        }).then(function (res) {
-          return res.json().then(function (data) {
-            if (!res.ok) appendToTerminal("\r\nError: " + (data.error || res.status) + "\r\n");
-          });
-        }).catch(function (e) {
-          appendToTerminal("\r\nError: " + (e && e.message ? e.message : "network") + "\r\n");
-        });
-      }
-
-      function threadAction(intent) {
-        if (!window.MeridianWeb.ensureToken() || !threadId) return;
-        if (!confirm("Are you sure you want to " + intent + " this thread?")) return;
-        
-        window.MeridianWeb.fetchWithAuth("/api/" + intent, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ thread_id: threadId })
-        }).then(function (res) {
-          return res.json().then(function (data) {
-            if (intent === "kill" || intent === "detach") {
-              window.location.href = window.MeridianWeb.apiBase() + "/index.html?token=" + encodeURIComponent(window.MeridianWeb.getToken());
-            }
-          });
-        });
-      }
-
-      if (!threadId || !window.MeridianWeb.ensureToken()) {
-        noTokenOverlay.classList.remove("hidden");
-      } else {
-        threadLabel.textContent = threadId;
-        var base = window.MeridianWeb.apiBase();
-        var protocol = base.indexOf("https") === 0 ? "wss" : "ws";
-        var wsBase = (protocol === "wss" ? base.replace(/^https/, "wss") : base.replace(/^http/, "ws"));
-        var token = window.MeridianWeb.getToken();
-        var wsUrl = wsBase.replace(/\/$/, "") + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + (token ? "&token=" + encodeURIComponent(token) : "");
-
-        if (typeof window.Terminal === "function") {
-          term = new window.Terminal({
-            cursorBlink: true,
-            scrollback: MAX_HISTORY_LINES,
-            theme: { background: "#000000", foreground: "#e2e8f0" },
-            fontSize: 14,
-            fontFamily: '"SF Mono", "Fira Code", monospace'
-          });
-          if (window.TerminalFit) window.TerminalFit.fit(term);
-          term.open(termEl);
-          term.onData(function (data) {
-            // Forward raw data if needed, but here we usually use the runCommand for input-run
-            // However, some might want to type directly in terminal
-            // For mobile, typing in terminal is hard, so we use the input zone
-          });
-        } else {
-          termEl.style.cssText = "padding:1rem;font-family:monospace;font-size:0.875rem;white-space:pre-wrap;overflow:auto;height:100%;color:#e2e8f0;";
-          var origAppend = appendToTerminal;
-          appendToTerminal = function (chunk) {
-            origAppend(chunk);
-            termEl.textContent += chunk;
-            termEl.scrollTop = termEl.scrollHeight;
+      function summarizeAgentText(content) {
+        var extracted = extractSummaryBlocks(content);
+        if (extracted.summaries.length > 0) {
+          return {
+            summary: extracted.summaries.join("\n\n").trim(),
+            details: extracted.residual.trim()
           };
         }
-
-        var ws = new WebSocket(wsUrl);
-        ws.onopen = function () {
-          loadingOverlay.classList.add("hidden");
+        var rawLines = content
+          .split(/\r?\n/)
+          .map(function(line) { return line.replace(/\s+$/, ""); });
+        var summaryLines = rawLines
+          .filter(function(line) { return !isLowValueLine(line); })
+          .filter(function(line) { return !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line); })
+          .slice(0, 6);
+        return {
+          summary: (summaryLines.join("\n").trim() || "Update received. Expand details for full output."),
+          details: content.trim()
         };
+      }
+
+      function addChatBubble(content, type, detailsText) {
+        if (!chatMessagesEl) return;
+        var bubble = document.createElement("div");
+        bubble.className = "chat-bubble " + (type || "agent");
+
+        // Split content into text vs code blocks
+        var lines = content.split("\n");
+        var currentBlock = [];
+        var currentIsCode = false;
+
+        function flushBlock() {
+          if (currentBlock.length === 0) return;
+          var blockText = currentBlock.join("\n");
+          if (!blockText.trim()) { currentBlock = []; return; }
+          if (currentIsCode) {
+            var pre = document.createElement("pre");
+            pre.className = "chat-code";
+            var code = document.createElement("code");
+            code.textContent = blockText;
+            pre.appendChild(code);
+            var copyBtn = document.createElement("button");
+            copyBtn.className = "copy-btn";
+            copyBtn.textContent = "Copy";
+            copyBtn.addEventListener("click", (function(t) {
+              return function() {
+                navigator.clipboard.writeText(t).catch(function(){});
+                this.textContent = "Copied!";
+                var self = this;
+                setTimeout(function() { self.textContent = "Copy"; }, 1500);
+              };
+            })(blockText));
+            pre.appendChild(copyBtn);
+            bubble.appendChild(pre);
+          } else {
+            var div = document.createElement("div");
+            div.className = "chat-text";
+            div.textContent = blockText;
+            bubble.appendChild(div);
+          }
+          currentBlock = [];
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          var isCodeLine = /^[+\-<>]/.test(line) || /^@@/.test(line) || /^diff /.test(line) || /^\s{4,}\S/.test(line);
+          if (i === 0) {
+            currentIsCode = isCodeLine;
+            currentBlock.push(line);
+          } else if (isCodeLine !== currentIsCode) {
+            flushBlock();
+            currentIsCode = isCodeLine;
+            currentBlock.push(line);
+          } else {
+            currentBlock.push(line);
+          }
+        }
+        flushBlock();
+
+        if (type !== "user" && detailsText) {
+          var details = document.createElement("details");
+          details.className = "chat-details";
+          var summary = document.createElement("summary");
+          var detailLineCount = detailsText.split(/\r?\n/).length;
+          summary.textContent = "Details (" + detailLineCount + " lines)";
+          var detailsBody = document.createElement("div");
+          detailsBody.className = "chat-details-body";
+          detailsBody.textContent = detailsText;
+          details.appendChild(summary);
+          details.appendChild(detailsBody);
+          bubble.appendChild(details);
+        }
+
+        // Detect and render option buttons (strict prompt gate)
+        if (type !== "user") {
+          if (detectApprovalPrompt(content)) {
+            var approvalDiv = document.createElement("div");
+            approvalDiv.className = "chat-options";
+            [
+              { action: "run", label: "1. Allow once" },
+              { action: "allow", label: "2. Allow for this session" },
+              { action: "skip", label: "3. No, suggest changes" }
+            ].forEach(function(opt) {
+              var btn = document.createElement("button");
+              btn.className = "chat-option-btn";
+              btn.textContent = opt.label;
+              btn.addEventListener("click", function() {
+                addChatBubble(opt.label, "user");
+                approvalDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
+                btn.classList.add("selected");
+                sendTerminalApproval(opt.action).catch(function(err) {
+                  var msg = err && err.message ? err.message : "Approval action failed.";
+                  addChatBubble("Error: " + msg, "agent");
+                });
+                if (navigator.vibrate) navigator.vibrate(10);
+              });
+              approvalDiv.appendChild(btn);
+            });
+            bubble.appendChild(approvalDiv);
+          }
+
+          var opts = detectOptions(content);
+          if (opts.length > 0) {
+            var optDiv = document.createElement("div");
+            optDiv.className = "chat-options";
+            opts.forEach(function(opt) {
+              var btn = document.createElement("button");
+              btn.className = "chat-option-btn";
+              btn.textContent = opt.key + ". " + opt.label;
+              btn.addEventListener("click", function() {
+                runCommand(opt.key);
+                addChatBubble(opt.key, "user");
+                optDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
+                btn.classList.add("selected");
+                if (navigator.vibrate) navigator.vibrate(10);
+              });
+              optDiv.appendChild(btn);
+            });
+            bubble.appendChild(optDiv);
+          }
+
+          if (detectYesNo(content)) {
+            var ynDiv = document.createElement("div");
+            ynDiv.className = "chat-yn-options";
+            [{key:"y",label:"Yes",cls:"yes"},{key:"n",label:"No",cls:"no"}].forEach(function(opt) {
+              var btn = document.createElement("button");
+              btn.className = "chat-yn-btn " + opt.cls;
+              btn.textContent = opt.label;
+              btn.addEventListener("click", function() {
+                runCommand(opt.key);
+                addChatBubble(opt.key, "user");
+                ynDiv.querySelectorAll(".chat-yn-btn").forEach(function(b) { b.disabled = true; });
+                btn.classList.add("selected");
+                if (navigator.vibrate) navigator.vibrate(10);
+              });
+              ynDiv.appendChild(btn);
+            });
+            bubble.appendChild(ynDiv);
+          }
+        }
+
+        chatMessagesEl.appendChild(bubble);
+        if (chatMessagesEl.classList.contains("chat-messages-empty")) chatMessagesEl.classList.remove("chat-messages-empty");
+        if (chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+      }
+
+      function showChatTyping(show) {
+        if (chatTypingEl) chatTypingEl.classList.toggle("active", show);
+        if (show && chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+      }
+
+      function flushChatBuffer() {
+        if (!chatBuffer.trim()) { chatBuffer = ""; return; }
+        var text = stripAnsi(chatBuffer).trim();
+        chatBuffer = "";
+        if (!text) return;
+        showChatTyping(false);
+        var digest = summarizeAgentText(text);
+        if (focusModeEnabled) {
+          var detailLineCount = digest.details ? digest.details.split(/\r?\n/).length : 0;
+          var shouldCollapse = detailLineCount > CHAT_COLLAPSE_LINE_LIMIT || digest.details.length > CHAT_COLLAPSE_CHAR_LIMIT;
+          addChatBubble(digest.summary, "agent", shouldCollapse ? digest.details : "");
+        } else {
+          addChatBubble(text, "agent");
+        }
+      }
+
+      if (chatMessagesEl) {
+        chatMessagesEl.addEventListener("scroll", function() {
+          chatAutoScroll = chatMessagesEl.scrollHeight - chatMessagesEl.scrollTop - chatMessagesEl.clientHeight < 50;
+        });
+      }
+      if (focusToggleBtn) {
+        focusToggleBtn.classList.toggle("active", focusModeEnabled);
+        focusToggleBtn.textContent = focusModeEnabled ? "Focus ON" : "Focus OFF";
+        focusToggleBtn.addEventListener("click", function() {
+          focusModeEnabled = !focusModeEnabled;
+          focusToggleBtn.classList.toggle("active", focusModeEnabled);
+          focusToggleBtn.textContent = focusModeEnabled ? "Focus ON" : "Focus OFF";
+          if (window.MeridianWeb && typeof window.MeridianWeb.setFocusModeEnabled === "function") {
+            window.MeridianWeb.setFocusModeEnabled(focusModeEnabled);
+          }
+        });
+      }
+
+      var term = null;
+      var terminalReady = false;
+
+      function fitTerminal() {
+        if (window.TerminalFit && term && terminalReady) {
+          try { window.TerminalFit.fit(term); } catch (e) {}
+        }
+      }
+
+      if (window.Terminal && termEl) {
+        term = new window.Terminal({
+          cursorBlink: true,
+          theme: { background: "#000000", foreground: "#f0f2f5" },
+          fontSize: 13,
+          fontFamily: '"SF Mono", "Fira Code", monospace',
+          allowProposedApi: true
+        });
+        term.open(termEl);
+        terminalReady = true;
+        fitTerminal();
+      } else if (termEl) {
+        var fallback = document.createElement("div");
+        fallback.style.cssText = "color:#94a3b8;padding:12px;font-size:12px;line-height:1.6;font-family:monospace;";
+        fallback.textContent = "Terminal viewer unavailable (xterm failed to load), but chat/send/editor/files remain available.";
+        termEl.appendChild(fallback);
+        term = { write: function () {} };
+      }
+
+      // WebSocket connection (only when thread_id and token present; otherwise server returns 401 and pane stays empty)
+      var base = window.MeridianWeb.apiBase();
+      var wsUrl = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId || "") + "&token=" + encodeURIComponent(token || "");
+      var ws = null;
+      if (threadId && token) {
+        ws = new WebSocket(wsUrl);
         ws.onmessage = function (ev) {
           try {
             var msg = JSON.parse(ev.data);
-            if (msg.type === "not_available") {
-              notAvailable = true;
-              appendToTerminal("\r\n[Terminal not available in bridge mode]\r\n");
-              return;
-            }
-            if (msg.type === "pane_output" && msg.chunk != null) {
-              appendToTerminal(msg.chunk);
+            if (msg.type === "pane_output" && msg.chunk) {
+              if (term && typeof term.write === "function") term.write(msg.chunk);
+              chatBuffer += msg.chunk;
+              clearTimeout(chatTimer);
+              clearTimeout(chatTypingTimer);
+              showChatTyping(true);
+              var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
+              chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
+              chatTypingTimer = setTimeout(function() { showChatTyping(false); }, 3000);
             }
           } catch (e) {}
         };
-        ws.onerror = function () {
-          loadingOverlay.innerHTML = "<div style='color:var(--error-color)'>WebSocket error.</div>";
+        ws.onerror = function() {
+          addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent");
         };
-        ws.onclose = function () {
-          if (!notAvailable) {
-            loadingOverlay.classList.remove("hidden");
-            loadingOverlay.innerHTML = "<div>Connection closed.</div>";
-          }
+        ws.onclose = function(ev) {
+          if (ev.code !== 1000 && ev.code !== 1005) addChatBubble("Connection closed. Refresh from the hub to reconnect.", "agent");
         };
+      } else {
+        if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent");
+        else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent");
+      }
 
-        function handleSend() {
-          var cmd = (inputRun.value || "").trim();
-          if (cmd) {
-            runCommand(cmd);
-            inputRun.value = "";
-            inputRun.style.height = "auto";
-          }
-        }
+      // Auto-expand input
+      cmdInput.addEventListener("input", function() {
+        this.style.height = "auto";
+        this.style.height = Math.min(this.scrollHeight, 120) + "px";
+      });
 
-        btnSend.addEventListener("click", handleSend);
-        inputRun.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            handleSend();
-          }
+      function runCommand(cmd, silent) {
+        return window.MeridianWeb.fetchWithAuth("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, content: cmd })
+        }).then(function(res) {
+          return res.json().then(function(data) {
+            if (!res.ok) {
+              var err = new Error(data && data.error ? data.error : "Request failed " + res.status);
+              err.status = res.status;
+              err.body = data;
+              throw err;
+            }
+            return data;
+          });
         });
+      }
 
-        document.querySelectorAll(".hint-btn").forEach(function(btn) {
-          btn.addEventListener("click", function() {
-            var cmd = this.getAttribute("data-cmd");
-            inputRun.value = cmd;
-            inputRun.style.height = "auto";
-            inputRun.style.height = (inputRun.scrollHeight) + "px";
-            inputRun.focus();
+      function sendTerminalApproval(action) {
+        return window.MeridianWeb.fetchWithAuth("/api/terminal_input", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, content: action })
+        }).then(function(res) {
+          return res.json().then(function(data) {
+            if (!res.ok) {
+              var err = new Error(data && data.error ? data.error : "Approval request failed " + res.status);
+              err.status = res.status;
+              throw err;
+            }
+            return data;
+          });
+        });
+      }
+
+      function handleSend() {
+        var cmd = cmdInput.value.trim();
+        if (!cmd) return;
+        if (!threadId) {
+          addChatBubble("Error: No session. Open this page from the hub (click a session card).", "agent");
+          return;
+        }
+        if (!window.MeridianWeb.getToken()) {
+          addChatBubble("Error: Missing token. Open this page from the hub with ?token= in the URL.", "agent");
+          return;
+        }
+        addChatBubble(cmd, "user");
+        runCommand(cmd).catch(function(err) {
+          var msg = err && err.message ? err.message : "Send failed.";
+          if (err && err.status === 401) msg = "Unauthorized. Refresh the page from the hub so the URL includes ?token=.";
+          addChatBubble("Error: " + msg, "agent");
+          if (navigator.vibrate) navigator.vibrate(50);
+        });
+        cmdInput.value = "";
+        cmdInput.style.height = "auto";
+        cmdInput.focus();
+        if (navigator.vibrate) navigator.vibrate(5);
+      }
+      btnSend.addEventListener("click", function(e) { e.preventDefault(); handleSend(); });
+      cmdInput.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+      });
+
+      // View Switching
+      function switchView(viewName) {
+        document.querySelectorAll(".view").forEach(function(v) { v.classList.add("hidden"); });
+        var target = document.getElementById(viewName + "-view");
+        if (target) target.classList.remove("hidden");
+        document.querySelectorAll(".tab, .nav-item[data-view]").forEach(function(t) {
+          t.classList.toggle("active", t.getAttribute("data-view") === viewName);
+        });
+        if (viewName === "terminal") {
+          setTimeout(function() { fitTerminal(); cmdInput.focus(); }, 10);
+        }
+        if (viewName === "chat" && chatMessagesEl) {
+          setTimeout(function() { chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight; cmdInput.focus(); }, 10);
+        }
+        closeSidebar();
+      }
+
+      document.querySelectorAll("[data-view]").forEach(el => {
+        el.addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); switchView(this.getAttribute("data-view")); });
+      });
+
+      // Sidebar logic
+      function toggleSidebar() {
+        var isOpen = sidebar.classList.toggle("open");
+        sidebarOverlay.classList.toggle("open", isOpen);
+      }
+      function closeSidebar() {
+        sidebar.classList.remove("open");
+        sidebarOverlay.classList.remove("open");
+      }
+      document.getElementById("menu-toggle").addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); toggleSidebar(); });
+      document.getElementById("mobile-explorer-btn").addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); toggleSidebar(); });
+      sidebarOverlay.addEventListener("click", closeSidebar);
+
+      // File Explorer Logic
+      function compareTreeNodes(a, b) {
+        if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      }
+
+      function loadExpandedDirs() {
+        try {
+          var raw = sessionStorage.getItem(EXPANDED_DIRS_STORAGE_KEY);
+          if (!raw) return;
+          var parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return;
+          expandedDirs = new Set(
+            parsed.filter(function(item) {
+              return typeof item === "string" && item.trim();
+            })
+          );
+        } catch (e) {}
+      }
+
+      function saveExpandedDirs() {
+        try {
+          var snapshot = Array.from(expandedDirs.values()).sort();
+          sessionStorage.setItem(EXPANDED_DIRS_STORAGE_KEY, JSON.stringify(snapshot));
+        } catch (e) {}
+      }
+
+      function toggleExpandedDir(dirPath) {
+        if (expandedDirs.has(dirPath)) expandedDirs.delete(dirPath);
+        else expandedDirs.add(dirPath);
+        saveExpandedDirs();
+        renderFileTree(fileTreeEntries);
+      }
+
+      function ensureTreeDirNode(root, dirPath) {
+        var cleaned = (dirPath || "").replace(/^\/+|\/+$/g, "");
+        if (!cleaned) return root;
+        var segments = cleaned.split("/");
+        var cursor = root;
+        var builtPath = "";
+        for (var i = 0; i < segments.length; i++) {
+          var segment = segments[i];
+          builtPath = builtPath ? builtPath + "/" + segment : segment;
+          var child = cursor.childrenMap[builtPath];
+          if (!child) {
+            child = {
+              name: segment,
+              path: builtPath,
+              kind: "dir",
+              children: [],
+              childrenMap: {}
+            };
+            cursor.children.push(child);
+            cursor.childrenMap[builtPath] = child;
+          }
+          cursor = child;
+        }
+        return cursor;
+      }
+
+      function buildTreeModel(entries) {
+        var root = {
+          name: "",
+          path: "",
+          kind: "dir",
+          children: [],
+          childrenMap: {}
+        };
+        entries.forEach(function(entry) {
+          if (!entry || typeof entry.path !== "string" || (entry.kind !== "file" && entry.kind !== "dir")) return;
+          var cleanPath = entry.path.replace(/^\/+|\/+$/g, "");
+          if (!cleanPath) return;
+          var parts = cleanPath.split("/");
+          var parentPath = parts.slice(0, -1).join("/");
+          var baseName = parts[parts.length - 1];
+          var parent = ensureTreeDirNode(root, parentPath);
+          if (entry.kind === "dir") {
+            ensureTreeDirNode(root, cleanPath);
+            return;
+          }
+          parent.children.push({
+            name: baseName,
+            path: cleanPath,
+            kind: "file",
+            children: []
           });
         });
 
-        btnKill.addEventListener("click", function () { threadAction("kill"); });
-        btnReboot.addEventListener("click", function () { threadAction("reboot"); });
-        btnDetach.addEventListener("click", function () { threadAction("detach"); });
-
-        window.addEventListener("resize", function () {
-          if (window.TerminalFit && term) window.TerminalFit.fit(term);
-        });
-        
-        // Initial fit
-        setTimeout(function() {
-          if (window.TerminalFit && term) window.TerminalFit.fit(term);
-        }, 100);
+        function sortChildren(node) {
+          node.children.sort(compareTreeNodes);
+          node.children.forEach(function(child) {
+            if (child.kind === "dir") sortChildren(child);
+          });
+        }
+        sortChildren(root);
+        return root;
       }
-    })();
+
+      function createTreeIcon(kind) {
+        var wrap = document.createElement("span");
+        wrap.innerHTML =
+          kind === "dir"
+            ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>'
+            : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
+        var icon = wrap.firstChild;
+        icon.style.width = "16px";
+        icon.style.height = "16px";
+        icon.style.flexShrink = "0";
+        return icon;
+      }
+
+      function renderTreeNode(node, depth) {
+        var nodeWrap = document.createElement("div");
+        nodeWrap.className = "tree-node";
+
+        var row = document.createElement("div");
+        row.className = "tree-row";
+        row.style.paddingLeft = (0.5 + depth * 0.85) + "rem";
+        if (node.path === selectedFilePath) row.classList.add("active");
+
+        if (node.kind === "dir") {
+          var toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "tree-toggle";
+          var expanded = expandedDirs.has(node.path);
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggle.setAttribute("aria-label", expanded ? "Collapse directory" : "Expand directory");
+          toggle.innerHTML = expanded
+            ? '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M5 7l5 6 5-6H5z"></path></svg>'
+            : '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M7 5l6 5-6 5V5z"></path></svg>';
+          toggle.addEventListener("click", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleExpandedDir(node.path);
+          });
+          row.appendChild(toggle);
+        } else {
+          var spacer = document.createElement("span");
+          spacer.className = "tree-toggle-placeholder";
+          row.appendChild(spacer);
+        }
+
+        row.appendChild(createTreeIcon(node.kind));
+        var label = document.createElement("span");
+        label.className = "tree-label";
+        label.textContent = node.name;
+        row.appendChild(label);
+
+        if (node.kind === "dir") {
+          row.setAttribute("role", "button");
+          row.setAttribute("tabindex", "0");
+          row.setAttribute("aria-expanded", expandedDirs.has(node.path) ? "true" : "false");
+          row.addEventListener("click", function() {
+            toggleExpandedDir(node.path);
+          });
+          row.addEventListener("keydown", function(event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              toggleExpandedDir(node.path);
+            }
+          });
+        } else {
+          row.addEventListener("click", function() {
+            openFile(node.path);
+          });
+        }
+
+        nodeWrap.appendChild(row);
+
+        if (node.kind === "dir" && node.children && node.children.length > 0) {
+          var childrenWrap = document.createElement("div");
+          childrenWrap.className = "tree-children";
+          if (expandedDirs.has(node.path)) childrenWrap.classList.add("open");
+          node.children.forEach(function(child) {
+            childrenWrap.appendChild(renderTreeNode(child, depth + 1));
+          });
+          nodeWrap.appendChild(childrenWrap);
+        }
+
+        return nodeWrap;
+      }
+
+      function renderFileTree(entries) {
+        fileTree.innerHTML = "";
+        if (!entries || entries.length === 0) {
+          fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.6;">No files found.</div>';
+          return;
+        }
+        var model = buildTreeModel(entries);
+        var fragment = document.createDocumentFragment();
+        model.children.forEach(function(child) {
+          fragment.appendChild(renderTreeNode(child, 0));
+        });
+        fileTree.appendChild(fragment);
+      }
+
+      function refreshFiles() {
+        fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.5;">Loading files...</div>';
+        if (!threadId) {
+          fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.7;">Open from hub to load files.</div>';
+          return;
+        }
+        window.MeridianWeb
+          .fetchWithAuth("/api/files?thread_id=" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to list files");
+              }
+              return Array.isArray(data) ? data : [];
+            });
+          })
+          .then(function(entries) {
+            fileTreeEntries = entries;
+            renderFileTree(fileTreeEntries);
+          })
+          .catch(function() {
+            fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.7;">Failed to load files.</div>';
+          });
+      }
+      document.getElementById("refresh-files").addEventListener("click", refreshFiles);
+      loadExpandedDirs();
+      refreshFiles();
+
+      function openFile(path) {
+        selectedFilePath = path;
+        renderFileTree(fileTreeEntries);
+        loadingOverlay.classList.remove("hidden");
+        switchView("editor");
+        window.MeridianWeb
+          .fetchWithAuth("/api/file?thread_id=" + encodeURIComponent(threadId || "") + "&path=" + encodeURIComponent(path))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to read file");
+              }
+              return data;
+            });
+          })
+          .then(function(data) {
+            editorContent.value = data.content || "";
+            editorContent.readOnly = false;
+            currentFilename.textContent = path;
+            btnSave.classList.remove("hidden");
+            loadingOverlay.classList.add("hidden");
+          })
+          .catch(function() {
+            loadingOverlay.classList.add("hidden");
+            alert("Failed to read file");
+          });
+      }
+
+      btnSave.addEventListener("click", function() {
+        var filePath = currentFilename.textContent;
+        if (!filePath || filePath === "No file open") return;
+        var content = editorContent.value;
+        loadingOverlay.classList.remove("hidden");
+        window.MeridianWeb
+          .fetchWithAuth("/api/file", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              thread_id: threadId,
+              path: filePath,
+              content: content
+            })
+          })
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Save failed");
+              }
+            });
+          })
+          .then(function() {
+            loadingOverlay.classList.add("hidden");
+            alert("Saved successfully");
+          })
+          .catch(function() {
+            loadingOverlay.classList.add("hidden");
+            alert("Save failed");
+          });
+      });
+
+      // Actions
+      document.getElementById("btn-reboot").addEventListener("click", function() {
+        if (confirm("Reboot this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/reboot", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => alert("Reboot sent"));
+        }
+      });
+      document.getElementById("btn-kill").addEventListener("click", function() {
+        if (confirm("Kill this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/kill", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => location.href = "index.html");
+        }
+      });
+
+      // Overflow menu (mobile)
+      var overflowBtn = document.getElementById("overflow-menu-btn");
+      var overflowDropdown = document.getElementById("overflow-dropdown");
+      function closeOverflow() {
+        if (overflowDropdown) overflowDropdown.classList.remove("open");
+        if (overflowBtn) overflowBtn.setAttribute("aria-expanded", "false");
+      }
+      function openOverflow() {
+        if (overflowDropdown) overflowDropdown.classList.add("open");
+        if (overflowBtn) overflowBtn.setAttribute("aria-expanded", "true");
+      }
+      if (overflowBtn) {
+        overflowBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var isOpen = overflowDropdown && overflowDropdown.classList.toggle("open");
+          overflowBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        });
+      }
+      document.addEventListener("click", function(e) {
+        if (overflowDropdown && overflowDropdown.classList.contains("open") && overflowBtn && !overflowBtn.contains(e.target) && !overflowDropdown.contains(e.target)) closeOverflow();
+      });
+      if (overflowDropdown) overflowDropdown.addEventListener("click", function(e) { e.stopPropagation(); });
+      document.getElementById("overflow-reboot").addEventListener("click", function(e) {
+        e.preventDefault();
+        closeOverflow();
+        if (confirm("Reboot this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/reboot", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => alert("Reboot sent"));
+        }
+      });
+      document.getElementById("overflow-kill").addEventListener("click", function(e) {
+        e.preventDefault();
+        closeOverflow();
+        if (confirm("Kill this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/kill", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => location.href = "index.html");
+        }
+      });
+
+      var resizeTimeout;
+      window.addEventListener("resize", function() {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(function() {
+          fitTerminal();
+          // If resized to desktop while on chat view, switch to terminal
+          var currentView = document.querySelector(".view:not(.hidden)");
+          if (!isMobile() && currentView && currentView.id === "chat-view") {
+            switchView("terminal");
+          }
+        }, 100);
+      });
+
+      document.getElementById("thread-label").textContent = threadId || "No session";
+
+      // Mobile: default to chat view
+      if (isMobile()) {
+        switchView("chat");
+      }
+      cmdInput.focus();
     });
   </script>
 </body>

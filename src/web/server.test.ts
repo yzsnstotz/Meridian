@@ -107,6 +107,143 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
   assert.match(String((seenMessages[0]?.reply_channel as { chat_id?: string }).chat_id), /^web:/);
 });
 
+test("Web Interface Server lists files from instance working directory", async () => {
+  const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-files-"));
+  await fs.promises.mkdir(path.join(repoDir, "src"), { recursive: true });
+  await fs.promises.mkdir(path.join(repoDir, ".git"), { recursive: true });
+  await fs.promises.writeFile(path.join(repoDir, "README.md"), "# demo\n");
+  await fs.promises.writeFile(path.join(repoDir, "src", "main.ts"), "console.log('ok');\n");
+  await fs.promises.writeFile(path.join(repoDir, ".git", "config"), "hidden");
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/files?thread_id=codex_01&token=secret-token`);
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as Array<{ path: string; kind: string }>;
+      assert.ok(payload.some((entry) => entry.path === "README.md" && entry.kind === "file"));
+      assert.ok(payload.some((entry) => entry.path === "src/main.ts" && entry.kind === "file"));
+      assert.ok(!payload.some((entry) => entry.path.startsWith(".git")));
+    }, {
+      requestHub: async (message: HubMessage) => {
+        if (message.intent !== "list") {
+          throw new Error(`Unexpected intent: ${message.intent}`);
+        }
+        return {
+          trace_id: message.trace_id,
+          thread_id: "global",
+          source: "codex",
+          status: "success",
+          content: JSON.stringify([
+            {
+              thread_id: "codex_01",
+              mode: "pane_bridge",
+              status: "running",
+              working_dir: repoDir
+            }
+          ]),
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server reads and writes file content in instance working directory", async () => {
+  const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-edit-"));
+  await fs.promises.mkdir(path.join(repoDir, "src"), { recursive: true });
+  await fs.promises.writeFile(path.join(repoDir, "src", "main.ts"), "export const v = 1;\n");
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const readResponse = await fetch(
+        `${baseUrl}/api/file?thread_id=codex_01&path=${encodeURIComponent("src/main.ts")}&token=secret-token`
+      );
+      assert.equal(readResponse.status, 200);
+      const readPayload = (await readResponse.json()) as { path: string; content: string };
+      assert.equal(readPayload.path, "src/main.ts");
+      assert.equal(readPayload.content, "export const v = 1;\n");
+
+      const writeResponse = await fetch(`${baseUrl}/api/file?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          thread_id: "codex_01",
+          path: "src/main.ts",
+          content: "export const v = 2;\n"
+        })
+      });
+      assert.equal(writeResponse.status, 200);
+      const updated = await fs.promises.readFile(path.join(repoDir, "src", "main.ts"), "utf8");
+      assert.equal(updated, "export const v = 2;\n");
+    }, {
+      requestHub: async (message: HubMessage) => {
+        if (message.intent !== "list") {
+          throw new Error(`Unexpected intent: ${message.intent}`);
+        }
+        return {
+          trace_id: message.trace_id,
+          thread_id: "global",
+          source: "codex",
+          status: "success",
+          content: JSON.stringify([
+            {
+              thread_id: "codex_01",
+              mode: "pane_bridge",
+              status: "running",
+              working_dir: repoDir
+            }
+          ]),
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server forwards terminal approval actions through terminal_input intent", async () => {
+  const seenMessages: Array<Record<string, unknown>> = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/terminal_input?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        thread_id: "codex_01",
+        content: "allow"
+      })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { status: string; content: string };
+    assert.equal(payload.status, "success");
+    assert.match(payload.content, /approval action/i);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenMessages.push(message as unknown as Record<string, unknown>);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: "Sent approval action 'allow' to codex_01.",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "terminal_input");
+  assert.equal(seenMessages[0]?.thread_id, "codex_01");
+  assert.equal(seenMessages[0]?.target, "codex_01");
+  assert.equal((seenMessages[0]?.payload as { content?: string })?.content, "allow");
+});
+
 test("Web Interface Server bridges pane output over WebSocket", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-"));
   const socketPath = path.join(socketDir, "hub.sock");

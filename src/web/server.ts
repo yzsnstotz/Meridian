@@ -42,6 +42,32 @@ const spawnRequestBodySchema = z.object({
   mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge")
 });
 
+const filesQuerySchema = z.object({
+  thread_id: z.string().min(1),
+  depth: z.coerce.number().int().min(1).max(12).default(6)
+});
+
+const fileReadQuerySchema = z.object({
+  thread_id: z.string().min(1),
+  path: z.string().min(1)
+});
+
+const fileWriteBodySchema = z.object({
+  thread_id: z.string().min(1),
+  path: z.string().min(1),
+  content: z.string()
+});
+
+const terminalInputBodySchema = z.object({
+  thread_id: z.string().min(1).optional(),
+  content: z.string().min(1, "content is required")
+});
+
+type RepoEntry = {
+  path: string;
+  kind: "file" | "dir";
+};
+
 export interface WebInterfaceLogger {
   info: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -175,6 +201,55 @@ function parseInstancesContent(content: string): unknown[] {
     throw new Error("Hub returned a non-array instances payload");
   }
   return parsed;
+}
+
+function normalizeRelativePath(inputPath: string): string {
+  const normalized = path.posix.normalize(inputPath.trim().replaceAll("\\", "/"));
+  if (!normalized || normalized === "." || normalized.startsWith("/") || normalized.startsWith("../") || normalized.includes("/../")) {
+    throw new Error("Invalid relative file path");
+  }
+  return normalized;
+}
+
+function resolvePathWithinRoot(rootDir: string, relativePath: string): string {
+  const normalizedRelative = normalizeRelativePath(relativePath);
+  const rootResolved = path.resolve(rootDir);
+  const resolved = path.resolve(rootResolved, normalizedRelative);
+  if (!resolved.startsWith(`${rootResolved}${path.sep}`) && resolved !== rootResolved) {
+    throw new Error("Resolved path escapes working directory");
+  }
+  return resolved;
+}
+
+async function listRepoEntries(rootDir: string, maxDepth: number): Promise<RepoEntry[]> {
+  const result: RepoEntry[] = [];
+  const rootResolved = path.resolve(rootDir);
+
+  const walk = async (relativeDir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) {
+      return;
+    }
+    const absoluteDir = relativeDir ? path.join(rootResolved, relativeDir) : rootResolved;
+    const entries = await fs.promises.readdir(absoluteDir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        result.push({ path: relativePath, kind: "dir" });
+        await walk(relativePath, depth + 1);
+        continue;
+      }
+      if (entry.isFile()) {
+        result.push({ path: relativePath, kind: "file" });
+      }
+    }
+  };
+
+  await walk("", 1);
+  return result;
 }
 
 export class WebInterfaceServer {
@@ -341,6 +416,26 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/files" && request.method === "GET") {
+      await this.handleFilesRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/file" && request.method === "GET") {
+      await this.handleFileReadRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/file" && request.method === "POST") {
+      await this.handleFileWriteRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/terminal_input" && request.method === "POST") {
+      await this.handleTerminalInputRequest(request, response);
+      return;
+    }
+
     await this.serveStaticAsset(requestUrl.pathname, response);
   }
 
@@ -423,6 +518,83 @@ export class WebInterfaceServer {
     );
 
     this.respondJson(response, 200, result);
+  }
+
+  private async handleFilesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = filesQuerySchema.parse({
+      thread_id: requestUrl.searchParams.get("thread_id"),
+      depth: requestUrl.searchParams.get("depth") ?? undefined
+    });
+    const workingDir = await this.resolveWorkingDirectory(sessionId, query.thread_id);
+    const entries = await listRepoEntries(workingDir, query.depth);
+    this.respondJson(response, 200, entries);
+  }
+
+  private async handleFileReadRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = fileReadQuerySchema.parse({
+      thread_id: requestUrl.searchParams.get("thread_id"),
+      path: requestUrl.searchParams.get("path")
+    });
+    const workingDir = await this.resolveWorkingDirectory(sessionId, query.thread_id);
+    const absolutePath = resolvePathWithinRoot(workingDir, query.path);
+    const content = await fs.promises.readFile(absolutePath, "utf8");
+    this.respondJson(response, 200, { path: query.path, content });
+  }
+
+  private async handleFileWriteRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const body = fileWriteBodySchema.parse(await this.readJsonBody(request));
+    const workingDir = await this.resolveWorkingDirectory(sessionId, body.thread_id);
+    const absolutePath = resolvePathWithinRoot(workingDir, body.path);
+    await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.promises.writeFile(absolutePath, body.content, "utf8");
+    this.respondJson(response, 200, { ok: true, path: body.path });
+  }
+
+  private async handleTerminalInputRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const body = terminalInputBodySchema.parse(await this.readJsonBody(request));
+    const threadSelector = normalizeThreadSelector(body.thread_id);
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "terminal_input",
+          thread_id: threadSelector.thread_id,
+          target: threadSelector.target,
+          content: body.content
+        })
+      )
+    );
+    this.respondJson(response, 200, result);
+  }
+
+  private async resolveWorkingDirectory(sessionId: string, threadId: string): Promise<string> {
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "list",
+          thread_id: "global",
+          target: "all",
+          content: ""
+        })
+      )
+    );
+    const instances = parseInstancesContent(result.content) as Array<Record<string, unknown>>;
+    const matched = instances.find((instance) => String(instance.thread_id ?? "") === threadId);
+    if (!matched) {
+      throw new Error(`No active instance found for thread_id=${threadId}`);
+    }
+    const workingDir = matched.working_dir;
+    if (typeof workingDir !== "string" || !workingDir.trim()) {
+      throw new Error(`Instance ${threadId} does not expose a working directory`);
+    }
+    return path.resolve(workingDir.trim());
   }
 
   private async serveStaticAsset(pathname: string, response: http.ServerResponse): Promise<void> {

@@ -142,6 +142,23 @@ test("parseSlashCommand routes bare /model through picker flow", () => {
   assert.equal(parsed.picker, "switch_model");
 });
 
+test("parseSlashCommand parses /detail with explicit trace and thread", () => {
+  const parsed = parseSlashCommand("/detail trace=5af7c1f6-91e3-4fcf-8b7a-3f6308f8f9af thread=gemini_01");
+  assert.equal(parsed.intent, "detail");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.threadId, "gemini_01");
+  assert.equal(parsed.target, "gemini_01");
+  assert.equal(parsed.payloadContent, "5af7c1f6-91e3-4fcf-8b7a-3f6308f8f9af");
+});
+
+test("parseSlashCommand parses bare /detail against active thread", () => {
+  const parsed = parseSlashCommand("/detail");
+  assert.equal(parsed.intent, "detail");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.payloadContent, "");
+});
+
 test("parseSlashCommand parses /restart as local command", () => {
   const parsed = parseSlashCommand("/restart");
   assert.equal(parsed.intent, "service_restart");

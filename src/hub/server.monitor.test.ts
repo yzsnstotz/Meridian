@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { config } from "../config";
 import type { HubResult, ReplyChannel, ServiceEndpoint } from "../types";
 import { PaneBroadcaster } from "./pane-broadcaster";
 import type { ResultSender } from "./result-sender";
@@ -255,8 +256,11 @@ test("HubServer flushes periodic monitor progress updates for due subscriptions"
   await (server as unknown as { flushMonitorProgressUpdates: () => Promise<void> }).flushMonitorProgressUpdates();
 
   assert.equal(fakeRouter.progressCalls.length, 1);
-  assert.equal(fakeResultSender.calls.length, 2);
-  assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "partial"));
+  const expectedCalls = config.TELEGRAM_PUSH_WHITELIST_ONLY ? 0 : 2;
+  assert.equal(fakeResultSender.calls.length, expectedCalls);
+  if (expectedCalls > 0) {
+    assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "partial"));
+  }
 });
 
 test("HubServer adds reboot and kill buttons to agent_error alerts", async () => {

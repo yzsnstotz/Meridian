@@ -17,6 +17,7 @@ const BOT_COMMANDS: BotCommand[] = [
   { command: "update", description: "Toggle monitor progress updates for a thread" },
   { command: "mupdate", description: "Send one manual progress update for a thread" },
   { command: "model", description: "Switch the provider model in the active thread" },
+  { command: "detail", description: "Show full raw output for latest or specified trace" },
   { command: "list", description: "List active instances" },
   { command: "help", description: "Show command usage" }
 ];

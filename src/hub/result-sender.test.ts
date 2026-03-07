@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { test } from "node:test";
 
 import type { HubResult, ReplyChannel } from "../types";
-import { ResultSender, decorateTelegramResultText, splitTextForTelegram } from "./result-sender";
+import { ResultSender, decorateTelegramResultText, resolveTelegramDetailRecord, splitTextForTelegram } from "./result-sender";
 
 test("splitTextForTelegram preserves content exactly", () => {
   const content = `header\n\n    indented line\n${"x".repeat(5000)}\nfooter`;
@@ -123,8 +123,75 @@ test("ResultSender sends oversized content as a temporary text file and removes 
 
   assert.equal(textSendCount, 0);
   assert.equal(capturedFilename, `meridian-${traceId}.txt`);
-  assert.equal(capturedContent, decorateTelegramResultText(result));
+  assert.match(capturedContent, new RegExp(`trace=${traceId}`));
+  assert.doesNotMatch(capturedContent, /Use \/detail trace=/);
   assert.equal(fs.existsSync(capturedFilePath), false);
+});
+
+test("ResultSender caches full detail text for /detail retrieval", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+  };
+  sender.sendTextWithRetry = async () => undefined;
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  const result: HubResult = {
+    trace_id: "81f8b79e-b32f-44e7-8f07-6f1f4be8f2f7",
+    thread_id: "codex_01",
+    source: "codex",
+    status: "success",
+    content: "final summary\n\nraw detail line",
+    attachments: [],
+    timestamp: new Date().toISOString()
+  };
+  const replyChannel: ReplyChannel = {
+    channel: "telegram",
+    chat_id: "telegram:12345",
+    bot_id: "123456789"
+  };
+  await sender.sendResult(result, replyChannel);
+
+  const detail = resolveTelegramDetailRecord({
+    chatId: "telegram:12345",
+    botId: "123456789",
+    traceId: result.trace_id
+  });
+  assert.ok(detail);
+  assert.equal(detail?.traceId, result.trace_id);
+  assert.equal(detail?.fullText, decorateTelegramResultText(result));
+});
+
+test("ResultSender avoids adding /detail hint for short summary content", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+  };
+  let sentText = "";
+  sender.sendTextWithRetry = async (_botToken, _chatId, text) => {
+    sentText = text;
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  await sender.sendResult(
+    {
+      trace_id: "6b0cc95f-85e9-49eb-b18b-3e5f3fa0ed06",
+      thread_id: "codex_01",
+      source: "codex",
+      status: "success",
+      content: "Task completed successfully.",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    },
+    {
+      channel: "telegram",
+      chat_id: "12345"
+    }
+  );
+
+  assert.doesNotMatch(sentText, /\/detail trace=/);
 });
 
 test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", async () => {

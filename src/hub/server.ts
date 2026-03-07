@@ -21,7 +21,7 @@ import {
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
 import { PaneBroadcaster } from "./pane-broadcaster";
-import { ResultSender } from "./result-sender";
+import { ResultSender, shouldPushTelegramProactive } from "./result-sender";
 import { InstanceRegistry } from "./registry";
 import { HubRouter, type MonitorUpdateDispatch } from "./router";
 
@@ -617,6 +617,17 @@ export class HubServer {
               err: error instanceof Error ? error.message : String(error)
             },
             "Failed to build monitor progress result"
+          );
+          continue;
+        }
+        if (!shouldPushTelegramProactive(progressResult)) {
+          this.log.info(
+            {
+              trace_id: traceId,
+              thread_id: threadId,
+              reason: "telegram_push_whitelist"
+            },
+            "Skipped proactive Telegram progress update"
           );
           continue;
         }

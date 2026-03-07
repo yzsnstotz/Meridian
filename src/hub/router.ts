@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { sendIpcRequest } from "../shared/ipc";
 import { buildWebGuiUrl, tryBuildGuiInlineKeyboard } from "../shared/telegram-controls";
@@ -220,6 +221,8 @@ export class HubRouter {
           return this.handleGui(message);
         case "switch_model":
           return await this.handleSwitchModel(message);
+        case "detail":
+          return this.handleDetail(message);
         case "monitor_update":
           return this.handleMonitorUpdate(message);
         case "monitor_manual_update":
@@ -458,6 +461,44 @@ export class HubRouter {
       instance.agent_type,
       this.appendAttachmentSummary(content, switchedThreadId),
       switchedThreadId
+    );
+  }
+
+  private handleDetail(message: HubMessage): HubResult {
+    if (message.reply_channel.channel !== "telegram") {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        "detail is only available for Telegram reply channels."
+      );
+    }
+
+    const requestedTrace = message.payload.content.trim() || undefined;
+    const requestedThread = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id) ?? undefined;
+    const detail = resolveTelegramDetailRecord({
+      chatId: message.reply_channel.chat_id,
+      botId: message.reply_channel.bot_id,
+      traceId: requestedTrace,
+      threadId: requestedThread
+    });
+
+    if (!detail) {
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        "No cached detail found. Send a new request first, then run /detail again."
+      );
+    }
+
+    const title = `Detail for trace=${detail.traceId} thread=${detail.threadId}`;
+    return this.buildResult(
+      message,
+      "success",
+      detail.source,
+      `${title}\n\n${detail.fullText}`,
+      detail.threadId
     );
   }
 

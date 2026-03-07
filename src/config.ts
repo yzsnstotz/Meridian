@@ -58,6 +58,8 @@ const envSchema = z
     WEBHOOK_URL: optionalEnvString(),
     WEBHOOK_PORT: z.coerce.number().int().positive().default(443),
     WEBHOOK_SECRET_TOKEN: optionalEnvString(),
+    TELEGRAM_SUMMARY_ONLY: envBoolean(true),
+    TELEGRAM_PUSH_WHITELIST_ONLY: envBoolean(true),
     WEB_GUI_ENABLED: envBoolean(false),
     WEB_GUI_PORT: z.coerce.number().int().positive().default(3000),
     WEB_GUI_HOST: optionalEnvString(),

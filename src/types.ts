@@ -17,6 +17,7 @@ export const BUILT_IN_INTENTS = [
   "list",
   "list_models",
   "switch_model",
+  "detail",
   "monitor_update",
   "monitor_manual_update"
  ] as const;

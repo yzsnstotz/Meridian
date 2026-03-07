@@ -35,10 +35,11 @@ function buildHubMessage(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("IntentSchema includes detach, reboot, and gui", () => {
+test("IntentSchema includes detach, reboot, gui, and detail", () => {
   assert.equal(BuiltInIntentSchema.parse("detach"), "detach");
   assert.equal(BuiltInIntentSchema.parse("reboot"), "reboot");
   assert.equal(BuiltInIntentSchema.parse("gui"), "gui");
+  assert.equal(BuiltInIntentSchema.parse("detail"), "detail");
   assert.equal(IntentSchema.parse("delegate"), "delegate");
 });
 

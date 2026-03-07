@@ -20,6 +20,30 @@ const TELEGRAM_CAPTION_LIMIT = 1024;
 const TELEGRAM_MAX_SEND_ATTEMPTS = 5;
 const TELEGRAM_RETRY_BACKOFF_BASE_MS = 500;
 const TELEGRAM_RETRY_BACKOFF_MAX_MS = 8000;
+const TELEGRAM_DETAIL_CACHE_LIMIT = 200;
+const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+
+interface TelegramDetailCacheRecord {
+  traceId: string;
+  threadId: string;
+  source: HubResult["source"];
+  status: HubResult["status"];
+  fullText: string;
+  summaryText: string;
+  chatId: string;
+  botId: string | null;
+  createdAtMs: number;
+}
+
+interface TelegramDetailLookupOptions {
+  chatId: string;
+  botId?: string;
+  traceId?: string;
+  threadId?: string;
+}
+
+const telegramDetailCache = new Map<string, TelegramDetailCacheRecord[]>();
 
 interface TelegramApiResponseBody {
   ok?: boolean;
@@ -76,6 +100,92 @@ export function splitTextForTelegram(content: string, limit = TELEGRAM_SAFE_TEXT
   return chunks;
 }
 
+function isLowValueLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (/^(heartbeat|typing)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/^(status:\s*(running|idle|live)|connected|reconnecting)$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^(\$|>|#)\s*(pwd|ls|cd)\b/.test(trimmed)) {
+    return true;
+  }
+  if (/^\/[\w./-]+$/.test(trimmed) || /^\.\/[\w./-]+$/.test(trimmed)) {
+    return true;
+  }
+  if (/^\[[0-9:. -]+\]/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+function extractSummaryBlocks(content: string): { summaries: string[]; residual: string } {
+  if (!content.includes(SUMMARY_MARKER_BEGIN) || !content.includes(SUMMARY_MARKER_END)) {
+    return { summaries: [], residual: content };
+  }
+
+  const summaries: string[] = [];
+  let cursor = 0;
+  let residual = "";
+
+  while (cursor < content.length) {
+    const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
+    if (beginIndex < 0) {
+      residual += content.slice(cursor);
+      break;
+    }
+    residual += content.slice(cursor, beginIndex);
+    const beginClose = content.indexOf("]]", beginIndex);
+    if (beginClose < 0) {
+      residual += content.slice(beginIndex);
+      break;
+    }
+    const endIndex = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
+    if (endIndex < 0) {
+      residual += content.slice(beginIndex);
+      break;
+    }
+    const endClose = content.indexOf("]]", endIndex);
+    if (endClose < 0) {
+      residual += content.slice(beginIndex);
+      break;
+    }
+    const summary = content.slice(beginClose + 2, endIndex).trim();
+    if (summary) {
+      summaries.push(summary);
+    }
+    cursor = endClose + 2;
+  }
+
+  return { summaries, residual };
+}
+
+function summarizeText(content: string): { summary: string; details: string; truncated: boolean } {
+  const extracted = extractSummaryBlocks(content);
+  if (extracted.summaries.length > 0) {
+    const summary = extracted.summaries.join("\n\n").trim();
+    const details = extracted.residual.trim();
+    return { summary, details, truncated: details.length > 0 };
+  }
+
+  const lines = content.split(/\r?\n/).map((line) => line.trimEnd());
+  const informativeLines = lines
+    .filter((line) => !isLowValueLine(line))
+    .filter((line) => !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line));
+  const summaryLines = informativeLines.slice(0, 6);
+  const fallbackSummary = summaryLines.join("\n").trim();
+  const details = content.trim();
+  return {
+    summary: fallbackSummary || "Update received. Use /detail to view full output.",
+    details,
+    truncated: informativeLines.length > summaryLines.length || details.length > Math.max(fallbackSummary.length + 80, 260)
+  };
+}
+
 export function decorateTelegramResultText(result: HubResult): string {
   const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
   const baseText = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
@@ -83,6 +193,84 @@ export function decorateTelegramResultText(result: HubResult): string {
     return baseText;
   }
   return `${baseText}${buildTelegramApprovalHint(result.thread_id)}`;
+}
+
+function composeSummaryTelegramText(result: HubResult, summaryText: string, includeDetailHint: boolean): string {
+  const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
+  if (!includeDetailHint) {
+    return `${headline}\n\n${summaryText.trim()}`;
+  }
+  return `${headline}\n\n${summaryText.trim()}\n\n/detail trace=${result.trace_id} thread=${result.thread_id}`;
+}
+
+function makeDetailCacheKey(chatId: string, botId: string | null): string {
+  return `${botId ?? "default"}::${chatId}`;
+}
+
+function saveTelegramDetailRecord(
+  replyChannel: ReplyChannel,
+  result: HubResult,
+  fullText: string,
+  summaryText: string
+): void {
+  const key = makeDetailCacheKey(replyChannel.chat_id, replyChannel.bot_id ?? null);
+  const records = telegramDetailCache.get(key) ?? [];
+  records.unshift({
+    traceId: result.trace_id,
+    threadId: result.thread_id,
+    source: result.source,
+    status: result.status,
+    fullText,
+    summaryText,
+    chatId: replyChannel.chat_id,
+    botId: replyChannel.bot_id ?? null,
+    createdAtMs: Date.now()
+  });
+  if (records.length > TELEGRAM_DETAIL_CACHE_LIMIT) {
+    records.length = TELEGRAM_DETAIL_CACHE_LIMIT;
+  }
+  telegramDetailCache.set(key, records);
+}
+
+export function resolveTelegramDetailRecord(
+  options: TelegramDetailLookupOptions
+): TelegramDetailCacheRecord | null {
+  const key = makeDetailCacheKey(options.chatId, options.botId ?? null);
+  const records = telegramDetailCache.get(key);
+  if (!records || records.length === 0) {
+    return null;
+  }
+
+  if (options.traceId) {
+    const byTrace = records.find((record) => record.traceId === options.traceId);
+    if (byTrace) {
+      return byTrace;
+    }
+  }
+  if (options.threadId) {
+    const byThread = records.find((record) => record.threadId === options.threadId);
+    if (byThread) {
+      return byThread;
+    }
+  }
+  return records[0] ?? null;
+}
+
+export function shouldPushTelegramProactive(result: HubResult): boolean {
+  if (!config.TELEGRAM_PUSH_WHITELIST_ONLY) {
+    return true;
+  }
+  if (result.status === "error") {
+    return true;
+  }
+  if (isApprovalPrompt(result.content)) {
+    return true;
+  }
+  const normalized = result.content.toLowerCase();
+  if (normalized.includes("completed") || normalized.includes("done") || normalized.includes("finished")) {
+    return true;
+  }
+  return false;
 }
 
 export interface ResultSenderOptions {
@@ -162,8 +350,17 @@ export class ResultSender {
     const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
     const targetChatId = resolveTelegramTargetChatId(replyChannel.chat_id);
-    const textBody = decorateTelegramResultText(result);
+    const fullTextBody = decorateTelegramResultText(result);
+    const summarized = summarizeText(result.content);
+    const summaryBody = composeSummaryTelegramText(
+      result,
+      summarized.summary,
+      summarized.truncated && !isApprovalPrompt(result.content)
+    );
+    const textBody = config.TELEGRAM_SUMMARY_ONLY ? summaryBody : fullTextBody;
     const replyMarkup = result.telegram_inline_keyboard;
+
+    saveTelegramDetailRecord(replyChannel, result, fullTextBody, summaryBody);
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
       await this.sendContentAsFile(botToken, targetChatId, textBody, replyToMessageId, {

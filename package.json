@@ -7,7 +7,7 @@
     "node": "^22.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/web/public dist/web/public",
+    "build": "tsc -p tsconfig.json && rm -rf dist/web/public && cp -r src/web/public dist/web/public",
     "start:hub": "tsx src/hub/index.ts",
     "start:interface": "tsx src/interface/index.ts",
     "start:monitor": "tsx src/monitor/index.ts",
