@@ -21,8 +21,11 @@ interface ThreadWatcher {
   basename: string;
   logPath: string;
   lastSize: number;
+  lastChunkHash: string;
+  nextFlushAtMs: number;
   flushing: boolean;
   pendingFlush: boolean;
+  scheduledFlushTimer: NodeJS.Timeout | null;
   subscriptions: Set<ThreadSubscription>;
   watcher: fs.FSWatcher | null;
 }
@@ -31,6 +34,7 @@ export interface PaneBroadcasterOptions {
   logDir?: string;
   now?: () => Date;
   watchFactory?: typeof fs.watch;
+  throttleMs?: number;
 }
 
 export type PaneSubscriptionResult =
@@ -41,6 +45,7 @@ export class PaneBroadcaster {
   private readonly logDir: string;
   private readonly now: () => Date;
   private readonly watchFactory: typeof fs.watch;
+  private readonly throttleMs: number;
   private readonly watchersByThread = new Map<string, ThreadWatcher>();
   private readonly socketCloseBound = new WeakSet<net.Socket>();
   private pushCallback: ((threadId: string, chunk: string) => void) | null = null;
@@ -49,6 +54,7 @@ export class PaneBroadcaster {
     this.logDir = options.logDir ?? config.LOG_DIR;
     this.now = options.now ?? (() => new Date());
     this.watchFactory = options.watchFactory ?? fs.watch;
+    this.throttleMs = Math.max(0, options.throttleMs ?? config.PANE_BROADCAST_THROTTLE_MS);
   }
 
   registerPushCallback(callback: (threadId: string, chunk: string) => void): void {
@@ -123,6 +129,9 @@ export class PaneBroadcaster {
 
   close(): void {
     for (const state of this.watchersByThread.values()) {
+      if (state.scheduledFlushTimer) {
+        clearTimeout(state.scheduledFlushTimer);
+      }
       state.watcher?.close();
     }
     this.watchersByThread.clear();
@@ -139,8 +148,11 @@ export class PaneBroadcaster {
       basename: path.basename(logPath),
       logPath,
       lastSize: 0,
+      lastChunkHash: "",
+      nextFlushAtMs: 0,
       flushing: false,
       pendingFlush: false,
+      scheduledFlushTimer: null,
       subscriptions: new Set<ThreadSubscription>(),
       watcher: null
     };
@@ -169,7 +181,7 @@ export class PaneBroadcaster {
 
   private createFileWatcher(threadId: string, state: ThreadWatcher): fs.FSWatcher {
     const triggerFlush = (): void => {
-      void this.flushThread(threadId);
+      this.scheduleFlush(threadId, state);
     };
 
     try {
@@ -183,6 +195,28 @@ export class PaneBroadcaster {
     }
   }
 
+  private scheduleFlush(threadId: string, state: ThreadWatcher): void {
+    if (state.flushing) {
+      state.pendingFlush = true;
+      return;
+    }
+
+    const nowMs = Date.now();
+    const delayMs = Math.max(0, state.nextFlushAtMs - nowMs);
+    if (delayMs <= 0) {
+      void this.flushThread(threadId);
+      return;
+    }
+    if (state.scheduledFlushTimer) {
+      return;
+    }
+    state.scheduledFlushTimer = setTimeout(() => {
+      state.scheduledFlushTimer = null;
+      void this.flushThread(threadId);
+    }, delayMs);
+    state.scheduledFlushTimer.unref();
+  }
+
   private async flushThread(threadId: string): Promise<void> {
     const state = this.watchersByThread.get(threadId);
     if (!state) {
@@ -194,6 +228,7 @@ export class PaneBroadcaster {
       return;
     }
     state.flushing = true;
+    state.nextFlushAtMs = Date.now() + this.throttleMs;
 
     try {
       do {
@@ -218,6 +253,11 @@ export class PaneBroadcaster {
         if (!chunk) {
           continue;
         }
+        const chunkHash = this.computeChunkHash(chunk);
+        if (chunkHash === state.lastChunkHash) {
+          continue;
+        }
+        state.lastChunkHash = chunkHash;
 
         const payload = this.buildChunk(threadId, chunk);
         for (const subscription of [...state.subscriptions]) {
@@ -225,6 +265,7 @@ export class PaneBroadcaster {
             state.subscriptions.delete(subscription);
           }
         }
+        this.appendGuiLog(threadId, chunk);
         if (this.pushCallback) {
           this.pushCallback(threadId, chunk);
         }
@@ -233,6 +274,14 @@ export class PaneBroadcaster {
     } finally {
       state.flushing = false;
     }
+  }
+
+  private computeChunkHash(chunk: string): string {
+    let hash = 0;
+    for (let index = 0; index < chunk.length; index += 1) {
+      hash = (hash * 31 + chunk.charCodeAt(index)) | 0;
+    }
+    return String(hash);
   }
 
   private write(socket: net.Socket, payload: PaneOutputChunk | PaneOutputNotAvailable): boolean {
@@ -252,9 +301,28 @@ export class PaneBroadcaster {
     });
   }
 
+  /**
+   * Append the same chunk sent to GUI clients to LOG_DIR/GUI/gui-pane-{threadId}.log
+   * so there is a linear stream log that matches what the Web GUI receives.
+   */
+  private appendGuiLog(threadId: string, chunk: string): void {
+    try {
+      const guiLogDir = path.join(this.logDir, "GUI");
+      fs.mkdirSync(guiLogDir, { recursive: true });
+      const guiLogPath = path.join(guiLogDir, `gui-pane-${threadId}.log`);
+      fs.appendFileSync(guiLogPath, chunk, "utf8");
+    } catch {
+      // Do not fail the broadcaster on log write errors (e.g. disk full, permissions).
+    }
+  }
+
   private disposeWatcherIfUnused(threadId: string, state: ThreadWatcher): void {
     if (state.subscriptions.size > 0) {
       return;
+    }
+    if (state.scheduledFlushTimer) {
+      clearTimeout(state.scheduledFlushTimer);
+      state.scheduledFlushTimer = null;
     }
     state.watcher?.close();
     this.watchersByThread.delete(threadId);

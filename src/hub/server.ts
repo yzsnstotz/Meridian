@@ -72,10 +72,19 @@ const IDEMPOTENCY_CLEANUP_INTERVAL_MS = 60 * 1000;
 const DEFAULT_PRIORITY = 5;
 const MONITOR_EVENT_PRIORITY = 7;
 const PUSH_DEBOUNCE_MS = 2000;
+const PUSH_DEDUP_WINDOW_MS = 90 * 1000;
+const RUN_COMPLETION_COOLDOWN_MS = 5_000;
+const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 
 interface PushAccumulator {
   chunks: string[];
   timer: NodeJS.Timeout;
+}
+
+interface PushDedupState {
+  fingerprint: string;
+  sentAtMs: number;
 }
 
 export class HubServer {
@@ -94,6 +103,7 @@ export class HubServer {
   private priorityQueueSequence = 0;
   private priorityQueueDraining = false;
   private readonly pushAccumulators = new Map<string, PushAccumulator>();
+  private readonly lastPushDedupByThread = new Map<string, PushDedupState>();
 
   constructor(options: HubServerOptions = {}) {
     this.socketPath = options.socketPath ?? config.HUB_SOCKET_PATH;
@@ -620,6 +630,9 @@ export class HubServer {
         if (targets.length === 0) {
           continue;
         }
+        if (this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId)) {
+          continue;
+        }
 
         const traceId = randomUUID();
         let progressResult: HubResult;
@@ -795,7 +808,10 @@ export class HubServer {
 
   private registerPushCallback(): void {
     this.paneBroadcaster.registerPushCallback((threadId: string, chunk: string) => {
-      const subscribers = this.router.getPushSubscriptionsForThread(threadId);
+      if (this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId)) {
+        return;
+      }
+      const subscribers = this.getPushSubscriptionsForThreadSafe(threadId);
       if (subscribers.length === 0) {
         return;
       }
@@ -820,6 +836,11 @@ export class HubServer {
   }
 
   private async flushPushAccumulator(threadId: string): Promise<void> {
+    if (this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId)) {
+      this.pushAccumulators.delete(threadId);
+      return;
+    }
+
     const accumulator = this.pushAccumulators.get(threadId);
     if (!accumulator) {
       return;
@@ -836,15 +857,20 @@ export class HubServer {
       return;
     }
 
-    const subscribers = this.router.getPushSubscriptionsForThread(threadId);
+    const subscribers = this.getPushSubscriptionsForThreadSafe(threadId);
     if (subscribers.length === 0) {
       return;
     }
 
     const traceId = randomUUID();
     const source = this.router.resolveSourceForThread(threadId);
-    const content = classification.text.trim();
+    const normalizedText = classification.text.trim();
+    const extractedSummary = this.extractLatestSummaryBlockAnyTrace(normalizedText);
+    const content = (extractedSummary ?? normalizedText).trim();
     if (!content) {
+      return;
+    }
+    if (this.isDuplicatePushContent(threadId, content)) {
       return;
     }
 
@@ -890,11 +916,95 @@ export class HubServer {
     );
   }
 
+  private getPushSubscriptionsForThreadSafe(threadId: string): PushDeliveryTarget[] {
+    const candidate = this.router as unknown as {
+      getPushSubscriptionsForThread?: (id: string) => Array<{ chatId: string; botId?: string }>;
+    };
+    const subscriptions = candidate.getPushSubscriptionsForThread?.(threadId) ?? [];
+    return subscriptions.map((entry) => ({ threadId, chatId: entry.chatId, botId: entry.botId }));
+  }
+
+  private isRunActiveForThreadSafe(threadId: string): boolean {
+    const candidate = this.router as unknown as {
+      isRunActiveForThread?: (id: string) => boolean;
+    };
+    return candidate.isRunActiveForThread?.(threadId) ?? false;
+  }
+
+  private isWithinRunCooldownSafe(threadId: string): boolean {
+    const candidate = this.router as unknown as {
+      isWithinRunCompletionCooldown?: (id: string, cooldownMs: number) => boolean;
+    };
+    return candidate.isWithinRunCompletionCooldown?.(threadId, RUN_COMPLETION_COOLDOWN_MS) ?? false;
+  }
+
+  private parseSummaryTagId(tagText: string): string | null {
+    const matched = tagText.match(/\bid=([0-9a-fA-F-]{36})\b/);
+    return matched?.[1]?.toLowerCase() ?? null;
+  }
+
+  private extractLatestSummaryBlockAnyTrace(content: string): string | null {
+    let cursor = 0;
+    let latest: string | null = null;
+
+    while (cursor < content.length) {
+      const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
+      if (beginIndex < 0) {
+        break;
+      }
+      const beginClose = content.indexOf("]]", beginIndex);
+      if (beginClose < 0) {
+        break;
+      }
+      const beginTag = content.slice(beginIndex, beginClose + 2);
+      const beginId = this.parseSummaryTagId(beginTag);
+      cursor = beginClose + 2;
+      if (!beginId) {
+        continue;
+      }
+
+      let searchFrom = beginClose + 2;
+      while (searchFrom < content.length) {
+        const endIndex = content.indexOf(SUMMARY_MARKER_END, searchFrom);
+        if (endIndex < 0) {
+          break;
+        }
+        const endClose = content.indexOf("]]", endIndex);
+        if (endClose < 0) {
+          break;
+        }
+        const endTag = content.slice(endIndex, endClose + 2);
+        const endId = this.parseSummaryTagId(endTag);
+        searchFrom = endClose + 2;
+        if (!endId || endId !== beginId) {
+          continue;
+        }
+        latest = content.slice(beginClose + 2, endIndex).trim();
+        cursor = endClose + 2;
+        break;
+      }
+    }
+
+    return latest && latest.trim() ? latest.trim() : null;
+  }
+
+  private isDuplicatePushContent(threadId: string, content: string): boolean {
+    const nowMs = Date.now();
+    const fingerprint = content.trim();
+    const previous = this.lastPushDedupByThread.get(threadId);
+    if (previous && previous.fingerprint === fingerprint && nowMs - previous.sentAtMs < PUSH_DEDUP_WINDOW_MS) {
+      return true;
+    }
+    this.lastPushDedupByThread.set(threadId, { fingerprint, sentAtMs: nowMs });
+    return false;
+  }
+
   private clearPushAccumulators(): void {
     for (const accumulator of this.pushAccumulators.values()) {
       clearTimeout(accumulator.timer);
     }
     this.pushAccumulators.clear();
+    this.lastPushDedupByThread.clear();
   }
 
   private async removeStaleSocket(): Promise<void> {

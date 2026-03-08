@@ -6,6 +6,8 @@ export interface ClassifiedAgentOutput {
 }
 
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 
 const TRANSIENT_SUBSTRING_HINTS = [
   "shift+tab to accept edits",
@@ -16,6 +18,15 @@ const TRANSIENT_SUBSTRING_HINTS = [
   "list your saved chat checkpoints with /chat list",
   "assessing the git situation",
   "analyzing push parameters",
+  "(esc to cancel",
+  "hide individual footer elements",
+  "show or hide the bottom status bar",
+  "toggle the coding sandbox",
+  "meridian protocol requirement",
+  "output exactly one summary block",
+  "do not output any content outside the summary block",
+  "both tags must be single-line",
+  "do not wrap tags in code fences"
 ];
 
 const TRANSIENT_LINE_PATTERNS = [
@@ -93,10 +104,29 @@ function parseActionRequiredText(content: string): string | null {
     break;
   }
 
-  const options = lines
-    .slice(allowIndex + 1)
-    .filter((line) => /^[●○]?\s*\d+\./.test(line))
-    .map((line) => line.replace(/^[●○]\s*/, ""));
+  const optionsByNumber = new Map<number, string>();
+  for (const line of lines) {
+    const matched = line.match(/^[●○]?\s*(\d+)\.\s*(.+)$/);
+    if (!matched) {
+      continue;
+    }
+    const optionNumber = Number(matched[1]);
+    if (!Number.isFinite(optionNumber)) {
+      continue;
+    }
+    if (!optionsByNumber.has(optionNumber)) {
+      optionsByNumber.set(optionNumber, `${optionNumber}. ${matched[2].trim()}`);
+    }
+  }
+
+  if (optionsByNumber.has(1) && optionsByNumber.has(2) && !optionsByNumber.has(3)) {
+    optionsByNumber.set(3, "3. Allow for all commands");
+  }
+
+  const options = [...optionsByNumber.keys()]
+    .sort((left, right) => left - right)
+    .map((key) => optionsByNumber.get(key)!)
+    .filter(Boolean);
 
   const summaryLines = ["Waiting for approval...", "Run this command?"];
   if (command) {
@@ -113,6 +143,14 @@ function isTransientText(content: string): boolean {
     return true;
   }
 
+  // Protocol tags without a complete closed block should never be treated as final content.
+  if (looksLikeIncompleteSummaryProtocol(normalized)) {
+    return true;
+  }
+  if (looksLikeProtocolOnlyContent(normalized)) {
+    return true;
+  }
+
   for (const hint of TRANSIENT_SUBSTRING_HINTS) {
     if (normalized.includes(hint)) {
       return true;
@@ -125,11 +163,45 @@ function isTransientText(content: string): boolean {
     }
   }
 
-  if (/[\u2800-\u28ff]/.test(content) && normalized.includes("(esc to cancel")) {
+  if (/[\u2800-\u28ff]/.test(content)) {
     return true;
   }
 
   return false;
+}
+
+function stripSummaryProtocolTags(content: string): string {
+  return content
+    .replace(/\[\[MERIDIAN_SUMMARY_BEGIN[^\]]*\]\]/gi, " ")
+    .replace(/\[\[MERIDIAN_SUMMARY_END[^\]]*\]\]/gi, " ");
+}
+
+function looksLikeIncompleteSummaryProtocol(normalizedLowercaseContent: string): boolean {
+  const beginMatches = normalizedLowercaseContent.match(/\[\[meridian_summary_begin[^\]]*\]\]/g) ?? [];
+  const endMatches = normalizedLowercaseContent.match(/\[\[meridian_summary_end[^\]]*\]\]/g) ?? [];
+  if (beginMatches.length === 0 && endMatches.length === 0) {
+    return false;
+  }
+  return beginMatches.length !== endMatches.length;
+}
+
+function looksLikeProtocolOnlyContent(normalizedLowercaseContent: string): boolean {
+  const hasSummaryProtocolTags =
+    normalizedLowercaseContent.includes(SUMMARY_MARKER_BEGIN.toLowerCase()) ||
+    normalizedLowercaseContent.includes(SUMMARY_MARKER_END.toLowerCase());
+  if (!hasSummaryProtocolTags) {
+    return false;
+  }
+
+  const stripped = stripSummaryProtocolTags(normalizedLowercaseContent)
+    .replace(/id=[0-9a-f-]{36}/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) {
+    return true;
+  }
+
+  return stripped === "<summary>" || stripped === "summary" || stripped === "trace_id";
 }
 
 export function classifyAgentOutput(content: string): ClassifiedAgentOutput {

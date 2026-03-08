@@ -65,7 +65,11 @@ const terminalInputBodySchema = z.object({
 
 const pushToggleBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
-  enabled: z.boolean()
+  enabled: z.boolean().optional()
+});
+
+const captureIntervalBodySchema = z.object({
+  interval_ms: z.coerce.number().int().min(2000).max(30000)
 });
 
 type RepoEntry = {
@@ -450,6 +454,16 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/capture_interval" && request.method === "GET") {
+      await this.handleGetCaptureInterval(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/capture_interval" && request.method === "POST") {
+      await this.handleSetCaptureInterval(request, response);
+      return;
+    }
+
     await this.serveStaticAsset(requestUrl.pathname, response);
   }
 
@@ -603,7 +617,7 @@ export class WebInterfaceServer {
             content: "",
             attachments: [],
             reply_to: null,
-            push_enabled: body.enabled
+            push_enabled: body.enabled ?? null
           },
           mode: "bridge",
           suppress_reply: true,
@@ -615,6 +629,47 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, result);
+  }
+
+  private async handleGetCaptureInterval(_request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        HubMessageSchema.parse({
+          trace_id: randomUUID(),
+          thread_id: "global",
+          actor_id: "web:system",
+          intent: "capture_interval",
+          target: "global",
+          payload: { content: "", attachments: [] },
+          mode: "bridge",
+          suppress_reply: true,
+          reply_channel: { channel: "web", chat_id: "web:system" }
+        })
+      )
+    );
+    const intervalMs = Number.parseInt(result.content, 10);
+    this.respondJson(response, 200, { interval_ms: Number.isFinite(intervalMs) ? intervalMs : 7000 });
+  }
+
+  private async handleSetCaptureInterval(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const body = captureIntervalBodySchema.parse(await this.readJsonBody(request));
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        HubMessageSchema.parse({
+          trace_id: randomUUID(),
+          thread_id: "global",
+          actor_id: "web:system",
+          intent: "capture_interval",
+          target: "global",
+          payload: { content: String(body.interval_ms), attachments: [] },
+          mode: "bridge",
+          suppress_reply: true,
+          reply_channel: { channel: "web", chat_id: "web:system" }
+        })
+      )
+    );
+    const intervalMs = Number.parseInt(result.content, 10);
+    this.respondJson(response, 200, { interval_ms: Number.isFinite(intervalMs) ? intervalMs : body.interval_ms });
   }
 
   private async resolveWorkingDirectory(sessionId: string, threadId: string): Promise<string> {
@@ -699,6 +754,9 @@ export class WebInterfaceServer {
       clientSocket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       return;
     }
+    const replayLinesParam = requestUrl.searchParams.get("replay_lines");
+    const parsedReplayLines = replayLinesParam === null ? NaN : Number(replayLinesParam);
+    const replayLines = Number.isFinite(parsedReplayLines) && parsedReplayLines >= 0 ? Math.floor(parsedReplayLines) : 200;
 
     const accept = createHash("sha1").update(`${websocketKey}${websocketGuid}`).digest("base64");
     clientSocket.write(
@@ -770,7 +828,9 @@ export class WebInterfaceServer {
     };
 
     hubSocket.on("connect", () => {
-      hubSocket.write(`${JSON.stringify({ type: "subscribe_pane_output", thread_id: threadId, replay_lines: 200 })}\n`);
+      hubSocket.write(
+        `${JSON.stringify({ type: "subscribe_pane_output", thread_id: threadId, replay_lines: replayLines })}\n`
+      );
     });
 
     hubSocket.on("data", (chunk: string) => {

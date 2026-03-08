@@ -7,6 +7,7 @@ import { buildClaudeSpawnArgs } from "../agents/claude";
 import { buildCodexSpawnArgs } from "../agents/codex";
 import { buildCursorSpawnArgs } from "../agents/cursor";
 import { buildGeminiSpawnArgs } from "../agents/gemini";
+import { config } from "../config";
 import { createLogger } from "../logger";
 import { APPROVAL_HELP_TEXT, approvalActionToTmuxKeys, normalizeApprovalAction } from "../shared/approval";
 import { AgentAPIClient } from "../shared/agentapi-client";
@@ -85,6 +86,13 @@ type AgentEndpointBinding = {
   transport: "socket" | "http";
 };
 
+interface PaneCaptureState {
+  timer: NodeJS.Timeout;
+  tmuxSession: string;
+  logPath: string;
+  lastSnapshot: string;
+}
+
 export class InstanceManager {
   private readonly log = createLogger("instance_mgr");
   private readonly agentapiBinPath: string;
@@ -101,8 +109,10 @@ export class InstanceManager {
   private readonly paneBridgeUsePtyWrapper: boolean;
   private agentapiSocketSupportCache: boolean | null = null;
   private agentapiAttachSocketSupportCache: boolean | null = null;
+  private paneCaptureIntervalMs: number = config.PANE_CAPTURE_INTERVAL_MS;
   private readonly children = new Map<string, ChildProcess>();
   private readonly agentLogFdByThread = new Map<string, number>();
+  private readonly paneCaptureByThread = new Map<string, PaneCaptureState>();
   private readonly sessionThreadBySession = new Map<string, string>();
   private readonly startupAttempts = 180;
   private readonly startupDelayMs = 250;
@@ -332,6 +342,9 @@ export class InstanceManager {
   async rehydrateFromState(state: PersistedHubState): Promise<RehydrationResult> {
     this.registry.clear();
     this.children.clear();
+    for (const threadId of this.paneCaptureByThread.keys()) {
+      this.stopTmuxPaneCapture(threadId);
+    }
     this.sessionThreadBySession.clear();
 
     const restoredThreadIds: string[] = [];
@@ -801,6 +814,7 @@ export class InstanceManager {
 
     this.children.delete(threadId);
     this.releaseAgentLogFd(threadId);
+    this.stopTmuxPaneCapture(threadId);
     this.registry.unregister(threadId);
 
     if (!preserveBindings) {
@@ -824,6 +838,7 @@ export class InstanceManager {
     child.once("exit", (code, signal) => {
       this.children.delete(threadId);
       this.releaseAgentLogFd(threadId);
+      this.stopTmuxPaneCapture(threadId);
 
       const instance = this.registry.get(threadId);
       if (!instance) {
@@ -945,7 +960,7 @@ export class InstanceManager {
       }
     );
     this.configureTmuxSession(tmuxSession);
-    this.enableTmuxPaneLogging(threadId, tmuxSession);
+    this.startTmuxPaneCapture(threadId, tmuxSession);
   }
 
   private configureTmuxSession(tmuxSession: string): void {
@@ -962,26 +977,95 @@ export class InstanceManager {
     });
   }
 
-  private enableTmuxPaneLogging(threadId: string, tmuxSession: string): void {
+  private startTmuxPaneCapture(threadId: string, tmuxSession: string): void {
     try {
       fs.mkdirSync(this.logDir, { recursive: true });
       const paneLogPath = path.join(this.logDir, `pane-${threadId}.log`);
-      const pipeCommand = `cat >> ${paneLogPath}`;
-      this.execSyncFn(
-        `tmux pipe-pane -o -t ${this.shellEscape(tmuxSession)} ${this.shellEscape(pipeCommand)}`,
-        {
-          stdio: "ignore"
-        }
-      );
+      this.stopTmuxPaneCapture(threadId);
+      const timer = setInterval(() => {
+        this.capturePaneSnapshot(threadId);
+      }, this.paneCaptureIntervalMs);
+      timer.unref();
+      this.paneCaptureByThread.set(threadId, {
+        timer,
+        tmuxSession,
+        logPath: paneLogPath,
+        lastSnapshot: ""
+      });
     } catch (error) {
       this.log.warn(
         {
-          operation: "pane_log_pipe_failed",
+          operation: "pane_capture_start_failed",
           thread_id: threadId,
           tmux_session: tmuxSession,
           err: error instanceof Error ? error.message : String(error)
         },
-        "Failed to enable tmux pane log capture"
+        "Failed to start tmux pane capture"
+      );
+    }
+  }
+
+  getPaneCaptureIntervalMs(): number {
+    return this.paneCaptureIntervalMs;
+  }
+
+  setPaneCaptureIntervalMs(intervalMs: number): void {
+    const clamped = Math.max(2000, Math.min(30000, Math.floor(intervalMs)));
+    if (clamped === this.paneCaptureIntervalMs) {
+      return;
+    }
+    this.paneCaptureIntervalMs = clamped;
+
+    // Restart all active capture timers with the new interval
+    for (const [threadId, capture] of this.paneCaptureByThread.entries()) {
+      clearInterval(capture.timer);
+      const timer = setInterval(() => {
+        this.capturePaneSnapshot(threadId);
+      }, this.paneCaptureIntervalMs);
+      timer.unref();
+      capture.timer = timer;
+    }
+  }
+
+  private stopTmuxPaneCapture(threadId: string): void {
+    const capture = this.paneCaptureByThread.get(threadId);
+    if (!capture) {
+      return;
+    }
+    clearInterval(capture.timer);
+    this.paneCaptureByThread.delete(threadId);
+  }
+
+  private capturePaneSnapshot(threadId: string): void {
+    const capture = this.paneCaptureByThread.get(threadId);
+    if (!capture) {
+      return;
+    }
+
+    try {
+      const output = this.execSyncFn(
+        `tmux capture-pane -p -t ${this.shellEscape(capture.tmuxSession)} -e`,
+        {
+          stdio: ["ignore", "pipe", "ignore"],
+          encoding: "utf8"
+        }
+      );
+      const snapshot = this.toText(output).trimEnd();
+      if (!snapshot || snapshot === capture.lastSnapshot) {
+        return;
+      }
+      capture.lastSnapshot = snapshot;
+      const timestamp = this.now().toISOString();
+      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${snapshot}\n`, "utf8");
+    } catch (error) {
+      this.log.warn(
+        {
+          operation: "pane_capture_tick_failed",
+          thread_id: threadId,
+          tmux_session: capture.tmuxSession,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Failed to capture tmux pane snapshot"
       );
     }
   }

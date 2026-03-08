@@ -236,3 +236,77 @@ test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", a
     inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=codex_01" }]]
   });
 });
+
+test("ResultSender parses trace-bound summary block and hides protocol tags", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+  };
+  let sentText = "";
+  sender.sendTextWithRetry = async (_botToken, _chatId, text) => {
+    sentText = text;
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  const traceId = "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8";
+  await sender.sendResult(
+    {
+      trace_id: traceId,
+      thread_id: "codex_01",
+      source: "codex",
+      status: "success",
+      content:
+        `before raw\n` +
+        `[[MERIDIAN_SUMMARY_BEGIN id=${traceId}]]\n` +
+        "Final answer in summary.\n" +
+        `[[MERIDIAN_SUMMARY_END id=${traceId}]]\n` +
+        "after raw",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    },
+    {
+      channel: "telegram",
+      chat_id: "12345"
+    }
+  );
+
+  assert.match(sentText, /Final answer in summary\./);
+  assert.doesNotMatch(sentText, /\[\[MERIDIAN_SUMMARY_(BEGIN|END)/);
+
+  const detail = resolveTelegramDetailRecord({ chatId: "12345", traceId });
+  assert.ok(detail);
+  assert.doesNotMatch(detail?.fullText ?? "", /\[\[MERIDIAN_SUMMARY_(BEGIN|END)/);
+});
+
+test("ResultSender marks missing summary end as incomplete", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+  };
+  let sentText = "";
+  sender.sendTextWithRetry = async (_botToken, _chatId, text) => {
+    sentText = text;
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  const traceId = "81f8b79e-b32f-44e7-8f07-6f1f4be8f2f7";
+  await sender.sendResult(
+    {
+      trace_id: traceId,
+      thread_id: "codex_01",
+      source: "codex",
+      status: "success",
+      content: `[[MERIDIAN_SUMMARY_BEGIN id=${traceId}]]\npartial response still streaming`,
+      attachments: [],
+      timestamp: new Date().toISOString()
+    },
+    {
+      channel: "telegram",
+      chat_id: "12345"
+    }
+  );
+
+  assert.match(sentText, /\(summary incomplete\)/);
+});

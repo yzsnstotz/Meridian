@@ -247,6 +247,7 @@ test("Web Interface Server forwards terminal approval actions through terminal_i
 test("Web Interface Server bridges pane output over WebSocket", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-"));
   const socketPath = path.join(socketDir, "hub.sock");
+  const subscribeRequests: Array<{ replay_lines?: number }> = [];
 
   const hubServer = net.createServer((socket) => {
     socket.setEncoding("utf8");
@@ -261,8 +262,9 @@ test("Web Interface Server bridges pane output over WebSocket", async () => {
         if (!payload) {
           continue;
         }
-        const parsed = JSON.parse(payload) as { type: string; thread_id: string };
+        const parsed = JSON.parse(payload) as { type: string; thread_id: string; replay_lines?: number };
         if (parsed.type === "subscribe_pane_output") {
+          subscribeRequests.push({ replay_lines: parsed.replay_lines });
           socket.write(
             `${JSON.stringify({
               type: "pane_output",
@@ -308,6 +310,75 @@ test("Web Interface Server bridges pane output over WebSocket", async () => {
     }, {
       hubSocketPath: socketPath
     });
+    assert.equal(subscribeRequests.length, 1);
+    assert.equal(subscribeRequests[0]?.replay_lines, 200);
+  } finally {
+    hubServer.close();
+    await fs.promises.rm(socketDir, { recursive: true, force: true });
+  }
+});
+
+test("WebSocket pane bridge accepts replay_lines override from query", async () => {
+  const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-replay-"));
+  const socketPath = path.join(socketDir, "hub.sock");
+  const subscribeRequests: Array<{ replay_lines?: number }> = [];
+
+  const hubServer = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    let buffer = "";
+
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const frames = buffer.split("\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const payload = frame.trim();
+        if (!payload) {
+          continue;
+        }
+        const parsed = JSON.parse(payload) as { type: string; thread_id: string; replay_lines?: number };
+        if (parsed.type === "subscribe_pane_output") {
+          subscribeRequests.push({ replay_lines: parsed.replay_lines });
+          socket.write(
+            `${JSON.stringify({
+              type: "pane_output",
+              thread_id: parsed.thread_id,
+              chunk: "",
+              timestamp: new Date().toISOString()
+            })}\n`
+          );
+        }
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => hubServer.listen(socketPath, resolve));
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const ws = new WebSocket(
+        `${baseUrl.replace("http://", "ws://")}/ws/terminal?thread_id=codex_01&token=secret-token&replay_lines=0`
+      );
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket payload")), 2000);
+        ws.addEventListener("message", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        ws.addEventListener("error", () => {
+          clearTimeout(timeout);
+          reject(new Error("WebSocket failed"));
+        });
+      });
+      await new Promise<void>((resolve) => {
+        ws.addEventListener("close", () => resolve(), { once: true });
+        ws.close();
+      });
+    }, {
+      hubSocketPath: socketPath
+    });
+    assert.equal(subscribeRequests.length, 1);
+    assert.equal(subscribeRequests[0]?.replay_lines, 0);
   } finally {
     hubServer.close();
     await fs.promises.rm(socketDir, { recursive: true, force: true });

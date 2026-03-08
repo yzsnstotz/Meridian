@@ -193,7 +193,7 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   assert.equal(instance?.tmux_pane, "agent_claude_01");
   assert.equal(instance?.pid, 2202);
   assert.equal(instance?.socket_path, socketPath);
-  assert.equal(execCalls.length, 6);
+  assert.equal(execCalls.length, 5);
   assert.match(execCalls[0] ?? "", /tmux kill-session -t .*agent_claude_01/);
   assert.match(execCalls[1] ?? "", /tmux new-session -d -s .*agent_claude_01/);
   assert.match(execCalls[1] ?? "", /'attach'/);
@@ -201,8 +201,6 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
   assert.match(execCalls[2] ?? "", /tmux set-option -t .*agent_claude_01.* history-limit 200000/);
   assert.match(execCalls[3] ?? "", /tmux set-window-option -t .*agent_claude_01.* alternate-screen off/);
   assert.match(execCalls[4] ?? "", /tmux set-option -t .*agent_claude_01.* mouse on/);
-  assert.match(execCalls[5] ?? "", /tmux pipe-pane -o -t .*agent_claude_01/);
-  assert.match(execCalls[5] ?? "", /pane-claude_01\.log/);
   assert.equal(spawnCalls.length, 1);
   assert.equal(spawnCalls[0]?.command, "/Users/yzliu/work/Meridian/bin/agentapi");
   assert.deepEqual(spawnCalls[0]?.args, [
@@ -275,7 +273,7 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
 
   assert.equal(message, `Sent approval action 'allow' to ${threadId}.`);
   assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'Tab'/);
+  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'2' 'Enter'/);
 });
 
 test("sendTerminalInput rejects bridge threads", async () => {

@@ -43,13 +43,14 @@
       border-bottom: 1px solid var(--border-color);
       padding: calc(0.5rem + var(--safe-area-inset-top)) 1rem 0.5rem;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 0.5rem;
       z-index: 100;
+      flex-wrap: wrap;
     }
 
-    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex-shrink: 1; overflow: visible; flex-wrap: wrap; }
     .header-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
     .focus-toggle {
       background: transparent;
@@ -69,8 +70,8 @@
     .back-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 0.5rem; display: flex; border-radius: 0.375rem; touch-action: manipulation; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
     .back-btn:hover { color: #fff; background: var(--surface-hover); }
     
-    header h1 { font-size: 0.9375rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-    .thread-badge { background: var(--bg-color); color: var(--accent-color); padding: 0.125rem 0.375rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.75rem; border: 1px solid var(--border-color); word-break: break-all; }
+    header h1 { font-size: 0.9375rem; font-weight: 600; display: block; min-width: 0; line-height: 1.6; }
+    .thread-badge { background: var(--bg-color); color: var(--accent-color); padding: 0.125rem 0.375rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.75rem; border: 1px solid var(--border-color); word-break: break-all; overflow-wrap: anywhere; display: inline; }
 
 
     #workspace {
@@ -416,9 +417,19 @@
     }
     .header-overflow .overflow-dropdown button:hover { background: var(--surface-hover); }
     .header-overflow .overflow-dropdown button.kill { color: var(--error-color); }
+    .header-overflow .overflow-dropdown .overflow-divider {
+      height: 1px;
+      background: var(--border-color);
+      margin: 0.25rem 0;
+    }
+    .header-overflow .overflow-dropdown button.active {
+      color: var(--accent-color);
+    }
     @media (max-width: 768px) {
       .header-overflow { display: flex; align-items: center; }
       .header-right .btn-action { display: none; }
+      .header-right > .focus-toggle,
+      .header-right > select.focus-toggle { display: none; }
     }
 
     @media (min-width: 769px) {
@@ -474,6 +485,27 @@
       border: 1px solid var(--border-color);
       word-break: break-word;
       animation: chatFadeIn 0.15s ease;
+      position: relative;
+    }
+    .bubble-copy-toast {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.8);
+      color: #fff;
+      padding: 0.5rem 1.25rem;
+      border-radius: 0.75rem;
+      font-size: 0.8125rem;
+      z-index: 9999;
+      pointer-events: none;
+      animation: toastFade 1.2s ease forwards;
+    }
+    @keyframes toastFade {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+      15% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      70% { opacity: 1; }
+      100% { opacity: 0; }
     }
     .chat-bubble.user {
       align-self: flex-end;
@@ -518,7 +550,7 @@
       font-size: 0.75rem;
       line-height: 1.45;
       color: var(--text-dim);
-      max-height: 220px;
+      max-height: 60vh;
       overflow: auto;
       padding-right: 0.125rem;
     }
@@ -654,13 +686,26 @@
       <div class="header-overflow">
         <button type="button" class="overflow-trigger" id="overflow-menu-btn" aria-label="More actions" aria-haspopup="true" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
         <div class="overflow-dropdown" id="overflow-dropdown">
+          <button type="button" id="overflow-focus" class="active">Focus ON</button>
+          <button type="button" id="overflow-push">Push OFF</button>
+          <button type="button" id="overflow-filters">Filters</button>
+          <div class="overflow-divider"></div>
           <button type="button" id="overflow-reboot">Reboot</button>
+          <button type="button" id="overflow-clear-chat">Clear Chat</button>
           <button type="button" class="kill" id="overflow-kill">Kill</button>
         </div>
       </div>
       <button id="focus-toggle" class="focus-toggle active" type="button">Focus ON</button>
       <button id="push-toggle" class="focus-toggle" type="button">Push OFF</button>
       <button id="filters-toggle" class="focus-toggle" type="button">Filters</button>
+      <select id="capture-interval" class="focus-toggle" style="appearance:auto;padding:3px 6px;font-size:11px;">
+        <option value="3000">Cap 3s</option>
+        <option value="5000">Cap 5s</option>
+        <option value="7000" selected>Cap 7s</option>
+        <option value="10000">Cap 10s</option>
+        <option value="15000">Cap 15s</option>
+        <option value="20000">Cap 20s</option>
+      </select>
       <button id="btn-reboot" class="btn-action" style="background:transparent;border:1px solid var(--border-color);color:var(--text-dim);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Reboot</button>
       <button id="btn-kill" class="btn-action" style="background:transparent;border:1px solid var(--error-color);color:var(--error-color);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Kill</button>
       <div id="agent-status" style="font-size: 0.75rem; color: var(--success-color); margin-left: 0.25rem; display: flex; align-items: center; gap: 0.375rem;">
@@ -814,6 +859,7 @@
       var chatTypingTimer = null;
       var chatAutoScroll = true;
       var lastFlushedContent = "";
+      var lastFlushedDetails = "";
       var focusModeEnabled =
         window.MeridianWeb && typeof window.MeridianWeb.getFocusModeEnabled === "function"
           ? window.MeridianWeb.getFocusModeEnabled(true)
@@ -824,10 +870,25 @@
       var CHAT_COLLAPSE_CHAR_LIMIT = 400;
       var SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
       var SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+      var SUMMARY_BLOCK_TIMEOUT_MS = 6000;
+      var SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
+      var CHAT_HISTORY_STORAGE_KEY = "meridian_chat_history:" + (threadId || "active");
+      var CHAT_HISTORY_MAX_ITEMS = 200;
+      var fallbackSummaryText = "Update received. Expand details for full output.";
+      var suppressibleMessageState = Object.create(null);
+      var seenBubbleFingerprintAtMs = Object.create(null);
+      var chatHistoryHydrating = false;
       var EXPANDED_DIRS_STORAGE_KEY = "meridian_expanded_dirs:" + (threadId || "active");
       var expandedDirs = new Set();
       var fileTreeEntries = [];
       var selectedFilePath = "";
+      var pendingSummaryBlock = null;
+      var lastSubmittedInput = "";
+      var lastSubmittedTraceId = "";
+      var lastFocusSummarySent = "";
+      var lastRunResultAtMs = 0;
+      var RUN_RESULT_COOLDOWN_MS = 3000;
+      var runPending = false;
 
       function isMobile() { return window.innerWidth <= 768; }
 
@@ -859,8 +920,79 @@
         if (!text) return false;
         return (
           /(Action Required|waiting for approval)/i.test(text) &&
-          /(Allow once|Allow for this session|Run this command\?|Allow execution of)/i.test(text)
+          /(Allow once|Allow for this session|Allow for all commands|Run this command\?|Allow execution of)/i.test(text)
         );
+      }
+
+      function mapApprovalOptionAction(label) {
+        var lower = (label || "").toLowerCase();
+        if (/allow once/i.test(lower) || lower === "yes" || /run once/i.test(lower)) return "run";
+        if (/allow for this session/i.test(lower) || /allowlist/i.test(lower) || /for this session/i.test(lower)) return "allow";
+        if (/allow for all/i.test(lower) || /always allow/i.test(lower) || /allow all/i.test(lower)) return "all";
+        if (/\bno\b/.test(lower) || /deny/i.test(lower) || /suggest changes/i.test(lower) || /reject/i.test(lower) || /don.t allow/i.test(lower)) return "skip";
+        return null;
+      }
+
+      function parseApprovalOptionsFromText(text) {
+        var normalized = stripAnsi(text || "");
+        var lines = normalized.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(Boolean);
+        var options = [];
+        var seenNums = {};
+        for (var i = 0; i < lines.length; i++) {
+          var m = lines[i].match(/^[●○]?\s*(\d+)\.\s*(.+)$/);
+          if (!m) continue;
+          var num = parseInt(m[1], 10);
+          var label = m[2].trim().replace(/\s*\(esc\)\s*$/, "");
+          if (seenNums[num]) continue;
+          seenNums[num] = true;
+          var action = mapApprovalOptionAction(label);
+          if (action) {
+            options.push({ key: String(num), label: num + ". " + label, action: action });
+          }
+        }
+        return options;
+      }
+
+      function summarizeApprovalPrompt(content) {
+        var normalized = stripAnsi(content || "");
+        var lines = normalized
+          .split(/\r?\n/)
+          .map(function(line) { return line.trim(); })
+          .filter(Boolean);
+        if (lines.length === 0) return "";
+
+        var lower = normalized.toLowerCase();
+        if (lower.indexOf("action required") < 0 || lower.indexOf("allow execution of:") < 0) return "";
+
+        var allowIndex = -1;
+        for (var i = 0; i < lines.length; i++) {
+          if (/^allow execution of:/i.test(lines[i])) {
+            allowIndex = i;
+            break;
+          }
+        }
+        if (allowIndex < 0) return "";
+
+        var command = "";
+        for (var idx = allowIndex - 1; idx >= 0; idx--) {
+          var candidate = lines[idx] || "";
+          if (!candidate || /^action required$/i.test(candidate) || /^\?/.test(candidate)) continue;
+          command = candidate;
+          break;
+        }
+
+        var options = [];
+        for (var oi = allowIndex + 1; oi < lines.length; oi++) {
+          if (/^[●○]?\s*\d+\./.test(lines[oi])) {
+            options.push(lines[oi].replace(/^[●○]\s*/, ""));
+          }
+        }
+
+        var summary = ["Waiting for approval...", "Run this command?"];
+        if (command) summary.push(command);
+        summary.push(lines[allowIndex] || "Allow execution?");
+        summary = summary.concat(options);
+        return summary.join("\n");
       }
 
       function isLowValueLine(line) {
@@ -890,7 +1022,15 @@
         if (t.indexOf("let node.js auto-configure memory") >= 0) return true;
         if (t.indexOf("list your saved chat checkpoints") >= 0) return true;
         if (t.indexOf("gemini cli is restarting") >= 0) return true;
+        if (t.indexOf("hide individual footer elements") >= 0) return true;
+        if (t.indexOf("show or hide the bottom status bar") >= 0) return true;
+        if (t.indexOf("toggle the coding sandbox") >= 0) return true;
         if (/^(GEMINI|CLAUDE|CODEX|CURSOR)\.md$/i.test(t)) return true;
+        // Meridian protocol requirement lines injected into agent prompts
+        if (t.indexOf("meridian protocol requirement") >= 0) return true;
+        if (/^\d+\)\s+(output exactly one summary block|do not output any content outside|both tags must be single-line|put your full reply between the tags|do not wrap tags in code fences)/i.test(t)) return true;
+        if (/^tag format reference/i.test(t)) return true;
+        if (/^-\s*(open|close) tag:/i.test(t)) return true;
         // Box-content lines (│ ... │) from terminal UI frames
         if (/^[│┃].*[│┃]$/.test(t)) return true;
         // Custom GUI filters (loaded from localStorage)
@@ -910,67 +1050,236 @@
         return false;
       }
 
-      function extractSummaryBlocks(content) {
-        if (content.indexOf(SUMMARY_MARKER_BEGIN) < 0 || content.indexOf(SUMMARY_MARKER_END) < 0) {
-          return { summaries: [], residual: content };
-        }
-        var summaries = [];
-        var residual = "";
-        var cursor = 0;
-        while (cursor < content.length) {
-          var begin = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
-          if (begin < 0) {
-            residual += content.slice(cursor);
-            break;
-          }
-          residual += content.slice(cursor, begin);
-          var beginClose = content.indexOf("]]", begin);
-          if (beginClose < 0) {
-            residual += content.slice(begin);
-            break;
-          }
-          var end = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
-          if (end < 0) {
-            residual += content.slice(begin);
-            break;
-          }
-          var endClose = content.indexOf("]]", end);
-          if (endClose < 0) {
-            residual += content.slice(begin);
-            break;
-          }
-          var summary = content.slice(beginClose + 2, end).trim();
-          if (summary) summaries.push(summary);
-          cursor = endClose + 2;
-        }
-        return { summaries: summaries, residual: residual };
+      function parseSummaryTagId(tagText) {
+        var matched = (tagText || "").match(/\bid=([0-9a-fA-F-]{36})\b/);
+        return matched && matched[1] ? matched[1].toLowerCase() : "";
       }
 
-      function summarizeAgentText(content) {
-        var extracted = extractSummaryBlocks(content);
-        if (extracted.summaries.length > 0) {
+      function resolveTraceIdFromText(content) {
+        var matched = (content || "").match(/\btrace(?:_id)?=([0-9a-fA-F-]{36})\b/i);
+        return matched && matched[1] ? matched[1].toLowerCase() : "";
+      }
+
+      function stripSummaryProtocolTags(content) {
+        return (content || "")
+          .replace(/\[\[MERIDIAN_SUMMARY_BEGIN[^\]]*\]\]\s*/g, "")
+          .replace(/\s*\[\[MERIDIAN_SUMMARY_END[^\]]*\]\]/g, "")
+          .trim();
+      }
+
+      function extractSummaryBlock(content, expectedTraceId) {
+        var begin = content.indexOf(SUMMARY_MARKER_BEGIN);
+        if (begin < 0) {
+          pendingSummaryBlock = null;
+          return { summary: "", residual: content, incomplete: false };
+        }
+        var beginClose = content.indexOf("]]", begin);
+        if (beginClose < 0) {
+          return { summary: "", residual: content, incomplete: false };
+        }
+
+        var beginTag = content.slice(begin, beginClose + 2);
+        if (beginTag.indexOf("\n") >= 0) {
+          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
+        }
+        var beginId = parseSummaryTagId(beginTag);
+        if (!beginId || (expectedTraceId && beginId !== expectedTraceId.toLowerCase())) {
+          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
+        }
+
+        var nowMs = Date.now();
+        if (!pendingSummaryBlock || pendingSummaryBlock.traceId !== beginId) {
+          pendingSummaryBlock = { traceId: beginId, startedAtMs: nowMs };
+        }
+
+        var end = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
+        if (end < 0) {
+          if (nowMs - pendingSummaryBlock.startedAtMs < SUMMARY_BLOCK_TIMEOUT_MS) {
+            return { summary: "", residual: content, incomplete: false };
+          }
+          var partial = content.slice(beginClose + 2).trim();
+          var incompleteSummary = partial
+            ? partial + "\n\n(" + SUMMARY_INCOMPLETE_LABEL + ")"
+            : SUMMARY_INCOMPLETE_LABEL;
+          pendingSummaryBlock = null;
           return {
-            summary: extracted.summaries.join("\n\n").trim(),
-            details: extracted.residual.trim()
+            summary: incompleteSummary,
+            residual: (content.slice(0, begin) + "\n" + partial).trim(),
+            incomplete: true
           };
         }
-        var rawLines = content
+
+        var endClose = content.indexOf("]]", end);
+        if (endClose < 0) {
+          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
+        }
+        var endTag = content.slice(end, endClose + 2);
+        if (endTag.indexOf("\n") >= 0) {
+          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
+        }
+        var endId = parseSummaryTagId(endTag);
+        if (!endId || endId !== beginId) {
+          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
+        }
+
+        pendingSummaryBlock = null;
+        return {
+          summary: content.slice(beginClose + 2, end).trim(),
+          residual: (content.slice(0, begin) + content.slice(endClose + 2)).trim(),
+          incomplete: false
+        };
+      }
+
+      function summarizeAgentText(content, expectedTraceId) {
+        var extracted = extractSummaryBlock(content, expectedTraceId || "");
+        // When we are waiting for a specific trace summary block, suppress noisy
+        // intermediate protocol frames until a complete block is available.
+        if (expectedTraceId && !extracted.summary) {
+          var lowered = (content || "").toLowerCase();
+          if (
+            lowered.indexOf("meridian protocol requirement") >= 0 ||
+            lowered.indexOf(SUMMARY_MARKER_BEGIN.toLowerCase()) >= 0 ||
+            lowered.indexOf("trace_id=" + expectedTraceId.toLowerCase()) >= 0
+          ) {
+            return {
+              summary: fallbackSummaryText,
+              details: "",
+              rawOutput: content.trim(),
+              incomplete: false
+            };
+          }
+        }
+        var approvalSummary = summarizeApprovalPrompt(extracted.residual || content);
+        if (approvalSummary) {
+          return {
+            summary: approvalSummary,
+            details: "",
+            rawOutput: content.trim()
+          };
+        }
+        if (extracted.summary) {
+          return {
+            summary: extracted.summary,
+            details: extracted.residual.trim(),
+            rawOutput: content.trim(),
+            incomplete: extracted.incomplete
+          };
+        }
+        var normalized = stripSummaryProtocolTags(content);
+        var rawLines = normalized
           .split(/\r?\n/)
           .map(function(line) { return line.replace(/\s+$/, ""); });
         var summaryLines = rawLines
           .filter(function(line) { return !isLowValueLine(line); })
           .filter(function(line) { return !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line); })
-          .slice(0, 6);
+          .slice(0, 20);
         return {
-          summary: (summaryLines.join("\n").trim() || "Update received. Expand details for full output."),
-          details: content.trim()
+          summary: (summaryLines.join("\n").trim() || fallbackSummaryText),
+          details: normalized.trim(),
+          rawOutput: content.trim(),
+          incomplete: false
         };
       }
 
-      function addChatBubble(content, type, detailsText) {
+      function makeBubbleFingerprint(content, type, detailsText) {
+        return [type || "agent", content || "", detailsText || ""].join("\n---\n");
+      }
+
+      function isSuppressibleMessage(content) {
+        if (!content) return false;
+        var normalized = content.trim().toLowerCase();
+        return normalized === fallbackSummaryText.toLowerCase() ||
+          normalized === "error: request timed out - the hub may be overloaded." ||
+          normalized === "error: request timed out — the hub may be overloaded.";
+      }
+
+      function shouldSuppressMessage(content, type) {
+        if (!isSuppressibleMessage(content)) return false;
+        var key = (type || "agent") + "::" + content.trim().toLowerCase();
+        var nowMs = Date.now();
+        var previous = suppressibleMessageState[key];
+        if (previous && nowMs - previous < 15000) {
+          suppressibleMessageState[key] = nowMs;
+          return true;
+        }
+        suppressibleMessageState[key] = nowMs;
+        return false;
+      }
+
+      function readChatHistory() {
+        try {
+          var raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+          if (!raw) return [];
+          var parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return [];
+          return parsed.filter(function(item) {
+            return item &&
+              typeof item.content === "string" &&
+              typeof item.type === "string" &&
+              (item.detailsText === undefined || typeof item.detailsText === "string");
+          });
+        } catch (e) {
+          return [];
+        }
+      }
+
+      function writeChatHistory(items) {
+        try {
+          localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(items.slice(-CHAT_HISTORY_MAX_ITEMS)));
+        } catch (e) {}
+      }
+
+      function appendChatHistoryEntry(content, type, detailsText) {
+        if (chatHistoryHydrating) return;
+        var history = readChatHistory();
+        var entry = {
+          content: content,
+          type: type || "agent",
+          detailsText: detailsText || "",
+          ts: Date.now()
+        };
+        history.push(entry);
+        writeChatHistory(history);
+      }
+
+      function restoreChatHistory() {
+        var history = readChatHistory();
+        if (history.length === 0) return false;
+        chatHistoryHydrating = true;
+        try {
+          for (var i = 0; i < history.length; i++) {
+            var entry = history[i];
+            addChatBubble(entry.content, entry.type, entry.detailsText, { persist: false, dedupe: false });
+          }
+        } finally {
+          chatHistoryHydrating = false;
+        }
+        return true;
+      }
+
+      function addChatBubble(content, type, detailsText, options) {
         if (!chatMessagesEl) return;
+        var opts = options || {};
+        var resolvedType = type || "agent";
+        var resolvedDetails = detailsText || "";
+        var fingerprint = makeBubbleFingerprint(content, resolvedType, resolvedDetails);
+        var nowMs = Date.now();
+        // Never dedupe user messages — sending the same text twice is intentional
+        if (resolvedType !== "user") {
+          var seenAt = seenBubbleFingerprintAtMs[fingerprint];
+          if (opts.dedupe !== false && seenAt && (nowMs - seenAt) < 120000) {
+            return;
+          }
+          if (opts.dedupe !== false && chatMessagesEl.lastElementChild && chatMessagesEl.lastElementChild.getAttribute("data-fingerprint") === fingerprint) {
+            return;
+          }
+          if (shouldSuppressMessage(content, resolvedType)) return;
+        }
+        seenBubbleFingerprintAtMs[fingerprint] = nowMs;
+
         var bubble = document.createElement("div");
-        bubble.className = "chat-bubble " + (type || "agent");
+        bubble.className = "chat-bubble " + resolvedType;
+        bubble.setAttribute("data-fingerprint", fingerprint);
 
         // Split content into text vs code blocks
         var lines = content.split("\n");
@@ -1025,30 +1334,57 @@
         }
         flushBlock();
 
-        if (type !== "user" && detailsText) {
+        // Tap to copy entire bubble text
+        (function(el, text) {
+          function showToast(msg) {
+            var t = document.createElement("div");
+            t.className = "bubble-copy-toast";
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, 1300);
+          }
+          el.style.cursor = "pointer";
+          el.addEventListener("click", function(e) {
+            // Don't copy when clicking links, buttons, or details/summary
+            if (e.target.closest("a, button, summary, details")) return;
+            navigator.clipboard.writeText(text).then(function() {
+              showToast("Message copied");
+            }).catch(function() {
+              showToast("Copy failed");
+            });
+          });
+        })(bubble, content);
+
+        if (resolvedType !== "user" && resolvedDetails) {
           var details = document.createElement("details");
           details.className = "chat-details";
           var summary = document.createElement("summary");
-          var detailLineCount = detailsText.split(/\r?\n/).length;
+          var detailLineCount = resolvedDetails.split(/\r?\n/).length;
           summary.textContent = "Details (" + detailLineCount + " lines)";
           var detailsBody = document.createElement("div");
           detailsBody.className = "chat-details-body";
-          detailsBody.textContent = detailsText;
+          detailsBody.textContent = resolvedDetails;
           details.appendChild(summary);
           details.appendChild(detailsBody);
           bubble.appendChild(details);
         }
 
         // Detect and render option buttons (strict prompt gate)
-        if (type !== "user") {
-          if (detectApprovalPrompt(content)) {
+        if (resolvedType !== "user") {
+          var approvalDetectionText = content + (resolvedDetails ? "\n" + resolvedDetails : "");
+          if (detectApprovalPrompt(approvalDetectionText)) {
+            var parsedApprovalOpts = parseApprovalOptionsFromText(approvalDetectionText);
+            if (parsedApprovalOpts.length === 0) {
+              // Fallback: show standard approval options
+              parsedApprovalOpts = [
+                { key: "1", label: "1. Allow once", action: "run" },
+                { key: "2", label: "2. Allow for this session", action: "allow" },
+                { key: "3", label: "3. No, suggest changes", action: "skip" }
+              ];
+            }
             var approvalDiv = document.createElement("div");
             approvalDiv.className = "chat-options";
-            [
-              { action: "run", label: "1. Allow once" },
-              { action: "allow", label: "2. Allow for this session" },
-              { action: "skip", label: "3. No, suggest changes" }
-            ].forEach(function(opt) {
+            parsedApprovalOpts.forEach(function(opt) {
               var btn = document.createElement("button");
               btn.className = "chat-option-btn";
               btn.textContent = opt.label;
@@ -1110,10 +1446,17 @@
         chatMessagesEl.appendChild(bubble);
         if (chatMessagesEl.classList.contains("chat-messages-empty")) chatMessagesEl.classList.remove("chat-messages-empty");
         if (chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+        if (opts.persist !== false) appendChatHistoryEntry(content, resolvedType, resolvedDetails);
       }
 
-      function showChatTyping(show) {
-        if (chatTypingEl) chatTypingEl.classList.toggle("active", show);
+      function showChatTyping(show, text) {
+        if (chatTypingEl) {
+          chatTypingEl.classList.toggle("active", show);
+          if (text) {
+            var label = chatTypingEl.lastChild;
+            if (label && label.nodeType === 3) label.textContent = " " + text;
+          }
+        }
         if (show && chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
       }
 
@@ -1148,8 +1491,31 @@
         return text;
       }
 
+      function composeRawDetail(inputText, outputText) {
+        // Filter out transient/noise lines so detail shows only agent reply content
+        var cleanedOutput = stripMeridianNoise(stripSummaryProtocolTags(stripAnsi(outputText || "")));
+        var cleanedInput = (inputText || "").trim();
+        if (!cleanedOutput && !cleanedInput) return "";
+        if (!cleanedInput) return cleanedOutput;
+        return "Your message:\n" + cleanedInput + "\n\nAgent reply:\n" + cleanedOutput;
+      }
+
       function flushChatBuffer() {
         if (!chatBuffer.trim()) { chatBuffer = ""; return; }
+        // While a run is in-flight, suppress pane-stream chat — the run
+        // result will be the authoritative reply for this turn.
+        if (runPending) {
+          chatBuffer = "";
+          showChatTyping(false);
+          return;
+        }
+        // Suppress pane-stream bubbles during post-run cooldown — the run
+        // result already rendered the authoritative reply for this turn.
+        if (lastRunResultAtMs && (Date.now() - lastRunResultAtMs) < RUN_RESULT_COOLDOWN_MS) {
+          chatBuffer = "";
+          showChatTyping(false);
+          return;
+        }
         var text = stripAnsi(chatBuffer).trim();
         chatBuffer = "";
         if (!text) return;
@@ -1161,15 +1527,51 @@
         if (!newContent) return;
 
         if (focusModeEnabled) {
-          var digest = summarizeAgentText(newContent);
+          var expectedTraceId = lastSubmittedTraceId || resolveTraceIdFromText(newContent);
+          var digest = summarizeAgentText(newContent, expectedTraceId);
           var cleanSummary = stripMeridianNoise(digest.summary);
-          if (!cleanSummary) return;
+          if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
+          if (lastFocusSummarySent && cleanSummary === lastFocusSummarySent) return;
           var cleanDetails = digest.details ? stripMeridianNoise(digest.details) : "";
-          var detailLineCount = cleanDetails ? cleanDetails.split(/\r?\n/).length : 0;
-          var shouldCollapse = detailLineCount > CHAT_COLLAPSE_LINE_LIMIT || cleanDetails.length > CHAT_COLLAPSE_CHAR_LIMIT;
-          addChatBubble(cleanSummary, "agent", shouldCollapse ? cleanDetails : "");
+          var latestDetails = cleanDetails ? computeDelta(cleanDetails, lastFlushedDetails) : "";
+          if (cleanDetails) {
+            lastFlushedDetails = cleanDetails;
+          }
+          var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || newContent);
+          addChatBubble(cleanSummary, "agent", rawDetail);
+          lastFocusSummarySent = cleanSummary;
+          lastSubmittedInput = "";
+          // Only clear trace_id when a proper summary was extracted.
+          if (digest.summary && digest.summary !== fallbackSummaryText && !digest.incomplete) {
+            lastSubmittedTraceId = "";
+          }
         } else {
           var cleanText = stripMeridianNoise(newContent);
+          if (!cleanText) return;
+          addChatBubble(cleanText, "agent");
+        }
+      }
+
+      function renderAgentContent(rawContent) {
+        var text = stripAnsi(rawContent || "").trim();
+        if (!text) return;
+        if (focusModeEnabled) {
+          var expectedTraceId = lastSubmittedTraceId || resolveTraceIdFromText(text);
+          var digest = summarizeAgentText(text, expectedTraceId);
+          var cleanSummary = stripMeridianNoise(digest.summary);
+          if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
+          if (lastFocusSummarySent && cleanSummary === lastFocusSummarySent) return;
+          var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || text);
+          addChatBubble(cleanSummary, "agent", rawDetail);
+          lastFocusSummarySent = cleanSummary;
+          lastSubmittedInput = "";
+          // Only clear trace_id when a proper summary was extracted;
+          // keep it alive so subsequent pane output can still match.
+          if (digest.summary && digest.summary !== fallbackSummaryText && !digest.incomplete) {
+            lastSubmittedTraceId = "";
+          }
+        } else {
+          var cleanText = stripMeridianNoise(stripSummaryProtocolTags(text));
           if (!cleanText) return;
           addChatBubble(cleanText, "agent");
         }
@@ -1190,38 +1592,91 @@
           if (window.MeridianWeb && typeof window.MeridianWeb.setFocusModeEnabled === "function") {
             window.MeridianWeb.setFocusModeEnabled(focusModeEnabled);
           }
+          if (typeof syncOverflowFocus === "function") syncOverflowFocus();
         });
       }
 
       // ── Push toggle ──
       var pushToggleBtn = document.getElementById("push-toggle");
       var pushEnabled = false;
+
+      function updatePushButton(enabled) {
+        pushEnabled = enabled;
+        if (!pushToggleBtn) return;
+        pushToggleBtn.classList.toggle("active", pushEnabled);
+        pushToggleBtn.textContent = pushEnabled ? "Push ON" : "Push OFF";
+        if (typeof syncOverflowPush === "function") syncOverflowPush();
+      }
+
+      function sendPushToggle(enabled) {
+        var body = { enabled: enabled };
+        if (threadId) body.thread_id = threadId;
+        return window.MeridianWeb.fetchWithAuth("/api/push", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        }).then(function(r) { return r.json(); }).then(function(data) {
+          if (data && data.status === "error") {
+            updatePushButton(false);
+            addChatBubble("Push: " + (data.content || "unknown error"), "agent");
+          } else if (data && data.status === "success") {
+            updatePushButton(enabled);
+            if (data.content) addChatBubble(data.content, "agent");
+          }
+        }).catch(function(err) {
+          updatePushButton(false);
+          addChatBubble("Push toggle failed: " + (err && err.message ? err.message : "network error"), "agent");
+        });
+      }
+
       if (pushToggleBtn) {
         pushToggleBtn.addEventListener("click", function() {
-          pushEnabled = !pushEnabled;
-          pushToggleBtn.classList.toggle("active", pushEnabled);
-          pushToggleBtn.textContent = pushEnabled ? "Push ON" : "Push OFF";
-          var body = { enabled: pushEnabled };
-          if (threadId) body.thread_id = threadId;
+          sendPushToggle(!pushEnabled);
+        });
+        // Query initial push state
+        if (threadId) {
           window.MeridianWeb.fetchWithAuth("/api/push", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body)
+            body: JSON.stringify({ thread_id: threadId })
           }).then(function(r) { return r.json(); }).then(function(data) {
-            if (data && data.status === "error") {
-              pushEnabled = false;
-              pushToggleBtn.classList.remove("active");
-              pushToggleBtn.textContent = "Push OFF";
-              addChatBubble("Push error: " + (data.content || "unknown"), "system");
-            } else if (data && data.status === "success" && data.content) {
-              addChatBubble(data.content, "system");
+            if (data && data.status === "success" && data.content) {
+              var isOn = /\bis ON\b/i.test(data.content);
+              updatePushButton(isOn);
             }
-          }).catch(function(err) {
-            pushEnabled = false;
-            pushToggleBtn.classList.remove("active");
-            pushToggleBtn.textContent = "Push OFF";
-            addChatBubble("Push toggle failed: " + (err && err.message ? err.message : "network error"), "system");
-          });
+          }).catch(function() {});
+        }
+      }
+
+      // ── Capture interval control ──
+      var captureIntervalSelect = document.getElementById("capture-interval");
+      if (captureIntervalSelect) {
+        // Load current value from server
+        window.MeridianWeb.fetchWithAuth("/api/capture_interval")
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data && typeof data.interval_ms === "number") {
+              captureIntervalSelect.value = String(data.interval_ms);
+              // If value doesn't match any option, pick the nearest
+              if (!captureIntervalSelect.querySelector("option[value='" + data.interval_ms + "']")) {
+                var best = null;
+                var options = captureIntervalSelect.options;
+                for (var i = 0; i < options.length; i++) {
+                  var v = Number(options[i].value);
+                  if (!best || Math.abs(v - data.interval_ms) < Math.abs(best - data.interval_ms)) best = v;
+                }
+                if (best) captureIntervalSelect.value = String(best);
+              }
+            }
+          }).catch(function() {});
+        captureIntervalSelect.addEventListener("change", function() {
+          var ms = Number(captureIntervalSelect.value);
+          if (!ms) return;
+          window.MeridianWeb.fetchWithAuth("/api/capture_interval", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ interval_ms: ms })
+          }).catch(function() {});
         });
       }
 
@@ -1411,35 +1866,89 @@
 
       // WebSocket connection (only when thread_id and token present; otherwise server returns 401 and pane stays empty)
       var base = window.MeridianWeb.apiBase();
-      var wsUrl = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId || "") + "&token=" + encodeURIComponent(token || "");
       var ws = null;
-      if (threadId && token) {
-        ws = new WebSocket(wsUrl);
-        ws.onmessage = function (ev) {
-          try {
-            var msg = JSON.parse(ev.data);
-            if (msg.type === "pane_output" && msg.chunk) {
-              if (term && typeof term.write === "function") term.write(msg.chunk);
-              chatBuffer += msg.chunk;
-              clearTimeout(chatTimer);
-              clearTimeout(chatTypingTimer);
-              showChatTyping(true);
-              var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
-              chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
-              chatTypingTimer = setTimeout(function() { showChatTyping(false); }, 3000);
-            }
-          } catch (e) {}
+      var wsReconnectAttempts = 0;
+      var wsReconnectTimer = null;
+      var WS_MAX_RECONNECT_ATTEMPTS = 20;
+      var wsConnected = false;
+      var hasStoredChatHistory = restoreChatHistory();
+      var initialReplayLines = hasStoredChatHistory ? 0 : 200;
+
+      function handleWsMessage(ev) {
+        try {
+          var msg = JSON.parse(ev.data);
+          if (msg.type === "pane_output" && msg.chunk) {
+            if (term && typeof term.write === "function") term.write(msg.chunk);
+            chatBuffer += msg.chunk;
+            clearTimeout(chatTimer);
+            clearTimeout(chatTypingTimer);
+            showChatTyping(true, "Agent is responding...");
+            var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
+            chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
+            chatTypingTimer = setTimeout(function() { showChatTyping(false); }, 3000);
+          }
+        } catch (e) {}
+      }
+
+      function connectWebSocket() {
+        if (!threadId || !token) return;
+        var replayLines = wsReconnectAttempts > 0 ? 100 : initialReplayLines;
+        var url = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
+        ws = new WebSocket(url);
+        ws.onopen = function() {
+          wsReconnectAttempts = 0;
+          wsConnected = true;
+          updateAgentStatusIndicator(true);
         };
+        ws.onmessage = handleWsMessage;
         ws.onerror = function() {
-          addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent");
+          if (!wsConnected) {
+            addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent");
+          }
         };
         ws.onclose = function(ev) {
-          if (ev.code !== 1000 && ev.code !== 1005) addChatBubble("Connection closed. Refresh from the hub to reconnect.", "agent");
+          wsConnected = false;
+          updateAgentStatusIndicator(false);
+          if (ev.code === 1000 || ev.code === 1005) return;
+          scheduleWsReconnect();
         };
+      }
+
+      function scheduleWsReconnect() {
+        if (wsReconnectAttempts >= WS_MAX_RECONNECT_ATTEMPTS) {
+          addChatBubble("Connection lost after " + WS_MAX_RECONNECT_ATTEMPTS + " attempts. Refresh the page.", "agent");
+          return;
+        }
+        var delay = Math.min(1000 * Math.pow(1.5, wsReconnectAttempts), 15000);
+        wsReconnectAttempts++;
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = setTimeout(connectWebSocket, delay);
+      }
+
+      function updateAgentStatusIndicator(connected) {
+        var statusEl = document.getElementById("agent-status");
+        if (!statusEl) return;
+        statusEl.style.color = connected ? "var(--success-color)" : "var(--error-color)";
+        statusEl.querySelector("div").style.background = "currentColor";
+        statusEl.lastChild.textContent = connected ? " Live" : " Reconnecting…";
+      }
+
+      if (threadId && token) {
+        connectWebSocket();
       } else {
         if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent");
         else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent");
       }
+
+      // Auto-reconnect on page visibility change (user returns after being away)
+      document.addEventListener("visibilitychange", function() {
+        if (document.visibilityState === "visible" && threadId && token) {
+          if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+            wsReconnectAttempts = 0;
+            connectWebSocket();
+          }
+        }
+      });
 
       // Auto-expand input
       cmdInput.addEventListener("input", function() {
@@ -1495,17 +2004,40 @@
         }
         // Reset chat buffer for new turn — ensures 1:1 ask-to-reply
         chatBuffer = "";
-        lastFlushedContent = "";
         clearTimeout(chatTimer);
         clearTimeout(chatTypingTimer);
         showChatTyping(false);
+        lastFocusSummarySent = "";
+        lastRunResultAtMs = 0;
+        runPending = true;
 
         addChatBubble(cmd, "user");
-        runCommand(cmd).catch(function(err) {
-          var msg = err && err.message ? err.message : "Send failed.";
-          if (err && err.status === 401) msg = "Unauthorized. Refresh the page from the hub so the URL includes ?token=.";
-          addChatBubble("Error: " + msg, "agent");
-          if (navigator.vibrate) navigator.vibrate(50);
+        lastSubmittedInput = cmd;
+        lastSubmittedTraceId = "";
+        showChatTyping(true, "Awaiting agent reply...");
+        runCommand(cmd)
+          .then(function(data) {
+            runPending = false;
+            showChatTyping(false);
+            var resultContent = data && typeof data.content === "string" ? data.content.trim() : "";
+            if (data && typeof data.trace_id === "string") {
+              lastSubmittedTraceId = data.trace_id.toLowerCase();
+            }
+            if (!resultContent) return;
+            // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
+            lastFlushedContent = stripAnsi(resultContent);
+            lastRunResultAtMs = Date.now();
+            renderAgentContent(resultContent);
+            // After rendering, flush any pane output that accumulated during the run
+            if (chatBuffer.trim()) flushChatBuffer();
+          })
+          .catch(function(err) {
+            runPending = false;
+            showChatTyping(false);
+            var msg = err && err.message ? err.message : "Send failed.";
+            if (err && err.status === 401) msg = "Unauthorized. Refresh the page from the hub so the URL includes ?token=.";
+            addChatBubble("Error: " + msg, "agent");
+            if (navigator.vibrate) navigator.vibrate(50);
         });
         cmdInput.value = "";
         cmdInput.style.height = "auto";
@@ -1896,6 +2428,62 @@
           }).then(() => location.href = "index.html");
         }
       });
+      document.getElementById("overflow-clear-chat").addEventListener("click", function(e) {
+        e.preventDefault();
+        closeOverflow();
+        localStorage.removeItem(CHAT_HISTORY_STORAGE_KEY);
+        if (chatMessagesEl) {
+          chatMessagesEl.innerHTML = "";
+          chatMessagesEl.classList.add("chat-messages-empty");
+        }
+        lastFlushedContent = "";
+        lastFlushedDetails = "";
+        seenBubbleFingerprintAtMs = Object.create(null);
+        suppressibleMessageState = Object.create(null);
+        chatBuffer = "";
+      });
+
+      // Overflow menu mirrors for mobile: Focus, Push, Filters
+      var overflowFocusBtn = document.getElementById("overflow-focus");
+      var overflowPushBtn = document.getElementById("overflow-push");
+      var overflowFiltersBtn = document.getElementById("overflow-filters");
+
+      function syncOverflowFocus() {
+        if (!overflowFocusBtn) return;
+        overflowFocusBtn.textContent = focusModeEnabled ? "Focus ON" : "Focus OFF";
+        overflowFocusBtn.classList.toggle("active", focusModeEnabled);
+      }
+      function syncOverflowPush() {
+        if (!overflowPushBtn) return;
+        overflowPushBtn.textContent = pushEnabled ? "Push ON" : "Push OFF";
+        overflowPushBtn.classList.toggle("active", pushEnabled);
+      }
+      syncOverflowFocus();
+      syncOverflowPush();
+
+      if (overflowFocusBtn) {
+        overflowFocusBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          closeOverflow();
+          if (focusToggleBtn) focusToggleBtn.click();
+          syncOverflowFocus();
+        });
+      }
+      if (overflowPushBtn) {
+        overflowPushBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          closeOverflow();
+          if (pushToggleBtn) pushToggleBtn.click();
+          setTimeout(syncOverflowPush, 300);
+        });
+      }
+      if (overflowFiltersBtn) {
+        overflowFiltersBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          closeOverflow();
+          if (filtersToggleBtn) filtersToggleBtn.click();
+        });
+      }
 
       var resizeTimeout;
       window.addEventListener("resize", function() {

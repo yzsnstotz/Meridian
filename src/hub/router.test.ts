@@ -92,10 +92,10 @@ test("HubRouter run logs getMessages_threw and uses fallback when getMessages() 
   );
   assert.equal(result.status, "success");
   assert.equal(result.source, "gemini");
-  assert.match(
+  assert.equal(
     result.content,
-    /Agent is processing/,
-    "fallback content should be human-readable ACK message"
+    "",
+    "fallback content should be empty when getMessages() throws on an ACK response"
   );
 });
 
@@ -616,7 +616,164 @@ test("HubRouter combines multi-part agent replies after run", async () => {
   );
 
   assert.equal(result.status, "success");
-  assert.equal(result.content, "part one\n\npart two");
+  // Only the latest new snapshot is returned to avoid leaking older conversation
+  // segments into the result (fixes stale memo / unrelated reply issue).
+  assert.equal(result.content, "part two");
+});
+
+test("HubRouter run returns only the latest complete summary block for current trace", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61111",
+    pid: 201,
+    tmux_pane: "agent_gemini_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const traceId = "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d";
+  let callCount = 0;
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return [{ id: 1, role: "agent", content: "old output" }];
+        }
+        if (callCount === 2) {
+          return [
+            {
+              id: 2,
+              role: "agent",
+              content:
+                "[[MERIDIAN_SUMMARY_BEGIN id=11111111-1111-1111-1111-111111111111]]\nold trace\n[[MERIDIAN_SUMMARY_END id=11111111-1111-1111-1111-111111111111]]"
+            }
+          ];
+        }
+        return [
+          {
+            id: 3,
+            role: "agent",
+            content:
+              "[[MERIDIAN_SUMMARY_BEGIN id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d]]\nfirst\n[[MERIDIAN_SUMMARY_END id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d]]\n" +
+              "[[MERIDIAN_SUMMARY_BEGIN id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d]]\nfinal answer\n[[MERIDIAN_SUMMARY_END id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d]]"
+          }
+        ];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: traceId,
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "final answer");
+});
+
+test("HubRouter run ignores incomplete summary block and falls back to stable reply", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61112",
+    pid: 202,
+    tmux_pane: "agent_gemini_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const traceId = "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99e";
+  let callCount = 0;
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return [{ id: 1, role: "agent", content: "old output" }];
+        }
+        if (callCount === 2) {
+          return [
+            {
+              id: 2,
+              role: "agent",
+              content:
+                "[[MERIDIAN_SUMMARY_BEGIN id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99e]]\nstreaming..."
+            }
+          ];
+        }
+        return [{ id: 3, role: "agent", content: "stable fallback output" }];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: traceId,
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "stable fallback output");
+});
+
+test("HubRouter run fallback does not reuse stale snapshot from before current run", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61113",
+    pid: 203,
+    tmux_pane: "agent_gemini_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let callCount = 0;
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        // Never produce a new agent reply for this run.
+        return [{ id: 5, role: "agent", content: "stale old snapshot before run" }];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99f",
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.match(result.content, /Agent is processing/);
+  assert.doesNotMatch(result.content, /stale old snapshot/);
 });
 
 test("HubRouter normalizes monitor statuses before updating registry", () => {
@@ -1559,4 +1716,45 @@ test("HubRouter handlePush rejects bridge mode instances", async () => {
   );
   assert.equal(result.status, "error");
   assert.match(result.content, /pane_bridge/);
+});
+
+test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "cooldown_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-cooldown_01.sock",
+    pid: 501,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "done" }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  // Before run, no cooldown
+  assert.equal(router.isWithinRunCompletionCooldown("cooldown_01", 5000), false);
+
+  await router.route(
+    baseMessage({
+      trace_id: "a1b2c3d4-e5f6-4a7b-8c9d-e0f1a2b3c4d5",
+      thread_id: "cooldown_01",
+      target: "cooldown_01",
+      intent: "run"
+    })
+  );
+
+  // After run, within cooldown
+  assert.equal(router.isWithinRunCompletionCooldown("cooldown_01", 5000), true);
+
+  // Simulate time passage beyond cooldown
+  assert.equal(router.isWithinRunCompletionCooldown("cooldown_01", 5000, Date.now() + 6000), false);
 });

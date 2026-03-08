@@ -67,7 +67,7 @@ test("PaneBroadcaster replays recent pane output and streams appended chunks", a
   const logPath = path.join(logDir, `pane-${threadId}.log`);
   await fs.promises.writeFile(logPath, "line 1\nline 2\n");
 
-  const broadcaster = new PaneBroadcaster({ logDir });
+  const broadcaster = new PaneBroadcaster({ logDir, throttleMs: 0 });
   const socket = new FakeSocket();
 
   await broadcaster.subscribe(socket as never, buildPaneBridgeInstance(threadId), {
@@ -88,7 +88,7 @@ test("PaneBroadcaster replays recent pane output and streams appended chunks", a
 });
 
 test("PaneBroadcaster returns not_available for bridge instances", async () => {
-  const broadcaster = new PaneBroadcaster({ logDir: os.tmpdir() });
+  const broadcaster = new PaneBroadcaster({ logDir: os.tmpdir(), throttleMs: 0 });
   const result = await broadcaster.subscribe(new FakeSocket() as never, {
     ...buildPaneBridgeInstance("codex_01"),
     mode: "bridge",
@@ -108,7 +108,7 @@ test("PaneBroadcaster cleans up subscriptions when the socket closes", async () 
   const logPath = path.join(logDir, `pane-${threadId}.log`);
   await fs.promises.writeFile(logPath, "seed\n");
 
-  const broadcaster = new PaneBroadcaster({ logDir });
+  const broadcaster = new PaneBroadcaster({ logDir, throttleMs: 0 });
   const socket = new FakeSocket();
 
   await broadcaster.subscribe(socket as never, buildPaneBridgeInstance(threadId), {
@@ -131,7 +131,7 @@ test("PaneBroadcaster invokes push callback on flush", async () => {
   const logPath = path.join(logDir, `pane-${threadId}.log`);
   await fs.promises.writeFile(logPath, "");
 
-  const broadcaster = new PaneBroadcaster({ logDir });
+  const broadcaster = new PaneBroadcaster({ logDir, throttleMs: 0 });
   const pushChunks: Array<{ threadId: string; chunk: string }> = [];
   broadcaster.registerPushCallback((tid, chunk) => {
     pushChunks.push({ threadId: tid, chunk });
@@ -149,6 +149,30 @@ test("PaneBroadcaster invokes push callback on flush", async () => {
   assert.ok(pushChunks.length > 0, "push callback should have been invoked");
   assert.equal(pushChunks[0].threadId, threadId);
   assert.ok(pushChunks[0].chunk.includes("agent reply line"));
+
+  broadcaster.close();
+  await fs.promises.rm(logDir, { recursive: true, force: true });
+});
+
+test("PaneBroadcaster appends chunks to LOG_DIR/GUI/gui-pane-{threadId}.log", async () => {
+  const threadId = "gui_log_01";
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pane-gui-log-"));
+  const logPath = path.join(logDir, `pane-${threadId}.log`);
+  await fs.promises.writeFile(logPath, "");
+
+  const broadcaster = new PaneBroadcaster({ logDir, throttleMs: 0 });
+  const socket = new FakeSocket();
+  await broadcaster.subscribe(socket as never, buildPaneBridgeInstance(threadId), {
+    type: "subscribe_pane_output",
+    thread_id: threadId
+  });
+
+  await fs.promises.appendFile(logPath, "agent reply line\n");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const guiLogPath = path.join(logDir, "GUI", `gui-pane-${threadId}.log`);
+  const guiLogContent = await fs.promises.readFile(guiLogPath, "utf8").catch(() => "");
+  assert.ok(guiLogContent.includes("agent reply line"), "GUI log should contain the chunk sent to clients");
 
   broadcaster.close();
   await fs.promises.rm(logDir, { recursive: true, force: true });

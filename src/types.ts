@@ -20,7 +20,8 @@ export const BUILT_IN_INTENTS = [
   "detail",
   "monitor_update",
   "monitor_manual_update",
-  "push"
+  "push",
+  "capture_interval"
  ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);

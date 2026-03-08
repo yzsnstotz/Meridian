@@ -66,6 +66,15 @@ interface PushSubscription {
   botId?: string;
 }
 
+interface ActiveRunState {
+  traceId: string;
+}
+
+interface CompletedRunRecord {
+  traceId: string;
+  completedAtMs: number;
+}
+
 export interface PushDeliveryTarget {
   threadId: string;
   chatId: string;
@@ -73,6 +82,9 @@ export interface PushDeliveryTarget {
 }
 
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
+const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+const AGENT_ROLES = new Set(["agent", "assistant"]);
 
 function encodeSessionId(chatId: string, botId: string | undefined): string {
   return botId ? `${botId}:${chatId}` : chatId;
@@ -96,6 +108,81 @@ function resolveSourceFromTarget(target: string): AgentType {
   return "codex";
 }
 
+function buildSummaryProtocolPrompt(traceId: string): string {
+  return [
+    "",
+    "Meridian protocol requirement (must follow exactly):",
+    `1) Output exactly ONE summary block with trace_id=${traceId}.`,
+    "2) Do not output any content outside the summary block.",
+    "3) Both tags must be single-line and must match the same id.",
+    "4) Put your FULL reply between the tags — answer the user's question or complete their request as you normally would.",
+    "5) Do not wrap tags in code fences.",
+    "",
+    "Tag format reference (replace <trace_id> with current trace id):",
+    "- Open tag: [[MERIDIAN_SUMMARY_BEGIN id=<trace_id>]]",
+    "- Close tag: [[MERIDIAN_SUMMARY_END id=<trace_id>]]"
+  ].join("\n");
+}
+
+function appendSummaryProtocolPrompt(input: string, traceId: string): string {
+  return `${input.trimEnd()}\n${buildSummaryProtocolPrompt(traceId)}`;
+}
+
+function parseSummaryTagId(tagText: string): string | null {
+  const matched = tagText.match(/\bid=([0-9a-fA-F-]{36})\b/);
+  return matched?.[1]?.toLowerCase() ?? null;
+}
+
+function extractLatestCompleteSummaryBlock(content: string, traceId: string): string | null {
+  const normalizedTraceId = traceId.toLowerCase();
+  let cursor = 0;
+  let latest: string | null = null;
+
+  while (cursor < content.length) {
+    const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
+    if (beginIndex < 0) {
+      break;
+    }
+    const beginClose = content.indexOf("]]", beginIndex);
+    if (beginClose < 0) {
+      break;
+    }
+
+    const beginTag = content.slice(beginIndex, beginClose + 2);
+    const beginId = parseSummaryTagId(beginTag);
+    cursor = beginClose + 2;
+    if (!beginId) {
+      continue;
+    }
+
+    let searchFrom = beginClose + 2;
+    while (searchFrom < content.length) {
+      const endIndex = content.indexOf(SUMMARY_MARKER_END, searchFrom);
+      if (endIndex < 0) {
+        break;
+      }
+      const endClose = content.indexOf("]]", endIndex);
+      if (endClose < 0) {
+        break;
+      }
+      const endTag = content.slice(endIndex, endClose + 2);
+      const endId = parseSummaryTagId(endTag);
+      searchFrom = endClose + 2;
+      if (!endId || endId !== beginId) {
+        continue;
+      }
+
+      if (beginId === normalizedTraceId) {
+        latest = content.slice(beginClose + 2, endIndex).trim();
+      }
+      cursor = endClose + 2;
+      break;
+    }
+  }
+
+  return latest;
+}
+
 export class HubRouter {
   private readonly log = createLogger("hub");
   private readonly clientFactory: (threadId: string) => AgentClient;
@@ -106,6 +193,8 @@ export class HubRouter {
   private readonly monitorUpdateSubscriptionsByThread = new Map<string, Map<string, MonitorUpdateSubscription>>();
   private readonly pushSubscriptionsByThread = new Map<string, Map<string, PushSubscription>>();
   private readonly attachmentMetaBySession = new Map<string, SessionAttachmentMetadata>();
+  private readonly activeRunsByThread = new Map<string, ActiveRunState>();
+  private readonly completedRunsByThread = new Map<string, CompletedRunRecord>();
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -243,6 +332,8 @@ export class HubRouter {
           return await this.handleManualMonitorUpdate(message);
         case "push":
           return this.handlePush(message);
+        case "capture_interval":
+          return this.handleCaptureInterval(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -261,13 +352,15 @@ export class HubRouter {
     const instance = this.resolveInstance(threadId);
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
+    this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id });
 
     try {
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
-      const response = await client.sendMessage(message.payload.content, message.payload.attachments);
+      const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
+      const response = await client.sendMessage(runContent, message.payload.attachments);
       this.registry.setStatus(instance.thread_id, "running");
       const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
-      const agentReply = await this.waitForAgentReply(client, previousSnapshot, runLogContext);
+      const agentReply = await this.waitForAgentReply(client, previousSnapshot, message.trace_id, runLogContext);
       if (agentReply === null) {
         this.log.warn(
           runLogContext,
@@ -276,7 +369,7 @@ export class HubRouter {
       }
       const content = this.formatRunContent(
         instance.thread_id,
-        agentReply ?? (await this.resolveFallbackRunContent(client, response))
+        agentReply ?? (await this.resolveFallbackRunContent(client, response, previousSnapshot))
       );
       const attachments = this.extractResultAttachments(response);
       return this.buildResult(
@@ -288,6 +381,14 @@ export class HubRouter {
         { attachments }
       );
     } finally {
+      const activeRun = this.activeRunsByThread.get(instance.thread_id);
+      if (activeRun?.traceId === message.trace_id) {
+        this.activeRunsByThread.delete(instance.thread_id);
+        this.completedRunsByThread.set(instance.thread_id, {
+          traceId: message.trace_id,
+          completedAtMs: Date.now()
+        });
+      }
       client.disconnect();
     }
   }
@@ -867,6 +968,34 @@ export class HubRouter {
     return this.registry.get(threadId)?.status === "running";
   }
 
+  isRunActiveForThread(threadId: string): boolean {
+    return this.activeRunsByThread.has(threadId);
+  }
+
+  getPaneCaptureIntervalMs(): number {
+    return this.instanceManager.getPaneCaptureIntervalMs();
+  }
+
+  setPaneCaptureIntervalMs(intervalMs: number): void {
+    this.instanceManager.setPaneCaptureIntervalMs(intervalMs);
+  }
+
+  getActiveRunTraceId(threadId: string): string | null {
+    return this.activeRunsByThread.get(threadId)?.traceId ?? null;
+  }
+
+  /**
+   * Returns true if a run completed for this thread within the last `cooldownMs`.
+   * Used to suppress duplicate push/monitor deliveries that race with the run result.
+   */
+  isWithinRunCompletionCooldown(threadId: string, cooldownMs: number, nowMs = Date.now()): boolean {
+    const record = this.completedRunsByThread.get(threadId);
+    if (!record) {
+      return false;
+    }
+    return nowMs - record.completedAtMs < cooldownMs;
+  }
+
   private isBuiltInIntent(intent: string): boolean {
     return BUILT_IN_INTENT_SET.has(intent);
   }
@@ -1162,6 +1291,18 @@ export class HubRouter {
     );
   }
 
+  private handleCaptureInterval(message: HubMessage): HubResult {
+    const content = message.payload.content.trim();
+    if (content) {
+      const requestedMs = Number.parseInt(content, 10);
+      if (Number.isFinite(requestedMs)) {
+        this.instanceManager.setPaneCaptureIntervalMs(requestedMs);
+      }
+    }
+    const currentMs = this.instanceManager.getPaneCaptureIntervalMs();
+    return this.buildResult(message, "success", this.resolveResultSource(message), String(currentMs));
+  }
+
   private parseSessionTarget(session: string): { chatId: string; botId?: string } | null {
     if (!session || session.startsWith("web:")) return null;
     const separatorIndex = session.indexOf(":");
@@ -1248,6 +1389,7 @@ export class HubRouter {
   private async waitForAgentReply(
     client: AgentClient,
     previousSnapshot: AgentMessageSnapshot | null,
+    traceId: string,
     runLogContext?: { trace_id: string; thread_id: string }
   ): Promise<string | null> {
     if (!client.getMessages) {
@@ -1258,31 +1400,37 @@ export class HubRouter {
       return null;
     }
 
-    const maxAttempts = 40;
+    const maxAttempts = 120;
     const delayMs = 500;
-    let candidate: string | null = null;
-    let candidateTail: string | null = null;
+    let fallbackCandidate: string | null = null;
+    let fallbackTail: string | null = null;
     let stablePolls = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const messages = await client.getMessages();
-        const snapshots = this.extractAgentMessageSnapshots(messages);
+        const summaryCandidate = this.extractLatestCompletedSummaryForTrace(messages, traceId);
+        if (summaryCandidate) {
+          return summaryCandidate;
+        }
+
+        const snapshots = this.extractAgentMessageSnapshots(messages, traceId);
         const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
         const combinedReply = this.combineNewAgentReplySnapshots(snapshots, previousSnapshot);
 
         if (latest && combinedReply && this.isNewAgentReply(latest, previousSnapshot)) {
-          const changedCandidate = candidate !== combinedReply;
+          const changedCandidate = fallbackCandidate !== combinedReply;
           if (changedCandidate) {
-            candidate = combinedReply;
-            candidateTail = latest.content;
+            fallbackCandidate = combinedReply;
+            fallbackTail = latest.content;
             stablePolls = 0;
           } else {
             stablePolls += 1;
           }
 
-          if (candidate && candidateTail && !this.isTransientTerminalFrame(candidateTail) && stablePolls >= 2) {
-            return candidate;
+          // Stable polls are now fallback-only when no complete summary block is available.
+          if (fallbackCandidate && fallbackTail && !this.isNonFinalTerminalFrame(fallbackTail) && stablePolls >= 2) {
+            return fallbackCandidate;
           }
         }
       } catch (error) {
@@ -1302,27 +1450,31 @@ export class HubRouter {
       });
     }
 
-    if (candidate && candidateTail && !this.isTransientTerminalFrame(candidateTail)) {
-      return candidate;
+    if (fallbackCandidate && fallbackTail && !this.isNonFinalTerminalFrame(fallbackTail)) {
+      return fallbackCandidate;
     }
 
-    if (candidate === null) {
+    if (fallbackCandidate === null || (fallbackTail && this.isNonFinalTerminalFrame(fallbackTail))) {
       this.log.warn(
         {
           ...runLogContext,
-          reason: "no_stable_reply_within_max_attempts",
+          reason: fallbackCandidate === null
+            ? "no_stable_reply_within_max_attempts"
+            : "only_non_final_frames_within_max_attempts",
           max_attempts: maxAttempts,
           delay_ms: delayMs
         },
-        "waitForAgentReply returning null: no stable agent reply within max attempts (GET /messages empty, all transient, or isNewAgentReply never true)"
+        "waitForAgentReply returning null: no complete summary block within max attempts and fallback did not stabilize"
       );
+      return null;
     }
-    return candidate;
+    return fallbackCandidate;
   }
 
   private async resolveFallbackRunContent(
     client: AgentClient,
-    response: Record<string, unknown>
+    response: Record<string, unknown>,
+    previousSnapshot: AgentMessageSnapshot | null
   ): Promise<string> {
     const isAck = this.isTransportAckResponse(response);
     const extracted = this.extractContent(response);
@@ -1332,12 +1484,16 @@ export class HubRouter {
     }
 
     const latestSnapshot = await this.getLatestAgentMessageSnapshot(client);
-    if (latestSnapshot?.content && !this.isTransientTerminalFrame(latestSnapshot.content)) {
+    if (
+      latestSnapshot?.content &&
+      !this.isNonFinalTerminalFrame(latestSnapshot.content) &&
+      this.isNewAgentReply(latestSnapshot, previousSnapshot)
+    ) {
       return latestSnapshot.content;
     }
 
     if (isAck) {
-      return "Message sent. Agent is processing — reply will arrive via monitor update.";
+      return "";
     }
 
     return extracted;
@@ -1361,12 +1517,65 @@ export class HubRouter {
     return latest.id > previous.id || latest.content !== previous.content;
   }
 
-  private isTransientTerminalFrame(content: string): boolean {
-    return classifyAgentOutput(content).kind === "transient";
+  private isNonFinalTerminalFrame(content: string): boolean {
+    const kind = classifyAgentOutput(content).kind;
+    return kind === "transient" || kind === "action_required";
+  }
+
+  private extractLatestCompletedSummaryForTrace(
+    messages: Record<string, unknown>[],
+    traceId: string
+  ): string | null {
+    let latestByMessageId: { id: number; content: string } | null = null;
+    let fallbackCounter = 0;
+
+    for (const message of messages) {
+      fallbackCounter += 1;
+      const role = typeof message.role === "string" ? message.role : "";
+      if (!AGENT_ROLES.has(role)) {
+        continue;
+      }
+
+      const contentCandidate =
+        typeof message.content === "string"
+          ? message.content
+          : typeof message.message === "string"
+            ? message.message
+            : "";
+      if (!contentCandidate.trim()) {
+        continue;
+      }
+
+      const idCandidate =
+        typeof message.id === "number" && Number.isFinite(message.id)
+          ? message.id
+          : Number.isFinite(Number(message.id))
+            ? Number(message.id)
+            : fallbackCounter;
+
+      const extracted = extractLatestCompleteSummaryBlock(contentCandidate, traceId);
+      if (!extracted) {
+        continue;
+      }
+      const trimmed = extracted.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      if (!latestByMessageId || idCandidate >= latestByMessageId.id) {
+        latestByMessageId = {
+          id: idCandidate,
+          content: trimmed
+        };
+      }
+    }
+
+    return latestByMessageId?.content ?? null;
   }
 
   private extractAgentMessageSnapshots(
-    messages: Record<string, unknown>[]
+    messages: Record<string, unknown>[],
+    traceId?: string
   ): AgentMessageSnapshot[] {
     const snapshots: AgentMessageSnapshot[] = [];
     let fallbackCounter = 0;
@@ -1374,7 +1583,7 @@ export class HubRouter {
     for (const message of messages) {
       fallbackCounter += 1;
       const role = typeof message.role === "string" ? message.role : "";
-      if (role !== "agent") {
+      if (!AGENT_ROLES.has(role)) {
         continue;
       }
 
@@ -1387,6 +1596,10 @@ export class HubRouter {
       const classified = classifyAgentOutput(contentCandidate);
       const content = classified.text.trim();
       if (!content || classified.kind === "transient") {
+        continue;
+      }
+      const summaryBlock = traceId ? extractLatestCompleteSummaryBlock(contentCandidate, traceId) : null;
+      if (traceId && summaryBlock !== null) {
         continue;
       }
 
@@ -1416,23 +1629,19 @@ export class HubRouter {
       return snapshots[snapshots.length - 1]?.content ?? null;
     }
 
-    const newSegments: string[] = [];
-    for (const snapshot of snapshots) {
-      if (snapshot.id > previous.id) {
-        newSegments.push(snapshot.content);
+    // Return only the latest new snapshot — joining all segments caused
+    // stale conversation history to leak into the result.
+    for (let index = snapshots.length - 1; index >= 0; index -= 1) {
+      const snapshot = snapshots[index];
+      if (!snapshot) {
         continue;
       }
-
-      if (snapshot.id === previous.id && snapshot.content !== previous.content) {
-        newSegments.push(snapshot.content);
+      if (snapshot.id > previous.id || (snapshot.id === previous.id && snapshot.content !== previous.content)) {
+        return snapshot.content;
       }
     }
 
-    if (newSegments.length === 0) {
-      return null;
-    }
-
-    return newSegments.join("\n\n");
+    return null;
   }
 
   private formatRunContent(_threadId: string, content: string): string {

@@ -32,13 +32,13 @@ export function normalizeApprovalAction(raw: string): ApprovalAction | null {
 export function approvalActionToTmuxKeys(action: ApprovalAction): string[] {
   switch (action) {
     case "run":
-      return ["y"];
+      return ["1", "Enter"];
     case "allow":
-      return ["Tab"];
+      return ["2", "Enter"];
     case "all":
       return ["BTab"];
     case "skip":
-      return ["n"];
+      return ["3", "Enter"];
   }
 }
 

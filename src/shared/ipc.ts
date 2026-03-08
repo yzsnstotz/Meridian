@@ -1,7 +1,7 @@
 import net from "node:net";
 
 const IPC_SEND_TIMEOUT_MS = 5000;
-const IPC_REQUEST_TIMEOUT_MS = 15000;
+const IPC_REQUEST_TIMEOUT_MS = 30000;
 
 export function sendIpcMessage<T extends object>(socketPath: string, payload: T): Promise<void> {
   return new Promise((resolve, reject) => {

@@ -50,6 +50,8 @@ const envSchema = z
     MONITOR_UPDATE_DEFAULT_INTERVAL_SEC: z.coerce.number().int().positive().default(30),
     MONITOR_UPDATE_MIN_INTERVAL_SEC: z.coerce.number().int().positive().default(5),
     MONITOR_UPDATE_MAX_INTERVAL_SEC: z.coerce.number().int().positive().default(600),
+    PANE_CAPTURE_INTERVAL_MS: z.coerce.number().int().positive().default(7000),
+    PANE_BROADCAST_THROTTLE_MS: z.coerce.number().int().positive().default(1000),
     LOG_DIR: z.string().default("/var/log/hub"),
     MERIDIAN_STATE_PATH: z.string().default("/tmp/meridian-state.json"),
     AGENT_WORKDIR: z.string().optional(),

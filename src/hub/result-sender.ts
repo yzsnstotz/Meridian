@@ -21,6 +21,7 @@ const TELEGRAM_MAX_SEND_ATTEMPTS = 5;
 const TELEGRAM_RETRY_BACKOFF_BASE_MS = 500;
 const TELEGRAM_RETRY_BACKOFF_MAX_MS = 8000;
 const TELEGRAM_DETAIL_CACHE_LIMIT = 200;
+const SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 
@@ -104,6 +105,18 @@ function stripMeridianContentFraming(content: string): string {
   return content.replace(/^\[thread=[^\]]*\]\n?/, "");
 }
 
+function parseSummaryTagId(tagText: string): string | null {
+  const matched = tagText.match(/\bid=([0-9a-fA-F-]{36})\b/);
+  return matched?.[1]?.toLowerCase() ?? null;
+}
+
+function stripSummaryProtocolTags(content: string): string {
+  return content
+    .replace(/\[\[MERIDIAN_SUMMARY_BEGIN[^\]]*\]\]\s*/g, "")
+    .replace(/\s*\[\[MERIDIAN_SUMMARY_END[^\]]*\]\]/g, "")
+    .trim();
+}
+
 function isLowValueLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -127,62 +140,75 @@ function isLowValueLine(line: string): boolean {
   return false;
 }
 
-function extractSummaryBlocks(content: string): { summaries: string[]; residual: string } {
-  if (!content.includes(SUMMARY_MARKER_BEGIN) || !content.includes(SUMMARY_MARKER_END)) {
-    return { summaries: [], residual: content };
+function extractSummaryBlocks(
+  content: string,
+  traceId: string
+): { summary: string | null; residual: string; incomplete: boolean } {
+  const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN);
+  if (beginIndex < 0) {
+    return { summary: null, residual: content, incomplete: false };
   }
 
-  const summaries: string[] = [];
-  let cursor = 0;
-  let residual = "";
-
-  while (cursor < content.length) {
-    const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
-    if (beginIndex < 0) {
-      residual += content.slice(cursor);
-      break;
-    }
-    residual += content.slice(cursor, beginIndex);
-    const beginClose = content.indexOf("]]", beginIndex);
-    if (beginClose < 0) {
-      residual += content.slice(beginIndex);
-      break;
-    }
-    const endIndex = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
-    if (endIndex < 0) {
-      residual += content.slice(beginIndex);
-      break;
-    }
-    const endClose = content.indexOf("]]", endIndex);
-    if (endClose < 0) {
-      residual += content.slice(beginIndex);
-      break;
-    }
-    const summary = content.slice(beginClose + 2, endIndex).trim();
-    if (summary) {
-      summaries.push(summary);
-    }
-    cursor = endClose + 2;
+  const beginClose = content.indexOf("]]", beginIndex);
+  if (beginClose < 0) {
+    return { summary: null, residual: content, incomplete: false };
   }
 
-  return { summaries, residual };
+  const beginTag = content.slice(beginIndex, beginClose + 2);
+  if (beginTag.includes("\n")) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+  const beginId = parseSummaryTagId(beginTag);
+  if (!beginId || beginId !== traceId.toLowerCase()) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const endIndex = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
+  if (endIndex < 0) {
+    const partial = content.slice(beginClose + 2).trim();
+    const summary = partial ? `${partial}\n\n(${SUMMARY_INCOMPLETE_LABEL})` : SUMMARY_INCOMPLETE_LABEL;
+    const residual = `${content.slice(0, beginIndex)}\n${partial}`.trim();
+    return { summary, residual, incomplete: true };
+  }
+
+  const endClose = content.indexOf("]]", endIndex);
+  if (endClose < 0) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const endTag = content.slice(endIndex, endClose + 2);
+  if (endTag.includes("\n")) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+  const endId = parseSummaryTagId(endTag);
+  if (!endId || endId !== beginId) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const summary = content.slice(beginClose + 2, endIndex).trim();
+  const residual = `${content.slice(0, beginIndex)}${content.slice(endClose + 2)}`.trim();
+  return {
+    summary: summary || null,
+    residual,
+    incomplete: false
+  };
 }
 
-function summarizeText(content: string): { summary: string; details: string; truncated: boolean } {
-  const extracted = extractSummaryBlocks(content);
-  if (extracted.summaries.length > 0) {
-    const summary = extracted.summaries.join("\n\n").trim();
+function summarizeText(content: string, traceId: string): { summary: string; details: string; truncated: boolean } {
+  const extracted = extractSummaryBlocks(content, traceId);
+  if (extracted.summary) {
     const details = extracted.residual.trim();
-    return { summary, details, truncated: details.length > 0 };
+    return { summary: extracted.summary, details, truncated: extracted.incomplete || details.length > 0 };
   }
 
-  const lines = content.split(/\r?\n/).map((line) => line.trimEnd());
+  const normalized = stripSummaryProtocolTags(content);
+  const lines = normalized.split(/\r?\n/).map((line) => line.trimEnd());
   const informativeLines = lines
     .filter((line) => !isLowValueLine(line))
     .filter((line) => !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line));
   const summaryLines = informativeLines.slice(0, 6);
   const fallbackSummary = summaryLines.join("\n").trim();
-  const details = content.trim();
+  const details = normalized.trim();
   return {
     summary: fallbackSummary || "Update received. Use /detail to view full output.",
     details,
@@ -192,7 +218,7 @@ function summarizeText(content: string): { summary: string; details: string; tru
 
 export function decorateTelegramResultText(result: HubResult): string {
   const tag = `trace=${result.trace_id}`;
-  const body = stripMeridianContentFraming(result.content).trim();
+  const body = stripMeridianContentFraming(stripSummaryProtocolTags(result.content)).trim();
   if (!body) {
     return tag;
   }
@@ -360,7 +386,7 @@ export class ResultSender {
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
     const targetChatId = resolveTelegramTargetChatId(replyChannel.chat_id);
     const fullTextBody = decorateTelegramResultText(result);
-    const summarized = summarizeText(result.content);
+    const summarized = summarizeText(result.content, result.trace_id);
     const summaryBody = composeSummaryTelegramText(
       result,
       summarized.summary,
