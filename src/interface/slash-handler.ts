@@ -12,6 +12,7 @@ export interface ParsedSlashCommand {
   spawnDir: string | null;
   monitorUpdatesEnabled: boolean | null;
   monitorUpdateIntervalSec: number | null;
+  pushEnabled: boolean | null;
   mode: BridgeMode;
   payloadContent: string;
   picker: PickerIntent | null;
@@ -35,6 +36,7 @@ const HELP_MESSAGE = [
   "/model [thread=<thread_id>]",
   "/detail [trace=<trace_id>] [thread=<thread_id>]",
   "/update [on|off] [thread=<thread_id>] [interval=<seconds>]",
+  "/push [on|off] [thread=<thread_id>]",
   "/mupdate [thread=<thread_id>]",
   "/list",
   "/help",
@@ -158,6 +160,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       spawnDir: null,
       monitorUpdatesEnabled: null,
       monitorUpdateIntervalSec: null,
+      pushEnabled: null,
       mode: "bridge",
       payloadContent: content,
       picker: null,
@@ -185,6 +188,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: args.dir?.trim() || args.repo?.trim() || null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: parseMode(args.mode),
         payloadContent: rawArgs,
         picker: rawArgs.trim().length === 0 ? "spawn" : null,
@@ -202,6 +206,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: threadId ? null : "kill",
@@ -219,6 +224,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -235,6 +241,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -251,6 +258,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: threadId ? null : "attach",
@@ -268,6 +276,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -285,6 +294,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -302,6 +312,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -319,6 +330,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: parseApprovalCommand(rawArgs, args, restTokens),
         picker: null,
@@ -336,6 +348,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
         picker: "switch_model",
@@ -354,6 +367,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: traceId,
         picker: null,
@@ -386,6 +400,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: parsedState ?? (parsedIntervalSec ? true : null),
         monitorUpdateIntervalSec: parsedIntervalSec,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -403,6 +418,30 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
+      };
+    }
+
+    case "/push": {
+      const bareStateToken = restTokens.find((token) => {
+        const normalized = token.trim().toLowerCase();
+        return normalized === "on" || normalized === "off";
+      });
+      const parsedState = parseMonitorUpdateSwitch(args.state ?? bareStateToken);
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "push",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: parsedState,
         mode: "bridge",
         payloadContent: rawArgs,
         picker: null,
@@ -419,6 +458,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
         picker: null,
@@ -434,6 +474,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
         picker: null,
@@ -449,6 +490,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
         picker: null,
@@ -464,6 +506,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
         picker: null,

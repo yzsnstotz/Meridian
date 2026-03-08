@@ -108,6 +108,24 @@
     } catch (e) {}
   }
 
+  // Custom filter persistence (localStorage — survives tab close)
+  var CUSTOM_FILTERS_PREFIX = "meridian_custom_filters_";
+
+  function getCustomFilters(scope) {
+    try {
+      var raw = localStorage.getItem(CUSTOM_FILTERS_PREFIX + scope);
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+  }
+
+  function setCustomFilters(scope, filters) {
+    try {
+      localStorage.setItem(CUSTOM_FILTERS_PREFIX + scope, JSON.stringify(filters));
+    } catch (e) {}
+  }
+
   window.MeridianWeb = {
     getToken: getToken,
     setToken: setToken,
@@ -116,6 +134,8 @@
     ensureToken: ensureToken,
     getQueryParams: getQueryParams,
     getFocusModeEnabled: getFocusModeEnabled,
-    setFocusModeEnabled: setFocusModeEnabled
+    setFocusModeEnabled: setFocusModeEnabled,
+    getCustomFilters: getCustomFilters,
+    setCustomFilters: setCustomFilters
   };
 })();

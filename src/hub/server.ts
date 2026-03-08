@@ -23,7 +23,8 @@ import { normalizeInboundEvent } from "./normalizer";
 import { PaneBroadcaster } from "./pane-broadcaster";
 import { ResultSender, shouldPushTelegramProactive } from "./result-sender";
 import { InstanceRegistry } from "./registry";
-import { HubRouter, type MonitorUpdateDispatch } from "./router";
+import { classifyAgentOutput } from "../shared/agent-output";
+import { HubRouter, type MonitorUpdateDispatch, type PushDeliveryTarget } from "./router";
 
 interface InboundEnvelope {
   chatId?: string;
@@ -70,6 +71,12 @@ const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
 const IDEMPOTENCY_CLEANUP_INTERVAL_MS = 60 * 1000;
 const DEFAULT_PRIORITY = 5;
 const MONITOR_EVENT_PRIORITY = 7;
+const PUSH_DEBOUNCE_MS = 2000;
+
+interface PushAccumulator {
+  chunks: string[];
+  timer: NodeJS.Timeout;
+}
 
 export class HubServer {
   private readonly log = createLogger("hub");
@@ -86,6 +93,7 @@ export class HubServer {
   private readonly priorityQueue: PriorityQueueItem[] = [];
   private priorityQueueSequence = 0;
   private priorityQueueDraining = false;
+  private readonly pushAccumulators = new Map<string, PushAccumulator>();
 
   constructor(options: HubServerOptions = {}) {
     this.socketPath = options.socketPath ?? config.HUB_SOCKET_PATH;
@@ -168,6 +176,7 @@ export class HubServer {
 
     this.startMonitorProgressTicker();
     this.startIdempotencyCleanup();
+    this.registerPushCallback();
 
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server listening");
   }
@@ -186,6 +195,7 @@ export class HubServer {
 
     this.stopMonitorProgressTicker();
     this.stopIdempotencyCleanup();
+    this.clearPushAccumulators();
     this.paneBroadcaster.close();
     await fs.promises.unlink(this.socketPath).catch(() => undefined);
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server stopped");
@@ -405,7 +415,7 @@ export class HubServer {
       return;
     }
 
-    const sessionTargets = this.router.getAttachedSessionsForThread(event.thread_id);
+    const sessionTargets = this.collectMonitorAlertTargets(event.thread_id);
     if (sessionTargets.length === 0) {
       this.log.warn(
         {
@@ -564,6 +574,12 @@ export class HubServer {
   }
 
   private collectMonitorCompletionTargets(threadId: string): string[] {
+    const attachedSessions = this.router.getAttachedSessionsForThread(threadId);
+    const monitorSubscribers = this.router.getMonitorUpdateSubscribersForThread(threadId);
+    return [...new Set([...attachedSessions, ...monitorSubscribers])];
+  }
+
+  private collectMonitorAlertTargets(threadId: string): string[] {
     const attachedSessions = this.router.getAttachedSessionsForThread(threadId);
     const monitorSubscribers = this.router.getMonitorUpdateSubscribersForThread(threadId);
     return [...new Set([...attachedSessions, ...monitorSubscribers])];
@@ -775,6 +791,110 @@ export class HubServer {
     clearInterval(this.idempotencyCleanupTimer);
     this.idempotencyCleanupTimer = null;
     this.idempotencyCache.clear();
+  }
+
+  private registerPushCallback(): void {
+    this.paneBroadcaster.registerPushCallback((threadId: string, chunk: string) => {
+      const subscribers = this.router.getPushSubscriptionsForThread(threadId);
+      if (subscribers.length === 0) {
+        return;
+      }
+
+      const accumulator = this.pushAccumulators.get(threadId);
+      if (accumulator) {
+        accumulator.chunks.push(chunk);
+        clearTimeout(accumulator.timer);
+        accumulator.timer = setTimeout(() => {
+          void this.flushPushAccumulator(threadId);
+        }, PUSH_DEBOUNCE_MS);
+        accumulator.timer.unref();
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        void this.flushPushAccumulator(threadId);
+      }, PUSH_DEBOUNCE_MS);
+      timer.unref();
+      this.pushAccumulators.set(threadId, { chunks: [chunk], timer });
+    });
+  }
+
+  private async flushPushAccumulator(threadId: string): Promise<void> {
+    const accumulator = this.pushAccumulators.get(threadId);
+    if (!accumulator) {
+      return;
+    }
+    this.pushAccumulators.delete(threadId);
+
+    const combined = accumulator.chunks.join("");
+    if (!combined.trim()) {
+      return;
+    }
+
+    const classification = classifyAgentOutput(combined);
+    if (classification.kind === "transient") {
+      return;
+    }
+
+    const subscribers = this.router.getPushSubscriptionsForThread(threadId);
+    if (subscribers.length === 0) {
+      return;
+    }
+
+    const traceId = randomUUID();
+    const source = this.router.resolveSourceForThread(threadId);
+    const content = classification.text.trim();
+    if (!content) {
+      return;
+    }
+
+    const result: HubResult = HubResultSchema.parse({
+      trace_id: traceId,
+      thread_id: threadId,
+      source,
+      status: "success",
+      content,
+      attachments: [],
+      timestamp: new Date().toISOString()
+    });
+
+    for (const subscriber of subscribers) {
+      await this.resultSender
+        .sendResult(result, {
+          channel: "telegram",
+          chat_id: subscriber.chatId,
+          bot_id: subscriber.botId
+        })
+        .catch((error) => {
+          this.log.error(
+            {
+              trace_id: traceId,
+              thread_id: threadId,
+              target: subscriber.chatId,
+              bot_id: subscriber.botId ?? null,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Failed to deliver push agent text to Telegram"
+          );
+        });
+    }
+
+    this.log.info(
+      {
+        trace_id: traceId,
+        thread_id: threadId,
+        kind: classification.kind,
+        subscriber_count: subscribers.length
+      },
+      "Push agent text delivered"
+    );
+  }
+
+  private clearPushAccumulators(): void {
+    for (const accumulator of this.pushAccumulators.values()) {
+      clearTimeout(accumulator.timer);
+    }
+    this.pushAccumulators.clear();
   }
 
   private async removeStaleSocket(): Promise<void> {

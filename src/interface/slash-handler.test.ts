@@ -198,3 +198,29 @@ test("parseSlashCommand parses /mupdate with explicit thread", () => {
   assert.equal(parsed.monitorUpdatesEnabled, null);
   assert.equal(parsed.monitorUpdateIntervalSec, null);
 });
+
+test("parseSlashCommand parses /push on thread=abc", () => {
+  const parsed = parseSlashCommand("/push on thread=abc");
+  assert.equal(parsed.intent, "push");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.pushEnabled, true);
+  assert.equal(parsed.threadId, "abc");
+  assert.equal(parsed.target, "abc");
+});
+
+test("parseSlashCommand parses /push off", () => {
+  const parsed = parseSlashCommand("/push off");
+  assert.equal(parsed.intent, "push");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.pushEnabled, false);
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+});
+
+test("parseSlashCommand parses bare /push as query", () => {
+  const parsed = parseSlashCommand("/push");
+  assert.equal(parsed.intent, "push");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.pushEnabled, null);
+  assert.equal(parsed.threadId, null);
+});

@@ -61,6 +61,17 @@ export interface MonitorUpdateDispatch {
   botId?: string;
 }
 
+interface PushSubscription {
+  chatId: string;
+  botId?: string;
+}
+
+export interface PushDeliveryTarget {
+  threadId: string;
+  chatId: string;
+  botId?: string;
+}
+
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
 
 function encodeSessionId(chatId: string, botId: string | undefined): string {
@@ -93,6 +104,7 @@ export class HubRouter {
   private readonly statePath: string;
   private readonly serviceRegistry: ServiceRegistry;
   private readonly monitorUpdateSubscriptionsByThread = new Map<string, Map<string, MonitorUpdateSubscription>>();
+  private readonly pushSubscriptionsByThread = new Map<string, Map<string, PushSubscription>>();
   private readonly attachmentMetaBySession = new Map<string, SessionAttachmentMetadata>();
 
   constructor(
@@ -229,6 +241,8 @@ export class HubRouter {
           return this.handleMonitorUpdate(message);
         case "monitor_manual_update":
           return await this.handleManualMonitorUpdate(message);
+        case "push":
+          return this.handlePush(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -252,7 +266,14 @@ export class HubRouter {
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
       const response = await client.sendMessage(message.payload.content, message.payload.attachments);
       this.registry.setStatus(instance.thread_id, "running");
-      const agentReply = await this.waitForAgentReply(client, previousSnapshot);
+      const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
+      const agentReply = await this.waitForAgentReply(client, previousSnapshot, runLogContext);
+      if (agentReply === null) {
+        this.log.warn(
+          runLogContext,
+          "Run using fallback content: waitForAgentReply returned null; response body or getLatestAgentMessageSnapshot used as result content"
+        );
+      }
       const content = this.formatRunContent(
         instance.thread_id,
         agentReply ?? (await this.resolveFallbackRunContent(client, response))
@@ -1039,6 +1060,162 @@ export class HubRouter {
     }
   }
 
+  // ── Push subscription management ──
+
+  private handlePush(message: HubMessage): HubResult {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const enabled = message.payload.push_enabled;
+
+    if (instance.mode !== "pane_bridge") {
+      return this.buildResult(
+        message, "error", instance.agent_type,
+        "Push is only available for pane_bridge mode instances.",
+        threadId
+      );
+    }
+
+    const isWebChannel = message.reply_channel.channel === "web";
+
+    if (isWebChannel) {
+      return this.handlePushFromWeb(message, threadId, instance, enabled);
+    }
+
+    const chatId = message.reply_channel.chat_id;
+    const botId = message.reply_channel.bot_id;
+    const sessionId = encodeSessionId(chatId, botId);
+
+    if (enabled === undefined || enabled === null) {
+      const existing = this.pushSubscriptionsByThread.get(threadId)?.get(sessionId);
+      const state = existing ? "ON" : "OFF";
+      return this.buildResult(
+        message, "success", instance.agent_type,
+        `Push agent text is ${state} for thread=${threadId}.`,
+        threadId
+      );
+    }
+
+    if (!enabled) {
+      this.deletePushSubscription(threadId, sessionId);
+      return this.buildResult(
+        message, "success", instance.agent_type,
+        `Push agent text turned OFF for thread=${threadId}.`,
+        threadId
+      );
+    }
+
+    this.upsertPushSubscription(threadId, sessionId, chatId, botId);
+    return this.buildResult(
+      message, "success", instance.agent_type,
+      `Push agent text turned ON for thread=${threadId}.`,
+      threadId
+    );
+  }
+
+  private handlePushFromWeb(
+    message: HubMessage,
+    threadId: string,
+    instance: AgentInstance,
+    enabled: boolean | undefined | null
+  ): HubResult {
+    const existingCount = this.pushSubscriptionsByThread.get(threadId)?.size ?? 0;
+
+    if (enabled === undefined || enabled === null) {
+      const state = existingCount > 0 ? "ON" : "OFF";
+      return this.buildResult(
+        message, "success", instance.agent_type,
+        `Push agent text is ${state} for thread=${threadId} (${existingCount} subscriber(s)).`,
+        threadId
+      );
+    }
+
+    if (!enabled) {
+      this.pushSubscriptionsByThread.delete(threadId);
+      return this.buildResult(
+        message, "success", instance.agent_type,
+        `Push agent text turned OFF for thread=${threadId}.`,
+        threadId
+      );
+    }
+
+    const attachedSessions = this.getAttachedSessionsForThread(threadId);
+    let subscribed = 0;
+    for (const session of attachedSessions) {
+      const parsed = this.parseSessionTarget(session);
+      if (!parsed) continue;
+      this.upsertPushSubscription(threadId, session, parsed.chatId, parsed.botId);
+      subscribed++;
+    }
+
+    if (subscribed === 0) {
+      return this.buildResult(
+        message, "error", instance.agent_type,
+        `No attached Telegram sessions for thread=${threadId}. Use Telegram /push on to subscribe.`,
+        threadId
+      );
+    }
+
+    return this.buildResult(
+      message, "success", instance.agent_type,
+      `Push agent text turned ON for thread=${threadId} (${subscribed} session(s)).`,
+      threadId
+    );
+  }
+
+  private parseSessionTarget(session: string): { chatId: string; botId?: string } | null {
+    if (!session || session.startsWith("web:")) return null;
+    const separatorIndex = session.indexOf(":");
+    if (separatorIndex <= 0) {
+      return { chatId: session };
+    }
+    const candidateBotId = session.slice(0, separatorIndex);
+    if (!/^\d+$/.test(candidateBotId)) {
+      return { chatId: session };
+    }
+    return {
+      botId: candidateBotId,
+      chatId: session.slice(separatorIndex + 1)
+    };
+  }
+
+  private upsertPushSubscription(threadId: string, sessionId: string, chatId: string, botId: string | undefined): void {
+    let byChat = this.pushSubscriptionsByThread.get(threadId);
+    if (!byChat) {
+      byChat = new Map();
+      this.pushSubscriptionsByThread.set(threadId, byChat);
+    }
+    byChat.set(sessionId, { chatId, botId });
+  }
+
+  private deletePushSubscription(threadId: string, sessionId: string): void {
+    const byChat = this.pushSubscriptionsByThread.get(threadId);
+    if (!byChat) return;
+    byChat.delete(sessionId);
+    if (byChat.size === 0) {
+      this.pushSubscriptionsByThread.delete(threadId);
+    }
+  }
+
+  getPushDeliveryTargets(): PushDeliveryTarget[] {
+    const targets: PushDeliveryTarget[] = [];
+    for (const [threadId, byChat] of this.pushSubscriptionsByThread.entries()) {
+      for (const sub of byChat.values()) {
+        targets.push({ threadId, chatId: sub.chatId, botId: sub.botId });
+      }
+    }
+    return targets;
+  }
+
+  getThreadsWithPushSubscriptions(): string[] {
+    return [...this.pushSubscriptionsByThread.keys()];
+  }
+
+  getPushSubscriptionsForThread(threadId: string): PushSubscription[] {
+    const byChat = this.pushSubscriptionsByThread.get(threadId);
+    if (!byChat) return [];
+    return [...byChat.values()];
+  }
+
   private normalizeMonitorUpdateIntervalSec(candidate: number | undefined): number {
     const fallback = config.MONITOR_UPDATE_DEFAULT_INTERVAL_SEC;
     const raw = candidate ?? fallback;
@@ -1070,9 +1247,14 @@ export class HubRouter {
 
   private async waitForAgentReply(
     client: AgentClient,
-    previousSnapshot: AgentMessageSnapshot | null
+    previousSnapshot: AgentMessageSnapshot | null,
+    runLogContext?: { trace_id: string; thread_id: string }
   ): Promise<string | null> {
     if (!client.getMessages) {
+      this.log.warn(
+        { ...runLogContext, reason: "client_has_no_getMessages" },
+        "waitForAgentReply returning null: client does not implement getMessages"
+      );
       return null;
     }
 
@@ -1103,7 +1285,15 @@ export class HubRouter {
             return candidate;
           }
         }
-      } catch {
+      } catch (error) {
+        this.log.warn(
+          {
+            ...runLogContext,
+            reason: "getMessages_threw",
+            err: error instanceof Error ? error.message : String(error)
+          },
+          "waitForAgentReply returning null: getMessages() threw"
+        );
         return null;
       }
 
@@ -1116,6 +1306,17 @@ export class HubRouter {
       return candidate;
     }
 
+    if (candidate === null) {
+      this.log.warn(
+        {
+          ...runLogContext,
+          reason: "no_stable_reply_within_max_attempts",
+          max_attempts: maxAttempts,
+          delay_ms: delayMs
+        },
+        "waitForAgentReply returning null: no stable agent reply within max attempts (GET /messages empty, all transient, or isNewAgentReply never true)"
+      );
+    }
     return candidate;
   }
 
@@ -1123,17 +1324,20 @@ export class HubRouter {
     client: AgentClient,
     response: Record<string, unknown>
   ): Promise<string> {
+    const isAck = this.isTransportAckResponse(response);
     const extracted = this.extractContent(response);
-    if (extracted.trim().length > 0 && !this.isTransportAckResponse(response)) {
+
+    if (!isAck && extracted.trim().length > 0) {
       return extracted;
     }
 
     const latestSnapshot = await this.getLatestAgentMessageSnapshot(client);
-    if (latestSnapshot?.content) {
-      if (this.isTransientTerminalFrame(latestSnapshot.content)) {
-        return extracted;
-      }
+    if (latestSnapshot?.content && !this.isTransientTerminalFrame(latestSnapshot.content)) {
       return latestSnapshot.content;
+    }
+
+    if (isAck) {
+      return "Message sent. Agent is processing — reply will arrive via monitor update.";
     }
 
     return extracted;
@@ -1231,8 +1435,8 @@ export class HubRouter {
     return newSegments.join("\n\n");
   }
 
-  private formatRunContent(threadId: string, content: string): string {
-    return `[thread=${threadId}]\n${content}`;
+  private formatRunContent(_threadId: string, content: string): string {
+    return content;
   }
 
   private buildResult(

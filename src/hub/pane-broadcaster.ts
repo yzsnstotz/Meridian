@@ -43,11 +43,16 @@ export class PaneBroadcaster {
   private readonly watchFactory: typeof fs.watch;
   private readonly watchersByThread = new Map<string, ThreadWatcher>();
   private readonly socketCloseBound = new WeakSet<net.Socket>();
+  private pushCallback: ((threadId: string, chunk: string) => void) | null = null;
 
   constructor(options: PaneBroadcasterOptions = {}) {
     this.logDir = options.logDir ?? config.LOG_DIR;
     this.now = options.now ?? (() => new Date());
     this.watchFactory = options.watchFactory ?? fs.watch;
+  }
+
+  registerPushCallback(callback: (threadId: string, chunk: string) => void): void {
+    this.pushCallback = callback;
   }
 
   async subscribe(
@@ -219,6 +224,9 @@ export class PaneBroadcaster {
           if (!this.write(subscription.socket, payload)) {
             state.subscriptions.delete(subscription);
           }
+        }
+        if (this.pushCallback) {
+          this.pushCallback(threadId, chunk);
         }
         this.disposeWatcherIfUnused(threadId, state);
       } while (state.pendingFlush);

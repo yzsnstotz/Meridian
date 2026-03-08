@@ -100,6 +100,10 @@ export function splitTextForTelegram(content: string, limit = TELEGRAM_SAFE_TEXT
   return chunks;
 }
 
+function stripMeridianContentFraming(content: string): string {
+  return content.replace(/^\[thread=[^\]]*\]\n?/, "");
+}
+
 function isLowValueLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -187,8 +191,12 @@ function summarizeText(content: string): { summary: string; details: string; tru
 }
 
 export function decorateTelegramResultText(result: HubResult): string {
-  const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
-  const baseText = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
+  const tag = `trace=${result.trace_id}`;
+  const body = stripMeridianContentFraming(result.content).trim();
+  if (!body) {
+    return tag;
+  }
+  const baseText = `${tag}\n\n${body}`;
   if (!isApprovalPrompt(result.content)) {
     return baseText;
   }
@@ -196,11 +204,12 @@ export function decorateTelegramResultText(result: HubResult): string {
 }
 
 function composeSummaryTelegramText(result: HubResult, summaryText: string, includeDetailHint: boolean): string {
-  const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
+  const tag = `trace=${result.trace_id}`;
+  const body = stripMeridianContentFraming(summaryText).trim();
   if (!includeDetailHint) {
-    return `${headline}\n\n${summaryText.trim()}`;
+    return `${tag}\n\n${body}`;
   }
-  return `${headline}\n\n${summaryText.trim()}\n\n/detail trace=${result.trace_id} thread=${result.thread_id}`;
+  return `${tag}\n\n${body}\n\n/detail trace=${result.trace_id}`;
 }
 
 function makeDetailCacheKey(chatId: string, botId: string | null): string {

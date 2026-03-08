@@ -124,3 +124,32 @@ test("PaneBroadcaster cleans up subscriptions when the socket closes", async () 
   broadcaster.close();
   await fs.promises.rm(logDir, { recursive: true, force: true });
 });
+
+test("PaneBroadcaster invokes push callback on flush", async () => {
+  const threadId = "push_test_01";
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pane-push-"));
+  const logPath = path.join(logDir, `pane-${threadId}.log`);
+  await fs.promises.writeFile(logPath, "");
+
+  const broadcaster = new PaneBroadcaster({ logDir });
+  const pushChunks: Array<{ threadId: string; chunk: string }> = [];
+  broadcaster.registerPushCallback((tid, chunk) => {
+    pushChunks.push({ threadId: tid, chunk });
+  });
+
+  const socket = new FakeSocket();
+  await broadcaster.subscribe(socket as never, buildPaneBridgeInstance(threadId), {
+    type: "subscribe_pane_output",
+    thread_id: threadId
+  });
+
+  await fs.promises.appendFile(logPath, "agent reply line\n");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  assert.ok(pushChunks.length > 0, "push callback should have been invoked");
+  assert.equal(pushChunks[0].threadId, threadId);
+  assert.ok(pushChunks[0].chunk.includes("agent reply line"));
+
+  broadcaster.close();
+  await fs.promises.rm(logDir, { recursive: true, force: true });
+});

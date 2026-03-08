@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-dotenv.config({ override: true });
+dotenv.config({ override: true, quiet: true });
 
 const optionalEnvString = () => z.string().default("");
 const envStringList = () =>

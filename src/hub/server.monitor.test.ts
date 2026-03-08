@@ -50,7 +50,7 @@ class FakeRouter {
       thread_id: threadId,
       source: "codex",
       status: "success",
-      content: `[thread=${threadId}]\ncompletion`,
+      content: `completion`,
       attachments: [],
       timestamp: new Date().toISOString()
     };
@@ -67,7 +67,7 @@ class FakeRouter {
       thread_id: threadId,
       source: "codex",
       status: "partial",
-      content: `[thread=${threadId}]\nprogress`,
+      content: `progress`,
       attachments: [],
       timestamp: new Date().toISOString()
     };
@@ -323,6 +323,34 @@ test("HubServer monitor alert includes agent_type, last_known_pid, and reason", 
   assert.match(content, /last_known_pid=64339/);
   assert.match(content, /reason=HEALTHCHECK_TIMEOUT_PID_GONE/);
   assert.match(content, /thread=claude_01/);
+});
+
+test("HubServer sends agent_error alert to /update subscribers even without attach", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.monitorSubscribersByThread.set("codex_01", ["chat-update"]);
+  const fakeResultSender = new FakeResultSender();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender
+  });
+
+  const result = await (server as unknown as { handleRawPayload: (raw: string) => Promise<HubResult | null> })
+    .handleRawPayload(
+      JSON.stringify({
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        event_type: "agent_error",
+        monitor_mode: "heartbeat",
+        timestamp: new Date().toISOString(),
+        error: "Process exited"
+      })
+    );
+
+  assert.equal(result, null);
+  assert.equal(fakeResultSender.calls.length, 1);
+  assert.equal(fakeResultSender.calls[0]?.replyChannel.chat_id, "chat-update");
+  assert.equal(fakeResultSender.calls[0]?.result.status, "error");
+  assert.match(fakeResultSender.calls[0]?.result.content ?? "", /agent_error/);
 });
 
 test("resolveStaticServiceEndpoints returns coordinator registration only when fully configured", () => {

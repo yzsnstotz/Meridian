@@ -63,6 +63,11 @@ const terminalInputBodySchema = z.object({
   content: z.string().min(1, "content is required")
 });
 
+const pushToggleBodySchema = z.object({
+  thread_id: z.string().min(1).optional(),
+  enabled: z.boolean()
+});
+
 type RepoEntry = {
   path: string;
   kind: "file" | "dir";
@@ -299,11 +304,15 @@ export class WebInterfaceServer {
     const requestListener: http.RequestListener = (request, response) => {
       void this.handleRequest(request, response).catch((error) => {
         const isBadRequest = error instanceof z.ZodError || (error instanceof Error && error.message.startsWith("Invalid JSON body:"));
-        this.logger.error({ err: error instanceof Error ? error.message : String(error) }, "Web request failed");
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.logger.error({ err: errorMessage }, "Web request failed");
         if (!response.headersSent) {
           response.writeHead(isBadRequest ? 400 : 500, { "content-type": "application/json; charset=utf-8" });
         }
-        response.end(JSON.stringify({ error: isBadRequest ? "Invalid request payload" : "Internal server error" }));
+        const clientMessage = isBadRequest
+          ? "Invalid request payload"
+          : this.friendlyErrorMessage(errorMessage);
+        response.end(JSON.stringify({ error: clientMessage }));
       });
     };
 
@@ -433,6 +442,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/terminal_input" && request.method === "POST") {
       await this.handleTerminalInputRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/push" && request.method === "POST") {
+      await this.handlePushToggleRequest(request, response);
       return;
     }
 
@@ -567,6 +581,36 @@ export class WebInterfaceServer {
           thread_id: threadSelector.thread_id,
           target: threadSelector.target,
           content: body.content
+        })
+      )
+    );
+    this.respondJson(response, 200, result);
+  }
+
+  private async handlePushToggleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const body = pushToggleBodySchema.parse(await this.readJsonBody(request));
+    const threadSelector = normalizeThreadSelector(body.thread_id);
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        HubMessageSchema.parse({
+          trace_id: randomUUID(),
+          thread_id: threadSelector.thread_id,
+          actor_id: `web:${sessionId}`,
+          intent: "push",
+          target: threadSelector.target,
+          payload: {
+            content: "",
+            attachments: [],
+            reply_to: null,
+            push_enabled: body.enabled
+          },
+          mode: "bridge",
+          suppress_reply: true,
+          reply_channel: {
+            channel: "web",
+            chat_id: `web:${sessionId}`
+          }
         })
       )
     );
@@ -884,6 +928,20 @@ export class WebInterfaceServer {
   private respondJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
     response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(payload));
+  }
+
+  private friendlyErrorMessage(raw: string): string {
+    const lower = raw.toLowerCase();
+    if (lower.includes("enoent") || lower.includes("econnrefused")) {
+      return "Hub is not reachable — is the hub process running?";
+    }
+    if (lower.includes("no active instance") || lower.includes("no active agent")) {
+      return "No active agent session — spawn or attach one first.";
+    }
+    if (lower.includes("timeout") || lower.includes("timed out")) {
+      return "Request timed out — the hub may be overloaded.";
+    }
+    return `Server error: ${raw}`;
   }
 
   private async readJsonBody(request: http.IncomingMessage): Promise<unknown> {

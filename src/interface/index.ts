@@ -191,7 +191,8 @@ function toHubMessage(
       reply_to: payload.event.reply_to,
       spawn_dir: parsedCommand.spawnDir ?? undefined,
       monitor_updates_enabled: parsedCommand.monitorUpdatesEnabled ?? undefined,
-      monitor_updates_interval_sec: parsedCommand.monitorUpdateIntervalSec ?? undefined
+      monitor_updates_interval_sec: parsedCommand.monitorUpdateIntervalSec ?? undefined,
+      push_enabled: parsedCommand.pushEnabled ?? undefined
     },
     mode: parsedCommand.mode,
     suppress_reply: false,
@@ -1358,6 +1359,7 @@ for (const { bot } of botRuntimes) {
             spawnDir: null,
             monitorUpdatesEnabled: null,
             monitorUpdateIntervalSec: null,
+            pushEnabled: null,
             mode: "bridge" as const,
             payloadContent: approvalReplyAction,
             picker: null,

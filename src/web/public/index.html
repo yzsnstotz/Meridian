@@ -434,6 +434,10 @@
             </details>
           `;
           
+          var detailsEl = card.querySelector("details.card-secondary");
+          if (detailsEl) {
+            detailsEl.addEventListener("click", function (e) { e.stopPropagation(); });
+          }
           card.addEventListener("click", function () { openInstance(inst); });
           gridEl.appendChild(card);
         });

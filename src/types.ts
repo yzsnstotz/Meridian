@@ -19,7 +19,8 @@ export const BUILT_IN_INTENTS = [
   "switch_model",
   "detail",
   "monitor_update",
-  "monitor_manual_update"
+  "monitor_manual_update",
+  "push"
  ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
@@ -95,7 +96,8 @@ export const HubPayloadSchema = z.object({
   spawn_dir: z.string().min(1).optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
-  gui_host_port_override: z.string().min(1).optional()
+  gui_host_port_override: z.string().min(1).optional(),
+  push_enabled: z.boolean().optional()
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;
 

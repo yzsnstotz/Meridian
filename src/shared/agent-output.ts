@@ -7,9 +7,8 @@ export interface ClassifiedAgentOutput {
 
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
-const TRANSIENT_HINTS = [
-  "waiting for auth",
-  "do you trust the files in this folder",
+const TRANSIENT_SUBSTRING_HINTS = [
+  "shift+tab to accept edits",
   "gemini cli is restarting to apply the trust changes",
   "skip the next speaker check for faster responses",
   "see full, untruncated responses",
@@ -17,7 +16,15 @@ const TRANSIENT_HINTS = [
   "list your saved chat checkpoints with /chat list",
   "assessing the git situation",
   "analyzing push parameters",
-  "(esc to cancel"
+];
+
+const TRANSIENT_LINE_PATTERNS = [
+  /^\[(?:success|error|partial)\]\s*thread=/,
+  /^\[thread=[^\]]*\]$/,
+  /^thread=[^\s]+\s+trace=[0-9a-f-]+/,
+  /^trace=[0-9a-f-]+$/,
+  /^(?:gemini|claude|codex|cursor)\.md$/,
+  /^(?:tip|shortcut):\s/,
 ];
 
 function stripAnsiAndControl(content: string): string {
@@ -106,8 +113,14 @@ function isTransientText(content: string): boolean {
     return true;
   }
 
-  for (const hint of TRANSIENT_HINTS) {
+  for (const hint of TRANSIENT_SUBSTRING_HINTS) {
     if (normalized.includes(hint)) {
+      return true;
+    }
+  }
+
+  for (const pattern of TRANSIENT_LINE_PATTERNS) {
+    if (pattern.test(normalized)) {
       return true;
     }
   }

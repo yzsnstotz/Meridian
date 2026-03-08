@@ -50,6 +50,15 @@ test("terminal explorer does not call find via /api/run", async () => {
   assert.match(terminalHtml, /\/api\/files\?thread_id=/);
 });
 
+test("terminal view wires fit addon for full-size terminal rendering", async () => {
+  const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
+
+  assert.match(terminalHtml, /xterm-addon-fit@\d/);
+  assert.match(terminalHtml, /new window\.FitAddon\.FitAddon\(\)/);
+  assert.match(terminalHtml, /term\.loadAddon\(fitAddon\)/);
+  assert.match(terminalHtml, /fitAddon\.fit\(\)/);
+});
+
 test("terminal approval actions use dedicated terminal_input API", async () => {
   const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
 

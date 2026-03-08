@@ -30,8 +30,17 @@ const transport =
         ]
       })
     : pino.transport({
-        target: "pino-pretty",
-        options: { colorize: true, translateTime: "SYS:standard" }
+        targets: [
+          {
+            target: "pino/file",
+            options: { destination: `${LOG_DIR}/hub.log`, mkdir: true },
+            level: "debug"
+          },
+          {
+            target: "pino-pretty",
+            options: { colorize: true, translateTime: "SYS:standard" }
+          }
+        ]
       });
 
 export const rootLogger = pino(baseConfig, transport);

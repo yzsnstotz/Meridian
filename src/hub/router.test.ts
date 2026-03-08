@@ -55,7 +55,48 @@ test("HubRouter routes run intent through AgentAPIClient", async () => {
   assert.equal(connectedSocketPath, "/tmp/agentapi-codex_01.sock");
   assert.equal(result.status, "success");
   assert.equal(result.source, "codex");
-  assert.equal(result.content, "[thread=codex_01]\ndone");
+  assert.equal(result.content, "done");
+});
+
+test("HubRouter run logs getMessages_threw and uses fallback when getMessages() throws", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 201,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => {
+        throw new Error("HTTP 404 returned for GET /messages");
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d",
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+  assert.equal(result.status, "success");
+  assert.equal(result.source, "gemini");
+  assert.match(
+    result.content,
+    /Agent is processing/,
+    "fallback content should be human-readable ACK message"
+  );
 });
 
 test("HubRouter forwards agent response files as HubResult attachments", async () => {
@@ -475,7 +516,7 @@ test("HubRouter returns updated agent screen content when transport response is 
 
   assert.equal(result.status, "success");
   assert.equal(result.source, "gemini");
-  assert.equal(result.content, "[thread=gemini_01]\nnew output after run");
+  assert.equal(result.content, "new output after run");
 });
 
 test("HubRouter waits past transient spinner frames and returns stabilized reply", async () => {
@@ -524,7 +565,7 @@ test("HubRouter waits past transient spinner frames and returns stabilized reply
   );
 
   assert.equal(result.status, "success");
-  assert.equal(result.content, `[thread=gemini_01]\n${finalFrame}`);
+  assert.equal(result.content, `${finalFrame}`);
 });
 
 test("HubRouter combines multi-part agent replies after run", async () => {
@@ -575,7 +616,7 @@ test("HubRouter combines multi-part agent replies after run", async () => {
   );
 
   assert.equal(result.status, "success");
-  assert.equal(result.content, "[thread=codex_01]\npart one\n\npart two");
+  assert.equal(result.content, "part one\n\npart two");
 });
 
 test("HubRouter normalizes monitor statuses before updating registry", () => {
@@ -658,7 +699,7 @@ test("HubRouter builds completion result from latest stable agent message", asyn
     assert.equal(result.status, "success");
     assert.equal(result.source, "codex");
     assert.equal(result.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
-    assert.equal(result.content, "[thread=codex_01]\nfinal completion reply");
+    assert.equal(result.content, "final completion reply");
     assert.deepEqual(result.telegram_inline_keyboard, {
       inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
     });
@@ -1269,7 +1310,7 @@ test("HubRouter builds monitor progress result from latest agent output", async 
     "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
   );
   assert.equal(result.status, "partial");
-  assert.equal(result.content, "[thread=codex_01]\nlive pane output");
+  assert.equal(result.content, "live pane output");
 });
 
 test("HubRouter keeps the latest stable progress reply when the newest frame is transient", async () => {
@@ -1309,7 +1350,7 @@ test("HubRouter keeps the latest stable progress reply when the newest frame is 
   );
 
   assert.equal(result.status, "partial");
-  assert.equal(result.content, "[thread=gemini_01]\nactual stable reply");
+  assert.equal(result.content, "actual stable reply");
 });
 
 test("HubRouter normalizes pane action-required frames into compact actionable content", async () => {
@@ -1357,7 +1398,7 @@ test("HubRouter normalizes pane action-required frames into compact actionable c
   );
 
   assert.equal(result.status, "partial");
-  assert.match(result.content, /^\[thread=gemini_01\]\nWaiting for approval\.\.\./);
+  assert.match(result.content, /^Waiting for approval\.\.\./);
   assert.match(result.content, /Run this command\?/);
   assert.match(result.content, /git status && git remote -v && git log -n 3/);
   assert.doesNotMatch(result.content, /╭|╰|│/);
@@ -1398,6 +1439,124 @@ test("HubRouter returns one-time manual monitor update without subscribing", asy
   );
 
   assert.equal(result.status, "partial");
-  assert.equal(result.content, "[thread=codex_01]\nmanual snapshot");
+  assert.equal(result.content, "manual snapshot");
   assert.deepEqual(router.getMonitorUpdateSubscribersForThread("codex_01"), []);
+});
+
+test("HubRouter handlePush enables and disables push for pane_bridge instance", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: "agent_codex_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({}),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const enableResult = await router.route(
+    baseMessage({
+      intent: "push",
+      target: "codex_01",
+      payload: { content: "", attachments: [], push_enabled: true },
+      reply_channel: { channel: "telegram", chat_id: "100", bot_id: "999" }
+    })
+  );
+  assert.equal(enableResult.status, "success");
+  assert.match(enableResult.content, /ON/);
+
+  const subs = router.getPushSubscriptionsForThread("codex_01");
+  assert.equal(subs.length, 1);
+  assert.equal(subs[0].chatId, "100");
+
+  const disableResult = await router.route(
+    baseMessage({
+      intent: "push",
+      target: "codex_01",
+      payload: { content: "", attachments: [], push_enabled: false },
+      reply_channel: { channel: "telegram", chat_id: "100", bot_id: "999" }
+    })
+  );
+  assert.equal(disableResult.status, "success");
+  assert.match(disableResult.content, /OFF/);
+  assert.equal(router.getPushSubscriptionsForThread("codex_01").length, 0);
+});
+
+test("HubRouter handlePush queries status when push_enabled is not set", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: "agent_codex_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({}),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const queryResult = await router.route(
+    baseMessage({
+      intent: "push",
+      target: "codex_01",
+      payload: { content: "", attachments: [] },
+      reply_channel: { channel: "telegram", chat_id: "100" }
+    })
+  );
+  assert.equal(queryResult.status, "success");
+  assert.match(queryResult.content, /OFF/);
+});
+
+test("HubRouter handlePush rejects bridge mode instances", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({}),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "push",
+      target: "codex_01",
+      payload: { content: "", attachments: [], push_enabled: true },
+      reply_channel: { channel: "telegram", chat_id: "100" }
+    })
+  );
+  assert.equal(result.status, "error");
+  assert.match(result.content, /pane_bridge/);
 });

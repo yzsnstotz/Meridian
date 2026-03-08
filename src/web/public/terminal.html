@@ -659,6 +659,8 @@
         </div>
       </div>
       <button id="focus-toggle" class="focus-toggle active" type="button">Focus ON</button>
+      <button id="push-toggle" class="focus-toggle" type="button">Push OFF</button>
+      <button id="filters-toggle" class="focus-toggle" type="button">Filters</button>
       <button id="btn-reboot" class="btn-action" style="background:transparent;border:1px solid var(--border-color);color:var(--text-dim);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Reboot</button>
       <button id="btn-kill" class="btn-action" style="background:transparent;border:1px solid var(--error-color);color:var(--error-color);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Kill</button>
       <div id="agent-status" style="font-size: 0.75rem; color: var(--success-color); margin-left: 0.25rem; display: flex; align-items: center; gap: 0.375rem;">
@@ -709,6 +711,33 @@
         <div id="loading-overlay" class="spinner-overlay hidden">
           <div class="spinner"></div>
         </div>
+
+        <!-- Filter editor modal -->
+        <div id="filters-modal" class="hidden" style="position:absolute;inset:0;z-index:400;background:rgba(11,15,26,0.92);display:flex;align-items:flex-start;justify-content:center;padding-top:2rem;overflow-y:auto;">
+          <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:0.75rem;width:92%;max-width:500px;max-height:80vh;overflow-y:auto;padding:1.25rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+              <h2 style="font-size:1rem;font-weight:600;margin:0;">Output Filters</h2>
+              <button id="filters-close" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:1.25rem;padding:0.25rem 0.5rem;">&times;</button>
+            </div>
+            <div style="display:flex;gap:0.25rem;margin-bottom:1rem;">
+              <button class="filter-tab active" data-filter-scope="gui" style="flex:1;padding:0.5rem;border:1px solid var(--border-color);background:var(--surface-hover);color:var(--text-color);border-radius:0.375rem;cursor:pointer;font-size:0.8125rem;font-weight:600;">GUI Filters</button>
+              <button class="filter-tab" data-filter-scope="interface" style="flex:1;padding:0.5rem;border:1px solid var(--border-color);background:transparent;color:var(--text-dim);border-radius:0.375rem;cursor:pointer;font-size:0.8125rem;font-weight:600;">Interface Filters</button>
+            </div>
+            <div id="filter-scope-description" style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.75rem;">Filters for GUI chat bubbles. Matching lines are hidden from chat view.</div>
+            <div id="builtin-filters-section">
+              <h3 style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin:0 0 0.5rem;">Built-in</h3>
+              <div id="builtin-filters-list" style="font-size:0.75rem;color:var(--text-dim);line-height:1.6;margin-bottom:0.75rem;"></div>
+            </div>
+            <div style="border-top:1px solid var(--border-color);padding-top:0.75rem;">
+              <h3 style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin:0 0 0.5rem;">Custom</h3>
+              <div id="custom-filters-list"></div>
+              <div style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
+                <input id="new-filter-pattern" type="text" placeholder="Substring or /regex/" style="flex:1;background:var(--bg-color);border:1px solid var(--border-color);color:var(--text-color);padding:0.4rem 0.625rem;border-radius:0.375rem;font-size:0.8125rem;font-family:monospace;outline:none;">
+                <button id="add-filter-btn" style="background:var(--accent-color);border:none;color:#fff;padding:0.4rem 0.75rem;border-radius:0.375rem;font-size:0.75rem;font-weight:600;cursor:pointer;white-space:nowrap;">Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div id="input-zone">
@@ -747,7 +776,7 @@
         js.onerror = finish;
         js.onload = function () {
           var fit = document.createElement("script");
-          fit.src = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/addons/fit/fit.js";
+          fit.src = "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js";
           fit.onload = finish;
           fit.onerror = finish;
           document.body.appendChild(fit);
@@ -764,7 +793,8 @@
       var params = window.MeridianWeb.getQueryParams();
       var threadId = params.thread_id;
       var token = window.MeridianWeb.getToken();
-      
+      var sessionId = params.session_id || "";
+
       var termEl = document.getElementById("term-container");
       var cmdInput = document.getElementById("cmd-input");
       var btnSend = document.getElementById("btn-send");
@@ -783,6 +813,7 @@
       var chatTimer = null;
       var chatTypingTimer = null;
       var chatAutoScroll = true;
+      var lastFlushedContent = "";
       var focusModeEnabled =
         window.MeridianWeb && typeof window.MeridianWeb.getFocusModeEnabled === "function"
           ? window.MeridianWeb.getFocusModeEnabled(true)
@@ -840,6 +871,42 @@
         if (/^(\$|>|#)\s*(pwd|ls|cd)\b/.test(t)) return true;
         if (/^\/[\w./-]+$/.test(t) || /^\.\/[\w./-]+$/.test(t)) return true;
         if (/^\[[0-9:. -]+\]/.test(t)) return true;
+        // Meridian framing lines
+        if (/^\[thread=[^\]]*\]$/.test(t)) return true;
+        if (/^\[(?:success|error|partial)\]\s*thread=/.test(t)) return true;
+        if (/^trace=[0-9a-f-]+$/i.test(t)) return true;
+        // Box-drawing borders and block-char filler lines (spinner frame borders)
+        if (/^[\s╭╮╰╯─━═▀▄▁▔█░▒▓│┃┌┐└┘├┤┬┴┼]+$/.test(t)) return true;
+        // Braille spinner characters mixed with transient text
+        if (/[\u2800-\u28ff]/.test(t)) return true;
+        // Agent CLI transient hints
+        if (/^(tip|shortcut):\s/i.test(t)) return true;
+        if (t.indexOf("shift+tab to accept edits") >= 0) return true;
+        if (t.indexOf("(esc to cancel") >= 0) return true;
+        if (t.indexOf("skip the next speaker check") >= 0) return true;
+        if (t.indexOf("assessing the git situation") >= 0) return true;
+        if (t.indexOf("analyzing push parameters") >= 0) return true;
+        if (t.indexOf("see full, untruncated responses") >= 0) return true;
+        if (t.indexOf("let node.js auto-configure memory") >= 0) return true;
+        if (t.indexOf("list your saved chat checkpoints") >= 0) return true;
+        if (t.indexOf("gemini cli is restarting") >= 0) return true;
+        if (/^(GEMINI|CLAUDE|CODEX|CURSOR)\.md$/i.test(t)) return true;
+        // Box-content lines (│ ... │) from terminal UI frames
+        if (/^[│┃].*[│┃]$/.test(t)) return true;
+        // Custom GUI filters (loaded from localStorage)
+        if (typeof customGuiFilters !== "undefined") {
+          for (var fi = 0; fi < customGuiFilters.length; fi++) {
+            var cf = customGuiFilters[fi];
+            if (cf.enabled === false) continue;
+            try {
+              if (cf.isRegex) {
+                if (new RegExp(cf.pattern, "i").test(t)) return true;
+              } else {
+                if (t.toLowerCase().indexOf(cf.pattern.toLowerCase()) >= 0) return true;
+              }
+            } catch (e) {}
+          }
+        }
         return false;
       }
 
@@ -1050,19 +1117,61 @@
         if (show && chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
       }
 
+      function stripMeridianNoise(text) {
+        var lines = text.split(/\r?\n/);
+        var cleaned = [];
+        var prevLine = null;
+        for (var i = 0; i < lines.length; i++) {
+          if (isLowValueLine(lines[i])) continue;
+          // Deduplicate consecutive identical lines
+          var trimmed = lines[i].trim();
+          if (trimmed === prevLine) continue;
+          cleaned.push(lines[i]);
+          prevLine = trimmed;
+        }
+        return cleaned.join("\n").trim();
+      }
+
+      function computeDelta(text, previous) {
+        if (!previous) return text;
+        // Prefix match: if current text starts with previous, take only the suffix
+        if (text.indexOf(previous) === 0) {
+          return text.slice(previous.length).trim();
+        }
+        // Suffix overlap: if previous ends with the beginning of text, trim overlap
+        var overlapLen = Math.min(previous.length, text.length);
+        for (var ol = overlapLen; ol > 0; ol--) {
+          if (previous.slice(-ol) === text.slice(0, ol)) {
+            return text.slice(ol).trim();
+          }
+        }
+        return text;
+      }
+
       function flushChatBuffer() {
         if (!chatBuffer.trim()) { chatBuffer = ""; return; }
         var text = stripAnsi(chatBuffer).trim();
         chatBuffer = "";
         if (!text) return;
         showChatTyping(false);
-        var digest = summarizeAgentText(text);
+
+        // Deduplicate against previously flushed content
+        var newContent = computeDelta(text, lastFlushedContent);
+        lastFlushedContent = text;
+        if (!newContent) return;
+
         if (focusModeEnabled) {
-          var detailLineCount = digest.details ? digest.details.split(/\r?\n/).length : 0;
-          var shouldCollapse = detailLineCount > CHAT_COLLAPSE_LINE_LIMIT || digest.details.length > CHAT_COLLAPSE_CHAR_LIMIT;
-          addChatBubble(digest.summary, "agent", shouldCollapse ? digest.details : "");
+          var digest = summarizeAgentText(newContent);
+          var cleanSummary = stripMeridianNoise(digest.summary);
+          if (!cleanSummary) return;
+          var cleanDetails = digest.details ? stripMeridianNoise(digest.details) : "";
+          var detailLineCount = cleanDetails ? cleanDetails.split(/\r?\n/).length : 0;
+          var shouldCollapse = detailLineCount > CHAT_COLLAPSE_LINE_LIMIT || cleanDetails.length > CHAT_COLLAPSE_CHAR_LIMIT;
+          addChatBubble(cleanSummary, "agent", shouldCollapse ? cleanDetails : "");
         } else {
-          addChatBubble(text, "agent");
+          var cleanText = stripMeridianNoise(newContent);
+          if (!cleanText) return;
+          addChatBubble(cleanText, "agent");
         }
       }
 
@@ -1084,12 +1193,196 @@
         });
       }
 
+      // ── Push toggle ──
+      var pushToggleBtn = document.getElementById("push-toggle");
+      var pushEnabled = false;
+      if (pushToggleBtn) {
+        pushToggleBtn.addEventListener("click", function() {
+          pushEnabled = !pushEnabled;
+          pushToggleBtn.classList.toggle("active", pushEnabled);
+          pushToggleBtn.textContent = pushEnabled ? "Push ON" : "Push OFF";
+          var body = { enabled: pushEnabled };
+          if (threadId) body.thread_id = threadId;
+          window.MeridianWeb.fetchWithAuth("/api/push", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data && data.status === "error") {
+              pushEnabled = false;
+              pushToggleBtn.classList.remove("active");
+              pushToggleBtn.textContent = "Push OFF";
+              addChatBubble("Push error: " + (data.content || "unknown"), "system");
+            } else if (data && data.status === "success" && data.content) {
+              addChatBubble(data.content, "system");
+            }
+          }).catch(function(err) {
+            pushEnabled = false;
+            pushToggleBtn.classList.remove("active");
+            pushToggleBtn.textContent = "Push OFF";
+            addChatBubble("Push toggle failed: " + (err && err.message ? err.message : "network error"), "system");
+          });
+        });
+      }
+
+      // ── Filter editor ──
+      var customGuiFilters = window.MeridianWeb.getCustomFilters("gui");
+      var customInterfaceFilters = window.MeridianWeb.getCustomFilters("interface");
+      var activeFilterScope = "gui";
+      var filtersModal = document.getElementById("filters-modal");
+      var filtersToggleBtn = document.getElementById("filters-toggle");
+      var filtersCloseBtn = document.getElementById("filters-close");
+      var builtinFiltersList = document.getElementById("builtin-filters-list");
+      var customFiltersList = document.getElementById("custom-filters-list");
+      var filterScopeDesc = document.getElementById("filter-scope-description");
+      var newFilterInput = document.getElementById("new-filter-pattern");
+      var addFilterBtn = document.getElementById("add-filter-btn");
+
+      var BUILTIN_FILTER_LABELS = [
+        "Status: heartbeat, typing, connected, running, idle",
+        "Shell echoes: $ pwd, $ ls, $ cd",
+        "Meridian framing: [thread=...], [success], trace=...",
+        "Box-drawing borders and block characters",
+        "Braille spinner characters",
+        "Agent hints: tip:, shortcut:, (esc to cancel), etc.",
+        "Agent config files: GEMINI.md, CLAUDE.md, etc.",
+        "Box-content lines: |...|"
+      ];
+
+      var SCOPE_DESCRIPTIONS = {
+        gui: "Filters for GUI chat bubbles. Matching lines are hidden from chat view.",
+        interface: "Filters for interface push (Telegram, etc). Matching lines are removed before sending to chat."
+      };
+
+      function renderBuiltinFilters() {
+        if (!builtinFiltersList) return;
+        builtinFiltersList.innerHTML = "";
+        BUILTIN_FILTER_LABELS.forEach(function(label) {
+          var div = document.createElement("div");
+          div.style.cssText = "padding:0.2rem 0;opacity:0.7;";
+          div.textContent = "- " + label;
+          builtinFiltersList.appendChild(div);
+        });
+      }
+
+      function renderCustomFilters() {
+        if (!customFiltersList) return;
+        var filters = activeFilterScope === "gui" ? customGuiFilters : customInterfaceFilters;
+        customFiltersList.innerHTML = "";
+        if (filters.length === 0) {
+          var empty = document.createElement("div");
+          empty.style.cssText = "font-size:0.75rem;color:var(--text-dim);padding:0.25rem 0;";
+          empty.textContent = "No custom filters yet.";
+          customFiltersList.appendChild(empty);
+          return;
+        }
+        filters.forEach(function(f, idx) {
+          var row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid var(--border-color);";
+          var toggle = document.createElement("input");
+          toggle.type = "checkbox";
+          toggle.checked = f.enabled !== false;
+          toggle.style.cssText = "cursor:pointer;flex-shrink:0;";
+          toggle.addEventListener("change", function() {
+            f.enabled = this.checked;
+            saveFilters();
+          });
+          var label = document.createElement("span");
+          label.style.cssText = "flex:1;font-family:monospace;font-size:0.8125rem;color:var(--text-color);word-break:break-all;";
+          label.textContent = (f.isRegex ? "/" : "") + f.pattern + (f.isRegex ? "/" : "");
+          var del = document.createElement("button");
+          del.style.cssText = "background:none;border:none;color:var(--error-color);cursor:pointer;font-size:0.875rem;padding:0.125rem 0.375rem;flex-shrink:0;";
+          del.textContent = "\u00d7";
+          del.addEventListener("click", function() {
+            var list = activeFilterScope === "gui" ? customGuiFilters : customInterfaceFilters;
+            list.splice(idx, 1);
+            saveFilters();
+            renderCustomFilters();
+          });
+          row.appendChild(toggle);
+          row.appendChild(label);
+          row.appendChild(del);
+          customFiltersList.appendChild(row);
+        });
+      }
+
+      function saveFilters() {
+        window.MeridianWeb.setCustomFilters("gui", customGuiFilters);
+        window.MeridianWeb.setCustomFilters("interface", customInterfaceFilters);
+      }
+
+      function switchFilterScope(scope) {
+        activeFilterScope = scope;
+        document.querySelectorAll(".filter-tab").forEach(function(tab) {
+          var isActive = tab.getAttribute("data-filter-scope") === scope;
+          tab.style.background = isActive ? "var(--surface-hover)" : "transparent";
+          tab.style.color = isActive ? "var(--text-color)" : "var(--text-dim)";
+          if (isActive) tab.classList.add("active");
+          else tab.classList.remove("active");
+        });
+        if (filterScopeDesc) filterScopeDesc.textContent = SCOPE_DESCRIPTIONS[scope] || "";
+        renderCustomFilters();
+      }
+
+      document.querySelectorAll(".filter-tab").forEach(function(tab) {
+        tab.addEventListener("click", function() {
+          switchFilterScope(this.getAttribute("data-filter-scope") || "gui");
+        });
+      });
+
+      if (filtersToggleBtn) {
+        filtersToggleBtn.addEventListener("click", function() {
+          if (filtersModal) {
+            filtersModal.classList.remove("hidden");
+            renderBuiltinFilters();
+            renderCustomFilters();
+          }
+        });
+      }
+      if (filtersCloseBtn) {
+        filtersCloseBtn.addEventListener("click", function() {
+          if (filtersModal) filtersModal.classList.add("hidden");
+        });
+      }
+      if (filtersModal) {
+        filtersModal.addEventListener("click", function(e) {
+          if (e.target === filtersModal) filtersModal.classList.add("hidden");
+        });
+      }
+      if (addFilterBtn && newFilterInput) {
+        addFilterBtn.addEventListener("click", function() {
+          var raw = newFilterInput.value.trim();
+          if (!raw) return;
+          var isRegex = false;
+          var pattern = raw;
+          // Auto-detect /regex/ syntax
+          if (raw.length > 2 && raw.charAt(0) === "/" && raw.charAt(raw.length - 1) === "/") {
+            pattern = raw.slice(1, -1);
+            isRegex = true;
+            try { new RegExp(pattern); } catch (e) {
+              alert("Invalid regex: " + e.message);
+              return;
+            }
+          }
+          var filter = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), pattern: pattern, isRegex: isRegex, enabled: true };
+          if (activeFilterScope === "gui") customGuiFilters.push(filter);
+          else customInterfaceFilters.push(filter);
+          saveFilters();
+          renderCustomFilters();
+          newFilterInput.value = "";
+        });
+        newFilterInput.addEventListener("keydown", function(e) {
+          if (e.key === "Enter") { e.preventDefault(); addFilterBtn.click(); }
+        });
+      }
+
       var term = null;
       var terminalReady = false;
+      var fitAddon = null;
 
       function fitTerminal() {
-        if (window.TerminalFit && term && terminalReady) {
-          try { window.TerminalFit.fit(term); } catch (e) {}
+        if (fitAddon && term && terminalReady) {
+          try { fitAddon.fit(); } catch (e) {}
         }
       }
 
@@ -1101,6 +1394,10 @@
           fontFamily: '"SF Mono", "Fira Code", monospace',
           allowProposedApi: true
         });
+        if (window.FitAddon && window.FitAddon.FitAddon) {
+          fitAddon = new window.FitAddon.FitAddon();
+          term.loadAddon(fitAddon);
+        }
         term.open(termEl);
         terminalReady = true;
         fitTerminal();
@@ -1196,6 +1493,13 @@
           addChatBubble("Error: Missing token. Open this page from the hub with ?token= in the URL.", "agent");
           return;
         }
+        // Reset chat buffer for new turn — ensures 1:1 ask-to-reply
+        chatBuffer = "";
+        lastFlushedContent = "";
+        clearTimeout(chatTimer);
+        clearTimeout(chatTypingTimer);
+        showChatTyping(false);
+
         addChatBubble(cmd, "user");
         runCommand(cmd).catch(function(err) {
           var msg = err && err.message ? err.message : "Send failed.";
