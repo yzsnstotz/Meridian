@@ -21,7 +21,8 @@ export const BUILT_IN_INTENTS = [
   "monitor_update",
   "monitor_manual_update",
   "push",
-  "capture_interval"
+  "capture_interval",
+  "history"
  ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
@@ -130,6 +131,8 @@ export const HubResultSchema = z.object({
   source: AgentTypeSchema,
   status: HubResultStatusSchema,
   content: z.string(),
+  summary_text: z.string().optional(),
+  details_text: z.string().optional(),
   attachments: z.array(FileAttachmentSchema).default([]),
   telegram_inline_keyboard: TelegramInlineKeyboardSchema.optional(),
   timestamp: z.string().datetime()

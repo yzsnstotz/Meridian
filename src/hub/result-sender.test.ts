@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { test } from "node:test";
 
+process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
+
 import type { HubResult, ReplyChannel } from "../types";
 import { ResultSender, decorateTelegramResultText, resolveTelegramDetailRecord, splitTextForTelegram } from "./result-sender";
 
@@ -161,6 +163,99 @@ test("ResultSender caches full detail text for /detail retrieval", async () => {
   assert.ok(detail);
   assert.equal(detail?.traceId, result.trace_id);
   assert.equal(detail?.fullText, decorateTelegramResultText(result));
+});
+
+test("ResultSender prefers shared history summary/details when provided", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+  };
+  let sentText = "";
+  sender.sendTextWithRetry = async (_botToken, _chatId, text) => {
+    sentText = text;
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  const traceId = "d23f6b56-46a4-4fcb-a57d-9325317cdd62";
+  await sender.sendResult(
+    {
+      trace_id: traceId,
+      thread_id: "codex_01",
+      source: "codex",
+      status: "success",
+      content: "raw upstream payload that should not leak into summary",
+      summary_text: "pane summary",
+      details_text: "Your message:\nhello\n\nAgent reply:\nfull detail body",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    },
+    {
+      channel: "telegram",
+      chat_id: "12345"
+    }
+  );
+
+  assert.match(sentText, /pane summary/);
+  assert.doesNotMatch(sentText, /raw upstream payload/);
+
+  const detail = resolveTelegramDetailRecord({ chatId: "12345", traceId });
+  assert.ok(detail);
+  assert.match(detail?.fullText ?? "", /Your message:\nhello/);
+  assert.match(detail?.fullText ?? "", /Agent reply:\nfull detail body/);
+});
+
+test("ResultSender suppresses duplicate Telegram deliveries with the same pane fingerprint", async () => {
+  const sender = new ResultSender({ botToken: "123456789:test_token" }) as unknown as {
+    sendResult: (result: HubResult, replyChannel: ReplyChannel) => Promise<void>;
+    sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
+    sendDocumentWithRetry: () => Promise<void>;
+    log: { info: () => void; warn: () => void; error: () => void };
+  };
+  sender.log = {
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined
+  };
+  let sendCount = 0;
+  sender.sendTextWithRetry = async () => {
+    sendCount += 1;
+  };
+  sender.sendDocumentWithRetry = async () => undefined;
+
+  const replyChannel: ReplyChannel = {
+    channel: "telegram",
+    chat_id: "telegram:12345",
+    bot_id: "123456789"
+  };
+  const baseResult = {
+    thread_id: "codex_01",
+    source: "codex" as const,
+    status: "success" as const,
+    content: "raw",
+    summary_text: "same summary",
+    details_text: "same detail",
+    attachments: [],
+    timestamp: new Date().toISOString()
+  };
+
+  await sender.sendResult(
+    {
+      ...baseResult,
+      trace_id: "78bd18f5-b9bb-4203-b434-b41c2f3c89c8"
+    },
+    replyChannel
+  );
+  await sender.sendResult(
+    {
+      ...baseResult,
+      trace_id: "27873689-b0f5-458b-8628-b8b4cf64c20b"
+    },
+    replyChannel
+  );
+
+  assert.equal(sendCount, 1);
+  assert.ok(resolveTelegramDetailRecord({ chatId: "telegram:12345", botId: "123456789", traceId: "27873689-b0f5-458b-8628-b8b4cf64c20b" }));
 });
 
 test("ResultSender avoids adding /detail hint for short summary content", async () => {

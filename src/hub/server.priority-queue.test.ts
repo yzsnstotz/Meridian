@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 
+process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
+
 import type { HubMessage, HubResult, ReplyChannel } from "../types";
 import type { ResultSender } from "./result-sender";
 import type { HubRouter } from "./router";
@@ -222,4 +224,105 @@ test("monitor events default to priority 7 (lower than normal messages)", () => 
 
   const killPayload = buildPayload("kill", 0);
   assert.equal(extractPriority.call(server, killPayload), 0, "/kill payload extracts priority 0");
+});
+
+test("list_models bypasses the global queue while a run is still in flight", async () => {
+  let releaseRun: () => void = () => undefined;
+  const runBlocked = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+
+  const fakeRouter = {
+    async initialize(): Promise<void> {
+      return;
+    },
+    async route(message: HubMessage): Promise<HubResult> {
+      if (message.intent === "run") {
+        await runBlocked;
+      }
+      return {
+        trace_id: message.trace_id,
+        thread_id: message.thread_id,
+        source: "codex",
+        status: "success",
+        content: message.intent,
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    },
+    setInstanceStatus(): void {
+      return;
+    },
+    getAttachedSessionsForThread(): string[] {
+      return [];
+    },
+    getMonitorUpdateSubscribersForThread(): string[] {
+      return [];
+    },
+    resolveSourceForThread(): "codex" {
+      return "codex";
+    },
+    collectDueMonitorUpdateDispatches(): [] {
+      return [];
+    },
+    isThreadRunning(): boolean {
+      return false;
+    },
+    forceMonitorUpdateDispatchNow(): void {
+      return;
+    },
+    resolveInstanceForThread(): null {
+      return null;
+    },
+    registerServiceEndpoint(): void {
+      return;
+    }
+  };
+
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: new FakeResultSender() as unknown as ResultSender,
+    staticServiceEndpoints: []
+  });
+  const accessor = server as unknown as EnqueueMessage;
+
+  const runPromise = accessor.enqueueMessage(
+    JSON.stringify({
+      trace_id: randomUUID(),
+      thread_id: "codex_01",
+      actor_id: "tg:123",
+      intent: "run",
+      target: "codex_01",
+      payload: { content: "hello", attachments: [] },
+      mode: "bridge",
+      reply_channel: { channel: "telegram", chat_id: "telegram:999" },
+      suppress_reply: true
+    })
+  );
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  const modelPromise = accessor.enqueueMessage(
+    JSON.stringify({
+      trace_id: randomUUID(),
+      thread_id: "codex_01",
+      actor_id: "tg:123",
+      intent: "list_models",
+      target: "codex_01",
+      payload: { content: "", attachments: [] },
+      mode: "bridge",
+      reply_channel: { channel: "telegram", chat_id: "telegram:999" },
+      suppress_reply: true
+    })
+  );
+
+  const modelResult = await Promise.race([
+    modelPromise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("list_models was blocked by run")), 200))
+  ]);
+  assert.equal(modelResult?.content, "list_models");
+
+  releaseRun();
+  const runResult = await runPromise;
+  assert.equal(runResult?.content, "run");
 });

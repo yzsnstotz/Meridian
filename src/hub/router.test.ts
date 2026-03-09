@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
+
 import { config } from "../config";
 import type { HubMessage } from "../types";
 import { InstanceRegistry } from "./registry";
@@ -58,6 +60,59 @@ test("HubRouter routes run intent through AgentAPIClient", async () => {
   assert.equal(result.content, "done");
 });
 
+test("HubRouter detail reuses conversation history details produced for pane/chat", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 101,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "final answer" }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const runTraceId = "81f8b79e-b32f-44e7-8f07-6f1f4be8f2f7";
+  await router.route(
+    baseMessage({
+      trace_id: runTraceId,
+      thread_id: "codex_01",
+      target: "codex_01",
+      payload: {
+        content: "ship it",
+        attachments: []
+      }
+    })
+  );
+
+  const detailResult = await router.route(
+    baseMessage({
+      trace_id: "6b0cc95f-85e9-49eb-b18b-3e5f3fa0ed06",
+      intent: "detail",
+      thread_id: "codex_01",
+      target: "codex_01",
+      payload: {
+        content: runTraceId,
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(detailResult.status, "success");
+  assert.match(detailResult.content, /Your message:\nship it/);
+  assert.match(detailResult.content, /Agent reply:\nfinal answer/);
+});
+
 test("HubRouter run logs getMessages_threw and uses fallback when getMessages() throws", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -94,8 +149,8 @@ test("HubRouter run logs getMessages_threw and uses fallback when getMessages() 
   assert.equal(result.source, "gemini");
   assert.equal(
     result.content,
-    "",
-    "fallback content should be empty when getMessages() throws on an ACK response"
+    "Agent is processing...",
+    "fallback content should surface a neutral progress message when getMessages() throws on an ACK response"
   );
 });
 
@@ -1716,6 +1771,63 @@ test("HubRouter handlePush rejects bridge mode instances", async () => {
   );
   assert.equal(result.status, "error");
   assert.match(result.content, /pane_bridge/);
+});
+
+test("HubRouter exposes conversation history after a run", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "history_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-history_01.sock",
+    pid: 901,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "ack" }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => [
+        {
+          id: 1,
+          role: "agent",
+          content:
+            "[[MERIDIAN_SUMMARY_BEGIN id=2f461d95-0157-4f90-bb4d-a63f2bfb1ed8]]done[[MERIDIAN_SUMMARY_END id=2f461d95-0157-4f90-bb4d-a63f2bfb1ed8]]"
+        }
+      ]
+    })
+  });
+
+  await router.route(
+    baseMessage({
+      trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+      thread_id: "history_01",
+      target: "history_01",
+      intent: "run",
+      payload: { content: "ship it", attachments: [] }
+    })
+  );
+
+  const historyResult = await router.route(
+    baseMessage({
+      intent: "history",
+      thread_id: "history_01",
+      target: "history_01",
+      payload: { content: "", attachments: [] }
+    })
+  );
+  const parsed = JSON.parse(historyResult.content) as Array<{ type: string; content: string }>;
+
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0]?.type, "user");
+  assert.equal(parsed[0]?.content, "ship it");
+  assert.equal(parsed[1]?.type, "agent");
+  assert.equal(parsed[1]?.content, "done");
 });
 
 test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {

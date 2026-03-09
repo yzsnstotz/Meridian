@@ -21,6 +21,7 @@ const TELEGRAM_MAX_SEND_ATTEMPTS = 5;
 const TELEGRAM_RETRY_BACKOFF_BASE_MS = 500;
 const TELEGRAM_RETRY_BACKOFF_MAX_MS = 8000;
 const TELEGRAM_DETAIL_CACHE_LIMIT = 200;
+const TELEGRAM_DUPLICATE_WINDOW_MS = 120 * 1000;
 const SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
@@ -242,6 +243,16 @@ function makeDetailCacheKey(chatId: string, botId: string | null): string {
   return `${botId ?? "default"}::${chatId}`;
 }
 
+function composeDetailTelegramText(result: HubResult, detailText: string): string {
+  const tag = `trace=${result.trace_id}`;
+  const body = stripMeridianContentFraming(detailText).trim();
+  return body ? `${tag}\n\n${body}` : tag;
+}
+
+function makeTelegramMessageFingerprint(summaryText: string, detailText: string): string {
+  return ["agent", summaryText.trim(), detailText.trim()].join("\n---\n");
+}
+
 function saveTelegramDetailRecord(
   replyChannel: ReplyChannel,
   result: HubResult,
@@ -354,6 +365,7 @@ export class ResultSender {
   private readonly log = createLogger("hub");
   private readonly defaultBotToken: string;
   private readonly botTokenById: Map<string, string>;
+  private readonly recentTelegramFingerprints = new Map<string, number>();
 
   constructor(options: ResultSenderOptions = {}) {
     const tokens = options.botToken
@@ -385,8 +397,19 @@ export class ResultSender {
     const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
     const targetChatId = resolveTelegramTargetChatId(replyChannel.chat_id);
-    const fullTextBody = decorateTelegramResultText(result);
-    const summarized = summarizeText(result.content, result.trace_id);
+    const summarized =
+      result.summary_text !== undefined && result.details_text !== undefined
+        ? {
+            summary: result.summary_text,
+            details: result.details_text,
+            truncated:
+              result.details_text.trim().length > 0 && result.details_text.trim() !== result.summary_text.trim()
+          }
+        : summarizeText(result.content, result.trace_id);
+    const fullTextBody =
+      result.details_text !== undefined
+        ? composeDetailTelegramText(result, result.details_text || result.summary_text || result.content)
+        : decorateTelegramResultText(result);
     const summaryBody = composeSummaryTelegramText(
       result,
       summarized.summary,
@@ -396,6 +419,9 @@ export class ResultSender {
     const replyMarkup = result.telegram_inline_keyboard;
 
     saveTelegramDetailRecord(replyChannel, result, fullTextBody, summaryBody);
+    if (this.shouldSkipDuplicateTelegramDelivery(replyChannel, result, summarized.summary, summarized.details)) {
+      return;
+    }
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
       await this.sendContentAsFile(botToken, targetChatId, textBody, replyToMessageId, {
@@ -428,6 +454,40 @@ export class ResultSender {
       },
       "HubResult delivered to Telegram"
     );
+  }
+
+  private shouldSkipDuplicateTelegramDelivery(
+    replyChannel: ReplyChannel,
+    result: HubResult,
+    summaryText: string,
+    detailText: string
+  ): boolean {
+    const nowMs = Date.now();
+    for (const [key, sentAtMs] of this.recentTelegramFingerprints.entries()) {
+      if (nowMs - sentAtMs > TELEGRAM_DUPLICATE_WINDOW_MS) {
+        this.recentTelegramFingerprints.delete(key);
+      }
+    }
+
+    const fingerprint = makeTelegramMessageFingerprint(summaryText, detailText);
+    const cacheKey = `${makeDetailCacheKey(replyChannel.chat_id, replyChannel.bot_id ?? null)}::${result.thread_id}::${fingerprint}`;
+    const previous = this.recentTelegramFingerprints.get(cacheKey);
+    if (previous && nowMs - previous < TELEGRAM_DUPLICATE_WINDOW_MS) {
+      this.log.info(
+        {
+          trace_id: result.trace_id,
+          thread_id: result.thread_id,
+          target: replyChannel.chat_id,
+          bot_id: replyChannel.bot_id ?? null
+        },
+        "Duplicate Telegram delivery suppressed"
+      );
+      this.recentTelegramFingerprints.set(cacheKey, nowMs);
+      return true;
+    }
+
+    this.recentTelegramFingerprints.set(cacheKey, nowMs);
+    return false;
   }
 
   private async sendContentAsFile(

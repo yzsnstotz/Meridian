@@ -76,6 +76,19 @@ const PUSH_DEDUP_WINDOW_MS = 90 * 1000;
 const RUN_COMPLETION_COOLDOWN_MS = 5_000;
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+const IMMEDIATE_INTENTS = new Set([
+  "attach",
+  "detach",
+  "detail",
+  "gui",
+  "history",
+  "list",
+  "list_models",
+  "push",
+  "status",
+  "terminal_input",
+  "capture_interval"
+]);
 
 interface PushAccumulator {
   chunks: string[];
@@ -255,6 +268,10 @@ export class HubServer {
   }
 
   private enqueueMessage(raw: string): Promise<HubResult | null> {
+    if (this.shouldHandleImmediately(raw)) {
+      return this.handleRawPayload(raw);
+    }
+
     const priority = this.extractPriorityFromRaw(raw);
     return new Promise<HubResult | null>((resolve, reject) => {
       const item: PriorityQueueItem = {
@@ -319,6 +336,19 @@ export class HubServer {
     return DEFAULT_PRIORITY;
   }
 
+  private shouldHandleImmediately(raw: string): boolean {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (MonitorEventSchema.safeParse(parsed).success) {
+        return false;
+      }
+      const message = HubMessageSchema.safeParse(parsed);
+      return message.success && IMMEDIATE_INTENTS.has(message.data.intent);
+    } catch {
+      return false;
+    }
+  }
+
   private async handleRawPayload(raw: string): Promise<HubResult | null> {
     let message: HubMessage | null = null;
 
@@ -346,7 +376,7 @@ export class HubServer {
       const validatedResult = HubResultSchema.parse(result);
       this.cacheIdempotencyResult(message, validatedResult);
       if (!message.suppress_reply) {
-        await this.resultSender.sendResult(validatedResult, message.reply_channel);
+        await this.sendUnifiedReply(message, validatedResult);
       }
       return validatedResult;
     } catch (error) {
@@ -509,10 +539,11 @@ export class HubServer {
       return;
     }
 
+    this.recordAgentPushConversationSafe(event.thread_id, completionResult.content, completionResult.trace_id);
     for (const sessionTarget of sessionTargets) {
       const replyTarget = this.parseReplyTarget(sessionTarget);
       await this.resultSender
-        .sendResult(completionResult, {
+        .sendResult(this.buildHistoryBackedResult(completionResult), {
           channel: "telegram",
           chat_id: replyTarget.chatId,
           bot_id: replyTarget.botId
@@ -661,9 +692,10 @@ export class HubServer {
           continue;
         }
 
+        this.recordAgentPushConversationSafe(threadId, progressResult.content, progressResult.trace_id);
         for (const target of targets) {
           await this.resultSender
-            .sendResult(progressResult, {
+            .sendResult(this.buildHistoryBackedResult(progressResult), {
               channel: "telegram",
               chat_id: target.chatId,
               bot_id: target.botId
@@ -865,8 +897,7 @@ export class HubServer {
     const traceId = randomUUID();
     const source = this.router.resolveSourceForThread(threadId);
     const normalizedText = classification.text.trim();
-    const extractedSummary = this.extractLatestSummaryBlockAnyTrace(normalizedText);
-    const content = (extractedSummary ?? normalizedText).trim();
+    const content = normalizedText.trim();
     if (!content) {
       return;
     }
@@ -884,9 +915,11 @@ export class HubServer {
       timestamp: new Date().toISOString()
     });
 
+    this.recordAgentPushConversationSafe(threadId, content, traceId);
+
     for (const subscriber of subscribers) {
       await this.resultSender
-        .sendResult(result, {
+        .sendResult(this.buildHistoryBackedResult(result), {
           channel: "telegram",
           chat_id: subscriber.chatId,
           bot_id: subscriber.botId
@@ -936,6 +969,47 @@ export class HubServer {
       isWithinRunCompletionCooldown?: (id: string, cooldownMs: number) => boolean;
     };
     return candidate.isWithinRunCompletionCooldown?.(threadId, RUN_COMPLETION_COOLDOWN_MS) ?? false;
+  }
+
+  private recordAgentPushConversationSafe(threadId: string, content: string, traceId: string): void {
+    const candidate = this.router as unknown as {
+      recordAgentPushConversation?: (id: string, rawContent: string, traceId: string | null) => void;
+    };
+    candidate.recordAgentPushConversation?.(threadId, content, traceId);
+  }
+
+  private async sendUnifiedReply(message: HubMessage, result: HubResult): Promise<void> {
+    void message;
+    await this.resultSender.sendResult(this.buildHistoryBackedResult(result), message.reply_channel);
+  }
+
+  private buildHistoryBackedResult(result: HubResult): HubResult {
+    const candidate = this.router as unknown as {
+      getLatestConversationEntry?: (
+        threadId: string,
+        traceId?: string | null,
+        type?: "user" | "agent" | null
+      ) => { raw_content?: string; content?: string; details_text?: string } | null;
+    };
+    const entry = candidate.getLatestConversationEntry?.(result.thread_id, result.trace_id, "agent") ?? null;
+    if (!entry) {
+      return result;
+    }
+
+    const content =
+      (typeof entry.raw_content === "string" && entry.raw_content.trim()) ||
+      (typeof entry.details_text === "string" && entry.details_text.trim()) ||
+      (typeof entry.content === "string" ? entry.content : "");
+    if (!content.trim()) {
+      return result;
+    }
+
+    return HubResultSchema.parse({
+      ...result,
+      content,
+      summary_text: typeof entry.content === "string" ? entry.content : undefined,
+      details_text: typeof entry.details_text === "string" ? entry.details_text : undefined
+    });
   }
 
   private parseSummaryTagId(tagText: string): string | null {

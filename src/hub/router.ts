@@ -23,7 +23,14 @@ import {
 import { InstanceManager } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
 import { ServiceRegistry } from "./service-registry";
-import { loadPersistedHubState, savePersistedHubState } from "./state-store";
+import {
+  buildPersistedHubState,
+  loadPersistedHubState,
+  savePersistedHubState,
+  type PersistedConversationHistoryEntry,
+  type PersistedHubState,
+  type PersistedPushSubscription
+} from "./state-store";
 
 interface AgentClient {
   connect: (socketPath: string) => Promise<void>;
@@ -62,8 +69,19 @@ export interface MonitorUpdateDispatch {
 }
 
 interface PushSubscription {
+  sessionId?: string;
   chatId: string;
   botId?: string;
+}
+
+export interface ConversationHistoryEntry {
+  id: string;
+  type: "user" | "agent";
+  content: string;
+  details_text: string;
+  raw_content: string;
+  trace_id: string | null;
+  timestamp: string;
 }
 
 interface ActiveRunState {
@@ -85,6 +103,7 @@ const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "runnin
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 const AGENT_ROLES = new Set(["agent", "assistant"]);
+const THREAD_HISTORY_LIMIT = 400;
 
 function encodeSessionId(chatId: string, botId: string | undefined): string {
   return botId ? `${botId}:${chatId}` : chatId;
@@ -131,6 +150,71 @@ function appendSummaryProtocolPrompt(input: string, traceId: string): string {
 function parseSummaryTagId(tagText: string): string | null {
   const matched = tagText.match(/\bid=([0-9a-fA-F-]{36})\b/);
   return matched?.[1]?.toLowerCase() ?? null;
+}
+
+function stripMeridianContentFraming(content: string): string {
+  return content.replace(/^\[thread=[^\]]*\]\n?/, "");
+}
+
+function stripSummaryProtocolTags(content: string): string {
+  return content
+    .replace(/\[\[MERIDIAN_SUMMARY_BEGIN[^\]]*\]\]\s*/g, "")
+    .replace(/\s*\[\[MERIDIAN_SUMMARY_END[^\]]*\]\]/g, "")
+    .trim();
+}
+
+function extractSummaryBlocks(
+  content: string,
+  traceId: string
+): { summary: string | null; residual: string; incomplete: boolean } {
+  const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN);
+  if (beginIndex < 0) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+
+  const beginClose = content.indexOf("]]", beginIndex);
+  if (beginClose < 0) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+
+  const beginTag = content.slice(beginIndex, beginClose + 2);
+  if (beginTag.includes("\n")) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+  const beginId = parseSummaryTagId(beginTag);
+  if (!beginId || beginId !== traceId.toLowerCase()) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const endIndex = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
+  if (endIndex < 0) {
+    const partial = content.slice(beginClose + 2).trim();
+    const summary = partial ? `${partial}\n\n(summary incomplete)` : "summary incomplete";
+    const residual = `${content.slice(0, beginIndex)}\n${partial}`.trim();
+    return { summary, residual, incomplete: true };
+  }
+
+  const endClose = content.indexOf("]]", endIndex);
+  if (endClose < 0) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const endTag = content.slice(endIndex, endClose + 2);
+  if (endTag.includes("\n")) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+  const endId = parseSummaryTagId(endTag);
+  if (!endId || endId !== beginId) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const summary = content.slice(beginClose + 2, endIndex).trim();
+  const residual = `${content.slice(0, beginIndex)}${content.slice(endClose + 2)}`.trim();
+  return {
+    summary: summary || null,
+    residual,
+    incomplete: false
+  };
 }
 
 function extractLatestCompleteSummaryBlock(content: string, traceId: string): string | null {
@@ -195,6 +279,7 @@ export class HubRouter {
   private readonly attachmentMetaBySession = new Map<string, SessionAttachmentMetadata>();
   private readonly activeRunsByThread = new Map<string, ActiveRunState>();
   private readonly completedRunsByThread = new Map<string, CompletedRunRecord>();
+  private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -214,6 +299,7 @@ export class HubRouter {
   async initialize(): Promise<void> {
     const persistedState = loadPersistedHubState(this.statePath, this.now().toISOString());
     const result = await this.instanceManager.rehydrateFromState(persistedState);
+    this.rehydrateLocalState(persistedState);
     this.persistStateSafely();
     this.log.info(
       {
@@ -334,6 +420,8 @@ export class HubRouter {
           return this.handlePush(message);
         case "capture_interval":
           return this.handleCaptureInterval(message);
+        case "history":
+          return this.handleHistory(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -353,6 +441,15 @@ export class HubRouter {
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
     this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id });
+    this.recordConversationEntry(threadId, {
+      id: randomUUID(),
+      type: "user",
+      content: message.payload.content,
+      details_text: "",
+      raw_content: message.payload.content,
+      trace_id: message.trace_id,
+      timestamp: this.now().toISOString()
+    });
 
     try {
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
@@ -372,7 +469,7 @@ export class HubRouter {
         agentReply ?? (await this.resolveFallbackRunContent(client, response, previousSnapshot))
       );
       const attachments = this.extractResultAttachments(response);
-      return this.buildResult(
+      const result = this.buildResult(
         message,
         "success",
         instance.agent_type,
@@ -380,6 +477,8 @@ export class HubRouter {
         instance.thread_id,
         { attachments }
       );
+      this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+      return result;
     } finally {
       const activeRun = this.activeRunsByThread.get(instance.thread_id);
       if (activeRun?.traceId === message.trace_id) {
@@ -599,7 +698,23 @@ export class HubRouter {
     }
 
     const requestedTrace = message.payload.content.trim() || undefined;
-    const requestedThread = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id) ?? undefined;
+    const requestedThread =
+      this.extractConcreteThreadId(message.target) ??
+      this.extractConcreteThreadId(message.thread_id) ??
+      this.instanceManager.getAttachedThread(encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id)) ??
+      undefined;
+    const historyDetail = this.resolveConversationDetailRecord(requestedTrace, requestedThread);
+    if (historyDetail) {
+      const title = `Detail for trace=${historyDetail.traceId} thread=${historyDetail.threadId}`;
+      return this.buildResult(
+        message,
+        "success",
+        historyDetail.source,
+        `${title}\n\n${historyDetail.fullText}`,
+        historyDetail.threadId
+      );
+    }
+
     const detail = resolveTelegramDetailRecord({
       chatId: message.reply_channel.chat_id,
       botId: message.reply_channel.bot_id,
@@ -1303,6 +1418,27 @@ export class HubRouter {
     return this.buildResult(message, "success", this.resolveResultSource(message), String(currentMs));
   }
 
+  private handleHistory(message: HubMessage): HubResult {
+    const requestedThreadId = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id);
+    if (requestedThreadId) {
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify(this.getConversationHistoryForThread(requestedThreadId), null, 2),
+        requestedThreadId
+      );
+    }
+
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify(this.listConversationThreads(), null, 2),
+      "global"
+    );
+  }
+
   private parseSessionTarget(session: string): { chatId: string; botId?: string } | null {
     if (!session || session.startsWith("web:")) return null;
     const separatorIndex = session.indexOf(":");
@@ -1325,7 +1461,7 @@ export class HubRouter {
       byChat = new Map();
       this.pushSubscriptionsByThread.set(threadId, byChat);
     }
-    byChat.set(sessionId, { chatId, botId });
+    byChat.set(sessionId, { sessionId, chatId, botId });
   }
 
   private deletePushSubscription(threadId: string, sessionId: string): void {
@@ -1355,6 +1491,225 @@ export class HubRouter {
     const byChat = this.pushSubscriptionsByThread.get(threadId);
     if (!byChat) return [];
     return [...byChat.values()];
+  }
+
+  getConversationHistoryForThread(threadId: string): ConversationHistoryEntry[] {
+    return [...(this.conversationHistoryByThread.get(threadId) ?? [])];
+  }
+
+  listConversationThreads(): Array<{
+    thread_id: string;
+    updated_at: string | null;
+    preview: string;
+    active: boolean;
+    status: AgentInstance["status"] | "stopped";
+    agent_type: AgentType | null;
+    model_id: string | null;
+  }> {
+    const threadIds = new Set<string>();
+    for (const threadId of this.conversationHistoryByThread.keys()) {
+      threadIds.add(threadId);
+    }
+    for (const instance of this.registry.list()) {
+      threadIds.add(instance.thread_id);
+    }
+
+    return [...threadIds]
+      .map((threadId) => {
+        const instance = this.registry.get(threadId) ?? null;
+        const history = this.conversationHistoryByThread.get(threadId) ?? [];
+        const lastEntry = history[history.length - 1] ?? null;
+        const previewSource = lastEntry?.content?.trim() || lastEntry?.details_text?.trim() || "";
+        const preview = previewSource ? previewSource.split(/\r?\n/, 1)[0] ?? "" : "";
+        return {
+          thread_id: threadId,
+          updated_at: lastEntry?.timestamp ?? instance?.created_at ?? null,
+          preview,
+          active: instance !== null && LIVE_INSTANCE_STATUSES.has(instance.status),
+          status: instance?.status ?? "stopped",
+          agent_type: instance?.agent_type ?? null,
+          model_id: instance?.model_id ?? null
+        };
+      })
+      .sort((left, right) => {
+        const leftTs = left.updated_at ?? "";
+        const rightTs = right.updated_at ?? "";
+        return rightTs.localeCompare(leftTs);
+      });
+  }
+
+  recordAgentPushConversation(threadId: string, rawContent: string, traceId: string | null = null): void {
+    this.recordAgentConversationEntry(threadId, rawContent, traceId, null);
+    this.persistStateSafely();
+  }
+
+  getLatestConversationEntry(threadId: string, traceId?: string | null, type: "user" | "agent" | null = null): ConversationHistoryEntry | null {
+    const history = this.conversationHistoryByThread.get(threadId) ?? [];
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (!entry) {
+        continue;
+      }
+      if (type && entry.type !== type) {
+        continue;
+      }
+      if (traceId && entry.trace_id !== traceId) {
+        continue;
+      }
+      return entry;
+    }
+    return null;
+  }
+
+  private resolveConversationDetailRecord(
+    requestedTraceId?: string,
+    requestedThreadId?: string
+  ): { traceId: string; threadId: string; source: AgentType; fullText: string } | null {
+    const threadCandidates = requestedThreadId
+      ? [requestedThreadId]
+      : [...new Set([...this.conversationHistoryByThread.keys(), ...this.registry.list().map((instance) => instance.thread_id)])];
+
+    for (const threadId of threadCandidates) {
+      const entry = this.getLatestConversationEntry(threadId, requestedTraceId ?? null, "agent");
+      if (!entry) {
+        continue;
+      }
+      const fullText = entry.details_text.trim() || entry.raw_content.trim() || entry.content.trim();
+      if (!fullText) {
+        continue;
+      }
+      return {
+        traceId: entry.trace_id ?? requestedTraceId ?? "unknown",
+        threadId,
+        source: this.resolveSourceForThread(threadId),
+        fullText
+      };
+    }
+    return null;
+  }
+
+  private recordAgentConversationEntry(
+    threadId: string,
+    rawContent: string,
+    traceId: string | null,
+    inputText: string | null
+  ): void {
+    const summary = this.summarizeConversationContent(rawContent, traceId);
+    const detailsText = this.composeConversationDetails(inputText, rawContent);
+    this.recordConversationEntry(threadId, {
+      id: randomUUID(),
+      type: "agent",
+      content: summary,
+      details_text: detailsText,
+      raw_content: rawContent,
+      trace_id: traceId,
+      timestamp: this.now().toISOString()
+    });
+  }
+
+  private summarizeConversationContent(rawContent: string, traceId: string | null): string {
+    const normalized = stripSummaryProtocolTags(stripMeridianContentFraming(rawContent)).trim();
+    const extracted = traceId ? extractSummaryBlocks(rawContent, traceId) : { summary: null, residual: normalized, incomplete: false };
+    if (extracted.summary) {
+      return extracted.summary;
+    }
+    return normalized || "Update received. Expand details for full output.";
+  }
+
+  private composeConversationDetails(inputText: string | null, rawContent: string): string {
+    const cleanOutput = stripSummaryProtocolTags(stripMeridianContentFraming(rawContent)).trim();
+    const cleanInput = inputText?.trim() ?? "";
+    if (!cleanInput) {
+      return cleanOutput;
+    }
+    if (!cleanOutput) {
+      return `Your message:\n${cleanInput}`;
+    }
+    return `Your message:\n${cleanInput}\n\nAgent reply:\n${cleanOutput}`;
+  }
+
+  private recordConversationEntry(threadId: string, entry: ConversationHistoryEntry): void {
+    const history = this.conversationHistoryByThread.get(threadId) ?? [];
+    const previous = history[history.length - 1] ?? null;
+    if (
+      previous &&
+      previous.type === entry.type &&
+      previous.content.trim() === entry.content.trim() &&
+      previous.details_text.trim() === entry.details_text.trim() &&
+      previous.trace_id === entry.trace_id
+    ) {
+      return;
+    }
+    history.push(entry);
+    if (history.length > THREAD_HISTORY_LIMIT) {
+      history.splice(0, history.length - THREAD_HISTORY_LIMIT);
+    }
+    this.conversationHistoryByThread.set(threadId, history);
+  }
+
+  private rehydrateLocalState(state: PersistedHubState): void {
+    this.pushSubscriptionsByThread.clear();
+    this.conversationHistoryByThread.clear();
+
+    for (const [threadId, subscriptions] of Object.entries(state.push_subscriptions ?? {})) {
+      if (!this.registry.has(threadId)) {
+        continue;
+      }
+      const byChat = new Map<string, PushSubscription>();
+      for (const subscription of subscriptions) {
+        byChat.set(subscription.session_id, {
+          sessionId: subscription.session_id,
+          chatId: subscription.chat_id,
+          botId: subscription.bot_id ?? undefined
+        });
+      }
+      if (byChat.size > 0) {
+        this.pushSubscriptionsByThread.set(threadId, byChat);
+      }
+    }
+
+    for (const [threadId, entries] of Object.entries(state.conversation_history ?? {})) {
+      this.conversationHistoryByThread.set(
+        threadId,
+        entries.map((entry) => ({
+          id: entry.id,
+          type: entry.type,
+          content: entry.content,
+          details_text: entry.details_text ?? "",
+          raw_content: entry.raw_content ?? entry.details_text ?? entry.content,
+          trace_id: entry.trace_id ?? null,
+          timestamp: entry.timestamp
+        }))
+      );
+    }
+  }
+
+  private serializePushSubscriptions(): Record<string, PersistedPushSubscription[]> {
+    const snapshot: Record<string, PersistedPushSubscription[]> = {};
+    for (const [threadId, subscriptions] of this.pushSubscriptionsByThread.entries()) {
+      snapshot[threadId] = [...subscriptions.entries()].map(([sessionId, subscription]) => ({
+        session_id: subscription.sessionId ?? sessionId,
+        chat_id: subscription.chatId,
+        bot_id: subscription.botId ?? null
+      }));
+    }
+    return snapshot;
+  }
+
+  private serializeConversationHistory(): Record<string, PersistedConversationHistoryEntry[]> {
+    const snapshot: Record<string, PersistedConversationHistoryEntry[]> = {};
+    for (const [threadId, entries] of this.conversationHistoryByThread.entries()) {
+      snapshot[threadId] = entries.map((entry) => ({
+        id: entry.id,
+        type: entry.type,
+        content: entry.content,
+        details_text: entry.details_text,
+        raw_content: entry.raw_content,
+        trace_id: entry.trace_id,
+        timestamp: entry.timestamp
+      }));
+    }
+    return snapshot;
   }
 
   private normalizeMonitorUpdateIntervalSec(candidate: number | undefined): number {
@@ -1493,7 +1848,7 @@ export class HubRouter {
     }
 
     if (isAck) {
-      return "";
+      return "Agent is processing...";
     }
 
     return extracted;
@@ -1673,7 +2028,17 @@ export class HubRouter {
 
   private persistStateSafely(): void {
     try {
-      savePersistedHubState(this.statePath, this.instanceManager.snapshotState());
+      const snapshot = this.instanceManager.snapshotState();
+      savePersistedHubState(
+        this.statePath,
+        buildPersistedHubState(
+          this.now().toISOString(),
+          snapshot.instances ?? [],
+          snapshot.session_bindings ?? {},
+          this.serializePushSubscriptions(),
+          this.serializeConversationHistory()
+        )
+      );
     } catch (error) {
       this.log.warn(
         {

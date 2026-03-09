@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
+process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
+
 import type { HubMessage, HubResult, ReplyChannel } from "../types";
 import type { ResultSender } from "./result-sender";
 import type { HubRouter } from "./router";
@@ -113,6 +115,8 @@ test("HubServer sends Telegram run replies from shared conversation history when
   assert.equal(result?.content, "summary-only result");
   assert.equal(fakeResultSender.calls.length, 1);
   assert.equal(fakeResultSender.calls[0]?.result.content, "shared history agent reply");
+  assert.equal(fakeResultSender.calls[0]?.result.summary_text, "shared history summary");
+  assert.equal(fakeResultSender.calls[0]?.result.details_text, "shared history details");
 });
 
 test("HubServer falls back to routed result when shared history has no matching entry", async () => {
