@@ -64,6 +64,7 @@ test("terminal approval actions use dedicated terminal_input API", async () => {
 
   assert.match(terminalHtml, /\/api\/terminal_input/);
   assert.match(terminalHtml, /Allow for all commands/);
+  assert.match(terminalHtml, /sendTerminalText\(opt\.key\)/);
 });
 
 test("terminal explorer renders a collapsible directory tree", async () => {
@@ -87,7 +88,18 @@ test("terminal chat history restores from local storage and disables replay when
 
   assert.match(terminalHtml, /CHAT_HISTORY_STORAGE_KEY/);
   assert.match(terminalHtml, /restoreChatHistory\(\)/);
+  assert.match(terminalHtml, /restoreServerChatHistory\(entries\)/);
   assert.match(terminalHtml, /replay_lines=/);
+});
+
+test("terminal layout includes sidebar session history and model picker", async () => {
+  const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
+
+  assert.match(terminalHtml, /data-sidebar-tab="sessions"/);
+  assert.match(terminalHtml, /id="session-list"/);
+  assert.match(terminalHtml, /\/api\/history_threads/);
+  assert.match(terminalHtml, /id="model-select"/);
+  assert.match(terminalHtml, /\/api\/models\?thread_id=/);
 });
 
 test("terminal chat prioritizes structured /api/run result to avoid pane replay mixing", async () => {

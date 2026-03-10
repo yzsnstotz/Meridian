@@ -52,6 +52,10 @@ const fileReadQuerySchema = z.object({
   path: z.string().min(1)
 });
 
+const threadQuerySchema = z.object({
+  thread_id: z.string().min(1)
+});
+
 const fileWriteBodySchema = z.object({
   thread_id: z.string().min(1),
   path: z.string().min(1),
@@ -434,6 +438,16 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/history" && request.method === "GET") {
+      await this.handleHistoryRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/history_threads" && request.method === "GET") {
+      await this.handleHistoryThreadsRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/file" && request.method === "GET") {
       await this.handleFileReadRequest(request, response);
       return;
@@ -451,6 +465,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/push" && request.method === "POST") {
       await this.handlePushToggleRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/models" && request.method === "GET") {
+      await this.handleModelsRequest(request, response);
       return;
     }
 
@@ -573,6 +592,43 @@ export class WebInterfaceServer {
     this.respondJson(response, 200, { path: query.path, content });
   }
 
+  private async handleHistoryRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = threadQuerySchema.parse({
+      thread_id: requestUrl.searchParams.get("thread_id")
+    });
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "history",
+          thread_id: query.thread_id,
+          target: query.thread_id,
+          content: ""
+        })
+      )
+    );
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleHistoryThreadsRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "history",
+          thread_id: "global",
+          target: "all",
+          content: ""
+        })
+      )
+    );
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
   private async handleFileWriteRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = fileWriteBodySchema.parse(await this.readJsonBody(request));
@@ -599,6 +655,26 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, result);
+  }
+
+  private async handleModelsRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = threadQuerySchema.parse({
+      thread_id: requestUrl.searchParams.get("thread_id")
+    });
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "list_models",
+          thread_id: query.thread_id,
+          target: query.thread_id,
+          content: ""
+        })
+      )
+    );
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
   }
 
   private async handlePushToggleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

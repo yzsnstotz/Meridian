@@ -300,18 +300,16 @@ export class InstanceManager {
       throw new Error(`Cannot send terminal input; thread_id=${threadId} is not registered`);
     }
 
-    const action = normalizeApprovalAction(rawInput);
-    if (!action) {
-      throw new Error(`Unsupported terminal approval input. ${APPROVAL_HELP_TEXT}`);
-    }
-
     if (instance.mode !== "pane_bridge" || !instance.tmux_pane) {
       throw new Error(
-        `Thread ${threadId} is running in mode=${instance.mode}; /approve requires a pane_bridge thread with tmux.`
+        `Thread ${threadId} is running in mode=${instance.mode}; terminal_input requires a pane_bridge thread with tmux.`
       );
     }
 
-    const keys = approvalActionToTmuxKeys(action);
+    const action = normalizeApprovalAction(rawInput);
+    const keys = action
+      ? approvalActionToTmuxKeys(action)
+      : this.rawTerminalInputToTmuxKeys(rawInput);
     const escapedKeys = keys.map((key) => this.shellEscape(key)).join(" ");
     this.execSyncFn(`tmux send-keys -t ${this.shellEscape(instance.tmux_pane)} ${escapedKeys}`, {
       stdio: "ignore"
@@ -322,13 +320,31 @@ export class InstanceManager {
         operation: "terminal_input",
         thread_id: threadId,
         tmux_pane: instance.tmux_pane,
-        approval_action: action,
+        approval_action: action ?? null,
+        raw_input: action ? null : rawInput,
         keys
       },
-      "Sent approval input to tmux pane"
+      "Sent terminal input to tmux pane"
     );
 
-    return `Sent approval action '${action}' to ${threadId}.`;
+    return action ? `Sent approval action '${action}' to ${threadId}.` : `Sent terminal input to ${threadId}.`;
+  }
+
+  private rawTerminalInputToTmuxKeys(rawInput: string): string[] {
+    const normalized = rawInput.replace(/\r/g, "");
+    if (!normalized.trim()) {
+      throw new Error(`Unsupported empty terminal input. ${APPROVAL_HELP_TEXT}`);
+    }
+
+    const lines = normalized.split("\n");
+    const keys: string[] = [];
+    for (const line of lines) {
+      if (line.length > 0) {
+        keys.push(line);
+      }
+      keys.push("Enter");
+    }
+    return keys;
   }
 
   snapshotState(): PersistedHubState {
@@ -351,7 +367,7 @@ export class InstanceManager {
     const prunedThreadIds: string[] = [];
     const liveThreadIds = new Set<string>();
 
-    for (const persistedInstance of state.instances) {
+    for (const persistedInstance of state.instances ?? []) {
       const hydratedInstance = await this.rehydrateInstance(persistedInstance);
       if (!hydratedInstance) {
         prunedThreadIds.push(persistedInstance.thread_id);
@@ -363,7 +379,7 @@ export class InstanceManager {
       liveThreadIds.add(hydratedInstance.thread_id);
     }
 
-    for (const [session, threadId] of Object.entries(state.session_bindings)) {
+    for (const [session, threadId] of Object.entries(state.session_bindings ?? {})) {
       if (!liveThreadIds.has(threadId)) {
         continue;
       }

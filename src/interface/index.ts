@@ -136,6 +136,27 @@ interface LiveInstanceCandidate {
   attachedSessions: string[];
 }
 
+function normalizeTerminalReplyInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const approval = normalizeApprovalAction(trimmed);
+  if (approval) {
+    return approval;
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^(?:y|n|yes|no)$/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^\/model$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
 function isAgentType(value: string): value is AgentType {
   return SPAWN_TYPES.includes(value as AgentType);
 }
@@ -1348,9 +1369,9 @@ for (const { bot } of botRuntimes) {
         return;
       }
 
-      const approvalReplyAction =
-        parsedPayload.event.reply_to !== null ? normalizeApprovalAction(parsedPayload.event.content) : null;
-      const parsedCommand = approvalReplyAction
+      const terminalReplyInput =
+        parsedPayload.event.reply_to !== null ? normalizeTerminalReplyInput(parsedPayload.event.content) : null;
+      const parsedCommand = terminalReplyInput
         ? {
             intent: "terminal_input" as const,
             shouldForward: true,
@@ -1361,7 +1382,7 @@ for (const { bot } of botRuntimes) {
             monitorUpdateIntervalSec: null,
             pushEnabled: null,
             mode: "bridge" as const,
-            payloadContent: approvalReplyAction,
+            payloadContent: terminalReplyInput,
             picker: null,
             priority: null
           }

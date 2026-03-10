@@ -276,6 +276,39 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
   assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'2' 'Enter'/);
 });
 
+test("sendTerminalInput forwards raw terminal text to tmux pane", async () => {
+  const registry = new InstanceRegistry();
+  const execCalls: string[] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2206) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("cursor", "pane_bridge");
+  execCalls.length = 0;
+
+  const message = manager.sendTerminalInput(threadId, "/model");
+
+  assert.equal(message, `Sent terminal input to ${threadId}.`);
+  assert.equal(execCalls.length, 1);
+  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'\/model' 'Enter'/);
+});
+
 test("sendTerminalInput rejects bridge threads", async () => {
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
@@ -298,7 +331,7 @@ test("sendTerminalInput rejects bridge threads", async () => {
 
   assert.throws(
     () => manager.sendTerminalInput(threadId, "run"),
-    /\/approve requires a pane_bridge thread with tmux/
+    /terminal_input requires a pane_bridge thread with tmux/
   );
 });
 

@@ -19,6 +19,7 @@
       --accent-hover: #2563eb;
       --success-color: #10b981;
       --error-color: #ef4444;
+      --sidebar-width: 300px;
       --safe-area-inset-top: env(safe-area-inset-top, 0px);
       --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
     }
@@ -83,13 +84,14 @@
 
     /* Sidebar / File Explorer */
     #sidebar {
-      width: 260px;
+      width: var(--sidebar-width);
       background: var(--sidebar-color);
       border-right: 1px solid var(--border-color);
       display: flex;
       flex-direction: column;
       transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       z-index: 200;
+      min-width: 0;
     }
 
     .sidebar-overlay {
@@ -105,6 +107,40 @@
     }
     .sidebar-overlay.open { display: block; opacity: 1; }
 
+    .sidebar-tabbar {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.375rem;
+      padding: 0.75rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .sidebar-tabbtn {
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-dim);
+      border-radius: 0.625rem;
+      padding: 0.55rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .sidebar-tabbtn.active {
+      background: var(--surface-color);
+      color: var(--text-color);
+      border-color: rgba(59, 130, 246, 0.45);
+      box-shadow: inset 0 -2px 0 var(--accent-color);
+    }
+    .sidebar-panel {
+      flex: 1;
+      min-height: 0;
+      display: none;
+      flex-direction: column;
+    }
+    .sidebar-panel.active {
+      display: flex;
+    }
     .sidebar-header {
       padding: 0.75rem 1rem;
       font-size: 0.75rem;
@@ -121,6 +157,69 @@
       flex: 1;
       overflow-y: auto;
       padding: 0.5rem;
+    }
+    #session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+    .session-item {
+      border: 1px solid var(--border-color);
+      background: rgba(11, 15, 26, 0.45);
+      border-radius: 0.875rem;
+      padding: 0.75rem;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      text-align: left;
+      color: var(--text-color);
+    }
+    .session-item.active {
+      border-color: rgba(59, 130, 246, 0.55);
+      background: rgba(59, 130, 246, 0.12);
+    }
+    .session-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      font-size: 0.6875rem;
+      color: var(--text-dim);
+    }
+    .session-title {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      color: var(--accent-color);
+      word-break: break-all;
+    }
+    .session-preview {
+      font-size: 0.8125rem;
+      line-height: 1.45;
+      color: var(--text-dim);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .session-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      font-size: 0.625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .session-status.live {
+      color: var(--success-color);
+      border-color: rgba(16, 185, 129, 0.35);
+      background: rgba(16, 185, 129, 0.08);
     }
 
     .tree-item {
@@ -206,7 +305,8 @@
       display: flex;
       flex-direction: column;
       min-width: 0;
-      background: var(--bg-color);
+      background:
+        linear-gradient(180deg, rgba(18, 24, 38, 0.92) 0%, rgba(7, 10, 16, 0.98) 100%);
       position: relative;
     }
 
@@ -271,10 +371,18 @@
       flex: 1;
       display: flex;
       flex-direction: column;
-      background: #000;
+      background: #05070b;
       min-height: 0;
     }
-    #term-container { flex: 1; min-height: 0; padding: 4px; }
+    #term-container {
+      flex: 1;
+      min-height: 0;
+      padding: 0.5rem 0.625rem 0.75rem;
+      border-top: 1px solid rgba(148, 163, 184, 0.08);
+      background:
+        radial-gradient(circle at top, rgba(59, 130, 246, 0.08), transparent 28%),
+        #05070b;
+    }
 
     /* Input Zone */
     #input-zone {
@@ -290,6 +398,17 @@
     }
 
     .input-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+    .header-select {
+      min-width: 180px;
+      max-width: 220px;
+      background: rgba(11, 15, 26, 0.9);
+      border: 1px solid var(--border-color);
+      color: var(--text-color);
+      border-radius: 0.625rem;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
     .textarea-wrapper {
       flex: 1;
       background: var(--bg-color);
@@ -437,6 +556,20 @@
       #menu-toggle { display: none; }
       .header-overflow { display: none; }
       .header-right .btn-action { display: flex; }
+      #workspace {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      }
+      .tabs {
+        height: 36px;
+        background: rgba(11, 15, 26, 0.88);
+      }
+      .tab {
+        border-right-color: rgba(148, 163, 184, 0.12);
+      }
+      #input-zone {
+        background: rgba(11, 15, 26, 0.9);
+      }
     }
 
     .spinner-overlay {
@@ -698,6 +831,9 @@
       <button id="focus-toggle" class="focus-toggle active" type="button">Focus ON</button>
       <button id="push-toggle" class="focus-toggle" type="button">Push OFF</button>
       <button id="filters-toggle" class="focus-toggle" type="button">Filters</button>
+      <select id="model-select" class="header-select" title="Model selector">
+        <option value="">Model: loading…</option>
+      </select>
       <select id="capture-interval" class="focus-toggle" style="appearance:auto;padding:3px 6px;font-size:11px;">
         <option value="3000">Cap 3s</option>
         <option value="5000">Cap 5s</option>
@@ -718,12 +854,27 @@
   <div id="workspace">
     <div id="sidebar-overlay" class="sidebar-overlay"></div>
     <div id="sidebar">
-      <div class="sidebar-header">
-        Explorer
-        <button id="refresh-files" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+      <div class="sidebar-tabbar">
+        <button type="button" class="sidebar-tabbtn active" data-sidebar-tab="files">Files</button>
+        <button type="button" class="sidebar-tabbtn" data-sidebar-tab="sessions">Sessions</button>
       </div>
-      <div id="file-tree">
-        <div class="tree-item" style="opacity: 0.5;">Loading files...</div>
+      <div id="sidebar-files-panel" class="sidebar-panel active">
+        <div class="sidebar-header">
+          Explorer
+          <button id="refresh-files" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+        </div>
+        <div id="file-tree">
+          <div class="tree-item" style="opacity: 0.5;">Loading files...</div>
+        </div>
+      </div>
+      <div id="sidebar-sessions-panel" class="sidebar-panel">
+        <div class="sidebar-header">
+          Sessions
+          <button id="refresh-sessions" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+        </div>
+        <div id="session-list">
+          <div class="tree-item" style="opacity: 0.5;">Loading sessions...</div>
+        </div>
       </div>
     </div>
 
@@ -850,6 +1001,8 @@
       var loadingOverlay = document.getElementById("loading-overlay");
       var sidebar = document.getElementById("sidebar");
       var sidebarOverlay = document.getElementById("sidebar-overlay");
+      var sessionListEl = document.getElementById("session-list");
+      var modelSelectEl = document.getElementById("model-select");
 
       // ── Chat view state ──
       var chatMessagesEl = document.getElementById("chat-messages");
@@ -889,6 +1042,8 @@
       var lastRunResultAtMs = 0;
       var RUN_RESULT_COOLDOWN_MS = 3000;
       var runPending = false;
+      var bubbleElementsByKey = Object.create(null);
+      var modelCatalogState = null;
 
       function isMobile() { return window.innerWidth <= 768; }
 
@@ -1068,39 +1223,71 @@
       }
 
       function extractSummaryBlock(content, expectedTraceId) {
-        var begin = content.indexOf(SUMMARY_MARKER_BEGIN);
-        if (begin < 0) {
-          pendingSummaryBlock = null;
-          return { summary: "", residual: content, incomplete: false };
-        }
-        var beginClose = content.indexOf("]]", begin);
-        if (beginClose < 0) {
-          return { summary: "", residual: content, incomplete: false };
-        }
-
-        var beginTag = content.slice(begin, beginClose + 2);
-        if (beginTag.indexOf("\n") >= 0) {
-          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
-        }
-        var beginId = parseSummaryTagId(beginTag);
-        if (!beginId || (expectedTraceId && beginId !== expectedTraceId.toLowerCase())) {
-          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
-        }
-
+        var normalizedTraceId = (expectedTraceId || "").toLowerCase();
+        var cursor = 0;
+        var latest = null;
         var nowMs = Date.now();
-        if (!pendingSummaryBlock || pendingSummaryBlock.traceId !== beginId) {
-          pendingSummaryBlock = { traceId: beginId, startedAtMs: nowMs };
-        }
 
-        var end = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
-        if (end < 0) {
-          if (nowMs - pendingSummaryBlock.startedAtMs < SUMMARY_BLOCK_TIMEOUT_MS) {
-            return { summary: "", residual: content, incomplete: false };
+        while (cursor < content.length) {
+          var begin = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
+          if (begin < 0) break;
+          var beginClose = content.indexOf("]]", begin);
+          if (beginClose < 0) break;
+
+          var beginTag = content.slice(begin, beginClose + 2);
+          if (beginTag.indexOf("\n") >= 0) {
+            cursor = beginClose + 2;
+            continue;
           }
+
+          var beginId = parseSummaryTagId(beginTag);
+          if (!beginId || (normalizedTraceId && beginId !== normalizedTraceId)) {
+            cursor = beginClose + 2;
+            continue;
+          }
+
+          if (!pendingSummaryBlock || pendingSummaryBlock.traceId !== beginId) {
+            pendingSummaryBlock = { traceId: beginId, startedAtMs: nowMs };
+          }
+
+          var searchFrom = beginClose + 2;
+          var matchedEnd = false;
+          while (searchFrom < content.length) {
+            var end = content.indexOf(SUMMARY_MARKER_END, searchFrom);
+            if (end < 0) break;
+            var endClose = content.indexOf("]]", end);
+            if (endClose < 0) break;
+            var endTag = content.slice(end, endClose + 2);
+            if (endTag.indexOf("\n") >= 0) {
+              searchFrom = endClose + 2;
+              continue;
+            }
+            var endId = parseSummaryTagId(endTag);
+            searchFrom = endClose + 2;
+            if (!endId || endId !== beginId) {
+              continue;
+            }
+            latest = {
+              summary: content.slice(beginClose + 2, end).trim(),
+              residual: (content.slice(0, begin) + content.slice(endClose + 2)).trim(),
+              incomplete: false
+            };
+            pendingSummaryBlock = null;
+            cursor = endClose + 2;
+            matchedEnd = true;
+            break;
+          }
+
+          if (matchedEnd) {
+            continue;
+          }
+
+          if (nowMs - pendingSummaryBlock.startedAtMs < SUMMARY_BLOCK_TIMEOUT_MS) {
+            return latest || { summary: "", residual: content, incomplete: false };
+          }
+
           var partial = content.slice(beginClose + 2).trim();
-          var incompleteSummary = partial
-            ? partial + "\n\n(" + SUMMARY_INCOMPLETE_LABEL + ")"
-            : SUMMARY_INCOMPLETE_LABEL;
+          var incompleteSummary = partial ? partial + "\n\n(" + SUMMARY_INCOMPLETE_LABEL + ")" : SUMMARY_INCOMPLETE_LABEL;
           pendingSummaryBlock = null;
           return {
             summary: incompleteSummary,
@@ -1109,25 +1296,7 @@
           };
         }
 
-        var endClose = content.indexOf("]]", end);
-        if (endClose < 0) {
-          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
-        }
-        var endTag = content.slice(end, endClose + 2);
-        if (endTag.indexOf("\n") >= 0) {
-          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
-        }
-        var endId = parseSummaryTagId(endTag);
-        if (!endId || endId !== beginId) {
-          return { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
-        }
-
-        pendingSummaryBlock = null;
-        return {
-          summary: content.slice(beginClose + 2, end).trim(),
-          residual: (content.slice(0, begin) + content.slice(endClose + 2)).trim(),
-          incomplete: false
-        };
+        return latest || { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
       }
 
       function summarizeAgentText(content, expectedTraceId) {
@@ -1216,7 +1385,8 @@
             return item &&
               typeof item.content === "string" &&
               typeof item.type === "string" &&
-              (item.detailsText === undefined || typeof item.detailsText === "string");
+              (item.detailsText === undefined || typeof item.detailsText === "string") &&
+              (item.messageKey === undefined || typeof item.messageKey === "string");
           });
         } catch (e) {
           return [];
@@ -1229,15 +1399,24 @@
         } catch (e) {}
       }
 
-      function appendChatHistoryEntry(content, type, detailsText) {
+      function appendChatHistoryEntry(content, type, detailsText, messageKey) {
         if (chatHistoryHydrating) return;
         var history = readChatHistory();
         var entry = {
           content: content,
           type: type || "agent",
           detailsText: detailsText || "",
+          messageKey: messageKey || "",
           ts: Date.now()
         };
+        if (entry.messageKey) {
+          for (var historyIndex = history.length - 1; historyIndex >= 0; historyIndex--) {
+            if (history[historyIndex] && history[historyIndex].messageKey === entry.messageKey) {
+              history.splice(historyIndex, 1);
+              break;
+            }
+          }
+        }
         history.push(entry);
         writeChatHistory(history);
       }
@@ -1249,11 +1428,47 @@
         try {
           for (var i = 0; i < history.length; i++) {
             var entry = history[i];
-            addChatBubble(entry.content, entry.type, entry.detailsText, { persist: false, dedupe: false });
+            addChatBubble(entry.content, entry.type, entry.detailsText, {
+              persist: false,
+              dedupe: false,
+              messageKey: entry.messageKey || ""
+            });
           }
         } finally {
           chatHistoryHydrating = false;
         }
+        return true;
+      }
+
+      function cacheServerHistory(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return;
+        writeChatHistory(entries.map(function(entry) {
+          return {
+            content: entry.content || "",
+            type: entry.type || "agent",
+            detailsText: entry.details_text || "",
+            messageKey: entry.trace_id ? "trace:" + entry.trace_id : "",
+            ts: Date.parse(entry.timestamp || "") || Date.now()
+          };
+        }));
+      }
+
+      function restoreServerChatHistory(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return false;
+        chatHistoryHydrating = true;
+        try {
+          for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            addChatBubble(entry.content || "", entry.type || "agent", entry.details_text || "", {
+              persist: false,
+              dedupe: false,
+              messageKey: entry.trace_id ? "trace:" + entry.trace_id : ""
+            });
+          }
+        } finally {
+          chatHistoryHydrating = false;
+        }
+        cacheServerHistory(entries);
         return true;
       }
 
@@ -1263,6 +1478,7 @@
         var resolvedType = type || "agent";
         var resolvedDetails = detailsText || "";
         var fingerprint = makeBubbleFingerprint(content, resolvedType, resolvedDetails);
+        var messageKey = opts.messageKey || "";
         var nowMs = Date.now();
         // Never dedupe user messages — sending the same text twice is intentional
         if (resolvedType !== "user") {
@@ -1277,9 +1493,21 @@
         }
         seenBubbleFingerprintAtMs[fingerprint] = nowMs;
 
+        if (messageKey && bubbleElementsByKey[messageKey] && bubbleElementsByKey[messageKey].parentNode) {
+          var existingBubble = bubbleElementsByKey[messageKey];
+          if (existingBubble.getAttribute("data-fingerprint") === fingerprint) {
+            return;
+          }
+          existingBubble.parentNode.removeChild(existingBubble);
+        }
+
         var bubble = document.createElement("div");
         bubble.className = "chat-bubble " + resolvedType;
         bubble.setAttribute("data-fingerprint", fingerprint);
+        if (messageKey) {
+          bubble.setAttribute("data-message-key", messageKey);
+          bubbleElementsByKey[messageKey] = bubble;
+        }
 
         // Split content into text vs code blocks
         var lines = content.split("\n");
@@ -1412,10 +1640,13 @@
               btn.className = "chat-option-btn";
               btn.textContent = opt.key + ". " + opt.label;
               btn.addEventListener("click", function() {
-                runCommand(opt.key);
                 addChatBubble(opt.key, "user");
                 optDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
                 btn.classList.add("selected");
+                sendTerminalText(opt.key).catch(function(err) {
+                  var msg = err && err.message ? err.message : "Terminal input failed.";
+                  addChatBubble("Error: " + msg, "agent");
+                });
                 if (navigator.vibrate) navigator.vibrate(10);
               });
               optDiv.appendChild(btn);
@@ -1431,10 +1662,13 @@
               btn.className = "chat-yn-btn " + opt.cls;
               btn.textContent = opt.label;
               btn.addEventListener("click", function() {
-                runCommand(opt.key);
                 addChatBubble(opt.key, "user");
                 ynDiv.querySelectorAll(".chat-yn-btn").forEach(function(b) { b.disabled = true; });
                 btn.classList.add("selected");
+                sendTerminalText(opt.key).catch(function(err) {
+                  var msg = err && err.message ? err.message : "Terminal input failed.";
+                  addChatBubble("Error: " + msg, "agent");
+                });
                 if (navigator.vibrate) navigator.vibrate(10);
               });
               ynDiv.appendChild(btn);
@@ -1446,7 +1680,7 @@
         chatMessagesEl.appendChild(bubble);
         if (chatMessagesEl.classList.contains("chat-messages-empty")) chatMessagesEl.classList.remove("chat-messages-empty");
         if (chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-        if (opts.persist !== false) appendChatHistoryEntry(content, resolvedType, resolvedDetails);
+        if (opts.persist !== false) appendChatHistoryEntry(content, resolvedType, resolvedDetails, messageKey);
       }
 
       function showChatTyping(show, text) {
@@ -1531,14 +1765,14 @@
           var digest = summarizeAgentText(newContent, expectedTraceId);
           var cleanSummary = stripMeridianNoise(digest.summary);
           if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
-          if (lastFocusSummarySent && cleanSummary === lastFocusSummarySent) return;
           var cleanDetails = digest.details ? stripMeridianNoise(digest.details) : "";
           var latestDetails = cleanDetails ? computeDelta(cleanDetails, lastFlushedDetails) : "";
           if (cleanDetails) {
             lastFlushedDetails = cleanDetails;
           }
           var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || newContent);
-          addChatBubble(cleanSummary, "agent", rawDetail);
+          var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || newContent);
+          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: bubbleTraceId ? "trace:" + bubbleTraceId : "" });
           lastFocusSummarySent = cleanSummary;
           lastSubmittedInput = "";
           // Only clear trace_id when a proper summary was extracted.
@@ -1560,9 +1794,9 @@
           var digest = summarizeAgentText(text, expectedTraceId);
           var cleanSummary = stripMeridianNoise(digest.summary);
           if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
-          if (lastFocusSummarySent && cleanSummary === lastFocusSummarySent) return;
           var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || text);
-          addChatBubble(cleanSummary, "agent", rawDetail);
+          var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || text);
+          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: bubbleTraceId ? "trace:" + bubbleTraceId : "" });
           lastFocusSummarySent = cleanSummary;
           lastSubmittedInput = "";
           // Only clear trace_id when a proper summary was extracted;
@@ -1677,6 +1911,164 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ interval_ms: ms })
           }).catch(function() {});
+        });
+      }
+
+      function fetchThreadHistory() {
+        if (!threadId) return Promise.resolve([]);
+        return window.MeridianWeb.fetchWithAuth("/api/history?thread_id=" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load history");
+              }
+              return Array.isArray(data) ? data : [];
+            });
+          });
+      }
+
+      function renderSessionList(entries) {
+        if (!sessionListEl) return;
+        sessionListEl.innerHTML = "";
+        if (!Array.isArray(entries) || entries.length === 0) {
+          sessionListEl.innerHTML = '<div class="tree-item" style="opacity: 0.7;">No session history yet.</div>';
+          return;
+        }
+        entries.forEach(function(entry) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "session-item" + (entry.thread_id === threadId ? " active" : "");
+          button.addEventListener("click", function() {
+            var next = "terminal.html?thread_id=" + encodeURIComponent(entry.thread_id);
+            if (token) next += "&token=" + encodeURIComponent(token);
+            location.href = next;
+          });
+
+          var meta = document.createElement("div");
+          meta.className = "session-meta";
+          var status = document.createElement("span");
+          status.className = "session-status" + (entry.active ? " live" : "");
+          status.textContent = entry.active ? "Live" : (entry.status || "stopped");
+          var updated = document.createElement("span");
+          updated.textContent = entry.updated_at ? new Date(entry.updated_at).toLocaleString() : "No history";
+          meta.appendChild(status);
+          meta.appendChild(updated);
+
+          var title = document.createElement("div");
+          title.className = "session-title";
+          title.textContent = entry.thread_id || "unknown";
+
+          var preview = document.createElement("div");
+          preview.className = "session-preview";
+          preview.textContent = entry.preview || "Open this session";
+
+          button.appendChild(meta);
+          button.appendChild(title);
+          button.appendChild(preview);
+          sessionListEl.appendChild(button);
+        });
+      }
+
+      function refreshSessionList() {
+        if (!sessionListEl) return;
+        sessionListEl.innerHTML = '<div class="tree-item" style="opacity: 0.5;">Loading sessions...</div>';
+        window.MeridianWeb.fetchWithAuth("/api/history_threads")
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load sessions");
+              }
+              renderSessionList(Array.isArray(data) ? data : []);
+            });
+          })
+          .catch(function() {
+            sessionListEl.innerHTML = '<div class="tree-item" style="opacity: 0.7;">Failed to load sessions.</div>';
+          });
+      }
+
+      function switchSidebarTab(tabName) {
+        document.querySelectorAll(".sidebar-tabbtn").forEach(function(button) {
+          button.classList.toggle("active", button.getAttribute("data-sidebar-tab") === tabName);
+        });
+        var filesPanel = document.getElementById("sidebar-files-panel");
+        var sessionsPanel = document.getElementById("sidebar-sessions-panel");
+        if (filesPanel) filesPanel.classList.toggle("active", tabName === "files");
+        if (sessionsPanel) sessionsPanel.classList.toggle("active", tabName === "sessions");
+      }
+
+      document.querySelectorAll(".sidebar-tabbtn").forEach(function(button) {
+        button.addEventListener("click", function() {
+          switchSidebarTab(button.getAttribute("data-sidebar-tab") || "files");
+        });
+      });
+      var refreshSessionsBtn = document.getElementById("refresh-sessions");
+      if (refreshSessionsBtn) refreshSessionsBtn.addEventListener("click", refreshSessionList);
+
+      function refreshModelCatalog(selectedModelId) {
+        if (!modelSelectEl || !threadId) return Promise.resolve(null);
+        modelSelectEl.disabled = true;
+        return window.MeridianWeb.fetchWithAuth("/api/models?thread_id=" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load models");
+              }
+              modelCatalogState = data;
+              modelSelectEl.innerHTML = "";
+              var models = Array.isArray(data.models) ? data.models : [];
+              if (models.length === 0) {
+                modelSelectEl.innerHTML = '<option value="">Model: unavailable</option>';
+                modelSelectEl.disabled = true;
+                return data;
+              }
+              models.forEach(function(model, index) {
+                var option = document.createElement("option");
+                option.value = model.id;
+                option.textContent = "Model: " + model.label;
+                option.setAttribute("data-terminal-index", String(index + 1));
+                if ((selectedModelId && selectedModelId === model.id) || (!selectedModelId && data.current_model_id === model.id)) {
+                  option.selected = true;
+                }
+                modelSelectEl.appendChild(option);
+              });
+              modelSelectEl.disabled = false;
+              return data;
+            });
+          })
+          .catch(function() {
+            modelSelectEl.innerHTML = '<option value="">Model: unavailable</option>';
+            modelSelectEl.disabled = true;
+            return null;
+          });
+      }
+
+      if (modelSelectEl) {
+        modelSelectEl.addEventListener("change", function() {
+          if (!modelCatalogState) return;
+          var selectedId = modelSelectEl.value;
+          if (!selectedId || selectedId === modelCatalogState.current_model_id) return;
+          var selectedOption = modelSelectEl.options[modelSelectEl.selectedIndex];
+          var terminalIndex = selectedOption ? selectedOption.getAttribute("data-terminal-index") : "";
+          modelSelectEl.disabled = true;
+          addChatBubble("/model", "user");
+          sendTerminalText("/model")
+            .then(function() {
+              return new Promise(function(resolve) { setTimeout(resolve, 250); });
+            })
+            .then(function() {
+              return sendTerminalText(terminalIndex || selectedId);
+            })
+            .then(function() {
+              addChatBubble("Model switch requested: " + selectedId, "agent");
+              return new Promise(function(resolve) { setTimeout(resolve, 1200); });
+            })
+            .then(function() {
+              return refreshModelCatalog(selectedId);
+            })
+            .catch(function(err) {
+              addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent");
+              refreshModelCatalog(modelCatalogState.current_model_id || "");
+            });
         });
       }
 
@@ -1871,8 +2263,22 @@
       var wsReconnectTimer = null;
       var WS_MAX_RECONNECT_ATTEMPTS = 20;
       var wsConnected = false;
-      var hasStoredChatHistory = restoreChatHistory();
-      var initialReplayLines = hasStoredChatHistory ? 0 : 200;
+      var initialReplayLines = 200;
+      var historyBootstrapPromise = fetchThreadHistory()
+        .then(function(entries) {
+          if (restoreServerChatHistory(entries)) {
+            initialReplayLines = 0;
+            return true;
+          }
+          var restoredLocal = restoreChatHistory();
+          initialReplayLines = restoredLocal ? 0 : 200;
+          return restoredLocal;
+        })
+        .catch(function() {
+          var restoredLocal = restoreChatHistory();
+          initialReplayLines = restoredLocal ? 0 : 200;
+          return restoredLocal;
+        });
 
       function handleWsMessage(ev) {
         try {
@@ -1933,12 +2339,14 @@
         statusEl.lastChild.textContent = connected ? " Live" : " Reconnecting…";
       }
 
-      if (threadId && token) {
-        connectWebSocket();
-      } else {
-        if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent");
-        else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent");
-      }
+      historyBootstrapPromise.finally(function() {
+        if (threadId && token) {
+          connectWebSocket();
+        } else {
+          if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent");
+          else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent");
+        }
+      });
 
       // Auto-reconnect on page visibility change (user returns after being away)
       document.addEventListener("visibilitychange", function() {
@@ -1974,7 +2382,7 @@
         });
       }
 
-      function sendTerminalApproval(action) {
+      function sendTerminalText(action) {
         return window.MeridianWeb.fetchWithAuth("/api/terminal_input", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1982,13 +2390,17 @@
         }).then(function(res) {
           return res.json().then(function(data) {
             if (!res.ok) {
-              var err = new Error(data && data.error ? data.error : "Approval request failed " + res.status);
+              var err = new Error(data && data.error ? data.error : "Terminal input failed " + res.status);
               err.status = res.status;
               throw err;
             }
             return data;
           });
         });
+      }
+
+      function sendTerminalApproval(action) {
+        return sendTerminalText(action);
       }
 
       function handleSend() {
@@ -2028,6 +2440,7 @@
             lastFlushedContent = stripAnsi(resultContent);
             lastRunResultAtMs = Date.now();
             renderAgentContent(resultContent);
+            refreshSessionList();
             // After rendering, flush any pane output that accumulated during the run
             if (chatBuffer.trim()) flushChatBuffer();
           })
@@ -2306,6 +2719,8 @@
       document.getElementById("refresh-files").addEventListener("click", refreshFiles);
       loadExpandedDirs();
       refreshFiles();
+      refreshSessionList();
+      refreshModelCatalog();
 
       function openFile(path) {
         selectedFilePath = path;
@@ -2436,6 +2851,7 @@
           chatMessagesEl.innerHTML = "";
           chatMessagesEl.classList.add("chat-messages-empty");
         }
+        bubbleElementsByKey = Object.create(null);
         lastFlushedContent = "";
         lastFlushedDetails = "";
         seenBubbleFingerprintAtMs = Object.create(null);

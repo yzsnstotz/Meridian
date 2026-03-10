@@ -244,6 +244,107 @@ test("Web Interface Server forwards terminal approval actions through terminal_i
   assert.equal((seenMessages[0]?.payload as { content?: string })?.content, "allow");
 });
 
+test("Web Interface Server returns persisted thread history", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/history?thread_id=codex_01&token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as Array<{ type: string; content: string }>;
+    assert.deepEqual(payload, [
+      {
+        id: "entry-1",
+        type: "user",
+        content: "hello",
+        details_text: "",
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        timestamp: "2026-03-09T00:00:00.000Z"
+      }
+    ]);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "history");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify([
+          {
+            id: "entry-1",
+            type: "user",
+            content: "hello",
+            details_text: "",
+            trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+            timestamp: "2026-03-09T00:00:00.000Z"
+          }
+        ]),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
+test("Web Interface Server returns history thread index and model catalog", async () => {
+  const seenIntents: string[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const [historyRes, modelsRes] = await Promise.all([
+      fetch(`${baseUrl}/api/history_threads?token=secret-token`),
+      fetch(`${baseUrl}/api/models?thread_id=codex_01&token=secret-token`)
+    ]);
+    assert.equal(historyRes.status, 200);
+    assert.equal(modelsRes.status, 200);
+    const historyPayload = (await historyRes.json()) as Array<{ thread_id: string }>;
+    const modelsPayload = (await modelsRes.json()) as { current_model_id: string; models: Array<{ id: string }> };
+    assert.equal(historyPayload[0]?.thread_id, "codex_01");
+    assert.equal(modelsPayload.current_model_id, "gpt-5.4");
+    assert.equal(modelsPayload.models[0]?.id, "gpt-5.4");
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenIntents.push(message.intent);
+      if (message.intent === "history") {
+        return {
+          trace_id: message.trace_id,
+          thread_id: "global",
+          source: "codex",
+          status: "success",
+          content: JSON.stringify([
+            {
+              thread_id: "codex_01",
+              updated_at: "2026-03-09T00:00:00.000Z",
+              preview: "hello",
+              active: true,
+              status: "running",
+              agent_type: "codex",
+              model_id: "gpt-5.4"
+            }
+          ]),
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({
+          thread_id: "codex_01",
+          provider: "codex",
+          current_model_id: "gpt-5.4",
+          models: [
+            { id: "gpt-5.4", label: "GPT 5.4" },
+            { id: "codex-5.3-max", label: "Codex 5.3 Max" }
+          ]
+        }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.deepEqual(seenIntents.sort(), ["history", "list_models"]);
+});
+
 test("Web Interface Server bridges pane output over WebSocket", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-"));
   const socketPath = path.join(socketDir, "hub.sock");
