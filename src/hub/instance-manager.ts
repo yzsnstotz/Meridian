@@ -1052,6 +1052,29 @@ export class InstanceManager {
     this.paneCaptureByThread.delete(threadId);
   }
 
+  /**
+   * Compute the delta (new lines only) between last snapshot and current snapshot.
+   * Terminal output grows downward; when the pane scrolls, the top of the new snapshot
+   * may overlap with the tail of the old. We find the longest overlap (last i lines of
+   * old = first i lines of new) and return the remaining lines of new as the delta.
+   */
+  private computePaneDelta(lastSnapshot: string, snapshot: string): string {
+    const oldLines = lastSnapshot.split(/\n/);
+    const newLines = snapshot.split(/\n/);
+    const n = oldLines.length;
+    const m = newLines.length;
+    let overlap = 0;
+    for (let i = 1; i <= Math.min(n, m); i++) {
+      const oldSuffix = oldLines.slice(n - i, n);
+      const newPrefix = newLines.slice(0, i);
+      if (oldSuffix.every((line, j) => line === newPrefix[j])) {
+        overlap = i;
+      }
+    }
+    const deltaLines = newLines.slice(overlap);
+    return deltaLines.join("\n") + (deltaLines.length > 0 ? "\n" : "");
+  }
+
   private capturePaneSnapshot(threadId: string): void {
     const capture = this.paneCaptureByThread.get(threadId);
     if (!capture) {
@@ -1070,9 +1093,13 @@ export class InstanceManager {
       if (!snapshot || snapshot === capture.lastSnapshot) {
         return;
       }
+      const delta = this.computePaneDelta(capture.lastSnapshot, snapshot);
       capture.lastSnapshot = snapshot;
+      if (!delta.trim()) {
+        return;
+      }
       const timestamp = this.now().toISOString();
-      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${snapshot}\n`, "utf8");
+      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${delta}`, "utf8");
     } catch (error) {
       this.log.warn(
         {

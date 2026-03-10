@@ -100,6 +100,8 @@ test("terminal layout includes sidebar session history and model picker", async 
   assert.match(terminalHtml, /\/api\/history_threads/);
   assert.match(terminalHtml, /id="model-select"/);
   assert.match(terminalHtml, /\/api\/models\?thread_id=/);
+  assert.match(terminalHtml, /fetchWithAuth\("\/api\/models",\s*\{/);
+  assert.match(terminalHtml, /Model: unavailable/);
 });
 
 test("terminal chat prioritizes structured /api/run result to avoid pane replay mixing", async () => {

@@ -56,6 +56,11 @@ const threadQuerySchema = z.object({
   thread_id: z.string().min(1)
 });
 
+const switchModelBodySchema = z.object({
+  thread_id: z.string().min(1),
+  model_id: z.string().min(1)
+});
+
 const fileWriteBodySchema = z.object({
   thread_id: z.string().min(1),
   path: z.string().min(1),
@@ -473,6 +478,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/models" && request.method === "POST") {
+      await this.handleSwitchModelRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/capture_interval" && request.method === "GET") {
       await this.handleGetCaptureInterval(request, response);
       return;
@@ -675,6 +685,23 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleSwitchModelRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const body = switchModelBodySchema.parse(await this.readJsonBody(request));
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "switch_model",
+          thread_id: body.thread_id,
+          target: body.thread_id,
+          content: body.model_id
+        })
+      )
+    );
+    this.respondJson(response, 200, result);
   }
 
   private async handlePushToggleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

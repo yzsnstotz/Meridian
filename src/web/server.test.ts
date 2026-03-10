@@ -345,6 +345,36 @@ test("Web Interface Server returns history thread index and model catalog", asyn
   assert.deepEqual(seenIntents.sort(), ["history", "list_models"]);
 });
 
+test("Web Interface Server switches model through dedicated API", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/models?token=secret-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: "codex_01", model_id: "codex-5.3-max" })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { content: string; thread_id: string };
+    assert.equal(payload.thread_id, "codex_01");
+    assert.equal(payload.content, "Switched codex_01 to model=codex-5.3-max");
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "switch_model");
+      assert.equal(message.thread_id, "codex_01");
+      assert.equal(message.target, "codex_01");
+      assert.equal(message.payload.content, "codex-5.3-max");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: "Switched codex_01 to model=codex-5.3-max",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
 test("Web Interface Server bridges pane output over WebSocket", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-"));
   const socketPath = path.join(socketDir, "hub.sock");

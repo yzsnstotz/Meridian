@@ -51,8 +51,8 @@
       flex-wrap: wrap;
     }
 
-    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex-shrink: 1; overflow: visible; flex-wrap: wrap; }
-    .header-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1 1 auto; overflow: visible; }
+    .header-right { display: flex; align-items: center; gap: 0.5rem; flex: 0 1 auto; min-width: 0; }
     .focus-toggle {
       background: transparent;
       border: 1px solid var(--border-color);
@@ -71,8 +71,32 @@
     .back-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 0.5rem; display: flex; border-radius: 0.375rem; touch-action: manipulation; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
     .back-btn:hover { color: #fff; background: var(--surface-hover); }
     
-    header h1 { font-size: 0.9375rem; font-weight: 600; display: block; min-width: 0; line-height: 1.6; }
-    .thread-badge { background: var(--bg-color); color: var(--accent-color); padding: 0.125rem 0.375rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.75rem; border: 1px solid var(--border-color); word-break: break-all; overflow-wrap: anywhere; display: inline; }
+    header h1 {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      display: block;
+      min-width: 0;
+      flex: 1 1 auto;
+      line-height: 1.6;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .thread-badge {
+      background: var(--bg-color);
+      color: var(--accent-color);
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.375rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      border: 1px solid var(--border-color);
+      display: inline-block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
 
 
     #workspace {
@@ -451,10 +475,33 @@
 
     /* Mobile Styles */
     @media (max-width: 768px) {
-      header { padding: calc(0.5rem + var(--safe-area-inset-top)) 0.75rem 0.5rem; }
+      header {
+        padding: calc(0.5rem + var(--safe-area-inset-top)) 0.75rem 0.5rem;
+        align-items: stretch;
+      }
+      .header-left {
+        width: 100%;
+        flex-wrap: nowrap;
+      }
+      .header-right {
+        width: 100%;
+        justify-content: flex-end;
+      }
+      .header-select {
+        min-width: 0;
+        max-width: none;
+        flex: 1 1 auto;
+      }
+      #agent-status {
+        margin-left: 0 !important;
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
       #sidebar {
         position: absolute;
         left: 0; top: 0; bottom: 0;
+        width: min(var(--sidebar-width), calc(100vw - 2.5rem));
+        max-width: calc(100vw - 2.5rem);
         transform: translateX(-100%);
         box-shadow: 10px 0 30px rgba(0,0,0,0.5);
       }
@@ -486,6 +533,9 @@
       .nav-item svg { width: 22px; height: 22px; }
       
       #main-content .tabs { display: none; } /* Use bottom nav instead */
+    }
+    @media (max-width: 480px) {
+      #agent-status { display: none !important; }
     }
 
     /* Header overflow menu (mobile: Reboot/Kill in dropdown) */
@@ -2005,7 +2055,21 @@
       if (refreshSessionsBtn) refreshSessionsBtn.addEventListener("click", refreshSessionList);
 
       function refreshModelCatalog(selectedModelId) {
-        if (!modelSelectEl || !threadId) return Promise.resolve(null);
+        if (!modelSelectEl) return Promise.resolve(null);
+        function renderUnavailable(label) {
+          modelCatalogState = null;
+          modelSelectEl.innerHTML = "";
+          var option = document.createElement("option");
+          option.value = "";
+          option.textContent = label || "Model: unavailable";
+          option.selected = true;
+          modelSelectEl.appendChild(option);
+          modelSelectEl.disabled = true;
+        }
+        if (!threadId) {
+          renderUnavailable("Model: unavailable");
+          return Promise.resolve(null);
+        }
         modelSelectEl.disabled = true;
         return window.MeridianWeb.fetchWithAuth("/api/models?thread_id=" + encodeURIComponent(threadId))
           .then(function(res) {
@@ -2016,28 +2080,41 @@
               modelCatalogState = data;
               modelSelectEl.innerHTML = "";
               var models = Array.isArray(data.models) ? data.models : [];
+              var currentModelId = typeof data.current_model_id === "string" ? data.current_model_id : "";
               if (models.length === 0) {
-                modelSelectEl.innerHTML = '<option value="">Model: unavailable</option>';
-                modelSelectEl.disabled = true;
+                renderUnavailable(currentModelId ? "Model: unavailable (" + currentModelId + ")" : "Model: unavailable");
                 return data;
               }
+              var hasCurrentModel = currentModelId
+                ? models.some(function(model) { return model && model.id === currentModelId; })
+                : false;
+              if (currentModelId && !hasCurrentModel) {
+                var unavailableOption = document.createElement("option");
+                unavailableOption.value = "";
+                unavailableOption.textContent = "Model: unavailable (" + currentModelId + ")";
+                unavailableOption.selected = !selectedModelId;
+                modelSelectEl.appendChild(unavailableOption);
+              }
+              var matchedSelection = false;
               models.forEach(function(model, index) {
                 var option = document.createElement("option");
                 option.value = model.id;
                 option.textContent = "Model: " + model.label;
-                option.setAttribute("data-terminal-index", String(index + 1));
-                if ((selectedModelId && selectedModelId === model.id) || (!selectedModelId && data.current_model_id === model.id)) {
+                if ((selectedModelId && selectedModelId === model.id) || (!selectedModelId && currentModelId === model.id)) {
                   option.selected = true;
+                  matchedSelection = true;
                 }
                 modelSelectEl.appendChild(option);
               });
+              if (!matchedSelection && modelSelectEl.options.length > 0) {
+                modelSelectEl.selectedIndex = 0;
+              }
               modelSelectEl.disabled = false;
               return data;
             });
           })
           .catch(function() {
-            modelSelectEl.innerHTML = '<option value="">Model: unavailable</option>';
-            modelSelectEl.disabled = true;
+            renderUnavailable("Model: unavailable");
             return null;
           });
       }
@@ -2047,16 +2124,19 @@
           if (!modelCatalogState) return;
           var selectedId = modelSelectEl.value;
           if (!selectedId || selectedId === modelCatalogState.current_model_id) return;
-          var selectedOption = modelSelectEl.options[modelSelectEl.selectedIndex];
-          var terminalIndex = selectedOption ? selectedOption.getAttribute("data-terminal-index") : "";
           modelSelectEl.disabled = true;
-          addChatBubble("/model", "user");
-          sendTerminalText("/model")
-            .then(function() {
-              return new Promise(function(resolve) { setTimeout(resolve, 250); });
-            })
-            .then(function() {
-              return sendTerminalText(terminalIndex || selectedId);
+          window.MeridianWeb.fetchWithAuth("/api/models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId, model_id: selectedId })
+          })
+            .then(function(res) {
+              return res.json().then(function(data) {
+                if (!res.ok) {
+                  throw new Error(data && data.error ? data.error : "Failed to switch model");
+                }
+                return data;
+              });
             })
             .then(function() {
               addChatBubble("Model switch requested: " + selectedId, "agent");
