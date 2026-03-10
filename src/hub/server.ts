@@ -97,8 +97,12 @@ interface PushAccumulator {
 
 interface PushDedupState {
   fingerprint: string;
+  /** Tail of last sent content (last PUSH_DEDUP_TAIL_CHARS) to catch same trace block with different leading text. */
+  tailFingerprint: string;
   sentAtMs: number;
 }
+
+const PUSH_DEDUP_TAIL_CHARS = 600;
 
 export class HubServer {
   private readonly log = createLogger("hub");
@@ -923,7 +927,7 @@ export class HubServer {
     if (!content) {
       return;
     }
-    if (this.isDuplicatePushContent(threadId, content)) {
+    if (this.isDuplicatePushContent(threadId, content, { skipTailDedup: classification.kind === "action_required" })) {
       return;
     }
 
@@ -1094,14 +1098,35 @@ export class HubServer {
     return latest && latest.trim() ? latest.trim() : null;
   }
 
-  private isDuplicatePushContent(threadId: string, content: string): boolean {
+  private isDuplicatePushContent(
+    threadId: string,
+    content: string,
+    options?: { skipTailDedup?: boolean }
+  ): boolean {
     const nowMs = Date.now();
     const fingerprint = content.trim();
+    const tailFingerprint =
+      fingerprint.length > PUSH_DEDUP_TAIL_CHARS
+        ? fingerprint.slice(-PUSH_DEDUP_TAIL_CHARS)
+        : fingerprint;
     const previous = this.lastPushDedupByThread.get(threadId);
-    if (previous && previous.fingerprint === fingerprint && nowMs - previous.sentAtMs < PUSH_DEDUP_WINDOW_MS) {
-      return true;
+    if (previous && nowMs - previous.sentAtMs < PUSH_DEDUP_WINDOW_MS) {
+      if (previous.fingerprint === fingerprint) {
+        return true;
+      }
+      if (
+        !options?.skipTailDedup &&
+        tailFingerprint.length >= 80 &&
+        previous.tailFingerprint === tailFingerprint
+      ) {
+        return true;
+      }
     }
-    this.lastPushDedupByThread.set(threadId, { fingerprint, sentAtMs: nowMs });
+    this.lastPushDedupByThread.set(threadId, {
+      fingerprint,
+      tailFingerprint,
+      sentAtMs: nowMs
+    });
     return false;
   }
 

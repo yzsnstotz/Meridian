@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 import { config } from "../config";
@@ -7,6 +10,7 @@ import type { AgentType, ProviderModel } from "../types";
 const execFileAsync = promisify(execFile);
 type ExecFileResult = { stdout: string; stderr: string };
 type ExecFileFn = (file: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => Promise<ExecFileResult>;
+type ReadFileFn = (filePath: string, encoding: BufferEncoding) => Promise<string>;
 
 interface OpenAiModelRecord {
   id?: unknown;
@@ -30,6 +34,12 @@ interface CodexModelRecord {
   hidden?: unknown;
 }
 
+interface CodexCachedModelRecord {
+  slug?: unknown;
+  display_name?: unknown;
+  visibility?: unknown;
+}
+
 export interface ProviderModelCatalogResult {
   provider: AgentType;
   models: ProviderModel[];
@@ -38,10 +48,12 @@ export interface ProviderModelCatalogResult {
 export interface ProviderModelCatalogOptions {
   fetchFn?: typeof fetch;
   execFileFn?: ExecFileFn;
+  readFileFn?: ReadFileFn;
   openAiApiKey?: string;
   anthropicApiKey?: string;
   geminiApiKey?: string;
   cursorApiKey?: string;
+  codexModelsCachePath?: string;
 }
 
 const OPENAI_MODEL_PREFIXES = ["gpt-", "codex-", "o1", "o3", "o4"];
@@ -102,10 +114,12 @@ function expectApiKey(provider: AgentType, value: string | undefined): string {
 export class ProviderModelCatalog {
   private readonly fetchFn: typeof fetch;
   private readonly execFileFn: ExecFileFn;
+  private readonly readFileFn: ReadFileFn;
   private readonly openAiApiKey: string | undefined;
   private readonly anthropicApiKey: string | undefined;
   private readonly geminiApiKey: string | undefined;
   private readonly cursorApiKey: string | undefined;
+  private readonly codexModelsCachePath: string;
 
   constructor(options: ProviderModelCatalogOptions = {}) {
     this.fetchFn = options.fetchFn ?? fetch;
@@ -118,10 +132,12 @@ export class ProviderModelCatalog {
           stderr: typeof result.stderr === "string" ? result.stderr : result.stderr.toString("utf8")
         };
       });
+    this.readFileFn = options.readFileFn ?? fs.readFile;
     this.openAiApiKey = options.openAiApiKey ?? config.OPENAI_API_KEY;
     this.anthropicApiKey = options.anthropicApiKey ?? config.ANTHROPIC_API_KEY;
     this.geminiApiKey = options.geminiApiKey ?? config.GEMINI_API_KEY;
     this.cursorApiKey = options.cursorApiKey ?? config.CURSOR_API_KEY;
+    this.codexModelsCachePath = options.codexModelsCachePath ?? path.join(os.homedir(), ".codex", "models_cache.json");
   }
 
   async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
@@ -154,23 +170,63 @@ export class ProviderModelCatalog {
       return await this.listCodexModelsViaAppServer();
     } catch (codexError) {
       const codexErrorMessage = codexError instanceof Error ? codexError.message : String(codexError);
-      if (!this.openAiApiKey) {
-        throw new Error(
-          `Codex model catalog failed via codex app-server: ${codexErrorMessage}. ` +
-          "Set OPENAI_API_KEY to enable OpenAI fallback."
-        );
-      }
-
       try {
-        return await this.listOpenAiModels();
-      } catch (openAiError) {
-        const openAiErrorMessage = openAiError instanceof Error ? openAiError.message : String(openAiError);
-        throw new Error(
-          `Codex model catalog failed via codex app-server: ${codexErrorMessage}. ` +
-          `OpenAI fallback failed: ${openAiErrorMessage}`
-        );
+        return await this.listCodexModelsViaLocalCache();
+      } catch (cacheError) {
+        const cacheErrorMessage = cacheError instanceof Error ? cacheError.message : String(cacheError);
+        if (!this.openAiApiKey) {
+          throw new Error(
+            `Codex model catalog failed via codex app-server: ${codexErrorMessage}. ` +
+            `Local models cache fallback failed: ${cacheErrorMessage}. ` +
+            "Set OPENAI_API_KEY to enable OpenAI fallback."
+          );
+        }
+
+        try {
+          return await this.listOpenAiModels();
+        } catch (openAiError) {
+          const openAiErrorMessage = openAiError instanceof Error ? openAiError.message : String(openAiError);
+          throw new Error(
+            `Codex model catalog failed via codex app-server: ${codexErrorMessage}. ` +
+            `Local models cache fallback failed: ${cacheErrorMessage}. ` +
+            `OpenAI fallback failed: ${openAiErrorMessage}`
+          );
+        }
       }
     }
+  }
+
+  private async listCodexModelsViaLocalCache(): Promise<ProviderModel[]> {
+    const raw = await this.readFileFn(this.codexModelsCachePath, "utf8");
+    const payload = JSON.parse(raw) as { models?: unknown };
+    const records = Array.isArray(payload.models) ? payload.models : [];
+    const models = records.flatMap((entry) => {
+      if (!isRecord(entry)) {
+        return [];
+      }
+      const record = entry as CodexCachedModelRecord;
+      const slug = typeof record.slug === "string" ? record.slug.trim() : "";
+      if (!slug) {
+        return [];
+      }
+      if (typeof record.visibility === "string" && record.visibility.trim().toLowerCase() === "hide") {
+        return [];
+      }
+      const displayName = typeof record.display_name === "string" && record.display_name.trim().length > 0
+        ? record.display_name.trim()
+        : formatModelLabel(slug);
+      return [
+        {
+          id: slug,
+          label: displayName
+        }
+      ];
+    });
+
+    if (models.length === 0) {
+      throw new Error("codex models cache returned no selectable models");
+    }
+    return sortAndDeduplicateModels(models);
   }
 
   private async listCodexModelsViaAppServer(): Promise<ProviderModel[]> {

@@ -1068,7 +1068,8 @@ export class InstanceManager {
    * old = first i lines of new) and return the remaining lines of new as the delta.
    * First frame (lastSnapshot === ""): return full snapshot normalized with trailing newline.
    * When overlap is 0 (e.g. full-screen redraw) and not first frame: return last K lines
-   * of the new snapshot to avoid losing content without duplicating the entire screen.
+   * only if they are not already present at the end of lastSnapshot, to avoid duplicate
+   * blocks in the pane log (which would cause duplicate push deliveries).
    */
   private computePaneDelta(lastSnapshot: string, snapshot: string): string {
     const oldLines = lastSnapshot.split(/\n/);
@@ -1091,7 +1092,13 @@ export class InstanceManager {
     }
     if (overlap === 0) {
       const tailLines = newLines.slice(-K);
-      return tailLines.join("\n") + (tailLines.length > 0 ? "\n" : "");
+      const tailBlock = tailLines.join("\n") + (tailLines.length > 0 ? "\n" : "");
+      const oldTail = oldLines.slice(-K).join("\n").trimEnd();
+      const newTail = tailLines.join("\n").trimEnd();
+      if (newTail.length > 0 && newTail === oldTail) {
+        return "";
+      }
+      return tailBlock;
     }
     const deltaLines = newLines.slice(overlap);
     return deltaLines.join("\n") + (deltaLines.length > 0 ? "\n" : "");

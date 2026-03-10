@@ -450,6 +450,7 @@ export class HubRouter {
       trace_id: message.trace_id,
       timestamp: this.now().toISOString()
     });
+    this.persistStateSafely();
 
     try {
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
@@ -506,6 +507,7 @@ export class HubRouter {
         trace_id: message.trace_id,
         timestamp: this.now().toISOString()
       });
+      this.persistStateSafely();
     }
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }

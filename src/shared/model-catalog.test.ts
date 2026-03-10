@@ -50,6 +50,9 @@ test("ProviderModelCatalog falls back to OpenAI models for Codex when app-server
     execFileFn: async () => {
       throw new Error("codex app-server unavailable");
     },
+    readFileFn: async () => {
+      throw new Error("local cache unavailable");
+    },
     fetchFn: async () =>
       new Response(
         JSON.stringify({
@@ -72,16 +75,57 @@ test("ProviderModelCatalog falls back to OpenAI models for Codex when app-server
   ]);
 });
 
+test("ProviderModelCatalog falls back to local Codex cache when app-server path fails", async () => {
+  const catalog = new ProviderModelCatalog({
+    execFileFn: async () => {
+      throw new Error("codex app-server unavailable");
+    },
+    readFileFn: async () =>
+      JSON.stringify({
+        models: [
+          {
+            slug: "gpt-5.4",
+            display_name: "GPT-5.4",
+            visibility: "list"
+          },
+          {
+            slug: "gpt-5.1-codex",
+            display_name: "GPT-5.1 Codex",
+            visibility: "hide"
+          },
+          {
+            slug: "codex-5.3-max",
+            visibility: "list"
+          }
+        ]
+      }),
+    fetchFn: async () => {
+      throw new Error("fetch should not be called when cache fallback succeeds");
+    }
+  });
+
+  const result = await catalog.listModels("codex");
+
+  assert.equal(result.provider, "codex");
+  assert.deepEqual(result.models, [
+    { id: "codex-5.3-max", label: "Codex-5.3-Max" },
+    { id: "gpt-5.4", label: "GPT-5.4" }
+  ]);
+});
+
 test("ProviderModelCatalog surfaces Codex app-server failure when no OpenAI fallback is configured", async () => {
   const catalog = new ProviderModelCatalog({
     execFileFn: async () => {
       throw new Error("codex app-server unavailable");
+    },
+    readFileFn: async () => {
+      throw new Error("local cache unavailable");
     }
   });
 
   await assert.rejects(
     async () => await catalog.listModels("codex"),
-    /Codex model catalog failed via codex app-server/
+    /Local models cache fallback failed: local cache unavailable/
   );
 });
 
