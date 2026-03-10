@@ -509,16 +509,25 @@ export class HubServer {
   }
 
   private async deliverMonitorCompletionResult(event: MonitorEvent): Promise<void> {
-    const sessionTargets = this.collectMonitorCompletionTargets(event.thread_id);
+    const allTargets = this.collectMonitorCompletionTargets(event.thread_id);
+    const pushKeys = this.getPushSubscriberSessionKeys(event.thread_id);
+    const sessionTargets = allTargets.filter((session) => !pushKeys.has(session));
     if (sessionTargets.length === 0) {
-      this.log.warn(
-        {
-          trace_id: event.trace_id,
-          thread_id: event.thread_id,
-          event_type: event.event_type
-        },
-        "Monitor completion skipped because no recipient is registered for thread"
-      );
+      if (allTargets.length > 0) {
+        this.log.debug(
+          { thread_id: event.thread_id, event_type: event.event_type },
+          "Monitor completion skipped: all recipients are push subscribers (they get pane push only)"
+        );
+      } else {
+        this.log.warn(
+          {
+            trace_id: event.trace_id,
+            thread_id: event.thread_id,
+            event_type: event.event_type
+          },
+          "Monitor completion skipped because no recipient is registered for thread"
+        );
+      }
       return;
     }
 
@@ -664,6 +673,13 @@ export class HubServer {
         if (this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId)) {
           continue;
         }
+        const pushKeys = this.getPushSubscriberSessionKeys(threadId);
+        const targetsToNotify = targets.filter(
+          (t) => !pushKeys.has(t.botId ? `${t.botId}:${t.chatId}` : t.chatId)
+        );
+        if (targetsToNotify.length === 0) {
+          continue;
+        }
 
         const traceId = randomUUID();
         let progressResult: HubResult;
@@ -693,7 +709,7 @@ export class HubServer {
         }
 
         this.recordAgentPushConversationSafe(threadId, progressResult.content, progressResult.trace_id);
-        for (const target of targets) {
+        for (const target of targetsToNotify) {
           await this.resultSender
             .sendResult(this.buildHistoryBackedResult(progressResult), {
               channel: "telegram",
@@ -868,23 +884,29 @@ export class HubServer {
   }
 
   private async flushPushAccumulator(threadId: string): Promise<void> {
-    if (this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId)) {
-      this.pushAccumulators.delete(threadId);
-      return;
-    }
-
     const accumulator = this.pushAccumulators.get(threadId);
     if (!accumulator) {
       return;
     }
-    this.pushAccumulators.delete(threadId);
 
     const combined = accumulator.chunks.join("");
     if (!combined.trim()) {
+      this.pushAccumulators.delete(threadId);
       return;
     }
 
     const classification = classifyAgentOutput(combined);
+
+    // Allow action_required (approval prompts) through even during active runs
+    // so the user on the other client can respond to approvals.
+    const runBlocked = this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId);
+    if (runBlocked && classification.kind !== "action_required") {
+      this.pushAccumulators.delete(threadId);
+      return;
+    }
+
+    this.pushAccumulators.delete(threadId);
+
     if (classification.kind === "transient") {
       return;
     }
@@ -955,6 +977,16 @@ export class HubServer {
     };
     const subscriptions = candidate.getPushSubscriptionsForThread?.(threadId) ?? [];
     return subscriptions.map((entry) => ({ threadId, chatId: entry.chatId, botId: entry.botId }));
+  }
+
+  /** Session keys for push subscribers (chatId or botId:chatId) so we can skip sending them monitor completion/progress (they get pane push only). */
+  private getPushSubscriberSessionKeys(threadId: string): Set<string> {
+    const subs = this.getPushSubscriptionsForThreadSafe(threadId);
+    const keys = new Set<string>();
+    for (const sub of subs) {
+      keys.add(sub.botId ? `${sub.botId}:${sub.chatId}` : sub.chatId);
+    }
+    return keys;
   }
 
   private isRunActiveForThreadSafe(threadId: string): boolean {

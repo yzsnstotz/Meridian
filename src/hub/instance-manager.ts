@@ -66,6 +66,8 @@ export interface InstanceManagerOptions {
   modelCatalog?: ProviderModelCatalog;
   now?: () => Date;
   paneBridgeUsePtyWrapper?: boolean;
+  /** When pane delta has no overlap (full-screen redraw), write last K lines to log instead of skipping. Default 50. */
+  paneDeltaTailLinesWhenNoOverlap?: number;
 }
 
 const SESSION_THREAD_PLACEHOLDERS = new Set(["active", "all", "global", "pending", "unbound", "none"]);
@@ -79,6 +81,10 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
 const DEFAULT_AGENT_WORKDIR = process.env.AGENT_WORKDIR ?? process.cwd();
+/** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
+const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
+/** Bytes of pane log tail to read when deduping capture vs run-injected content. */
+const CAPTURE_DEDUP_TAIL_SIZE = 65536;
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
 type AgentEndpointBinding = {
   endpoint: string;
@@ -107,6 +113,7 @@ export class InstanceManager {
   private readonly modelCatalog: ProviderModelCatalog;
   private readonly now: () => Date;
   private readonly paneBridgeUsePtyWrapper: boolean;
+  private readonly paneDeltaTailLinesWhenNoOverlap: number;
   private agentapiSocketSupportCache: boolean | null = null;
   private agentapiAttachSocketSupportCache: boolean | null = null;
   private paneCaptureIntervalMs: number = config.PANE_CAPTURE_INTERVAL_MS;
@@ -139,6 +146,8 @@ export class InstanceManager {
     this.modelCatalog = options.modelCatalog ?? new ProviderModelCatalog();
     this.now = options.now ?? (() => new Date());
     this.paneBridgeUsePtyWrapper = options.paneBridgeUsePtyWrapper ?? false;
+    this.paneDeltaTailLinesWhenNoOverlap =
+      options.paneDeltaTailLinesWhenNoOverlap ?? PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP;
   }
 
   async spawn(type: AgentType, mode: BridgeMode, workingDirectory?: string, modelId?: string): Promise<string> {
@@ -1057,12 +1066,21 @@ export class InstanceManager {
    * Terminal output grows downward; when the pane scrolls, the top of the new snapshot
    * may overlap with the tail of the old. We find the longest overlap (last i lines of
    * old = first i lines of new) and return the remaining lines of new as the delta.
+   * First frame (lastSnapshot === ""): return full snapshot normalized with trailing newline.
+   * When overlap is 0 (e.g. full-screen redraw) and not first frame: return last K lines
+   * of the new snapshot to avoid losing content without duplicating the entire screen.
    */
   private computePaneDelta(lastSnapshot: string, snapshot: string): string {
     const oldLines = lastSnapshot.split(/\n/);
     const newLines = snapshot.split(/\n/);
     const n = oldLines.length;
     const m = newLines.length;
+    const K = this.paneDeltaTailLinesWhenNoOverlap;
+
+    if (lastSnapshot === "") {
+      return snapshot.trimEnd() ? snapshot.trimEnd() + "\n" : "";
+    }
+
     let overlap = 0;
     for (let i = 1; i <= Math.min(n, m); i++) {
       const oldSuffix = oldLines.slice(n - i, n);
@@ -1070,6 +1088,10 @@ export class InstanceManager {
       if (oldSuffix.every((line, j) => line === newPrefix[j])) {
         overlap = i;
       }
+    }
+    if (overlap === 0) {
+      const tailLines = newLines.slice(-K);
+      return tailLines.join("\n") + (tailLines.length > 0 ? "\n" : "");
     }
     const deltaLines = newLines.slice(overlap);
     return deltaLines.join("\n") + (deltaLines.length > 0 ? "\n" : "");
@@ -1082,24 +1104,23 @@ export class InstanceManager {
     }
 
     try {
-      const output = this.execSyncFn(
-        `tmux capture-pane -p -t ${this.shellEscape(capture.tmuxSession)} -e`,
-        {
-          stdio: ["ignore", "pipe", "ignore"],
-          encoding: "utf8"
-        }
+      // Capture currently visible pane content so the log gets output as soon as it
+      // appears (scrollback-only capture wrote only when lines scrolled off, so the
+      // log stayed empty on large panes or low output).
+      const rawSnapshot = this.execSyncFn(
+        `tmux capture-pane -e -p -t ${this.shellEscape(capture.tmuxSession)}`,
+        { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }
       );
-      const snapshot = this.toText(output).trimEnd();
-      if (!snapshot || snapshot === capture.lastSnapshot) {
-        return;
-      }
+      const snapshot = this.toText(rawSnapshot).trimEnd();
       const delta = this.computePaneDelta(capture.lastSnapshot, snapshot);
       capture.lastSnapshot = snapshot;
-      if (!delta.trim()) {
+
+      if (!delta) {
         return;
       }
+
       const timestamp = this.now().toISOString();
-      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${delta}`, "utf8");
+      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${delta}\n`, "utf8");
     } catch (error) {
       this.log.warn(
         {

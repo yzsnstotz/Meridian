@@ -79,3 +79,28 @@ test("classifyAgentOutput marks protocol-only summary blocks as transient", () =
   const result = classifyAgentOutput(protocolOnly);
   assert.equal(result.kind, "transient");
 });
+
+test("classifyAgentOutput recognizes Codex-style approval prompt", () => {
+  const codexFrame = [
+    "Would you like to run the following command?",
+    "",
+    "Reason: Do you want me to query the live local web API so I can confirm why",
+    "the GUI and /list data are out of sync on the running service?",
+    "",
+    "$ curl --max-time 5 -sS 'http://127.0.0.1:3000/api/instances?token=meridian-gui-token'",
+    "",
+    "› 1. Yes, proceed (y)",
+    "  2. Yes, and don't ask again for commands that start with `curl --max-time 5` (p)",
+    "  3. No, and tell Codex what to do differently (esc)",
+    "",
+    "Press enter to confirm or esc to cancel"
+  ].join("\n");
+
+  const result = classifyAgentOutput(codexFrame);
+  assert.equal(result.kind, "action_required");
+  assert.match(result.text, /^Waiting for approval\.\.\./);
+  assert.match(result.text, /Run this command\?/);
+  assert.match(result.text, /curl --max-time 5/);
+  assert.match(result.text, /1\.\s*Yes, proceed/);
+  assert.match(result.text, /3\.\s*No, and tell Codex what to do differently/);
+});

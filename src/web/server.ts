@@ -11,6 +11,7 @@ import { config } from "../config";
 import { requestHubMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
 import {
+  AgentTypeSchema,
   FileAttachmentSchema,
   HubMessageSchema,
   HubResultSchema,
@@ -219,6 +220,26 @@ function parseInstancesContent(content: string): unknown[] {
     throw new Error("Hub returned a non-array instances payload");
   }
   return parsed;
+}
+
+function buildFallbackModelCatalogPayload(entry: Record<string, unknown>, threadId: string): Record<string, unknown> {
+  const parsedProvider = AgentTypeSchema.safeParse(entry.agent_type);
+  const currentModelId = typeof entry.model_id === "string" && entry.model_id.trim()
+    ? entry.model_id.trim()
+    : null;
+  return {
+    thread_id: threadId,
+    provider: parsedProvider.success ? parsedProvider.data : "codex",
+    current_model_id: currentModelId,
+    models: currentModelId
+      ? [
+          {
+            id: currentModelId,
+            label: currentModelId
+          }
+        ]
+      : []
+  };
 }
 
 function normalizeRelativePath(inputPath: string): string {
@@ -673,18 +694,30 @@ export class WebInterfaceServer {
     const query = threadQuerySchema.parse({
       thread_id: requestUrl.searchParams.get("thread_id")
     });
-    const result = HubResultSchema.parse(
-      await this.requestHub(
-        this.buildHubMessage({
-          sessionId,
-          intent: "list_models",
-          thread_id: query.thread_id,
-          target: query.thread_id,
-          content: ""
-        })
-      )
-    );
-    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+    try {
+      const result = HubResultSchema.parse(
+        await this.requestHub(
+          this.buildHubMessage({
+            sessionId,
+            intent: "list_models",
+            thread_id: query.thread_id,
+            target: query.thread_id,
+            content: ""
+          })
+        )
+      );
+      if (result.status !== "success") {
+        throw new Error(result.content || "Failed to load models");
+      }
+      this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+    } catch (error) {
+      const fallbackCatalog = await this.resolveFallbackModelCatalog(sessionId, query.thread_id);
+      if (fallbackCatalog) {
+        this.respondJson(response, 200, fallbackCatalog);
+        return;
+      }
+      throw error;
+    }
   }
 
   private async handleSwitchModelRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -978,6 +1011,43 @@ export class WebInterfaceServer {
     if (head.length > 0) {
       clientSocket.emit("data", head);
     }
+  }
+
+  private async resolveFallbackModelCatalog(
+    sessionId: string,
+    threadId: string
+  ): Promise<Record<string, unknown> | null> {
+    const liveResult = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "list",
+          thread_id: "global",
+          target: "all",
+          content: ""
+        })
+      )
+    );
+    const liveInstances = parseInstancesContent(liveResult.content) as Array<Record<string, unknown>>;
+    const liveMatch = liveInstances.find((entry) => String(entry.thread_id ?? "") === threadId);
+    if (liveMatch) {
+      return buildFallbackModelCatalogPayload(liveMatch, threadId);
+    }
+
+    const historyResult = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "history",
+          thread_id: "global",
+          target: "all",
+          content: ""
+        })
+      )
+    );
+    const historyEntries = JSON.parse(historyResult.content) as Array<Record<string, unknown>>;
+    const historyMatch = historyEntries.find((entry) => String(entry.thread_id ?? "") === threadId);
+    return historyMatch ? buildFallbackModelCatalogPayload(historyMatch, threadId) : null;
   }
 
   private closeBridge(bridge: WebSocketBridge): void {

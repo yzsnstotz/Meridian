@@ -487,6 +487,16 @@
         width: 100%;
         justify-content: flex-end;
       }
+      .header-right > .header-select {
+        order: 1;
+      }
+      .header-right > #agent-status {
+        order: 2;
+      }
+      .header-right > .header-overflow {
+        order: 3;
+        margin-left: 0.25rem;
+      }
       .header-select {
         min-width: 0;
         max-width: none;
@@ -562,12 +572,14 @@
       position: absolute;
       top: 100%;
       right: 0;
+      left: auto;
       margin-top: 0.25rem;
       background: var(--surface-color);
       border: 1px solid var(--border-color);
       border-radius: 0.5rem;
       box-shadow: 0 10px 25px rgba(0,0,0,0.3);
       min-width: 140px;
+      max-width: min(16rem, calc(100vw - 1rem));
       z-index: 1000;
       display: none;
     }
@@ -1123,18 +1135,16 @@
 
       function detectApprovalPrompt(text) {
         if (!text) return false;
-        return (
-          /(Action Required|waiting for approval)/i.test(text) &&
-          /(Allow once|Allow for this session|Allow for all commands|Run this command\?|Allow execution of)/i.test(text)
-        );
+        var lower = text.toLowerCase();
+        return lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0);
       }
 
       function mapApprovalOptionAction(label) {
         var lower = (label || "").toLowerCase();
-        if (/allow once/i.test(lower) || lower === "yes" || /run once/i.test(lower)) return "run";
-        if (/allow for this session/i.test(lower) || /allowlist/i.test(lower) || /for this session/i.test(lower)) return "allow";
+        if (/allow once/i.test(lower) || lower === "yes" || /run once/i.test(lower) || /yes,\s*proceed/i.test(lower)) return "run";
+        if (/allow for this session/i.test(lower) || /allowlist/i.test(lower) || /for this session/i.test(lower) || /don't ask again/i.test(lower)) return "allow";
         if (/allow for all/i.test(lower) || /always allow/i.test(lower) || /allow all/i.test(lower)) return "all";
-        if (/\bno\b/.test(lower) || /deny/i.test(lower) || /suggest changes/i.test(lower) || /reject/i.test(lower) || /don.t allow/i.test(lower)) return "skip";
+        if (/\bno\b/.test(lower) || /deny/i.test(lower) || /suggest changes/i.test(lower) || /reject/i.test(lower) || /don.t allow/i.test(lower) || /tell codex what to do differently/i.test(lower) || /tell me what to do differently/i.test(lower)) return "skip";
         return null;
       }
 
@@ -1144,10 +1154,10 @@
         var options = [];
         var seenNums = {};
         for (var i = 0; i < lines.length; i++) {
-          var m = lines[i].match(/^[●○]?\s*(\d+)\.\s*(.+)$/);
+          var m = lines[i].match(/^[●○›•]?\s*(\d+)\.\s*(.+)$/);
           if (!m) continue;
           var num = parseInt(m[1], 10);
-          var label = m[2].trim().replace(/\s*\(esc\)\s*$/, "");
+          var label = m[2].trim().replace(/\s*\(esc\)\s*$/, "").replace(/\s*\([ypn]\)\s*$/i, "").trim();
           if (seenNums[num]) continue;
           seenNums[num] = true;
           var action = mapApprovalOptionAction(label);
@@ -1159,45 +1169,11 @@
       }
 
       function summarizeApprovalPrompt(content) {
-        var normalized = stripAnsi(content || "");
-        var lines = normalized
-          .split(/\r?\n/)
-          .map(function(line) { return line.trim(); })
-          .filter(Boolean);
-        if (lines.length === 0) return "";
-
+        var normalized = stripAnsi(content || "").trim();
+        if (!normalized) return "";
         var lower = normalized.toLowerCase();
-        if (lower.indexOf("action required") < 0 || lower.indexOf("allow execution of:") < 0) return "";
-
-        var allowIndex = -1;
-        for (var i = 0; i < lines.length; i++) {
-          if (/^allow execution of:/i.test(lines[i])) {
-            allowIndex = i;
-            break;
-          }
-        }
-        if (allowIndex < 0) return "";
-
-        var command = "";
-        for (var idx = allowIndex - 1; idx >= 0; idx--) {
-          var candidate = lines[idx] || "";
-          if (!candidate || /^action required$/i.test(candidate) || /^\?/.test(candidate)) continue;
-          command = candidate;
-          break;
-        }
-
-        var options = [];
-        for (var oi = allowIndex + 1; oi < lines.length; oi++) {
-          if (/^[●○]?\s*\d+\./.test(lines[oi])) {
-            options.push(lines[oi].replace(/^[●○]\s*/, ""));
-          }
-        }
-
-        var summary = ["Waiting for approval...", "Run this command?"];
-        if (command) summary.push(command);
-        summary.push(lines[allowIndex] || "Allow execution?");
-        summary = summary.concat(options);
-        return summary.join("\n");
+        if (lower.indexOf("waiting for approval") < 0 || (lower.indexOf("run this command?") < 0 && lower.indexOf("allowlist") < 0)) return "";
+        return normalized;
       }
 
       function isLowValueLine(line) {
@@ -1648,7 +1624,9 @@
         }
 
         // Detect and render option buttons (strict prompt gate)
-        if (resolvedType !== "user") {
+        // Skip interactive approval buttons during history restore — those approvals
+        // have already been dealt with and the user's choice appears as the next entry.
+        if (resolvedType !== "user" && !chatHistoryHydrating) {
           var approvalDetectionText = content + (resolvedDetails ? "\n" + resolvedDetails : "");
           if (detectApprovalPrompt(approvalDetectionText)) {
             var parsedApprovalOpts = parseApprovalOptionsFromText(approvalDetectionText);
@@ -2056,6 +2034,19 @@
 
       function refreshModelCatalog(selectedModelId) {
         if (!modelSelectEl) return Promise.resolve(null);
+        function formatModelText(modelLabelOrId) {
+          return modelLabelOrId ? "Model: " + modelLabelOrId : "Model";
+        }
+        function renderCurrentOnly(modelLabelOrId) {
+          modelCatalogState = null;
+          modelSelectEl.innerHTML = "";
+          var currentOption = document.createElement("option");
+          currentOption.value = "";
+          currentOption.textContent = formatModelText(modelLabelOrId);
+          currentOption.selected = true;
+          modelSelectEl.appendChild(currentOption);
+          modelSelectEl.disabled = true;
+        }
         function renderUnavailable(label) {
           modelCatalogState = null;
           modelSelectEl.innerHTML = "";
@@ -2082,7 +2073,11 @@
               var models = Array.isArray(data.models) ? data.models : [];
               var currentModelId = typeof data.current_model_id === "string" ? data.current_model_id : "";
               if (models.length === 0) {
-                renderUnavailable(currentModelId ? "Model: unavailable (" + currentModelId + ")" : "Model: unavailable");
+                if (currentModelId) {
+                  renderCurrentOnly(currentModelId);
+                  return data;
+                }
+                renderUnavailable("Model: unavailable");
                 return data;
               }
               var hasCurrentModel = currentModelId
@@ -2091,7 +2086,7 @@
               if (currentModelId && !hasCurrentModel) {
                 var unavailableOption = document.createElement("option");
                 unavailableOption.value = "";
-                unavailableOption.textContent = "Model: unavailable (" + currentModelId + ")";
+                unavailableOption.textContent = formatModelText(currentModelId);
                 unavailableOption.selected = !selectedModelId;
                 modelSelectEl.appendChild(unavailableOption);
               }

@@ -496,6 +496,17 @@ export class HubRouter {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
     const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
+    if (message.payload.content?.trim()) {
+      this.recordConversationEntry(threadId, {
+        id: randomUUID(),
+        type: "user",
+        content: message.payload.content.trim(),
+        details_text: "",
+        raw_content: message.payload.content.trim(),
+        trace_id: message.trace_id,
+        timestamp: this.now().toISOString()
+      });
+    }
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
   }
 

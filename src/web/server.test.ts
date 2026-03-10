@@ -345,6 +345,55 @@ test("Web Interface Server returns history thread index and model catalog", asyn
   assert.deepEqual(seenIntents.sort(), ["history", "list_models"]);
 });
 
+test("Web Interface Server falls back to the thread's current model when live catalog lookup fails", async () => {
+  const seenIntents: string[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/models?thread_id=codex_01&token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { current_model_id: string; models: Array<{ id: string; label: string }> };
+    assert.equal(payload.current_model_id, "gpt-5.4");
+    assert.deepEqual(payload.models, [{ id: "gpt-5.4", label: "gpt-5.4" }]);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenIntents.push(message.intent);
+      if (message.intent === "list_models") {
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_01",
+          source: "codex",
+          status: "error",
+          content: "model catalog unavailable",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+      if (message.intent === "list") {
+        return {
+          trace_id: message.trace_id,
+          thread_id: "global",
+          source: "codex",
+          status: "success",
+          content: JSON.stringify([
+            {
+              thread_id: "codex_01",
+              agent_type: "codex",
+              model_id: "gpt-5.4",
+              mode: "bridge",
+              status: "idle"
+            }
+          ]),
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+      throw new Error(`Unexpected intent: ${message.intent}`);
+    }
+  });
+
+  assert.deepEqual(seenIntents, ["list_models", "list"]);
+});
+
 test("Web Interface Server switches model through dedicated API", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/models?token=secret-token`, {

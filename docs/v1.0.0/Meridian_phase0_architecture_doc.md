@@ -250,7 +250,29 @@ Telegram Bot 只做接入，不做业务逻辑。
 这点非常重要。  
 图中表达的是：协议仍然统一，只是在实例生成时选择不同运行形态。
 
-## 7. 适合如何落地成文档
+## 7. Pane Log 与多端历史一致性
+
+### 7.1 单源与职责
+
+| 需求 | 机制 |
+|------|------|
+| 及时回复 | HubResult → reply_channel（Telegram/Web 等）、GUI chat bubble；仅 trace_id block 级 |
+| 展示全文 | `pane-{threadId}.log` 为**唯一持久源**：capture（tmux 快照 delta）+ run 注入（HubResult.content） |
+| 多端历史 | 按轮次的结构化历史：`conversation_history`（state-store）+ 统一 **History API** |
+
+Meridian 保持 A2A calling hub；HubResult 为协议层「任务结果」；run 注入到 pane log 时做去重，避免与 capture 已写入内容重复。
+
+### 7.2 多端历史以 Meridian 为准
+
+所有端（Telegram、Web、未来 IM）通过同一 **History API** 拉取按轮次的历史：
+
+- **数据来源**：Hub Router 的 `conversation_history`（内存）持久化到 state-store 的 `conversation_history`。
+- **写入时机**：run 完成路径由 Router 调用 `recordAgentConversationEntry`；push 回调由 `recordAgentPushConversation` 写入。
+- **API**：Web 的 `/api/history?thread_id=`、`/api/history_threads` 等通过 Hub 的 `intent: "history"` 从同一 router/state 读取，**无其他历史来源**。
+
+验收：在 A 端（如 Telegram）发起 run 并收到回复后，B 端（如 Web）调用 History API，应能看到同一 thread 下同一轮 user/agent 记录。
+
+## 8. 适合如何落地成文档
 
 如果你后续要把这一套放到 GitHub / GitBook / 设计文档里，推荐这样组织：
 
@@ -263,7 +285,7 @@ Telegram Bot 只做接入，不做业务逻辑。
    - 实例状态模型
    - Monitor 事件模型
 
-## 8. 转换保留与损失
+## 9. 转换保留与损失
 
 ### 保留了什么
 - 原图的分层关系
@@ -278,6 +300,6 @@ Telegram Bot 只做接入，不做业务逻辑。
 - 颜色语义和 hover 高亮
 - 更细的 UI 呈现细节
 
-## 9. 一句话总结
+## 10. 一句话总结
 
 这份 JSX 架构图本质上表达的是一个 **以 Calling Hub 为唯一控制平面的、Telegram 驱动的、多 Agent CLI 调度系统**；其内部通过 Unix Socket + agentapi 完成统一控制，并通过独立 Monitor 保持低耦合的可观测性。

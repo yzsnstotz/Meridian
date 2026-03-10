@@ -104,6 +104,15 @@ test("terminal layout includes sidebar session history and model picker", async 
   assert.match(terminalHtml, /Model: unavailable/);
 });
 
+test("terminal mobile header keeps overflow menu on the top-right and renders current-model fallback", async () => {
+  const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
+
+  assert.match(terminalHtml, /\.header-right > \.header-overflow\s*\{[\s\S]*order:\s*3/);
+  assert.match(terminalHtml, /\.header-overflow \.overflow-dropdown\s*\{[\s\S]*left:\s*auto/);
+  assert.match(terminalHtml, /function renderCurrentOnly\(modelLabelOrId\)/);
+  assert.match(terminalHtml, /if \(currentModelId\) \{\s*renderCurrentOnly\(currentModelId\);/);
+});
+
 test("terminal chat prioritizes structured /api/run result to avoid pane replay mixing", async () => {
   const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
 
