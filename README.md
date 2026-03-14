@@ -5,7 +5,7 @@
 1. Save the generated token and set `TELEGRAM_BOT_TOKEN` in `.env`.
 1. Optional multi-bot: set `TELEGRAM_BOT_TOKENS` as a comma-separated list of additional bot tokens.
 1. Set your Telegram user id in `ALLOWED_USER_IDS`.
-1. Optional: set `AGENT_WORKDIR` in `.env` to choose the default repo directory for `/spawn`.
+1. `/spawn` defaults to the parent of the Meridian repo. In this checkout that is `/Users/yzliu/work`. Optional: set `AGENT_WORKDIR` in `.env` to override the default repo directory.
 1. Configure slash commands in `@BotFather` with `/setcommands`:
 
 ```text

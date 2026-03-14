@@ -80,7 +80,7 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 ]);
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
-const DEFAULT_AGENT_WORKDIR = process.env.AGENT_WORKDIR ?? process.cwd();
+const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
 /** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
 const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
 /** Bytes of pane log tail to read when deduping capture vs run-injected content. */

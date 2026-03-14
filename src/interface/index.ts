@@ -28,7 +28,7 @@ const interfaceLog = createLogger("interface");
 const SPAWN_TYPES: AgentType[] = ["claude", "codex", "gemini", "cursor"];
 const CALLBACK_PREFIX = "pk";
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
-const SPAWN_DIR_ROOT = "/Users/yzliu/work";
+const SPAWN_DIR_ROOT = config.AGENT_WORKDIR;
 const SPAWN_DIR_MAX_BUTTONS = 24;
 const BROWSE_ROOT = process.cwd();
 const BROWSE_MAX_BUTTONS = 24;
@@ -390,13 +390,11 @@ function pruneBrowseSessions(): void {
   }
 }
 
-function buildSpawnDirectoryKeyboard(session: SpawnDirectorySession): InlineKeyboard {
+export function buildSpawnDirectoryKeyboard(session: SpawnDirectorySession): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   keyboard.text("Use This Folder", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:select`).row();
   keyboard.text("Create Folder", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:create`).row();
-  if (path.resolve(session.currentDir) !== path.resolve(SPAWN_DIR_ROOT)) {
-    keyboard.text("Up", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:up`).row();
-  }
+  keyboard.text("Up", `${CALLBACK_PREFIX}:spawn_dir:${session.sessionId}:up`).row();
 
   for (let index = 0; index < session.entries.length; index += 1) {
     const entryName = session.entries[index];

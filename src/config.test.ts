@@ -1,3 +1,4 @@
+import path from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -14,6 +15,7 @@ const CONFIG_KEYS = [
   "WEBHOOK_URL",
   "WEBHOOK_PORT",
   "WEBHOOK_SECRET_TOKEN",
+  "AGENT_WORKDIR",
   "TELEGRAM_SUMMARY_ONLY",
   "TELEGRAM_PUSH_WHITELIST_ONLY",
   "WEB_GUI_ENABLED",
@@ -51,9 +53,11 @@ async function withProcessEnv(overrides: Record<string, string>, fn: () => Promi
 
 test("parseConfig applies v2 defaults for webhook and web GUI fields", async () => {
   await withProcessEnv({}, async () => {
-    const { parseConfig } = await import("./config");
+    const { DEFAULT_AGENT_WORKDIR, parseConfig } = await import("./config");
     const config = parseConfig(REQUIRED_ENV);
 
+    assert.equal(DEFAULT_AGENT_WORKDIR, path.resolve(process.cwd(), ".."));
+    assert.equal(config.AGENT_WORKDIR, DEFAULT_AGENT_WORKDIR);
     assert.equal(config.COORDINATOR_SOCKET_PATH, "");
     assert.deepEqual(config.COORDINATOR_INTENTS, []);
     assert.equal(config.WEBHOOK_URL, "");
@@ -76,6 +80,7 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
     const { parseConfig } = await import("./config");
     const config = parseConfig({
       ...REQUIRED_ENV,
+      AGENT_WORKDIR: path.resolve("/tmp/custom-agent-root"),
       COORDINATOR_SOCKET_PATH: "/tmp/coordinator.sock",
       COORDINATOR_INTENTS: "delegate, plan , review",
       WEBHOOK_URL: "https://bot.example.com/webhook",
@@ -92,6 +97,7 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
       TLS_KEY_PATH: "/etc/ssl/private/gui.key"
     });
 
+    assert.equal(config.AGENT_WORKDIR, "/tmp/custom-agent-root");
     assert.equal(config.COORDINATOR_SOCKET_PATH, "/tmp/coordinator.sock");
     assert.deepEqual(config.COORDINATOR_INTENTS, ["delegate", "plan", "review"]);
     assert.equal(config.WEBHOOK_URL, "https://bot.example.com/webhook");

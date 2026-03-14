@@ -1,7 +1,10 @@
+import path from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
 
 dotenv.config({ override: true, quiet: true });
+
+export const DEFAULT_AGENT_WORKDIR = path.resolve(process.cwd(), "..");
 
 const optionalEnvString = () => z.string().default("");
 const envStringList = () =>
@@ -54,7 +57,7 @@ const envSchema = z
     PANE_BROADCAST_THROTTLE_MS: z.coerce.number().int().positive().default(1000),
     LOG_DIR: z.string().default("/var/log/hub"),
     MERIDIAN_STATE_PATH: z.string().default("/tmp/meridian-state.json"),
-    AGENT_WORKDIR: z.string().optional(),
+    AGENT_WORKDIR: z.string().default(DEFAULT_AGENT_WORKDIR),
     COORDINATOR_SOCKET_PATH: optionalEnvString(),
     COORDINATOR_INTENTS: envStringList(),
     WEBHOOK_URL: optionalEnvString(),
