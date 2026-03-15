@@ -331,7 +331,7 @@ test("pane_bridge uses attach --url when running in port mode", async () => {
       execCalls.push(command);
       return Buffer.from("");
     }) as never,
-    spawnFn: ((_: string, _args: string[]) => {
+    spawnFn: (() => {
       return new FakeChildProcess(2212) as never;
     }) as never,
     clientFactory: () => ({

@@ -7,7 +7,6 @@ import { config } from "../../config";
 import { createLogger } from "../../logger";
 import { buildTelegramApprovalHint, isApprovalPrompt } from "../../shared/approval";
 import {
-  HubResultSchema,
   type HubResult,
   type ReplyChannel,
   type TelegramInlineKeyboard

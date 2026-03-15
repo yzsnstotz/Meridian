@@ -15,7 +15,7 @@ function createLogger() {
       const [payload, message] = args;
       this.infoCalls.push({ payload, message: typeof message === "string" ? message : String(message) });
     },
-    warn(..._args: unknown[]) {
+    warn() {
       // Not needed in these tests.
     },
     error(...args: unknown[]) {

@@ -15,7 +15,8 @@ const stubAgentapiPath = path.resolve(path.join(__dirname, "..", "..", "fixtures
  * No-op ResultSender so integration tests do not call Telegram API.
  */
 class NoOpResultSender {
-  async sendResult(_result: HubResult, _channel: ReplyChannel): Promise<void> {}
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async sendResult(result: HubResult, replyChannel: ReplyChannel): Promise<void> {}
 }
 
 export interface IntegrationHubContext {

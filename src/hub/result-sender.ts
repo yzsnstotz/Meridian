@@ -14,7 +14,6 @@ export {
   resolveTelegramDetailRecord,
   shouldPushTelegramProactive,
   TelegramChannelAdapter,
-  TelegramChannelAdapter as TelegramChannelAdapterBridge,
   type TelegramAdapterOptions as ResultSenderOptions
 } from "../interface/adapters/telegram-adapter";
 

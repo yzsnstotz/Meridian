@@ -12,21 +12,6 @@ type ExecFileResult = { stdout: string; stderr: string };
 type ExecFileFn = (file: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => Promise<ExecFileResult>;
 type ReadFileFn = (filePath: string, encoding: BufferEncoding) => Promise<string>;
 
-interface OpenAiModelRecord {
-  id?: unknown;
-}
-
-interface AnthropicModelRecord {
-  id?: unknown;
-  display_name?: unknown;
-}
-
-interface GeminiModelRecord {
-  name?: unknown;
-  displayName?: unknown;
-  supportedGenerationMethods?: unknown;
-}
-
 interface CodexModelRecord {
   id?: unknown;
   model?: unknown;

@@ -5,7 +5,7 @@ import { test } from "node:test";
 process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
 
 import type { HubResult, ReplyChannel } from "../types";
-import { ResultSender, TelegramChannelAdapterBridge, decorateTelegramResultText, resolveTelegramDetailRecord, splitTextForTelegram } from "./result-sender";
+import { ResultSender, TelegramChannelAdapter, decorateTelegramResultText, resolveTelegramDetailRecord, splitTextForTelegram } from "./result-sender";
 
 test("splitTextForTelegram preserves content exactly", () => {
   const content = `header\n\n    indented line\n${"x".repeat(5000)}\nfooter`;
@@ -42,7 +42,7 @@ test("decorateTelegramResultText appends approval guidance for approval prompts"
 });
 
 test("ResultSender strips telegram: prefix before sending to Telegram API", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: (
@@ -80,7 +80,7 @@ test("ResultSender strips telegram: prefix before sending to Telegram API", asyn
 });
 
 test("ResultSender sends oversized content as a temporary text file and removes it afterwards", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: (
@@ -133,7 +133,7 @@ test("ResultSender sends oversized content as a temporary text file and removes 
 });
 
 test("ResultSender caches full detail text for /detail retrieval", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: () => Promise<void>;
@@ -169,7 +169,7 @@ test("ResultSender caches full detail text for /detail retrieval", async () => {
 });
 
 test("ResultSender prefers shared history summary/details when provided", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: () => Promise<void>;
@@ -210,7 +210,7 @@ test("ResultSender prefers shared history summary/details when provided", async 
 });
 
 test("ResultSender suppresses duplicate Telegram deliveries with the same pane fingerprint", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: () => Promise<void>;
@@ -264,7 +264,7 @@ test("ResultSender suppresses duplicate Telegram deliveries with the same pane f
 });
 
 test("ResultSender avoids adding /detail hint for short summary content", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: () => Promise<void>;
@@ -296,7 +296,7 @@ test("ResultSender avoids adding /detail hint for short summary content", async 
 });
 
 test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (
       botToken: string,
@@ -340,7 +340,7 @@ test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", a
 });
 
 test("ResultSender parses trace-bound summary block and hides protocol tags", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: () => Promise<void>;
@@ -383,7 +383,7 @@ test("ResultSender parses trace-bound summary block and hides protocol tags", as
 });
 
 test("ResultSender marks missing summary end as incomplete", async () => {
-  const bridge = new TelegramChannelAdapterBridge({ botToken: "123456789:test_token" });
+  const bridge = new TelegramChannelAdapter({ botToken: "123456789:test_token" });
   const bridgeMock = bridge as unknown as {
     sendTextWithRetry: (botToken: string, chatId: string, text: string, replyToMessageId?: number) => Promise<void>;
     sendDocumentWithRetry: () => Promise<void>;

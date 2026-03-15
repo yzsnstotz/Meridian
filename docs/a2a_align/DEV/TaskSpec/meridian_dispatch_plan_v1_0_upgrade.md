@@ -35,7 +35,7 @@
 | ✅ | 4 | R-09 | interface/slash-handler.ts /autoapprove | CODEX | R-03 | PRD §4.4 | New slash command; update HELP_MESSAGE |
 | ✅ | 4 | R-10 | web/server.ts spawn API + index.html | CODEX | R-06 | PRD §4.5, §5 web rows | Schema extension + UI toggle |
 | ✅ | 5 | R-11 | agents/claude.ts + agents/codex.ts CLI flags | CODEX | R-06 | PRD §4.2 Method A | Add autoApprove param to both builders |
-| ⬜ | 6 | D-01 | Dead code sweep + test updates | OPUS | ALL | Full PRD | Final sweep; all tests must pass |
+| ✅ | 6 | D-01 | Dead code sweep + test updates | OPUS | ALL | Full PRD | Final sweep; all tests must pass |
 
 Status: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked
 

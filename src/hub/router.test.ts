@@ -803,7 +803,6 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
     created_at: new Date().toISOString()
   });
 
-  let callCount = 0;
   const router = new HubRouter(registry, {
     clientFactory: () => ({
       connect: async () => undefined,
@@ -811,7 +810,6 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
       sendMessage: async () => ({ ok: true }),
       getStatus: async () => ({ status: "idle" }),
       getMessages: async () => {
-        callCount += 1;
         // Never produce a new agent reply for this run.
         return [{ id: 5, role: "agent", content: "stale old snapshot before run" }];
       }
