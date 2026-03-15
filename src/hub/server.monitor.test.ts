@@ -89,6 +89,22 @@ class FakeRouter {
   registerServiceEndpoint(): void {
     return;
   }
+
+  resolveReplyChannelForSession(session: string): ReplyChannel {
+    const separatorIndex = session.indexOf(":");
+    if (separatorIndex <= 0) {
+      return { channel: "telegram", chat_id: session };
+    }
+    const candidateBotId = session.slice(0, separatorIndex);
+    if (!/^\d+$/.test(candidateBotId)) {
+      return { channel: "telegram", chat_id: session };
+    }
+    return {
+      channel: "telegram",
+      chat_id: session.slice(separatorIndex + 1),
+      bot_id: candidateBotId
+    };
+  }
 }
 
 class FakeResultSender {

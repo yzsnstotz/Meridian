@@ -17,7 +17,8 @@ import {
   type ServiceEndpoint,
   type AgentType,
   type HubMessage,
-  type HubResult
+  type HubResult,
+  type ReplyChannel
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
 import { PaneBroadcaster } from "./pane-broadcaster";
@@ -480,7 +481,7 @@ export class HubServer {
     const source = this.router.resolveSourceForThread(event.thread_id);
     const content = this.formatMonitorAlert(event, traceId);
     for (const sessionTarget of sessionTargets) {
-      const replyTarget = this.parseReplyTarget(sessionTarget);
+      const replyChannel = this.router.resolveReplyChannelForSession(sessionTarget);
       await this.resultSender
         .sendResult(
           {
@@ -494,23 +495,19 @@ export class HubServer {
               event.event_type === "agent_error" ? buildAgentErrorInlineKeyboard(event.thread_id) : undefined,
             timestamp: new Date().toISOString()
           },
-          {
-            channel: "telegram",
-            chat_id: replyTarget.chatId,
-            bot_id: replyTarget.botId
-          }
+          replyChannel
         )
         .catch((error) => {
           this.log.error(
             {
               trace_id: traceId,
               thread_id: event.thread_id,
-              target: replyTarget.chatId,
-              bot_id: replyTarget.botId ?? null,
+              target: replyChannel.chat_id,
+              bot_id: replyChannel.bot_id ?? null,
               event_type: event.event_type,
               err: error instanceof Error ? error.message : String(error)
             },
-            "Failed to deliver monitor alert to Telegram"
+            "Failed to deliver monitor alert"
           );
         });
     }
@@ -558,24 +555,20 @@ export class HubServer {
 
     this.recordAgentPushConversationSafe(event.thread_id, completionResult.content, completionResult.trace_id);
     for (const sessionTarget of sessionTargets) {
-      const replyTarget = this.parseReplyTarget(sessionTarget);
+      const replyChannel = this.router.resolveReplyChannelForSession(sessionTarget);
       await this.resultSender
-        .sendResult(this.buildHistoryBackedResult(completionResult), {
-          channel: "telegram",
-          chat_id: replyTarget.chatId,
-          bot_id: replyTarget.botId
-        })
+        .sendResult(this.buildHistoryBackedResult(completionResult), replyChannel)
         .catch((error) => {
           this.log.error(
             {
               trace_id: traceId,
               thread_id: event.thread_id,
-              target: replyTarget.chatId,
-              bot_id: replyTarget.botId ?? null,
+              target: replyChannel.chat_id,
+              bot_id: replyChannel.bot_id ?? null,
               event_type: event.event_type,
               err: error instanceof Error ? error.message : String(error)
             },
-            "Failed to deliver monitor completion result to Telegram"
+            "Failed to deliver monitor completion result"
           );
         });
     }
@@ -719,21 +712,17 @@ export class HubServer {
         this.recordAgentPushConversationSafe(threadId, progressResult.content, progressResult.trace_id);
         for (const target of targetsToNotify) {
           await this.resultSender
-            .sendResult(this.buildHistoryBackedResult(progressResult), {
-              channel: "telegram",
-              chat_id: target.chatId,
-              bot_id: target.botId
-            })
+            .sendResult(this.buildHistoryBackedResult(progressResult), target.replyChannel)
             .catch((error) => {
               this.log.error(
                 {
                   trace_id: traceId,
                   thread_id: threadId,
-                  target: target.chatId,
-                  bot_id: target.botId ?? null,
+                  target: target.replyChannel.chat_id,
+                  bot_id: target.replyChannel.bot_id ?? null,
                   err: error instanceof Error ? error.message : String(error)
                 },
-                "Failed to deliver monitor progress update to Telegram"
+                "Failed to deliver monitor progress update"
               );
             });
         }
@@ -754,21 +743,6 @@ export class HubServer {
       byThread.set(dispatch.threadId, [dispatch]);
     }
     return byThread;
-  }
-
-  private parseReplyTarget(session: string): { chatId: string; botId?: string } {
-    const separatorIndex = session.indexOf(":");
-    if (separatorIndex <= 0) {
-      return { chatId: session };
-    }
-    const candidateBotId = session.slice(0, separatorIndex);
-    if (!/^\d+$/.test(candidateBotId)) {
-      return { chatId: session };
-    }
-    return {
-      botId: candidateBotId,
-      chatId: session.slice(separatorIndex + 1)
-    };
   }
 
   private normalizeIncomingMessage(payload: unknown): HubMessage {
@@ -913,6 +887,18 @@ export class HubServer {
       return;
     }
 
+    // Auto-approve intercept: if the instance has auto_approve enabled and the
+    // output is an approval prompt, automatically send the approval input and
+    // skip pushing notifications to subscribers.
+    if (classification.kind === "action_required") {
+      const instance = this.getRegistryInstanceSafe(threadId);
+      if (instance?.auto_approve) {
+        this.sendAutoApproveInputSafe(threadId);
+        this.pushAccumulators.delete(threadId);
+        return;
+      }
+    }
+
     this.pushAccumulators.delete(threadId);
 
     if (classification.kind === "transient") {
@@ -949,21 +935,17 @@ export class HubServer {
 
     for (const subscriber of subscribers) {
       await this.resultSender
-        .sendResult(this.buildHistoryBackedResult(result), {
-          channel: "telegram",
-          chat_id: subscriber.chatId,
-          bot_id: subscriber.botId
-        })
+        .sendResult(this.buildHistoryBackedResult(result), subscriber.replyChannel)
         .catch((error) => {
           this.log.error(
             {
               trace_id: traceId,
               thread_id: threadId,
-              target: subscriber.chatId,
-              bot_id: subscriber.botId ?? null,
+              target: subscriber.replyChannel.chat_id,
+              bot_id: subscriber.replyChannel.bot_id ?? null,
               err: error instanceof Error ? error.message : String(error)
             },
-            "Failed to deliver push agent text to Telegram"
+            "Failed to deliver push agent text"
           );
         });
     }
@@ -981,10 +963,10 @@ export class HubServer {
 
   private getPushSubscriptionsForThreadSafe(threadId: string): PushDeliveryTarget[] {
     const candidate = this.router as unknown as {
-      getPushSubscriptionsForThread?: (id: string) => Array<{ chatId: string; botId?: string }>;
+      getPushSubscriptionsForThread?: (id: string) => Array<{ chatId: string; botId?: string; replyChannel: ReplyChannel }>;
     };
     const subscriptions = candidate.getPushSubscriptionsForThread?.(threadId) ?? [];
-    return subscriptions.map((entry) => ({ threadId, chatId: entry.chatId, botId: entry.botId }));
+    return subscriptions.map((entry) => ({ threadId, chatId: entry.chatId, botId: entry.botId, replyChannel: entry.replyChannel }));
   }
 
   /** Session keys for push subscribers (chatId or botId:chatId) so we can skip sending them monitor completion/progress (they get pane push only). */
@@ -1016,6 +998,20 @@ export class HubServer {
       recordAgentPushConversation?: (id: string, rawContent: string, traceId: string | null) => void;
     };
     candidate.recordAgentPushConversation?.(threadId, content, traceId);
+  }
+
+  private getRegistryInstanceSafe(threadId: string): { auto_approve?: boolean } | null {
+    const candidate = this.router as unknown as {
+      getRegistryInstance?: (id: string) => { auto_approve?: boolean } | undefined;
+    };
+    return candidate.getRegistryInstance?.(threadId) ?? null;
+  }
+
+  private sendAutoApproveInputSafe(threadId: string): void {
+    const candidate = this.router as unknown as {
+      sendAutoApproveTerminalInput?: (id: string) => void;
+    };
+    candidate.sendAutoApproveTerminalInput?.(threadId);
   }
 
   private async sendUnifiedReply(message: HubMessage, result: HubResult): Promise<void> {

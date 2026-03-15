@@ -18,6 +18,7 @@ import {
   type FileAttachment,
   type HubMessage,
   type HubResult,
+  type ReplyChannel,
   type ServiceEndpoint
 } from "../types";
 import { InstanceManager } from "./instance-manager";
@@ -58,6 +59,7 @@ interface MonitorUpdateSubscription {
   sessionId: string;
   chatId: string;
   botId?: string;
+  replyChannel: ReplyChannel;
   intervalMs: number;
   nextDispatchAtMs: number;
 }
@@ -66,12 +68,14 @@ export interface MonitorUpdateDispatch {
   threadId: string;
   chatId: string;
   botId?: string;
+  replyChannel: ReplyChannel;
 }
 
 interface PushSubscription {
   sessionId?: string;
   chatId: string;
   botId?: string;
+  replyChannel: ReplyChannel;
 }
 
 export interface ConversationHistoryEntry {
@@ -97,6 +101,7 @@ export interface PushDeliveryTarget {
   threadId: string;
   chatId: string;
   botId?: string;
+  replyChannel: ReplyChannel;
 }
 
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
@@ -422,6 +427,8 @@ export class HubRouter {
           return this.handleCaptureInterval(message);
         case "history":
           return this.handleHistory(message);
+        case "set_auto_approve":
+          return this.handleSetAutoApprove(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -799,7 +806,7 @@ export class HubRouter {
     const normalizedIntervalSec = this.normalizeMonitorUpdateIntervalSec(
       requestedIntervalSec ?? existingIntervalSec
     );
-    this.upsertMonitorUpdateSubscription(threadId, sessionId, chatId, botId, normalizedIntervalSec);
+    this.upsertMonitorUpdateSubscription(threadId, sessionId, chatId, botId, normalizedIntervalSec, message.reply_channel);
     return this.buildResult(
       message,
       "success",
@@ -887,6 +894,26 @@ export class HubRouter {
       return { botId: maybeBotId, chatId: rest };
     }
     return { botId: null, chatId: session };
+  }
+
+  resolveReplyChannelForSession(session: string): ReplyChannel {
+    const metadata = this.attachmentMetaBySession.get(session);
+    if (metadata) {
+      const rc: ReplyChannel = {
+        channel: metadata.channel as ReplyChannel["channel"],
+        chat_id: metadata.chatId,
+        bot_id: metadata.botId ?? undefined,
+        chat_name: metadata.chatName ?? undefined,
+        bot_name: metadata.botName ?? undefined
+      };
+      return rc;
+    }
+    const parsed = this.parseSession(session);
+    return {
+      channel: "telegram",
+      chat_id: parsed.chatId,
+      bot_id: parsed.botId ?? undefined
+    };
   }
 
   private resolveBotLabel(botName: string | null | undefined, botId: string | null): string | null {
@@ -1075,7 +1102,8 @@ export class HubRouter {
         due.push({
           threadId,
           chatId: subscription.chatId,
-          botId: subscription.botId
+          botId: subscription.botId,
+          replyChannel: subscription.replyChannel
         });
       }
     }
@@ -1098,6 +1126,25 @@ export class HubRouter {
 
   isRunActiveForThread(threadId: string): boolean {
     return this.activeRunsByThread.has(threadId);
+  }
+
+  getRegistryInstance(threadId: string): { auto_approve?: boolean } | undefined {
+    return this.registry.get(threadId);
+  }
+
+  sendAutoApproveTerminalInput(threadId: string): void {
+    try {
+      this.instanceManager.sendTerminalInput(threadId, "all");
+    } catch (error) {
+      this.log.error(
+        {
+          trace_id: null,
+          thread_id: threadId,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Failed to send auto-approve terminal input"
+      );
+    }
   }
 
   getPaneCaptureIntervalMs(): number {
@@ -1288,7 +1335,8 @@ export class HubRouter {
     sessionId: string,
     chatId: string,
     botId: string | undefined,
-    intervalSec: number
+    intervalSec: number,
+    replyChannel: ReplyChannel
   ): void {
     let byChat = this.monitorUpdateSubscriptionsByThread.get(threadId);
     if (!byChat) {
@@ -1300,6 +1348,7 @@ export class HubRouter {
       sessionId,
       chatId,
       botId,
+      replyChannel,
       intervalMs: intervalSec * 1000,
       nextDispatchAtMs: this.now().getTime()
     });
@@ -1361,7 +1410,7 @@ export class HubRouter {
       );
     }
 
-    this.upsertPushSubscription(threadId, sessionId, chatId, botId);
+    this.upsertPushSubscription(threadId, sessionId, chatId, botId, message.reply_channel);
     return this.buildResult(
       message, "success", instance.agent_type,
       `Push agent text turned ON for thread=${threadId}.`,
@@ -1400,7 +1449,8 @@ export class HubRouter {
     for (const session of attachedSessions) {
       const parsed = this.parseSessionTarget(session);
       if (!parsed) continue;
-      this.upsertPushSubscription(threadId, session, parsed.chatId, parsed.botId);
+      const replyChannel = this.resolveReplyChannelForSession(session);
+      this.upsertPushSubscription(threadId, session, parsed.chatId, parsed.botId, replyChannel);
       subscribed++;
     }
 
@@ -1452,6 +1502,29 @@ export class HubRouter {
     );
   }
 
+  private handleSetAutoApprove(message: HubMessage): HubResult {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const value = message.payload.content.trim().toLowerCase() === "true";
+    const updated = this.registry.setAutoApprove(threadId, value);
+    if (!updated) {
+      return this.buildResult(
+        message,
+        "error",
+        instance.agent_type,
+        `Failed to set auto_approve for thread=${threadId}`,
+        threadId
+      );
+    }
+    return this.buildResult(
+      message,
+      "success",
+      instance.agent_type,
+      `auto_approve=${value} for thread=${threadId}`,
+      threadId
+    );
+  }
+
   private parseSessionTarget(session: string): { chatId: string; botId?: string } | null {
     if (!session || session.startsWith("web:")) return null;
     const separatorIndex = session.indexOf(":");
@@ -1468,13 +1541,13 @@ export class HubRouter {
     };
   }
 
-  private upsertPushSubscription(threadId: string, sessionId: string, chatId: string, botId: string | undefined): void {
+  private upsertPushSubscription(threadId: string, sessionId: string, chatId: string, botId: string | undefined, replyChannel: ReplyChannel): void {
     let byChat = this.pushSubscriptionsByThread.get(threadId);
     if (!byChat) {
       byChat = new Map();
       this.pushSubscriptionsByThread.set(threadId, byChat);
     }
-    byChat.set(sessionId, { sessionId, chatId, botId });
+    byChat.set(sessionId, { sessionId, chatId, botId, replyChannel });
   }
 
   private deletePushSubscription(threadId: string, sessionId: string): void {
@@ -1490,7 +1563,7 @@ export class HubRouter {
     const targets: PushDeliveryTarget[] = [];
     for (const [threadId, byChat] of this.pushSubscriptionsByThread.entries()) {
       for (const sub of byChat.values()) {
-        targets.push({ threadId, chatId: sub.chatId, botId: sub.botId });
+        targets.push({ threadId, chatId: sub.chatId, botId: sub.botId, replyChannel: sub.replyChannel });
       }
     }
     return targets;
@@ -1673,7 +1746,12 @@ export class HubRouter {
         byChat.set(subscription.session_id, {
           sessionId: subscription.session_id,
           chatId: subscription.chat_id,
-          botId: subscription.bot_id ?? undefined
+          botId: subscription.bot_id ?? undefined,
+          replyChannel: {
+            channel: "telegram",
+            chat_id: subscription.chat_id,
+            bot_id: subscription.bot_id ?? undefined
+          }
         });
       }
       if (byChat.size > 0) {
