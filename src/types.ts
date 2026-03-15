@@ -99,6 +99,7 @@ export const HubPayloadSchema = z.object({
   raw_message_id: z.string().min(1).optional(),
   reply_to: z.string().nullable().optional(),
   spawn_dir: z.string().min(1).optional(),
+  auto_approve: z.boolean().optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   gui_host_port_override: z.string().min(1).optional(),

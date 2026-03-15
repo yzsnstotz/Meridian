@@ -564,7 +564,13 @@ export class HubRouter {
   private async handleSpawn(message: HubMessage): Promise<HubResult> {
     const type = AgentTypeSchema.parse(message.target);
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
-    const threadId = await this.instanceManager.spawn(type, message.mode, spawnDir);
+    const threadId = await this.instanceManager.spawn(
+      type,
+      message.mode,
+      spawnDir,
+      undefined,
+      message.payload.auto_approve
+    );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
     this.rememberAttachmentMetadata(sessionId, message);

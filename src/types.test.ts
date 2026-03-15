@@ -80,6 +80,22 @@ test("HubMessageSchema parses new idempotency and tracing fields", () => {
   assert.equal(parsed.intent, "detach");
 });
 
+test("HubMessageSchema parses optional auto_approve payload field", () => {
+  const parsed = HubMessageSchema.parse(
+    buildHubMessage({
+      intent: "spawn",
+      target: "codex",
+      payload: {
+        content: "spawn",
+        attachments: [],
+        auto_approve: true
+      }
+    })
+  );
+
+  assert.equal(parsed.payload.auto_approve, true);
+});
+
 test("MonitorEventSchema accepts optional span fields", () => {
   const spanId = randomUUID();
   const parentSpanId = randomUUID();

@@ -28,7 +28,7 @@
 | ✅ | 2 | R-03 | registry.ts setAutoApprove() | CODEX | R-01 | PRD §4.3 | Single method addition; ~15 lines |
 | ✅ | 3 | R-04 | server.ts Hardcode Cleanup + Auto-Approve Intercept | OPUS | R-02, R-03 | PRD §3.1, §4.2 Method B, §4.5 | ⚠️ PM-FLAG-01: subscriber data structure may need extension to carry full ReplyChannel |
 | ✅ | 3 | R-05 | router.ts handleDetail + isWebChannel Refactor | OPUS | R-02 | PRD §3.1 router rows | Delete 2 guards; web push restructure |
-| ⬜ | 3 | R-06 | instance-manager.ts spawn autoApprove | CODEX | R-01, R-03 | PRD §4.3, §4.5 | Thread autoApprove through spawn chain |
+| ✅ | 3 | R-06 | instance-manager.ts spawn autoApprove | CODEX | R-01, R-03 | PRD §4.3, §4.5 | Thread autoApprove through spawn chain |
 | ⬜ | 3 | R-07 | monitor/index.ts channel fix | CODEX | R-01 | PRD §3.1 monitor row | Single-line channel value change |
 | ⬜ | 4 | N-02 | interface/adapters/ TelegramAdapter + WebAdapter | OPUS | R-02, R-04, R-05 | PRD §2.2, §3.2 | Code MOVE not rewrite. Create adapters/ dir. |
 | ⬜ | 4 | R-08 | interface/index.ts decouple send logic | OPUS | N-02 | PRD §3.1 interface rows | Extract buildTelegramReplyChannel helper; remove ResultSender import |

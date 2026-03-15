@@ -129,6 +129,28 @@ test("spawn forwards selected model to provider CLI", async () => {
   ]);
 });
 
+test("spawn stores auto_approve in the registry when requested", async () => {
+  const registry = new InstanceRegistry();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_: string, _args: string[]) => {
+      return new FakeChildProcess(1103) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("claude", "bridge", undefined, undefined, true);
+
+  assert.equal(threadId, "claude_01");
+  assert.equal(registry.get(threadId)?.auto_approve, true);
+});
+
 test("spawn claude bridge includes --allowedTools args", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
