@@ -36,8 +36,9 @@ function buildListRequestMessage(): HubMessage {
     mode: "bridge",
     suppress_reply: true,
     reply_channel: {
-      channel: "telegram",
-      chat_id: "monitor"
+      channel: "socket",
+      chat_id: "monitor",
+      socket_path: config.HUB_SOCKET_PATH
     }
   };
 }
