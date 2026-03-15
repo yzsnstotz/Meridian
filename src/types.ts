@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const ChannelSchema = z.enum(["telegram", "web"]);
+export const ChannelSchema = z.enum(["telegram", "web", "socket"]);
 export type Channel = z.infer<typeof ChannelSchema>;
 
 export const BUILT_IN_INTENTS = [
@@ -22,7 +22,8 @@ export const BUILT_IN_INTENTS = [
   "monitor_manual_update",
   "push",
   "capture_interval",
-  "history"
+  "history",
+  "set_auto_approve"
  ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
@@ -86,7 +87,9 @@ export const ReplyChannelSchema = z.object({
   message_id: z.string().min(1).optional(),
   bot_id: z.string().regex(/^\d+$/).optional(),
   chat_name: z.string().min(1).optional(),
-  bot_name: z.string().min(1).optional()
+  bot_name: z.string().min(1).optional(),
+  // required when channel === 'socket'
+  socket_path: z.string().min(1).optional()
 });
 export type ReplyChannel = z.infer<typeof ReplyChannelSchema>;
 
@@ -180,9 +183,10 @@ export const AgentInstanceSchema = z.object({
   tmux_pane: z.string().nullable(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
-  restart_safe: z.boolean().optional()
+  restart_safe: z.boolean().optional(),
+  auto_approve: z.boolean().default(false)
 });
-export type AgentInstance = z.infer<typeof AgentInstanceSchema>;
+export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
 export const PaneSubscribeRequestSchema = z.object({
   type: z.literal("subscribe_pane_output"),
