@@ -708,15 +708,6 @@ export class HubRouter {
   }
 
   private handleDetail(message: HubMessage): HubResult {
-    if (message.reply_channel.channel !== "telegram") {
-      return this.buildResult(
-        message,
-        "error",
-        this.resolveResultSource(message),
-        "detail is only available for Telegram reply channels."
-      );
-    }
-
     const requestedTrace = message.payload.content.trim() || undefined;
     const requestedThread =
       this.extractConcreteThreadId(message.target) ??
@@ -1381,9 +1372,7 @@ export class HubRouter {
       );
     }
 
-    const isWebChannel = message.reply_channel.channel === "web";
-
-    if (isWebChannel) {
+    if (message.reply_channel.channel === "web") {
       return this.handlePushFromWeb(message, threadId, instance, enabled);
     }
 
