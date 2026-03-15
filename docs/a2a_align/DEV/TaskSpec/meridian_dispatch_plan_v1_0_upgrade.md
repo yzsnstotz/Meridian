@@ -23,7 +23,7 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|-------|--------|------|-------|-----------|----------------|-------|
 | ✅ | 1 | R-01 | types.ts Schema Extensions | CODEX | — | PRD_Meridian_Upgrade_v1.0.docx | Pure schema; no logic. 4 sub-tasks. |
-| ⬜ | 2 | N-01 | channel-adapter.ts Interface + SocketAdapter | CODEX | R-01 | PRD §2.2, §2.4 | Two new files; ~50 lines total |
+| ✅ | 2 | N-01 | channel-adapter.ts Interface + SocketAdapter | CODEX | R-01 | PRD §2.2, §2.4 | Two new files; ~50 lines total |
 | ⬜ | 2 | R-02 | result-sender.ts Multi-Adapter Router | OPUS | R-01, N-01 | PRD §2.3 | Most complex rework. Scaffolding bridge first, real adapters later (N-02). |
 | ⬜ | 2 | R-03 | registry.ts setAutoApprove() | CODEX | R-01 | PRD §4.3 | Single method addition; ~15 lines |
 | ⬜ | 3 | R-04 | server.ts Hardcode Cleanup + Auto-Approve Intercept | OPUS | R-02, R-03 | PRD §3.1, §4.2 Method B, §4.5 | ⚠️ PM-FLAG-01: subscriber data structure may need extension to carry full ReplyChannel |
