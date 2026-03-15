@@ -43,11 +43,71 @@ test("parseSlashCommand accepts full-width equals in args", () => {
   assert.equal(parsed.picker, null);
 });
 
+test("parseSlashCommand parses /info as active-thread status", () => {
+  const parsed = parseSlashCommand("/info");
+  assert.equal(parsed.intent, "status");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.shouldForward, true);
+});
+
 test("parseSlashCommand marks /attach without thread as picker flow", () => {
   const parsed = parseSlashCommand("/attach");
   assert.equal(parsed.intent, "attach");
   assert.equal(parsed.threadId, null);
   assert.equal(parsed.picker, "attach");
+});
+
+test("parseSlashCommand parses /detach with implicit active thread", () => {
+  const parsed = parseSlashCommand("/detach");
+  assert.equal(parsed.intent, "detach");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.picker, null);
+});
+
+test("parseSlashCommand parses /detach with explicit thread", () => {
+  const parsed = parseSlashCommand("/detach thread=codex_01");
+  assert.equal(parsed.intent, "detach");
+  assert.equal(parsed.threadId, "codex_01");
+  assert.equal(parsed.target, "codex_01");
+});
+
+test("parseSlashCommand parses /reboot with explicit thread", () => {
+  const parsed = parseSlashCommand("/reboot thread=codex_01");
+  assert.equal(parsed.intent, "reboot");
+  assert.equal(parsed.threadId, "codex_01");
+  assert.equal(parsed.target, "codex_01");
+});
+
+test("parseSlashCommand parses /gui with implicit active thread", () => {
+  const parsed = parseSlashCommand("/gui");
+  assert.equal(parsed.intent, "gui");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+});
+
+test("parseSlashCommand parses /gui with explicit thread", () => {
+  const parsed = parseSlashCommand("/gui thread=gemini_01");
+  assert.equal(parsed.intent, "gui");
+  assert.equal(parsed.threadId, "gemini_01");
+  assert.equal(parsed.target, "gemini_01");
+});
+
+test("parseSlashCommand parses /approve with explicit thread", () => {
+  const parsed = parseSlashCommand("/approve allow thread=cursor_01");
+  assert.equal(parsed.intent, "terminal_input");
+  assert.equal(parsed.threadId, "cursor_01");
+  assert.equal(parsed.target, "cursor_01");
+  assert.equal(parsed.payloadContent, "allow");
+});
+
+test("parseSlashCommand normalizes /approve aliases", () => {
+  const parsed = parseSlashCommand("/approve y");
+  assert.equal(parsed.intent, "terminal_input");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.payloadContent, "run");
 });
 
 test("parseSlashCommand marks /kill without thread as picker flow", () => {
@@ -63,34 +123,45 @@ test("parseSlashCommand marks /spawn without args as picker flow", () => {
   assert.equal(parsed.picker, "spawn");
 });
 
-test("parseSlashCommand parses typed /model command", () => {
-  const parsed = parseSlashCommand("/model thread=gemini_01 type=codex");
-  assert.equal(parsed.intent, "switch_model");
-  assert.equal(parsed.threadId, "gemini_01");
-  assert.equal(parsed.target, "codex");
-  assert.equal(parsed.picker, null);
-});
-
-test("parseSlashCommand forwards bare /model as run intent", () => {
-  const parsed = parseSlashCommand("/model");
-  assert.equal(parsed.intent, "run");
-  assert.equal(parsed.shouldForward, true);
-  assert.equal(parsed.target, "active");
-  assert.equal(parsed.threadId, null);
-  assert.equal(parsed.payloadContent, "/model");
-  assert.equal(parsed.picker, null);
-});
-
-test("parseSlashCommand keeps thread when /model omits type", () => {
+test("parseSlashCommand routes /model through picker flow with explicit thread", () => {
   const parsed = parseSlashCommand("/model thread=gemini_01");
   assert.equal(parsed.intent, "switch_model");
   assert.equal(parsed.threadId, "gemini_01");
+  assert.equal(parsed.target, "gemini_01");
+  assert.equal(parsed.shouldForward, false);
   assert.equal(parsed.picker, "switch_model");
+});
+
+test("parseSlashCommand routes bare /model through picker flow", () => {
+  const parsed = parseSlashCommand("/model");
+  assert.equal(parsed.intent, "switch_model");
+  assert.equal(parsed.shouldForward, false);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.payloadContent, "");
+  assert.equal(parsed.picker, "switch_model");
+});
+
+test("parseSlashCommand parses /detail with explicit trace and thread", () => {
+  const parsed = parseSlashCommand("/detail trace=5af7c1f6-91e3-4fcf-8b7a-3f6308f8f9af thread=gemini_01");
+  assert.equal(parsed.intent, "detail");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.threadId, "gemini_01");
+  assert.equal(parsed.target, "gemini_01");
+  assert.equal(parsed.payloadContent, "5af7c1f6-91e3-4fcf-8b7a-3f6308f8f9af");
+});
+
+test("parseSlashCommand parses bare /detail against active thread", () => {
+  const parsed = parseSlashCommand("/detail");
+  assert.equal(parsed.intent, "detail");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.payloadContent, "");
 });
 
 test("parseSlashCommand parses /restart as local command", () => {
   const parsed = parseSlashCommand("/restart");
-  assert.equal(parsed.intent, "restart");
+  assert.equal(parsed.intent, "service_restart");
   assert.equal(parsed.shouldForward, false);
 });
 
@@ -126,4 +197,30 @@ test("parseSlashCommand parses /mupdate with explicit thread", () => {
   assert.equal(parsed.target, "codex_01");
   assert.equal(parsed.monitorUpdatesEnabled, null);
   assert.equal(parsed.monitorUpdateIntervalSec, null);
+});
+
+test("parseSlashCommand parses /push on thread=abc", () => {
+  const parsed = parseSlashCommand("/push on thread=abc");
+  assert.equal(parsed.intent, "push");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.pushEnabled, true);
+  assert.equal(parsed.threadId, "abc");
+  assert.equal(parsed.target, "abc");
+});
+
+test("parseSlashCommand parses /push off", () => {
+  const parsed = parseSlashCommand("/push off");
+  assert.equal(parsed.intent, "push");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.pushEnabled, false);
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.target, "active");
+});
+
+test("parseSlashCommand parses bare /push as query", () => {
+  const parsed = parseSlashCommand("/push");
+  assert.equal(parsed.intent, "push");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.pushEnabled, null);
+  assert.equal(parsed.threadId, null);
 });

@@ -185,12 +185,16 @@ export class MonitorManager {
       }
 
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const pidAlive = this.isPidAlive(task.instance.pid);
+      const reason = pidAlive ? "SOCKET_UNREACHABLE" : "PID_GONE";
       this.log.error(
         {
           trace_id: null,
           thread_id: task.instance.thread_id,
           monitor_mode: task.mode,
           socket_path: task.instance.socket_path,
+          pid: task.instance.pid,
+          pid_alive: pidAlive,
           err: errorMessage
         },
         "Failed to start monitor task"
@@ -198,7 +202,7 @@ export class MonitorManager {
       await this.emitEvent(task, "agent_error", {
         error: errorMessage,
         details: {
-          reason: "monitor_connect_failed"
+          reason
         }
       });
     }
@@ -369,9 +373,12 @@ export class MonitorManager {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       task.missedHeartbeats += 1;
+      const pidAlive = this.isPidAlive(task.instance.pid);
+      const reason = pidAlive ? "SOCKET_UNREACHABLE" : "PID_GONE";
       await this.emitEvent(task, "heartbeat_missed", {
         missed_heartbeats: task.missedHeartbeats,
-        error: errorMessage
+        error: errorMessage,
+        details: { reason }
       });
 
       if (task.missedHeartbeats >= this.heartbeatMissedThreshold && !task.thresholdAlerted) {
@@ -380,7 +387,7 @@ export class MonitorManager {
           error: `Heartbeat missed ${task.missedHeartbeats} consecutive checks`,
           missed_heartbeats: task.missedHeartbeats,
           details: {
-            reason: "heartbeat_threshold_exceeded"
+            reason: `HEALTHCHECK_TIMEOUT_${reason}`
           }
         });
       }
@@ -405,6 +412,8 @@ export class MonitorManager {
       monitor_mode: task.mode,
       timestamp: this.now().toISOString(),
       agent_status: fields.agent_status ?? task.lastStatus ?? undefined,
+      agent_type: task.instance.agent_type,
+      last_known_pid: task.instance.pid,
       missed_heartbeats: fields.missed_heartbeats,
       sse_reconnect_count: task.sseReconnectCount > 0 ? task.sseReconnectCount : undefined,
       details: fields.details,
@@ -539,6 +548,15 @@ export class MonitorManager {
     }
 
     return data?.completed === true;
+  }
+
+  private isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private asRecord(data: unknown): Record<string, unknown> | null {

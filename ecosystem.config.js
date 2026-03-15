@@ -45,6 +45,13 @@ module.exports = {
       script: "./dist/monitor/index.js",
       out_file: path.join(LOG_DIR, "monitor.log"),
       error_file: path.join(LOG_DIR, "monitor-error.log")
+    },
+    {
+      ...baseApp,
+      name: "calling-web",
+      script: "./dist/web/server.js",
+      out_file: path.join(LOG_DIR, "web.log"),
+      error_file: path.join(LOG_DIR, "web-error.log")
     }
   ]
 };

@@ -1,6 +1,7 @@
 import type { BridgeMode, Intent } from "../types";
+import { APPROVAL_HELP_TEXT, normalizeApprovalAction } from "../shared/approval";
 
-type SlashIntent = Intent | "help" | "restart" | "browse";
+type SlashIntent = Intent | "help" | "service_restart" | "browse";
 type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
 
 export interface ParsedSlashCommand {
@@ -11,31 +12,53 @@ export interface ParsedSlashCommand {
   spawnDir: string | null;
   monitorUpdatesEnabled: boolean | null;
   monitorUpdateIntervalSec: number | null;
+  pushEnabled: boolean | null;
   mode: BridgeMode;
   payloadContent: string;
   picker: PickerIntent | null;
+  priority: number | null;
 }
 
 const HELP_MESSAGE = [
   "Available commands:",
   "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge> [dir=<absolute_path>]",
-  "/restart",
+  "/restart Rebuild and restart Meridian service",
   "/browse",
   "/kill thread=<thread_id>",
+  "/info",
   "/status thread=<thread_id>",
-  "/attach thread=<thread_id>",
+  "/attach [thread=<thread_id>]",
+  "/detach [thread=<thread_id>]",
+  "/reboot thread=<thread_id>",
+  "/gui [thread=<thread_id>]",
+  "/approve <run|allow|all|skip> [thread=<thread_id>]",
   "/model",
-  "/model thread=<thread_id> type=<claude|codex|gemini|cursor>",
+  "/model [thread=<thread_id>]",
+  "/detail [trace=<trace_id>] [thread=<thread_id>]",
   "/update [on|off] [thread=<thread_id>] [interval=<seconds>]",
+  "/push [on|off] [thread=<thread_id>]",
   "/mupdate [thread=<thread_id>]",
   "/list",
   "/help",
+  APPROVAL_HELP_TEXT,
   "Free text messages are treated as run intent."
 ].join("\n");
 
 const ALLOWED_AGENT_TYPES = new Set(["claude", "codex", "gemini", "cursor"]);
 const ALT_SLASH_PREFIXES = new Set(["／", "⁄", "∕"]);
-const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo", "state", "interval", "every", "sec", "seconds"]);
+const ARG_KEYS = new Set([
+  "type",
+  "mode",
+  "thread",
+  "dir",
+  "repo",
+  "state",
+  "interval",
+  "every",
+  "sec",
+  "seconds",
+  "action"
+]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   if (!rawArgs.trim()) {
@@ -86,17 +109,6 @@ function requireThreadId(args: Record<string, string>, commandName: string): str
   return thread.trim();
 }
 
-function requireModelType(args: Record<string, string>, commandName: string): string {
-  const type = (args.type ?? "").trim().toLowerCase();
-  if (!type) {
-    throw new Error(`${commandName} requires type=<claude|codex|gemini|cursor>`);
-  }
-  if (!ALLOWED_AGENT_TYPES.has(type)) {
-    throw new Error(`${commandName} type must be one of claude|codex|gemini|cursor`);
-  }
-  return type;
-}
-
 function parseMonitorUpdateSwitch(value: string | undefined): boolean | null {
   if (!value) {
     return null;
@@ -122,6 +134,16 @@ function parsePositiveInteger(value: string, field: string): number {
   return parsed;
 }
 
+function parseApprovalCommand(rawArgs: string, args: Record<string, string>, restTokens: string[]): string {
+  const bareAction = restTokens.find((token) => !token.includes("=")) ?? "";
+  const rawAction = (args.action ?? bareAction ?? rawArgs).trim();
+  const action = normalizeApprovalAction(rawAction);
+  if (!action) {
+    throw new Error(`/approve action is invalid. ${APPROVAL_HELP_TEXT}`);
+  }
+  return action;
+}
+
 export function getHelpMessage(): string {
   return HELP_MESSAGE;
 }
@@ -138,9 +160,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       spawnDir: null,
       monitorUpdatesEnabled: null,
       monitorUpdateIntervalSec: null,
+      pushEnabled: null,
       mode: "bridge",
       payloadContent: content,
-      picker: null
+      picker: null,
+      priority: null
     };
   }
 
@@ -164,9 +188,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: args.dir?.trim() || args.repo?.trim() || null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: parseMode(args.mode),
         payloadContent: rawArgs,
-        picker: rawArgs.trim().length === 0 ? "spawn" : null
+        picker: rawArgs.trim().length === 0 ? "spawn" : null,
+        priority: null
       };
     }
 
@@ -180,9 +206,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: threadId ? null : "kill"
+        picker: threadId ? null : "kill",
+        priority: 0
       };
     }
 
@@ -196,11 +224,29 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: null
+        picker: null,
+        priority: null
       };
     }
+
+    case "/info":
+      return {
+        intent: "status",
+        shouldForward: true,
+        target: "active",
+        threadId: null,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
+      };
 
     case "/attach": {
       const threadId = args.thread?.trim() || null;
@@ -212,57 +258,120 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: threadId ? null : "attach"
+        picker: threadId ? null : "attach",
+        priority: null
+      };
+    }
+
+    case "/detach": {
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "detach",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
+      };
+    }
+
+    case "/reboot": {
+      const threadId = requireThreadId(args, "/reboot");
+      return {
+        intent: "reboot",
+        shouldForward: true,
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: 0
+      };
+    }
+
+    case "/gui": {
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "gui",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
+      };
+    }
+
+    case "/approve": {
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "terminal_input",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: parseApprovalCommand(rawArgs, args, restTokens),
+        picker: null,
+        priority: null
       };
     }
 
     case "/model": {
       const threadId = args.thread?.trim() || null;
-      const type = (args.type ?? "").trim().toLowerCase();
-      if (!threadId && !type) {
-        return {
-          intent: "run",
-          shouldForward: true,
-          target: "active",
-          threadId: null,
-          spawnDir: null,
-          monitorUpdatesEnabled: null,
-          monitorUpdateIntervalSec: null,
-          mode: "bridge",
-          payloadContent: content,
-          picker: null
-        };
-      }
-
-      if (!threadId || !type) {
-        return {
-          intent: "switch_model",
-          shouldForward: true,
-          target: type || "codex",
-          threadId,
-          spawnDir: null,
-          monitorUpdatesEnabled: null,
-          monitorUpdateIntervalSec: null,
-          mode: "bridge",
-          payloadContent: rawArgs,
-          picker: "switch_model"
-        };
-      }
-
-      const resolvedType = requireModelType(args, "/model");
       return {
         intent: "switch_model",
-        shouldForward: true,
-        target: resolvedType,
+        shouldForward: false,
+        target: threadId ?? "active",
         threadId,
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
-        payloadContent: rawArgs,
-        picker: null
+        payloadContent: "",
+        picker: "switch_model",
+        priority: null
+      };
+    }
+
+    case "/detail": {
+      const threadId = args.thread?.trim() || null;
+      const traceId = args.trace?.trim() || "";
+      return {
+        intent: "detail",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: traceId,
+        picker: null,
+        priority: null
       };
     }
 
@@ -291,9 +400,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: parsedState ?? (parsedIntervalSec ? true : null),
         monitorUpdateIntervalSec: parsedIntervalSec,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: null
+        picker: null,
+        priority: null
       };
     }
 
@@ -307,9 +418,34 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: rawArgs,
-        picker: null
+        picker: null,
+        priority: null
+      };
+    }
+
+    case "/push": {
+      const bareStateToken = restTokens.find((token) => {
+        const normalized = token.trim().toLowerCase();
+        return normalized === "on" || normalized === "off";
+      });
+      const parsedState = parseMonitorUpdateSwitch(args.state ?? bareStateToken);
+      const threadId = args.thread?.trim() || null;
+      return {
+        intent: "push",
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: parsedState,
+        mode: "bridge",
+        payloadContent: rawArgs,
+        picker: null,
+        priority: null
       };
     }
 
@@ -322,9 +458,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     case "/help":
@@ -336,23 +474,27 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     case "/restart":
       return {
-        intent: "restart",
+        intent: "service_restart",
         shouldForward: false,
         target: "none",
         threadId: null,
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     case "/browse":
@@ -364,9 +506,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
+        pushEnabled: null,
         mode: "bridge",
         payloadContent: "",
-        picker: null
+        picker: null,
+        priority: null
       };
 
     default:

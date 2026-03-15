@@ -5,14 +5,26 @@ import path from "node:path";
 
 import { buildClaudeSpawnArgs } from "../agents/claude";
 import { buildCodexSpawnArgs } from "../agents/codex";
+import { buildCursorSpawnArgs } from "../agents/cursor";
+import { buildGeminiSpawnArgs } from "../agents/gemini";
+import { config } from "../config";
 import { createLogger } from "../logger";
+import { APPROVAL_HELP_TEXT, approvalActionToTmuxKeys, normalizeApprovalAction } from "../shared/approval";
 import { AgentAPIClient } from "../shared/agentapi-client";
-import type { AgentInstance, AgentInstanceStatus, AgentType, BridgeMode } from "../types";
+import { ProviderModelCatalog } from "../shared/model-catalog";
+import type {
+  AgentInstance,
+  AgentInstanceStatus,
+  AgentType,
+  BridgeMode,
+  ProviderModelCatalog as ProviderModelCatalogPayload
+} from "../types";
 import { InstanceRegistry } from "./registry";
+import { buildPersistedHubState, type PersistedHubState } from "./state-store";
 
 type SpawnFn = typeof spawn;
 type ExecSyncFn = typeof execSync;
-type PortAllocator = () => Promise<number>;
+type SocketPathFactory = (threadId: string) => string;
 
 interface StatusClient {
   connect: (endpoint: string) => Promise<void>;
@@ -36,25 +48,29 @@ export interface ThreadAttachment {
   interface_id: string | null;
 }
 
+export interface RehydrationResult {
+  restored_thread_ids: string[];
+  pruned_thread_ids: string[];
+}
+
 export interface InstanceManagerOptions {
   agentapiBinPath?: string;
   logDir?: string;
   agentWorkdir?: string;
   spawnFn?: SpawnFn;
   execSyncFn?: ExecSyncFn;
-  portAllocator?: PortAllocator;
+  socketPathFactory?: SocketPathFactory;
+  agentapiSocketSupport?: boolean;
+  agentapiAttachSocketSupport?: boolean;
   clientFactory?: (threadId: string) => StatusClient;
+  modelCatalog?: ProviderModelCatalog;
   now?: () => Date;
   paneBridgeUsePtyWrapper?: boolean;
+  /** When pane delta has no overlap (full-screen redraw), write last K lines to log instead of skipping. Default 50. */
+  paneDeltaTailLinesWhenNoOverlap?: number;
 }
 
 const SESSION_THREAD_PLACEHOLDERS = new Set(["active", "all", "global", "pending", "unbound", "none"]);
-const AGENT_COMMAND_BY_TYPE: Record<AgentType, string> = {
-  claude: "claude",
-  codex: "codex",
-  gemini: "gemini",
-  cursor: "cursor-agent"
-};
 const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
   "idle",
   "running",
@@ -64,7 +80,24 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 ]);
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
-const DEFAULT_AGENT_WORKDIR = process.env.AGENT_WORKDIR ?? process.cwd();
+const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
+/** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
+const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
+/** Bytes of pane log tail to read when deduping capture vs run-injected content. */
+const CAPTURE_DEDUP_TAIL_SIZE = 65536;
+type SpawnStdioMode = "inherit" | ["ignore", number, number];
+type AgentEndpointBinding = {
+  endpoint: string;
+  listenArg: string;
+  transport: "socket" | "http";
+};
+
+interface PaneCaptureState {
+  timer: NodeJS.Timeout;
+  tmuxSession: string;
+  logPath: string;
+  lastSnapshot: string;
+}
 
 export class InstanceManager {
   private readonly log = createLogger("instance_mgr");
@@ -73,12 +106,20 @@ export class InstanceManager {
   private readonly agentWorkdir: string;
   private readonly spawnFn: SpawnFn;
   private readonly execSyncFn: ExecSyncFn;
-  private readonly portAllocator: PortAllocator;
+  private readonly socketPathFactory: SocketPathFactory;
+  private readonly forcedAgentapiSocketSupport: boolean | null;
+  private readonly forcedAgentapiAttachSocketSupport: boolean | null;
   private readonly clientFactory: (threadId: string) => StatusClient;
+  private readonly modelCatalog: ProviderModelCatalog;
   private readonly now: () => Date;
   private readonly paneBridgeUsePtyWrapper: boolean;
+  private readonly paneDeltaTailLinesWhenNoOverlap: number;
+  private agentapiSocketSupportCache: boolean | null = null;
+  private agentapiAttachSocketSupportCache: boolean | null = null;
+  private paneCaptureIntervalMs: number = config.PANE_CAPTURE_INTERVAL_MS;
   private readonly children = new Map<string, ChildProcess>();
   private readonly agentLogFdByThread = new Map<string, number>();
+  private readonly paneCaptureByThread = new Map<string, PaneCaptureState>();
   private readonly sessionThreadBySession = new Map<string, string>();
   private readonly startupAttempts = 180;
   private readonly startupDelayMs = 250;
@@ -94,18 +135,23 @@ export class InstanceManager {
     this.agentWorkdir = this.resolveWorkdir(options.agentWorkdir ?? DEFAULT_AGENT_WORKDIR);
     this.spawnFn = options.spawnFn ?? spawn;
     this.execSyncFn = options.execSyncFn ?? execSync;
-    this.portAllocator = options.portAllocator ?? (() => this.allocateAvailablePort());
+    this.socketPathFactory = options.socketPathFactory ?? ((threadId: string) => this.formatAgentSocketPath(threadId));
+    this.forcedAgentapiSocketSupport = options.agentapiSocketSupport ?? null;
+    this.forcedAgentapiAttachSocketSupport = options.agentapiAttachSocketSupport ?? null;
     this.clientFactory =
       options.clientFactory ??
       ((threadId: string) => {
         return new AgentAPIClient({ threadId });
       });
+    this.modelCatalog = options.modelCatalog ?? new ProviderModelCatalog();
     this.now = options.now ?? (() => new Date());
     this.paneBridgeUsePtyWrapper = options.paneBridgeUsePtyWrapper ?? false;
+    this.paneDeltaTailLinesWhenNoOverlap =
+      options.paneDeltaTailLinesWhenNoOverlap ?? PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP;
   }
 
-  async spawn(type: AgentType, mode: BridgeMode, workingDirectory?: string): Promise<string> {
-    return await this.spawnWithRetry(type, mode, undefined, workingDirectory);
+  async spawn(type: AgentType, mode: BridgeMode, workingDirectory?: string, modelId?: string): Promise<string> {
+    return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId);
   }
 
   async kill(threadId: string): Promise<void> {
@@ -218,7 +264,13 @@ export class InstanceManager {
 
     const previousStatus = existing.status;
     await this.killInternal(threadId, true);
-    const restartedThreadId = await this.spawnWithRetry(existing.agent_type, existing.mode, threadId, existing.working_dir);
+    const restartedThreadId = await this.spawnWithRetry(
+      existing.agent_type,
+      existing.mode,
+      threadId,
+      existing.working_dir,
+      existing.model_id
+    );
     const current = this.registry.get(restartedThreadId);
 
     this.log.info(
@@ -236,28 +288,152 @@ export class InstanceManager {
     return restartedThreadId;
   }
 
-  async switchModel(threadId: string, nextType: AgentType): Promise<string> {
+  async listModels(threadId: string): Promise<ProviderModelCatalogPayload> {
+    const instance = this.registry.get(threadId);
+    if (!instance) {
+      throw new Error(`Cannot list models; thread_id=${threadId} is not registered`);
+    }
+
+    const catalog = await this.modelCatalog.listModels(instance.agent_type);
+    return {
+      thread_id: threadId,
+      provider: catalog.provider,
+      current_model_id: instance.model_id ?? null,
+      models: catalog.models
+    };
+  }
+
+  sendTerminalInput(threadId: string, rawInput: string): string {
+    const instance = this.registry.get(threadId);
+    if (!instance) {
+      throw new Error(`Cannot send terminal input; thread_id=${threadId} is not registered`);
+    }
+
+    if (instance.mode !== "pane_bridge" || !instance.tmux_pane) {
+      throw new Error(
+        `Thread ${threadId} is running in mode=${instance.mode}; terminal_input requires a pane_bridge thread with tmux.`
+      );
+    }
+
+    const action = normalizeApprovalAction(rawInput);
+    const keys = action
+      ? approvalActionToTmuxKeys(action)
+      : this.rawTerminalInputToTmuxKeys(rawInput);
+    const escapedKeys = keys.map((key) => this.shellEscape(key)).join(" ");
+    this.execSyncFn(`tmux send-keys -t ${this.shellEscape(instance.tmux_pane)} ${escapedKeys}`, {
+      stdio: "ignore"
+    });
+
+    this.log.info(
+      {
+        operation: "terminal_input",
+        thread_id: threadId,
+        tmux_pane: instance.tmux_pane,
+        approval_action: action ?? null,
+        raw_input: action ? null : rawInput,
+        keys
+      },
+      "Sent terminal input to tmux pane"
+    );
+
+    return action ? `Sent approval action '${action}' to ${threadId}.` : `Sent terminal input to ${threadId}.`;
+  }
+
+  private rawTerminalInputToTmuxKeys(rawInput: string): string[] {
+    const normalized = rawInput.replace(/\r/g, "");
+    if (!normalized.trim()) {
+      throw new Error(`Unsupported empty terminal input. ${APPROVAL_HELP_TEXT}`);
+    }
+
+    const lines = normalized.split("\n");
+    const keys: string[] = [];
+    for (const line of lines) {
+      if (line.length > 0) {
+        keys.push(line);
+      }
+      keys.push("Enter");
+    }
+    return keys;
+  }
+
+  snapshotState(): PersistedHubState {
+    return buildPersistedHubState(
+      this.now().toISOString(),
+      this.registry.list(),
+      Object.fromEntries(this.sessionThreadBySession.entries())
+    );
+  }
+
+  async rehydrateFromState(state: PersistedHubState): Promise<RehydrationResult> {
+    this.registry.clear();
+    this.children.clear();
+    for (const threadId of this.paneCaptureByThread.keys()) {
+      this.stopTmuxPaneCapture(threadId);
+    }
+    this.sessionThreadBySession.clear();
+
+    const restoredThreadIds: string[] = [];
+    const prunedThreadIds: string[] = [];
+    const liveThreadIds = new Set<string>();
+
+    for (const persistedInstance of state.instances ?? []) {
+      const hydratedInstance = await this.rehydrateInstance(persistedInstance);
+      if (!hydratedInstance) {
+        prunedThreadIds.push(persistedInstance.thread_id);
+        continue;
+      }
+
+      this.registry.register(hydratedInstance);
+      restoredThreadIds.push(hydratedInstance.thread_id);
+      liveThreadIds.add(hydratedInstance.thread_id);
+    }
+
+    for (const [session, threadId] of Object.entries(state.session_bindings ?? {})) {
+      if (!liveThreadIds.has(threadId)) {
+        continue;
+      }
+      try {
+        this.sessionThreadBySession.set(this.sanitizeSession(session), threadId);
+      } catch {
+        // Ignore invalid persisted bindings and continue restoring the rest.
+      }
+    }
+
+    return {
+      restored_thread_ids: restoredThreadIds,
+      pruned_thread_ids: prunedThreadIds
+    };
+  }
+
+  async switchModel(threadId: string, nextModelId: string): Promise<string> {
     const existing = this.registry.get(threadId);
     if (!existing) {
       throw new Error(`Cannot switch model; thread_id=${threadId} is not registered`);
     }
 
-    if (existing.agent_type === nextType) {
+    if (existing.model_id === nextModelId) {
       return threadId;
     }
 
     const previousStatus = existing.status;
-    const previousType = existing.agent_type;
+    const previousModelId = existing.model_id ?? null;
     await this.killInternal(threadId, true);
-    const restartedThreadId = await this.spawnWithRetry(nextType, existing.mode, threadId, existing.working_dir);
+    const restartedThreadId = await this.spawnWithRetry(
+      existing.agent_type,
+      existing.mode,
+      threadId,
+      existing.working_dir,
+      nextModelId
+    );
     const current = this.registry.get(restartedThreadId);
 
     this.log.info(
       {
         operation: "switch_model",
         thread_id: restartedThreadId,
-        from_agent_type: previousType,
-        to_agent_type: nextType,
+        agent_type: existing.agent_type,
+        from_model_id: previousModelId,
+        to_model_id: nextModelId,
         pid: current?.pid ?? null,
         socket_path: current?.socket_path ?? null,
         prev_status: previousStatus,
@@ -312,13 +488,14 @@ export class InstanceManager {
     type: AgentType,
     mode: BridgeMode,
     threadIdOverride?: string,
-    workingDirectory?: string
+    workingDirectory?: string,
+    modelId?: string
   ): Promise<string> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
       try {
-        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory);
+        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory, modelId);
       } catch (error) {
         lastError = error;
         if (!this.shouldRetrySpawn(error) || attempt >= this.spawnAttempts) {
@@ -364,14 +541,18 @@ export class InstanceManager {
     type: AgentType,
     mode: BridgeMode,
     threadIdOverride?: string,
-    workingDirectory?: string
+    workingDirectory?: string,
+    modelId?: string
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
-    const port = await this.portAllocator();
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
-    const socketPath = this.formatAgentEndpoint(port);
+    const endpointBinding = await this.resolveAgentEndpointBinding(threadId);
+    const socketPath = endpointBinding.endpoint;
+    if (endpointBinding.transport === "socket") {
+      await this.removeSocketPath(socketPath);
+    }
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
-    const args = this.buildSpawnArgs(type, port);
+    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId);
     const childEnv = this.buildChildEnv();
 
     if (tmuxSession) {
@@ -394,7 +575,7 @@ export class InstanceManager {
         "Launching agent instance process"
       );
       const child = this.spawnFn(paneLaunch.command, paneLaunch.args, {
-        detached: false,
+        detached: true,
         stdio,
         env: childEnv,
         cwd: spawnWorkdir
@@ -418,25 +599,27 @@ export class InstanceManager {
       const instance: AgentInstance = {
         thread_id: threadId,
         agent_type: type,
+        model_id: modelId,
         mode,
         socket_path: socketPath,
         working_dir: spawnWorkdir,
         pid: child.pid,
         tmux_pane: tmuxSession,
         status: "idle",
-        created_at: this.now().toISOString()
+        created_at: this.now().toISOString(),
+        restart_safe: true
       };
 
       this.registry.register(instance);
       this.children.set(threadId, child);
+      this.maybeUnrefChild(child, stdio);
       this.watchChildProcess(threadId, child);
       try {
         await this.assertAgentReady(threadId, socketPath);
-        this.spawnInTmuxSession(
-          threadId,
-          tmuxSession,
-          this.buildAgentAttachCliArgs(socketPath)
-        );
+        const attachArgs = this.buildAgentAttachCliArgs(endpointBinding);
+        if (attachArgs) {
+          this.spawnInTmuxSession(threadId, tmuxSession, attachArgs);
+        }
       } catch (error) {
         await this.killInternal(threadId, false).catch(() => undefined);
         throw error;
@@ -475,7 +658,7 @@ export class InstanceManager {
       "Launching agent instance process"
     );
     const child = this.spawnFn(this.agentapiBinPath, args, {
-      detached: false,
+      detached: true,
       stdio,
       env: childEnv,
       cwd: spawnWorkdir
@@ -499,17 +682,20 @@ export class InstanceManager {
     const instance: AgentInstance = {
       thread_id: threadId,
       agent_type: type,
+      model_id: modelId,
       mode,
       socket_path: socketPath,
       working_dir: spawnWorkdir,
       pid: child.pid,
       tmux_pane: tmuxSession,
       status: "idle",
-      created_at: this.now().toISOString()
+      created_at: this.now().toISOString(),
+      restart_safe: true
     };
 
     this.registry.register(instance);
     this.children.set(threadId, child);
+    this.maybeUnrefChild(child, stdio);
     this.watchChildProcess(threadId, child);
     await this.assertAgentReady(threadId, socketPath);
 
@@ -587,6 +773,33 @@ export class InstanceManager {
     );
   }
 
+  private async rehydrateInstance(instance: AgentInstance): Promise<AgentInstance | null> {
+    const client = this.clientFactory(instance.thread_id);
+    try {
+      await client.connect(instance.socket_path);
+      const rawStatus = await client.getStatus();
+      const reportedStatus = this.toKnownStatus(rawStatus.status);
+      return {
+        ...instance,
+        status: reportedStatus ?? instance.status
+      };
+    } catch (error) {
+      this.log.warn(
+        {
+          operation: "rehydrate_probe_failed",
+          thread_id: instance.thread_id,
+          socket_path: instance.socket_path,
+          pid: instance.pid,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Skipping persisted agent instance because readiness probe failed"
+      );
+      return null;
+    } finally {
+      client.disconnect();
+    }
+  }
+
   private async killInternal(threadId: string, preserveBindings: boolean): Promise<void> {
     const instance = this.registry.get(threadId);
     if (!instance) {
@@ -626,6 +839,7 @@ export class InstanceManager {
 
     this.children.delete(threadId);
     this.releaseAgentLogFd(threadId);
+    this.stopTmuxPaneCapture(threadId);
     this.registry.unregister(threadId);
 
     if (!preserveBindings) {
@@ -649,15 +863,24 @@ export class InstanceManager {
     child.once("exit", (code, signal) => {
       this.children.delete(threadId);
       this.releaseAgentLogFd(threadId);
+      this.stopTmuxPaneCapture(threadId);
 
       const instance = this.registry.get(threadId);
       if (!instance) {
         return;
       }
 
-      const nextStatus: AgentInstanceStatus = code === 0 || signal === "SIGTERM" ? "stopped" : "error";
-      this.registry.unregister(threadId);
-      this.clearSessionBindingsForThread(threadId);
+      const isGraceful = code === 0 || signal === "SIGTERM";
+      const nextStatus: AgentInstanceStatus = isGraceful ? "stopped" : "error";
+
+      if (isGraceful) {
+        this.registry.unregister(threadId);
+        this.clearSessionBindingsForThread(threadId);
+      } else {
+        // Crash: preserve instance and session bindings so the monitor service
+        // can detect the failure and deliver a Telegram alert before cleanup.
+        this.registry.setStatus(threadId, "error");
+      }
 
       this.log.warn(
         {
@@ -669,7 +892,7 @@ export class InstanceManager {
           signal,
           prev_status: instance.status,
           next_status: nextStatus,
-          removed_from_registry: true
+          removed_from_registry: isGraceful
         },
         "Agent process exited"
       );
@@ -713,21 +936,36 @@ export class InstanceManager {
     return `${type}_${String(maxIndex + 1).padStart(2, "0")}`;
   }
 
-  private buildSpawnArgs(type: AgentType, port: number): string[] {
+  private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string): string[] {
     if (type === "codex") {
-      return buildCodexSpawnArgs("bridge", null, port);
+      return buildCodexSpawnArgs("bridge", null, listenArg, modelId);
     }
     if (type === "claude") {
-      return buildClaudeSpawnArgs("bridge", null, port);
+      return buildClaudeSpawnArgs("bridge", null, listenArg, modelId);
     }
-
-    const args = ["server", `--type=${type}`, `--port=${port}`];
-    args.push("--", AGENT_COMMAND_BY_TYPE[type]);
-    return args;
+    if (type === "gemini") {
+      return buildGeminiSpawnArgs("bridge", null, listenArg, modelId);
+    }
+    return buildCursorSpawnArgs("bridge", null, listenArg, modelId);
   }
 
-  private buildAgentAttachCliArgs(url: string): string[] {
-    return [this.agentapiBinPath, "attach", `--url=${url}`];
+  private buildAgentAttachCliArgs(binding: AgentEndpointBinding): string[] | null {
+    if (binding.transport === "http") {
+      return [this.agentapiBinPath, "attach", `--url=${binding.endpoint}`];
+    }
+
+    if (this.supportsAgentapiAttachSocketFlag()) {
+      return [this.agentapiBinPath, "attach", `--socket=${binding.endpoint}`];
+    }
+
+    this.log.warn(
+      {
+        operation: "spawn_attach_skipped",
+        endpoint: binding.endpoint
+      },
+      "agentapi attach does not support --socket; skipping tmux attach for pane_bridge"
+    );
+    return null;
   }
 
   private spawnInTmuxSession(
@@ -747,7 +985,7 @@ export class InstanceManager {
       }
     );
     this.configureTmuxSession(tmuxSession);
-    this.enableTmuxPaneLogging(threadId, tmuxSession);
+    this.startTmuxPaneCapture(threadId, tmuxSession);
   }
 
   private configureTmuxSession(tmuxSession: string): void {
@@ -764,55 +1002,277 @@ export class InstanceManager {
     });
   }
 
-  private enableTmuxPaneLogging(threadId: string, tmuxSession: string): void {
+  private startTmuxPaneCapture(threadId: string, tmuxSession: string): void {
     try {
       fs.mkdirSync(this.logDir, { recursive: true });
       const paneLogPath = path.join(this.logDir, `pane-${threadId}.log`);
-      const pipeCommand = `cat >> ${paneLogPath}`;
-      this.execSyncFn(
-        `tmux pipe-pane -o -t ${this.shellEscape(tmuxSession)} ${this.shellEscape(pipeCommand)}`,
-        {
-          stdio: "ignore"
-        }
-      );
+      this.stopTmuxPaneCapture(threadId);
+      const timer = setInterval(() => {
+        this.capturePaneSnapshot(threadId);
+      }, this.paneCaptureIntervalMs);
+      timer.unref();
+      this.paneCaptureByThread.set(threadId, {
+        timer,
+        tmuxSession,
+        logPath: paneLogPath,
+        lastSnapshot: ""
+      });
     } catch (error) {
       this.log.warn(
         {
-          operation: "pane_log_pipe_failed",
+          operation: "pane_capture_start_failed",
           thread_id: threadId,
           tmux_session: tmuxSession,
           err: error instanceof Error ? error.message : String(error)
         },
-        "Failed to enable tmux pane log capture"
+        "Failed to start tmux pane capture"
       );
     }
   }
 
-  private formatAgentEndpoint(port: number): string {
+  getPaneCaptureIntervalMs(): number {
+    return this.paneCaptureIntervalMs;
+  }
+
+  setPaneCaptureIntervalMs(intervalMs: number): void {
+    const clamped = Math.max(2000, Math.min(30000, Math.floor(intervalMs)));
+    if (clamped === this.paneCaptureIntervalMs) {
+      return;
+    }
+    this.paneCaptureIntervalMs = clamped;
+
+    // Restart all active capture timers with the new interval
+    for (const [threadId, capture] of this.paneCaptureByThread.entries()) {
+      clearInterval(capture.timer);
+      const timer = setInterval(() => {
+        this.capturePaneSnapshot(threadId);
+      }, this.paneCaptureIntervalMs);
+      timer.unref();
+      capture.timer = timer;
+    }
+  }
+
+  private stopTmuxPaneCapture(threadId: string): void {
+    const capture = this.paneCaptureByThread.get(threadId);
+    if (!capture) {
+      return;
+    }
+    clearInterval(capture.timer);
+    this.paneCaptureByThread.delete(threadId);
+  }
+
+  /**
+   * Compute the delta (new lines only) between last snapshot and current snapshot.
+   * Terminal output grows downward; when the pane scrolls, the top of the new snapshot
+   * may overlap with the tail of the old. We find the longest overlap (last i lines of
+   * old = first i lines of new) and return the remaining lines of new as the delta.
+   * First frame (lastSnapshot === ""): return full snapshot normalized with trailing newline.
+   * When overlap is 0 (e.g. full-screen redraw) and not first frame: return last K lines
+   * only if they are not already present at the end of lastSnapshot, to avoid duplicate
+   * blocks in the pane log (which would cause duplicate push deliveries).
+   */
+  private computePaneDelta(lastSnapshot: string, snapshot: string): string {
+    const oldLines = lastSnapshot.split(/\n/);
+    const newLines = snapshot.split(/\n/);
+    const n = oldLines.length;
+    const m = newLines.length;
+    const K = this.paneDeltaTailLinesWhenNoOverlap;
+
+    if (lastSnapshot === "") {
+      return snapshot.trimEnd() ? snapshot.trimEnd() + "\n" : "";
+    }
+
+    let overlap = 0;
+    for (let i = 1; i <= Math.min(n, m); i++) {
+      const oldSuffix = oldLines.slice(n - i, n);
+      const newPrefix = newLines.slice(0, i);
+      if (oldSuffix.every((line, j) => line === newPrefix[j])) {
+        overlap = i;
+      }
+    }
+    if (overlap === 0) {
+      const tailLines = newLines.slice(-K);
+      const tailBlock = tailLines.join("\n") + (tailLines.length > 0 ? "\n" : "");
+      const oldTail = oldLines.slice(-K).join("\n").trimEnd();
+      const newTail = tailLines.join("\n").trimEnd();
+      if (newTail.length > 0 && newTail === oldTail) {
+        return "";
+      }
+      return tailBlock;
+    }
+    const deltaLines = newLines.slice(overlap);
+    return deltaLines.join("\n") + (deltaLines.length > 0 ? "\n" : "");
+  }
+
+  private capturePaneSnapshot(threadId: string): void {
+    const capture = this.paneCaptureByThread.get(threadId);
+    if (!capture) {
+      return;
+    }
+
+    try {
+      // Capture currently visible pane content so the log gets output as soon as it
+      // appears (scrollback-only capture wrote only when lines scrolled off, so the
+      // log stayed empty on large panes or low output).
+      const rawSnapshot = this.execSyncFn(
+        `tmux capture-pane -e -p -t ${this.shellEscape(capture.tmuxSession)}`,
+        { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }
+      );
+      const snapshot = this.toText(rawSnapshot).trimEnd();
+      const delta = this.computePaneDelta(capture.lastSnapshot, snapshot);
+      capture.lastSnapshot = snapshot;
+
+      if (!delta) {
+        return;
+      }
+
+      const timestamp = this.now().toISOString();
+      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${delta}\n`, "utf8");
+    } catch (error) {
+      this.log.warn(
+        {
+          operation: "pane_capture_tick_failed",
+          thread_id: threadId,
+          tmux_session: capture.tmuxSession,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Failed to capture tmux pane snapshot"
+      );
+    }
+  }
+
+  private formatAgentSocketPath(threadId: string): string {
+    return path.join("/tmp", `agentapi-${threadId}.sock`);
+  }
+
+  private formatAgentHttpEndpoint(port: number): string {
     return `http://127.0.0.1:${port}`;
   }
 
-  private async allocateAvailablePort(): Promise<number> {
+  private async resolveAgentEndpointBinding(threadId: string): Promise<AgentEndpointBinding> {
+    if (this.supportsAgentapiSocketFlag()) {
+      const socketPath = this.socketPathFactory(threadId);
+      return {
+        endpoint: socketPath,
+        listenArg: `--socket=${socketPath}`,
+        transport: "socket"
+      };
+    }
+
+    const port = await this.allocateLoopbackPort();
+    return {
+      endpoint: this.formatAgentHttpEndpoint(port),
+      listenArg: `--port=${port}`,
+      transport: "http"
+    };
+  }
+
+  private supportsAgentapiSocketFlag(): boolean {
+    if (this.forcedAgentapiSocketSupport !== null) {
+      return this.forcedAgentapiSocketSupport;
+    }
+    if (this.agentapiSocketSupportCache !== null) {
+      return this.agentapiSocketSupportCache;
+    }
+
+    const supported = this.probeAgentapiFlagSupport("server", "--socket");
+    this.agentapiSocketSupportCache = supported;
+    return supported;
+  }
+
+  private supportsAgentapiAttachSocketFlag(): boolean {
+    if (this.forcedAgentapiAttachSocketSupport !== null) {
+      return this.forcedAgentapiAttachSocketSupport;
+    }
+    if (this.agentapiAttachSocketSupportCache !== null) {
+      return this.agentapiAttachSocketSupportCache;
+    }
+
+    const supported = this.probeAgentapiFlagSupport("attach", "--socket");
+    this.agentapiAttachSocketSupportCache = supported;
+    return supported;
+  }
+
+  private probeAgentapiFlagSupport(command: "server" | "attach", flag: string): boolean {
+    const helpOutput = this.readAgentapiHelp(command);
+    const supported = helpOutput.includes(flag);
+
+    this.log.info(
+      {
+        operation: "agentapi_feature_probe",
+        command,
+        flag,
+        supported
+      },
+      "Detected agentapi flag support"
+    );
+
+    return supported;
+  }
+
+  private readAgentapiHelp(command: "server" | "attach"): string {
+    const shellCommand = `${this.shellEscape(this.agentapiBinPath)} ${command} --help`;
+    try {
+      const output = this.execSyncFn(shellCommand, {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8"
+      });
+      return this.toText(output);
+    } catch (error) {
+      const details = error as { stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
+      return `${this.toText(details.stdout)}\n${this.toText(details.stderr)}\n${details.message ?? ""}`;
+    }
+  }
+
+  private toText(value: unknown): string {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (Buffer.isBuffer(value)) {
+      return value.toString("utf8");
+    }
+    return "";
+  }
+
+  private async allocateLoopbackPort(): Promise<number> {
     return await new Promise<number>((resolve, reject) => {
       const server = net.createServer();
       server.unref();
-      server.once("error", reject);
+
+      server.once("error", (error) => {
+        reject(error);
+      });
+
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
         if (!address || typeof address === "string") {
-          server.close(() => reject(new Error("Failed to allocate localhost port")));
+          server.close(() => {
+            reject(new Error("Failed to allocate ephemeral loopback port"));
+          });
           return;
         }
 
-        const { port } = address;
+        const selectedPort = address.port;
         server.close((error) => {
           if (error) {
             reject(error);
             return;
           }
-          resolve(port);
+          resolve(selectedPort);
         });
       });
+    });
+  }
+
+  private async removeSocketPath(socketPath: string): Promise<void> {
+    if (!socketPath.startsWith("/")) {
+      return;
+    }
+
+    await fs.promises.unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
     });
   }
 
@@ -830,7 +1290,7 @@ export class InstanceManager {
     }
   }
 
-  private buildSpawnStdio(threadId: string): "inherit" | ["ignore", number, number] {
+  private buildSpawnStdio(threadId: string): SpawnStdioMode {
     const shouldRedirectLogs = DEFAULT_NODE_ENV === "production" || Boolean(process.env.PM2_HOME);
     if (!shouldRedirectLogs) {
       return "inherit";
@@ -841,6 +1301,15 @@ export class InstanceManager {
     const fd = fs.openSync(agentLogPath, "a");
     this.agentLogFdByThread.set(threadId, fd);
     return ["ignore", fd, fd];
+  }
+
+  private maybeUnrefChild(child: ChildProcess, stdio: SpawnStdioMode): void {
+    if (stdio === "inherit") {
+      return;
+    }
+    if (typeof child.unref === "function") {
+      child.unref();
+    }
   }
 
   private buildChildEnv(): NodeJS.ProcessEnv {

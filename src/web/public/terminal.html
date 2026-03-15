@@ -1,0 +1,3002 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Meridian — Coding Agent</title>
+  <link rel="stylesheet" href="layout-base.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <style>
+    :root {
+      --bg-color: #0b0f1a;
+      --sidebar-color: #111827;
+      --surface-color: #161b2a;
+      --surface-hover: #1f2638;
+      --border-color: #2d3343;
+      --text-color: #f0f2f5;
+      --text-dim: #94a3b8;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --success-color: #10b981;
+      --error-color: #ef4444;
+      --sidebar-width: 300px;
+      --safe-area-inset-top: env(safe-area-inset-top, 0px);
+      --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-color);
+      color: var(--text-color);
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .hidden { display: none !important; }
+
+    header {
+      flex-shrink: 0;
+      background: var(--sidebar-color);
+      border-bottom: 1px solid var(--border-color);
+      padding: calc(0.5rem + var(--safe-area-inset-top)) 1rem 0.5rem;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.5rem;
+      z-index: 100;
+      flex-wrap: wrap;
+    }
+
+    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1 1 auto; overflow: visible; }
+    .header-right { display: flex; align-items: center; gap: 0.5rem; flex: 0 1 auto; min-width: 0; }
+    .focus-toggle {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .focus-toggle.active {
+      color: var(--accent-color);
+      border-color: var(--accent-color);
+      background: rgba(59, 130, 246, 0.12);
+    }
+    .back-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 0.5rem; display: flex; border-radius: 0.375rem; touch-action: manipulation; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
+    .back-btn:hover { color: #fff; background: var(--surface-hover); }
+    
+    header h1 {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      display: block;
+      min-width: 0;
+      flex: 1 1 auto;
+      line-height: 1.6;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .thread-badge {
+      background: var(--bg-color);
+      color: var(--accent-color);
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.375rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      border: 1px solid var(--border-color);
+      display: inline-block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+
+    #workspace {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+    }
+
+    /* Sidebar / File Explorer */
+    #sidebar {
+      width: var(--sidebar-width);
+      background: var(--sidebar-color);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      z-index: 200;
+      min-width: 0;
+    }
+
+    .sidebar-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 150;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .sidebar-overlay.open { display: block; opacity: 1; }
+
+    .sidebar-tabbar {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.375rem;
+      padding: 0.75rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .sidebar-tabbtn {
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-dim);
+      border-radius: 0.625rem;
+      padding: 0.55rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .sidebar-tabbtn.active {
+      background: var(--surface-color);
+      color: var(--text-color);
+      border-color: rgba(59, 130, 246, 0.45);
+      box-shadow: inset 0 -2px 0 var(--accent-color);
+    }
+    .sidebar-panel {
+      flex: 1;
+      min-height: 0;
+      display: none;
+      flex-direction: column;
+    }
+    .sidebar-panel.active {
+      display: flex;
+    }
+    .sidebar-header {
+      padding: 0.75rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #file-tree {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+    }
+    #session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+    .session-item {
+      border: 1px solid var(--border-color);
+      background: rgba(11, 15, 26, 0.45);
+      border-radius: 0.875rem;
+      padding: 0.75rem;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      text-align: left;
+      color: var(--text-color);
+    }
+    .session-item.active {
+      border-color: rgba(59, 130, 246, 0.55);
+      background: rgba(59, 130, 246, 0.12);
+    }
+    .session-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      font-size: 0.6875rem;
+      color: var(--text-dim);
+    }
+    .session-title {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      color: var(--accent-color);
+      word-break: break-all;
+    }
+    .session-preview {
+      font-size: 0.8125rem;
+      line-height: 1.45;
+      color: var(--text-dim);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .session-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      font-size: 0.625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .session-status.live {
+      color: var(--success-color);
+      border-color: rgba(16, 185, 129, 0.35);
+      background: rgba(16, 185, 129, 0.08);
+    }
+
+    .tree-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+      color: var(--text-dim);
+      word-break: break-all;
+      white-space: normal;
+      margin-bottom: 2px;
+    }
+
+    .tree-item:hover { background: var(--surface-color); color: #fff; }
+    .tree-item:active { background: var(--surface-hover); }
+    .tree-item.active { background: rgba(59, 130, 246, 0.1); color: var(--accent-color); }
+    .tree-item svg { flex-shrink: 0; width: 16px; height: 16px; }
+    .tree-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.5rem;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+      color: var(--text-dim);
+      cursor: pointer;
+      user-select: none;
+    }
+    .tree-row:hover { background: var(--surface-color); color: #fff; }
+    .tree-row.active { background: rgba(59, 130, 246, 0.1); color: var(--accent-color); }
+    .tree-toggle {
+      width: 16px;
+      height: 16px;
+      border: none;
+      background: transparent;
+      color: inherit;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .tree-toggle:hover { background: rgba(148, 163, 184, 0.16); }
+    .tree-toggle-placeholder {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+    .tree-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+    .tree-node {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tree-children {
+      margin-left: 0.25rem;
+      padding-left: 0.35rem;
+      border-left: 1px dashed rgba(148, 163, 184, 0.25);
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 0.18s ease, opacity 0.18s ease;
+    }
+    .tree-children.open {
+      max-height: 1200px;
+      opacity: 1;
+    }
+
+    /* Main Area */
+    #main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background:
+        linear-gradient(180deg, rgba(18, 24, 38, 0.92) 0%, rgba(7, 10, 16, 0.98) 100%);
+      position: relative;
+    }
+
+    .tabs {
+      height: 40px;
+      background: var(--sidebar-color);
+      display: flex;
+      border-bottom: 1px solid var(--border-color);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+
+    .tab {
+      padding: 0 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8125rem;
+      color: var(--text-dim);
+      border-right: 1px solid var(--border-color);
+      cursor: pointer;
+      word-break: break-all;
+      white-space: normal;
+      background: var(--sidebar-color);
+      transition: all 0.2s;
+    }
+
+    .tab:hover { color: #fff; }
+    .tab.active { background: var(--bg-color); color: #fff; box-shadow: inset 0 -2px 0 var(--accent-color); }
+
+    .view-container {
+      flex: 1;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    /* Editor View */
+    #editor-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    #editor-content {
+      flex: 1;
+      background: transparent;
+      color: var(--text-color);
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 13px;
+      padding: 1rem;
+      border: none;
+      resize: none;
+      outline: none;
+      line-height: 1.6;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Terminal View */
+    #terminal-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #05070b;
+      min-height: 0;
+    }
+    #term-container {
+      flex: 1;
+      min-height: 0;
+      padding: 0.5rem 0.625rem 0.75rem;
+      border-top: 1px solid rgba(148, 163, 184, 0.08);
+      background:
+        radial-gradient(circle at top, rgba(59, 130, 246, 0.08), transparent 28%),
+        #05070b;
+    }
+
+    /* Input Zone */
+    #input-zone {
+      flex-shrink: 0;
+      background: var(--surface-color);
+      border-top: 1px solid var(--border-color);
+      padding: 0.75rem;
+      padding-bottom: calc(0.75rem + var(--safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      z-index: 100;
+    }
+
+    .input-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+    .header-select {
+      min-width: 180px;
+      max-width: 220px;
+      background: rgba(11, 15, 26, 0.9);
+      border: 1px solid var(--border-color);
+      color: var(--text-color);
+      border-radius: 0.625rem;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .textarea-wrapper {
+      flex: 1;
+      background: var(--bg-color);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 0.5rem 0.875rem;
+      display: flex;
+      align-items: center;
+    }
+    textarea#cmd-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: #fff;
+      font-size: 0.9375rem;
+      resize: none;
+      outline: none;
+      max-height: 120px;
+      padding: 0;
+      line-height: 1.4;
+    }
+
+    .btn-send {
+      background: var(--accent-color);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 2.75rem;
+      height: 2.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .btn-send:hover { background: var(--accent-hover); }
+    .btn-send:active { transform: scale(0.95); }
+    .btn-send { touch-action: manipulation; min-width: 44px; min-height: 44px; }
+
+    /* Mobile Styles */
+    @media (max-width: 768px) {
+      header {
+        padding: calc(0.5rem + var(--safe-area-inset-top)) 0.75rem 0.5rem;
+        align-items: stretch;
+      }
+      .header-left {
+        width: 100%;
+        flex-wrap: nowrap;
+      }
+      .header-right {
+        width: 100%;
+        justify-content: flex-end;
+      }
+      .header-right > .header-select {
+        order: 1;
+      }
+      .header-right > #agent-status {
+        order: 2;
+      }
+      .header-right > .header-overflow {
+        order: 3;
+        margin-left: 0.25rem;
+      }
+      .header-select {
+        min-width: 0;
+        max-width: none;
+        flex: 1 1 auto;
+      }
+      #agent-status {
+        margin-left: 0 !important;
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      #sidebar {
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        width: min(var(--sidebar-width), calc(100vw - 2.5rem));
+        max-width: calc(100vw - 2.5rem);
+        transform: translateX(-100%);
+        box-shadow: 10px 0 30px rgba(0,0,0,0.5);
+      }
+      #sidebar.open { transform: translateX(0); }
+      
+      .header-right .btn-action { display: none; } /* Hide complex actions in header on mobile */
+      
+      .mobile-nav {
+        display: flex;
+        background: var(--sidebar-color);
+        border-top: 1px solid var(--border-color);
+        padding-bottom: var(--safe-area-inset-bottom);
+      }
+      .nav-item {
+        flex: 1;
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.625rem;
+        color: var(--text-dim);
+        cursor: pointer;
+        touch-action: manipulation;
+        min-height: 44px;
+        justify-content: center;
+      }
+      .nav-item.active { color: var(--accent-color); }
+      .nav-item svg { width: 22px; height: 22px; }
+      
+      #main-content .tabs { display: none; } /* Use bottom nav instead */
+    }
+    @media (max-width: 480px) {
+      #agent-status { display: none !important; }
+    }
+
+    /* Header overflow menu (mobile: Reboot/Kill in dropdown) */
+    .header-overflow {
+      display: none;
+      position: relative;
+    }
+    .header-overflow .overflow-trigger {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 0.5rem;
+      border-radius: 0.375rem;
+      touch-action: manipulation;
+      min-width: 44px;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      display: flex;
+    }
+    .header-overflow .overflow-trigger:hover { color: #fff; background: var(--surface-hover); }
+    .header-overflow .overflow-dropdown {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      left: auto;
+      margin-top: 0.25rem;
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+      min-width: 140px;
+      max-width: min(16rem, calc(100vw - 1rem));
+      z-index: 1000;
+      display: none;
+    }
+    .header-overflow .overflow-dropdown.open { display: block; }
+    .header-overflow .overflow-dropdown button {
+      display: block;
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: none;
+      background: none;
+      color: var(--text-color);
+      font-size: 0.875rem;
+      text-align: left;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .header-overflow .overflow-dropdown button:hover { background: var(--surface-hover); }
+    .header-overflow .overflow-dropdown button.kill { color: var(--error-color); }
+    .header-overflow .overflow-dropdown .overflow-divider {
+      height: 1px;
+      background: var(--border-color);
+      margin: 0.25rem 0;
+    }
+    .header-overflow .overflow-dropdown button.active {
+      color: var(--accent-color);
+    }
+    @media (max-width: 768px) {
+      .header-overflow { display: flex; align-items: center; }
+      .header-right .btn-action { display: none; }
+      .header-right > .focus-toggle,
+      .header-right > select.focus-toggle { display: none; }
+    }
+
+    @media (min-width: 769px) {
+      .mobile-nav { display: none; }
+      #menu-toggle { display: none; }
+      .header-overflow { display: none; }
+      .header-right .btn-action { display: flex; }
+      #workspace {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      }
+      .tabs {
+        height: 36px;
+        background: rgba(11, 15, 26, 0.88);
+      }
+      .tab {
+        border-right-color: rgba(148, 163, 184, 0.12);
+      }
+      #input-zone {
+        background: rgba(11, 15, 26, 0.9);
+      }
+    }
+
+    .spinner-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(11, 15, 26, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 300;
+    }
+    .spinner { width: 2.5rem; height: 2.5rem; border: 3px solid var(--border-color); border-top-color: var(--accent-color); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Chat View (mobile agent interaction) ── */
+    #chat-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-color);
+      min-height: 0;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      -webkit-overflow-scrolling: touch;
+      min-height: 80px;
+    }
+    .chat-messages-empty::after {
+      content: "Agent output will appear here. Send a message below or wait for pane output.";
+      display: block;
+      padding: 1rem;
+      color: var(--text-dim);
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+    .chat-bubble {
+      max-width: 92%;
+      padding: 0.625rem 0.875rem;
+      border-radius: 1rem;
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      word-break: break-word;
+      animation: chatFadeIn 0.15s ease;
+      position: relative;
+    }
+    .bubble-copy-toast {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.8);
+      color: #fff;
+      padding: 0.5rem 1.25rem;
+      border-radius: 0.75rem;
+      font-size: 0.8125rem;
+      z-index: 9999;
+      pointer-events: none;
+      animation: toastFade 1.2s ease forwards;
+    }
+    @keyframes toastFade {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+      15% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      70% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      background: var(--accent-color);
+      border-color: var(--accent-hover);
+      color: white;
+      border-bottom-right-radius: 0.25rem;
+      max-width: 80%;
+    }
+    .chat-bubble.agent {
+      align-self: flex-start;
+      border-bottom-left-radius: 0.25rem;
+    }
+    .chat-text {
+      white-space: pre-wrap;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+    .chat-summary-label {
+      font-size: 0.625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+      margin-bottom: 0.375rem;
+    }
+    .chat-details {
+      margin-top: 0.5rem;
+      border-top: 1px dashed var(--border-color);
+      padding-top: 0.5rem;
+    }
+    .chat-details summary {
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      user-select: none;
+    }
+    .chat-details-body {
+      margin-top: 0.5rem;
+      white-space: pre-wrap;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      line-height: 1.45;
+      color: var(--text-dim);
+      max-height: 60vh;
+      overflow: auto;
+      padding-right: 0.125rem;
+    }
+    .chat-bubble.user .chat-text {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 0.875rem;
+      white-space: normal;
+    }
+    .chat-code {
+      background: #000;
+      border-radius: 0.5rem;
+      padding: 0.625rem;
+      overflow-x: auto;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      line-height: 1.4;
+      margin: 0.375rem 0;
+      -webkit-overflow-scrolling: touch;
+      position: relative;
+    }
+    .chat-code code {
+      color: var(--text-color);
+      white-space: pre;
+      display: block;
+    }
+    .chat-code .copy-btn {
+      position: absolute;
+      top: 0.25rem;
+      right: 0.25rem;
+      background: var(--surface-hover);
+      border: none;
+      color: var(--text-dim);
+      border-radius: 0.25rem;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.625rem;
+      cursor: pointer;
+    }
+    @media (hover: none) { .chat-code .copy-btn { opacity: 0.8; } }
+    .chat-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.625rem;
+    }
+    .chat-option-btn {
+      display: block;
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid var(--accent-color);
+      background: rgba(59, 130, 246, 0.08);
+      color: var(--accent-color);
+      border-radius: 0.75rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chat-option-btn:active { transform: scale(0.98); background: rgba(59, 130, 246, 0.18); }
+    .chat-option-btn.selected { background: var(--accent-color); color: white; border-color: var(--accent-color); }
+    .chat-option-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .chat-yn-options {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.625rem;
+    }
+    .chat-yn-btn {
+      flex: 1;
+      padding: 0.75rem;
+      border-radius: 0.75rem;
+      border: 1px solid var(--border-color);
+      background: var(--surface-hover);
+      color: var(--text-color);
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chat-yn-btn.yes { border-color: var(--success-color); color: var(--success-color); }
+    .chat-yn-btn.yes:active { background: rgba(16, 185, 129, 0.15); }
+    .chat-yn-btn.no { border-color: var(--error-color); color: var(--error-color); }
+    .chat-yn-btn.no:active { background: rgba(239, 68, 68, 0.15); }
+    .chat-yn-btn:active { transform: scale(0.97); }
+    .chat-yn-btn.selected { color: white; }
+    .chat-yn-btn.yes.selected { background: var(--success-color); border-color: var(--success-color); }
+    .chat-yn-btn.no.selected { background: var(--error-color); border-color: var(--error-color); }
+    .chat-yn-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .chat-typing {
+      align-self: flex-start;
+      padding: 0.5rem 0.875rem;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      display: none;
+    }
+    .chat-typing.active { display: flex; align-items: center; gap: 0.375rem; }
+    .typing-dots span {
+      display: inline-block;
+      width: 4px; height: 4px;
+      background: var(--text-dim);
+      border-radius: 50%;
+      animation: typingBounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typingBounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-4px); }
+    }
+    @keyframes chatFadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 768px) {
+      #terminal-view { display: none !important; }
+      #chat-view:not(.hidden) { display: flex; }
+      .header-right { gap: 0.25rem; }
+    }
+    @media (min-width: 769px) {
+      #chat-view { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <button class="back-btn" aria-label="Go back" onclick="location.href='index.html'"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></button>
+      <button id="menu-toggle" class="back-btn" aria-label="Toggle menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg></button>
+      <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+    </div>
+    <div class="header-right">
+      <div class="header-overflow">
+        <button type="button" class="overflow-trigger" id="overflow-menu-btn" aria-label="More actions" aria-haspopup="true" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
+        <div class="overflow-dropdown" id="overflow-dropdown">
+          <button type="button" id="overflow-focus" class="active">Focus ON</button>
+          <button type="button" id="overflow-push">Push OFF</button>
+          <button type="button" id="overflow-filters">Filters</button>
+          <div class="overflow-divider"></div>
+          <button type="button" id="overflow-reboot">Reboot</button>
+          <button type="button" id="overflow-clear-chat">Clear Chat</button>
+          <button type="button" class="kill" id="overflow-kill">Kill</button>
+        </div>
+      </div>
+      <button id="focus-toggle" class="focus-toggle active" type="button">Focus ON</button>
+      <button id="push-toggle" class="focus-toggle" type="button">Push OFF</button>
+      <button id="filters-toggle" class="focus-toggle" type="button">Filters</button>
+      <select id="model-select" class="header-select" title="Model selector">
+        <option value="">Model: loading…</option>
+      </select>
+      <select id="capture-interval" class="focus-toggle" style="appearance:auto;padding:3px 6px;font-size:11px;">
+        <option value="3000">Cap 3s</option>
+        <option value="5000">Cap 5s</option>
+        <option value="7000" selected>Cap 7s</option>
+        <option value="10000">Cap 10s</option>
+        <option value="15000">Cap 15s</option>
+        <option value="20000">Cap 20s</option>
+      </select>
+      <button id="btn-reboot" class="btn-action" style="background:transparent;border:1px solid var(--border-color);color:var(--text-dim);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Reboot</button>
+      <button id="btn-kill" class="btn-action" style="background:transparent;border:1px solid var(--error-color);color:var(--error-color);padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Kill</button>
+      <div id="agent-status" style="font-size: 0.75rem; color: var(--success-color); margin-left: 0.25rem; display: flex; align-items: center; gap: 0.375rem;">
+        <div style="width: 6px; height: 6px; background: currentColor; border-radius: 50%;"></div>
+        Live
+      </div>
+    </div>
+  </header>
+
+  <div id="workspace">
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
+    <div id="sidebar">
+      <div class="sidebar-tabbar">
+        <button type="button" class="sidebar-tabbtn active" data-sidebar-tab="files">Files</button>
+        <button type="button" class="sidebar-tabbtn" data-sidebar-tab="sessions">Sessions</button>
+      </div>
+      <div id="sidebar-files-panel" class="sidebar-panel active">
+        <div class="sidebar-header">
+          Explorer
+          <button id="refresh-files" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+        </div>
+        <div id="file-tree">
+          <div class="tree-item" style="opacity: 0.5;">Loading files...</div>
+        </div>
+      </div>
+      <div id="sidebar-sessions-panel" class="sidebar-panel">
+        <div class="sidebar-header">
+          Sessions
+          <button id="refresh-sessions" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+        </div>
+        <div id="session-list">
+          <div class="tree-item" style="opacity: 0.5;">Loading sessions...</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="main-content">
+      <div class="tabs">
+        <div class="tab active" data-view="terminal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg> Terminal</div>
+        <div class="tab" data-view="editor"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg> Editor</div>
+      </div>
+
+      <div class="view-container">
+        <div id="terminal-view" class="view">
+          <div id="term-container"></div>
+        </div>
+        <div id="editor-view" class="view hidden">
+          <div style="padding: 0.625rem 1rem; font-size: 0.75rem; color: var(--text-dim); background: var(--sidebar-color); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+            <span id="current-filename" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 1rem;">No file open</span>
+            <button id="btn-save" style="background: var(--accent-color); border:none; color:#fff; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor:pointer;" class="hidden">Save</button>
+          </div>
+          <textarea id="editor-content" placeholder="Select a file to edit..." readonly spellcheck="false"></textarea>
+        </div>
+        
+        <div id="chat-view" class="view">
+          <div id="chat-messages" class="chat-messages chat-messages-empty"></div>
+          <div id="chat-typing" class="chat-typing">
+            <div class="typing-dots"><span></span><span></span><span></span></div>
+            Agent is responding...
+          </div>
+        </div>
+
+        <div id="loading-overlay" class="spinner-overlay hidden">
+          <div class="spinner"></div>
+        </div>
+
+        <!-- Filter editor modal -->
+        <div id="filters-modal" class="hidden" style="position:absolute;inset:0;z-index:400;background:rgba(11,15,26,0.92);display:flex;align-items:flex-start;justify-content:center;padding-top:2rem;overflow-y:auto;">
+          <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:0.75rem;width:92%;max-width:500px;max-height:80vh;overflow-y:auto;padding:1.25rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+              <h2 style="font-size:1rem;font-weight:600;margin:0;">Output Filters</h2>
+              <button id="filters-close" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:1.25rem;padding:0.25rem 0.5rem;">&times;</button>
+            </div>
+            <div style="display:flex;gap:0.25rem;margin-bottom:1rem;">
+              <button class="filter-tab active" data-filter-scope="gui" style="flex:1;padding:0.5rem;border:1px solid var(--border-color);background:var(--surface-hover);color:var(--text-color);border-radius:0.375rem;cursor:pointer;font-size:0.8125rem;font-weight:600;">GUI Filters</button>
+              <button class="filter-tab" data-filter-scope="interface" style="flex:1;padding:0.5rem;border:1px solid var(--border-color);background:transparent;color:var(--text-dim);border-radius:0.375rem;cursor:pointer;font-size:0.8125rem;font-weight:600;">Interface Filters</button>
+            </div>
+            <div id="filter-scope-description" style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.75rem;">Filters for GUI chat bubbles. Matching lines are hidden from chat view.</div>
+            <div id="builtin-filters-section">
+              <h3 style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin:0 0 0.5rem;">Built-in</h3>
+              <div id="builtin-filters-list" style="font-size:0.75rem;color:var(--text-dim);line-height:1.6;margin-bottom:0.75rem;"></div>
+            </div>
+            <div style="border-top:1px solid var(--border-color);padding-top:0.75rem;">
+              <h3 style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin:0 0 0.5rem;">Custom</h3>
+              <div id="custom-filters-list"></div>
+              <div style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
+                <input id="new-filter-pattern" type="text" placeholder="Substring or /regex/" style="flex:1;background:var(--bg-color);border:1px solid var(--border-color);color:var(--text-color);padding:0.4rem 0.625rem;border-radius:0.375rem;font-size:0.8125rem;font-family:monospace;outline:none;">
+                <button id="add-filter-btn" style="background:var(--accent-color);border:none;color:#fff;padding:0.4rem 0.75rem;border-radius:0.375rem;font-size:0.75rem;font-weight:600;cursor:pointer;white-space:nowrap;">Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="input-zone">
+        <div class="input-row">
+          <div class="textarea-wrapper">
+            <textarea id="cmd-input" rows="1" placeholder="Ask agent or run command..." autocomplete="off"></textarea>
+          </div>
+          <button id="btn-send" class="btn-send" aria-label="Send">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="mobile-nav">
+    <div class="nav-item active" data-view="chat"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>Chat</div>
+    <div class="nav-item" data-view="editor"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>Editor</div>
+    <div class="nav-item" id="mobile-explorer-btn"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>Files</div>
+  </nav>
+
+  <script src="app.js"></script>
+  <script>
+    /* Lightweight xterm loader */
+    (function () {
+      function boot() { document.dispatchEvent(new Event("meridian:ready")); }
+      function loadXterm(cb) {
+        var done = false;
+        function finish() {
+          if (done) return;
+          done = true;
+          cb();
+        }
+        var js = document.createElement("script");
+        js.src = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js";
+        js.onerror = finish;
+        js.onload = function () {
+          var fit = document.createElement("script");
+          fit.src = "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js";
+          fit.onload = finish;
+          fit.onerror = finish;
+          document.body.appendChild(fit);
+        };
+        document.body.appendChild(js);
+        // Fallback: do not block the entire UI on CDN issues.
+        setTimeout(finish, 3000);
+      }
+      loadXterm(boot);
+    })();
+  </script>
+  <script>
+    document.addEventListener("meridian:ready", function () {
+      var params = window.MeridianWeb.getQueryParams();
+      var threadId = params.thread_id;
+      var token = window.MeridianWeb.getToken();
+      var sessionId = params.session_id || "";
+
+      var termEl = document.getElementById("term-container");
+      var cmdInput = document.getElementById("cmd-input");
+      var btnSend = document.getElementById("btn-send");
+      var fileTree = document.getElementById("file-tree");
+      var editorContent = document.getElementById("editor-content");
+      var currentFilename = document.getElementById("current-filename");
+      var btnSave = document.getElementById("btn-save");
+      var loadingOverlay = document.getElementById("loading-overlay");
+      var sidebar = document.getElementById("sidebar");
+      var sidebarOverlay = document.getElementById("sidebar-overlay");
+      var sessionListEl = document.getElementById("session-list");
+      var modelSelectEl = document.getElementById("model-select");
+
+      // ── Chat view state ──
+      var chatMessagesEl = document.getElementById("chat-messages");
+      var chatTypingEl = document.getElementById("chat-typing");
+      var chatBuffer = "";
+      var chatTimer = null;
+      var chatTypingTimer = null;
+      var chatAutoScroll = true;
+      var lastFlushedContent = "";
+      var lastFlushedDetails = "";
+      var focusModeEnabled =
+        window.MeridianWeb && typeof window.MeridianWeb.getFocusModeEnabled === "function"
+          ? window.MeridianWeb.getFocusModeEnabled(true)
+          : true;
+      var focusToggleBtn = document.getElementById("focus-toggle");
+      var CHAT_FLUSH_WINDOW_MS = 1200;
+      var CHAT_COLLAPSE_LINE_LIMIT = 8;
+      var CHAT_COLLAPSE_CHAR_LIMIT = 400;
+      var SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+      var SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+      var SUMMARY_BLOCK_TIMEOUT_MS = 6000;
+      var SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
+      var CHAT_HISTORY_STORAGE_KEY = "meridian_chat_history:" + (threadId || "active");
+      var CHAT_HISTORY_MAX_ITEMS = 200;
+      var fallbackSummaryText = "Update received. Expand details for full output.";
+      var suppressibleMessageState = Object.create(null);
+      var seenBubbleFingerprintAtMs = Object.create(null);
+      var chatHistoryHydrating = false;
+      var EXPANDED_DIRS_STORAGE_KEY = "meridian_expanded_dirs:" + (threadId || "active");
+      var expandedDirs = new Set();
+      var fileTreeEntries = [];
+      var selectedFilePath = "";
+      var pendingSummaryBlock = null;
+      var lastSubmittedInput = "";
+      var lastSubmittedTraceId = "";
+      var lastFocusSummarySent = "";
+      var lastRunResultAtMs = 0;
+      var RUN_RESULT_COOLDOWN_MS = 3000;
+      var runPending = false;
+      var bubbleElementsByKey = Object.create(null);
+      var modelCatalogState = null;
+
+      function isMobile() { return window.innerWidth <= 768; }
+
+      function stripAnsi(str) {
+        return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+                  .replace(/\x1b\][^\x07]*\x07/g, "")
+                  .replace(/\x1b[()][AB012]/g, "")
+                  .replace(/\r/g, "");
+      }
+
+      function detectOptions(text) {
+        if (!/(^|\n)\s*(Choose|Select)\s*:/i.test(text)) return [];
+        var lines = text.split("\n").filter(function(l) { return l.trim(); });
+        var opts = [];
+        var re1 = /^\s*(\d+)[.)]\s+(.+)$/;
+        var re2 = /^\s*\[(\d+)\]\s+(.+)$/;
+        for (var i = 0; i < lines.length; i++) {
+          var m = lines[i].match(re1) || lines[i].match(re2);
+          if (m) opts.push({ key: m[1], label: m[2].trim() });
+        }
+        return opts.length >= 2 ? opts : [];
+      }
+
+      function detectYesNo(text) {
+        return /(^|\n)\s*(Answer with|Please answer)\s+(y\/n|yes\/no)\b/i.test(text);
+      }
+
+      function detectApprovalPrompt(text) {
+        if (!text) return false;
+        var lower = text.toLowerCase();
+        return lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0);
+      }
+
+      function mapApprovalOptionAction(label) {
+        var lower = (label || "").toLowerCase();
+        if (/allow once/i.test(lower) || lower === "yes" || /run once/i.test(lower) || /yes,\s*proceed/i.test(lower)) return "run";
+        if (/allow for this session/i.test(lower) || /allowlist/i.test(lower) || /for this session/i.test(lower) || /don't ask again/i.test(lower)) return "allow";
+        if (/allow for all/i.test(lower) || /always allow/i.test(lower) || /allow all/i.test(lower)) return "all";
+        if (/\bno\b/.test(lower) || /deny/i.test(lower) || /suggest changes/i.test(lower) || /reject/i.test(lower) || /don.t allow/i.test(lower) || /tell codex what to do differently/i.test(lower) || /tell me what to do differently/i.test(lower)) return "skip";
+        return null;
+      }
+
+      function parseApprovalOptionsFromText(text) {
+        var normalized = stripAnsi(text || "");
+        var lines = normalized.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(Boolean);
+        var options = [];
+        var seenNums = {};
+        for (var i = 0; i < lines.length; i++) {
+          var m = lines[i].match(/^[●○›•]?\s*(\d+)\.\s*(.+)$/);
+          if (!m) continue;
+          var num = parseInt(m[1], 10);
+          var label = m[2].trim().replace(/\s*\(esc\)\s*$/, "").replace(/\s*\([ypn]\)\s*$/i, "").trim();
+          if (seenNums[num]) continue;
+          seenNums[num] = true;
+          var action = mapApprovalOptionAction(label);
+          if (action) {
+            options.push({ key: String(num), label: num + ". " + label, action: action });
+          }
+        }
+        return options;
+      }
+
+      function summarizeApprovalPrompt(content) {
+        var normalized = stripAnsi(content || "").trim();
+        if (!normalized) return "";
+        var lower = normalized.toLowerCase();
+        if (lower.indexOf("waiting for approval") < 0 || (lower.indexOf("run this command?") < 0 && lower.indexOf("allowlist") < 0)) return "";
+        return normalized;
+      }
+
+      function isLowValueLine(line) {
+        var t = (line || "").trim();
+        if (!t) return true;
+        if (/^(heartbeat|typing)\b/i.test(t)) return true;
+        if (/^(status:\s*(running|idle|live)|connected|reconnecting)$/i.test(t)) return true;
+        if (/^(\$|>|#)\s*(pwd|ls|cd)\b/.test(t)) return true;
+        if (/^\/[\w./-]+$/.test(t) || /^\.\/[\w./-]+$/.test(t)) return true;
+        if (/^\[[0-9:. -]+\]/.test(t)) return true;
+        // Meridian framing lines
+        if (/^\[thread=[^\]]*\]$/.test(t)) return true;
+        if (/^\[(?:success|error|partial)\]\s*thread=/.test(t)) return true;
+        if (/^trace=[0-9a-f-]+$/i.test(t)) return true;
+        // Box-drawing borders and block-char filler lines (spinner frame borders)
+        if (/^[\s╭╮╰╯─━═▀▄▁▔█░▒▓│┃┌┐└┘├┤┬┴┼]+$/.test(t)) return true;
+        // Braille spinner characters mixed with transient text
+        if (/[\u2800-\u28ff]/.test(t)) return true;
+        // Agent CLI transient hints
+        if (/^(tip|shortcut):\s/i.test(t)) return true;
+        if (t.indexOf("shift+tab to accept edits") >= 0) return true;
+        if (t.indexOf("(esc to cancel") >= 0) return true;
+        if (t.indexOf("skip the next speaker check") >= 0) return true;
+        if (t.indexOf("assessing the git situation") >= 0) return true;
+        if (t.indexOf("analyzing push parameters") >= 0) return true;
+        if (t.indexOf("see full, untruncated responses") >= 0) return true;
+        if (t.indexOf("let node.js auto-configure memory") >= 0) return true;
+        if (t.indexOf("list your saved chat checkpoints") >= 0) return true;
+        if (t.indexOf("gemini cli is restarting") >= 0) return true;
+        if (t.indexOf("hide individual footer elements") >= 0) return true;
+        if (t.indexOf("show or hide the bottom status bar") >= 0) return true;
+        if (t.indexOf("toggle the coding sandbox") >= 0) return true;
+        if (/^(GEMINI|CLAUDE|CODEX|CURSOR)\.md$/i.test(t)) return true;
+        // Meridian protocol requirement lines injected into agent prompts
+        if (t.indexOf("meridian protocol requirement") >= 0) return true;
+        if (/^\d+\)\s+(output exactly one summary block|do not output any content outside|both tags must be single-line|put your full reply between the tags|do not wrap tags in code fences)/i.test(t)) return true;
+        if (/^tag format reference/i.test(t)) return true;
+        if (/^-\s*(open|close) tag:/i.test(t)) return true;
+        // Box-content lines (│ ... │) from terminal UI frames
+        if (/^[│┃].*[│┃]$/.test(t)) return true;
+        // Custom GUI filters (loaded from localStorage)
+        if (typeof customGuiFilters !== "undefined") {
+          for (var fi = 0; fi < customGuiFilters.length; fi++) {
+            var cf = customGuiFilters[fi];
+            if (cf.enabled === false) continue;
+            try {
+              if (cf.isRegex) {
+                if (new RegExp(cf.pattern, "i").test(t)) return true;
+              } else {
+                if (t.toLowerCase().indexOf(cf.pattern.toLowerCase()) >= 0) return true;
+              }
+            } catch (e) {}
+          }
+        }
+        return false;
+      }
+
+      function parseSummaryTagId(tagText) {
+        var matched = (tagText || "").match(/\bid=([0-9a-fA-F-]{36})\b/);
+        return matched && matched[1] ? matched[1].toLowerCase() : "";
+      }
+
+      function resolveTraceIdFromText(content) {
+        var matched = (content || "").match(/\btrace(?:_id)?=([0-9a-fA-F-]{36})\b/i);
+        return matched && matched[1] ? matched[1].toLowerCase() : "";
+      }
+
+      function stripSummaryProtocolTags(content) {
+        return (content || "")
+          .replace(/\[\[MERIDIAN_SUMMARY_BEGIN[^\]]*\]\]\s*/g, "")
+          .replace(/\s*\[\[MERIDIAN_SUMMARY_END[^\]]*\]\]/g, "")
+          .trim();
+      }
+
+      function extractSummaryBlock(content, expectedTraceId) {
+        var normalizedTraceId = (expectedTraceId || "").toLowerCase();
+        var cursor = 0;
+        var latest = null;
+        var nowMs = Date.now();
+
+        while (cursor < content.length) {
+          var begin = content.indexOf(SUMMARY_MARKER_BEGIN, cursor);
+          if (begin < 0) break;
+          var beginClose = content.indexOf("]]", begin);
+          if (beginClose < 0) break;
+
+          var beginTag = content.slice(begin, beginClose + 2);
+          if (beginTag.indexOf("\n") >= 0) {
+            cursor = beginClose + 2;
+            continue;
+          }
+
+          var beginId = parseSummaryTagId(beginTag);
+          if (!beginId || (normalizedTraceId && beginId !== normalizedTraceId)) {
+            cursor = beginClose + 2;
+            continue;
+          }
+
+          if (!pendingSummaryBlock || pendingSummaryBlock.traceId !== beginId) {
+            pendingSummaryBlock = { traceId: beginId, startedAtMs: nowMs };
+          }
+
+          var searchFrom = beginClose + 2;
+          var matchedEnd = false;
+          while (searchFrom < content.length) {
+            var end = content.indexOf(SUMMARY_MARKER_END, searchFrom);
+            if (end < 0) break;
+            var endClose = content.indexOf("]]", end);
+            if (endClose < 0) break;
+            var endTag = content.slice(end, endClose + 2);
+            if (endTag.indexOf("\n") >= 0) {
+              searchFrom = endClose + 2;
+              continue;
+            }
+            var endId = parseSummaryTagId(endTag);
+            searchFrom = endClose + 2;
+            if (!endId || endId !== beginId) {
+              continue;
+            }
+            latest = {
+              summary: content.slice(beginClose + 2, end).trim(),
+              residual: (content.slice(0, begin) + content.slice(endClose + 2)).trim(),
+              incomplete: false
+            };
+            pendingSummaryBlock = null;
+            cursor = endClose + 2;
+            matchedEnd = true;
+            break;
+          }
+
+          if (matchedEnd) {
+            continue;
+          }
+
+          if (nowMs - pendingSummaryBlock.startedAtMs < SUMMARY_BLOCK_TIMEOUT_MS) {
+            return latest || { summary: "", residual: content, incomplete: false };
+          }
+
+          var partial = content.slice(beginClose + 2).trim();
+          var incompleteSummary = partial ? partial + "\n\n(" + SUMMARY_INCOMPLETE_LABEL + ")" : SUMMARY_INCOMPLETE_LABEL;
+          pendingSummaryBlock = null;
+          return {
+            summary: incompleteSummary,
+            residual: (content.slice(0, begin) + "\n" + partial).trim(),
+            incomplete: true
+          };
+        }
+
+        return latest || { summary: "", residual: stripSummaryProtocolTags(content), incomplete: false };
+      }
+
+      function summarizeAgentText(content, expectedTraceId) {
+        var extracted = extractSummaryBlock(content, expectedTraceId || "");
+        // When we are waiting for a specific trace summary block, suppress noisy
+        // intermediate protocol frames until a complete block is available.
+        if (expectedTraceId && !extracted.summary) {
+          var lowered = (content || "").toLowerCase();
+          if (
+            lowered.indexOf("meridian protocol requirement") >= 0 ||
+            lowered.indexOf(SUMMARY_MARKER_BEGIN.toLowerCase()) >= 0 ||
+            lowered.indexOf("trace_id=" + expectedTraceId.toLowerCase()) >= 0
+          ) {
+            return {
+              summary: fallbackSummaryText,
+              details: "",
+              rawOutput: content.trim(),
+              incomplete: false
+            };
+          }
+        }
+        var approvalSummary = summarizeApprovalPrompt(extracted.residual || content);
+        if (approvalSummary) {
+          return {
+            summary: approvalSummary,
+            details: "",
+            rawOutput: content.trim()
+          };
+        }
+        if (extracted.summary) {
+          return {
+            summary: extracted.summary,
+            details: extracted.residual.trim(),
+            rawOutput: content.trim(),
+            incomplete: extracted.incomplete
+          };
+        }
+        var normalized = stripSummaryProtocolTags(content);
+        var rawLines = normalized
+          .split(/\r?\n/)
+          .map(function(line) { return line.replace(/\s+$/, ""); });
+        var summaryLines = rawLines
+          .filter(function(line) { return !isLowValueLine(line); })
+          .filter(function(line) { return !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line); })
+          .slice(0, 20);
+        return {
+          summary: (summaryLines.join("\n").trim() || fallbackSummaryText),
+          details: normalized.trim(),
+          rawOutput: content.trim(),
+          incomplete: false
+        };
+      }
+
+      function makeBubbleFingerprint(content, type, detailsText) {
+        return [type || "agent", content || "", detailsText || ""].join("\n---\n");
+      }
+
+      function isSuppressibleMessage(content) {
+        if (!content) return false;
+        var normalized = content.trim().toLowerCase();
+        return normalized === fallbackSummaryText.toLowerCase() ||
+          normalized === "error: request timed out - the hub may be overloaded." ||
+          normalized === "error: request timed out — the hub may be overloaded.";
+      }
+
+      function shouldSuppressMessage(content, type) {
+        if (!isSuppressibleMessage(content)) return false;
+        var key = (type || "agent") + "::" + content.trim().toLowerCase();
+        var nowMs = Date.now();
+        var previous = suppressibleMessageState[key];
+        if (previous && nowMs - previous < 15000) {
+          suppressibleMessageState[key] = nowMs;
+          return true;
+        }
+        suppressibleMessageState[key] = nowMs;
+        return false;
+      }
+
+      function readChatHistory() {
+        try {
+          var raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+          if (!raw) return [];
+          var parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return [];
+          return parsed.filter(function(item) {
+            return item &&
+              typeof item.content === "string" &&
+              typeof item.type === "string" &&
+              (item.detailsText === undefined || typeof item.detailsText === "string") &&
+              (item.messageKey === undefined || typeof item.messageKey === "string");
+          });
+        } catch (e) {
+          return [];
+        }
+      }
+
+      function writeChatHistory(items) {
+        try {
+          localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(items.slice(-CHAT_HISTORY_MAX_ITEMS)));
+        } catch (e) {}
+      }
+
+      function appendChatHistoryEntry(content, type, detailsText, messageKey) {
+        if (chatHistoryHydrating) return;
+        var history = readChatHistory();
+        var entry = {
+          content: content,
+          type: type || "agent",
+          detailsText: detailsText || "",
+          messageKey: messageKey || "",
+          ts: Date.now()
+        };
+        if (entry.messageKey) {
+          for (var historyIndex = history.length - 1; historyIndex >= 0; historyIndex--) {
+            if (history[historyIndex] && history[historyIndex].messageKey === entry.messageKey) {
+              history.splice(historyIndex, 1);
+              break;
+            }
+          }
+        }
+        history.push(entry);
+        writeChatHistory(history);
+      }
+
+      function restoreChatHistory() {
+        var history = readChatHistory();
+        if (history.length === 0) return false;
+        chatHistoryHydrating = true;
+        try {
+          for (var i = 0; i < history.length; i++) {
+            var entry = history[i];
+            addChatBubble(entry.content, entry.type, entry.detailsText, {
+              persist: false,
+              dedupe: false,
+              messageKey: entry.messageKey || ""
+            });
+          }
+        } finally {
+          chatHistoryHydrating = false;
+        }
+        return true;
+      }
+
+      function cacheServerHistory(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return;
+        writeChatHistory(entries.map(function(entry) {
+          return {
+            content: entry.content || "",
+            type: entry.type || "agent",
+            detailsText: entry.details_text || "",
+            messageKey: entry.trace_id ? "trace:" + entry.trace_id : "",
+            ts: Date.parse(entry.timestamp || "") || Date.now()
+          };
+        }));
+      }
+
+      function restoreServerChatHistory(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return false;
+        chatHistoryHydrating = true;
+        try {
+          for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            addChatBubble(entry.content || "", entry.type || "agent", entry.details_text || "", {
+              persist: false,
+              dedupe: false,
+              messageKey: entry.trace_id ? "trace:" + entry.trace_id : ""
+            });
+          }
+        } finally {
+          chatHistoryHydrating = false;
+        }
+        cacheServerHistory(entries);
+        return true;
+      }
+
+      function addChatBubble(content, type, detailsText, options) {
+        if (!chatMessagesEl) return;
+        var opts = options || {};
+        var resolvedType = type || "agent";
+        var resolvedDetails = detailsText || "";
+        var fingerprint = makeBubbleFingerprint(content, resolvedType, resolvedDetails);
+        var messageKey = opts.messageKey || "";
+        var nowMs = Date.now();
+        // Never dedupe user messages — sending the same text twice is intentional
+        if (resolvedType !== "user") {
+          var seenAt = seenBubbleFingerprintAtMs[fingerprint];
+          if (opts.dedupe !== false && seenAt && (nowMs - seenAt) < 120000) {
+            return;
+          }
+          if (opts.dedupe !== false && chatMessagesEl.lastElementChild && chatMessagesEl.lastElementChild.getAttribute("data-fingerprint") === fingerprint) {
+            return;
+          }
+          if (shouldSuppressMessage(content, resolvedType)) return;
+        }
+        seenBubbleFingerprintAtMs[fingerprint] = nowMs;
+
+        if (messageKey && bubbleElementsByKey[messageKey] && bubbleElementsByKey[messageKey].parentNode) {
+          var existingBubble = bubbleElementsByKey[messageKey];
+          if (existingBubble.getAttribute("data-fingerprint") === fingerprint) {
+            return;
+          }
+          existingBubble.parentNode.removeChild(existingBubble);
+        }
+
+        var bubble = document.createElement("div");
+        bubble.className = "chat-bubble " + resolvedType;
+        bubble.setAttribute("data-fingerprint", fingerprint);
+        if (messageKey) {
+          bubble.setAttribute("data-message-key", messageKey);
+          bubbleElementsByKey[messageKey] = bubble;
+        }
+
+        // Split content into text vs code blocks
+        var lines = content.split("\n");
+        var currentBlock = [];
+        var currentIsCode = false;
+
+        function flushBlock() {
+          if (currentBlock.length === 0) return;
+          var blockText = currentBlock.join("\n");
+          if (!blockText.trim()) { currentBlock = []; return; }
+          if (currentIsCode) {
+            var pre = document.createElement("pre");
+            pre.className = "chat-code";
+            var code = document.createElement("code");
+            code.textContent = blockText;
+            pre.appendChild(code);
+            var copyBtn = document.createElement("button");
+            copyBtn.className = "copy-btn";
+            copyBtn.textContent = "Copy";
+            copyBtn.addEventListener("click", (function(t) {
+              return function() {
+                navigator.clipboard.writeText(t).catch(function(){});
+                this.textContent = "Copied!";
+                var self = this;
+                setTimeout(function() { self.textContent = "Copy"; }, 1500);
+              };
+            })(blockText));
+            pre.appendChild(copyBtn);
+            bubble.appendChild(pre);
+          } else {
+            var div = document.createElement("div");
+            div.className = "chat-text";
+            div.textContent = blockText;
+            bubble.appendChild(div);
+          }
+          currentBlock = [];
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          var isCodeLine = /^[+\-<>]/.test(line) || /^@@/.test(line) || /^diff /.test(line) || /^\s{4,}\S/.test(line);
+          if (i === 0) {
+            currentIsCode = isCodeLine;
+            currentBlock.push(line);
+          } else if (isCodeLine !== currentIsCode) {
+            flushBlock();
+            currentIsCode = isCodeLine;
+            currentBlock.push(line);
+          } else {
+            currentBlock.push(line);
+          }
+        }
+        flushBlock();
+
+        // Tap to copy entire bubble text
+        (function(el, text) {
+          function showToast(msg) {
+            var t = document.createElement("div");
+            t.className = "bubble-copy-toast";
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, 1300);
+          }
+          el.style.cursor = "pointer";
+          el.addEventListener("click", function(e) {
+            // Don't copy when clicking links, buttons, or details/summary
+            if (e.target.closest("a, button, summary, details")) return;
+            navigator.clipboard.writeText(text).then(function() {
+              showToast("Message copied");
+            }).catch(function() {
+              showToast("Copy failed");
+            });
+          });
+        })(bubble, content);
+
+        if (resolvedType !== "user" && resolvedDetails) {
+          var details = document.createElement("details");
+          details.className = "chat-details";
+          var summary = document.createElement("summary");
+          var detailLineCount = resolvedDetails.split(/\r?\n/).length;
+          summary.textContent = "Details (" + detailLineCount + " lines)";
+          var detailsBody = document.createElement("div");
+          detailsBody.className = "chat-details-body";
+          detailsBody.textContent = resolvedDetails;
+          details.appendChild(summary);
+          details.appendChild(detailsBody);
+          bubble.appendChild(details);
+        }
+
+        // Detect and render option buttons (strict prompt gate)
+        // Skip interactive approval buttons during history restore — those approvals
+        // have already been dealt with and the user's choice appears as the next entry.
+        if (resolvedType !== "user" && !chatHistoryHydrating) {
+          var approvalDetectionText = content + (resolvedDetails ? "\n" + resolvedDetails : "");
+          if (detectApprovalPrompt(approvalDetectionText)) {
+            var parsedApprovalOpts = parseApprovalOptionsFromText(approvalDetectionText);
+            if (parsedApprovalOpts.length === 0) {
+              // Fallback: show standard approval options
+              parsedApprovalOpts = [
+                { key: "1", label: "1. Allow once", action: "run" },
+                { key: "2", label: "2. Allow for this session", action: "allow" },
+                { key: "3", label: "3. No, suggest changes", action: "skip" }
+              ];
+            }
+            var approvalDiv = document.createElement("div");
+            approvalDiv.className = "chat-options";
+            parsedApprovalOpts.forEach(function(opt) {
+              var btn = document.createElement("button");
+              btn.className = "chat-option-btn";
+              btn.textContent = opt.label;
+              btn.addEventListener("click", function() {
+                addChatBubble(opt.label, "user");
+                approvalDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
+                btn.classList.add("selected");
+                sendTerminalApproval(opt.action).catch(function(err) {
+                  var msg = err && err.message ? err.message : "Approval action failed.";
+                  addChatBubble("Error: " + msg, "agent");
+                });
+                if (navigator.vibrate) navigator.vibrate(10);
+              });
+              approvalDiv.appendChild(btn);
+            });
+            bubble.appendChild(approvalDiv);
+          }
+
+          var opts = detectOptions(content);
+          if (opts.length > 0) {
+            var optDiv = document.createElement("div");
+            optDiv.className = "chat-options";
+            opts.forEach(function(opt) {
+              var btn = document.createElement("button");
+              btn.className = "chat-option-btn";
+              btn.textContent = opt.key + ". " + opt.label;
+              btn.addEventListener("click", function() {
+                addChatBubble(opt.key, "user");
+                optDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
+                btn.classList.add("selected");
+                sendTerminalText(opt.key).catch(function(err) {
+                  var msg = err && err.message ? err.message : "Terminal input failed.";
+                  addChatBubble("Error: " + msg, "agent");
+                });
+                if (navigator.vibrate) navigator.vibrate(10);
+              });
+              optDiv.appendChild(btn);
+            });
+            bubble.appendChild(optDiv);
+          }
+
+          if (detectYesNo(content)) {
+            var ynDiv = document.createElement("div");
+            ynDiv.className = "chat-yn-options";
+            [{key:"y",label:"Yes",cls:"yes"},{key:"n",label:"No",cls:"no"}].forEach(function(opt) {
+              var btn = document.createElement("button");
+              btn.className = "chat-yn-btn " + opt.cls;
+              btn.textContent = opt.label;
+              btn.addEventListener("click", function() {
+                addChatBubble(opt.key, "user");
+                ynDiv.querySelectorAll(".chat-yn-btn").forEach(function(b) { b.disabled = true; });
+                btn.classList.add("selected");
+                sendTerminalText(opt.key).catch(function(err) {
+                  var msg = err && err.message ? err.message : "Terminal input failed.";
+                  addChatBubble("Error: " + msg, "agent");
+                });
+                if (navigator.vibrate) navigator.vibrate(10);
+              });
+              ynDiv.appendChild(btn);
+            });
+            bubble.appendChild(ynDiv);
+          }
+        }
+
+        chatMessagesEl.appendChild(bubble);
+        if (chatMessagesEl.classList.contains("chat-messages-empty")) chatMessagesEl.classList.remove("chat-messages-empty");
+        if (chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+        if (opts.persist !== false) appendChatHistoryEntry(content, resolvedType, resolvedDetails, messageKey);
+      }
+
+      function showChatTyping(show, text) {
+        if (chatTypingEl) {
+          chatTypingEl.classList.toggle("active", show);
+          if (text) {
+            var label = chatTypingEl.lastChild;
+            if (label && label.nodeType === 3) label.textContent = " " + text;
+          }
+        }
+        if (show && chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+      }
+
+      function stripMeridianNoise(text) {
+        var lines = text.split(/\r?\n/);
+        var cleaned = [];
+        var prevLine = null;
+        for (var i = 0; i < lines.length; i++) {
+          if (isLowValueLine(lines[i])) continue;
+          // Deduplicate consecutive identical lines
+          var trimmed = lines[i].trim();
+          if (trimmed === prevLine) continue;
+          cleaned.push(lines[i]);
+          prevLine = trimmed;
+        }
+        return cleaned.join("\n").trim();
+      }
+
+      function computeDelta(text, previous) {
+        if (!previous) return text;
+        // Prefix match: if current text starts with previous, take only the suffix
+        if (text.indexOf(previous) === 0) {
+          return text.slice(previous.length).trim();
+        }
+        // Suffix overlap: if previous ends with the beginning of text, trim overlap
+        var overlapLen = Math.min(previous.length, text.length);
+        for (var ol = overlapLen; ol > 0; ol--) {
+          if (previous.slice(-ol) === text.slice(0, ol)) {
+            return text.slice(ol).trim();
+          }
+        }
+        return text;
+      }
+
+      function composeRawDetail(inputText, outputText) {
+        // Filter out transient/noise lines so detail shows only agent reply content
+        var cleanedOutput = stripMeridianNoise(stripSummaryProtocolTags(stripAnsi(outputText || "")));
+        var cleanedInput = (inputText || "").trim();
+        if (!cleanedOutput && !cleanedInput) return "";
+        if (!cleanedInput) return cleanedOutput;
+        return "Your message:\n" + cleanedInput + "\n\nAgent reply:\n" + cleanedOutput;
+      }
+
+      function flushChatBuffer() {
+        if (!chatBuffer.trim()) { chatBuffer = ""; return; }
+        // While a run is in-flight, suppress pane-stream chat — the run
+        // result will be the authoritative reply for this turn.
+        if (runPending) {
+          chatBuffer = "";
+          showChatTyping(false);
+          return;
+        }
+        // Suppress pane-stream bubbles during post-run cooldown — the run
+        // result already rendered the authoritative reply for this turn.
+        if (lastRunResultAtMs && (Date.now() - lastRunResultAtMs) < RUN_RESULT_COOLDOWN_MS) {
+          chatBuffer = "";
+          showChatTyping(false);
+          return;
+        }
+        var text = stripAnsi(chatBuffer).trim();
+        chatBuffer = "";
+        if (!text) return;
+        showChatTyping(false);
+
+        // Deduplicate against previously flushed content
+        var newContent = computeDelta(text, lastFlushedContent);
+        lastFlushedContent = text;
+        if (!newContent) return;
+
+        if (focusModeEnabled) {
+          var expectedTraceId = lastSubmittedTraceId || resolveTraceIdFromText(newContent);
+          var digest = summarizeAgentText(newContent, expectedTraceId);
+          var cleanSummary = stripMeridianNoise(digest.summary);
+          if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
+          var cleanDetails = digest.details ? stripMeridianNoise(digest.details) : "";
+          var latestDetails = cleanDetails ? computeDelta(cleanDetails, lastFlushedDetails) : "";
+          if (cleanDetails) {
+            lastFlushedDetails = cleanDetails;
+          }
+          var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || newContent);
+          var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || newContent);
+          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: bubbleTraceId ? "trace:" + bubbleTraceId : "" });
+          lastFocusSummarySent = cleanSummary;
+          lastSubmittedInput = "";
+          // Only clear trace_id when a proper summary was extracted.
+          if (digest.summary && digest.summary !== fallbackSummaryText && !digest.incomplete) {
+            lastSubmittedTraceId = "";
+          }
+        } else {
+          var cleanText = stripMeridianNoise(newContent);
+          if (!cleanText) return;
+          addChatBubble(cleanText, "agent");
+        }
+      }
+
+      function renderAgentContent(rawContent) {
+        var text = stripAnsi(rawContent || "").trim();
+        if (!text) return;
+        if (focusModeEnabled) {
+          var expectedTraceId = lastSubmittedTraceId || resolveTraceIdFromText(text);
+          var digest = summarizeAgentText(text, expectedTraceId);
+          var cleanSummary = stripMeridianNoise(digest.summary);
+          if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
+          var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || text);
+          var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || text);
+          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: bubbleTraceId ? "trace:" + bubbleTraceId : "" });
+          lastFocusSummarySent = cleanSummary;
+          lastSubmittedInput = "";
+          // Only clear trace_id when a proper summary was extracted;
+          // keep it alive so subsequent pane output can still match.
+          if (digest.summary && digest.summary !== fallbackSummaryText && !digest.incomplete) {
+            lastSubmittedTraceId = "";
+          }
+        } else {
+          var cleanText = stripMeridianNoise(stripSummaryProtocolTags(text));
+          if (!cleanText) return;
+          addChatBubble(cleanText, "agent");
+        }
+      }
+
+      if (chatMessagesEl) {
+        chatMessagesEl.addEventListener("scroll", function() {
+          chatAutoScroll = chatMessagesEl.scrollHeight - chatMessagesEl.scrollTop - chatMessagesEl.clientHeight < 50;
+        });
+      }
+      if (focusToggleBtn) {
+        focusToggleBtn.classList.toggle("active", focusModeEnabled);
+        focusToggleBtn.textContent = focusModeEnabled ? "Focus ON" : "Focus OFF";
+        focusToggleBtn.addEventListener("click", function() {
+          focusModeEnabled = !focusModeEnabled;
+          focusToggleBtn.classList.toggle("active", focusModeEnabled);
+          focusToggleBtn.textContent = focusModeEnabled ? "Focus ON" : "Focus OFF";
+          if (window.MeridianWeb && typeof window.MeridianWeb.setFocusModeEnabled === "function") {
+            window.MeridianWeb.setFocusModeEnabled(focusModeEnabled);
+          }
+          if (typeof syncOverflowFocus === "function") syncOverflowFocus();
+        });
+      }
+
+      // ── Push toggle ──
+      var pushToggleBtn = document.getElementById("push-toggle");
+      var pushEnabled = false;
+
+      function updatePushButton(enabled) {
+        pushEnabled = enabled;
+        if (!pushToggleBtn) return;
+        pushToggleBtn.classList.toggle("active", pushEnabled);
+        pushToggleBtn.textContent = pushEnabled ? "Push ON" : "Push OFF";
+        if (typeof syncOverflowPush === "function") syncOverflowPush();
+      }
+
+      function sendPushToggle(enabled) {
+        var body = { enabled: enabled };
+        if (threadId) body.thread_id = threadId;
+        return window.MeridianWeb.fetchWithAuth("/api/push", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        }).then(function(r) { return r.json(); }).then(function(data) {
+          if (data && data.status === "error") {
+            updatePushButton(false);
+            addChatBubble("Push: " + (data.content || "unknown error"), "agent");
+          } else if (data && data.status === "success") {
+            updatePushButton(enabled);
+            if (data.content) addChatBubble(data.content, "agent");
+          }
+        }).catch(function(err) {
+          updatePushButton(false);
+          addChatBubble("Push toggle failed: " + (err && err.message ? err.message : "network error"), "agent");
+        });
+      }
+
+      if (pushToggleBtn) {
+        pushToggleBtn.addEventListener("click", function() {
+          sendPushToggle(!pushEnabled);
+        });
+        // Query initial push state
+        if (threadId) {
+          window.MeridianWeb.fetchWithAuth("/api/push", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data && data.status === "success" && data.content) {
+              var isOn = /\bis ON\b/i.test(data.content);
+              updatePushButton(isOn);
+            }
+          }).catch(function() {});
+        }
+      }
+
+      // ── Capture interval control ──
+      var captureIntervalSelect = document.getElementById("capture-interval");
+      if (captureIntervalSelect) {
+        // Load current value from server
+        window.MeridianWeb.fetchWithAuth("/api/capture_interval")
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data && typeof data.interval_ms === "number") {
+              captureIntervalSelect.value = String(data.interval_ms);
+              // If value doesn't match any option, pick the nearest
+              if (!captureIntervalSelect.querySelector("option[value='" + data.interval_ms + "']")) {
+                var best = null;
+                var options = captureIntervalSelect.options;
+                for (var i = 0; i < options.length; i++) {
+                  var v = Number(options[i].value);
+                  if (!best || Math.abs(v - data.interval_ms) < Math.abs(best - data.interval_ms)) best = v;
+                }
+                if (best) captureIntervalSelect.value = String(best);
+              }
+            }
+          }).catch(function() {});
+        captureIntervalSelect.addEventListener("change", function() {
+          var ms = Number(captureIntervalSelect.value);
+          if (!ms) return;
+          window.MeridianWeb.fetchWithAuth("/api/capture_interval", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ interval_ms: ms })
+          }).catch(function() {});
+        });
+      }
+
+      function fetchThreadHistory() {
+        if (!threadId) return Promise.resolve([]);
+        return window.MeridianWeb.fetchWithAuth("/api/history?thread_id=" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load history");
+              }
+              return Array.isArray(data) ? data : [];
+            });
+          });
+      }
+
+      function renderSessionList(entries) {
+        if (!sessionListEl) return;
+        sessionListEl.innerHTML = "";
+        if (!Array.isArray(entries) || entries.length === 0) {
+          sessionListEl.innerHTML = '<div class="tree-item" style="opacity: 0.7;">No session history yet.</div>';
+          return;
+        }
+        entries.forEach(function(entry) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "session-item" + (entry.thread_id === threadId ? " active" : "");
+          button.addEventListener("click", function() {
+            var next = "terminal.html?thread_id=" + encodeURIComponent(entry.thread_id);
+            if (token) next += "&token=" + encodeURIComponent(token);
+            location.href = next;
+          });
+
+          var meta = document.createElement("div");
+          meta.className = "session-meta";
+          var status = document.createElement("span");
+          status.className = "session-status" + (entry.active ? " live" : "");
+          status.textContent = entry.active ? "Live" : (entry.status || "stopped");
+          var updated = document.createElement("span");
+          updated.textContent = entry.updated_at ? new Date(entry.updated_at).toLocaleString() : "No history";
+          meta.appendChild(status);
+          meta.appendChild(updated);
+
+          var title = document.createElement("div");
+          title.className = "session-title";
+          title.textContent = entry.thread_id || "unknown";
+
+          var preview = document.createElement("div");
+          preview.className = "session-preview";
+          preview.textContent = entry.preview || "Open this session";
+
+          button.appendChild(meta);
+          button.appendChild(title);
+          button.appendChild(preview);
+          sessionListEl.appendChild(button);
+        });
+      }
+
+      function refreshSessionList() {
+        if (!sessionListEl) return;
+        sessionListEl.innerHTML = '<div class="tree-item" style="opacity: 0.5;">Loading sessions...</div>';
+        window.MeridianWeb.fetchWithAuth("/api/history_threads")
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load sessions");
+              }
+              renderSessionList(Array.isArray(data) ? data : []);
+            });
+          })
+          .catch(function() {
+            sessionListEl.innerHTML = '<div class="tree-item" style="opacity: 0.7;">Failed to load sessions.</div>';
+          });
+      }
+
+      function switchSidebarTab(tabName) {
+        document.querySelectorAll(".sidebar-tabbtn").forEach(function(button) {
+          button.classList.toggle("active", button.getAttribute("data-sidebar-tab") === tabName);
+        });
+        var filesPanel = document.getElementById("sidebar-files-panel");
+        var sessionsPanel = document.getElementById("sidebar-sessions-panel");
+        if (filesPanel) filesPanel.classList.toggle("active", tabName === "files");
+        if (sessionsPanel) sessionsPanel.classList.toggle("active", tabName === "sessions");
+      }
+
+      document.querySelectorAll(".sidebar-tabbtn").forEach(function(button) {
+        button.addEventListener("click", function() {
+          switchSidebarTab(button.getAttribute("data-sidebar-tab") || "files");
+        });
+      });
+      var refreshSessionsBtn = document.getElementById("refresh-sessions");
+      if (refreshSessionsBtn) refreshSessionsBtn.addEventListener("click", refreshSessionList);
+
+      function refreshModelCatalog(selectedModelId) {
+        if (!modelSelectEl) return Promise.resolve(null);
+        function formatModelText(modelLabelOrId) {
+          return modelLabelOrId ? "Model: " + modelLabelOrId : "Model";
+        }
+        function renderCurrentOnly(modelLabelOrId) {
+          modelCatalogState = null;
+          modelSelectEl.innerHTML = "";
+          var currentOption = document.createElement("option");
+          currentOption.value = "";
+          currentOption.textContent = formatModelText(modelLabelOrId);
+          currentOption.selected = true;
+          modelSelectEl.appendChild(currentOption);
+          modelSelectEl.disabled = true;
+        }
+        function renderUnavailable(label) {
+          modelCatalogState = null;
+          modelSelectEl.innerHTML = "";
+          var option = document.createElement("option");
+          option.value = "";
+          option.textContent = label || "Model: unavailable";
+          option.selected = true;
+          modelSelectEl.appendChild(option);
+          modelSelectEl.disabled = true;
+        }
+        if (!threadId) {
+          renderUnavailable("Model: unavailable");
+          return Promise.resolve(null);
+        }
+        modelSelectEl.disabled = true;
+        return window.MeridianWeb.fetchWithAuth("/api/models?thread_id=" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load models");
+              }
+              modelCatalogState = data;
+              modelSelectEl.innerHTML = "";
+              var models = Array.isArray(data.models) ? data.models : [];
+              var currentModelId = typeof data.current_model_id === "string" ? data.current_model_id : "";
+              if (models.length === 0) {
+                if (currentModelId) {
+                  renderCurrentOnly(currentModelId);
+                  return data;
+                }
+                renderUnavailable("Model: unavailable");
+                return data;
+              }
+              var hasCurrentModel = currentModelId
+                ? models.some(function(model) { return model && model.id === currentModelId; })
+                : false;
+              if (currentModelId && !hasCurrentModel) {
+                var unavailableOption = document.createElement("option");
+                unavailableOption.value = "";
+                unavailableOption.textContent = formatModelText(currentModelId);
+                unavailableOption.selected = !selectedModelId;
+                modelSelectEl.appendChild(unavailableOption);
+              }
+              var matchedSelection = false;
+              models.forEach(function(model, index) {
+                var option = document.createElement("option");
+                option.value = model.id;
+                option.textContent = "Model: " + model.label;
+                if ((selectedModelId && selectedModelId === model.id) || (!selectedModelId && currentModelId === model.id)) {
+                  option.selected = true;
+                  matchedSelection = true;
+                }
+                modelSelectEl.appendChild(option);
+              });
+              if (!matchedSelection && modelSelectEl.options.length > 0) {
+                modelSelectEl.selectedIndex = 0;
+              }
+              modelSelectEl.disabled = false;
+              return data;
+            });
+          })
+          .catch(function() {
+            renderUnavailable("Model: unavailable");
+            return null;
+          });
+      }
+
+      if (modelSelectEl) {
+        modelSelectEl.addEventListener("change", function() {
+          if (!modelCatalogState) return;
+          var selectedId = modelSelectEl.value;
+          if (!selectedId || selectedId === modelCatalogState.current_model_id) return;
+          modelSelectEl.disabled = true;
+          window.MeridianWeb.fetchWithAuth("/api/models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId, model_id: selectedId })
+          })
+            .then(function(res) {
+              return res.json().then(function(data) {
+                if (!res.ok) {
+                  throw new Error(data && data.error ? data.error : "Failed to switch model");
+                }
+                return data;
+              });
+            })
+            .then(function() {
+              addChatBubble("Model switch requested: " + selectedId, "agent");
+              return new Promise(function(resolve) { setTimeout(resolve, 1200); });
+            })
+            .then(function() {
+              return refreshModelCatalog(selectedId);
+            })
+            .catch(function(err) {
+              addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent");
+              refreshModelCatalog(modelCatalogState.current_model_id || "");
+            });
+        });
+      }
+
+      // ── Filter editor ──
+      var customGuiFilters = window.MeridianWeb.getCustomFilters("gui");
+      var customInterfaceFilters = window.MeridianWeb.getCustomFilters("interface");
+      var activeFilterScope = "gui";
+      var filtersModal = document.getElementById("filters-modal");
+      var filtersToggleBtn = document.getElementById("filters-toggle");
+      var filtersCloseBtn = document.getElementById("filters-close");
+      var builtinFiltersList = document.getElementById("builtin-filters-list");
+      var customFiltersList = document.getElementById("custom-filters-list");
+      var filterScopeDesc = document.getElementById("filter-scope-description");
+      var newFilterInput = document.getElementById("new-filter-pattern");
+      var addFilterBtn = document.getElementById("add-filter-btn");
+
+      var BUILTIN_FILTER_LABELS = [
+        "Status: heartbeat, typing, connected, running, idle",
+        "Shell echoes: $ pwd, $ ls, $ cd",
+        "Meridian framing: [thread=...], [success], trace=...",
+        "Box-drawing borders and block characters",
+        "Braille spinner characters",
+        "Agent hints: tip:, shortcut:, (esc to cancel), etc.",
+        "Agent config files: GEMINI.md, CLAUDE.md, etc.",
+        "Box-content lines: |...|"
+      ];
+
+      var SCOPE_DESCRIPTIONS = {
+        gui: "Filters for GUI chat bubbles. Matching lines are hidden from chat view.",
+        interface: "Filters for interface push (Telegram, etc). Matching lines are removed before sending to chat."
+      };
+
+      function renderBuiltinFilters() {
+        if (!builtinFiltersList) return;
+        builtinFiltersList.innerHTML = "";
+        BUILTIN_FILTER_LABELS.forEach(function(label) {
+          var div = document.createElement("div");
+          div.style.cssText = "padding:0.2rem 0;opacity:0.7;";
+          div.textContent = "- " + label;
+          builtinFiltersList.appendChild(div);
+        });
+      }
+
+      function renderCustomFilters() {
+        if (!customFiltersList) return;
+        var filters = activeFilterScope === "gui" ? customGuiFilters : customInterfaceFilters;
+        customFiltersList.innerHTML = "";
+        if (filters.length === 0) {
+          var empty = document.createElement("div");
+          empty.style.cssText = "font-size:0.75rem;color:var(--text-dim);padding:0.25rem 0;";
+          empty.textContent = "No custom filters yet.";
+          customFiltersList.appendChild(empty);
+          return;
+        }
+        filters.forEach(function(f, idx) {
+          var row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid var(--border-color);";
+          var toggle = document.createElement("input");
+          toggle.type = "checkbox";
+          toggle.checked = f.enabled !== false;
+          toggle.style.cssText = "cursor:pointer;flex-shrink:0;";
+          toggle.addEventListener("change", function() {
+            f.enabled = this.checked;
+            saveFilters();
+          });
+          var label = document.createElement("span");
+          label.style.cssText = "flex:1;font-family:monospace;font-size:0.8125rem;color:var(--text-color);word-break:break-all;";
+          label.textContent = (f.isRegex ? "/" : "") + f.pattern + (f.isRegex ? "/" : "");
+          var del = document.createElement("button");
+          del.style.cssText = "background:none;border:none;color:var(--error-color);cursor:pointer;font-size:0.875rem;padding:0.125rem 0.375rem;flex-shrink:0;";
+          del.textContent = "\u00d7";
+          del.addEventListener("click", function() {
+            var list = activeFilterScope === "gui" ? customGuiFilters : customInterfaceFilters;
+            list.splice(idx, 1);
+            saveFilters();
+            renderCustomFilters();
+          });
+          row.appendChild(toggle);
+          row.appendChild(label);
+          row.appendChild(del);
+          customFiltersList.appendChild(row);
+        });
+      }
+
+      function saveFilters() {
+        window.MeridianWeb.setCustomFilters("gui", customGuiFilters);
+        window.MeridianWeb.setCustomFilters("interface", customInterfaceFilters);
+      }
+
+      function switchFilterScope(scope) {
+        activeFilterScope = scope;
+        document.querySelectorAll(".filter-tab").forEach(function(tab) {
+          var isActive = tab.getAttribute("data-filter-scope") === scope;
+          tab.style.background = isActive ? "var(--surface-hover)" : "transparent";
+          tab.style.color = isActive ? "var(--text-color)" : "var(--text-dim)";
+          if (isActive) tab.classList.add("active");
+          else tab.classList.remove("active");
+        });
+        if (filterScopeDesc) filterScopeDesc.textContent = SCOPE_DESCRIPTIONS[scope] || "";
+        renderCustomFilters();
+      }
+
+      document.querySelectorAll(".filter-tab").forEach(function(tab) {
+        tab.addEventListener("click", function() {
+          switchFilterScope(this.getAttribute("data-filter-scope") || "gui");
+        });
+      });
+
+      if (filtersToggleBtn) {
+        filtersToggleBtn.addEventListener("click", function() {
+          if (filtersModal) {
+            filtersModal.classList.remove("hidden");
+            renderBuiltinFilters();
+            renderCustomFilters();
+          }
+        });
+      }
+      if (filtersCloseBtn) {
+        filtersCloseBtn.addEventListener("click", function() {
+          if (filtersModal) filtersModal.classList.add("hidden");
+        });
+      }
+      if (filtersModal) {
+        filtersModal.addEventListener("click", function(e) {
+          if (e.target === filtersModal) filtersModal.classList.add("hidden");
+        });
+      }
+      if (addFilterBtn && newFilterInput) {
+        addFilterBtn.addEventListener("click", function() {
+          var raw = newFilterInput.value.trim();
+          if (!raw) return;
+          var isRegex = false;
+          var pattern = raw;
+          // Auto-detect /regex/ syntax
+          if (raw.length > 2 && raw.charAt(0) === "/" && raw.charAt(raw.length - 1) === "/") {
+            pattern = raw.slice(1, -1);
+            isRegex = true;
+            try { new RegExp(pattern); } catch (e) {
+              alert("Invalid regex: " + e.message);
+              return;
+            }
+          }
+          var filter = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), pattern: pattern, isRegex: isRegex, enabled: true };
+          if (activeFilterScope === "gui") customGuiFilters.push(filter);
+          else customInterfaceFilters.push(filter);
+          saveFilters();
+          renderCustomFilters();
+          newFilterInput.value = "";
+        });
+        newFilterInput.addEventListener("keydown", function(e) {
+          if (e.key === "Enter") { e.preventDefault(); addFilterBtn.click(); }
+        });
+      }
+
+      var term = null;
+      var terminalReady = false;
+      var fitAddon = null;
+
+      function fitTerminal() {
+        if (fitAddon && term && terminalReady) {
+          try { fitAddon.fit(); } catch (e) {}
+        }
+      }
+
+      if (window.Terminal && termEl) {
+        term = new window.Terminal({
+          cursorBlink: true,
+          theme: { background: "#000000", foreground: "#f0f2f5" },
+          fontSize: 13,
+          fontFamily: '"SF Mono", "Fira Code", monospace',
+          allowProposedApi: true
+        });
+        if (window.FitAddon && window.FitAddon.FitAddon) {
+          fitAddon = new window.FitAddon.FitAddon();
+          term.loadAddon(fitAddon);
+        }
+        term.open(termEl);
+        terminalReady = true;
+        fitTerminal();
+      } else if (termEl) {
+        var fallback = document.createElement("div");
+        fallback.style.cssText = "color:#94a3b8;padding:12px;font-size:12px;line-height:1.6;font-family:monospace;";
+        fallback.textContent = "Terminal viewer unavailable (xterm failed to load), but chat/send/editor/files remain available.";
+        termEl.appendChild(fallback);
+        term = { write: function () {} };
+      }
+
+      // WebSocket connection (only when thread_id and token present; otherwise server returns 401 and pane stays empty)
+      var base = window.MeridianWeb.apiBase();
+      var ws = null;
+      var wsReconnectAttempts = 0;
+      var wsReconnectTimer = null;
+      var WS_MAX_RECONNECT_ATTEMPTS = 20;
+      var wsConnected = false;
+      var initialReplayLines = 200;
+      var historyBootstrapPromise = fetchThreadHistory()
+        .then(function(entries) {
+          if (restoreServerChatHistory(entries)) {
+            initialReplayLines = 0;
+            return true;
+          }
+          var restoredLocal = restoreChatHistory();
+          initialReplayLines = restoredLocal ? 0 : 200;
+          return restoredLocal;
+        })
+        .catch(function() {
+          var restoredLocal = restoreChatHistory();
+          initialReplayLines = restoredLocal ? 0 : 200;
+          return restoredLocal;
+        });
+
+      function handleWsMessage(ev) {
+        try {
+          var msg = JSON.parse(ev.data);
+          if (msg.type === "pane_output" && msg.chunk) {
+            if (term && typeof term.write === "function") term.write(msg.chunk);
+            chatBuffer += msg.chunk;
+            clearTimeout(chatTimer);
+            clearTimeout(chatTypingTimer);
+            showChatTyping(true, "Agent is responding...");
+            var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
+            chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
+            chatTypingTimer = setTimeout(function() { showChatTyping(false); }, 3000);
+          }
+        } catch (e) {}
+      }
+
+      function connectWebSocket() {
+        if (!threadId || !token) return;
+        var replayLines = wsReconnectAttempts > 0 ? 100 : initialReplayLines;
+        var url = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
+        ws = new WebSocket(url);
+        ws.onopen = function() {
+          wsReconnectAttempts = 0;
+          wsConnected = true;
+          updateAgentStatusIndicator(true);
+        };
+        ws.onmessage = handleWsMessage;
+        ws.onerror = function() {
+          if (!wsConnected) {
+            addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent");
+          }
+        };
+        ws.onclose = function(ev) {
+          wsConnected = false;
+          updateAgentStatusIndicator(false);
+          if (ev.code === 1000 || ev.code === 1005) return;
+          scheduleWsReconnect();
+        };
+      }
+
+      function scheduleWsReconnect() {
+        if (wsReconnectAttempts >= WS_MAX_RECONNECT_ATTEMPTS) {
+          addChatBubble("Connection lost after " + WS_MAX_RECONNECT_ATTEMPTS + " attempts. Refresh the page.", "agent");
+          return;
+        }
+        var delay = Math.min(1000 * Math.pow(1.5, wsReconnectAttempts), 15000);
+        wsReconnectAttempts++;
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = setTimeout(connectWebSocket, delay);
+      }
+
+      function updateAgentStatusIndicator(connected) {
+        var statusEl = document.getElementById("agent-status");
+        if (!statusEl) return;
+        statusEl.style.color = connected ? "var(--success-color)" : "var(--error-color)";
+        statusEl.querySelector("div").style.background = "currentColor";
+        statusEl.lastChild.textContent = connected ? " Live" : " Reconnecting…";
+      }
+
+      historyBootstrapPromise.finally(function() {
+        if (threadId && token) {
+          connectWebSocket();
+        } else {
+          if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent");
+          else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent");
+        }
+      });
+
+      // Auto-reconnect on page visibility change (user returns after being away)
+      document.addEventListener("visibilitychange", function() {
+        if (document.visibilityState === "visible" && threadId && token) {
+          if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+            wsReconnectAttempts = 0;
+            connectWebSocket();
+          }
+        }
+      });
+
+      // Auto-expand input
+      cmdInput.addEventListener("input", function() {
+        this.style.height = "auto";
+        this.style.height = Math.min(this.scrollHeight, 120) + "px";
+      });
+
+      function runCommand(cmd, silent) {
+        return window.MeridianWeb.fetchWithAuth("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, content: cmd })
+        }).then(function(res) {
+          return res.json().then(function(data) {
+            if (!res.ok) {
+              var err = new Error(data && data.error ? data.error : "Request failed " + res.status);
+              err.status = res.status;
+              err.body = data;
+              throw err;
+            }
+            return data;
+          });
+        });
+      }
+
+      function sendTerminalText(action) {
+        return window.MeridianWeb.fetchWithAuth("/api/terminal_input", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, content: action })
+        }).then(function(res) {
+          return res.json().then(function(data) {
+            if (!res.ok) {
+              var err = new Error(data && data.error ? data.error : "Terminal input failed " + res.status);
+              err.status = res.status;
+              throw err;
+            }
+            return data;
+          });
+        });
+      }
+
+      function sendTerminalApproval(action) {
+        return sendTerminalText(action);
+      }
+
+      function handleSend() {
+        var cmd = cmdInput.value.trim();
+        if (!cmd) return;
+        if (!threadId) {
+          addChatBubble("Error: No session. Open this page from the hub (click a session card).", "agent");
+          return;
+        }
+        if (!window.MeridianWeb.getToken()) {
+          addChatBubble("Error: Missing token. Open this page from the hub with ?token= in the URL.", "agent");
+          return;
+        }
+        // Reset chat buffer for new turn — ensures 1:1 ask-to-reply
+        chatBuffer = "";
+        clearTimeout(chatTimer);
+        clearTimeout(chatTypingTimer);
+        showChatTyping(false);
+        lastFocusSummarySent = "";
+        lastRunResultAtMs = 0;
+        runPending = true;
+
+        addChatBubble(cmd, "user");
+        lastSubmittedInput = cmd;
+        lastSubmittedTraceId = "";
+        showChatTyping(true, "Awaiting agent reply...");
+        runCommand(cmd)
+          .then(function(data) {
+            runPending = false;
+            showChatTyping(false);
+            var resultContent = data && typeof data.content === "string" ? data.content.trim() : "";
+            if (data && typeof data.trace_id === "string") {
+              lastSubmittedTraceId = data.trace_id.toLowerCase();
+            }
+            if (!resultContent) return;
+            // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
+            lastFlushedContent = stripAnsi(resultContent);
+            lastRunResultAtMs = Date.now();
+            renderAgentContent(resultContent);
+            refreshSessionList();
+            // After rendering, flush any pane output that accumulated during the run
+            if (chatBuffer.trim()) flushChatBuffer();
+          })
+          .catch(function(err) {
+            runPending = false;
+            showChatTyping(false);
+            var msg = err && err.message ? err.message : "Send failed.";
+            if (err && err.status === 401) msg = "Unauthorized. Refresh the page from the hub so the URL includes ?token=.";
+            addChatBubble("Error: " + msg, "agent");
+            if (navigator.vibrate) navigator.vibrate(50);
+        });
+        cmdInput.value = "";
+        cmdInput.style.height = "auto";
+        cmdInput.focus();
+        if (navigator.vibrate) navigator.vibrate(5);
+      }
+      btnSend.addEventListener("click", function(e) { e.preventDefault(); handleSend(); });
+      cmdInput.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+      });
+
+      // View Switching
+      function switchView(viewName) {
+        document.querySelectorAll(".view").forEach(function(v) { v.classList.add("hidden"); });
+        var target = document.getElementById(viewName + "-view");
+        if (target) target.classList.remove("hidden");
+        document.querySelectorAll(".tab, .nav-item[data-view]").forEach(function(t) {
+          t.classList.toggle("active", t.getAttribute("data-view") === viewName);
+        });
+        if (viewName === "terminal") {
+          setTimeout(function() { fitTerminal(); cmdInput.focus(); }, 10);
+        }
+        if (viewName === "chat" && chatMessagesEl) {
+          setTimeout(function() { chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight; cmdInput.focus(); }, 10);
+        }
+        closeSidebar();
+      }
+
+      document.querySelectorAll("[data-view]").forEach(el => {
+        el.addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); switchView(this.getAttribute("data-view")); });
+      });
+
+      // Sidebar logic
+      function toggleSidebar() {
+        var isOpen = sidebar.classList.toggle("open");
+        sidebarOverlay.classList.toggle("open", isOpen);
+      }
+      function closeSidebar() {
+        sidebar.classList.remove("open");
+        sidebarOverlay.classList.remove("open");
+      }
+      document.getElementById("menu-toggle").addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); toggleSidebar(); });
+      document.getElementById("mobile-explorer-btn").addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); toggleSidebar(); });
+      sidebarOverlay.addEventListener("click", closeSidebar);
+
+      // File Explorer Logic
+      function compareTreeNodes(a, b) {
+        if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      }
+
+      function loadExpandedDirs() {
+        try {
+          var raw = sessionStorage.getItem(EXPANDED_DIRS_STORAGE_KEY);
+          if (!raw) return;
+          var parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return;
+          expandedDirs = new Set(
+            parsed.filter(function(item) {
+              return typeof item === "string" && item.trim();
+            })
+          );
+        } catch (e) {}
+      }
+
+      function saveExpandedDirs() {
+        try {
+          var snapshot = Array.from(expandedDirs.values()).sort();
+          sessionStorage.setItem(EXPANDED_DIRS_STORAGE_KEY, JSON.stringify(snapshot));
+        } catch (e) {}
+      }
+
+      function toggleExpandedDir(dirPath) {
+        if (expandedDirs.has(dirPath)) expandedDirs.delete(dirPath);
+        else expandedDirs.add(dirPath);
+        saveExpandedDirs();
+        renderFileTree(fileTreeEntries);
+      }
+
+      function ensureTreeDirNode(root, dirPath) {
+        var cleaned = (dirPath || "").replace(/^\/+|\/+$/g, "");
+        if (!cleaned) return root;
+        var segments = cleaned.split("/");
+        var cursor = root;
+        var builtPath = "";
+        for (var i = 0; i < segments.length; i++) {
+          var segment = segments[i];
+          builtPath = builtPath ? builtPath + "/" + segment : segment;
+          var child = cursor.childrenMap[builtPath];
+          if (!child) {
+            child = {
+              name: segment,
+              path: builtPath,
+              kind: "dir",
+              children: [],
+              childrenMap: {}
+            };
+            cursor.children.push(child);
+            cursor.childrenMap[builtPath] = child;
+          }
+          cursor = child;
+        }
+        return cursor;
+      }
+
+      function buildTreeModel(entries) {
+        var root = {
+          name: "",
+          path: "",
+          kind: "dir",
+          children: [],
+          childrenMap: {}
+        };
+        entries.forEach(function(entry) {
+          if (!entry || typeof entry.path !== "string" || (entry.kind !== "file" && entry.kind !== "dir")) return;
+          var cleanPath = entry.path.replace(/^\/+|\/+$/g, "");
+          if (!cleanPath) return;
+          var parts = cleanPath.split("/");
+          var parentPath = parts.slice(0, -1).join("/");
+          var baseName = parts[parts.length - 1];
+          var parent = ensureTreeDirNode(root, parentPath);
+          if (entry.kind === "dir") {
+            ensureTreeDirNode(root, cleanPath);
+            return;
+          }
+          parent.children.push({
+            name: baseName,
+            path: cleanPath,
+            kind: "file",
+            children: []
+          });
+        });
+
+        function sortChildren(node) {
+          node.children.sort(compareTreeNodes);
+          node.children.forEach(function(child) {
+            if (child.kind === "dir") sortChildren(child);
+          });
+        }
+        sortChildren(root);
+        return root;
+      }
+
+      function createTreeIcon(kind) {
+        var wrap = document.createElement("span");
+        wrap.innerHTML =
+          kind === "dir"
+            ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>'
+            : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
+        var icon = wrap.firstChild;
+        icon.style.width = "16px";
+        icon.style.height = "16px";
+        icon.style.flexShrink = "0";
+        return icon;
+      }
+
+      function renderTreeNode(node, depth) {
+        var nodeWrap = document.createElement("div");
+        nodeWrap.className = "tree-node";
+
+        var row = document.createElement("div");
+        row.className = "tree-row";
+        row.style.paddingLeft = (0.5 + depth * 0.85) + "rem";
+        if (node.path === selectedFilePath) row.classList.add("active");
+
+        if (node.kind === "dir") {
+          var toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "tree-toggle";
+          var expanded = expandedDirs.has(node.path);
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggle.setAttribute("aria-label", expanded ? "Collapse directory" : "Expand directory");
+          toggle.innerHTML = expanded
+            ? '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M5 7l5 6 5-6H5z"></path></svg>'
+            : '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M7 5l6 5-6 5V5z"></path></svg>';
+          toggle.addEventListener("click", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleExpandedDir(node.path);
+          });
+          row.appendChild(toggle);
+        } else {
+          var spacer = document.createElement("span");
+          spacer.className = "tree-toggle-placeholder";
+          row.appendChild(spacer);
+        }
+
+        row.appendChild(createTreeIcon(node.kind));
+        var label = document.createElement("span");
+        label.className = "tree-label";
+        label.textContent = node.name;
+        row.appendChild(label);
+
+        if (node.kind === "dir") {
+          row.setAttribute("role", "button");
+          row.setAttribute("tabindex", "0");
+          row.setAttribute("aria-expanded", expandedDirs.has(node.path) ? "true" : "false");
+          row.addEventListener("click", function() {
+            toggleExpandedDir(node.path);
+          });
+          row.addEventListener("keydown", function(event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              toggleExpandedDir(node.path);
+            }
+          });
+        } else {
+          row.addEventListener("click", function() {
+            openFile(node.path);
+          });
+        }
+
+        nodeWrap.appendChild(row);
+
+        if (node.kind === "dir" && node.children && node.children.length > 0) {
+          var childrenWrap = document.createElement("div");
+          childrenWrap.className = "tree-children";
+          if (expandedDirs.has(node.path)) childrenWrap.classList.add("open");
+          node.children.forEach(function(child) {
+            childrenWrap.appendChild(renderTreeNode(child, depth + 1));
+          });
+          nodeWrap.appendChild(childrenWrap);
+        }
+
+        return nodeWrap;
+      }
+
+      function renderFileTree(entries) {
+        fileTree.innerHTML = "";
+        if (!entries || entries.length === 0) {
+          fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.6;">No files found.</div>';
+          return;
+        }
+        var model = buildTreeModel(entries);
+        var fragment = document.createDocumentFragment();
+        model.children.forEach(function(child) {
+          fragment.appendChild(renderTreeNode(child, 0));
+        });
+        fileTree.appendChild(fragment);
+      }
+
+      function refreshFiles() {
+        fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.5;">Loading files...</div>';
+        if (!threadId) {
+          fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.7;">Open from hub to load files.</div>';
+          return;
+        }
+        window.MeridianWeb
+          .fetchWithAuth("/api/files?thread_id=" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to list files");
+              }
+              return Array.isArray(data) ? data : [];
+            });
+          })
+          .then(function(entries) {
+            fileTreeEntries = entries;
+            renderFileTree(fileTreeEntries);
+          })
+          .catch(function() {
+            fileTree.innerHTML = '<div class="tree-item" style="opacity: 0.7;">Failed to load files.</div>';
+          });
+      }
+      document.getElementById("refresh-files").addEventListener("click", refreshFiles);
+      loadExpandedDirs();
+      refreshFiles();
+      refreshSessionList();
+      refreshModelCatalog();
+
+      function openFile(path) {
+        selectedFilePath = path;
+        renderFileTree(fileTreeEntries);
+        loadingOverlay.classList.remove("hidden");
+        switchView("editor");
+        window.MeridianWeb
+          .fetchWithAuth("/api/file?thread_id=" + encodeURIComponent(threadId || "") + "&path=" + encodeURIComponent(path))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to read file");
+              }
+              return data;
+            });
+          })
+          .then(function(data) {
+            editorContent.value = data.content || "";
+            editorContent.readOnly = false;
+            currentFilename.textContent = path;
+            btnSave.classList.remove("hidden");
+            loadingOverlay.classList.add("hidden");
+          })
+          .catch(function() {
+            loadingOverlay.classList.add("hidden");
+            alert("Failed to read file");
+          });
+      }
+
+      btnSave.addEventListener("click", function() {
+        var filePath = currentFilename.textContent;
+        if (!filePath || filePath === "No file open") return;
+        var content = editorContent.value;
+        loadingOverlay.classList.remove("hidden");
+        window.MeridianWeb
+          .fetchWithAuth("/api/file", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              thread_id: threadId,
+              path: filePath,
+              content: content
+            })
+          })
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Save failed");
+              }
+            });
+          })
+          .then(function() {
+            loadingOverlay.classList.add("hidden");
+            alert("Saved successfully");
+          })
+          .catch(function() {
+            loadingOverlay.classList.add("hidden");
+            alert("Save failed");
+          });
+      });
+
+      // Actions
+      document.getElementById("btn-reboot").addEventListener("click", function() {
+        if (confirm("Reboot this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/reboot", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => alert("Reboot sent"));
+        }
+      });
+      document.getElementById("btn-kill").addEventListener("click", function() {
+        if (confirm("Kill this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/kill", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => location.href = "index.html");
+        }
+      });
+
+      // Overflow menu (mobile)
+      var overflowBtn = document.getElementById("overflow-menu-btn");
+      var overflowDropdown = document.getElementById("overflow-dropdown");
+      function closeOverflow() {
+        if (overflowDropdown) overflowDropdown.classList.remove("open");
+        if (overflowBtn) overflowBtn.setAttribute("aria-expanded", "false");
+      }
+      function openOverflow() {
+        if (overflowDropdown) overflowDropdown.classList.add("open");
+        if (overflowBtn) overflowBtn.setAttribute("aria-expanded", "true");
+      }
+      if (overflowBtn) {
+        overflowBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var isOpen = overflowDropdown && overflowDropdown.classList.toggle("open");
+          overflowBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        });
+      }
+      document.addEventListener("click", function(e) {
+        if (overflowDropdown && overflowDropdown.classList.contains("open") && overflowBtn && !overflowBtn.contains(e.target) && !overflowDropdown.contains(e.target)) closeOverflow();
+      });
+      if (overflowDropdown) overflowDropdown.addEventListener("click", function(e) { e.stopPropagation(); });
+      document.getElementById("overflow-reboot").addEventListener("click", function(e) {
+        e.preventDefault();
+        closeOverflow();
+        if (confirm("Reboot this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/reboot", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => alert("Reboot sent"));
+        }
+      });
+      document.getElementById("overflow-kill").addEventListener("click", function(e) {
+        e.preventDefault();
+        closeOverflow();
+        if (confirm("Kill this agent?")) {
+          window.MeridianWeb.fetchWithAuth("/api/kill", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: threadId })
+          }).then(() => location.href = "index.html");
+        }
+      });
+      document.getElementById("overflow-clear-chat").addEventListener("click", function(e) {
+        e.preventDefault();
+        closeOverflow();
+        localStorage.removeItem(CHAT_HISTORY_STORAGE_KEY);
+        if (chatMessagesEl) {
+          chatMessagesEl.innerHTML = "";
+          chatMessagesEl.classList.add("chat-messages-empty");
+        }
+        bubbleElementsByKey = Object.create(null);
+        lastFlushedContent = "";
+        lastFlushedDetails = "";
+        seenBubbleFingerprintAtMs = Object.create(null);
+        suppressibleMessageState = Object.create(null);
+        chatBuffer = "";
+      });
+
+      // Overflow menu mirrors for mobile: Focus, Push, Filters
+      var overflowFocusBtn = document.getElementById("overflow-focus");
+      var overflowPushBtn = document.getElementById("overflow-push");
+      var overflowFiltersBtn = document.getElementById("overflow-filters");
+
+      function syncOverflowFocus() {
+        if (!overflowFocusBtn) return;
+        overflowFocusBtn.textContent = focusModeEnabled ? "Focus ON" : "Focus OFF";
+        overflowFocusBtn.classList.toggle("active", focusModeEnabled);
+      }
+      function syncOverflowPush() {
+        if (!overflowPushBtn) return;
+        overflowPushBtn.textContent = pushEnabled ? "Push ON" : "Push OFF";
+        overflowPushBtn.classList.toggle("active", pushEnabled);
+      }
+      syncOverflowFocus();
+      syncOverflowPush();
+
+      if (overflowFocusBtn) {
+        overflowFocusBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          closeOverflow();
+          if (focusToggleBtn) focusToggleBtn.click();
+          syncOverflowFocus();
+        });
+      }
+      if (overflowPushBtn) {
+        overflowPushBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          closeOverflow();
+          if (pushToggleBtn) pushToggleBtn.click();
+          setTimeout(syncOverflowPush, 300);
+        });
+      }
+      if (overflowFiltersBtn) {
+        overflowFiltersBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          closeOverflow();
+          if (filtersToggleBtn) filtersToggleBtn.click();
+        });
+      }
+
+      var resizeTimeout;
+      window.addEventListener("resize", function() {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(function() {
+          fitTerminal();
+          // If resized to desktop while on chat view, switch to terminal
+          var currentView = document.querySelector(".view:not(.hidden)");
+          if (!isMobile() && currentView && currentView.id === "chat-view") {
+            switchView("terminal");
+          }
+        }, 100);
+      });
+
+      document.getElementById("thread-label").textContent = threadId || "No session";
+
+      // Mobile: default to chat view
+      if (isMobile()) {
+        switchView("chat");
+      }
+      cmdInput.focus();
+    });
+  </script>
+</body>
+</html>

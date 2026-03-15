@@ -10,6 +10,9 @@ const FILENAME_SAFE_REGEX = /[^a-zA-Z0-9._-]/g;
 export interface ParsedInboundEvent {
   chatId: string;
   botId: string;
+  chatName: string | null;
+  botName: string | null;
+  actorId: string;
   event: InboundUIEvent;
 }
 
@@ -143,6 +146,48 @@ function resolveReplyTo(message: TelegramMessage): string | null {
   return typeof replyMessageId === "number" ? String(replyMessageId) : null;
 }
 
+function buildTelegramChatName(message: TelegramMessage): string | null {
+  const chat = message.chat as { type?: unknown; title?: unknown; username?: unknown; first_name?: unknown; last_name?: unknown };
+  const chatType = typeof chat.type === "string" ? chat.type : "";
+  const title = typeof chat.title === "string" ? chat.title.trim() : "";
+  const username = typeof chat.username === "string" ? chat.username.trim() : "";
+  const firstName = typeof chat.first_name === "string" ? chat.first_name.trim() : "";
+  const lastName = typeof chat.last_name === "string" ? chat.last_name.trim() : "";
+
+  if (title) {
+    return title;
+  }
+  if (chatType === "private") {
+    const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+    if (fullName) {
+      return fullName;
+    }
+    if (username) {
+      return `@${username}`;
+    }
+  }
+  if (username) {
+    return `@${username}`;
+  }
+  return null;
+}
+
+function buildTelegramBotName(ctx: Context): string | null {
+  const username = typeof ctx.me?.username === "string" ? ctx.me.username.trim() : "";
+  if (username) {
+    return `@${username}`;
+  }
+  return null;
+}
+
+export function formatTelegramChatId(chatId: string | number): string {
+  return `telegram:${String(chatId)}`;
+}
+
+export function formatTelegramActorId(userId: string | number): string {
+  return `tg:${String(userId)}`;
+}
+
 export async function parseTelegramMessage(ctx: Context): Promise<ParsedInboundEvent | null> {
   const message = ctx.message;
   if (!message) {
@@ -170,8 +215,11 @@ export async function parseTelegramMessage(ctx: Context): Promise<ParsedInboundE
   };
 
   return {
-    chatId: String(message.chat.id),
+    chatId: formatTelegramChatId(message.chat.id),
     botId,
+    chatName: buildTelegramChatName(message),
+    botName: buildTelegramBotName(ctx),
+    actorId: formatTelegramActorId(senderId),
     event
   };
 }

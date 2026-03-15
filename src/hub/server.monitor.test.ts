@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { HubResult, ReplyChannel } from "../types";
+import { config } from "../config";
+import type { HubResult, ReplyChannel, ServiceEndpoint } from "../types";
+import { PaneBroadcaster } from "./pane-broadcaster";
 import type { ResultSender } from "./result-sender";
 import type { HubRouter } from "./router";
-import { HubServer } from "./server";
+import { HubServer, resolveStaticServiceEndpoints } from "./server";
 
 class FakeRouter {
   readonly completionCalls: Array<{ threadId: string; traceId: string | null }> = [];
@@ -14,6 +16,10 @@ class FakeRouter {
   attachedSessionsByThread = new Map<string, string[]>();
   monitorSubscribersByThread = new Map<string, string[]>();
   dueDispatches: Array<{ threadId: string; chatId: string }> = [];
+
+  async initialize(): Promise<void> {
+    return;
+  }
 
   async route(rawMessage: unknown): Promise<HubResult> {
     void rawMessage;
@@ -44,7 +50,7 @@ class FakeRouter {
       thread_id: threadId,
       source: "codex",
       status: "success",
-      content: `[thread=${threadId}]\ncompletion`,
+      content: `completion`,
       attachments: [],
       timestamp: new Date().toISOString()
     };
@@ -61,7 +67,7 @@ class FakeRouter {
       thread_id: threadId,
       source: "codex",
       status: "partial",
-      content: `[thread=${threadId}]\nprogress`,
+      content: `progress`,
       attachments: [],
       timestamp: new Date().toISOString()
     };
@@ -75,6 +81,14 @@ class FakeRouter {
   forceMonitorUpdateDispatchNow(threadId: string): void {
     this.forceDispatchCalls.push(threadId);
   }
+
+  resolveInstanceForThread(): null {
+    return null;
+  }
+
+  registerServiceEndpoint(): void {
+    return;
+  }
 }
 
 class FakeResultSender {
@@ -82,6 +96,34 @@ class FakeResultSender {
 
   async sendResult(result: HubResult, replyChannel: ReplyChannel): Promise<void> {
     this.calls.push({ result, replyChannel });
+  }
+}
+
+class FakePaneBroadcaster {
+  readonly subscribeCalls: Array<{ threadId: string }> = [];
+
+  async subscribe(): Promise<{ kind: "not_available"; payload: { type: "not_available"; thread_id: string; reason: string } }> {
+    this.subscribeCalls.push({ threadId: "codex_01" });
+    return {
+      kind: "not_available",
+      payload: {
+        type: "not_available",
+        thread_id: "codex_01",
+        reason: "pane output is unavailable for bridge mode"
+      }
+    };
+  }
+
+  unsubscribe(): boolean {
+    return true;
+  }
+
+  cleanupSocket(): void {
+    return;
+  }
+
+  close(): void {
+    return;
   }
 }
 
@@ -214,6 +256,152 @@ test("HubServer flushes periodic monitor progress updates for due subscriptions"
   await (server as unknown as { flushMonitorProgressUpdates: () => Promise<void> }).flushMonitorProgressUpdates();
 
   assert.equal(fakeRouter.progressCalls.length, 1);
-  assert.equal(fakeResultSender.calls.length, 2);
-  assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "partial"));
+  const expectedCalls = config.TELEGRAM_PUSH_WHITELIST_ONLY ? 0 : 2;
+  assert.equal(fakeResultSender.calls.length, expectedCalls);
+  if (expectedCalls > 0) {
+    assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "partial"));
+  }
+});
+
+test("HubServer adds reboot and kill buttons to agent_error alerts", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.attachedSessionsByThread.set("codex_01", ["chat-a"]);
+  const fakeResultSender = new FakeResultSender();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender
+  });
+
+  const result = await (server as unknown as { handleRawPayload: (raw: string) => Promise<HubResult | null> })
+    .handleRawPayload(
+      JSON.stringify({
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        event_type: "agent_error",
+        monitor_mode: "sse_hook",
+        timestamp: new Date().toISOString(),
+        error: "boom"
+      })
+    );
+
+  assert.equal(result, null);
+  assert.deepEqual(fakeResultSender.calls[0]?.result.telegram_inline_keyboard, {
+    inline_keyboard: [[
+      { text: "🔄 Reboot", callback_data: "hub:reboot:codex_01" },
+      { text: "❌ Kill", callback_data: "hub:kill:codex_01" }
+    ]]
+  });
+});
+
+test("HubServer monitor alert includes agent_type, last_known_pid, and reason", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.attachedSessionsByThread.set("claude_01", ["chat-a"]);
+  const fakeResultSender = new FakeResultSender();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender
+  });
+
+  await (server as unknown as { handleRawPayload: (raw: string) => Promise<HubResult | null> })
+    .handleRawPayload(
+      JSON.stringify({
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "claude_01",
+        event_type: "agent_error",
+        monitor_mode: "heartbeat",
+        timestamp: new Date().toISOString(),
+        agent_type: "claude",
+        last_known_pid: 64339,
+        error: "Heartbeat missed 3 consecutive checks",
+        details: { reason: "HEALTHCHECK_TIMEOUT_PID_GONE" }
+      })
+    );
+
+  assert.equal(fakeResultSender.calls.length, 1);
+  const content = fakeResultSender.calls[0]?.result.content ?? "";
+  assert.match(content, /agent_type=claude/);
+  assert.match(content, /last_known_pid=64339/);
+  assert.match(content, /reason=HEALTHCHECK_TIMEOUT_PID_GONE/);
+  assert.match(content, /thread=claude_01/);
+});
+
+test("HubServer sends agent_error alert to /update subscribers even without attach", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.monitorSubscribersByThread.set("codex_01", ["chat-update"]);
+  const fakeResultSender = new FakeResultSender();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender
+  });
+
+  const result = await (server as unknown as { handleRawPayload: (raw: string) => Promise<HubResult | null> })
+    .handleRawPayload(
+      JSON.stringify({
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        event_type: "agent_error",
+        monitor_mode: "heartbeat",
+        timestamp: new Date().toISOString(),
+        error: "Process exited"
+      })
+    );
+
+  assert.equal(result, null);
+  assert.equal(fakeResultSender.calls.length, 1);
+  assert.equal(fakeResultSender.calls[0]?.replyChannel.chat_id, "chat-update");
+  assert.equal(fakeResultSender.calls[0]?.result.status, "error");
+  assert.match(fakeResultSender.calls[0]?.result.content ?? "", /agent_error/);
+});
+
+test("resolveStaticServiceEndpoints returns coordinator registration only when fully configured", () => {
+  const endpoints = resolveStaticServiceEndpoints({
+    COORDINATOR_SOCKET_PATH: "/tmp/coordinator.sock",
+    COORDINATOR_INTENTS: ["delegate", "plan"]
+  } as never);
+
+  assert.deepEqual(endpoints, [
+    {
+      service: "coordinator",
+      socket_path: "/tmp/coordinator.sock",
+      intents: ["delegate", "plan"]
+    } satisfies ServiceEndpoint
+  ]);
+  assert.deepEqual(
+    resolveStaticServiceEndpoints({
+      COORDINATOR_SOCKET_PATH: "",
+      COORDINATOR_INTENTS: ["delegate"]
+    } as never),
+    []
+  );
+});
+
+test("HubServer routes subscribe_pane_output payloads through PaneBroadcaster", async () => {
+  const paneBroadcaster = new FakePaneBroadcaster();
+  const server = new HubServer({
+    router: new FakeRouter() as unknown as HubRouter,
+    resultSender: new FakeResultSender() as unknown as ResultSender,
+    paneBroadcaster: paneBroadcaster as unknown as PaneBroadcaster
+  });
+
+  const writes: string[] = [];
+  await (server as unknown as {
+    handleSocketPayload: (socket: { writable: boolean; end: (chunk?: string) => void }, raw: string, closeOnComplete: boolean) => Promise<void>;
+  }).handleSocketPayload(
+    {
+      writable: true,
+      end: (chunk?: string) => {
+        if (chunk) {
+          writes.push(chunk);
+        }
+      }
+    },
+    JSON.stringify({
+      type: "subscribe_pane_output",
+      thread_id: "codex_01"
+    }),
+    true
+  );
+
+  assert.deepEqual(paneBroadcaster.subscribeCalls, [{ threadId: "codex_01" }]);
+  assert.equal(JSON.parse(writes[0] ?? "{}").type, "not_available");
 });

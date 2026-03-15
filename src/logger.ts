@@ -1,40 +1,71 @@
 import pino, { Logger } from "pino";
 
-const NODE_ENV = process.env.NODE_ENV ?? "development";
-const LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
+function resolveNodeEnv(): string {
+  return process.env.NODE_ENV ?? "development";
+}
 
-const baseConfig: pino.LoggerOptions = {
-  level: process.env.LOG_LEVEL ?? (NODE_ENV === "production" ? "info" : "debug"),
-  messageKey: "msg",
-  timestamp: () => `,\"timestamp\":\"${new Date().toISOString()}\"`,
-  formatters: {
-    level: (label) => ({ level: label })
-  },
-  base: { service: "calling-hub" }
-};
+function isNodeTestRuntime(): boolean {
+  return process.argv.some((arg) => arg === "--test" || arg.startsWith("--test-"));
+}
 
-const transport =
-  NODE_ENV === "production"
+function resolveLogDir(): string {
+  return process.env.LOG_DIR ?? "/var/log/hub";
+}
+
+function buildBaseConfig(): pino.LoggerOptions {
+  const nodeEnv = resolveNodeEnv();
+  return {
+    level: process.env.LOG_LEVEL ?? (nodeEnv === "production" ? "info" : "debug"),
+    messageKey: "msg",
+    timestamp: () => `,\"timestamp\":\"${new Date().toISOString()}\"`,
+    formatters: {
+      level: (label) => ({ level: label })
+    },
+    base: { service: "calling-hub" }
+  };
+}
+
+function buildTransport() {
+  const nodeEnv = resolveNodeEnv();
+  const logDir = resolveLogDir();
+  if (isNodeTestRuntime()) {
+    return undefined;
+  }
+  return nodeEnv === "production"
     ? pino.transport({
         targets: [
           {
             target: "pino/file",
-            options: { destination: `${LOG_DIR}/hub.log`, mkdir: true },
+            options: { destination: `${logDir}/hub.log`, mkdir: true },
             level: "info"
           },
           {
             target: "pino/file",
-            options: { destination: `${LOG_DIR}/hub-error.log`, mkdir: true },
+            options: { destination: `${logDir}/hub-error.log`, mkdir: true },
             level: "error"
           }
         ]
       })
     : pino.transport({
-        target: "pino-pretty",
-        options: { colorize: true, translateTime: "SYS:standard" }
+        targets: [
+          {
+            target: "pino-pretty",
+            options: { colorize: true, translateTime: "SYS:standard" }
+          }
+        ]
       });
+}
 
-export const rootLogger = pino(baseConfig, transport);
+let rootLoggerInstance: Logger | null = null;
+
+export function getRootLogger(): Logger {
+  if (!rootLoggerInstance) {
+    const transport = buildTransport();
+    rootLoggerInstance = transport ? pino(buildBaseConfig(), transport) : pino(buildBaseConfig());
+  }
+  return rootLoggerInstance;
+}
+
 const moduleLoggerCache = new Map<string, Logger>();
 
 function createProductionModuleLogger(module: string): Logger {
@@ -44,29 +75,31 @@ function createProductionModuleLogger(module: string): Logger {
   }
 
   const destinationByModule: Record<string, { destination: string; level: string }> = {
-    interface: { destination: `${LOG_DIR}/interface.log`, level: "info" },
-    instance_mgr: { destination: `${LOG_DIR}/instance.log`, level: "debug" },
-    monitor: { destination: `${LOG_DIR}/monitor.log`, level: "info" }
+    interface: { destination: `${resolveLogDir()}/interface.log`, level: "info" },
+    instance_mgr: { destination: `${resolveLogDir()}/instance.log`, level: "debug" },
+    monitor: { destination: `${resolveLogDir()}/monitor.log`, level: "info" }
   };
 
   const selected = destinationByModule[module];
   if (!selected) {
-    return rootLogger;
+    return getRootLogger();
   }
 
   const moduleLogger = pino(
-    baseConfig,
-    pino.transport({
-      target: "pino/file",
-      options: { destination: selected.destination, mkdir: true },
-      level: selected.level
-    })
+    buildBaseConfig(),
+    isNodeTestRuntime()
+      ? undefined
+      : pino.transport({
+          target: "pino/file",
+          options: { destination: selected.destination, mkdir: true },
+          level: selected.level
+        })
   );
   moduleLoggerCache.set(module, moduleLogger);
   return moduleLogger;
 }
 
 export function createLogger(module: string, bindings: Record<string, unknown> = {}): Logger {
-  const base = NODE_ENV === "production" ? createProductionModuleLogger(module) : rootLogger;
+  const base = resolveNodeEnv() === "production" ? createProductionModuleLogger(module) : getRootLogger();
   return base.child({ module, trace_id: null, thread_id: null, ...bindings });
 }

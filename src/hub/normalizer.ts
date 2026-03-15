@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { HubMessageSchema, type BridgeMode, type HubMessage, type InboundUIEvent, type Intent } from "../types";
+import { APPROVAL_HELP_TEXT, normalizeApprovalAction } from "../shared/approval";
 
 interface ParsedIntent {
   intent: Intent;
@@ -21,7 +22,20 @@ export interface NormalizerContext {
 }
 
 const AGENT_TYPE_SET = new Set(["claude", "codex", "gemini", "cursor"]);
-const ARG_KEYS = new Set(["type", "mode", "thread", "dir", "repo", "state", "interval", "every", "sec", "seconds"]);
+const ARG_KEYS = new Set([
+  "type",
+  "mode",
+  "thread",
+  "dir",
+  "repo",
+  "state",
+  "interval",
+  "every",
+  "sec",
+  "seconds",
+  "action",
+  "model"
+]);
 
 function parseKeyValueArgs(rawArgs: string): Record<string, string> {
   const normalized = rawArgs.replace(/[＝:：]/g, "=").replace(/\s*=\s*/g, "=").trim();
@@ -47,6 +61,14 @@ function parseKeyValueArgs(rawArgs: string): Record<string, string> {
     args[key] = value;
   }
   return args;
+}
+
+function toCompositeChatId(channel: string, chatId: string): string {
+  return chatId.includes(":") ? chatId : `${channel}:${chatId}`;
+}
+
+function toDefaultActorId(event: InboundUIEvent): string {
+  return `${event.channel === "telegram" ? "tg" : event.channel}:${event.sender_id}`;
 }
 
 function resolveMode(mode: string | undefined): BridgeMode {
@@ -87,6 +109,16 @@ function requireThreadId(args: Record<string, string>, fallbackThreadId: string,
     throw new Error(`${command} requires thread=<thread_id>`);
   }
   return threadId;
+}
+
+function parseApprovalCommand(rawArgs: string, args: Record<string, string>, restTokens: string[]): string {
+  const bareAction = restTokens.find((token) => !token.includes("=")) ?? "";
+  const rawAction = (args.action ?? bareAction ?? rawArgs).trim();
+  const action = normalizeApprovalAction(rawAction);
+  if (!action) {
+    throw new Error(`/approve action is invalid. ${APPROVAL_HELP_TEXT}`);
+  }
+  return action;
 }
 
 function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
@@ -156,6 +188,20 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       };
     }
 
+    case "/info": {
+      const threadId = args.thread?.trim() || "";
+      return {
+        intent: "status",
+        target: threadId || "active",
+        threadId: threadId || "active",
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: rawArgs
+      };
+    }
+
     case "/attach": {
       const threadId = requireThreadId(args, fallbackThreadId, "/attach");
       return {
@@ -170,34 +216,35 @@ function parseIntent(content: string, fallbackThreadId: string): ParsedIntent {
       };
     }
 
-    case "/model": {
-      if (!args.thread && !args.type) {
-        return {
-          intent: "run",
-          target: fallbackThreadId || "active",
-          threadId: fallbackThreadId || "unbound",
-          spawnDir: null,
-          monitorUpdatesEnabled: null,
-          monitorUpdateIntervalSec: null,
-          mode: "bridge",
-          payloadContent: trimmed
-        };
-      }
-
-      const threadId = requireThreadId(args, fallbackThreadId, "/model");
-      const type = (args.type ?? "").trim().toLowerCase();
-      if (!AGENT_TYPE_SET.has(type)) {
-        throw new Error("model type must be one of claude|codex|gemini|cursor");
-      }
+    case "/approve": {
+      const threadId = requireThreadId(args, fallbackThreadId, "/approve");
       return {
-        intent: "switch_model",
-        target: type,
+        intent: "terminal_input",
+        target: threadId,
         threadId,
         spawnDir: null,
         monitorUpdatesEnabled: null,
         monitorUpdateIntervalSec: null,
         mode: "bridge",
-        payloadContent: rawArgs
+        payloadContent: parseApprovalCommand(rawArgs, args, restTokens)
+      };
+    }
+
+    case "/model": {
+      const threadId = requireThreadId(args, fallbackThreadId, "/model");
+      const modelId = (args.model ?? "").trim();
+      if (!modelId) {
+        throw new Error("/model requires model=<provider_model_id> when sent as plain text");
+      }
+      return {
+        intent: "switch_model",
+        target: threadId,
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        mode: "bridge",
+        payloadContent: modelId
       };
     }
 
@@ -276,7 +323,8 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
   return HubMessageSchema.parse({
     trace_id: randomUUID(),
     thread_id: parsed.threadId,
-    actor_id: context.actorId ?? "owner",
+    actor_id: context.actorId ?? toDefaultActorId(event),
+    idempotency_key: event.raw_message_id,
     intent: parsed.intent,
     target: parsed.target,
     payload: {
@@ -290,8 +338,8 @@ export function normalizeInboundEvent(event: InboundUIEvent, context: Normalizer
     },
     mode: parsed.mode,
     reply_channel: {
-      channel: "telegram",
-      chat_id: context.chatId,
+      channel: event.channel,
+      chat_id: toCompositeChatId(event.channel, context.chatId),
       message_id: event.raw_message_id,
       bot_id: context.botId
     }

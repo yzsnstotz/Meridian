@@ -5,15 +5,47 @@ import https from "node:https";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
-import { HubResultSchema, ReplyChannelSchema, type HubResult, type ReplyChannel } from "../types";
+import { buildTelegramApprovalHint, isApprovalPrompt } from "../shared/approval";
+import {
+  HubResultSchema,
+  ReplyChannelSchema,
+  type HubResult,
+  type ReplyChannel,
+  type TelegramInlineKeyboard
+} from "../types";
 
 const TELEGRAM_TEXT_LIMIT = 4096;
 const TELEGRAM_SAFE_TEXT_LIMIT = 3500;
 const TELEGRAM_CAPTION_LIMIT = 1024;
-const TELEGRAM_CHUNK_DELAY_MS = 250;
 const TELEGRAM_MAX_SEND_ATTEMPTS = 5;
 const TELEGRAM_RETRY_BACKOFF_BASE_MS = 500;
 const TELEGRAM_RETRY_BACKOFF_MAX_MS = 8000;
+const TELEGRAM_DETAIL_CACHE_LIMIT = 200;
+const TELEGRAM_DUPLICATE_WINDOW_MS = 120 * 1000;
+const SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
+const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
+const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
+
+interface TelegramDetailCacheRecord {
+  traceId: string;
+  threadId: string;
+  source: HubResult["source"];
+  status: HubResult["status"];
+  fullText: string;
+  summaryText: string;
+  chatId: string;
+  botId: string | null;
+  createdAtMs: number;
+}
+
+interface TelegramDetailLookupOptions {
+  chatId: string;
+  botId?: string;
+  traceId?: string;
+  threadId?: string;
+}
+
+const telegramDetailCache = new Map<string, TelegramDetailCacheRecord[]>();
 
 interface TelegramApiResponseBody {
   ok?: boolean;
@@ -70,6 +102,223 @@ export function splitTextForTelegram(content: string, limit = TELEGRAM_SAFE_TEXT
   return chunks;
 }
 
+function stripMeridianContentFraming(content: string): string {
+  return content.replace(/^\[thread=[^\]]*\]\n?/, "");
+}
+
+function parseSummaryTagId(tagText: string): string | null {
+  const matched = tagText.match(/\bid=([0-9a-fA-F-]{36})\b/);
+  return matched?.[1]?.toLowerCase() ?? null;
+}
+
+function stripSummaryProtocolTags(content: string): string {
+  return content
+    .replace(/\[\[MERIDIAN_SUMMARY_BEGIN[^\]]*\]\]\s*/g, "")
+    .replace(/\s*\[\[MERIDIAN_SUMMARY_END[^\]]*\]\]/g, "")
+    .trim();
+}
+
+function isLowValueLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (/^(heartbeat|typing)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/^(status:\s*(running|idle|live)|connected|reconnecting)$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^(\$|>|#)\s*(pwd|ls|cd)\b/.test(trimmed)) {
+    return true;
+  }
+  if (/^\/[\w./-]+$/.test(trimmed) || /^\.\/[\w./-]+$/.test(trimmed)) {
+    return true;
+  }
+  if (/^\[[0-9:. -]+\]/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+function extractSummaryBlocks(
+  content: string,
+  traceId: string
+): { summary: string | null; residual: string; incomplete: boolean } {
+  const beginIndex = content.indexOf(SUMMARY_MARKER_BEGIN);
+  if (beginIndex < 0) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+
+  const beginClose = content.indexOf("]]", beginIndex);
+  if (beginClose < 0) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+
+  const beginTag = content.slice(beginIndex, beginClose + 2);
+  if (beginTag.includes("\n")) {
+    return { summary: null, residual: content, incomplete: false };
+  }
+  const beginId = parseSummaryTagId(beginTag);
+  if (!beginId || beginId !== traceId.toLowerCase()) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const endIndex = content.indexOf(SUMMARY_MARKER_END, beginClose + 2);
+  if (endIndex < 0) {
+    const partial = content.slice(beginClose + 2).trim();
+    const summary = partial ? `${partial}\n\n(${SUMMARY_INCOMPLETE_LABEL})` : SUMMARY_INCOMPLETE_LABEL;
+    const residual = `${content.slice(0, beginIndex)}\n${partial}`.trim();
+    return { summary, residual, incomplete: true };
+  }
+
+  const endClose = content.indexOf("]]", endIndex);
+  if (endClose < 0) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const endTag = content.slice(endIndex, endClose + 2);
+  if (endTag.includes("\n")) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+  const endId = parseSummaryTagId(endTag);
+  if (!endId || endId !== beginId) {
+    return { summary: null, residual: stripSummaryProtocolTags(content), incomplete: false };
+  }
+
+  const summary = content.slice(beginClose + 2, endIndex).trim();
+  const residual = `${content.slice(0, beginIndex)}${content.slice(endClose + 2)}`.trim();
+  return {
+    summary: summary || null,
+    residual,
+    incomplete: false
+  };
+}
+
+function summarizeText(content: string, traceId: string): { summary: string; details: string; truncated: boolean } {
+  const extracted = extractSummaryBlocks(content, traceId);
+  if (extracted.summary) {
+    const details = extracted.residual.trim();
+    return { summary: extracted.summary, details, truncated: extracted.incomplete || details.length > 0 };
+  }
+
+  const normalized = stripSummaryProtocolTags(content);
+  const lines = normalized.split(/\r?\n/).map((line) => line.trimEnd());
+  const informativeLines = lines
+    .filter((line) => !isLowValueLine(line))
+    .filter((line) => !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line));
+  const summaryLines = informativeLines.slice(0, 6);
+  const fallbackSummary = summaryLines.join("\n").trim();
+  const details = normalized.trim();
+  return {
+    summary: fallbackSummary || "Update received. Use /detail to view full output.",
+    details,
+    truncated: informativeLines.length > summaryLines.length || details.length > Math.max(fallbackSummary.length + 80, 260)
+  };
+}
+
+export function decorateTelegramResultText(result: HubResult): string {
+  const tag = `trace=${result.trace_id}`;
+  const body = stripMeridianContentFraming(stripSummaryProtocolTags(result.content)).trim();
+  if (!body) {
+    return tag;
+  }
+  const baseText = `${tag}\n\n${body}`;
+  if (!isApprovalPrompt(result.content)) {
+    return baseText;
+  }
+  return `${baseText}${buildTelegramApprovalHint(result.thread_id)}`;
+}
+
+function composeSummaryTelegramText(result: HubResult, summaryText: string, includeDetailHint: boolean): string {
+  const tag = `trace=${result.trace_id}`;
+  const body = stripMeridianContentFraming(summaryText).trim();
+  if (!includeDetailHint) {
+    return `${tag}\n\n${body}`;
+  }
+  return `${tag}\n\n${body}\n\n/detail trace=${result.trace_id}`;
+}
+
+function makeDetailCacheKey(chatId: string, botId: string | null): string {
+  return `${botId ?? "default"}::${chatId}`;
+}
+
+function composeDetailTelegramText(result: HubResult, detailText: string): string {
+  const tag = `trace=${result.trace_id}`;
+  const body = stripMeridianContentFraming(detailText).trim();
+  return body ? `${tag}\n\n${body}` : tag;
+}
+
+function makeTelegramMessageFingerprint(summaryText: string, detailText: string): string {
+  return ["agent", summaryText.trim(), detailText.trim()].join("\n---\n");
+}
+
+function saveTelegramDetailRecord(
+  replyChannel: ReplyChannel,
+  result: HubResult,
+  fullText: string,
+  summaryText: string
+): void {
+  const key = makeDetailCacheKey(replyChannel.chat_id, replyChannel.bot_id ?? null);
+  const records = telegramDetailCache.get(key) ?? [];
+  records.unshift({
+    traceId: result.trace_id,
+    threadId: result.thread_id,
+    source: result.source,
+    status: result.status,
+    fullText,
+    summaryText,
+    chatId: replyChannel.chat_id,
+    botId: replyChannel.bot_id ?? null,
+    createdAtMs: Date.now()
+  });
+  if (records.length > TELEGRAM_DETAIL_CACHE_LIMIT) {
+    records.length = TELEGRAM_DETAIL_CACHE_LIMIT;
+  }
+  telegramDetailCache.set(key, records);
+}
+
+export function resolveTelegramDetailRecord(
+  options: TelegramDetailLookupOptions
+): TelegramDetailCacheRecord | null {
+  const key = makeDetailCacheKey(options.chatId, options.botId ?? null);
+  const records = telegramDetailCache.get(key);
+  if (!records || records.length === 0) {
+    return null;
+  }
+
+  if (options.traceId) {
+    const byTrace = records.find((record) => record.traceId === options.traceId);
+    if (byTrace) {
+      return byTrace;
+    }
+  }
+  if (options.threadId) {
+    const byThread = records.find((record) => record.threadId === options.threadId);
+    if (byThread) {
+      return byThread;
+    }
+  }
+  return records[0] ?? null;
+}
+
+export function shouldPushTelegramProactive(result: HubResult): boolean {
+  if (!config.TELEGRAM_PUSH_WHITELIST_ONLY) {
+    return true;
+  }
+  if (result.status === "error") {
+    return true;
+  }
+  if (isApprovalPrompt(result.content)) {
+    return true;
+  }
+  const normalized = result.content.toLowerCase();
+  if (normalized.includes("completed") || normalized.includes("done") || normalized.includes("finished")) {
+    return true;
+  }
+  return false;
+}
+
 export interface ResultSenderOptions {
   botToken?: string;
   botTokens?: string[];
@@ -108,10 +357,15 @@ function resolveConfiguredBotTokens(): string[] {
   return tokens;
 }
 
+function resolveTelegramTargetChatId(chatId: string): string {
+  return chatId.startsWith("telegram:") ? chatId.slice("telegram:".length) : chatId;
+}
+
 export class ResultSender {
   private readonly log = createLogger("hub");
   private readonly defaultBotToken: string;
   private readonly botTokenById: Map<string, string>;
+  private readonly recentTelegramFingerprints = new Map<string, number>();
 
   constructor(options: ResultSenderOptions = {}) {
     const tokens = options.botToken
@@ -142,23 +396,47 @@ export class ResultSender {
 
     const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
-    const headline = `[${result.status}] thread=${result.thread_id} trace=${result.trace_id}`;
-    const textBody = result.content.trim().length === 0 ? headline : `${headline}\n\n${result.content}`;
+    const targetChatId = resolveTelegramTargetChatId(replyChannel.chat_id);
+    const summarized =
+      result.summary_text !== undefined && result.details_text !== undefined
+        ? {
+            summary: result.summary_text,
+            details: result.details_text,
+            truncated:
+              result.details_text.trim().length > 0 && result.details_text.trim() !== result.summary_text.trim()
+          }
+        : summarizeText(result.content, result.trace_id);
+    const fullTextBody =
+      result.details_text !== undefined
+        ? composeDetailTelegramText(result, result.details_text || result.summary_text || result.content)
+        : decorateTelegramResultText(result);
+    const summaryBody = composeSummaryTelegramText(
+      result,
+      summarized.summary,
+      summarized.truncated && !isApprovalPrompt(result.content)
+    );
+    const textBody = config.TELEGRAM_SUMMARY_ONLY ? summaryBody : fullTextBody;
+    const replyMarkup = result.telegram_inline_keyboard;
+
+    saveTelegramDetailRecord(replyChannel, result, fullTextBody, summaryBody);
+    if (this.shouldSkipDuplicateTelegramDelivery(replyChannel, result, summarized.summary, summarized.details)) {
+      return;
+    }
 
     if (textBody.length > TELEGRAM_TEXT_LIMIT) {
-      await this.sendLongTextInChunks(botToken, replyChannel.chat_id, textBody, replyToMessageId, {
+      await this.sendContentAsFile(botToken, targetChatId, textBody, replyToMessageId, {
         traceId: result.trace_id,
         threadId: result.thread_id
-      });
+      }, replyMarkup);
     } else {
-      await this.sendTextWithRetry(botToken, replyChannel.chat_id, textBody, replyToMessageId);
+      await this.sendTextWithRetry(botToken, targetChatId, textBody, replyToMessageId, replyMarkup);
     }
 
     for (const attachment of result.attachments) {
       const filename = attachment.filename ?? path.basename(attachment.path);
       await this.sendDocumentWithRetry(
         botToken,
-        replyChannel.chat_id,
+        targetChatId,
         attachment.path,
         filename,
         undefined,
@@ -171,14 +449,48 @@ export class ResultSender {
         trace_id: result.trace_id,
         thread_id: result.thread_id,
         status: result.status,
-        target: replyChannel.chat_id,
+        target: targetChatId,
         bot_id: replyChannel.bot_id ?? extractBotIdFromToken(botToken)
       },
       "HubResult delivered to Telegram"
     );
   }
 
-  private async sendLongTextInChunks(
+  private shouldSkipDuplicateTelegramDelivery(
+    replyChannel: ReplyChannel,
+    result: HubResult,
+    summaryText: string,
+    detailText: string
+  ): boolean {
+    const nowMs = Date.now();
+    for (const [key, sentAtMs] of this.recentTelegramFingerprints.entries()) {
+      if (nowMs - sentAtMs > TELEGRAM_DUPLICATE_WINDOW_MS) {
+        this.recentTelegramFingerprints.delete(key);
+      }
+    }
+
+    const fingerprint = makeTelegramMessageFingerprint(summaryText, detailText);
+    const cacheKey = `${makeDetailCacheKey(replyChannel.chat_id, replyChannel.bot_id ?? null)}::${result.thread_id}::${fingerprint}`;
+    const previous = this.recentTelegramFingerprints.get(cacheKey);
+    if (previous && nowMs - previous < TELEGRAM_DUPLICATE_WINDOW_MS) {
+      this.log.info(
+        {
+          trace_id: result.trace_id,
+          thread_id: result.thread_id,
+          target: replyChannel.chat_id,
+          bot_id: replyChannel.bot_id ?? null
+        },
+        "Duplicate Telegram delivery suppressed"
+      );
+      this.recentTelegramFingerprints.set(cacheKey, nowMs);
+      return true;
+    }
+
+    this.recentTelegramFingerprints.set(cacheKey, nowMs);
+    return false;
+  }
+
+  private async sendContentAsFile(
     botToken: string,
     chatId: string,
     content: string,
@@ -186,26 +498,33 @@ export class ResultSender {
     context?: {
       traceId: string;
       threadId: string;
-    }
+    },
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
-    const chunks = splitTextForTelegram(content);
+    const filePath = path.join("/tmp", `meridian-${context?.traceId ?? randomUUID()}.txt`);
     this.log.info(
       {
         trace_id: context?.traceId ?? null,
         thread_id: context?.threadId ?? null,
         chat_id: chatId,
-        chunk_count: chunks.length,
         total_characters: content.length
       },
-      "Sending long Telegram reply in chunks"
+      "Sending long Telegram reply as text attachment"
     );
 
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index] ?? "";
-      await this.sendTextWithRetry(botToken, chatId, chunk, index === 0 ? replyToMessageId : undefined);
-      if (index < chunks.length - 1) {
-        await this.delay(TELEGRAM_CHUNK_DELAY_MS);
-      }
+    await fs.promises.writeFile(filePath, content, "utf8");
+    try {
+      await this.sendDocumentWithRetry(
+        botToken,
+        chatId,
+        filePath,
+        path.basename(filePath),
+        undefined,
+        replyToMessageId,
+        replyMarkup
+      );
+    } finally {
+      await fs.promises.unlink(filePath).catch(() => undefined);
     }
   }
 
@@ -213,10 +532,11 @@ export class ResultSender {
     botToken: string,
     chatId: string,
     text: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
     await this.withTelegramRetry(
-      () => this.sendText(botToken, chatId, text, replyToMessageId),
+      () => this.sendText(botToken, chatId, text, replyToMessageId, replyMarkup),
       "sendMessage"
     );
   }
@@ -227,10 +547,11 @@ export class ResultSender {
     filePath: string,
     filename: string,
     caption?: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
     await this.withTelegramRetry(
-      () => this.sendDocument(botToken, chatId, filePath, filename, caption, replyToMessageId),
+      () => this.sendDocument(botToken, chatId, filePath, filename, caption, replyToMessageId, replyMarkup),
       "sendDocument"
     );
   }
@@ -297,13 +618,22 @@ export class ResultSender {
     });
   }
 
-  private async sendText(botToken: string, chatId: string, text: string, replyToMessageId?: number): Promise<void> {
+  private async sendText(
+    botToken: string,
+    chatId: string,
+    text: string,
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
+  ): Promise<void> {
     const payload: Record<string, unknown> = {
       chat_id: chatId,
       text
     };
     if (replyToMessageId) {
       payload.reply_to_message_id = replyToMessageId;
+    }
+    if (replyMarkup) {
+      payload.reply_markup = replyMarkup;
     }
 
     await this.postJson(botToken, "/sendMessage", payload);
@@ -315,7 +645,8 @@ export class ResultSender {
     filePath: string,
     filename: string,
     caption?: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    replyMarkup?: TelegramInlineKeyboard
   ): Promise<void> {
     const fileData = await fs.promises.readFile(filePath);
     const boundary = `----MeridianBoundary${randomUUID()}`;
@@ -327,6 +658,9 @@ export class ResultSender {
     }
     if (replyToMessageId) {
       parts.push(this.formField(boundary, "reply_to_message_id", String(replyToMessageId)));
+    }
+    if (replyMarkup) {
+      parts.push(this.formField(boundary, "reply_markup", JSON.stringify(replyMarkup)));
     }
     parts.push(this.formFile(boundary, "document", filename, fileData));
     parts.push(Buffer.from(`--${boundary}--\r\n`, "utf8"));
