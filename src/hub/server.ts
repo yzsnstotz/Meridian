@@ -22,7 +22,9 @@ import {
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
 import { PaneBroadcaster } from "./pane-broadcaster";
-import { ResultSender, TelegramChannelAdapterBridge, shouldPushTelegramProactive } from "./result-sender";
+import { ResultSender, shouldPushTelegramProactive } from "./result-sender";
+import { TelegramChannelAdapter } from "../interface/adapters/telegram-adapter";
+import { WebChannelAdapter } from "../interface/adapters/web-adapter";
 import { SocketChannelAdapter } from "./socket-adapter";
 import { InstanceRegistry } from "./registry";
 import { classifyAgentOutput } from "../shared/agent-output";
@@ -129,7 +131,8 @@ export class HubServer {
     this.router = options.router ?? new HubRouter(new InstanceRegistry());
     this.resultSender = options.resultSender ?? new ResultSender([
       new SocketChannelAdapter(),
-      new TelegramChannelAdapterBridge()
+      new TelegramChannelAdapter(),
+      new WebChannelAdapter()
     ]);
     this.paneBroadcaster = options.paneBroadcaster ?? new PaneBroadcaster();
     this.staticServiceEndpoints = options.staticServiceEndpoints ?? resolveStaticServiceEndpoints();
