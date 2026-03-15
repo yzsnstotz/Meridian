@@ -17,7 +17,8 @@ export function buildCodexSpawnArgs(
   mode: BridgeMode,
   tmuxSession: string | null,
   endpointFlag: string,
-  modelId?: string
+  modelId?: string,
+  autoApprove?: boolean
 ): string[] {
   void mode;
   void tmuxSession;
@@ -25,6 +26,9 @@ export function buildCodexSpawnArgs(
   args.push("--", codexAgentConfig.command);
   if (modelId) {
     args.push("--model", modelId);
+  }
+  if (autoApprove === true) {
+    args.push("--approval-policy=auto-approve");
   }
   return args;
 }

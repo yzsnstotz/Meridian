@@ -18,11 +18,15 @@ export const claudeAgentConfig: ClaudeAgentConfig = {
 
 export function buildClaudeCliArgs(
   allowedTools: readonly string[] = claudeAgentConfig.allowedTools,
-  modelId?: string
+  modelId?: string,
+  autoApprove?: boolean
 ): string[] {
   const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
   if (modelId) {
     args.push("--model", modelId);
+  }
+  if (autoApprove === true) {
+    args.push("--dangerously-skip-permissions");
   }
   return args;
 }
@@ -31,11 +35,12 @@ export function buildClaudeSpawnArgs(
   mode: BridgeMode,
   tmuxSession: string | null,
   endpointFlag: string,
-  modelId?: string
+  modelId?: string,
+  autoApprove?: boolean
 ): string[] {
   void mode;
   void tmuxSession;
   const args = ["server", `--type=${claudeAgentConfig.type}`, endpointFlag];
-  args.push("--", ...buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId));
+  args.push("--", ...buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId, autoApprove));
   return args;
 }

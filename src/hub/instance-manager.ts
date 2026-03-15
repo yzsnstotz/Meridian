@@ -562,7 +562,7 @@ export class InstanceManager {
       await this.removeSocketPath(socketPath);
     }
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
-    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId);
+    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId, autoApprove);
     const childEnv = this.buildChildEnv();
 
     if (tmuxSession) {
@@ -952,12 +952,12 @@ export class InstanceManager {
     return `${type}_${String(maxIndex + 1).padStart(2, "0")}`;
   }
 
-  private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string): string[] {
+  private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string, autoApprove?: boolean): string[] {
     if (type === "codex") {
-      return buildCodexSpawnArgs("bridge", null, listenArg, modelId);
+      return buildCodexSpawnArgs("bridge", null, listenArg, modelId, autoApprove);
     }
     if (type === "claude") {
-      return buildClaudeSpawnArgs("bridge", null, listenArg, modelId);
+      return buildClaudeSpawnArgs("bridge", null, listenArg, modelId, autoApprove);
     }
     if (type === "gemini") {
       return buildGeminiSpawnArgs("bridge", null, listenArg, modelId);
