@@ -13,6 +13,7 @@ import {
   type ReplyChannel,
   type TelegramInlineKeyboard
 } from "../types";
+import type { ChannelAdapter } from "./channel-adapter";
 
 const TELEGRAM_TEXT_LIMIT = 4096;
 const TELEGRAM_SAFE_TEXT_LIMIT = 3500;
@@ -361,7 +362,8 @@ function resolveTelegramTargetChatId(chatId: string): string {
   return chatId.startsWith("telegram:") ? chatId.slice("telegram:".length) : chatId;
 }
 
-export class ResultSender {
+export class TelegramChannelAdapterBridge implements ChannelAdapter {
+  readonly channel = "telegram" as const;
   private readonly log = createLogger("hub");
   private readonly defaultBotToken: string;
   private readonly botTokenById: Map<string, string>;
@@ -386,14 +388,11 @@ export class ResultSender {
     }
   }
 
-  async sendResult(rawResult: HubResult, rawReplyChannel: ReplyChannel): Promise<void> {
-    const result = HubResultSchema.parse(rawResult);
-    const replyChannel = ReplyChannelSchema.parse(rawReplyChannel);
+  canHandle(replyChannel: ReplyChannel): boolean {
+    return replyChannel.channel === "telegram";
+  }
 
-    if (replyChannel.channel !== "telegram") {
-      throw new Error(`Unsupported reply channel: ${replyChannel.channel}`);
-    }
-
+  async send(result: HubResult, replyChannel: ReplyChannel): Promise<void> {
     const botToken = this.resolveBotToken(replyChannel.bot_id);
     const replyToMessageId = this.toMessageId(replyChannel.message_id);
     const targetChatId = resolveTelegramTargetChatId(replyChannel.chat_id);
@@ -801,5 +800,25 @@ export class ResultSender {
       return undefined;
     }
     return number;
+  }
+}
+
+export class ResultSender {
+  private readonly adapters: ChannelAdapter[];
+
+  constructor(adapters: ChannelAdapter[]) {
+    this.adapters = adapters;
+  }
+
+  async sendResult(rawResult: HubResult, rawReplyChannel: ReplyChannel): Promise<void> {
+    const result = HubResultSchema.parse(rawResult);
+    const replyChannel = ReplyChannelSchema.parse(rawReplyChannel);
+
+    const adapter = this.adapters.find((a) => a.canHandle(replyChannel));
+    if (!adapter) {
+      throw new Error(`No adapter registered for channel: ${replyChannel.channel}`);
+    }
+
+    await adapter.send(result, replyChannel);
   }
 }
