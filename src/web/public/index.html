@@ -66,6 +66,38 @@
       align-items: center;
       justify-content: space-between;
       margin-bottom: 2rem;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .spawn-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.875rem;
+      flex-wrap: wrap;
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.625rem;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--border-color);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-dim);
+      font-size: 0.8125rem;
+      line-height: 1.2;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .toggle input {
+      width: 1rem;
+      height: 1rem;
+      margin: 0;
+      accent-color: var(--accent-color);
+      cursor: pointer;
     }
 
     .btn {
@@ -322,16 +354,22 @@
 
     <div id="content" class="hidden">
       <div class="toolbar">
-        <button id="btn-spawn" class="btn btn-primary">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          New Session
-        </button>
+        <div class="spawn-controls">
+          <button id="btn-spawn" class="btn btn-primary">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            New Session
+          </button>
+          <label class="toggle" for="spawn-auto-approve">
+            <input id="spawn-auto-approve" type="checkbox" />
+            <span>Auto-approve agent prompts</span>
+          </label>
+        </div>
         <div id="refresh-indicator" style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.5rem;">
           <div class="status-dot active"></div>
           Live
         </div>
       </div>
-      
+
       <div id="grid" class="card-grid">
         <!-- Cards injected here -->
       </div>
@@ -369,6 +407,7 @@
       var loadingEl = document.getElementById("loading");
       var emptyStateEl = document.getElementById("empty-state");
       var btnSpawn = document.getElementById("btn-spawn");
+      var autoApproveEl = document.getElementById("spawn-auto-approve");
 
       function showState(state) {
         loadingEl.classList.toggle("hidden", state !== "loading");
@@ -479,7 +518,11 @@
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "codex", mode: "pane_bridge" })
+          body: JSON.stringify({
+            type: "codex",
+            mode: "pane_bridge",
+            auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
+          })
         })
           .then(function (res) {
             return res.json().then(function (body) {

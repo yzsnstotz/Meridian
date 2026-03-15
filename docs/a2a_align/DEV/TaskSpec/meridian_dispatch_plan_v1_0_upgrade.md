@@ -33,7 +33,7 @@
 | ✅ | 4 | N-02 | interface/adapters/ TelegramAdapter + WebAdapter | OPUS | R-02, R-04, R-05 | PRD §2.2, §3.2 | Code MOVE not rewrite. Create adapters/ dir. |
 | ✅ | 4 | R-08 | interface/index.ts decouple send logic | OPUS | N-02 | PRD §3.1 interface rows | Extract buildTelegramReplyChannel helper; remove ResultSender import |
 | ✅ | 4 | R-09 | interface/slash-handler.ts /autoapprove | CODEX | R-03 | PRD §4.4 | New slash command; update HELP_MESSAGE |
-| ⬜ | 4 | R-10 | web/server.ts spawn API + index.html | CODEX | R-06 | PRD §4.5, §5 web rows | Schema extension + UI toggle |
+| ✅ | 4 | R-10 | web/server.ts spawn API + index.html | CODEX | R-06 | PRD §4.5, §5 web rows | Schema extension + UI toggle |
 | ⬜ | 5 | R-11 | agents/claude.ts + agents/codex.ts CLI flags | CODEX | R-06 | PRD §4.2 Method A | Add autoApprove param to both builders |
 | ⬜ | 6 | D-01 | Dead code sweep + test updates | OPUS | ALL | Full PRD | Final sweep; all tests must pass |
 
