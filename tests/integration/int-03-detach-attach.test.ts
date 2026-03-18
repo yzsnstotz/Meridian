@@ -3,7 +3,6 @@
  * Assert: attach → detach → run returns error → re-attach → run succeeds.
  */
 import assert from "node:assert/strict";
-import path from "node:path";
 import { test } from "node:test";
 
 import { setIntegrationTestEnv } from "./helpers/env";

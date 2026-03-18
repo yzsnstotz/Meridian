@@ -26,3 +26,33 @@ test("InstanceRegistry tracks register, status updates, and removal", () => {
   assert.equal(removed?.thread_id, "codex_01");
   assert.equal(registry.has("codex_01"), false);
 });
+
+test("setAutoApprove updates and returns immutable copy", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "claude_01",
+    agent_type: "claude",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-claude_01.sock",
+    pid: 5678,
+    tmux_pane: null,
+    status: "idle",
+    auto_approve: false,
+    created_at: new Date().toISOString()
+  });
+
+  assert.equal(registry.get("claude_01")?.auto_approve, false);
+
+  const updated = registry.setAutoApprove("claude_01", true);
+  assert.equal(updated?.auto_approve, true);
+  assert.equal(registry.get("claude_01")?.auto_approve, true);
+
+  const reverted = registry.setAutoApprove("claude_01", false);
+  assert.equal(reverted?.auto_approve, false);
+  assert.equal(registry.get("claude_01")?.auto_approve, false);
+});
+
+test("setAutoApprove returns undefined for unknown thread", () => {
+  const registry = new InstanceRegistry();
+  assert.equal(registry.setAutoApprove("nonexistent", true), undefined);
+});

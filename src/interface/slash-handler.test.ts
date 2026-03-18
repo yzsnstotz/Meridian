@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { parseSlashCommand } from "./slash-handler";
+import { getHelpMessage, parseSlashCommand } from "./slash-handler";
 
 test("parseSlashCommand parses /spawn normally", () => {
   const parsed = parseSlashCommand("/spawn type=gemini mode=pane_bridge");
@@ -223,4 +223,38 @@ test("parseSlashCommand parses bare /push as query", () => {
   assert.equal(parsed.shouldForward, true);
   assert.equal(parsed.pushEnabled, null);
   assert.equal(parsed.threadId, null);
+});
+
+test("parseSlashCommand parses /autoapprove on", () => {
+  const parsed = parseSlashCommand("/autoapprove on");
+  assert.equal(parsed.intent, "set_auto_approve");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.autoApproveValue, true);
+  assert.equal(parsed.autoApproveQuery, false);
+});
+
+test("parseSlashCommand parses /autoapprove off with explicit thread", () => {
+  const parsed = parseSlashCommand("/autoapprove off thread=codex_01");
+  assert.equal(parsed.intent, "set_auto_approve");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.target, "codex_01");
+  assert.equal(parsed.threadId, "codex_01");
+  assert.equal(parsed.autoApproveValue, false);
+  assert.equal(parsed.autoApproveQuery, false);
+});
+
+test("parseSlashCommand parses /autoapprove status as a status query", () => {
+  const parsed = parseSlashCommand("/autoapprove status");
+  assert.equal(parsed.intent, "status");
+  assert.equal(parsed.shouldForward, true);
+  assert.equal(parsed.target, "active");
+  assert.equal(parsed.threadId, null);
+  assert.equal(parsed.autoApproveValue, null);
+  assert.equal(parsed.autoApproveQuery, true);
+});
+
+test("getHelpMessage documents /autoapprove", () => {
+  assert.match(getHelpMessage(), /\/autoapprove on\|off\|status \[thread=<thread_id>\]/);
 });

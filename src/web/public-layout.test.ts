@@ -63,7 +63,7 @@ test("terminal approval actions use dedicated terminal_input API", async () => {
   const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
 
   assert.match(terminalHtml, /\/api\/terminal_input/);
-  assert.match(terminalHtml, /Allow for all commands/);
+  assert.match(terminalHtml, /Allow for this session/);
   assert.match(terminalHtml, /sendTerminalText\(opt\.key\)/);
 });
 

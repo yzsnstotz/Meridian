@@ -15,7 +15,7 @@ function createLogger() {
       const [payload, message] = args;
       this.infoCalls.push({ payload, message: typeof message === "string" ? message : String(message) });
     },
-    warn(..._args: unknown[]) {
+    warn() {
       // Not needed in these tests.
     },
     error(...args: unknown[]) {
@@ -165,4 +165,31 @@ test("handleHubActionCallbackData dispatches reboot requests through Hub IPC", a
   assert.equal(dispatched[0]?.thread_id, "codex_01");
   assert.equal(dispatched[0]?.target, "codex_01");
   assert.deepEqual(answerCalls, [{ text: "Rebooting codex_01..." }]);
+});
+
+test("toHubMessage encodes /autoapprove as set_auto_approve with boolean content", async () => {
+  const { toHubMessage } = await interfaceModulePromise;
+  const { parseSlashCommand } = await import("./slash-handler");
+
+  const parsedCommand = parseSlashCommand("/autoapprove on");
+  const hubMessage = toHubMessage(
+    parsedCommand,
+    {
+      actorId: "telegram:99",
+      botId: "777",
+      botName: "bot_777",
+      chatId: "12345",
+      chatName: "test-chat",
+      event: {
+        content: "/autoapprove on",
+        attachments: [],
+        raw_message_id: "42",
+        reply_to: null
+      }
+    } as never
+  );
+
+  assert.equal(hubMessage.intent, "set_auto_approve");
+  assert.equal(hubMessage.target, "active");
+  assert.equal(hubMessage.payload.content, "true");
 });

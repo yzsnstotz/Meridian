@@ -40,7 +40,8 @@ const threadActionBodySchema = z.object({
 
 const spawnRequestBodySchema = z.object({
   type: z.enum(["claude", "codex", "gemini", "cursor"]).default("codex"),
-  mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge")
+  mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge"),
+  auto_approve: z.boolean().default(false)
 });
 
 const filesQuerySchema = z.object({
@@ -590,6 +591,7 @@ export class WebInterfaceServer {
           target: body.type,
           content: "",
           mode: body.mode,
+          autoApprove: body.auto_approve,
           guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined
         })
       )
@@ -1076,6 +1078,7 @@ export class WebInterfaceServer {
     content: string;
     attachments?: FileAttachment[];
     mode?: "bridge" | "pane_bridge";
+    autoApprove?: boolean;
     guiHostPortOverride?: string;
   }): HubMessage {
     return HubMessageSchema.parse({
@@ -1088,6 +1091,7 @@ export class WebInterfaceServer {
         content: params.content,
         attachments: params.attachments ?? [],
         reply_to: null,
+        ...(params.autoApprove !== undefined && { auto_approve: params.autoApprove }),
         ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride })
       },
       mode: params.mode ?? "bridge",

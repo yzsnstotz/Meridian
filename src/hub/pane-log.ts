@@ -77,7 +77,7 @@ function appendContentToPaneLog(
 
     fs.appendFileSync(logPath, block, "utf8");
     return Promise.resolve(true);
-  } catch (err) {
+  } catch {
     return Promise.resolve(false);
   }
 }

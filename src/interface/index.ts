@@ -36,6 +36,23 @@ const SPAWN_DIR_SESSION_TTL_MS = 15 * 60 * 1000;
 const MODEL_PICKER_MAX_BUTTONS = 20;
 const MODEL_PICKER_TTL_MS = 5 * 60 * 1000;
 
+function buildTelegramReplyChannel(params: {
+  chatId: string;
+  botId: string;
+  messageId?: string;
+  chatName?: string | null;
+  botName?: string | null;
+}): { channel: "telegram"; chat_id: string; bot_id: string; message_id?: string; chat_name?: string; bot_name?: string } {
+  return {
+    channel: "telegram",
+    chat_id: params.chatId,
+    bot_id: params.botId,
+    message_id: params.messageId,
+    chat_name: params.chatName ?? undefined,
+    bot_name: params.botName ?? undefined
+  };
+}
+
 type TelegramBotInfoLike = {
   id: number;
   username?: string;
@@ -181,7 +198,7 @@ function resolveThreadId(parsedCommand: ParsedSlashCommand, fallbackReplyTo: str
   return "unbound";
 }
 
-function toHubMessage(
+export function toHubMessage(
   parsedCommand: ParsedSlashCommand,
   payload: Awaited<ReturnType<typeof parseTelegramMessage>>
 ): HubMessage {
@@ -196,6 +213,14 @@ function toHubMessage(
   const threadId = resolveThreadId(parsedCommand, payload.event.reply_to);
   const target =
     parsedCommand.target === "active" ? (payload.event.reply_to ?? "active") : parsedCommand.target;
+  const content =
+    parsedCommand.intent === "set_auto_approve"
+      ? parsedCommand.autoApproveValue === null
+        ? (() => {
+            throw new Error("set_auto_approve command requires autoApproveValue");
+          })()
+        : String(parsedCommand.autoApproveValue)
+      : parsedCommand.payloadContent || payload.event.content;
 
   return {
     trace_id: randomUUID(),
@@ -206,7 +231,7 @@ function toHubMessage(
     intent: parsedCommand.intent,
     target,
     payload: {
-      content: parsedCommand.payloadContent || payload.event.content,
+      content,
       attachments: payload.event.attachments,
       raw_message_id: payload.event.raw_message_id,
       reply_to: payload.event.reply_to,
@@ -217,14 +242,13 @@ function toHubMessage(
     },
     mode: parsedCommand.mode,
     suppress_reply: false,
-    reply_channel: {
-      channel: "telegram",
-      chat_id: payload.chatId,
-      message_id: payload.event.raw_message_id,
-      bot_id: payload.botId,
-      chat_name: payload.chatName ?? undefined,
-      bot_name: payload.botName ?? undefined
-    }
+    reply_channel: buildTelegramReplyChannel({
+      chatId: payload.chatId,
+      botId: payload.botId,
+      messageId: payload.event.raw_message_id,
+      chatName: payload.chatName,
+      botName: payload.botName
+    })
   };
 }
 
@@ -258,14 +282,13 @@ function buildActionHubMessage(params: {
     },
     mode: params.mode ?? "bridge",
     suppress_reply: params.suppressReply ?? false,
-    reply_channel: {
-      channel: "telegram",
-      chat_id: params.chatId,
-      message_id: params.messageId,
-      bot_id: params.botId,
-      chat_name: params.chatName ?? undefined,
-      bot_name: params.botName ?? undefined
-    }
+    reply_channel: buildTelegramReplyChannel({
+      chatId: params.chatId,
+      botId: params.botId,
+      messageId: params.messageId,
+      chatName: params.chatName,
+      botName: params.botName
+    })
   };
 }
 
@@ -1382,7 +1405,9 @@ for (const { bot } of botRuntimes) {
             mode: "bridge" as const,
             payloadContent: terminalReplyInput,
             picker: null,
-            priority: null
+            priority: null,
+            autoApproveValue: null,
+            autoApproveQuery: false
           }
         : parseSlashCommand(parsedPayload.event.content);
       interfaceLog.info(

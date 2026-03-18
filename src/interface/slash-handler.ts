@@ -17,6 +17,8 @@ export interface ParsedSlashCommand {
   payloadContent: string;
   picker: PickerIntent | null;
   priority: number | null;
+  autoApproveValue: boolean | null;
+  autoApproveQuery: boolean;
 }
 
 const HELP_MESSAGE = [
@@ -32,6 +34,7 @@ const HELP_MESSAGE = [
   "/reboot thread=<thread_id>",
   "/gui [thread=<thread_id>]",
   "/approve <run|allow|all|skip> [thread=<thread_id>]",
+  "/autoapprove on|off|status [thread=<thread_id>]",
   "/model",
   "/model [thread=<thread_id>]",
   "/detail [trace=<trace_id>] [thread=<thread_id>]",
@@ -144,6 +147,50 @@ function parseApprovalCommand(rawArgs: string, args: Record<string, string>, res
   return action;
 }
 
+function createParsedSlashCommand(
+  command: Omit<ParsedSlashCommand, "autoApproveValue" | "autoApproveQuery"> &
+    Partial<Pick<ParsedSlashCommand, "autoApproveValue" | "autoApproveQuery">>
+): ParsedSlashCommand {
+  return {
+    autoApproveValue: null,
+    autoApproveQuery: false,
+    ...command
+  };
+}
+
+function parseAutoApproveCommand(
+  args: Record<string, string>,
+  restTokens: string[]
+): Pick<ParsedSlashCommand, "intent" | "payloadContent" | "autoApproveValue" | "autoApproveQuery"> {
+  const bareAction = restTokens.find((token) => !token.includes("="))?.trim().toLowerCase() ?? "";
+  const action = (args.action ?? bareAction).trim().toLowerCase();
+  if (action === "on") {
+    return {
+      intent: "set_auto_approve",
+      payloadContent: "on",
+      autoApproveValue: true,
+      autoApproveQuery: false
+    };
+  }
+  if (action === "off") {
+    return {
+      intent: "set_auto_approve",
+      payloadContent: "off",
+      autoApproveValue: false,
+      autoApproveQuery: false
+    };
+  }
+  if (action === "status") {
+    return {
+      intent: "status",
+      payloadContent: "status",
+      autoApproveValue: null,
+      autoApproveQuery: true
+    };
+  }
+  throw new Error("/autoapprove action must be on, off, or status");
+}
+
 export function getHelpMessage(): string {
   return HELP_MESSAGE;
 }
@@ -152,7 +199,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
   const content = normalizeCommandPrefix(rawContent.trim());
 
   if (!content.startsWith("/")) {
-    return {
+    return createParsedSlashCommand({
       intent: "run",
       shouldForward: true,
       target: "active",
@@ -165,7 +212,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       payloadContent: content,
       picker: null,
       priority: null
-    };
+    });
   }
 
   const [rawCommand, ...restTokens] = content.split(/\s+/);
@@ -180,7 +227,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         throw new Error("spawn type must be one of claude|codex|gemini|cursor");
       }
 
-      return {
+      return createParsedSlashCommand({
         intent: "spawn",
         shouldForward: true,
         target: rawType,
@@ -193,12 +240,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: rawArgs.trim().length === 0 ? "spawn" : null,
         priority: null
-      };
+      });
     }
 
     case "/kill": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "kill",
         shouldForward: true,
         target: threadId ?? "active",
@@ -211,12 +258,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: threadId ? null : "kill",
         priority: 0
-      };
+      });
     }
 
     case "/status": {
       const threadId = requireThreadId(args, "/status");
-      return {
+      return createParsedSlashCommand({
         intent: "status",
         shouldForward: true,
         target: threadId,
@@ -229,11 +276,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/info":
-      return {
+      return createParsedSlashCommand({
         intent: "status",
         shouldForward: true,
         target: "active",
@@ -246,11 +293,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
 
     case "/attach": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "attach",
         shouldForward: true,
         target: threadId ?? "active",
@@ -263,12 +310,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: threadId ? null : "attach",
         priority: null
-      };
+      });
     }
 
     case "/detach": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "detach",
         shouldForward: true,
         target: threadId ?? "active",
@@ -281,12 +328,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/reboot": {
       const threadId = requireThreadId(args, "/reboot");
-      return {
+      return createParsedSlashCommand({
         intent: "reboot",
         shouldForward: true,
         target: threadId,
@@ -299,12 +346,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: 0
-      };
+      });
     }
 
     case "/gui": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "gui",
         shouldForward: true,
         target: threadId ?? "active",
@@ -317,12 +364,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/approve": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "terminal_input",
         shouldForward: true,
         target: threadId ?? "active",
@@ -335,12 +382,33 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: parseApprovalCommand(rawArgs, args, restTokens),
         picker: null,
         priority: null
-      };
+      });
+    }
+
+    case "/autoapprove": {
+      const threadId = args.thread?.trim() || null;
+      const parsed = parseAutoApproveCommand(args, restTokens);
+      return createParsedSlashCommand({
+        intent: parsed.intent,
+        shouldForward: true,
+        target: threadId ?? "active",
+        threadId,
+        spawnDir: null,
+        monitorUpdatesEnabled: null,
+        monitorUpdateIntervalSec: null,
+        pushEnabled: null,
+        mode: "bridge",
+        payloadContent: parsed.payloadContent,
+        picker: null,
+        priority: null,
+        autoApproveValue: parsed.autoApproveValue,
+        autoApproveQuery: parsed.autoApproveQuery
+      });
     }
 
     case "/model": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "switch_model",
         shouldForward: false,
         target: threadId ?? "active",
@@ -353,13 +421,13 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: "",
         picker: "switch_model",
         priority: null
-      };
+      });
     }
 
     case "/detail": {
       const threadId = args.thread?.trim() || null;
       const traceId = args.trace?.trim() || "";
-      return {
+      return createParsedSlashCommand({
         intent: "detail",
         shouldForward: true,
         target: threadId ?? "active",
@@ -372,7 +440,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: traceId,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/update": {
@@ -392,7 +460,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         : null;
       const threadId = args.thread?.trim() || null;
 
-      return {
+      return createParsedSlashCommand({
         intent: "monitor_update",
         shouldForward: true,
         target: threadId ?? "active",
@@ -405,12 +473,12 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/mupdate": {
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "monitor_manual_update",
         shouldForward: true,
         target: threadId ?? "active",
@@ -423,7 +491,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/push": {
@@ -433,7 +501,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
       });
       const parsedState = parseMonitorUpdateSwitch(args.state ?? bareStateToken);
       const threadId = args.thread?.trim() || null;
-      return {
+      return createParsedSlashCommand({
         intent: "push",
         shouldForward: true,
         target: threadId ?? "active",
@@ -446,11 +514,11 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: rawArgs,
         picker: null,
         priority: null
-      };
+      });
     }
 
     case "/list":
-      return {
+      return createParsedSlashCommand({
         intent: "list",
         shouldForward: true,
         target: "all",
@@ -463,10 +531,10 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: "",
         picker: null,
         priority: null
-      };
+      });
 
     case "/help":
-      return {
+      return createParsedSlashCommand({
         intent: "help",
         shouldForward: false,
         target: "none",
@@ -479,10 +547,10 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: "",
         picker: null,
         priority: null
-      };
+      });
 
     case "/restart":
-      return {
+      return createParsedSlashCommand({
         intent: "service_restart",
         shouldForward: false,
         target: "none",
@@ -495,10 +563,10 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: "",
         picker: null,
         priority: null
-      };
+      });
 
     case "/browse":
-      return {
+      return createParsedSlashCommand({
         intent: "browse",
         shouldForward: false,
         target: "none",
@@ -511,7 +579,7 @@ export function parseSlashCommand(rawContent: string): ParsedSlashCommand {
         payloadContent: "",
         picker: null,
         priority: null
-      };
+      });
 
     default:
       throw new Error(`Unsupported command: ${command}. Use /help for usage.`);

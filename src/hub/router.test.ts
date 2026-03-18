@@ -803,7 +803,6 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
     created_at: new Date().toISOString()
   });
 
-  let callCount = 0;
   const router = new HubRouter(registry, {
     clientFactory: () => ({
       connect: async () => undefined,
@@ -811,7 +810,6 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
       sendMessage: async () => ({ ok: true }),
       getStatus: async () => ({ status: "idle" }),
       getMessages: async () => {
-        callCount += 1;
         // Never produce a new agent reply for this run.
         return [{ id: 5, role: "agent", content: "stale old snapshot before run" }];
       }
@@ -1367,6 +1365,88 @@ test("HubRouter spawn result includes a Web GUI button when available", async ()
     config.WEB_GUI_TOKEN = previousToken;
     config.WEB_GUI_HTTPS = previousHttps;
   }
+});
+
+test("HubRouter forwards auto_approve on spawn", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: Array<{
+    type: string;
+    mode: string;
+    workingDirectory: string | undefined;
+    modelId: string | undefined;
+    autoApprove: boolean | undefined;
+  }> = [];
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    spawn: async (
+      type: string,
+      mode: string,
+      workingDirectory?: string,
+      modelId?: string,
+      autoApprove?: boolean
+    ) => {
+      spawnCalls.push({ type, mode, workingDirectory, modelId, autoApprove });
+      registry.register({
+        thread_id: "codex_01",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: "/tmp/agentapi-codex_01.sock",
+        pid: 101,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString(),
+        auto_approve: autoApprove ?? false
+      });
+      return "codex_01";
+    },
+    attach: () => ({ thread_id: "codex_01", session_id: "777:100" }),
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: ["777:100"], interface_id: "777" }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "spawn",
+      thread_id: "pending",
+      target: "codex",
+      payload: {
+        content: "spawn",
+        attachments: [],
+        auto_approve: true
+      },
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100",
+        bot_id: "777"
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.deepEqual(spawnCalls, [
+    {
+      type: "codex",
+      mode: "bridge",
+      workingDirectory: undefined,
+      modelId: undefined,
+      autoApprove: true
+    }
+  ]);
+  assert.equal(registry.get("codex_01")?.auto_approve, true);
 });
 
 test("HubRouter list includes attachment owner and attachability by bot interface", async () => {

@@ -83,8 +83,6 @@ const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
 const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
 /** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
 const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
-/** Bytes of pane log tail to read when deduping capture vs run-injected content. */
-const CAPTURE_DEDUP_TAIL_SIZE = 65536;
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
 type AgentEndpointBinding = {
   endpoint: string;
@@ -150,8 +148,14 @@ export class InstanceManager {
       options.paneDeltaTailLinesWhenNoOverlap ?? PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP;
   }
 
-  async spawn(type: AgentType, mode: BridgeMode, workingDirectory?: string, modelId?: string): Promise<string> {
-    return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId);
+  async spawn(
+    type: AgentType,
+    mode: BridgeMode,
+    workingDirectory?: string,
+    modelId?: string,
+    autoApprove?: boolean
+  ): Promise<string> {
+    return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId, autoApprove);
   }
 
   async kill(threadId: string): Promise<void> {
@@ -269,7 +273,8 @@ export class InstanceManager {
       existing.mode,
       threadId,
       existing.working_dir,
-      existing.model_id
+      existing.model_id,
+      existing.auto_approve
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -423,7 +428,8 @@ export class InstanceManager {
       existing.mode,
       threadId,
       existing.working_dir,
-      nextModelId
+      nextModelId,
+      existing.auto_approve
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -489,13 +495,14 @@ export class InstanceManager {
     mode: BridgeMode,
     threadIdOverride?: string,
     workingDirectory?: string,
-    modelId?: string
+    modelId?: string,
+    autoApprove?: boolean
   ): Promise<string> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
       try {
-        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory, modelId);
+        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory, modelId, autoApprove);
       } catch (error) {
         lastError = error;
         if (!this.shouldRetrySpawn(error) || attempt >= this.spawnAttempts) {
@@ -542,7 +549,8 @@ export class InstanceManager {
     mode: BridgeMode,
     threadIdOverride?: string,
     workingDirectory?: string,
-    modelId?: string
+    modelId?: string,
+    autoApprove?: boolean
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
@@ -552,7 +560,7 @@ export class InstanceManager {
       await this.removeSocketPath(socketPath);
     }
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
-    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId);
+    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId, autoApprove);
     const childEnv = this.buildChildEnv();
 
     if (tmuxSession) {
@@ -611,6 +619,9 @@ export class InstanceManager {
       };
 
       this.registry.register(instance);
+      if (autoApprove === true) {
+        this.registry.setAutoApprove(threadId, true);
+      }
       this.children.set(threadId, child);
       this.maybeUnrefChild(child, stdio);
       this.watchChildProcess(threadId, child);
@@ -694,6 +705,9 @@ export class InstanceManager {
     };
 
     this.registry.register(instance);
+    if (autoApprove === true) {
+      this.registry.setAutoApprove(threadId, true);
+    }
     this.children.set(threadId, child);
     this.maybeUnrefChild(child, stdio);
     this.watchChildProcess(threadId, child);
@@ -936,12 +950,12 @@ export class InstanceManager {
     return `${type}_${String(maxIndex + 1).padStart(2, "0")}`;
   }
 
-  private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string): string[] {
+  private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string, autoApprove?: boolean): string[] {
     if (type === "codex") {
-      return buildCodexSpawnArgs("bridge", null, listenArg, modelId);
+      return buildCodexSpawnArgs("bridge", null, listenArg, modelId, autoApprove);
     }
     if (type === "claude") {
-      return buildClaudeSpawnArgs("bridge", null, listenArg, modelId);
+      return buildClaudeSpawnArgs("bridge", null, listenArg, modelId, autoApprove);
     }
     if (type === "gemini") {
       return buildGeminiSpawnArgs("bridge", null, listenArg, modelId);

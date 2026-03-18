@@ -129,6 +129,40 @@ test("spawn forwards selected model to provider CLI", async () => {
   ]);
 });
 
+test("spawn stores auto_approve in the registry when requested", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1103) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("claude", "bridge", undefined, undefined, true);
+
+  assert.equal(threadId, "claude_01");
+  assert.equal(registry.get(threadId)?.auto_approve, true);
+  assert.deepEqual(spawnCalls[0], [
+    "server",
+    "--type=claude",
+    `--socket=${socketPathForThread(threadId)}`,
+    "--",
+    "claude",
+    "--allowedTools",
+    "Bash Edit Replace",
+    "--dangerously-skip-permissions"
+  ]);
+});
+
 test("spawn claude bridge includes --allowedTools args", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
@@ -158,6 +192,38 @@ test("spawn claude bridge includes --allowedTools args", async () => {
     "claude",
     "--allowedTools",
     "Bash Edit Replace"
+  ]);
+});
+
+test("spawn codex bridge includes auto-approve flag when requested", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1203) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge", undefined, undefined, true);
+  const socketPath = socketPathForThread(threadId);
+
+  assert.equal(threadId, "codex_01");
+  assert.deepEqual(spawnCalls[0], [
+    "server",
+    "--type=codex",
+    `--socket=${socketPath}`,
+    "--",
+    "codex",
+    "--approval-policy=auto-approve"
   ]);
 });
 
@@ -265,7 +331,7 @@ test("pane_bridge uses attach --url when running in port mode", async () => {
       execCalls.push(command);
       return Buffer.from("");
     }) as never,
-    spawnFn: ((_: string, _args: string[]) => {
+    spawnFn: (() => {
       return new FakeChildProcess(2212) as never;
     }) as never,
     clientFactory: () => ({

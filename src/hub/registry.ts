@@ -65,6 +65,20 @@ export class InstanceRegistry {
     return { ...updated };
   }
 
+  setAutoApprove(threadId: string, value: boolean): AgentInstance | undefined {
+    const existing = this.instances.get(threadId);
+    if (!existing) {
+      return undefined;
+    }
+
+    const updated: AgentInstance = {
+      ...existing,
+      auto_approve: value
+    };
+    this.instances.set(threadId, updated);
+    return { ...updated };
+  }
+
   clear(): void {
     this.instances.clear();
   }
