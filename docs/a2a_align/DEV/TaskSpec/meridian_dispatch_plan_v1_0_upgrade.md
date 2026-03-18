@@ -47,7 +47,7 @@
 | ✅ | 5 | R-11 | agents/claude.ts + agents/codex.ts CLI flags | CODEX | R-06 | Main PRD §4.2 Method A | Add autoApprove param to both builders |
 | ✅ | 6 | D-01 | Dead code sweep + test updates | OPUS | ALL | Main PRD | Final sweep; all tests must pass |
 | ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | OPUS | R-01, N-01, R-02, R-03, R-04, R-05, R-06, R-07, N-02, R-08, R-09, R-10, R-11, D-01 | TaskSpec, Main PRD | One pass only. If findings remain and scope is small, append corrective workers below this row. |
-| ⬜ | Ω | PR-REVIEW | PR Alignment Review | OPUS | DELTA-CHECK | TaskSpec, Main PRD | Terminal merge gate; human merges after verdict. |
+| ✅ | Ω | PR-REVIEW | PR Alignment Review | OPUS | DELTA-CHECK | TaskSpec, Main PRD | Terminal merge gate; human merges after verdict. |
 
 Status: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked
 
