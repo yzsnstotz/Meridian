@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manifest"
+  short_description: "Fork and adapt GitHub MCP repos into clawso-ready sources."
+  default_prompt: "Use this when you need to fork a GitHub repo with the clawso-manifest-gen account, adapt it to clawso's current MCP deploy contract, generate manifest.json, and return the exact URL and form values admin should submit."
