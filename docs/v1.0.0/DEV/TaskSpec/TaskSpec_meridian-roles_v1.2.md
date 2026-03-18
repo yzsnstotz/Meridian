@@ -85,14 +85,19 @@ N-08 (Web GUI)    N-09 (Meridian index.html link)
   |                    |
 [PHASE 5 — Serial]
 N-10 (E2E integration tests + docs)
+  |
+[PHASE Ω — Terminal Verification]
+DELTA-CHECK (spec alignment audit + corrective dispatch)
+  |
+PR-REVIEW (full diff review + merge recommendation)
 ```
 
 | Metric | Value |
 |--------|-------|
 | Max parallel workers | 3 |
-| Total tasks | 10 |
-| Critical path | N-01 → N-02 → N-05 → N-06 → N-08 → N-10 |
-| Phase count | 5 |
+| Total tasks | 12 |
+| Critical path | N-01 → N-02 → N-05 → N-06 → N-08 → N-10 → DELTA-CHECK → PR-REVIEW |
+| Phase count | 5 implementation phases + Ω terminal verification |
 
 ---
 
@@ -732,7 +737,101 @@ npm run test:e2e
 
 ---
 
-## V. Risks & PM Flags
+## V. DELTA-CHECK
+
+### DELTA-CHECK — Spec Alignment Audit + Corrective Dispatch
+
+- **Runtime**: Local (git diff + document review)
+- **Delta Type**: DRIFT / REWORK triage
+- **Phase**: Ω
+- **Priority**: P0
+- **Depends on**: N-01, N-02, N-03, N-04, N-05, N-06, N-07, N-08, N-09, N-10
+
+#### Sub-tasks
+
+**DELTA-CHECK.1 — Diff implemented output against Worker acceptance criteria**
+- Load the original TaskSpec, both PRDs, and all Worker completion reports before reviewing the branch diff
+- Compare actual deliverables against every Worker acceptance criterion using the full feature-branch diff against the approved base branch
+- Produce `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md`
+- Required table columns: `Worker | Status | Findings | Action Required`
+- Allowed status values: `✅ Aligned` / `⚠️ Drift` / `❌ Missing`
+- **Key constraint**: Every implementation Worker from N-01 through N-10 must appear exactly once in the report
+- **Acceptance**: Delta report exists and covers all implementation Workers with evidence-backed findings
+- **Ref**: Terminal lifecycle rule for this TaskSpec
+
+**DELTA-CHECK.2 — Append minimum-scope corrective workers if gaps are found**
+- If any `⚠️ Drift` or `❌ Missing` finding is present, evaluate the size of the correction before dispatching more work
+- If the fix scope is `<=5` corrective workers and requires no new PM decision, append new rows directly to the current dispatch plan with `Phase: Ω+1`, `Depends On: DELTA-CHECK`, and `Delta Type: DRIFT` or `REWORK`
+- Corrective worker completion reports must be written under `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`
+- If more than 5 corrective workers are needed, or if any new PRD-level decision is required, stop and generate a new delta TaskSpec artifact set for PM review instead of continuing inside this plan
+- **Key constraint**: This is one pass only. No second Delta Check runs after corrective workers finish; PR Review is the terminal safety net
+- **Acceptance**: Corrective workers are appended only when the minimum viable correction is clear; otherwise the task is escalated to a new delta TaskSpec round
+- **Ref**: Terminal lifecycle rule for this TaskSpec
+
+#### AI Auto-Tests
+```bash
+cd /Users/yzliu/work/Meridian/Meridian-roles
+git diff <base-branch>..HEAD --stat
+test -f /Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md
+rg -n "N-01|N-02|N-03|N-04|N-05|N-06|N-07|N-08|N-09|N-10" /Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md
+rg -n "✅ Aligned|⚠️ Drift|❌ Missing" /Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md
+```
+
+#### Human Acceptance Criteria
+- [ ] Every implementation Worker is represented in the Delta Check report with a concrete alignment verdict
+- [ ] Every `⚠️ Drift` or `❌ Missing` finding identifies the specific acceptance gap and the minimum corrective action required
+- [ ] Any corrective workers added to the dispatch plan are explicitly scoped to the drift they fix and point to `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`
+- [ ] No second Delta Check is scheduled after corrective workers complete
+
+---
+
+## VI. PR-REVIEW
+
+### PR-REVIEW — Full Diff Review + Merge Recommendation
+
+- **Runtime**: Local (git diff + PRD/TaskSpec review)
+- **Delta Type**: REVIEW
+- **Phase**: Ω
+- **Priority**: P0
+- **Depends on**: DELTA-CHECK
+
+#### Sub-tasks
+
+**PR-REVIEW.1 — Review the full PR diff against PRD + TaskSpec**
+- Open the full feature diff against the approved base branch after DELTA-CHECK is `✅`
+- Load: both PRDs, this TaskSpec, the Delta Check report, and any corrective worker reports under `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`
+- Verify that all TaskSpec acceptance criteria are implemented, no marked-complete Worker is absent from the diff, and no unplanned behavior or files were introduced
+- **Key constraint**: Review must cover both `meridian-roles` and the Meridian-side N-09 change so the terminal verdict reflects the real cross-repo surface area
+- **Acceptance**: Review notes map every changed file in scope to a Worker and a verdict
+- **Ref**: meridian-roles PRD v1.2; Meridian 平台升级 PRD v1.0
+
+**PR-REVIEW.2 — Produce merge/block recommendation**
+- Write `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md`
+- Required table columns: `File | Worker | Verdict | Notes`
+- Allowed verdict values: `✅ Aligned` / `⚠️ Scope Drift` / `❌ Missing` / `➕ Unplanned Addition`
+- Add a 1-3 sentence scope drift summary and end the report with exactly one final line: `MERGE APPROVED` or `MERGE BLOCKED — [reason]`
+- **Key constraint**: Agents never merge. If blocked, findings go back to PM; if approved, human performs the actual merge
+- **Acceptance**: PR review report exists, includes a per-file verdict table, and ends with an explicit merge recommendation
+- **Ref**: Terminal lifecycle rule for this TaskSpec
+
+#### AI Auto-Tests
+```bash
+cd /Users/yzliu/work/Meridian/Meridian-roles
+git diff <base-branch>..HEAD --name-only
+test -f /Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md
+rg -n "✅ Aligned|⚠️ Scope Drift|❌ Missing|➕ Unplanned Addition" /Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md
+rg -n "MERGE APPROVED|MERGE BLOCKED" /Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md
+```
+
+#### Human Acceptance Criteria
+- [ ] Every changed file in the final PR scope is assigned to a Worker and receives an explicit verdict
+- [ ] The report clearly identifies any remaining scope drift, missing implementation, or unplanned additions
+- [ ] The final line is either `MERGE APPROVED` or `MERGE BLOCKED — [reason]`
+- [ ] Merge remains a human-only action
+
+---
+
+## VII. Risks & PM Flags
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -740,6 +839,8 @@ npm run test:e2e
 | LLM inference output format unstable | Medium | Medium | JSON fence stripping + zod validation; prompt includes strict format examples |
 | E2E depends on real claude agent | Medium | Medium | `--mock` flag for Scenario A/C/D/E in CI; Scenario B always manual |
 | `[ASSUMPTION]` paths not confirmed before dispatch | Medium | Medium | All `[ASSUMPTION]` entries in File Directory Index must be confirmed by PM before agent sessions start |
+| Delta Check finds broad drift late in the round | High | Low | Allow in-plan corrective workers only for minimum-scope fixes; escalate to a new delta TaskSpec if >5 workers or new PM decisions are required |
+| PR review misses cross-repo scope because N-09 lives in Meridian | High | Low | PR-REVIEW must explicitly inspect both meridian-roles diff and the Meridian-side N-09 change before issuing merge guidance |
 
 **PM Flags for Dispatch Plan**:
 

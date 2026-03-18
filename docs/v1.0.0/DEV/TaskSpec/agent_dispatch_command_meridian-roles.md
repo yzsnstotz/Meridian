@@ -255,6 +255,140 @@ Check: are all other Workers in the same Phase also `✅` in the Dispatch Plan?
 
 ---
 
+## Step 6 — Delta Check (mandatory, one pass only)
+
+Start this step only after N-01 through N-10 are `✅`, the latest implementation state is pushed, and all worker completion reports exist.
+
+### 6a. Load review inputs
+Before evaluating anything, load all of the following:
+- `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/TaskSpec/TaskSpec_meridian-roles_v1.2.md`
+- `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/PRD/PRD_meridian-roles_v1.2.docx`
+- `/Users/yzliu/work/Meridian/docs/a2a_align/PRD/PRD_Meridian_Upgrade_v1.0.docx`
+- Every Worker completion report in `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/`
+- The full feature diff against the approved base branch:
+
+```bash
+cd /Users/yzliu/work/Meridian/Meridian-roles
+git diff <base-branch>..HEAD
+```
+
+### 6b. Review every implementation Worker against acceptance criteria
+For each Worker N-01 through N-10:
+- Compare actual deliverables and diff output against that Worker's acceptance criteria
+- Identify whether the result is aligned, drifted, or missing
+- Do not skip a Worker because its code "looks fine" — every Worker must be checked explicitly
+
+### 6c. Write the Delta Check report
+Save to:
+`/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md`
+
+Required format:
+```markdown
+# Delta Check Report: meridian-roles v1.2
+
+| Worker | Status | Findings | Action Required |
+|--------|--------|----------|-----------------|
+| N-01 | ✅ Aligned | ... | None |
+| N-02 | ⚠️ Drift | ... | Add corrective worker R-11 |
+```
+
+Allowed `Status` values:
+- `✅ Aligned`
+- `⚠️ Drift`
+- `❌ Missing`
+
+### 6d. Corrective dispatch protocol
+If the report contains any `⚠️ Drift` or `❌ Missing` entry:
+- Evaluate the scope first
+- If the correction is `<=5` Workers and requires no new PM decision:
+  - Append corrective rows directly to `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/TaskSpec/dispatch_plan_meridian-roles.md`
+  - Use the next available Worker IDs
+  - Set `Phase` to `Ω+1`
+  - Set `Depends On` to `DELTA-CHECK`
+  - Use `Delta Type` of `DRIFT` or `REWORK` as appropriate in the TaskSpec or corrective notes
+  - Write corrective completion reports to `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`
+- If more than 5 corrective Workers are needed, or any new PRD-level decision is required:
+  - Stop
+  - Output `⏸ PAUSE: Delta scope exceeds in-plan corrective dispatch. New delta TaskSpec required.`
+  - Notify PM
+
+### 6e. One-pass rule
+- This is the only Delta Check pass
+- After corrective Workers complete, do **not** run a second Delta Check
+- Proceed directly to Step 7
+
+### 6f. Mark completion
+When all findings are either `✅ Aligned` or covered by completed minimum-scope corrective Workers:
+- Update the `DELTA-CHECK` row in the Dispatch Plan from `🔄` or `⬜` to `✅`
+- Commit the updated dispatch artifacts and delta report
+
+---
+
+## Step 7 — PR Review (mandatory terminal gate)
+
+Start this step only after the `DELTA-CHECK` row is `✅`.
+
+### 7a. Open the full PR diff
+Review the full feature diff against the approved base branch:
+
+```bash
+cd /Users/yzliu/work/Meridian/Meridian-roles
+git diff <base-branch>..HEAD
+```
+
+### 7b. Load required review context
+You must review the diff against all of the following:
+- The two PRD documents
+- The TaskSpec acceptance criteria for all Workers
+- `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md`
+- Any corrective reports in `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`
+
+### 7c. Review checklist
+Confirm all of the following:
+- All TaskSpec acceptance criteria are implemented correctly
+- No Worker marked `✅` in the Dispatch Plan is absent or incomplete in the diff
+- No new fields, endpoints, behaviors, or files were introduced without plan coverage
+- API contract field names remain aligned with the PRD
+- State transitions, socket routing, and service contracts match the spec
+- The Meridian-side N-09 change is reviewed together with the meridian-roles diff so the final verdict covers both repos
+- Any corrective Worker stayed within its stated scope
+
+### 7d. Write the PR Review report
+Save to:
+`/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md`
+
+Required format:
+```markdown
+# PR Review Report: meridian-roles v1.2
+
+| File | Worker | Verdict | Notes |
+|------|--------|---------|-------|
+| src/a2a/client.ts | N-02 | ✅ Aligned | ... |
+| src/web/public/index.html | N-09 | ⚠️ Scope Drift | ... |
+
+Scope drift summary: [1-3 sentence assessment]
+
+MERGE APPROVED
+```
+
+Allowed `Verdict` values:
+- `✅ Aligned`
+- `⚠️ Scope Drift`
+- `❌ Missing`
+- `➕ Unplanned Addition`
+
+The final line must be exactly one of:
+- `MERGE APPROVED`
+- `MERGE BLOCKED — [reason]`
+
+### 7e. Final rule
+- If the report ends with `MERGE BLOCKED — [reason]`: do not merge; notify PM
+- If the report ends with `MERGE APPROVED`: human performs the actual merge
+- Agent never auto-merges
+- Update the `PR-REVIEW` row in the Dispatch Plan to `✅` after the report is complete
+
+---
+
 ## Status Legend
 
 | Symbol | Meaning |
@@ -281,3 +415,5 @@ Check: are all other Workers in the same Phase also `✅` in the Dispatch Plan?
 | N-08 | 4 | CODEX | trace_id display = first 8 chars only; dark theme |
 | N-09 | 4 | CODEX | ⚠️ Works in /Users/yzliu/work/Meridian (git: yzsnstotz/Meridian.git), not /Users/yzliu/work/Meridian/Meridian-roles |
 | N-10 | 5 | OPUS | Scenario B quality = manual PM review; --mock for CI |
+| DELTA-CHECK | Ω | OPUS | One pass only; append minimum-scope corrective workers only when needed |
+| PR-REVIEW | Ω | OPUS | Terminal verdict only; agent never merges |
