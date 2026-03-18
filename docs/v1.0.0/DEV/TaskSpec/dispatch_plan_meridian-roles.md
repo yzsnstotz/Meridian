@@ -31,7 +31,7 @@
 
 | Code | Model | Assign When |
 |------|-------|-------------|
-| `OPUS` | Claude Opus | Complex multi-file coordination, architectural decisions, nuanced business logic, integration-heavy tasks |
+| `OPUS` | Claude Code | Complex multi-file coordination, architectural decisions, nuanced business logic, integration-heavy tasks |
 | `CODEX` | Codex | Well-specified interface implementations, config files, straightforward CRUD, UI with clear API contracts |
 
 ---
@@ -46,10 +46,12 @@
 | ✅ | 1 | N-04 | State persistence | CODEX | N-01 | meridian-roles PRD §2.1 | Atomic write pattern required |
 | ✅ | 2 | N-05 | Dispatcher state machine | CODEX | N-02, N-03, N-04 | meridian-roles PRD §3 (full) | Critical path; `suppress_reply: false` must be explicit; PM code review on reply_channel shape |
 | ✅ | 3 | N-06 | Inferred dispatch mode | CODEX | N-05 | meridian-roles PRD §3.1 | JSON fence stripping required; error state must not crash |
-| ⬜ | 3 | N-07 | Prompt hot-reload API | CODEX | N-05 | meridian-roles PRD §4 | Write-through to StateStore on every change |
+| ✅ | 3 | N-07 | Prompt hot-reload API | CODEX | N-05 | meridian-roles PRD §4 | Write-through to StateStore on every change |
 | ⬜ | 4 | N-08 | Web GUI | CODEX | N-05, N-07 | meridian-roles PRD §5 | Dark theme; vanilla JS; trace_id truncated to 8 chars |
 | ⬜ | 4 | N-09 | Meridian index.html link | CODEX | N-02 | meridian-roles PRD §5, Meridian PRD | Targets MERIDIAN_ROOT, not REPO_ROOT — brief agent separately |
 | ⬜ | 5 | N-10 | E2E tests + docs | OPUS | N-06, N-07, N-08, N-09 | All PRDs | Scenario B quality = manual review; `--mock` for CI |
+| ⬜ | Ω | DELTA-CHECK | Delta Check & corrective dispatch | OPUS | N-01, N-02, N-03, N-04, N-05, N-06, N-07, N-08, N-09, N-10 | All PRDs, TaskSpec meridian-roles v1.2 | One pass only. Write `delta_check_report.md`; append `Ω+1` corrective workers only for minimum-scope drift fixes |
+| ⬜ | Ω | PR-REVIEW | PR alignment review | OPUS | DELTA-CHECK | All PRDs, TaskSpec meridian-roles v1.2, delta_check_report.md | Terminal gate. Write `pr_review_report.md`; human merge only |
 
 **Status Legend**: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked
 
@@ -185,6 +187,34 @@
 
 ---
 
+### Phase Ω — Terminal Verification
+
+**Workers**: DELTA-CHECK (OPUS), PR-REVIEW (OPUS)
+**Priority**: P0 once all implementation work is complete
+**Prerequisite**: N-01 through N-10 are all `✅`, latest branch state is pushed, and all completion reports are present
+
+**Agent Notes for DELTA-CHECK (OPUS)**:
+- Load both PRDs, the TaskSpec, all worker completion reports, and the full diff against the approved base branch before making findings
+- Report path is fixed: `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md`
+- If drift is found and the fix is small (`<=5` corrective workers, no new PM decision), append corrective rows directly to this dispatch plan at `Phase: Ω+1`
+- Corrective worker reports live under `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`
+- This is one pass only; do not schedule a second Delta Check after corrective workers complete
+
+**Agent Notes for PR-REVIEW (OPUS)**:
+- Start only after DELTA-CHECK is `✅`
+- Review both the meridian-roles diff and the Meridian-side N-09 change so the verdict reflects the full shipped surface
+- Report path is fixed: `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md`
+- Final line must be exactly `MERGE APPROVED` or `MERGE BLOCKED — [reason]`
+- Agent never merges; PM/human performs the merge if approved
+
+**Completion Gate**:
+- [ ] `delta_check_report.md` exists and includes N-01 through N-10 with allowed verdicts only
+- [ ] Any corrective workers added at `Ω+1` are minimum-scope and complete
+- [ ] `pr_review_report.md` exists with per-file verdicts and a final merge recommendation
+- [ ] PM has reviewed any `MERGE BLOCKED` finding before deciding next action
+
+---
+
 ## PM Flags Summary
 
 | # | Flag | Phase | Impact | Resolution |
@@ -194,6 +224,8 @@
 | 3 | N-09 uses `/Users/yzliu/work/Meridian`, not `/Users/yzliu/work/Meridian/Meridian-roles` | 4 | Medium — agent writes to wrong repo if path is wrong | Brief N-09 agent explicitly with `/Users/yzliu/work/Meridian` absolute path in session prompt |
 | 4 | E2E Scenario B requires a running idle claude agent | 5 | Medium — CI will fail if agent unavailable | Use `--mock` for CI; Scenario B = manual-only gate |
 | 5 | `meridian-roles` is an independent repo — git operations must target `yzsnstotz/meridian-roles.git` | All | High — wrong repo pushes break both projects | Agents must verify `git remote -v` outputs `yzsnstotz/meridian-roles.git` at session start (except N-09) |
+| 6 | DELTA-CHECK may surface broad drift late in the round | Ω | High — can invalidate “done” statuses if left vague | Allow direct corrective append only for `<=5` workers with no new PM decision; otherwise stop and create a delta artifact set |
+| 7 | PR-REVIEW must cover both repos because N-09 lands outside meridian-roles | Ω | High — merge could be approved with incomplete review coverage | PR-REVIEW explicitly inspects both the meridian-roles diff and the Meridian-side N-09 change before issuing verdict |
 
 ---
 
@@ -207,12 +239,15 @@
 | 1 | N-04 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-04_completion.md` |
 | 2 | N-05 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-05_completion.md` |
 | 3 | N-06 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-06_completion.md` |
-| 3 | N-07 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-07_completion.md` |
+| 3 | N-07 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-07_completion.md` |
 | 4 | N-08 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-08_completion.md` |
 | 4 | N-09 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-09_completion.md` |
 | 5 | N-10 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-10_completion.md` |
+| Ω | DELTA-CHECK | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md` |
+| Ω | PR-REVIEW | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md` |
 
 > 📁 All completion report paths are relative to `/Users/yzliu/work/Meridian/Meridian-roles` — see File Directory Index.
+> 📁 Corrective worker reports, if needed, are written to `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/v1.2_delta/`.
 
 ---
 
@@ -231,3 +266,5 @@ When starting a new agent session, inject the following context summaries:
 | N-08 | N-07 HTTP endpoint contracts + N-05 role detail response shape |
 | N-09 | N-02 `register_service` endpoint contract + `/Users/yzliu/work/Meridian` absolute path + ⚠️ git remote = `yzsnstotz/Meridian.git` |
 | N-10 | Full project summary + confirmed socket paths + Meridian integration status |
+| DELTA-CHECK | Full worker completion set + TaskSpec acceptance criteria + both PRDs + feature diff against approved base branch |
+| PR-REVIEW | Delta Check report + any `v1.2_delta/` corrective reports + full PR diff + both PRDs + final dispatch plan state |
