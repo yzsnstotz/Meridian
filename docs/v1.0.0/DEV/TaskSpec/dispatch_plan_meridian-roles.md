@@ -47,7 +47,7 @@
 | ✅ | 2 | N-05 | Dispatcher state machine | CODEX | N-02, N-03, N-04 | meridian-roles PRD §3 (full) | Critical path; `suppress_reply: false` must be explicit; PM code review on reply_channel shape |
 | ✅ | 3 | N-06 | Inferred dispatch mode | CODEX | N-05 | meridian-roles PRD §3.1 | JSON fence stripping required; error state must not crash |
 | ✅ | 3 | N-07 | Prompt hot-reload API | CODEX | N-05 | meridian-roles PRD §4 | Write-through to StateStore on every change |
-| ⬜ | 4 | N-08 | Web GUI | CODEX | N-05, N-07 | meridian-roles PRD §5 | Dark theme; vanilla JS; trace_id truncated to 8 chars |
+| ✅ | 4 | N-08 | Web GUI | CODEX | N-05, N-07 | meridian-roles PRD §5 | Dark theme; vanilla JS; trace_id truncated to 8 chars |
 | ⬜ | 4 | N-09 | Meridian index.html link | CODEX | N-02 | meridian-roles PRD §5, Meridian PRD | Targets MERIDIAN_ROOT, not REPO_ROOT — brief agent separately |
 | ⬜ | 5 | N-10 | E2E tests + docs | OPUS | N-06, N-07, N-08, N-09 | All PRDs | Scenario B quality = manual review; `--mock` for CI |
 | ⬜ | Ω | DELTA-CHECK | Delta Check & corrective dispatch | OPUS | N-01, N-02, N-03, N-04, N-05, N-06, N-07, N-08, N-09, N-10 | All PRDs, TaskSpec meridian-roles v1.2 | One pass only. Write `delta_check_report.md`; append `Ω+1` corrective workers only for minimum-scope drift fixes |
@@ -240,7 +240,7 @@
 | 2 | N-05 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-05_completion.md` |
 | 3 | N-06 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-06_completion.md` |
 | 3 | N-07 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-07_completion.md` |
-| 4 | N-08 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-08_completion.md` |
+| 4 | N-08 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-08_completion.md` |
 | 4 | N-09 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-09_completion.md` |
 | 5 | N-10 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-10_completion.md` |
 | Ω | DELTA-CHECK | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md` |

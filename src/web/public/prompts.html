@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prompt Editor</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="prompt-editor">
+    <main class="shell">
+      <section class="hero hero-compact">
+        <a id="detail-link" class="back-link" href="/">← Task Detail</a>
+        <p class="eyebrow">Prompt Editor</p>
+        <h1 id="prompt-title">Loading prompts…</h1>
+        <p class="lede">Hot-reload prompt overrides for the next task dispatch.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>System Prompt</h2>
+          <p class="muted">Saved changes apply to future task dispatches.</p>
+        </div>
+        <form id="system-prompt-form" class="stack">
+          <label class="field">
+            <span>system_prompt</span>
+            <textarea id="system-prompt-input" rows="8"></textarea>
+          </label>
+          <div class="actions">
+            <button type="submit" class="primary-button">Save System Prompt</button>
+            <p id="prompt-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Per-Task Templates</h2>
+          <p class="muted">Delete a template to fall back to the base instruction.</p>
+        </div>
+        <div id="prompt-task-empty" class="empty-state">This dispatcher has no tasks yet.</div>
+        <div id="prompt-task-list" class="task-list"></div>
+      </section>
+    </main>
+  </body>
+</html>

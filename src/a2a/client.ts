@@ -90,6 +90,9 @@ export class A2AClient {
       void this.ensureRegistered()
         .then(() => this.flushQueue())
         .catch((error) => {
+          if (isStoppedRegistrationError(error)) {
+            return;
+          }
           this.log.warn("A2A registration retry failed", asError(error));
         });
       return;
@@ -178,6 +181,9 @@ export class A2AClient {
             void this.ensureRegistered()
               .then(() => this.flushQueue())
               .catch((registrationError) => {
+                if (isStoppedRegistrationError(registrationError)) {
+                  return;
+                }
                 this.log.warn("A2A background registration failed", asError(registrationError));
               });
           }
@@ -374,4 +380,8 @@ function stripServicePrefix(serviceId: string): string {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function isStoppedRegistrationError(error: unknown): boolean {
+  return asError(error).message === "A2A client stopped before register_service completed";
 }

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Role Detail</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="role-detail">
+    <main class="shell">
+      <section class="hero hero-compact">
+        <a class="back-link" href="/">← Dashboard</a>
+        <p class="eyebrow">Task Detail</p>
+        <h1 id="role-title">Loading role…</h1>
+        <p id="role-subtitle" class="lede">Fetching dispatcher detail.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Role Summary</h2>
+          <a id="prompts-link" class="ghost-link" href="/">Prompt Editor</a>
+        </div>
+        <dl id="role-summary" class="summary-grid"></dl>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>DAG Tasks</h2>
+          <p class="muted">Auto-refreshes every 3 seconds.</p>
+        </div>
+        <div id="role-tasks-empty" class="empty-state">No tasks have been recorded for this role.</div>
+        <div id="role-tasks" class="task-list"></div>
+      </section>
+    </main>
+  </body>
+</html>

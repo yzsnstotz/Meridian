@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="dashboard">
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Role Layer Console</p>
+        <h1>meridian-roles</h1>
+        <p class="lede">Dispatcher roles, task DAG state, and prompt overrides in one local control plane.</p>
+      </section>
+
+      <section class="panel panel-form">
+        <div class="panel-heading">
+          <h2>Create Dispatcher</h2>
+          <button type="button" class="ghost-button" data-action="refresh-roles">Refresh</button>
+        </div>
+        <form id="create-role-form" class="stack">
+          <label class="field">
+            <span>thread_id</span>
+            <input name="thread_id" type="text" placeholder="dispatcher-demo" />
+          </label>
+
+          <label class="field">
+            <span>system_prompt</span>
+            <textarea name="system_prompt" rows="4" placeholder="Optional system prompt override"></textarea>
+          </label>
+
+          <label class="field">
+            <span>TaskSpec</span>
+            <textarea
+              name="taskspec"
+              rows="8"
+              placeholder="Paste a TaskSpec to trigger inferred dispatch mode"
+            ></textarea>
+          </label>
+
+          <label class="field">
+            <span>tasks JSON</span>
+            <textarea
+              name="tasks_json"
+              rows="6"
+              placeholder='Optional explicit tasks array, e.g. [{"task_id":"A","instruction":"...","depends_on":[]}]'
+            ></textarea>
+          </label>
+
+          <div class="actions">
+            <button type="submit" class="primary-button">Activate Role</button>
+            <p id="dashboard-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Active Roles</h2>
+          <p class="muted">Live state is read from the persisted role store.</p>
+        </div>
+        <div id="roles-empty" class="empty-state">No active roles.</div>
+        <div id="roles-list" class="card-grid"></div>
+      </section>
+    </main>
+  </body>
+</html>
