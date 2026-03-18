@@ -2,10 +2,20 @@
 
 - **Version**: v1.0
 - **Date**: 2026-03-15
+- **Revision Note**: 2026-03-19 terminal pass update — `DELTA-CHECK` and `PR-REVIEW` added as remaining todo rows
 - **Branch**: feat/upgrade-v1.0
 - **Repo root**: /Users/yzliu/work/Meridian
 - **TaskSpec**: /Users/yzliu/work/Meridian/docs/a2a_align/DEV/TaskSpec/meridian_taskspec_v1_0_upgrade.md
 - **Dev history dir**: /Users/yzliu/work/Meridian/docs/a2a_align/DEV/
+
+---
+
+## PRD Reference Paths
+
+| Shorthand | Full Path |
+|-----------|-----------|
+| Main PRD | /Users/yzliu/work/Meridian/docs/a2a_align/PRD/PRD_Meridian_Upgrade_v1.0.docx |
+| TaskSpec | /Users/yzliu/work/Meridian/docs/a2a_align/DEV/TaskSpec/meridian_taskspec_v1_0_upgrade.md |
 
 ---
 
@@ -21,21 +31,23 @@
 ## Master Dispatch Table
 
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
-|--------|-------|--------|------|-------|-----------|----------------|-------|
-| ✅ | 1 | R-01 | types.ts Schema Extensions | CODEX | — | PRD_Meridian_Upgrade_v1.0.docx | Pure schema; no logic. 4 sub-tasks. |
-| ✅ | 2 | N-01 | channel-adapter.ts Interface + SocketAdapter | CODEX | R-01 | PRD §2.2, §2.4 | Two new files; ~50 lines total |
-| ✅ | 2 | R-02 | result-sender.ts Multi-Adapter Router | OPUS | R-01, N-01 | PRD §2.3 | Most complex rework. Scaffolding bridge first, real adapters later (N-02). |
-| ✅ | 2 | R-03 | registry.ts setAutoApprove() | CODEX | R-01 | PRD §4.3 | Single method addition; ~15 lines |
-| ✅ | 3 | R-04 | server.ts Hardcode Cleanup + Auto-Approve Intercept | OPUS | R-02, R-03 | PRD §3.1, §4.2 Method B, §4.5 | ⚠️ PM-FLAG-01: subscriber data structure may need extension to carry full ReplyChannel |
-| ✅ | 3 | R-05 | router.ts handleDetail + isWebChannel Refactor | OPUS | R-02 | PRD §3.1 router rows | Delete 2 guards; web push restructure |
-| ✅ | 3 | R-06 | instance-manager.ts spawn autoApprove | CODEX | R-01, R-03 | PRD §4.3, §4.5 | Thread autoApprove through spawn chain |
-| ✅ | 3 | R-07 | monitor/index.ts channel fix | CODEX | R-01 | PRD §3.1 monitor row | Single-line channel value change |
-| ✅ | 4 | N-02 | interface/adapters/ TelegramAdapter + WebAdapter | OPUS | R-02, R-04, R-05 | PRD §2.2, §3.2 | Code MOVE not rewrite. Create adapters/ dir. |
-| ✅ | 4 | R-08 | interface/index.ts decouple send logic | OPUS | N-02 | PRD §3.1 interface rows | Extract buildTelegramReplyChannel helper; remove ResultSender import |
-| ✅ | 4 | R-09 | interface/slash-handler.ts /autoapprove | CODEX | R-03 | PRD §4.4 | New slash command; update HELP_MESSAGE |
-| ✅ | 4 | R-10 | web/server.ts spawn API + index.html | CODEX | R-06 | PRD §4.5, §5 web rows | Schema extension + UI toggle |
-| ✅ | 5 | R-11 | agents/claude.ts + agents/codex.ts CLI flags | CODEX | R-06 | PRD §4.2 Method A | Add autoApprove param to both builders |
-| ✅ | 6 | D-01 | Dead code sweep + test updates | OPUS | ALL | Full PRD | Final sweep; all tests must pass |
+|--------|-------|--------|------|-------|------------|----------------|-------|
+| ✅ | 1 | R-01 | types.ts Schema Extensions | CODEX | — | Main PRD §2.1, §4.3, §4.5 | Pure schema; no logic. 4 sub-tasks. |
+| ✅ | 2 | N-01 | channel-adapter.ts Interface + SocketAdapter | CODEX | R-01 | Main PRD §2.2, §2.4 | Two new files; ~50 lines total |
+| ✅ | 2 | R-02 | result-sender.ts Multi-Adapter Router | OPUS | R-01, N-01 | Main PRD §2.3 | Most complex rework. Scaffolding bridge first, real adapters later (N-02). |
+| ✅ | 2 | R-03 | registry.ts setAutoApprove() | CODEX | R-01 | Main PRD §4.3 | Single method addition; ~15 lines |
+| ✅ | 3 | R-04 | server.ts Hardcode Cleanup + Auto-Approve Intercept | OPUS | R-02, R-03 | Main PRD §3.1, §4.2 Method B, §4.5 | ⚠️ PM-FLAG-01: subscriber data structure may need extension to carry full ReplyChannel |
+| ✅ | 3 | R-05 | router.ts handleDetail + isWebChannel Refactor | OPUS | R-02 | Main PRD §3.1 | Delete 2 guards; web push restructure |
+| ✅ | 3 | R-06 | instance-manager.ts spawn autoApprove | CODEX | R-01, R-03 | Main PRD §4.3, §4.5 | Thread autoApprove through spawn chain |
+| ✅ | 3 | R-07 | monitor/index.ts channel fix | CODEX | R-01 | Main PRD §3.1 | Single-line channel value change |
+| ✅ | 4 | N-02 | interface/adapters/ TelegramAdapter + WebAdapter | OPUS | R-02, R-04, R-05 | Main PRD §2.2, §3.2 | Code MOVE not rewrite. Create adapters/ dir. |
+| ✅ | 4 | R-08 | interface/index.ts decouple send logic | OPUS | N-02 | Main PRD §3.1 | Extract buildTelegramReplyChannel helper; remove ResultSender import |
+| ✅ | 4 | R-09 | interface/slash-handler.ts /autoapprove | CODEX | R-03 | Main PRD §4.4 | New slash command; update HELP_MESSAGE |
+| ✅ | 4 | R-10 | web/server.ts spawn API + index.html | CODEX | R-06 | Main PRD §4.5, §5 | Schema extension + UI toggle |
+| ✅ | 5 | R-11 | agents/claude.ts + agents/codex.ts CLI flags | CODEX | R-06 | Main PRD §4.2 Method A | Add autoApprove param to both builders |
+| ✅ | 6 | D-01 | Dead code sweep + test updates | OPUS | ALL | Main PRD | Final sweep; all tests must pass |
+| ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | OPUS | R-01, N-01, R-02, R-03, R-04, R-05, R-06, R-07, N-02, R-08, R-09, R-10, R-11, D-01 | TaskSpec, Main PRD | One pass only. If findings remain and scope is small, append corrective workers below this row. |
+| ⬜ | Ω | PR-REVIEW | PR Alignment Review | OPUS | DELTA-CHECK | TaskSpec, Main PRD | Terminal merge gate; human merges after verdict. |
 
 Status: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked
 
@@ -158,6 +170,41 @@ Status: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Block
 
 ---
 
+### Terminal — DELTA-CHECK
+
+**Workers**: DELTA-CHECK  
+**Priority**: P0  
+**Model**: OPUS  
+**Parallelism**: Single worker; starts only after `D-01` is `✅`  
+
+**Agent Notes**:
+- Review the completed branch against the TaskSpec acceptance criteria using `git diff origin/main...HEAD`.
+- Write `/Users/yzliu/work/Meridian/docs/a2a_align/DEV/delta_check_report_v1_0_upgrade.md`.
+- If all Workers align, mark `DELTA-CHECK` as `✅`.
+- If gaps exist and the fix scope is `<=5` Workers with no new PM decision, append corrective rows to this dispatch plan and store their reports under `/Users/yzliu/work/Meridian/docs/a2a_align/DEV/delta_reports/`.
+- If the corrective scope is larger or requires new PM guidance, stop and escalate instead of improvising a second main-round plan.
+
+**Completion Gate**: Delta Check report exists; every implementation Worker has a verdict; no unresolved finding remains without an explicit next action.
+
+---
+
+### Terminal — PR-REVIEW
+
+**Workers**: PR-REVIEW  
+**Priority**: P0  
+**Model**: OPUS  
+**Parallelism**: Single worker; starts only after `DELTA-CHECK` is `✅`  
+
+**Agent Notes**:
+- Review the full PR diff against the Main PRD, TaskSpec acceptance criteria, the Delta Check report, and any corrective worker reports.
+- Write `/Users/yzliu/work/Meridian/docs/a2a_align/DEV/pr_review_report_v1_0_upgrade.md`.
+- Report every changed file with verdict `✅ Aligned`, `⚠️ Scope Drift`, `❌ Missing`, or `➕ Unplanned Addition`.
+- End with exactly one final line: `MERGE APPROVED` or `MERGE BLOCKED — [specific reason]`.
+
+**Completion Gate**: PR Review report exists with per-file verdicts, scope summary, and an explicit final merge recommendation.
+
+---
+
 ## PM Flags Summary
 
 | Flag | Location | Issue | Resolution |
@@ -178,3 +225,7 @@ Status: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Block
 | 4 | N-02, R-08, R-09, R-10 | | | /Users/yzliu/work/Meridian/docs/a2a_align/DEV/batch4_*.md |
 | 5 | R-11 | | | /Users/yzliu/work/Meridian/docs/a2a_align/DEV/batch5_R-11.md |
 | 6 | D-01 | | | /Users/yzliu/work/Meridian/docs/a2a_align/DEV/batch6_D-01.md |
+| Ω | DELTA-CHECK | | | /Users/yzliu/work/Meridian/docs/a2a_align/DEV/delta_check_report_v1_0_upgrade.md |
+| Ω | PR-REVIEW | | | /Users/yzliu/work/Meridian/docs/a2a_align/DEV/pr_review_report_v1_0_upgrade.md |
+
+Corrective worker reports, if Delta Check appends them, must be written under `/Users/yzliu/work/Meridian/docs/a2a_align/DEV/delta_reports/`.
