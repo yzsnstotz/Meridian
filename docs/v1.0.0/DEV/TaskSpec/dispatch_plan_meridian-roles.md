@@ -41,7 +41,7 @@
 | Status | Phase | Worker | Task Name | Model | Depends On | PRDs to Attach | Notes |
 |--------|-------|--------|-----------|-------|------------|----------------|-------|
 | ✅ | 0 | N-01 | Scaffold + core types | OPUS | — | meridian-roles PRD v1.2, Meridian 平台升级 PRD v1.0 | ReplyChannelSchema must align with Meridian; human review required |
-| ⬜ | 1 | N-02 | A2A comms layer | OPUS | N-01 | meridian-roles PRD §1.2, §3.2 | sendIpcMessage format confirmed; socket lifecycle careful |
+| ✅ | 1 | N-02 | A2A comms layer | CODEX | N-01 | meridian-roles PRD §1.2, §3.2 | sendIpcMessage format confirmed; socket lifecycle careful |
 | ✅ | 1 | N-03 | BaseRole + RoleRunner | CODEX | N-01 | meridian-roles PRD §2.2 | Interface frozen; implement as specified |
 | ✅ | 1 | N-04 | State persistence | CODEX | N-01 | meridian-roles PRD §2.1 | Atomic write pattern required |
 | ⬜ | 2 | N-05 | Dispatcher state machine | OPUS | N-02, N-03, N-04 | meridian-roles PRD §3 (full) | Critical path; `suppress_reply: false` must be explicit; PM code review on reply_channel shape |
@@ -202,7 +202,7 @@
 | Phase | Worker | Start Date | End Date | Completion Report |
 |-------|--------|------------|----------|-------------------|
 | 0 | N-01 | 2026-03-16 | 2026-03-16 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-01_completion.md` |
-| 1 | N-02 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-02_completion.md` |
+| 1 | N-02 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-02_completion.md` |
 | 1 | N-03 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-03_completion.md` |
 | 1 | N-04 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-04_completion.md` |
 | 2 | N-05 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-05_completion.md` |
