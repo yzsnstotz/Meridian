@@ -45,7 +45,7 @@
 | ✅ | 1 | N-03 | BaseRole + RoleRunner | CODEX | N-01 | meridian-roles PRD §2.2 | Interface frozen; implement as specified |
 | ✅ | 1 | N-04 | State persistence | CODEX | N-01 | meridian-roles PRD §2.1 | Atomic write pattern required |
 | ✅ | 2 | N-05 | Dispatcher state machine | CODEX | N-02, N-03, N-04 | meridian-roles PRD §3 (full) | Critical path; `suppress_reply: false` must be explicit; PM code review on reply_channel shape |
-| ⬜ | 3 | N-06 | Inferred dispatch mode | OPUS | N-05 | meridian-roles PRD §3.1 | JSON fence stripping required; error state must not crash |
+| ✅ | 3 | N-06 | Inferred dispatch mode | CODEX | N-05 | meridian-roles PRD §3.1 | JSON fence stripping required; error state must not crash |
 | ⬜ | 3 | N-07 | Prompt hot-reload API | CODEX | N-05 | meridian-roles PRD §4 | Write-through to StateStore on every change |
 | ⬜ | 4 | N-08 | Web GUI | CODEX | N-05, N-07 | meridian-roles PRD §5 | Dark theme; vanilla JS; trace_id truncated to 8 chars |
 | ⬜ | 4 | N-09 | Meridian index.html link | CODEX | N-02 | meridian-roles PRD §5, Meridian PRD | Targets MERIDIAN_ROOT, not REPO_ROOT — brief agent separately |
@@ -206,7 +206,7 @@
 | 1 | N-03 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-03_completion.md` |
 | 1 | N-04 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-04_completion.md` |
 | 2 | N-05 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-05_completion.md` |
-| 3 | N-06 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-06_completion.md` |
+| 3 | N-06 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-06_completion.md` |
 | 3 | N-07 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-07_completion.md` |
 | 4 | N-08 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-08_completion.md` |
 | 4 | N-09 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-09_completion.md` |

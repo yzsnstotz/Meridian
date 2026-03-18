@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../../config";
 import { StateStore } from "../../state-store";
 import {
+  DispatchTaskSchema,
   DispatcherConfigSchema,
   type AgentInstance,
   type AppState,
@@ -15,6 +16,8 @@ import {
 import type { BaseRole, RoleContext } from "../base-role";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
+
+const INFER_RESPONSE_FENCE_PATTERN = /```json\s*([\s\S]*?)```/;
 
 export interface DispatcherRoleOptions {
   stateStore?: PersistableStateStore;
@@ -35,6 +38,8 @@ export class DispatcherRole implements BaseRole {
 
   private ctx: RoleContext | null = null;
   private completionTriggered = false;
+  private inferTraceId: string | null = null;
+  private hasErrored = false;
   private transitionChain: Promise<void> = Promise.resolve();
 
   constructor(threadId: string, config: unknown, options: DispatcherRoleOptions = {}) {
@@ -54,6 +59,12 @@ export class DispatcherRole implements BaseRole {
     try {
       this.initializeGraph();
       await this.persistState();
+
+      if (this.shouldInferTasks()) {
+        await this.dispatchInferenceRequest();
+        return;
+      }
+
       await this.dispatchReadyTasks();
       await this.maybeSendCompletionSummary();
     } catch (error) {
@@ -69,6 +80,11 @@ export class DispatcherRole implements BaseRole {
 
   async onInboundResult(result: HubResult): Promise<void> {
     return this.enqueueTransition(async () => {
+      if (this.inferTraceId && result.trace_id === this.inferTraceId) {
+        await this.handleInferenceResult(result);
+        return;
+      }
+
       const task = this.tasks.find((candidate) => candidate.result_trace_id === result.trace_id);
       if (!task) {
         return;
@@ -175,11 +191,7 @@ export class DispatcherRole implements BaseRole {
           attachments: []
         },
         mode: "bridge",
-        reply_channel: {
-          channel: "socket",
-          chat_id: ROLES_SERVICE_ID,
-          socket_path: ROLES_SOCKET_PATH
-        },
+        reply_channel: this.buildSocketReplyChannel(),
         suppress_reply: false
       };
 
@@ -197,6 +209,71 @@ export class DispatcherRole implements BaseRole {
     }
 
     await this.persistState();
+  }
+
+  private async dispatchInferenceRequest(): Promise<void> {
+    const ctx = this.requireContext();
+    const traceId = this.traceIdFactory();
+
+    this.inferTraceId = traceId;
+
+    try {
+      const target = this.resolveInferenceTarget(ctx.listInstances());
+      await ctx.sendToHub({
+        trace_id: traceId,
+        thread_id: this.threadId,
+        actor_id: ROLES_SERVICE_ID,
+        intent: "run",
+        target,
+        priority: 5,
+        payload: {
+          content: this.buildInferencePrompt(),
+          attachments: []
+        },
+        mode: "bridge",
+        reply_channel: this.buildSocketReplyChannel(),
+        suppress_reply: false
+      });
+    } catch (error) {
+      this.inferTraceId = null;
+      this.hasErrored = true;
+      ctx.log.error("Dispatcher inference request failed", {
+        dispatcherThreadId: this.threadId,
+        error: asError(error).message
+      });
+    }
+
+    await this.persistState();
+  }
+
+  private async handleInferenceResult(result: HubResult): Promise<void> {
+    const ctx = this.requireContext();
+    const rawContent = result.content;
+
+    try {
+      const parsedTasks = DispatchTaskSchema.array().parse(JSON.parse(stripJsonFence(rawContent)));
+
+      this.inferTraceId = null;
+      this.hasErrored = false;
+      this.replaceTasks(parsedTasks);
+      this.initializeGraph();
+
+      await this.persistState();
+      await this.dispatchReadyTasks();
+      await this.maybeSendCompletionSummary();
+    } catch (error) {
+      this.inferTraceId = null;
+      this.hasErrored = true;
+
+      ctx.log.error("Dispatcher inference result parse failed", {
+        dispatcherThreadId: this.threadId,
+        traceId: result.trace_id,
+        error: asError(error).message,
+        rawContent
+      });
+
+      await this.persistState();
+    }
   }
 
   private resolveTarget(task: DispatchTask, instances: AgentInstance[]): string {
@@ -226,6 +303,15 @@ export class DispatcherRole implements BaseRole {
     }
 
     throw new Error("No idle instance available for dispatcher task");
+  }
+
+  private resolveInferenceTarget(instances: AgentInstance[]): string {
+    const idleInstance = instances.find((instance) => instance.status === "idle");
+    if (idleInstance) {
+      return idleInstance.thread_id;
+    }
+
+    throw new Error("No idle instance available for dispatcher inference");
   }
 
   private areDependenciesDone(task: DispatchTask): boolean {
@@ -258,7 +344,7 @@ export class DispatcherRole implements BaseRole {
   }
 
   private async maybeSendCompletionSummary(): Promise<void> {
-    if (this.completionTriggered || !this.tasks.every((task) => isTerminalStatus(task.status))) {
+    if (this.hasErrored || this.completionTriggered || !this.tasks.every((task) => isTerminalStatus(task.status))) {
       return;
     }
 
@@ -333,7 +419,7 @@ export class DispatcherRole implements BaseRole {
       threadId: this.threadId,
       roleType: this.roleType,
       config: this.snapshotConfig(),
-      status: this.tasks.every((task) => isTerminalStatus(task.status)) ? "completed" : "active"
+      status: this.hasErrored ? "error" : this.tasks.every((task) => isTerminalStatus(task.status)) ? "completed" : "active"
     });
 
     const nextState: AppState = {
@@ -378,6 +464,48 @@ export class DispatcherRole implements BaseRole {
     return next;
   }
 
+  private shouldInferTasks(): boolean {
+    return this.tasks.length === 0 && Boolean(this.config.taskspec?.trim());
+  }
+
+  private replaceTasks(tasks: DispatchTask[]): void {
+    const normalizedTasks = tasks.map((task) => ({
+      ...task,
+      depends_on: [...task.depends_on],
+      status: "pending" as const,
+      result_trace_id: undefined,
+      result_summary: undefined
+    }));
+
+    this.tasks.splice(0, this.tasks.length, ...normalizedTasks);
+    this.executionOrder.length = 0;
+  }
+
+  private buildInferencePrompt(): string {
+    const taskspec = this.config.taskspec?.trim() ?? "";
+
+    return [
+      "Convert the TaskSpec below into a dispatch DAG.",
+      "Return only a valid JSON array. Do not include markdown, code fences, comments, or prose.",
+      "Each array item must be a DispatchTask-compatible object with:",
+      '- required keys: "task_id", "instruction", "depends_on"',
+      '- optional keys: "instruction_template", "target_thread_id", "target_model_id", "target_agent_type"',
+      'Do not include "status", "result_trace_id", or "result_summary".',
+      "Use unique task_id values and only reference dependency ids that exist in the same array.",
+      "",
+      "TaskSpec:",
+      taskspec
+    ].join("\n");
+  }
+
+  private buildSocketReplyChannel(): ReplyChannel {
+    return {
+      channel: "socket",
+      chat_id: ROLES_SERVICE_ID,
+      socket_path: ROLES_SOCKET_PATH
+    };
+  }
+
   private requireContext(): RoleContext {
     if (!this.ctx) {
       throw new Error("Dispatcher role is not active");
@@ -403,6 +531,11 @@ function isTerminalStatus(status: DispatchTask["status"]): boolean {
 
 function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : value.slice(0, maxLength);
+}
+
+function stripJsonFence(value: string): string {
+  const match = value.match(INFER_RESPONSE_FENCE_PATTERN);
+  return (match?.[1] ?? value).trim();
 }
 
 function asError(error: unknown): Error {
