@@ -49,7 +49,7 @@
 | ✅ | 3 | N-07 | Prompt hot-reload API | CODEX | N-05 | meridian-roles PRD §4 | Write-through to StateStore on every change |
 | ✅ | 4 | N-08 | Web GUI | CODEX | N-05, N-07 | meridian-roles PRD §5 | Dark theme; vanilla JS; trace_id truncated to 8 chars |
 | ✅ | 4 | N-09 | Meridian index.html link | CODEX | N-02 | meridian-roles PRD §5, Meridian PRD | Targets MERIDIAN_ROOT, not REPO_ROOT — brief agent separately |
-| ⬜ | 5 | N-10 | E2E tests + docs | CODEX | N-06, N-07, N-08, N-09 | All PRDs | Scenario B quality = manual review; `--mock` for CI |
+| ✅ | 5 | N-10 | E2E tests + docs | CODEX | N-06, N-07, N-08, N-09 | All PRDs | Scenario B quality = manual review; `--mock` for CI |
 | ⬜ | Ω | DELTA-CHECK | Delta Check & corrective dispatch | OPUS | N-01, N-02, N-03, N-04, N-05, N-06, N-07, N-08, N-09, N-10 | All PRDs, TaskSpec meridian-roles v1.2 | One pass only. Write `delta_check_report.md`; append `Ω+1` corrective workers only for minimum-scope drift fixes |
 | ⬜ | Ω | PR-REVIEW | PR alignment review | OPUS | DELTA-CHECK | All PRDs, TaskSpec meridian-roles v1.2, delta_check_report.md | Terminal gate. Write `pr_review_report.md`; human merge only |
 
@@ -170,7 +170,7 @@
 
 ### Phase 5 — E2E + Docs (Serial)
 
-**Workers**: 1 (N-10, OPUS)
+**Workers**: 1 (N-10, CODEX)
 **Priority**: P1
 **Prerequisite**: Meridian with socket channel support must be deployed and running
 
@@ -242,7 +242,7 @@
 | 3 | N-07 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-07_completion.md` |
 | 4 | N-08 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-08_completion.md` |
 | 4 | N-09 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-09_completion.md` |
-| 5 | N-10 | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-10_completion.md` |
+| 5 | N-10 | 2026-03-19 | 2026-03-19 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/N-10_completion.md` |
 | Ω | DELTA-CHECK | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/delta_check_report.md` |
 | Ω | PR-REVIEW | — | — | `/Users/yzliu/work/Meridian/Meridian-roles/docs/v1.0.0/DEV/dev_history/pr_review_report.md` |
 
