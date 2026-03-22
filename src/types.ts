@@ -147,6 +147,29 @@ export const DispatchTaskSchema = z.object({
 });
 export type DispatchTask = z.infer<typeof DispatchTaskSchema>;
 
+export const DispatcherEditorTaskSchema = z.object({
+  task_id: z.string().min(1),
+  instruction: z.string().min(1),
+  instruction_template: z.string().min(1).optional(),
+  depends_on: z.array(z.string()).default([]),
+  target_thread_id: z.string().min(1).optional(),
+  target_model_id: z.string().min(1).optional(),
+  target_agent_type: AgentTypeSchema.optional()
+}).strict();
+export type DispatcherEditorTask = z.infer<typeof DispatcherEditorTaskSchema>;
+
+export const DispatcherEditorConfigSchema = z.object({
+  tasks: z.array(DispatcherEditorTaskSchema).default([]),
+  taskspec: z.string().optional()
+}).strict();
+export type DispatcherEditorConfig = z.infer<typeof DispatcherEditorConfigSchema>;
+
+export const DispatcherEditorConfigPatchSchema = DispatcherEditorConfigSchema.partial().strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one editable dispatcher config field is required" }
+);
+export type DispatcherEditorConfigPatch = z.infer<typeof DispatcherEditorConfigPatchSchema>;
+
 export const DispatcherConfigSchema = z.object({
   tasks: z.array(DispatchTaskSchema).default([]),
   taskspec: z.string().optional(),
