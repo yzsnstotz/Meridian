@@ -15,6 +15,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (page === "prompt-editor") {
     void setupPromptEditor();
+    return;
+  }
+
+  if (page === "config-editor") {
+    void setupConfigEditor();
   }
 });
 
@@ -147,18 +152,22 @@ async function setupRoleDetail() {
   const tasks = document.getElementById("role-tasks");
   const empty = document.getElementById("role-tasks-empty");
   const promptsLink = document.getElementById("prompts-link");
+  const configLink = document.getElementById("config-link");
 
-  if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink) {
+  if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink || !configLink) {
     return;
   }
 
+  const defaultEmptyMessage = empty.textContent;
   promptsLink.href = `/role/${encodeURIComponent(threadId)}/prompts`;
+  configLink.href = `/role/${encodeURIComponent(threadId)}/config`;
 
   const render = async () => {
     const detail = await fetchJson(`/api/role/${encodeURIComponent(threadId)}`);
 
     title.textContent = detail.thread_id;
     subtitle.textContent = detail.taskspec ? "Inferred dispatch enabled." : "Explicit task DAG.";
+    empty.textContent = defaultEmptyMessage;
 
     summary.innerHTML = `
       <div><dt>role_type</dt><dd>${escapeHtml(detail.role_type)}</dd></div>
@@ -199,12 +208,12 @@ async function setupRoleDetail() {
   try {
     await render();
   } catch (error) {
-    subtitle.textContent = getErrorMessage(error);
+    renderRoleDetailError({ title, subtitle, summary, tasks, empty }, getErrorMessage(error));
   }
 
   window.setInterval(() => {
     void render().catch((error) => {
-      subtitle.textContent = getErrorMessage(error);
+      renderRoleDetailError({ title, subtitle, summary, tasks, empty }, getErrorMessage(error));
     });
   }, POLL_INTERVAL_MS);
 }
@@ -324,6 +333,93 @@ async function setupPromptEditor() {
   } catch (error) {
     feedback.textContent = getErrorMessage(error);
   }
+}
+
+async function setupConfigEditor() {
+  const threadId = decodeThreadId(["role", "", "config"]);
+  if (!threadId) {
+    return;
+  }
+
+  const title = document.getElementById("config-title");
+  const detailLink = document.getElementById("config-detail-link");
+  const status = document.getElementById("config-status");
+  const feedback = document.getElementById("config-feedback");
+  const form = document.getElementById("config-form");
+  const input = document.getElementById("config-input");
+  const saveButton = document.getElementById("config-save-button");
+
+  if (!title || !detailLink || !status || !feedback || !form || !input || !saveButton) {
+    return;
+  }
+
+  detailLink.href = `/role/${encodeURIComponent(threadId)}`;
+
+  const applyEditState = (response) => {
+    input.readOnly = response.can_edit !== true;
+    saveButton.disabled = response.can_edit !== true;
+    status.textContent = response.can_edit
+      ? "Only tasks and taskspec are editable here. Runtime task fields are reset on save."
+      : response.blocked_reason || "Editing is temporarily unavailable.";
+  };
+
+  const render = async (successMessage = "") => {
+    const response = await fetchJson(`/api/role/${encodeURIComponent(threadId)}/config`);
+    title.textContent = response.thread_id;
+    input.value = JSON.stringify(response.config, null, 2);
+    applyEditState(response);
+    feedback.textContent = successMessage || (response.can_edit ? "Dispatcher config loaded." : status.textContent);
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    let payload;
+    try {
+      payload = JSON.parse(input.value);
+    } catch {
+      feedback.textContent = "Config JSON must be valid JSON.";
+      return;
+    }
+
+    try {
+      feedback.textContent = "Saving dispatcher config…";
+      const response = await fetchJson(`/api/role/${encodeURIComponent(threadId)}/config`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      title.textContent = response.thread_id;
+      input.value = JSON.stringify(response.config, null, 2);
+      applyEditState(response);
+      feedback.textContent = response.can_edit
+        ? "Dispatcher config saved."
+        : response.blocked_reason || "Dispatcher config saved, but editing is now unavailable.";
+    } catch (error) {
+      feedback.textContent = getErrorMessage(error);
+    }
+  });
+
+  try {
+    await render();
+  } catch (error) {
+    title.textContent = "Config unavailable";
+    status.textContent = "Unable to load dispatcher config.";
+    feedback.textContent = getErrorMessage(error);
+    input.value = "";
+    input.readOnly = true;
+    saveButton.disabled = true;
+  }
+}
+
+function renderRoleDetailError(elements, message) {
+  elements.title.textContent = "Role unavailable";
+  elements.subtitle.textContent = message;
+  elements.summary.innerHTML = "";
+  elements.tasks.replaceChildren();
+  elements.empty.textContent = "Role data unavailable.";
+  elements.empty.hidden = false;
 }
 
 async function fetchJson(url, options) {

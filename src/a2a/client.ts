@@ -3,7 +3,7 @@ import net from "node:net";
 
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../config";
 import type { Logger } from "../roles/base-role";
-import { HubResultSchema, type HubMessage, type HubResult } from "../types";
+import { AgentInstanceSchema, HubResultSchema, type AgentInstance, type HubMessage, type HubResult } from "../types";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
@@ -99,6 +99,24 @@ export class A2AClient {
     }
 
     void this.flushQueue();
+  }
+
+  async listInstances(): Promise<AgentInstance[]> {
+    if (!this.running) {
+      throw new Error("A2A client has not been started");
+    }
+
+    await this.ensureRegistered();
+    const result = await this.sendRequest(this.buildListInstancesMessage());
+    if (result.status !== "success") {
+      throw new Error(`list failed: ${result.content}`);
+    }
+
+    try {
+      return AgentInstanceSchema.array().parse(JSON.parse(result.content));
+    } catch (error) {
+      throw new Error(`list failed: invalid AgentInstance[] response: ${asError(error).message}`);
+    }
   }
 
   private async ensureRegistered(): Promise<void> {
@@ -221,14 +239,35 @@ export class A2AClient {
       target: "global",
       priority: 5,
       mode: "bridge",
-      reply_channel: {
-        channel: "web",
-        chat_id: this.serviceId
-      },
+      reply_channel: this.buildServiceReplyChannel(),
       payload: {
         content: JSON.stringify(payload),
         attachments: []
       }
+    };
+  }
+
+  private buildListInstancesMessage(): HubMessage {
+    return {
+      trace_id: randomUUID(),
+      thread_id: "list_instances",
+      actor_id: this.serviceId,
+      intent: "list",
+      target: "global",
+      priority: 5,
+      mode: "bridge",
+      reply_channel: this.buildServiceReplyChannel(),
+      payload: {
+        content: "",
+        attachments: []
+      }
+    };
+  }
+
+  private buildServiceReplyChannel(): HubMessage["reply_channel"] {
+    return {
+      channel: "web",
+      chat_id: this.serviceId
     };
   }
 

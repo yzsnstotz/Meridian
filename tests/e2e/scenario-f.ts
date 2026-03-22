@@ -1,0 +1,452 @@
+import * as fs from "node:fs/promises";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import vm from "node:vm";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { DispatcherRole } from "../../src/roles/definitions";
+import { PromptStore } from "../../src/roles/prompt-store";
+import { RoleRegistry } from "../../src/roles/role-registry";
+import { RoleRunner } from "../../src/roles/role-runner";
+import { createPromptHandlers } from "../../src/server/prompt-handlers";
+import { createRoleHandlers } from "../../src/server/role-handlers";
+import { HttpServer } from "../../src/server/http-server";
+import { StateStore } from "../../src/state-store";
+
+describe("Scenario F: Config editor and role error states", () => {
+  afterEach(async () => {
+    await fs.rm("/tmp/meridian-roles.sock", { force: true }).catch(() => undefined);
+  });
+
+  it("serves every PRD section 5 GUI route over HTTP", async () => {
+    const harness = await startHttpHarness();
+
+    try {
+      await harness.requestJson("POST", "/api/role", {
+        thread_id: "dispatcher-f",
+        tasks: [],
+        taskspec: "ship the fix"
+      });
+
+      const dashboardPage = await harness.requestText("/");
+      expect(dashboardPage.status).toBe(200);
+      expect(dashboardPage.body).toContain("Create Dispatcher");
+
+      const rolePage = await harness.requestText(`/role/dispatcher-f`);
+      expect(rolePage.status).toBe(200);
+      expect(rolePage.body).toContain('id="config-link"');
+      expect(rolePage.body).toContain("Config Editor");
+
+      const promptsPage = await harness.requestText("/role/dispatcher-f/prompts");
+      expect(promptsPage.status).toBe(200);
+      expect(promptsPage.body).toContain('data-page="prompt-editor"');
+      expect(promptsPage.body).toContain("Prompt Editor");
+
+      const configPage = await harness.requestText("/role/dispatcher-f/config");
+      expect(configPage.status).toBe(200);
+      expect(configPage.body).toContain('data-page="config-editor"');
+      expect(configPage.body).toContain("Dispatch Plan JSON");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("replaces stale role-detail loading content on missing-role fetch errors", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/role/does-not-exist-xyz",
+      elements: {
+        "role-title": createElement("Loading role…"),
+        "role-subtitle": createElement("Fetching dispatcher detail."),
+        "role-summary": createElement("", "<div>stale summary</div>"),
+        "role-tasks": createContainer([{ stale: true }]),
+        "role-tasks-empty": createElement("No tasks have been recorded for this role."),
+        "prompts-link": createElement(),
+        "config-link": createElement()
+      },
+      fetchImpl: async () => createJsonResponse(404, {
+        error: "Role not found for thread_id=does-not-exist-xyz"
+      })
+    });
+
+    await page.hooks.setupRoleDetail();
+
+    expect(page.elements["role-title"].textContent).toBe("Role unavailable");
+    expect(page.elements["role-subtitle"].textContent).toBe("Role not found for thread_id=does-not-exist-xyz");
+    expect(page.elements["role-summary"].innerHTML).toBe("");
+    expect(page.elements["role-tasks"].children).toEqual([]);
+    expect(page.elements["role-tasks-empty"].textContent).toBe("Role data unavailable.");
+    expect(page.elements["role-tasks-empty"].hidden).toBe(false);
+    expect(page.elements["prompts-link"].href).toBe("/role/does-not-exist-xyz/prompts");
+    expect(page.elements["config-link"].href).toBe("/role/does-not-exist-xyz/config");
+  });
+
+  it("loads and saves dispatcher config JSON in the browser client", async () => {
+    const patchBodies: unknown[] = [];
+    const page = await loadBrowserApp({
+      pathname: "/role/dispatcher-f/config",
+      elements: {
+        "config-title": createElement("Loading config…"),
+        "config-detail-link": createElement(),
+        "config-status": createElement(),
+        "config-feedback": createElement(),
+        "config-form": createFormElement(),
+        "config-input": createInputElement(),
+        "config-save-button": createButtonElement()
+      },
+      fetchImpl: async (url, init) => {
+        if (!init?.method || init.method === "GET") {
+          return createJsonResponse(200, {
+            thread_id: "dispatcher-f",
+            status: "active",
+            can_edit: true,
+            config: {
+              tasks: [
+                {
+                  task_id: "task-a",
+                  instruction: "Run task A",
+                  depends_on: []
+                }
+              ],
+              taskspec: "before"
+            }
+          });
+        }
+
+        if (init.method === "PATCH") {
+          patchBodies.push(init.body ? JSON.parse(String(init.body)) : null);
+          return createJsonResponse(200, {
+            thread_id: "dispatcher-f",
+            status: "active",
+            can_edit: true,
+            config: {
+              tasks: [
+                {
+                  task_id: "task-a",
+                  instruction: "Run task A better",
+                  depends_on: []
+                }
+              ],
+              taskspec: "after"
+            }
+          });
+        }
+
+        throw new Error(`Unexpected request: ${init.method || "GET"} ${url}`);
+      }
+    });
+
+    await page.hooks.setupConfigEditor();
+
+    expect(page.elements["config-title"].textContent).toBe("dispatcher-f");
+    expect(page.elements["config-detail-link"].href).toBe("/role/dispatcher-f");
+    expect(page.elements["config-feedback"].textContent).toBe("Dispatcher config loaded.");
+    expect(page.elements["config-input"].value).toContain('"taskspec": "before"');
+
+    page.elements["config-input"].value = JSON.stringify({
+      tasks: [
+        {
+          task_id: "task-a",
+          instruction: "Run task A better",
+          depends_on: []
+        }
+      ],
+      taskspec: "after"
+    }, null, 2);
+
+    await page.submit("config-form");
+
+    expect(patchBodies).toEqual([
+      {
+        tasks: [
+          {
+            task_id: "task-a",
+            instruction: "Run task A better",
+            depends_on: []
+          }
+        ],
+        taskspec: "after"
+      }
+    ]);
+    expect(page.elements["config-feedback"].textContent).toBe("Dispatcher config saved.");
+    expect(page.elements["config-input"].value).toContain('"taskspec": "after"');
+  });
+
+  it("disables config saves when the server marks the dispatcher read-only", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/role/dispatcher-f/config",
+      elements: {
+        "config-title": createElement("Loading config…"),
+        "config-detail-link": createElement(),
+        "config-status": createElement(),
+        "config-feedback": createElement(),
+        "config-form": createFormElement(),
+        "config-input": createInputElement(),
+        "config-save-button": createButtonElement()
+      },
+      fetchImpl: async () => createJsonResponse(200, {
+        thread_id: "dispatcher-f",
+        status: "active",
+        can_edit: false,
+        blocked_reason: "Cannot edit dispatcher config while tasks are running",
+        config: {
+          tasks: [],
+          taskspec: "locked"
+        }
+      })
+    });
+
+    await page.hooks.setupConfigEditor();
+
+    expect(page.elements["config-input"].readOnly).toBe(true);
+    expect(page.elements["config-save-button"].disabled).toBe(true);
+    expect(page.elements["config-status"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
+    expect(page.elements["config-feedback"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
+  });
+});
+
+interface HttpHarness {
+  requestJson<T>(method: string, pathname: string, body?: unknown): Promise<T>;
+  requestText(pathname: string): Promise<{ status: number; body: string }>;
+  close(): Promise<void>;
+}
+
+async function startHttpHarness(): Promise<HttpHarness> {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-scenario-f-"));
+  const stateFilePath = path.join(baseDir, "state.json");
+  const port = await getFreePort();
+  const stateStore = new StateStore(stateFilePath);
+  const registry = new RoleRegistry();
+
+  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+
+  const roleHandlers = createRoleHandlers({
+    runner: new RoleRunner({
+      sendToHub: async () => undefined,
+      listInstances: () => [],
+      log: createLogger()
+    }),
+    registry,
+    stateStore,
+    log: createLogger()
+  });
+
+  const promptStore = new PromptStore({
+    stateStore,
+    resolveRole: roleHandlers.resolveRole
+  });
+  const promptHandlers = createPromptHandlers(promptStore);
+  const server = new HttpServer({
+    port,
+    roleHandlers,
+    promptHandlers,
+    log: createLogger()
+  });
+
+  await server.listen();
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  return {
+    async requestJson(method, pathname, body) {
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        method,
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) : null;
+
+      if (!response.ok) {
+        throw new Error(typeof payload?.error === "string" ? payload.error : `Request failed: ${response.status}`);
+      }
+
+      return payload as T;
+    },
+    async requestText(pathname) {
+      const response = await fetch(`${baseUrl}${pathname}`);
+      return {
+        status: response.status,
+        body: await response.text()
+      };
+    },
+    async close() {
+      await Promise.allSettled([
+        server.close(),
+        fs.rm(baseDir, { recursive: true, force: true })
+      ]);
+    }
+  };
+}
+
+async function getFreePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("Expected an ephemeral TCP port"));
+        return;
+      }
+
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(port);
+      });
+    });
+  });
+}
+
+interface BrowserPage {
+  elements: Record<string, FakeElement>;
+  hooks: {
+    setupConfigEditor(): Promise<void>;
+    setupRoleDetail(): Promise<void>;
+  };
+  submit(id: string): Promise<void>;
+}
+
+async function loadBrowserApp(options: {
+  pathname: string;
+  elements: Record<string, FakeElement>;
+  fetchImpl(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+}): Promise<BrowserPage> {
+  const appPath = path.resolve("/Users/yzliu/work/Meridian/Meridian-roles/src/web/public/app.js");
+  const source = await fs.readFile(appPath, "utf8");
+  const documentListeners = new Map<string, Array<() => void>>();
+  const context = {
+    console,
+    fetch: options.fetchImpl,
+    document: {
+      body: {
+        dataset: {
+          page: "test"
+        }
+      },
+      addEventListener(type: string, handler: () => void) {
+        const current = documentListeners.get(type) ?? [];
+        current.push(handler);
+        documentListeners.set(type, current);
+      },
+      getElementById(id: string) {
+        return options.elements[id] ?? null;
+      }
+    },
+    window: {
+      location: {
+        pathname: options.pathname
+      },
+      setInterval() {
+        return 1;
+      }
+    }
+  };
+
+  const script = new vm.Script(`${source}\nthis.__hooks = { setupConfigEditor, setupRoleDetail };`);
+  vm.createContext(context);
+  script.runInContext(context);
+
+  return {
+    elements: options.elements,
+    hooks: (context as { __hooks: BrowserPage["hooks"] }).__hooks,
+    async submit(id: string) {
+      const element = options.elements[id];
+      if (!element?.listeners.submit?.[0]) {
+        throw new Error(`No submit listener registered for ${id}`);
+      }
+
+      await element.listeners.submit[0]({
+        preventDefault() {
+          return undefined;
+        }
+      });
+    }
+  };
+}
+
+interface FakeElement {
+  children: unknown[];
+  disabled: boolean;
+  hidden: boolean;
+  href: string;
+  innerHTML: string;
+  listeners: Record<string, Array<(event: { preventDefault(): void }) => Promise<void> | void>>;
+  readOnly: boolean;
+  textContent: string;
+  value: string;
+  addEventListener(type: string, handler: (event: { preventDefault(): void }) => Promise<void> | void): void;
+  replaceChildren(...children: unknown[]): void;
+}
+
+function createElement(textContent = "", innerHTML = ""): FakeElement {
+  return {
+    children: [],
+    disabled: false,
+    hidden: false,
+    href: "",
+    innerHTML,
+    listeners: {},
+    readOnly: false,
+    textContent,
+    value: "",
+    addEventListener(type, handler) {
+      this.listeners[type] ??= [];
+      this.listeners[type].push(handler);
+    },
+    replaceChildren(...children) {
+      this.children = [...children];
+      this.innerHTML = "";
+    }
+  };
+}
+
+function createContainer(children: unknown[] = []): FakeElement {
+  const element = createElement();
+  element.children = [...children];
+  return element;
+}
+
+function createFormElement(): FakeElement {
+  return createElement();
+}
+
+function createInputElement(): FakeElement {
+  const element = createElement();
+  element.value = "";
+  return element;
+}
+
+function createButtonElement(): FakeElement {
+  return createElement();
+}
+
+function createJsonResponse(status: number, body: unknown): { ok: boolean; status: number; text(): Promise<string> } {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text() {
+      return JSON.stringify(body);
+    }
+  };
+}
+
+function createLogger() {
+  return {
+    info() {
+      return undefined;
+    },
+    warn() {
+      return undefined;
+    },
+    error() {
+      return undefined;
+    }
+  };
+}

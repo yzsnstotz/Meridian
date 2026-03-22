@@ -134,6 +134,12 @@ code,
   margin-bottom: 18px;
 }
 
+.panel-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .panel-heading h2 {
   margin: 0;
   font-size: 1.1rem;
@@ -175,6 +181,17 @@ textarea {
 textarea {
   resize: vertical;
   min-height: 120px;
+}
+
+textarea[readonly],
+button:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.editor-textarea {
+  min-height: 360px;
+  font-family: var(--font-mono);
 }
 
 .actions,
@@ -339,5 +356,9 @@ dd {
   .role-card-header,
   .task-card-header {
     flex-direction: column;
+  }
+
+  .panel-links {
+    width: 100%;
   }
 }

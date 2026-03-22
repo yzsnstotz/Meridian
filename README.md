@@ -6,7 +6,7 @@
 
 - `DispatcherRole` for explicit DAG execution and inferred DAG generation from a TaskSpec
 - Prompt hot-reload APIs for the system prompt and per-task instruction templates
-- Local GUI pages for the dashboard, role detail, and prompt editor
+- Local GUI pages for the dashboard, role detail, prompt editor, and config editor
 - A2A client/server transport over Unix sockets
 - E2E scenarios for explicit DAGs, inferred mode, prompt updates, restart recovery rehydration, and socket routing
 
@@ -29,6 +29,8 @@ GUI_PORT=7701
 STATE_FILE_PATH=/var/lib/meridian-roles/state.json
 ```
 
+For local development and CI, override `STATE_FILE_PATH` to a writable path such as `/tmp/meridian-roles/state.json`. The default `/var/lib/...` path is intended for managed deployments, not unprivileged shells.
+
 The service boot path is `src/index.ts`. Startup does three things:
 
 1. Starts `A2AServer` on `ROLES_SOCKET_PATH` to receive callback results.
@@ -40,6 +42,7 @@ The service boot path is `src/index.ts`. Startup does three things:
 Prerequisites:
 
 - Meridian must already support `reply_channel.channel = "socket"`.
+- Meridian Hub must honor `intent: "reply"` for terminal summaries and `intent: "list"` for instance discovery.
 - Meridian's hub socket must match `HUB_SOCKET_PATH`.
 - The machine must allow writes to `ROLES_SOCKET_PATH` and `STATE_FILE_PATH`.
 - Meridian's GUI link patch from worker `N-09` must be present if you want the "Role Config" link inside Meridian.
@@ -76,7 +79,7 @@ DispatcherRole.dispatchTask()
   -> DispatcherRole.onInboundResult()
 ```
 
-Summary messages use the original `user_reply_channel`, but task execution replies always come back through `ROLES_SOCKET_PATH`.
+Task execution still uses `intent: "run"` with the socket reply channel. Terminal dispatcher summaries now use `intent: "reply"` with the original `user_reply_channel`. Automatic routing for `target_model_id`, `target_agent_type`, or idle fallback now asks Meridian Hub for `intent: "list"` instance data; explicit `target_thread_id` still wins.
 
 More detail: [`docs/socket-channel-flow.md`](docs/socket-channel-flow.md)
 
@@ -102,7 +105,24 @@ Inspect the live state:
 ```bash
 curl http://localhost:7701/api/role/dispatcher-demo
 curl http://localhost:7701/api/role/dispatcher-demo/prompts
+curl http://localhost:7701/api/role/dispatcher-demo/config
 ```
+
+Edit dispatcher config (`tasks` and `taskspec` only):
+
+```bash
+curl -X PATCH http://localhost:7701/api/role/dispatcher-demo/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tasks": [
+      { "task_id": "A", "instruction": "Collect facts", "depends_on": [] },
+      { "task_id": "B", "instruction": "Write summary", "depends_on": ["A"] }
+    ],
+    "taskspec": "Optional TaskSpec text"
+  }'
+```
+
+If any dispatcher task is `running`, the config endpoint returns `409` and the GUI editor becomes read-only until execution is terminal. Prompt content remains on `/role/:thread_id/prompts`.
 
 Patch the system prompt or a task template:
 
@@ -148,8 +168,15 @@ The full walkthrough, including a working `EchoRole` example, is in [`docs/addin
 ## Testing
 
 ```bash
+npm run lint
 npm test
 npm run test:e2e
+```
+
+Recommended CI gate:
+
+```bash
+npm run lint && npm test && npm run test:e2e
 ```
 
 `npm run test:e2e` currently covers:

@@ -69,7 +69,7 @@ describe("Scenario A: Explicit DAG dispatch", () => {
             task_id: "B",
             instruction: "Validate the first output",
             depends_on: ["A"],
-            target_thread_id: "codex_01"
+            target_model_id: "gpt-5-codex"
           },
           {
             task_id: "C",
@@ -111,9 +111,11 @@ describe("Scenario A: Explicit DAG dispatch", () => {
       );
 
       expect(secondRun.target).toBe("codex_01");
+      expect(thirdRun.target).toBe("claude_01");
       expect(thirdRun.trace_id).not.toBe(secondRun.trace_id);
       expect(harness.hub.messages.indexOf(secondRun)).toBeGreaterThan(harness.hub.messages.indexOf(firstRun));
       expect(harness.hub.messages.indexOf(thirdRun)).toBeGreaterThan(harness.hub.messages.indexOf(firstRun));
+      expect(harness.hub.messages.some((message) => message.intent === "list")).toBe(true);
 
       await Promise.all([
         harness.hub.sendResult(secondRun, {
@@ -143,7 +145,7 @@ describe("Scenario A: Explicit DAG dispatch", () => {
       const summaryMessage = await waitForHubMessage(
         harness.hub,
         (message) =>
-          message.intent === "run" &&
+          message.intent === "reply" &&
           message.suppress_reply === true &&
           message.payload.content.includes("# Dispatcher Summary: dispatcher-a")
       );
@@ -199,7 +201,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarne
 
   const runner = new RoleRunner({
     sendToHub: (message) => client.send(message),
-    listInstances: () => idleInstances,
+    listInstances: () => client.listInstances(),
     log
   });
   const roleHandlers = createRoleHandlers({
@@ -300,6 +302,19 @@ async function startFakeHub(socketPath: string): Promise<FakeHub> {
         source: "codex",
         status: "success",
         content: "registered",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      }));
+      return;
+    }
+
+    if (message.intent === "list") {
+      socket.end(JSON.stringify({
+        trace_id: message.trace_id,
+        thread_id: message.thread_id,
+        source: "codex",
+        status: "success",
+        content: JSON.stringify(idleInstances),
         attachments: [],
         timestamp: new Date().toISOString()
       }));

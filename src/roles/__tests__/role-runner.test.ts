@@ -41,19 +41,19 @@ function createLogger(): Logger {
   };
 }
 
-function createMockRole(threadId = "dispatcher-1") {
+function createMockRole(threadId = "dispatcher-1", config: unknown = { enabled: true }) {
   let capturedContext: RoleContext | undefined;
 
   const role = {
     roleType: "dispatcher" as const,
     threadId,
-    config: { enabled: true },
+    config,
     onActivate: vi.fn(async (ctx: RoleContext) => {
       capturedContext = ctx;
     }),
     onDeactivate: vi.fn(async () => {}),
-    onInboundResult: vi.fn(async (_result: HubResult) => {}),
-    onStatusChange: vi.fn(async (_threadId: string, _status: string) => {})
+    onInboundResult: vi.fn(async () => {}),
+    onStatusChange: vi.fn(async () => {})
   } satisfies BaseRole;
 
   return {
@@ -79,7 +79,7 @@ describe("RoleRunner", () => {
     const context = getContext();
     expect(context).toBeDefined();
     expect(context?.log).toBe(logger);
-    expect(context?.listInstances()).toEqual(instances);
+    expect(await context?.listInstances()).toEqual(instances);
 
     await context?.sendToHub({ intent: "run" });
     expect(sendToHub).toHaveBeenCalledWith({ intent: "run" });
@@ -116,6 +116,35 @@ describe("RoleRunner", () => {
     expect(logger.debug).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to trace_id correlation for dispatcher results routed to an agent thread", async () => {
+    const traceId = "123e4567-e89b-12d3-a456-426614174000";
+    const { role } = createMockRole("dispatcher-trace", {
+      tasks: [
+        {
+          task_id: "task-a",
+          result_trace_id: traceId
+        }
+      ]
+    });
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(role);
+    await runner.dispatch({
+      ...sampleResult,
+      thread_id: "codex_01",
+      trace_id: traceId
+    });
+
+    expect(role.onInboundResult).toHaveBeenCalledTimes(1);
+    expect(role.onInboundResult).toHaveBeenCalledWith({
+      ...sampleResult,
+      thread_id: "codex_01",
+      trace_id: traceId
+    });
+  });
+
   it("deactivates a role and unregisters it", async () => {
     const logger = createLogger();
     const { role } = createMockRole();
@@ -139,7 +168,7 @@ describe("RoleRegistry", () => {
     const registry = new RoleRegistry();
     const { role } = createMockRole("dispatcher-2");
 
-    registry.register("dispatcher", (_threadId, _config) => role);
+    registry.register("dispatcher", () => role);
 
     const created = registry.create("dispatcher", "dispatcher-2", { enabled: true });
 

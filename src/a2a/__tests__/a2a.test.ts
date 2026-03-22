@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HubMessage, HubResult } from "../../types";
+import type { AgentInstance, HubMessage, HubResult } from "../../types";
 import { A2AClient } from "../client";
 import { A2AServer } from "../server";
 
@@ -18,6 +18,22 @@ const tempDirectories = new Set<string>();
 const clients = new Set<A2AClient>();
 const servers = new Set<TestHubServer>();
 const roleServers = new Set<A2AServer>();
+const listedInstances: AgentInstance[] = [
+  {
+    thread_id: "codex_01",
+    agent_type: "codex",
+    model_id: "gpt-5-codex",
+    mode: "bridge",
+    socket_path: "/tmp/codex.sock",
+    working_dir: "/tmp",
+    pid: 202,
+    tmux_pane: null,
+    status: "idle",
+    created_at: "2026-03-19T00:00:00.000Z",
+    restart_safe: true,
+    auto_approve: false
+  }
+];
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -197,6 +213,36 @@ describe("A2AClient", () => {
       target: "claude_01"
     });
   });
+
+  it("lists registered instances through the hub list contract", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const rolesSocketPath = path.join(directory, "roles.sock");
+    const hub = await startHubServer(hubSocketPath, { listInstances: listedInstances });
+    servers.add(hub);
+
+    const client = new A2AClient({
+      hubSocketPath,
+      rolesSocketPath,
+      retryBaseDelayMs: 10,
+      maxRetryDelayMs: 20
+    });
+    clients.add(client);
+
+    await client.start();
+
+    await expect(client.listInstances()).resolves.toEqual(listedInstances);
+    expect(hub.messages[1]).toMatchObject({
+      thread_id: "list_instances",
+      actor_id: "service:meridian-roles",
+      intent: "list",
+      target: "global",
+      reply_channel: {
+        channel: "web",
+        chat_id: "service:meridian-roles"
+      }
+    });
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
@@ -205,7 +251,12 @@ async function createTempDirectory(): Promise<string> {
   return directory;
 }
 
-async function startHubServer(socketPath: string): Promise<TestHubServer> {
+async function startHubServer(
+  socketPath: string,
+  options: {
+    listInstances?: AgentInstance[];
+  } = {}
+): Promise<TestHubServer> {
   const messages: Record<string, unknown>[] = [];
   let closed = false;
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
@@ -219,13 +270,14 @@ async function startHubServer(socketPath: string): Promise<TestHubServer> {
     socket.on("end", () => {
       const message = JSON.parse(raw) as Record<string, unknown>;
       messages.push(message);
+      const content = message.intent === "list" ? JSON.stringify(options.listInstances ?? []) : "ok";
 
       socket.end(JSON.stringify({
         trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
         thread_id: typeof message.thread_id === "string" ? message.thread_id : "unknown",
         source: "codex",
         status: "success",
-        content: "ok",
+        content,
         attachments: [],
         timestamp: new Date().toISOString()
       }));

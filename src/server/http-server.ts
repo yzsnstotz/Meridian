@@ -134,6 +134,10 @@ function mapPublicAsset(pathname: string): { fileName: string; contentType: stri
     return { fileName: "prompts.html", contentType: "text/html; charset=utf-8" };
   }
 
+  if (/^\/role\/[^/]+\/config$/.test(pathname)) {
+    return { fileName: "config.html", contentType: "text/html; charset=utf-8" };
+  }
+
   if (pathname === "/app.js") {
     return { fileName: "app.js", contentType: "text/javascript; charset=utf-8" };
   }
