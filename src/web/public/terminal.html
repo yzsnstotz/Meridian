@@ -923,7 +923,7 @@
       <div id="sidebar-files-panel" class="sidebar-panel active">
         <div class="sidebar-header">
           Explorer
-          <button id="refresh-files" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+          <button id="refresh-files" aria-label="Refresh files" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
         </div>
         <div id="file-tree">
           <div class="tree-item" style="opacity: 0.5;">Loading files...</div>
@@ -932,7 +932,7 @@
       <div id="sidebar-sessions-panel" class="sidebar-panel">
         <div class="sidebar-header">
           Sessions
-          <button id="refresh-sessions" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+          <button id="refresh-sessions" aria-label="Refresh sessions" style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding: 4px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
         </div>
         <div id="session-list">
           <div class="tree-item" style="opacity: 0.5;">Loading sessions...</div>
@@ -941,9 +941,9 @@
     </div>
 
     <div id="main-content">
-      <div class="tabs">
-        <div class="tab active" data-view="terminal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg> Terminal</div>
-        <div class="tab" data-view="editor"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg> Editor</div>
+      <div class="tabs" role="tablist" aria-label="Workspace views">
+        <div class="tab active" data-view="terminal" role="tab" aria-selected="true" aria-controls="terminal-view"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg> Terminal</div>
+        <div class="tab" data-view="editor" role="tab" aria-selected="false" aria-controls="editor-view"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg> Editor</div>
       </div>
 
       <div class="view-container">
@@ -975,7 +975,7 @@
           <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:0.75rem;width:92%;max-width:500px;max-height:80vh;overflow-y:auto;padding:1.25rem;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
               <h2 style="font-size:1rem;font-weight:600;margin:0;">Output Filters</h2>
-              <button id="filters-close" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:1.25rem;padding:0.25rem 0.5rem;">&times;</button>
+              <button id="filters-close" aria-label="Close filters" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:1.25rem;padding:0.25rem 0.5rem;">&times;</button>
             </div>
             <div style="display:flex;gap:0.25rem;margin-bottom:1rem;">
               <button class="filter-tab active" data-filter-scope="gui" style="flex:1;padding:0.5rem;border:1px solid var(--border-color);background:var(--surface-hover);color:var(--text-color);border-radius:0.375rem;cursor:pointer;font-size:0.8125rem;font-weight:600;">GUI Filters</button>
@@ -1011,9 +1011,9 @@
     </div>
   </div>
 
-  <nav class="mobile-nav">
-    <div class="nav-item active" data-view="chat"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>Chat</div>
-    <div class="nav-item" data-view="editor"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>Editor</div>
+  <nav class="mobile-nav" role="tablist" aria-label="Mobile views">
+    <div class="nav-item active" data-view="chat" role="tab" aria-selected="true" aria-controls="chat-view"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>Chat</div>
+    <div class="nav-item" data-view="editor" role="tab" aria-selected="false" aria-controls="editor-view"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>Editor</div>
     <div class="nav-item" id="mobile-explorer-btn"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>Files</div>
   </nav>
 
@@ -2215,6 +2215,7 @@
           var del = document.createElement("button");
           del.style.cssText = "background:none;border:none;color:var(--error-color);cursor:pointer;font-size:0.875rem;padding:0.125rem 0.375rem;flex-shrink:0;";
           del.textContent = "\u00d7";
+          del.setAttribute("aria-label", "Remove filter");
           del.addEventListener("click", function() {
             var list = activeFilterScope === "gui" ? customGuiFilters : customInterfaceFilters;
             list.splice(idx, 1);
@@ -2543,7 +2544,9 @@
         var target = document.getElementById(viewName + "-view");
         if (target) target.classList.remove("hidden");
         document.querySelectorAll(".tab, .nav-item[data-view]").forEach(function(t) {
-          t.classList.toggle("active", t.getAttribute("data-view") === viewName);
+          var isActive = t.getAttribute("data-view") === viewName;
+          t.classList.toggle("active", isActive);
+          t.setAttribute("aria-selected", isActive ? "true" : "false");
         });
         if (viewName === "terminal") {
           setTimeout(function() { fitTerminal(); cmdInput.focus(); }, 10);
