@@ -808,6 +808,10 @@
     .chat-option-btn:active { transform: scale(0.98); background: rgba(59, 130, 246, 0.18); }
     .chat-option-btn.selected { background: var(--accent-color); color: white; border-color: var(--accent-color); }
     .chat-option-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .chat-options.resolved,
+    .chat-yn-options.resolved {
+      opacity: 0.55;
+    }
     .chat-yn-options {
       display: flex;
       gap: 0.5rem;
@@ -1105,7 +1109,13 @@
       var RUN_RESULT_COOLDOWN_MS = 3000;
       var runPending = false;
       var bubbleElementsByKey = Object.create(null);
+      var progressPollTimer = null;
+      var PROGRESS_POLL_INTERVAL_MS = 3000;
+      var activeProgressMessageKey = "";
+      var activeProgressTraceId = "";
+      var serverHistoryRestored = false;
       var modelCatalogState = null;
+      var CUSTOM_MODEL_OPTION_VALUE = "__custom__";
 
       function isMobile() { return window.innerWidth <= 768; }
 
@@ -1136,11 +1146,19 @@
       function detectApprovalPrompt(text) {
         if (!text) return false;
         var lower = text.toLowerCase();
-        return lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0);
+        return (
+          (lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0)) ||
+          (lower.indexOf("action required") >= 0 && lower.indexOf("allow execution of:") >= 0) ||
+          /would you like to run the following command\?/i.test(lower)
+        );
       }
 
       function mapApprovalOptionAction(label) {
         var lower = (label || "").toLowerCase();
+        if (lower === "1" || lower === "run" || lower === "y" || lower === "yes") return "run";
+        if (lower === "2" || lower === "allow" || lower === "tab") return "allow";
+        if (lower === "all" || lower === "btab" || lower === "shift+tab") return "all";
+        if (lower === "3" || lower === "n" || lower === "no" || lower === "skip") return "skip";
         if (/allow once/i.test(lower) || lower === "yes" || /run once/i.test(lower) || /yes,\s*proceed/i.test(lower)) return "run";
         if (/allow for this session/i.test(lower) || /allowlist/i.test(lower) || /for this session/i.test(lower) || /don't ask again/i.test(lower)) return "allow";
         if (/allow for all/i.test(lower) || /always allow/i.test(lower) || /allow all/i.test(lower)) return "all";
@@ -1172,8 +1190,180 @@
         var normalized = stripAnsi(content || "").trim();
         if (!normalized) return "";
         var lower = normalized.toLowerCase();
-        if (lower.indexOf("waiting for approval") < 0 || (lower.indexOf("run this command?") < 0 && lower.indexOf("allowlist") < 0)) return "";
-        return normalized;
+        if (lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0)) {
+          return normalized;
+        }
+
+        var lines = normalized
+          .split(/\r?\n/)
+          .map(function(line) { return line.trim(); })
+          .filter(Boolean);
+
+        if (lower.indexOf("action required") >= 0 && lower.indexOf("allow execution of:") >= 0) {
+          var allowIndex = -1;
+          for (var allowScan = 0; allowScan < lines.length; allowScan++) {
+            if (/^allow execution of:/i.test(lines[allowScan])) {
+              allowIndex = allowScan;
+              break;
+            }
+          }
+          if (allowIndex < 0) return "";
+          var command = "";
+          for (var commandScan = allowIndex - 1; commandScan >= 0; commandScan--) {
+            var candidate = lines[commandScan] || "";
+            if (!candidate || /^action required$/i.test(candidate) || /^\?/.test(candidate)) continue;
+            command = candidate;
+            break;
+          }
+          var geminiOptions = parseApprovalOptionsFromText(normalized);
+          var hasAllOption = geminiOptions.some(function(opt) { return opt && opt.action === "all"; });
+          if (!hasAllOption && geminiOptions.length >= 2) {
+            geminiOptions.push({ key: "3", label: "3. Allow for all commands", action: "all" });
+          }
+          if (geminiOptions.length === 0) return "";
+          var geminiSummary = ["Waiting for approval...", "Run this command?"];
+          if (command) geminiSummary.push(command);
+          geminiSummary.push(lines[allowIndex] || "Allow execution?");
+          geminiOptions.forEach(function(opt) { geminiSummary.push(opt.label); });
+          return geminiSummary.join("\n");
+        }
+
+        if (/would you like to run the following command\?/i.test(lower)) {
+          var codexCommand = "";
+          for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            var commandMatch = lines[lineIndex].match(/^\$\s*(.+)$/);
+            if (commandMatch) {
+              codexCommand = commandMatch[1] || "";
+              break;
+            }
+          }
+          var codexOptions = parseApprovalOptionsFromText(normalized);
+          if (codexOptions.length === 0) return "";
+          var codexSummary = ["Waiting for approval...", "Run this command?"];
+          if (codexCommand) codexSummary.push(codexCommand);
+          codexSummary.push("Run this command?");
+          codexOptions.forEach(function(opt) { codexSummary.push(opt.label); });
+          return codexSummary.join("\n");
+        }
+
+        return "";
+      }
+
+      function buildTraceMessageKey(type, traceId) {
+        var normalizedType = type === "user" ? "user" : "agent";
+        var normalizedTraceId = typeof traceId === "string" ? traceId.trim().toLowerCase() : "";
+        return normalizedTraceId ? normalizedType + ":trace:" + normalizedTraceId : "";
+      }
+
+      function buildHistoryMessageKey(entry) {
+        if (!entry) return "";
+        if (typeof entry.id === "string" && entry.id.trim()) {
+          return "history:" + entry.id.trim();
+        }
+        return buildTraceMessageKey(entry.type, entry.trace_id);
+      }
+
+      function buildProgressMessageKey(traceId) {
+        var normalizedTraceId = typeof traceId === "string" ? traceId.trim().toLowerCase() : "";
+        return "progress:" + (normalizedTraceId || threadId || "active");
+      }
+
+      function makeBubbleContentFingerprint(content, type) {
+        var normalizedContent = stripMeridianNoise(stripSummaryProtocolTags(stripAnsi(content || ""))).trim().toLowerCase();
+        return normalizedContent ? [type || "agent", normalizedContent].join("::") : "";
+      }
+
+      function hasRecentBubbleWithContentFingerprint(contentFingerprint, maxToScan, excludedBubble) {
+        if (!contentFingerprint || !chatMessagesEl) return false;
+        var scanned = 0;
+        for (var bubble = chatMessagesEl.lastElementChild; bubble && scanned < maxToScan; bubble = bubble.previousElementSibling) {
+          if (bubble !== excludedBubble && bubble.getAttribute("data-content-fingerprint") === contentFingerprint) {
+            return true;
+          }
+          scanned++;
+        }
+        return false;
+      }
+
+      function removeChatHistoryEntryByKey(messageKey) {
+        if (!messageKey) return;
+        var history = readChatHistory().filter(function(entry) {
+          return entry.messageKey !== messageKey;
+        });
+        writeChatHistory(history);
+      }
+
+      function clearBubbleByKey(messageKey) {
+        if (!messageKey) return;
+        var bubble = bubbleElementsByKey[messageKey];
+        if (bubble && bubble.parentNode) {
+          bubble.parentNode.removeChild(bubble);
+        }
+        delete bubbleElementsByKey[messageKey];
+        removeChatHistoryEntryByKey(messageKey);
+        if (chatMessagesEl && !chatMessagesEl.children.length) {
+          chatMessagesEl.classList.add("chat-messages-empty");
+        }
+      }
+
+      function clearActiveProgressBubble() {
+        if (activeProgressMessageKey) {
+          clearBubbleByKey(activeProgressMessageKey);
+        }
+        activeProgressMessageKey = "";
+        activeProgressTraceId = "";
+      }
+
+      function resolveApprovalOptions(selectedAction) {
+        if (!chatMessagesEl) return;
+        var containers = chatMessagesEl.querySelectorAll(".chat-options[data-approval-prompt='true'], .chat-yn-options[data-approval-prompt='true']");
+        containers.forEach(function(container) {
+          var buttons = container.querySelectorAll("button");
+          if (buttons.length === 0) return;
+          container.classList.add("resolved");
+          container.setAttribute("data-resolved", "true");
+          buttons.forEach(function(button) {
+            button.disabled = true;
+            if (selectedAction && button.getAttribute("data-approval-action") === selectedAction) {
+              button.classList.add("selected");
+            }
+          });
+        });
+      }
+
+      function syncApprovalStateWithBubble(content, type, detailsText) {
+        if (type === "user") {
+          var action = mapApprovalOptionAction(content);
+          if (action) {
+            resolveApprovalOptions(action);
+          }
+          return;
+        }
+        if (type === "agent") {
+          var approvalText = (content || "") + (detailsText ? "\n" + detailsText : "");
+          if (!detectApprovalPrompt(approvalText)) {
+            resolveApprovalOptions("");
+          }
+        }
+      }
+
+      function maybeRenderLiveApprovalPrompt() {
+        if (!runPending) return false;
+        var pendingText = stripAnsi(chatBuffer || "").trim();
+        var approvalSummary = summarizeApprovalPrompt(pendingText);
+        if (!pendingText || !approvalSummary) return false;
+        clearTimeout(chatTimer);
+        clearTimeout(chatTypingTimer);
+        runPending = false;
+        lastFlushedContent = pendingText;
+        chatBuffer = "";
+        showChatTyping(false);
+        renderProgressSnapshot({
+          content: approvalSummary,
+          trace_id: lastSubmittedTraceId || resolveTraceIdFromText(pendingText) || activeProgressTraceId || ""
+        });
+        startProgressPolling();
+        return true;
       }
 
       function isLowValueLine(line) {
@@ -1473,7 +1663,7 @@
             content: entry.content || "",
             type: entry.type || "agent",
             detailsText: entry.details_text || "",
-            messageKey: entry.trace_id ? "trace:" + entry.trace_id : "",
+            messageKey: buildHistoryMessageKey(entry),
             ts: Date.parse(entry.timestamp || "") || Date.now()
           };
         }));
@@ -1481,6 +1671,7 @@
 
       function restoreServerChatHistory(entries) {
         if (!Array.isArray(entries) || entries.length === 0) return false;
+        var latestPendingEntry = null;
         chatHistoryHydrating = true;
         try {
           for (var i = 0; i < entries.length; i++) {
@@ -1488,13 +1679,25 @@
             addChatBubble(entry.content || "", entry.type || "agent", entry.details_text || "", {
               persist: false,
               dedupe: false,
-              messageKey: entry.trace_id ? "trace:" + entry.trace_id : ""
+              messageKey: buildHistoryMessageKey(entry)
             });
+            if (entry.event_kind === "progress" || entry.event_kind === "approval") {
+              latestPendingEntry = entry;
+            } else if (entry.event_kind === "final_reply") {
+              latestPendingEntry = null;
+            }
           }
         } finally {
           chatHistoryHydrating = false;
         }
         cacheServerHistory(entries);
+        if (latestPendingEntry) {
+          activeProgressMessageKey = buildHistoryMessageKey(latestPendingEntry);
+          activeProgressTraceId = latestPendingEntry.trace_id || "";
+        } else {
+          activeProgressMessageKey = "";
+          activeProgressTraceId = "";
+        }
         return true;
       }
 
@@ -1504,10 +1707,18 @@
         var resolvedType = type || "agent";
         var resolvedDetails = detailsText || "";
         var fingerprint = makeBubbleFingerprint(content, resolvedType, resolvedDetails);
+        var contentFingerprint = makeBubbleContentFingerprint(content, resolvedType);
         var messageKey = opts.messageKey || "";
         var nowMs = Date.now();
+        var existingBubble = messageKey && bubbleElementsByKey[messageKey] && bubbleElementsByKey[messageKey].parentNode
+          ? bubbleElementsByKey[messageKey]
+          : null;
+        syncApprovalStateWithBubble(content, resolvedType, resolvedDetails);
         // Never dedupe user messages — sending the same text twice is intentional
         if (resolvedType !== "user") {
+          if (existingBubble && existingBubble.getAttribute("data-fingerprint") === fingerprint) {
+            return;
+          }
           var seenAt = seenBubbleFingerprintAtMs[fingerprint];
           if (opts.dedupe !== false && seenAt && (nowMs - seenAt) < 120000) {
             return;
@@ -1515,21 +1726,21 @@
           if (opts.dedupe !== false && chatMessagesEl.lastElementChild && chatMessagesEl.lastElementChild.getAttribute("data-fingerprint") === fingerprint) {
             return;
           }
+          if (opts.dedupe !== false && hasRecentBubbleWithContentFingerprint(contentFingerprint, 6, existingBubble)) {
+            return;
+          }
           if (shouldSuppressMessage(content, resolvedType)) return;
         }
         seenBubbleFingerprintAtMs[fingerprint] = nowMs;
 
-        if (messageKey && bubbleElementsByKey[messageKey] && bubbleElementsByKey[messageKey].parentNode) {
-          var existingBubble = bubbleElementsByKey[messageKey];
-          if (existingBubble.getAttribute("data-fingerprint") === fingerprint) {
-            return;
-          }
+        if (existingBubble) {
           existingBubble.parentNode.removeChild(existingBubble);
         }
 
         var bubble = document.createElement("div");
         bubble.className = "chat-bubble " + resolvedType;
         bubble.setAttribute("data-fingerprint", fingerprint);
+        bubble.setAttribute("data-content-fingerprint", contentFingerprint);
         if (messageKey) {
           bubble.setAttribute("data-message-key", messageKey);
           bubbleElementsByKey[messageKey] = bubble;
@@ -1624,9 +1835,7 @@
         }
 
         // Detect and render option buttons (strict prompt gate)
-        // Skip interactive approval buttons during history restore — those approvals
-        // have already been dealt with and the user's choice appears as the next entry.
-        if (resolvedType !== "user" && !chatHistoryHydrating) {
+        if (resolvedType !== "user") {
           var approvalDetectionText = content + (resolvedDetails ? "\n" + resolvedDetails : "");
           if (detectApprovalPrompt(approvalDetectionText)) {
             var parsedApprovalOpts = parseApprovalOptionsFromText(approvalDetectionText);
@@ -1640,14 +1849,15 @@
             }
             var approvalDiv = document.createElement("div");
             approvalDiv.className = "chat-options";
+            approvalDiv.setAttribute("data-approval-prompt", "true");
             parsedApprovalOpts.forEach(function(opt) {
               var btn = document.createElement("button");
               btn.className = "chat-option-btn";
               btn.textContent = opt.label;
+              btn.setAttribute("data-approval-action", opt.action);
               btn.addEventListener("click", function() {
+                resolveApprovalOptions(opt.action);
                 addChatBubble(opt.label, "user");
-                approvalDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
-                btn.classList.add("selected");
                 sendTerminalApproval(opt.action).catch(function(err) {
                   var msg = err && err.message ? err.message : "Approval action failed.";
                   addChatBubble("Error: " + msg, "agent");
@@ -1800,7 +2010,7 @@
           }
           var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || newContent);
           var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || newContent);
-          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: bubbleTraceId ? "trace:" + bubbleTraceId : "" });
+          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: buildTraceMessageKey("agent", bubbleTraceId) });
           lastFocusSummarySent = cleanSummary;
           lastSubmittedInput = "";
           // Only clear trace_id when a proper summary was extracted.
@@ -1824,7 +2034,7 @@
           if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
           var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || text);
           var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || text);
-          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: bubbleTraceId ? "trace:" + bubbleTraceId : "" });
+          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: buildTraceMessageKey("agent", bubbleTraceId) });
           lastFocusSummarySent = cleanSummary;
           lastSubmittedInput = "";
           // Only clear trace_id when a proper summary was extracted;
@@ -1955,6 +2165,78 @@
           });
       }
 
+      function fetchThreadProgress() {
+        if (!threadId) return Promise.resolve(null);
+        return window.MeridianWeb.fetchWithAuth("/api/progress/" + encodeURIComponent(threadId))
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to load progress");
+              }
+              return data && typeof data === "object" ? data : null;
+            });
+          });
+      }
+
+      function shouldPollProgress() {
+        return Boolean(threadId && token && (runPending || activeProgressMessageKey));
+      }
+
+      function stopProgressPolling() {
+        clearTimeout(progressPollTimer);
+        progressPollTimer = null;
+      }
+
+      function scheduleProgressPoll(delayMs) {
+        stopProgressPolling();
+        if (!shouldPollProgress()) return;
+        progressPollTimer = setTimeout(function() {
+          progressPollTimer = null;
+          pollThreadProgress();
+        }, delayMs);
+      }
+
+      function renderProgressSnapshot(snapshot) {
+        if (!snapshot || typeof snapshot.content !== "string") return;
+        var content = snapshot.content.trim();
+        if (!content) return;
+        var traceId = typeof snapshot.trace_id === "string" ? snapshot.trace_id.toLowerCase() : "";
+        var nextMessageKey = buildProgressMessageKey(traceId);
+        if (activeProgressMessageKey && activeProgressMessageKey !== nextMessageKey) {
+          clearBubbleByKey(activeProgressMessageKey);
+        }
+        activeProgressMessageKey = nextMessageKey;
+        activeProgressTraceId = traceId;
+        addChatBubble(content, "agent", "", { messageKey: nextMessageKey });
+        showChatTyping(false);
+      }
+
+      function pollThreadProgress() {
+        if (!shouldPollProgress()) return;
+        fetchThreadProgress()
+          .then(function(snapshot) {
+            renderProgressSnapshot(snapshot);
+          })
+          .catch(function(err) {
+            var message = err && err.message ? err.message : "";
+            if (/no active agent session|no registered agent instance found/i.test(message)) {
+              stopProgressPolling();
+              clearActiveProgressBubble();
+              return null;
+            }
+            return null;
+          })
+          .finally(function() {
+            if (shouldPollProgress()) {
+              scheduleProgressPoll(PROGRESS_POLL_INTERVAL_MS);
+            }
+          });
+      }
+
+      function startProgressPolling(immediate) {
+        scheduleProgressPoll(immediate === false ? PROGRESS_POLL_INTERVAL_MS : 0);
+      }
+
       function renderSessionList(entries) {
         if (!sessionListEl) return;
         sessionListEl.innerHTML = "";
@@ -2037,6 +2319,13 @@
         function formatModelText(modelLabelOrId) {
           return modelLabelOrId ? "Model: " + modelLabelOrId : "Model";
         }
+        function appendCustomModelOption() {
+          var customOption = document.createElement("option");
+          customOption.value = CUSTOM_MODEL_OPTION_VALUE;
+          customOption.textContent = "Model: Custom...";
+          customOption.selected = selectedModelId === CUSTOM_MODEL_OPTION_VALUE;
+          modelSelectEl.appendChild(customOption);
+        }
         function renderCurrentOnly(modelLabelOrId) {
           modelCatalogState = null;
           modelSelectEl.innerHTML = "";
@@ -2045,7 +2334,8 @@
           currentOption.textContent = formatModelText(modelLabelOrId);
           currentOption.selected = true;
           modelSelectEl.appendChild(currentOption);
-          modelSelectEl.disabled = true;
+          appendCustomModelOption();
+          modelSelectEl.disabled = false;
         }
         function renderUnavailable(label) {
           modelCatalogState = null;
@@ -2055,7 +2345,8 @@
           option.textContent = label || "Model: unavailable";
           option.selected = true;
           modelSelectEl.appendChild(option);
-          modelSelectEl.disabled = true;
+          appendCustomModelOption();
+          modelSelectEl.disabled = false;
         }
         if (!threadId) {
           renderUnavailable("Model: unavailable");
@@ -2104,6 +2395,7 @@
               if (!matchedSelection && modelSelectEl.options.length > 0) {
                 modelSelectEl.selectedIndex = 0;
               }
+              appendCustomModelOption();
               modelSelectEl.disabled = false;
               return data;
             });
@@ -2116,9 +2408,17 @@
 
       if (modelSelectEl) {
         modelSelectEl.addEventListener("change", function() {
-          if (!modelCatalogState) return;
           var selectedId = modelSelectEl.value;
-          if (!selectedId || selectedId === modelCatalogState.current_model_id) return;
+          var currentModelId = modelCatalogState && modelCatalogState.current_model_id ? modelCatalogState.current_model_id : "";
+          if (selectedId === CUSTOM_MODEL_OPTION_VALUE) {
+            var manualId = window.prompt("Enter provider model id:", currentModelId || "");
+            if (!manualId || !manualId.trim()) {
+              refreshModelCatalog(currentModelId);
+              return;
+            }
+            selectedId = manualId.trim();
+          }
+          if (!selectedId || selectedId === currentModelId) return;
           modelSelectEl.disabled = true;
           window.MeridianWeb.fetchWithAuth("/api/models", {
             method: "POST",
@@ -2142,7 +2442,7 @@
             })
             .catch(function(err) {
               addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent");
-              refreshModelCatalog(modelCatalogState.current_model_id || "");
+              refreshModelCatalog(currentModelId || "");
             });
         });
       }
@@ -2342,8 +2642,12 @@
       var initialReplayLines = 200;
       var historyBootstrapPromise = fetchThreadHistory()
         .then(function(entries) {
-          if (restoreServerChatHistory(entries)) {
+          serverHistoryRestored = restoreServerChatHistory(entries);
+          if (serverHistoryRestored) {
             initialReplayLines = 0;
+            if (activeProgressMessageKey) {
+              startProgressPolling();
+            }
             return true;
           }
           var restoredLocal = restoreChatHistory();
@@ -2351,6 +2655,7 @@
           return restoredLocal;
         })
         .catch(function() {
+          serverHistoryRestored = false;
           var restoredLocal = restoreChatHistory();
           initialReplayLines = restoredLocal ? 0 : 200;
           return restoredLocal;
@@ -2362,19 +2667,26 @@
           if (msg.type === "pane_output" && msg.chunk) {
             if (term && typeof term.write === "function") term.write(msg.chunk);
             chatBuffer += msg.chunk;
+            if (maybeRenderLiveApprovalPrompt()) {
+              return;
+            }
             clearTimeout(chatTimer);
             clearTimeout(chatTypingTimer);
             showChatTyping(true, "Agent is responding...");
             var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
             chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
-            chatTypingTimer = setTimeout(function() { showChatTyping(false); }, 3000);
+            chatTypingTimer = setTimeout(function() {
+              if (!runPending && !activeProgressMessageKey) {
+                showChatTyping(false);
+              }
+            }, 3000);
           }
         } catch (e) {}
       }
 
       function connectWebSocket() {
         if (!threadId || !token) return;
-        var replayLines = wsReconnectAttempts > 0 ? 100 : initialReplayLines;
+        var replayLines = wsReconnectAttempts > 0 ? (serverHistoryRestored ? 0 : 100) : initialReplayLines;
         var url = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
         ws = new WebSocket(url);
         ws.onopen = function() {
@@ -2498,30 +2810,38 @@
         lastFocusSummarySent = "";
         lastRunResultAtMs = 0;
         runPending = true;
+        clearActiveProgressBubble();
 
         addChatBubble(cmd, "user");
         lastSubmittedInput = cmd;
         lastSubmittedTraceId = "";
         showChatTyping(true, "Awaiting agent reply...");
+        startProgressPolling();
         runCommand(cmd)
           .then(function(data) {
             runPending = false;
+            stopProgressPolling();
             showChatTyping(false);
             var resultContent = data && typeof data.content === "string" ? data.content.trim() : "";
             if (data && typeof data.trace_id === "string") {
               lastSubmittedTraceId = data.trace_id.toLowerCase();
             }
+            clearActiveProgressBubble();
             if (!resultContent) return;
             // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
             lastFlushedContent = stripAnsi(resultContent);
             lastRunResultAtMs = Date.now();
             renderAgentContent(resultContent);
             refreshSessionList();
-            // After rendering, flush any pane output that accumulated during the run
-            if (chatBuffer.trim()) flushChatBuffer();
+            // The structured run result is authoritative for completed turns.
+            chatBuffer = "";
+            clearTimeout(chatTimer);
+            clearTimeout(chatTypingTimer);
           })
           .catch(function(err) {
             runPending = false;
+            stopProgressPolling();
+            clearActiveProgressBubble();
             showChatTyping(false);
             var msg = err && err.message ? err.message : "Send failed.";
             if (err && err.status === 401) msg = "Unauthorized. Refresh the page from the hub so the URL includes ?token=.";
@@ -2935,6 +3255,9 @@
         seenBubbleFingerprintAtMs = Object.create(null);
         suppressibleMessageState = Object.create(null);
         chatBuffer = "";
+        stopProgressPolling();
+        activeProgressMessageKey = "";
+        activeProgressTraceId = "";
       });
 
       // Overflow menu mirrors for mobile: Focus, Push, Filters

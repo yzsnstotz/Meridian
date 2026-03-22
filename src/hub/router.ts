@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
 import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
 import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
@@ -26,6 +27,7 @@ import { InstanceRegistry } from "./registry";
 import { ServiceRegistry } from "./service-registry";
 import {
   buildPersistedHubState,
+  type ConversationEventKind,
   loadPersistedHubState,
   savePersistedHubState,
   type PersistedConversationHistoryEntry,
@@ -80,12 +82,16 @@ interface PushSubscription {
 
 export interface ConversationHistoryEntry {
   id: string;
+  sequence: number;
+  event_kind: ConversationEventKind;
+  source: string;
   type: "user" | "agent";
   content: string;
   details_text: string;
   raw_content: string;
   trace_id: string | null;
   timestamp: string;
+  replace_key: string | null;
 }
 
 interface ActiveRunState {
@@ -109,6 +115,14 @@ const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 const AGENT_ROLES = new Set(["agent", "assistant"]);
 const THREAD_HISTORY_LIMIT = 400;
+
+function conversationEntryTypeForEventKind(eventKind: ConversationEventKind): "user" | "agent" {
+  return eventKind === "user_send" || eventKind === "terminal_input" ? "user" : "agent";
+}
+
+function isReplaceableConversationEventKind(eventKind: ConversationEventKind): eventKind is "progress" | "approval" {
+  return eventKind === "progress" || eventKind === "approval";
+}
 
 function encodeSessionId(chatId: string, botId: string | undefined): string {
   return botId ? `${botId}:${chatId}` : chatId;
@@ -429,6 +443,10 @@ export class HubRouter {
           return this.handleHistory(message);
         case "set_auto_approve":
           return this.handleSetAutoApprove(message);
+        case "register_service":
+          return this.handleRegisterService(message);
+        case "unregister_service":
+          return this.handleUnregisterService(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -448,15 +466,7 @@ export class HubRouter {
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
     this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id });
-    this.recordConversationEntry(threadId, {
-      id: randomUUID(),
-      type: "user",
-      content: message.payload.content,
-      details_text: "",
-      raw_content: message.payload.content,
-      trace_id: message.trace_id,
-      timestamp: this.now().toISOString()
-    });
+    this.recordUserConversationEntry(threadId, message.payload.content, message.trace_id, "user_send");
     this.persistStateSafely();
 
     try {
@@ -505,15 +515,8 @@ export class HubRouter {
     const instance = this.resolveInstance(threadId);
     const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
     if (message.payload.content?.trim()) {
-      this.recordConversationEntry(threadId, {
-        id: randomUUID(),
-        type: "user",
-        content: message.payload.content.trim(),
-        details_text: "",
-        raw_content: message.payload.content.trim(),
-        trace_id: message.trace_id,
-        timestamp: this.now().toISOString()
-      });
+      this.recordUserConversationEntry(threadId, message.payload.content.trim(), message.trace_id, "terminal_input");
+      this.resolveApprovalConversationEntry(threadId);
       this.persistStateSafely();
     }
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
@@ -1045,7 +1048,7 @@ export class HubRouter {
     try {
       const content = await this.resolveProgressContent(client, threadId);
       return HubResultSchema.parse({
-        trace_id: traceId ?? randomUUID(),
+        trace_id: this.activeRunsByThread.get(threadId)?.traceId ?? traceId ?? randomUUID(),
         thread_id: threadId,
         source: instance.agent_type,
         status: "partial",
@@ -1520,6 +1523,107 @@ export class HubRouter {
     );
   }
 
+  /**
+   * Dynamic A2A registration: meridian-roles (and other services) register their callback socket
+   * so the hub can route custom intents. Outbound `run` traffic still uses agent thread_ids.
+   */
+  private handleRegisterService(message: HubMessage): HubResult {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.payload.content);
+    } catch {
+      return this.buildResult(
+        message,
+        "error",
+        "codex",
+        "register_service: payload.content must be JSON",
+        message.thread_id
+      );
+    }
+
+    const raw = parsed as {
+      service?: string;
+      socket_path?: string;
+      agent_card?: { skills?: Array<{ intents?: string[] }> };
+    };
+    const socketPath = raw.socket_path?.trim();
+    if (!socketPath) {
+      return this.buildResult(
+        message,
+        "error",
+        "codex",
+        "register_service: payload must include socket_path",
+        message.thread_id
+      );
+    }
+
+    const serviceId = raw.service?.trim() ?? "service";
+    const intents: string[] = [];
+    for (const skill of raw.agent_card?.skills ?? []) {
+      for (const intent of skill.intents ?? []) {
+        const trimmed = intent.trim();
+        if (trimmed) {
+          intents.push(trimmed);
+        }
+      }
+    }
+
+    try {
+      this.serviceRegistry.register({
+        service: serviceId,
+        socket_path: socketPath,
+        intents
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error.message : String(error);
+      return this.buildResult(message, "error", "codex", `register_service failed: ${err}`, message.thread_id);
+    }
+
+    return this.buildResult(
+      message,
+      "success",
+      "codex",
+      JSON.stringify({ ok: true, service: serviceId, socket_path: socketPath, intents }),
+      message.thread_id
+    );
+  }
+
+  private handleUnregisterService(message: HubMessage): HubResult {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.payload.content);
+    } catch {
+      return this.buildResult(
+        message,
+        "error",
+        "codex",
+        "unregister_service: payload.content must be JSON",
+        message.thread_id
+      );
+    }
+
+    const raw = parsed as { service?: string };
+    const serviceId = raw.service?.trim();
+    if (!serviceId) {
+      return this.buildResult(
+        message,
+        "error",
+        "codex",
+        "unregister_service: payload must include service",
+        message.thread_id
+      );
+    }
+
+    const removed = this.serviceRegistry.unregister(serviceId);
+    return this.buildResult(
+      message,
+      "success",
+      "codex",
+      JSON.stringify({ ok: true, service: serviceId, removed }),
+      message.thread_id
+    );
+  }
+
   private parseSessionTarget(session: string): { chatId: string; botId?: string } | null {
     if (!session || session.startsWith("web:")) return null;
     const separatorIndex = session.indexOf(":");
@@ -1575,7 +1679,7 @@ export class HubRouter {
   }
 
   getConversationHistoryForThread(threadId: string): ConversationHistoryEntry[] {
-    return [...(this.conversationHistoryByThread.get(threadId) ?? [])];
+    return this.readConversationHistory(threadId);
   }
 
   listConversationThreads(): Array<{
@@ -1598,7 +1702,7 @@ export class HubRouter {
     return [...threadIds]
       .map((threadId) => {
         const instance = this.registry.get(threadId) ?? null;
-        const history = this.conversationHistoryByThread.get(threadId) ?? [];
+        const history = this.readConversationHistory(threadId);
         const lastEntry = history[history.length - 1] ?? null;
         const previewSource = lastEntry?.content?.trim() || lastEntry?.details_text?.trim() || "";
         const preview = previewSource ? previewSource.split(/\r?\n/, 1)[0] ?? "" : "";
@@ -1619,13 +1723,36 @@ export class HubRouter {
       });
   }
 
-  recordAgentPushConversation(threadId: string, rawContent: string, traceId: string | null = null): void {
-    this.recordAgentConversationEntry(threadId, rawContent, traceId, null);
+  recordAgentPushConversation(
+    threadId: string,
+    rawContent: string,
+    traceId: string | null = null,
+    eventKindHint: "progress" | "final_reply" = "progress"
+  ): void {
+    if (eventKindHint === "final_reply") {
+      this.recordAgentConversationEntry(threadId, rawContent, traceId, null);
+      this.persistStateSafely();
+      return;
+    }
+    const normalizedRaw = stripSummaryProtocolTags(stripMeridianContentFraming(rawContent)).trim() || rawContent.trim();
+    const approvalSummary = parseApprovalSummaryFromRawContent(rawContent) ?? (isApprovalPrompt(normalizedRaw) ? normalizedRaw : null);
+    const eventKind: ConversationEventKind = approvalSummary ? "approval" : "progress";
+    const content = approvalSummary ?? normalizedRaw ?? "Task is running...";
+    this.recordCanonicalConversationEntry(threadId, {
+      event_kind: eventKind,
+      source: this.resolveSourceForThread(threadId),
+      content,
+      details_text: normalizedRaw && normalizedRaw !== content ? normalizedRaw : "",
+      raw_content: rawContent,
+      trace_id: traceId,
+      timestamp: this.now().toISOString(),
+      replace_key: this.buildReplaceKey(threadId, traceId, eventKind)
+    });
     this.persistStateSafely();
   }
 
   getLatestConversationEntry(threadId: string, traceId?: string | null, type: "user" | "agent" | null = null): ConversationHistoryEntry | null {
-    const history = this.conversationHistoryByThread.get(threadId) ?? [];
+    const history = this.readConversationHistory(threadId);
     for (let index = history.length - 1; index >= 0; index -= 1) {
       const entry = history[index];
       if (!entry) {
@@ -1677,14 +1804,15 @@ export class HubRouter {
   ): void {
     const summary = this.summarizeConversationContent(rawContent, traceId);
     const detailsText = this.composeConversationDetails(inputText, rawContent);
-    this.recordConversationEntry(threadId, {
-      id: randomUUID(),
-      type: "agent",
+    this.recordCanonicalConversationEntry(threadId, {
+      event_kind: "final_reply",
+      source: this.resolveSourceForThread(threadId),
       content: summary,
       details_text: detailsText,
       raw_content: rawContent,
       trace_id: traceId,
-      timestamp: this.now().toISOString()
+      timestamp: this.now().toISOString(),
+      replace_key: null
     });
   }
 
@@ -1709,23 +1837,106 @@ export class HubRouter {
     return `Your message:\n${cleanInput}\n\nAgent reply:\n${cleanOutput}`;
   }
 
-  private recordConversationEntry(threadId: string, entry: ConversationHistoryEntry): void {
-    const history = this.conversationHistoryByThread.get(threadId) ?? [];
+  private recordUserConversationEntry(
+    threadId: string,
+    rawContent: string,
+    traceId: string | null,
+    eventKind: "user_send" | "terminal_input"
+  ): void {
+    this.recordCanonicalConversationEntry(threadId, {
+      event_kind: eventKind,
+      source: "user",
+      content: rawContent,
+      details_text: "",
+      raw_content: rawContent,
+      trace_id: traceId,
+      timestamp: this.now().toISOString(),
+      replace_key: null
+    });
+  }
+
+  private recordCanonicalConversationEntry(
+    threadId: string,
+    entry: Omit<ConversationHistoryEntry, "id" | "sequence" | "type">
+  ): void {
+    const history = this.readConversationHistory(threadId);
+
+    if (entry.event_kind === "final_reply" && entry.trace_id) {
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const existing = history[index];
+        if (!existing) {
+          continue;
+        }
+        if (existing.trace_id === entry.trace_id && isReplaceableConversationEventKind(existing.event_kind)) {
+          history.splice(index, 1);
+        }
+      }
+    }
+
+    if (entry.replace_key) {
+      const existingIndex = history.findIndex((candidate) => candidate.replace_key === entry.replace_key);
+      if (existingIndex >= 0) {
+        const existing = history[existingIndex];
+        history[existingIndex] = {
+          ...existing,
+          event_kind: entry.event_kind,
+          source: entry.source,
+          type: conversationEntryTypeForEventKind(entry.event_kind),
+          content: entry.content,
+          details_text: entry.details_text,
+          raw_content: entry.raw_content,
+          trace_id: entry.trace_id,
+          timestamp: entry.timestamp,
+          replace_key: entry.replace_key
+        };
+        this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
+        return;
+      }
+    }
+
     const previous = history[history.length - 1] ?? null;
     if (
       previous &&
-      previous.type === entry.type &&
+      previous.event_kind === entry.event_kind &&
       previous.content.trim() === entry.content.trim() &&
       previous.details_text.trim() === entry.details_text.trim() &&
-      previous.trace_id === entry.trace_id
+      previous.trace_id === entry.trace_id &&
+      previous.replace_key === entry.replace_key
     ) {
       return;
     }
-    history.push(entry);
-    if (history.length > THREAD_HISTORY_LIMIT) {
-      history.splice(0, history.length - THREAD_HISTORY_LIMIT);
+
+    history.push({
+      id: randomUUID(),
+      sequence: this.nextConversationSequence(history),
+      event_kind: entry.event_kind,
+      source: entry.source,
+      type: conversationEntryTypeForEventKind(entry.event_kind),
+      content: entry.content,
+      details_text: entry.details_text,
+      raw_content: entry.raw_content,
+      trace_id: entry.trace_id,
+      timestamp: entry.timestamp,
+      replace_key: entry.replace_key
+    });
+    this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
+  }
+
+  private resolveApprovalConversationEntry(threadId: string): void {
+    const history = this.readConversationHistory(threadId);
+    const activeTraceId = this.activeRunsByThread.get(threadId)?.traceId ?? null;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (!entry || entry.event_kind !== "approval") {
+        continue;
+      }
+      if (activeTraceId && entry.trace_id && entry.trace_id !== activeTraceId) {
+        continue;
+      }
+      history.splice(index, 1);
+      this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
+      return;
     }
-    this.conversationHistoryByThread.set(threadId, history);
   }
 
   private rehydrateLocalState(state: PersistedHubState): void {
@@ -1759,13 +1970,17 @@ export class HubRouter {
         threadId,
         entries.map((entry) => ({
           id: entry.id,
-          type: entry.type,
+          sequence: entry.sequence,
+          event_kind: entry.event_kind,
+          source: entry.source,
+          type: conversationEntryTypeForEventKind(entry.event_kind),
           content: entry.content,
           details_text: entry.details_text ?? "",
           raw_content: entry.raw_content ?? entry.details_text ?? entry.content,
           trace_id: entry.trace_id ?? null,
-          timestamp: entry.timestamp
-        }))
+          timestamp: entry.timestamp,
+          replace_key: entry.replace_key ?? null
+        })).sort((left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp))
       );
     }
   }
@@ -1787,15 +2002,45 @@ export class HubRouter {
     for (const [threadId, entries] of this.conversationHistoryByThread.entries()) {
       snapshot[threadId] = entries.map((entry) => ({
         id: entry.id,
-        type: entry.type,
+        sequence: entry.sequence,
+        event_kind: entry.event_kind,
+        source: entry.source,
         content: entry.content,
         details_text: entry.details_text,
         raw_content: entry.raw_content,
         trace_id: entry.trace_id,
-        timestamp: entry.timestamp
+        timestamp: entry.timestamp,
+        replace_key: entry.replace_key
       }));
     }
     return snapshot;
+  }
+
+  private buildReplaceKey(
+    threadId: string,
+    traceId: string | null,
+    eventKind: Extract<ConversationEventKind, "progress" | "approval">
+  ): string {
+    return traceId ? `${traceId}:${eventKind}` : `${threadId}:${eventKind}`;
+  }
+
+  private nextConversationSequence(history: ConversationHistoryEntry[]): number {
+    const latest = history[history.length - 1];
+    return (latest?.sequence ?? 0) + 1;
+  }
+
+  private trimConversationHistory(history: ConversationHistoryEntry[]): ConversationHistoryEntry[] {
+    history.sort((left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp));
+    if (history.length > THREAD_HISTORY_LIMIT) {
+      history.splice(0, history.length - THREAD_HISTORY_LIMIT);
+    }
+    return history;
+  }
+
+  private readConversationHistory(threadId: string): ConversationHistoryEntry[] {
+    return [...(this.conversationHistoryByThread.get(threadId) ?? [])].sort(
+      (left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp)
+    );
   }
 
   private normalizeMonitorUpdateIntervalSec(candidate: number | undefined): number {

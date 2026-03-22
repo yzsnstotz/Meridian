@@ -29,12 +29,12 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|------:|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Validate paths, env contract, typecheck, baseline tests | CODEX | — | Solution PRD, Test Report, Config, Package | Hard gate; all workers depend on this |
-| 🟧 | 1 | R-01 | Canonical conversation-event store + migration + coalescing rules | CODEX | PRE-FLIGHT | Solution PRD, Test Report | Foundation schema for all downstream work |
-| 🟧 | 2 | R-02 | Hub canonical event recording + web-readable progress exposure | CODEX | R-01 | Solution PRD, Test Report | Keep existing duplicate-final guards intact |
-| ⬜ | 3 | R-03 | Canonical `/api/history` + authenticated `/api/progress/:threadId` | CODEX | R-02 | Solution PRD, Test Report, Config | Coordinate route names with R-04 |
-| 🟧 | 3 | R-04 | Terminal: canonical restore + durable progress + reconnect dedup | CODEX | R-02 | Solution PRD, Test Report, TaskSpec | Covers F-01, F-02, F-03 client-side |
+| ✅ | 1 | R-01 | Canonical conversation-event store + migration + coalescing rules | CODEX | PRE-FLIGHT | Solution PRD, Test Report | Foundation schema for all downstream work |
+| ✅ | 2 | R-02 | Hub canonical event recording + web-readable progress exposure | CODEX | R-01 | Solution PRD, Test Report | Keep existing duplicate-final guards intact |
+| ✅ | 3 | R-03 | Canonical `/api/history` + authenticated `/api/progress/:threadId` | CODEX | R-02 | Solution PRD, Test Report, Config | Coordinate route names with R-04 |
+| ✅ | 3 | R-04 | Terminal: canonical restore + durable progress + reconnect dedup | CODEX | R-02 | Solution PRD, Test Report, TaskSpec | Covers F-01, F-02, F-03 client-side |
 | ✅ | 3 | R-05 | ARIA accessibility fixes (sidebar, tabs, icon-only buttons) | CODEX | PRE-FLIGHT | Solution PRD, Test Report | Covers F-04, F-05, F-06; parallel with R-03/R-04 |
-| ⬜ | 4 | R-06 | Regression coverage for all six findings (F-01–F-06) | CODEX | R-03, R-04, R-05 | Solution PRD, Test Report, TaskSpec | Extend existing tests; do not replace |
+| ✅ | 4 | R-06 | Regression coverage for all six findings (F-01–F-06) | CODEX | R-03, R-04, R-05 | Solution PRD, Test Report, TaskSpec | Extend existing tests; do not replace |
 | 🟧 | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-06 | TaskSpec, Solution PRD, Test Report | Always completes; appends corrective rows if drift |
 | 🟧 | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Solution PRD, Test Report | Terminal gate; human merges |
 

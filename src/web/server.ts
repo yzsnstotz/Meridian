@@ -475,6 +475,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname.startsWith("/api/progress/") && request.method === "GET") {
+      await this.handleProgressRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/file" && request.method === "GET") {
       await this.handleFileReadRequest(request, response);
       return;
@@ -660,6 +665,33 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleProgressRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = threadQuerySchema.parse({
+      thread_id: decodeURIComponent(requestUrl.pathname.slice("/api/progress/".length))
+    });
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "monitor_manual_update",
+          thread_id: query.thread_id,
+          target: query.thread_id,
+          content: `/mupdate thread=${query.thread_id}`
+        })
+      )
+    );
+
+    if (result.status === "error") {
+      const statusCode = /no registered agent instance found/i.test(result.content) ? 404 : 502;
+      this.respondJson(response, statusCode, { error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+
+    this.respondJson(response, 200, result);
   }
 
   private async handleFileWriteRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -1172,7 +1204,7 @@ export class WebInterfaceServer {
     if (lower.includes("enoent") || lower.includes("econnrefused")) {
       return "Hub is not reachable — is the hub process running?";
     }
-    if (lower.includes("no active instance") || lower.includes("no active agent")) {
+    if (lower.includes("no active instance") || lower.includes("no active agent") || lower.includes("no registered agent instance found")) {
       return "No active agent session — spawn or attach one first.";
     }
     if (lower.includes("timeout") || lower.includes("timed out")) {
