@@ -623,6 +623,69 @@ test("HubRouter waits past transient spinner frames and returns stabilized reply
   assert.equal(result.content, `${finalFrame}`);
 });
 
+test("HubRouter prefers Gemini edit approval over transient POST /message chrome", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:50731",
+    pid: 101,
+    tmux_pane: "agent_gemini_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let callCount = 0;
+  const editApprovalFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "Press Ctrl+O to expand pasted text                            1 GEMINI.md file" }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount <= 1) {
+          return [{ id: 40, role: "agent", content: "old frame" }];
+        }
+        return [{ id: 41, role: "agent", content: editApprovalFrame }];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.match(result.content, /^Waiting for approval\.\.\./);
+  assert.match(result.content, /Apply this change\?/);
+  assert.doesNotMatch(result.content, /Press Ctrl\+O to expand pasted text/);
+});
+
 test("HubRouter combines multi-part agent replies after run", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -1693,6 +1756,62 @@ test("HubRouter normalizes pane action-required frames into compact actionable c
   assert.match(result.content, /^Waiting for approval\.\.\./);
   assert.match(result.content, /Run this command\?/);
   assert.match(result.content, /git status && git remote -v && git log -n 3/);
+  assert.doesNotMatch(result.content, /╭|╰|│/);
+});
+
+test("HubRouter normalizes Gemini edit approval frames into compact actionable content", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 101,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const actionRequiredFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => [{ id: 1, role: "agent", content: actionRequiredFrame }]
+    })
+  });
+
+  const result = await router.buildProgressResultForThread(
+    "gemini_01",
+    "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
+  );
+
+  assert.equal(result.status, "partial");
+  assert.match(result.content, /^Waiting for approval\.\.\./);
+  assert.match(result.content, /Apply this change\?/);
+  assert.match(result.content, /Edit \.gitignore: \.context\/ => \.context\//);
+  assert.match(result.content, /4\.\s*No, suggest changes/);
   assert.doesNotMatch(result.content, /╭|╰|│/);
 });
 

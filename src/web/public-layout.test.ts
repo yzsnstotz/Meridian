@@ -37,6 +37,15 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
 });
 
+test("hub layout renders log footprint monitoring from the main page", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="log-overview"/);
+  assert.match(indexHtml, /id="log-list"/);
+  assert.match(indexHtml, /\/api\/logs/);
+  assert.match(indexHtml, /function renderLogInventory\(payload\)/);
+});
+
 test("bridge layout does not hard-cap content width on large screens", async () => {
   const bridgeHtml = await fs.promises.readFile(path.join(publicDir, "bridge.html"), "utf8");
 
@@ -73,7 +82,7 @@ test("terminal approval actions use dedicated terminal_input API", async () => {
 
   assert.match(terminalHtml, /\/api\/terminal_input/);
   assert.match(terminalHtml, /Allow for this session/);
-  assert.match(terminalHtml, /sendTerminalText\(opt\.key\)/);
+  assert.match(terminalHtml, /sendTerminalText\(opt\.(submit|key)\)/);
 });
 
 test("terminal explorer renders a collapsible directory tree", async () => {

@@ -1143,31 +1143,78 @@
         return /(^|\n)\s*(Answer with|Please answer)\s+(y\/n|yes\/no)\b/i.test(text);
       }
 
-      function detectApprovalPrompt(text) {
-        if (!text) return false;
-        var lower = text.toLowerCase();
-        return (
-          (lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0)) ||
-          (lower.indexOf("action required") >= 0 && lower.indexOf("allow execution of:") >= 0) ||
-          /would you like to run the following command\?/i.test(lower)
-        );
+      function normalizeApprovalText(text) {
+        var stripped = stripAnsi(text || "").replace(/\r/g, "");
+        var lines = stripped.split(/\n/).map(function(rawLine) {
+          var trimmed = rawLine.replace(/\s+$/, "");
+          var compact = trimmed.trim();
+          if (!compact) return "";
+          if (/^[\s╭╮╰╯─━═▀▄▁▔█]+$/.test(compact)) return "";
+          var boxed = compact.match(/^[│┃]\s?(.*?)\s?[│┃]$/);
+          if (boxed) return (boxed[1] || "").replace(/\s+$/, "");
+          return compact;
+        });
+        while (lines.length && !lines[0]) lines.shift();
+        while (lines.length && !lines[lines.length - 1]) lines.pop();
+        return lines.join("\n").trim();
+      }
+
+      function normalizeApprovalOptionLabel(label) {
+        return (label || "")
+          .trim()
+          .replace(/\s*\(esc\)\s*$/i, "")
+          .replace(/\s*\([ypn]\)\s*$/i, "")
+          .trim();
+      }
+
+      function stripApprovalPromptLeader(text) {
+        return (text || "").replace(/^\?\s*/, "").trim();
+      }
+
+      function isApprovalOptionLine(text) {
+        return /^[●○›•]?\s*\d+\.\s+/.test((text || "").trim());
+      }
+
+      function isDiffPreviewLine(text) {
+        return /^\d+\s+[+\-]?\S/.test((text || "").trim());
       }
 
       function mapApprovalOptionAction(label) {
-        var lower = (label || "").toLowerCase();
-        if (lower === "1" || lower === "run" || lower === "y" || lower === "yes") return "run";
-        if (lower === "2" || lower === "allow" || lower === "tab") return "allow";
-        if (lower === "all" || lower === "btab" || lower === "shift+tab") return "all";
-        if (lower === "3" || lower === "n" || lower === "no" || lower === "skip") return "skip";
-        if (/allow once/i.test(lower) || lower === "yes" || /run once/i.test(lower) || /yes,\s*proceed/i.test(lower)) return "run";
-        if (/allow for this session/i.test(lower) || /allowlist/i.test(lower) || /for this session/i.test(lower) || /don't ask again/i.test(lower)) return "allow";
-        if (/allow for all/i.test(lower) || /always allow/i.test(lower) || /allow all/i.test(lower)) return "all";
-        if (/\bno\b/.test(lower) || /deny/i.test(lower) || /suggest changes/i.test(lower) || /reject/i.test(lower) || /don.t allow/i.test(lower) || /tell codex what to do differently/i.test(lower) || /tell me what to do differently/i.test(lower)) return "skip";
+        var lower = normalizeApprovalOptionLabel(label).toLowerCase().replace(/[\s_-]+/g, "");
+        if (!lower) return null;
+        if (
+          lower.indexOf("allowonce") >= 0 ||
+          lower.indexOf("runonce") >= 0 ||
+          lower.indexOf("approveonce") >= 0 ||
+          lower.indexOf("yesproceed") >= 0 ||
+          lower === "yes"
+        ) return "run";
+        if (
+          lower.indexOf("allowforthissession") >= 0 ||
+          lower.indexOf("forthissession") >= 0 ||
+          lower.indexOf("allowlist") >= 0 ||
+          lower.indexOf("dontaskagain") >= 0
+        ) return "allow";
+        if (
+          lower.indexOf("allowforall") >= 0 ||
+          lower.indexOf("allowall") >= 0 ||
+          lower.indexOf("alwaysallow") >= 0 ||
+          lower.indexOf("allcommands") >= 0
+        ) return "all";
+        if (
+          lower === "no" ||
+          lower.indexOf("deny") >= 0 ||
+          lower.indexOf("suggestchanges") >= 0 ||
+          lower.indexOf("reject") >= 0 ||
+          lower.indexOf("dontallow") >= 0 ||
+          lower.indexOf("tellcodexwhattododifferently") >= 0 ||
+          lower.indexOf("tellmewhattododifferently") >= 0
+        ) return "skip";
         return null;
       }
 
       function parseApprovalOptionsFromText(text) {
-        var normalized = stripAnsi(text || "");
+        var normalized = normalizeApprovalText(text);
         var lines = normalized.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(Boolean);
         var options = [];
         var seenNums = {};
@@ -1175,22 +1222,58 @@
           var m = lines[i].match(/^[●○›•]?\s*(\d+)\.\s*(.+)$/);
           if (!m) continue;
           var num = parseInt(m[1], 10);
-          var label = m[2].trim().replace(/\s*\(esc\)\s*$/, "").replace(/\s*\([ypn]\)\s*$/i, "").trim();
+          var key = String(num);
+          var label = normalizeApprovalOptionLabel(m[2]);
           if (seenNums[num]) continue;
           seenNums[num] = true;
           var action = mapApprovalOptionAction(label);
-          if (action) {
-            options.push({ key: String(num), label: num + ". " + label, action: action });
-          }
+          options.push({ key: key, label: key + ". " + label, action: action, submit: key });
         }
         return options;
       }
 
+      function findNearestApprovalContextLine(lines, fromIndex) {
+        for (var index = fromIndex - 1; index >= 0; index--) {
+          var candidate = stripApprovalPromptLeader(lines[index] || "");
+          var lower = candidate.toLowerCase();
+          if (!candidate) continue;
+          if (lower === "action required" || isApprovalOptionLine(candidate) || isDiffPreviewLine(candidate)) continue;
+          return candidate;
+        }
+        return "";
+      }
+
+      function findNearestEditApprovalContextLine(lines, fromIndex) {
+        for (var index = fromIndex - 1; index >= 0; index--) {
+          var candidate = stripApprovalPromptLeader(lines[index] || "");
+          if (!candidate) continue;
+          if (/^(edit|write|update|create|delete|rename|move)\b/i.test(candidate)) return candidate;
+        }
+        return findNearestApprovalContextLine(lines, fromIndex);
+      }
+
+      function buildApprovalSummaryLines(header, context, promptLine, options) {
+        var summary = ["Waiting for approval...", header];
+        var normalizedContext = (context || "").trim();
+        var normalizedPromptLine = (promptLine || "").trim();
+        if (normalizedContext && normalizedContext !== header && normalizedContext !== normalizedPromptLine) {
+          summary.push(normalizedContext);
+        }
+        if (normalizedPromptLine && normalizedPromptLine !== header) {
+          summary.push(normalizedPromptLine);
+        }
+        options.forEach(function(opt) { summary.push(opt.label); });
+        return summary.join("\n");
+      }
+
       function summarizeApprovalPrompt(content) {
-        var normalized = stripAnsi(content || "").trim();
+        var normalized = normalizeApprovalText(content);
         if (!normalized) return "";
         var lower = normalized.toLowerCase();
-        if (lower.indexOf("waiting for approval") >= 0 && (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0)) {
+        if (
+          lower.indexOf("waiting for approval") >= 0 &&
+          (lower.indexOf("run this command?") >= 0 || lower.indexOf("allowlist") >= 0 || lower.indexOf("apply this change?") >= 0)
+        ) {
           return normalized;
         }
 
@@ -1198,6 +1281,8 @@
           .split(/\r?\n/)
           .map(function(line) { return line.trim(); })
           .filter(Boolean);
+        var options = parseApprovalOptionsFromText(normalized);
+        if (options.length === 0) return "";
 
         if (lower.indexOf("action required") >= 0 && lower.indexOf("allow execution of:") >= 0) {
           var allowIndex = -1;
@@ -1208,24 +1293,29 @@
             }
           }
           if (allowIndex < 0) return "";
-          var command = "";
-          for (var commandScan = allowIndex - 1; commandScan >= 0; commandScan--) {
-            var candidate = lines[commandScan] || "";
-            if (!candidate || /^action required$/i.test(candidate) || /^\?/.test(candidate)) continue;
-            command = candidate;
-            break;
+          return buildApprovalSummaryLines(
+            "Run this command?",
+            findNearestApprovalContextLine(lines, allowIndex),
+            lines[allowIndex] || "Allow execution?",
+            options
+          );
+        }
+
+        if (lower.indexOf("action required") >= 0 && lower.indexOf("apply this change?") >= 0) {
+          var applyIndex = -1;
+          for (var applyScan = 0; applyScan < lines.length; applyScan++) {
+            if (/^apply this change\?$/i.test(lines[applyScan])) {
+              applyIndex = applyScan;
+              break;
+            }
           }
-          var geminiOptions = parseApprovalOptionsFromText(normalized);
-          var hasAllOption = geminiOptions.some(function(opt) { return opt && opt.action === "all"; });
-          if (!hasAllOption && geminiOptions.length >= 2) {
-            geminiOptions.push({ key: "3", label: "3. Allow for all commands", action: "all" });
-          }
-          if (geminiOptions.length === 0) return "";
-          var geminiSummary = ["Waiting for approval...", "Run this command?"];
-          if (command) geminiSummary.push(command);
-          geminiSummary.push(lines[allowIndex] || "Allow execution?");
-          geminiOptions.forEach(function(opt) { geminiSummary.push(opt.label); });
-          return geminiSummary.join("\n");
+          if (applyIndex < 0) return "";
+          return buildApprovalSummaryLines(
+            "Apply this change?",
+            findNearestEditApprovalContextLine(lines, applyIndex),
+            lines[applyIndex] || "Apply this change?",
+            options
+          );
         }
 
         if (/would you like to run the following command\?/i.test(lower)) {
@@ -1237,16 +1327,37 @@
               break;
             }
           }
-          var codexOptions = parseApprovalOptionsFromText(normalized);
-          if (codexOptions.length === 0) return "";
-          var codexSummary = ["Waiting for approval...", "Run this command?"];
-          if (codexCommand) codexSummary.push(codexCommand);
-          codexSummary.push("Run this command?");
-          codexOptions.forEach(function(opt) { codexSummary.push(opt.label); });
-          return codexSummary.join("\n");
+          return buildApprovalSummaryLines("Run this command?", codexCommand, "Run this command?", options);
+        }
+
+        if (lower.indexOf("action required") >= 0) {
+          for (var questionIndex = 0; questionIndex < lines.length; questionIndex++) {
+            var questionLine = stripApprovalPromptLeader(lines[questionIndex] || "");
+            if (!questionLine || isApprovalOptionLine(questionLine) || questionLine.toLowerCase() === "action required") continue;
+            if (!/\?$/.test(questionLine)) continue;
+            return buildApprovalSummaryLines(
+              questionLine || "Approval required",
+              findNearestApprovalContextLine(lines, questionIndex),
+              questionLine,
+              options
+            );
+          }
         }
 
         return "";
+      }
+
+      function detectApprovalPrompt(text) {
+        return !!summarizeApprovalPrompt(text);
+      }
+
+      function extractApprovalSelectionToken(label) {
+        var trimmed = (label || "").trim();
+        if (!trimmed) return "";
+        if (/^\d+$/.test(trimmed)) return trimmed;
+        var optionMatch = trimmed.match(/^(\d+)\.\s+/);
+        if (optionMatch) return optionMatch[1] || "";
+        return mapApprovalOptionAction(trimmed) || "";
       }
 
       function buildTraceMessageKey(type, traceId) {
@@ -1314,7 +1425,7 @@
         activeProgressTraceId = "";
       }
 
-      function resolveApprovalOptions(selectedAction) {
+      function resolveApprovalOptions(selectedToken) {
         if (!chatMessagesEl) return;
         var containers = chatMessagesEl.querySelectorAll(".chat-options[data-approval-prompt='true'], .chat-yn-options[data-approval-prompt='true']");
         containers.forEach(function(container) {
@@ -1324,7 +1435,13 @@
           container.setAttribute("data-resolved", "true");
           buttons.forEach(function(button) {
             button.disabled = true;
-            if (selectedAction && button.getAttribute("data-approval-action") === selectedAction) {
+            if (
+              selectedToken &&
+              (
+                button.getAttribute("data-approval-token") === selectedToken ||
+                button.getAttribute("data-approval-action") === selectedToken
+              )
+            ) {
               button.classList.add("selected");
             }
           });
@@ -1333,9 +1450,9 @@
 
       function syncApprovalStateWithBubble(content, type, detailsText) {
         if (type === "user") {
-          var action = mapApprovalOptionAction(content);
-          if (action) {
-            resolveApprovalOptions(action);
+          var selectedToken = extractApprovalSelectionToken(content);
+          if (selectedToken) {
+            resolveApprovalOptions(selectedToken);
           }
           return;
         }
@@ -1389,6 +1506,7 @@
         if (t.indexOf("skip the next speaker check") >= 0) return true;
         if (t.indexOf("assessing the git situation") >= 0) return true;
         if (t.indexOf("analyzing push parameters") >= 0) return true;
+        if (t.indexOf("press ctrl+o to expand pasted text") >= 0) return true;
         if (t.indexOf("see full, untruncated responses") >= 0) return true;
         if (t.indexOf("let node.js auto-configure memory") >= 0) return true;
         if (t.indexOf("list your saved chat checkpoints") >= 0) return true;
@@ -1842,9 +1960,9 @@
             if (parsedApprovalOpts.length === 0) {
               // Fallback: show standard approval options
               parsedApprovalOpts = [
-                { key: "1", label: "1. Allow once", action: "run" },
-                { key: "2", label: "2. Allow for this session", action: "allow" },
-                { key: "3", label: "3. No, suggest changes", action: "skip" }
+                { key: "1", label: "1. Allow once", action: "run", submit: "1" },
+                { key: "2", label: "2. Allow for this session", action: "allow", submit: "2" },
+                { key: "3", label: "3. No, suggest changes", action: "skip", submit: "3" }
               ];
             }
             var approvalDiv = document.createElement("div");
@@ -1854,11 +1972,13 @@
               var btn = document.createElement("button");
               btn.className = "chat-option-btn";
               btn.textContent = opt.label;
-              btn.setAttribute("data-approval-action", opt.action);
+              if (opt.action) btn.setAttribute("data-approval-action", opt.action);
+              btn.setAttribute("data-approval-token", opt.submit || opt.key);
               btn.addEventListener("click", function() {
-                resolveApprovalOptions(opt.action);
+                var approvalToken = opt.submit || opt.key || opt.action || "";
+                resolveApprovalOptions(approvalToken);
                 addChatBubble(opt.label, "user");
-                sendTerminalApproval(opt.action).catch(function(err) {
+                sendTerminalApproval(approvalToken).catch(function(err) {
                   var msg = err && err.message ? err.message : "Approval action failed.";
                   addChatBubble("Error: " + msg, "agent");
                 });

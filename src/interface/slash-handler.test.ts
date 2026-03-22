@@ -110,6 +110,14 @@ test("parseSlashCommand normalizes /approve aliases", () => {
   assert.equal(parsed.payloadContent, "run");
 });
 
+test("parseSlashCommand accepts numeric /approve selections", () => {
+  const parsed = parseSlashCommand("/approve 4 thread=gemini_01");
+  assert.equal(parsed.intent, "terminal_input");
+  assert.equal(parsed.threadId, "gemini_01");
+  assert.equal(parsed.target, "gemini_01");
+  assert.equal(parsed.payloadContent, "4");
+});
+
 test("parseSlashCommand marks /kill without thread as picker flow", () => {
   const parsed = parseSlashCommand("/kill");
   assert.equal(parsed.intent, "kill");

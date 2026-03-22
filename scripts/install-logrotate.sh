@@ -12,6 +12,11 @@ if [[ ! -f "${SOURCE_FILE}" ]]; then
   exit 1
 fi
 
+if ! command -v logrotate >/dev/null 2>&1; then
+  echo "logrotate is not installed or not in PATH." >&2
+  exit 1
+fi
+
 if [[ ! -w "${TARGET_DIR}" ]]; then
   echo "No write permission for ${TARGET_DIR}. Re-run with sudo." >&2
   exit 1

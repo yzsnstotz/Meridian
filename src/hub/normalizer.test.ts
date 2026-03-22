@@ -70,6 +70,28 @@ test("normalizeInboundEvent parses /model command", () => {
   assert.equal(message.mode, "bridge");
 });
 
+test("normalizeInboundEvent accepts numeric /approve selections", () => {
+  const message = normalizeInboundEvent(
+    {
+      channel: "telegram",
+      raw_message_id: "103b",
+      sender_id: 7,
+      content: "/approve 4 thread=gemini_01",
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      reply_to: null
+    },
+    {
+      chatId: "67890"
+    }
+  );
+
+  assert.equal(message.intent, "terminal_input");
+  assert.equal(message.thread_id, "gemini_01");
+  assert.equal(message.target, "gemini_01");
+  assert.equal(message.payload.content, "4");
+});
+
 test("normalizeInboundEvent rejects bare /model without a model id", () => {
   assert.throws(
     () =>

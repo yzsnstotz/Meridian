@@ -44,7 +44,38 @@ test("classifyAgentOutput keeps plain replies as message content", () => {
   assert.equal(result.text, "Hi! How can I help you today?");
 });
 
-test("classifyAgentOutput backfills option 3 when terminal prompt only exposes 1 and 2", () => {
+test("classifyAgentOutput marks Gemini idle prompt chrome as transient", () => {
+  const frame = [
+    "Gemini CLI v0.34.0",
+    "Signed in with Google: user@example.com",
+    "",
+    "? for shortcuts",
+    ">   Type your message or @path/to/file"
+  ].join("\n");
+
+  const result = classifyAgentOutput(frame);
+  assert.equal(result.kind, "transient");
+});
+
+test("classifyAgentOutput marks Gemini startup notice as transient", () => {
+  const frame = [
+    "We're making changes to Gemini CLI that may impact your workflow.",
+    "What's Changing: We are adding more robust detection of policy-violating use cases.",
+    "Read more: https://goo.gle/geminicli-updates",
+    "",
+    ">   Type your message or @path/to/file"
+  ].join("\n");
+
+  const result = classifyAgentOutput(frame);
+  assert.equal(result.kind, "transient");
+});
+
+test("classifyAgentOutput marks Gemini paste-expander chrome as transient", () => {
+  const result = classifyAgentOutput("Press Ctrl+O to expand pasted text                            1 GEMINI.md file");
+  assert.equal(result.kind, "transient");
+});
+
+test("classifyAgentOutput preserves only the approval options exposed by the prompt", () => {
   const frame = [
     "Action Required",
     "",
@@ -56,7 +87,39 @@ test("classifyAgentOutput backfills option 3 when terminal prompt only exposes 1
 
   const result = classifyAgentOutput(frame);
   assert.equal(result.kind, "action_required");
-  assert.match(result.text, /3\. Allow for all commands/);
+  assert.match(result.text, /^Waiting for approval\.\.\./);
+  assert.match(result.text, /1\. Allow once/);
+  assert.match(result.text, /2\. Allow for this session/);
+  assert.doesNotMatch(result.text, /3\. Allow for all commands/);
+});
+
+test("classifyAgentOutput recognizes Gemini edit-apply approval prompt", () => {
+  const frame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const result = classifyAgentOutput(frame);
+  assert.equal(result.kind, "action_required");
+  assert.match(result.text, /^Waiting for approval\.\.\./);
+  assert.match(result.text, /Apply this change\?/);
+  assert.match(result.text, /Edit \.gitignore: \.context\/ => \.context\//);
+  assert.match(result.text, /4\.\s*No, suggest changes/);
 });
 
 test("classifyAgentOutput marks incomplete summary protocol blocks as transient", () => {

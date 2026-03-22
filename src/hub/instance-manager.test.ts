@@ -490,8 +490,20 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
   assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'2' 'Enter'/);
 });
 
-test("sendTerminalInput maps Gemini auto-approve to the allow-for-session key", async () => {
+test("sendTerminalInput falls back to Gemini allow-for-session key when prompt inspection fails", () => {
   const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 2205,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString(),
+    auto_approve: false
+  });
+
   const execCalls: string[] = [];
 
   const manager = new InstanceManager(registry, {
@@ -499,6 +511,9 @@ test("sendTerminalInput maps Gemini auto-approve to the allow-for-session key", 
     socketPathFactory: socketPathForThread,
     execSyncFn: ((command: string) => {
       execCalls.push(command);
+      if (command.includes("capture-pane")) {
+        throw new Error("capture failed");
+      }
       return Buffer.from("");
     }) as never,
     spawnFn: ((command: string, args: string[]) => {
@@ -509,30 +524,82 @@ test("sendTerminalInput maps Gemini auto-approve to the allow-for-session key", 
     clientFactory: () => ({
       connect: async () => undefined,
       disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" }),
-      getMessages: async () => [
-        {
-          role: "agent",
-          content: [
-            "Gemini CLI v0.34.0",
-            "? for shortcuts",
-            "Shift+Tab to accept edits",
-            ">   Type your message or @path/to/file"
-          ].join("\n")
-        }
-      ]
+      getStatus: async () => ({ status: "running" })
     })
   });
-  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 20;
 
-  const threadId = await manager.spawn("gemini", "pane_bridge");
+  const message = manager.sendTerminalInput("gemini_01", "all");
+
+  assert.equal(message, "Sent approval action 'all' to gemini_01.");
+  assert.equal(execCalls.length, 2);
+  assert.match(execCalls[0] ?? "", /tmux capture-pane -e -p -t 'agent_gemini_01'/);
+  assert.match(execCalls[1] ?? "", /tmux send-keys -t 'agent_gemini_01' '2' 'Enter'/);
+});
+
+test("sendTerminalInput derives Gemini option numbers from the live approval prompt", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 2207,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString(),
+    auto_approve: false
+  });
+
+  const execCalls: string[] = [];
+  const approvalFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      if (command.includes("capture-pane")) {
+        return approvalFrame;
+      }
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2207) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
   execCalls.length = 0;
+  const message = manager.sendTerminalInput("gemini_01", "skip");
 
-  const message = manager.sendTerminalInput(threadId, "all");
-
-  assert.equal(message, `Sent approval action 'all' to ${threadId}.`);
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_gemini_01.*'2' 'Enter'/);
+  assert.equal(message, "Sent approval action 'skip' to gemini_01.");
+  assert.equal(execCalls.length, 2);
+  assert.match(execCalls[0] ?? "", /tmux capture-pane -e -p -t 'agent_gemini_01'/);
+  assert.match(execCalls[1] ?? "", /tmux send-keys -t 'agent_gemini_01' '4' 'Enter'/);
 });
 
 test("sendTerminalInput forwards raw terminal text to tmux pane", async () => {

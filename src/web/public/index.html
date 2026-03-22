@@ -70,6 +70,97 @@
       flex-wrap: wrap;
     }
 
+    .overview-panel {
+      background: linear-gradient(135deg, rgba(22, 27, 42, 0.96), rgba(15, 23, 42, 0.92));
+      border: 1px solid var(--border-color);
+      border-radius: 1.1rem;
+      padding: 1.1rem 1.2rem;
+      margin-bottom: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .overview-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .overview-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .overview-subtitle {
+      margin-top: 0.2rem;
+      color: var(--text-dim);
+      font-size: 0.8rem;
+    }
+
+    .overview-total {
+      text-align: right;
+    }
+
+    .overview-total strong {
+      display: block;
+      font-size: 1.4rem;
+      color: #fff;
+      line-height: 1;
+    }
+
+    .overview-total span {
+      color: var(--text-dim);
+      font-size: 0.75rem;
+    }
+
+    .log-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.7rem;
+    }
+
+    .log-item {
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.03);
+      padding: 0.8rem 0.9rem;
+      min-width: 0;
+    }
+
+    .log-item-path {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      line-height: 1.4;
+      color: #dbe7ff;
+      word-break: break-all;
+    }
+
+    .log-item-meta {
+      margin-top: 0.45rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+    }
+
+    .log-item-size {
+      color: #fff;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .log-empty {
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      padding: 0.25rem 0;
+    }
+
     .spawn-controls {
       display: flex;
       align-items: center;
@@ -98,6 +189,16 @@
       margin: 0;
       accent-color: var(--accent-color);
       cursor: pointer;
+    }
+
+    .select {
+      min-width: 10rem;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--border-color);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-color);
+      font-size: 0.875rem;
     }
 
     .btn {
@@ -355,6 +456,12 @@
     <div id="content" class="hidden">
       <div class="toolbar">
         <div class="spawn-controls">
+          <select id="spawn-provider" class="select" aria-label="Spawn provider">
+            <option value="codex">Provider: Codex</option>
+            <option value="claude">Provider: Claude</option>
+            <option value="gemini">Provider: Gemini</option>
+            <option value="cursor">Provider: Cursor</option>
+          </select>
           <button id="btn-spawn" class="btn btn-primary">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             New Session
@@ -369,6 +476,22 @@
           Live
         </div>
       </div>
+
+      <section id="log-overview" class="overview-panel">
+        <div class="overview-head">
+          <div>
+            <div class="overview-title">Log Footprint</div>
+            <div id="log-overview-subtitle" class="overview-subtitle">Checking current log directory usage...</div>
+          </div>
+          <div class="overview-total">
+            <strong id="log-total-size">--</strong>
+            <span id="log-file-count">0 files</span>
+          </div>
+        </div>
+        <div id="log-list" class="log-list">
+          <div class="log-empty">Loading log sizes…</div>
+        </div>
+      </section>
 
       <div id="grid" class="card-grid">
         <!-- Cards injected here -->
@@ -407,7 +530,35 @@
       var loadingEl = document.getElementById("loading");
       var emptyStateEl = document.getElementById("empty-state");
       var btnSpawn = document.getElementById("btn-spawn");
+      var logOverviewSubtitleEl = document.getElementById("log-overview-subtitle");
+      var logTotalSizeEl = document.getElementById("log-total-size");
+      var logFileCountEl = document.getElementById("log-file-count");
+      var logListEl = document.getElementById("log-list");
+      var providerEl = document.getElementById("spawn-provider");
       var autoApproveEl = document.getElementById("spawn-auto-approve");
+      var SPAWN_PROVIDER_STORAGE_KEY = "meridian_spawn_provider";
+      var SPAWN_AUTO_APPROVE_STORAGE_KEY = "meridian_spawn_auto_approve";
+
+      function loadSpawnPreferences() {
+        try {
+          if (providerEl) {
+            var savedProvider = localStorage.getItem(SPAWN_PROVIDER_STORAGE_KEY);
+            if (savedProvider && providerEl.querySelector('option[value="' + savedProvider + '"]')) {
+              providerEl.value = savedProvider;
+            }
+          }
+          if (autoApproveEl) {
+            autoApproveEl.checked = localStorage.getItem(SPAWN_AUTO_APPROVE_STORAGE_KEY) === "true";
+          }
+        } catch (e) {}
+      }
+
+      function saveSpawnPreferences() {
+        try {
+          if (providerEl) localStorage.setItem(SPAWN_PROVIDER_STORAGE_KEY, providerEl.value || "codex");
+          if (autoApproveEl) localStorage.setItem(SPAWN_AUTO_APPROVE_STORAGE_KEY, autoApproveEl.checked ? "true" : "false");
+        } catch (e) {}
+      }
 
       function showState(state) {
         loadingEl.classList.toggle("hidden", state !== "loading");
@@ -427,6 +578,18 @@
           if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
           return d.toLocaleDateString();
         } catch (e) { return s; }
+      }
+
+      function formatBytes(bytes) {
+        if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0) return "0 B";
+        var units = ["B", "KB", "MB", "GB", "TB"];
+        var unitIndex = 0;
+        var value = bytes;
+        while (value >= 1024 && unitIndex < units.length - 1) {
+          value = value / 1024;
+          unitIndex += 1;
+        }
+        return (value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)) + " " + units[unitIndex];
       }
 
       function openInstance(inst) {
@@ -469,17 +632,55 @@
                   <span class="detail-label">Mode</span>
                   <span class="detail-value">${escapeHtml(inst.mode || "bridge")}</span>
                 </div>
+                <a class="role-link" href="http://localhost:7701/role/${encodeURIComponent(inst.thread_id)}" style="display:none">角色配置 →</a>
               </div>
             </details>
           `;
           
           var detailsEl = card.querySelector("details.card-secondary");
+          var roleLinkEl = card.querySelector(".role-link");
           if (detailsEl) {
             detailsEl.addEventListener("click", function (e) { e.stopPropagation(); });
+          }
+          if (roleLinkEl) {
+            roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
+            fetch("http://localhost:7701/api/role/" + encodeURIComponent(inst.thread_id))
+              .then(function (res) {
+                if (res.ok) roleLinkEl.style.display = "flex";
+              })
+              .catch(function () {});
           }
           card.addEventListener("click", function () { openInstance(inst); });
           gridEl.appendChild(card);
         });
+      }
+
+      function renderLogInventory(payload) {
+        var files = payload && Array.isArray(payload.files) ? payload.files : [];
+        if (logTotalSizeEl) logTotalSizeEl.textContent = formatBytes(payload && payload.total_bytes || 0);
+        if (logFileCountEl) logFileCountEl.textContent = files.length + " files";
+        if (logOverviewSubtitleEl) {
+          var root = payload && payload.root ? payload.root : "log dir";
+          logOverviewSubtitleEl.textContent = "Monitoring " + root;
+        }
+        if (!logListEl) return;
+        if (!files.length) {
+          logListEl.innerHTML = '<div class="log-empty">No log files found.</div>';
+          return;
+        }
+
+        logListEl.innerHTML = files.map(function (entry) {
+          var updatedLabel = entry.updated_at ? formatDate(entry.updated_at) : "unknown";
+          return (
+            '<div class="log-item">' +
+              '<div class="log-item-path">' + escapeHtml(entry.path || "") + '</div>' +
+              '<div class="log-item-meta">' +
+                '<span>' + escapeHtml(updatedLabel) + '</span>' +
+                '<span class="log-item-size">' + escapeHtml(formatBytes(entry.size_bytes || 0)) + '</span>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join("");
       }
 
       function escapeHtml(s) {
@@ -494,20 +695,29 @@
           showState("unauthorized");
           return;
         }
-        window.MeridianWeb.fetchWithAuth("/api/instances")
-          .then(function (res) {
+        Promise.all([
+          window.MeridianWeb.fetchWithAuth("/api/instances").then(function (res) {
+            if (res.status === 401) throw new Error("401");
+            return res.json();
+          }),
+          window.MeridianWeb.fetchWithAuth("/api/logs").then(function (res) {
             if (res.status === 401) throw new Error("401");
             return res.json();
           })
-          .then(function (data) {
+        ])
+          .then(function (results) {
+            var data = results[0];
+            var logs = results[1];
             showState("ready");
             renderGrid(Array.isArray(data) ? data : []);
+            renderLogInventory(logs || { files: [], total_bytes: 0, root: "" });
           })
           .catch(function (err) {
             if (err.message === "401") showState("unauthorized");
             else {
               showState("ready");
               renderGrid([]);
+              renderLogInventory({ files: [], total_bytes: 0, root: "log dir" });
             }
           });
       }
@@ -515,11 +725,12 @@
       function spawn() {
         if (!window.MeridianWeb.ensureToken()) return;
         btnSpawn.disabled = true;
+        saveSpawnPreferences();
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            type: "codex",
+            type: providerEl && providerEl.value ? providerEl.value : "codex",
             mode: "pane_bridge",
             auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
           })
@@ -535,6 +746,8 @@
       }
 
       btnSpawn.addEventListener("click", spawn);
+      if (providerEl) providerEl.addEventListener("change", saveSpawnPreferences);
+      if (autoApproveEl) autoApproveEl.addEventListener("change", saveSpawnPreferences);
 
       // FAB (mobile) triggers same spawn
       var fabBtn = document.getElementById("fab-spawn");
@@ -566,6 +779,7 @@
         ptrStartY = 0;
       }, { passive: true });
 
+      loadSpawnPreferences();
       fetchList();
       setInterval(fetchList, REFRESH_MS);
     })();

@@ -107,6 +107,36 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
   assert.match(String((seenMessages[0]?.reply_channel as { chat_id?: string }).chat_id), /^web:/);
 });
 
+test("Web Interface Server returns log inventory for an authorized request", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-logs-"));
+
+  try {
+    await fs.promises.mkdir(path.join(logDir, "GUI"), { recursive: true });
+    await fs.promises.writeFile(path.join(logDir, "hub.log"), "1234567890");
+    await fs.promises.writeFile(path.join(logDir, "GUI", "gui-pane-codex_01.log"), "1234");
+
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/logs?token=secret-token`);
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as {
+        root: string;
+        total_bytes: number;
+        files: Array<{ path: string; size_bytes: number }>;
+      };
+      assert.equal(payload.root, logDir);
+      assert.equal(payload.total_bytes, 14);
+      assert.deepEqual(
+        payload.files.map((entry) => entry.path),
+        ["hub.log", "GUI/gui-pane-codex_01.log"]
+      );
+    }, {
+      logDir
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
 test("Web Interface Server lists files from instance working directory", async () => {
   const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-files-"));
   await fs.promises.mkdir(path.join(repoDir, "src"), { recursive: true });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { HubMessageSchema, type BridgeMode, type HubMessage, type InboundUIEvent, type Intent } from "../types";
-import { APPROVAL_HELP_TEXT, normalizeApprovalAction } from "../shared/approval";
+import { APPROVAL_HELP_TEXT, normalizeApprovalSelection } from "../shared/approval";
 
 interface ParsedIntent {
   intent: Intent;
@@ -114,7 +114,7 @@ function requireThreadId(args: Record<string, string>, fallbackThreadId: string,
 function parseApprovalCommand(rawArgs: string, args: Record<string, string>, restTokens: string[]): string {
   const bareAction = restTokens.find((token) => !token.includes("=")) ?? "";
   const rawAction = (args.action ?? bareAction ?? rawArgs).trim();
-  const action = normalizeApprovalAction(rawAction);
+  const action = normalizeApprovalSelection(rawAction);
   if (!action) {
     throw new Error(`/approve action is invalid. ${APPROVAL_HELP_TEXT}`);
   }

@@ -217,12 +217,11 @@ function summarizeText(content: string, traceId: string): { summary: string; det
 }
 
 export function decorateTelegramResultText(result: HubResult): string {
-  const tag = `trace=${result.trace_id}`;
   const body = stripMeridianContentFraming(stripSummaryProtocolTags(result.content)).trim();
   if (!body) {
-    return tag;
+    return "/detail";
   }
-  const baseText = `${tag}\n\n${body}`;
+  const baseText = body;
   if (!isApprovalPrompt(result.content)) {
     return baseText;
   }
@@ -230,12 +229,11 @@ export function decorateTelegramResultText(result: HubResult): string {
 }
 
 function composeSummaryTelegramText(result: HubResult, summaryText: string, includeDetailHint: boolean): string {
-  const tag = `trace=${result.trace_id}`;
   const body = stripMeridianContentFraming(summaryText).trim();
   if (!includeDetailHint) {
-    return `${tag}\n\n${body}`;
+    return body;
   }
-  return `${tag}\n\n${body}\n\n/detail trace=${result.trace_id}`;
+  return body ? `${body}\n\n/detail` : "/detail";
 }
 
 function makeDetailCacheKey(chatId: string, botId: string | null): string {
@@ -243,9 +241,8 @@ function makeDetailCacheKey(chatId: string, botId: string | null): string {
 }
 
 function composeDetailTelegramText(result: HubResult, detailText: string): string {
-  const tag = `trace=${result.trace_id}`;
   const body = stripMeridianContentFraming(detailText).trim();
-  return body ? `${tag}\n\n${body}` : tag;
+  return body || "/detail";
 }
 
 function makeTelegramMessageFingerprint(summaryText: string, detailText: string): string {

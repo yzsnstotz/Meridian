@@ -10,6 +10,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { requestHubMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
+import { collectLogInventory } from "../log-retention";
 import {
   AgentTypeSchema,
   FileAttachmentSchema,
@@ -99,6 +100,7 @@ export interface WebInterfaceServerOptions {
   port?: number;
   listenHost?: string;
   token?: string;
+  logDir?: string;
   hubSocketPath?: string;
   httpsEnabled?: boolean;
   tlsCertPath?: string;
@@ -298,6 +300,7 @@ export class WebInterfaceServer {
   private readonly listenHost: string;
   private readonly token: string;
   private readonly hubSocketPath: string;
+  private readonly logDir: string;
   private readonly httpsEnabled: boolean;
   private readonly tlsCertPath: string;
   private readonly tlsKeyPath: string;
@@ -314,6 +317,7 @@ export class WebInterfaceServer {
     this.listenHost = options.listenHost ?? "0.0.0.0";
     this.token = (options.token ?? config.WEB_GUI_TOKEN).trim();
     this.hubSocketPath = options.hubSocketPath ?? config.HUB_SOCKET_PATH;
+    this.logDir = options.logDir ?? config.LOG_DIR;
     this.httpsEnabled = options.httpsEnabled ?? config.WEB_GUI_HTTPS;
     this.tlsCertPath = options.tlsCertPath ?? config.TLS_CERT_PATH;
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
@@ -435,6 +439,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/logs" && request.method === "GET") {
+      await this.handleLogInventoryRequest(response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/run" && request.method === "POST") {
       await this.handleRunRequest(request, response);
       return;
@@ -538,6 +547,11 @@ export class WebInterfaceServer {
     );
 
     this.respondJson(response, 200, parseInstancesContent(result.content));
+  }
+
+  private async handleLogInventoryRequest(response: http.ServerResponse): Promise<void> {
+    const inventory = await collectLogInventory(this.logDir);
+    this.respondJson(response, 200, inventory);
   }
 
   private async handleRunRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

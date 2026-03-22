@@ -1,13 +1,11 @@
-/var/log/hub/*.log {
+/var/log/hub/*.log /var/log/hub/GUI/*.log {
   daily
-  rotate 30
+  maxsize 50M
+  rotate 14
+  dateext
   compress
   delaycompress
   missingok
   notifempty
-  postrotate
-    pm2 reload calling-hub --silent || true
-    pm2 reload calling-interface --silent || true
-    pm2 reload calling-monitor --silent || true
-  endscript
+  copytruncate
 }

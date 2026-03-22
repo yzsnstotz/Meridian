@@ -2164,9 +2164,15 @@ export class HubRouter {
   ): Promise<string> {
     const isAck = this.isTransportAckResponse(response);
     const extracted = this.extractContent(response);
+    const extractedClassification = classifyAgentOutput(extracted);
 
     if (!isAck && extracted.trim().length > 0) {
-      return extracted;
+      if (extractedClassification.kind === "action_required") {
+        return extractedClassification.text.trim() || extracted.trim();
+      }
+      if (extractedClassification.kind === "message") {
+        return extractedClassification.text.trim() || extracted.trim();
+      }
     }
 
     const latestSnapshot = await this.getLatestAgentMessageSnapshot(client);
@@ -2182,7 +2188,11 @@ export class HubRouter {
       return "Agent is processing...";
     }
 
-    return extracted;
+    if (extractedClassification.kind === "transient") {
+      return "Agent is processing...";
+    }
+
+    return extractedClassification.text.trim() || extracted;
   }
 
   private isTransportAckResponse(response: Record<string, unknown>): boolean {
