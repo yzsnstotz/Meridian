@@ -5,6 +5,7 @@ import { STATE_FILE_PATH } from "./config";
 import { AppStateSchema, type AppState } from "./types";
 
 type FileSystem = Pick<typeof fs, "mkdir" | "writeFile" | "rename" | "unlink" | "readFile">;
+const WRITABLE_STATE_FILE_EXAMPLE = "/tmp/meridian-roles/state.json";
 
 export class StateStore {
   constructor(
@@ -18,14 +19,24 @@ export class StateStore {
     const tempFilePath = `${this.filePath}.tmp`;
     const payload = `${JSON.stringify(normalizedState, null, 2)}\n`;
 
-    await this.fileSystem.mkdir(directory, { recursive: true });
+    try {
+      await this.fileSystem.mkdir(directory, { recursive: true });
+    } catch (error) {
+      throw createStateStoreError("create state directory", directory, this.filePath, error);
+    }
 
     try {
       await this.fileSystem.writeFile(tempFilePath, payload, "utf8");
+    } catch (error) {
+      await this.fileSystem.unlink(tempFilePath).catch(() => undefined);
+      throw createStateStoreError("write temporary state file", tempFilePath, this.filePath, error);
+    }
+
+    try {
       await this.fileSystem.rename(tempFilePath, this.filePath);
     } catch (error) {
       await this.fileSystem.unlink(tempFilePath).catch(() => undefined);
-      throw error;
+      throw createStateStoreError("replace state file", this.filePath, this.filePath, error);
     }
   }
 
@@ -45,4 +56,20 @@ export class StateStore {
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function createStateStoreError(
+  action: string,
+  attemptedPath: string,
+  stateFilePath: string,
+  error: unknown
+): Error {
+  const details = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `Failed to ${action} at "${attemptedPath}" while saving state to "${stateFilePath}". ${details}. ` +
+      `Set STATE_FILE_PATH to a writable absolute path, for example "${WRITABLE_STATE_FILE_EXAMPLE}".`,
+    {
+      cause: error
+    }
+  );
 }

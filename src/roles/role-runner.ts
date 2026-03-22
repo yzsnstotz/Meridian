@@ -1,9 +1,9 @@
 import type { AgentInstance, HubMessage, HubResult } from "../types";
-import type { BaseRole, Logger, RoleContext } from "./base-role";
+import type { Awaitable, BaseRole, Logger, RoleContext } from "./base-role";
 
 export interface RoleRunnerOptions {
   sendToHub(msg: Partial<HubMessage>): Promise<void>;
-  listInstances?: () => AgentInstance[];
+  listInstances?: () => Awaitable<AgentInstance[]>;
   log?: Logger;
 }
 
@@ -47,7 +47,12 @@ export class RoleRunner {
   }
 
   async dispatch(result: HubResult): Promise<void> {
-    const role = this.roles.get(result.thread_id);
+    let role = this.roles.get(result.thread_id);
+    if (!role) {
+      // Hub `run` results often carry the agent thread_id (codex_01), while the outbound
+      // HubMessage.thread_id was the dispatcher role. Fall back to trace_id correlation.
+      role = this.findRoleByInboundTrace(result);
+    }
     if (!role) {
       this.context.log.debug("Ignoring inbound result for unknown role thread", {
         threadId: result.thread_id,
@@ -57,5 +62,24 @@ export class RoleRunner {
     }
 
     await role.onInboundResult(result);
+  }
+
+  private findRoleByInboundTrace(result: HubResult): BaseRole | undefined {
+    for (const candidate of this.roles.values()) {
+      if (candidate.roleType !== "dispatcher") {
+        continue;
+      }
+
+      const inferTraceId = (candidate as { inferTraceId?: string | null }).inferTraceId;
+      if (inferTraceId === result.trace_id) {
+        return candidate;
+      }
+
+      const tasks = (candidate.config as { tasks?: Array<{ result_trace_id?: string }> }).tasks;
+      if (tasks?.some((task) => task.result_trace_id === result.trace_id)) {
+        return candidate;
+      }
+    }
+    return undefined;
   }
 }

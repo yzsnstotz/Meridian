@@ -268,6 +268,8 @@ describe("DispatcherRole", () => {
       channel: "telegram",
       chat_id: "telegram:123"
     });
+    expect(summaryMessage.intent).toBe("reply");
+    expect(summaryMessage.target).toBe("global");
     expect(summaryMessage.suppress_reply).toBe(true);
     expect(summaryMessage.payload.content).toContain("# Dispatcher Summary: dispatcher-3");
     expect(summaryMessage.payload.content).toContain("- root: failed | root failed");
@@ -427,6 +429,7 @@ describe("DispatcherRole", () => {
       .map((call) => call[0])
       .filter((message): message is HubMessage => Boolean(message) && message.suppress_reply === true);
     expect(summaryMessages).toHaveLength(1);
+    expect(summaryMessages[0]?.intent).toBe("reply");
     expect(summaryMessages[0]?.payload.content).toContain("1. root");
     expect(summaryMessages[0]?.payload.content).toContain("2. left");
     expect(summaryMessages[0]?.payload.content).toContain("3. right");
@@ -479,7 +482,7 @@ function buildResult(overrides: Partial<HubResult> = {}): HubResult {
 }
 
 function createSendToHubMock() {
-  return vi.fn(async (_message: Partial<HubMessage>) => undefined);
+  return vi.fn<(message: Partial<HubMessage>) => Promise<void>>(async () => undefined);
 }
 
 function cloneState(state: AppState): AppState {

@@ -138,7 +138,7 @@ describe("Scenario D: Restart recovery", () => {
       const completion = await waitForHubMessage(
         secondHarness.hub,
         (message) =>
-          message.intent === "run" &&
+          message.intent === "reply" &&
           message.suppress_reply === true &&
           message.payload.content.includes("# Dispatcher Summary: dispatcher-d")
       );

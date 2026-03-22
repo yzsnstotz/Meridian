@@ -24,7 +24,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   const registry = new RoleRegistry();
   const runner = new RoleRunner({
     sendToHub: (message) => client.send(message),
-    listInstances: () => [],
+    listInstances: () => client.listInstances(),
     log
   });
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });

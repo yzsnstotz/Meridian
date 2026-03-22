@@ -2,7 +2,7 @@
 
 **Version**: v1.2
 **Date**: 2026-03
-**Status**: Phase 0 complete — Phase 1 ready for dispatch
+**Status**: Phase 5 complete — DELTA-CHECK paused pending PM delta decision
 
 ---
 
@@ -50,7 +50,7 @@
 | ✅ | 4 | N-08 | Web GUI | CODEX | N-05, N-07 | meridian-roles PRD §5 | Dark theme; vanilla JS; trace_id truncated to 8 chars |
 | ✅ | 4 | N-09 | Meridian index.html link | CODEX | N-02 | meridian-roles PRD §5, Meridian PRD | Targets MERIDIAN_ROOT, not REPO_ROOT — brief agent separately |
 | ✅ | 5 | N-10 | E2E tests + docs | CODEX | N-06, N-07, N-08, N-09 | All PRDs | Scenario B quality = manual review; `--mock` for CI |
-| ⬜ | Ω | DELTA-CHECK | Delta Check & corrective dispatch | OPUS | N-01, N-02, N-03, N-04, N-05, N-06, N-07, N-08, N-09, N-10 | All PRDs, TaskSpec meridian-roles v1.2 | One pass only. Write `delta_check_report.md`; append `Ω+1` corrective workers only for minimum-scope drift fixes |
+| ⬜ | Ω | DELTA-CHECK | Delta Check & corrective dispatch | CODEX | N-01, N-02, N-03, N-04, N-05, N-06, N-07, N-08, N-09, N-10 | All PRDs, TaskSpec meridian-roles v1.2 | Paused after report: drift found, including one item that needs a PM-level contract decision before corrective dispatch. |
 | ⬜ | Ω | PR-REVIEW | PR alignment review | OPUS | DELTA-CHECK | All PRDs, TaskSpec meridian-roles v1.2, delta_check_report.md | Terminal gate. Write `pr_review_report.md`; human merge only |
 
 **Status Legend**: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked

@@ -103,7 +103,7 @@ export class DispatcherRole implements BaseRole {
     });
   }
 
-  async onStatusChange(_threadId: string, _status: string): Promise<void> {
+  async onStatusChange(): Promise<void> {
     return undefined;
   }
 
@@ -178,7 +178,9 @@ export class DispatcherRole implements BaseRole {
     task.status = "running";
 
     try {
-      const target = this.resolveTarget(task, ctx.listInstances());
+      const target = task.target_thread_id
+        ? task.target_thread_id
+        : this.resolveTarget(task, await ctx.listInstances());
       const message: HubMessage = {
         trace_id: traceId,
         thread_id: this.threadId,
@@ -218,7 +220,7 @@ export class DispatcherRole implements BaseRole {
     this.inferTraceId = traceId;
 
     try {
-      const target = this.resolveInferenceTarget(ctx.listInstances());
+      const target = this.resolveInferenceTarget(await ctx.listInstances());
       await ctx.sendToHub({
         trace_id: traceId,
         thread_id: this.threadId,
@@ -374,7 +376,7 @@ export class DispatcherRole implements BaseRole {
       trace_id: this.traceIdFactory(),
       thread_id: this.threadId,
       actor_id: ROLES_SERVICE_ID,
-      intent: "run",
+      intent: "reply",
       target: "global",
       priority: 5,
       payload: {

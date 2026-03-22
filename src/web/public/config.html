@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Config Editor</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="config-editor">
+    <main class="shell">
+      <section class="hero hero-compact">
+        <a id="config-detail-link" class="back-link" href="/">← Task Detail</a>
+        <p class="eyebrow">Config Editor</p>
+        <h1 id="config-title">Loading config…</h1>
+        <p class="lede">Edit dispatcher JSON for `tasks` and `taskspec`. Prompt content stays on the prompt editor.</p>
+      </section>
+
+      <section class="panel panel-form">
+        <div class="panel-heading">
+          <h2>Dispatch Plan JSON</h2>
+          <p id="config-status" class="muted">Only tasks and taskspec are editable here. Runtime task fields are reset on save.</p>
+        </div>
+        <form id="config-form" class="stack">
+          <label class="field">
+            <span>dispatcher_config</span>
+            <textarea id="config-input" class="editor-textarea" rows="18" spellcheck="false"></textarea>
+          </label>
+          <div class="actions">
+            <button id="config-save-button" type="submit" class="primary-button">Save Config</button>
+            <p id="config-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

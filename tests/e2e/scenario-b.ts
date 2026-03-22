@@ -125,7 +125,7 @@ describe("Scenario B: Inferred dispatch", () => {
       const completion = await waitForHubMessage(
         harness.hub,
         (message) =>
-          message.intent === "run" &&
+          message.intent === "reply" &&
           message.suppress_reply === true &&
           message.payload.content.includes("# Dispatcher Summary: dispatcher-b")
       );

@@ -1,5 +1,7 @@
 import type { AgentInstance, HubMessage, HubResult, RoleType } from "../types";
 
+export type Awaitable<T> = T | Promise<T>;
+
 export interface Logger {
   debug: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
@@ -9,7 +11,7 @@ export interface Logger {
 
 export interface RoleContext {
   sendToHub(msg: Partial<HubMessage>): Promise<void>;
-  listInstances(): AgentInstance[];
+  listInstances(): Awaitable<AgentInstance[]>;
   log: Logger;
 }
 

@@ -3,3 +3,6 @@ dist/
 *.js.map
 .env.local
 .DS_Store
+
+# Ignore documentation directories
+**/docs/
