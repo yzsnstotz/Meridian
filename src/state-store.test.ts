@@ -64,7 +64,7 @@ describe("StateStore", () => {
   it("preserves the last complete state if rename fails", async () => {
     const directory = await createTempDirectory();
     const stateFilePath = path.join(directory, "state.json");
-    const renameError = new Error("rename failed");
+    const renameError = Object.assign(new Error("rename failed"), { code: "EXDEV" });
     const store = new StateStore(stateFilePath, {
       mkdir: fs.mkdir.bind(fs),
       writeFile: fs.writeFile.bind(fs),
@@ -88,9 +88,56 @@ describe("StateStore", () => {
       ]
     };
 
-    await expect(store.save(updatedState)).rejects.toThrow("rename failed");
+    await expect(store.save(updatedState)).rejects.toThrow(
+      `Failed to replace state file at "${stateFilePath}" while saving state to "${stateFilePath}". rename failed.`
+    );
     await expect(fs.readFile(stateFilePath, "utf8")).resolves.toBe(originalContents);
     await expect(fs.access(`${stateFilePath}.tmp`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("wraps directory creation failures with an actionable STATE_FILE_PATH hint", async () => {
+    const stateFilePath = "/var/lib/meridian-roles/state.json";
+    const directoryError = Object.assign(
+      new Error("EACCES: permission denied, mkdir '/var/lib/meridian-roles'"),
+      { code: "EACCES" }
+    );
+    const store = new StateStore(stateFilePath, {
+      mkdir: async () => {
+        throw directoryError;
+      },
+      writeFile: fs.writeFile.bind(fs),
+      rename: fs.rename.bind(fs),
+      unlink: fs.unlink.bind(fs),
+      readFile: fs.readFile.bind(fs)
+    });
+
+    await expect(store.save(sampleState)).rejects.toThrow(
+      'Failed to create state directory at "/var/lib/meridian-roles" while saving state to "/var/lib/meridian-roles/state.json".'
+    );
+    await expect(store.save(sampleState)).rejects.toThrow('Set STATE_FILE_PATH to a writable absolute path');
+  });
+
+  it("cleans up temp files when writing the temporary state file fails", async () => {
+    const directory = await createTempDirectory();
+    const stateFilePath = path.join(directory, "state.json");
+    const tempFilePath = `${stateFilePath}.tmp`;
+    const writeError = Object.assign(new Error("EACCES: permission denied, open temp file"), { code: "EACCES" });
+    const store = new StateStore(stateFilePath, {
+      mkdir: fs.mkdir.bind(fs),
+      writeFile: async (targetPath, contents, encoding) => {
+        await fs.writeFile(targetPath, contents, encoding);
+        throw writeError;
+      },
+      rename: fs.rename.bind(fs),
+      unlink: fs.unlink.bind(fs),
+      readFile: fs.readFile.bind(fs)
+    });
+
+    await expect(store.save(sampleState)).rejects.toThrow(
+      `Failed to write temporary state file at "${tempFilePath}" while saving state to "${stateFilePath}". EACCES: permission denied, open temp file.`
+    );
+    await expect(store.save(sampleState)).rejects.toThrow('Set STATE_FILE_PATH to a writable absolute path');
+    await expect(fs.access(tempFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

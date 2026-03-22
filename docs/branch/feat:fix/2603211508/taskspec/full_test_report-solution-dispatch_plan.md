@@ -50,14 +50,14 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|-------|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Environment health check | CODEX | — | Solution PRD, Test Report, Product PRD | Use `/tmp/...` `STATE_FILE_PATH` override. Confirm branch target. Create `dev_history/` dirs. |
-| ⬜ | 1 | R-01 | Config API + safe persistence (F-01) | OPUS | PRE-FLIGHT | Solution PRD, Product PRD | GET/PATCH config; 409 on running tasks; normalize runtime fields on save. |
-| ⬜ | 1 | R-03 | State-path diagnostics (F-04) | CODEX | PRE-FLIGHT | Solution PRD, Test Report | Keep default path; improve errors only. |
+| 🟧 | 1 | R-01 | Config API + safe persistence (F-01) | CODEX | PRE-FLIGHT | Solution PRD, Product PRD | GET/PATCH config; 409 on running tasks; normalize runtime fields on save. |
+| ✅ | 1 | R-03 | State-path diagnostics (F-04) | CODEX | PRE-FLIGHT | Solution PRD, Test Report | Keep default path; improve errors only. |
 | ⬜ | 2 | R-02 | Config UI + role error states (F-01, F-02) | CODEX | R-01 | Solution PRD, Product PRD | Add `/role/:thread_id/config`; fix error title/subtitle; §P: error-path acceptance. |
-| ⬜ | 2 | R-04 | Reply contract + instance discovery (F-06, F-07) | OPUS | PRE-FLIGHT | Solution PRD, Test Report, Product PRD | Replace summary `run` envelope; wire Hub-backed instance lookup. |
+| 🟧 | 2 | R-04 | Reply contract + instance discovery (F-06, F-07) | CODEX | PRE-FLIGHT | Solution PRD, Test Report, Product PRD | Replace summary `run` envelope; wire Hub-backed instance lookup. |
 | ⬜ | 3 | R-05 | Full regression + docs (F-03, §P) | CODEX | R-01, R-02, R-03, R-04 | Solution PRD, Test Report, Product PRD, Integration Notes | Route-coverage gate (§P); clear lint; update docs; full matrix. |
 | ⬜ | 3 | V-01 | Integration Hub Verification (F-06, F-07) | HUMAN | R-04 | Solution PRD, Test Report | Cannot be completed by coding agents. Requires Meridian Hub running. |
-| ⬜ | Ω | DELTA-CHECK | Delta check & corrective dispatch | OPUS | PRE-FLIGHT, R-01, R-02, R-03, R-04, R-05, V-01 | Solution PRD, Test Report, Product PRD, TaskSpec | V-01 must be checked; one pass only; always marks self ✅. |
-| ⬜ | Ω | PR-REVIEW | PR alignment review | OPUS | DELTA-CHECK, all Ω+1 corrective workers, all PM-DECIDE-N rows, V-01 | Solution PRD, Test Report, Product PRD, TaskSpec | V-01 gate: MERGE BLOCKED if V-01 ≠ ✅. Human merge only. |
+| 🟧 | Ω | DELTA-CHECK | Delta check & corrective dispatch | CODEX | PRE-FLIGHT, R-01, R-02, R-03, R-04, R-05, V-01 | Solution PRD, Test Report, Product PRD, TaskSpec | V-01 must be checked; one pass only; always marks self ✅. |
+| 🟧 | Ω | PR-REVIEW | PR alignment review | CODEX | DELTA-CHECK, all Ω+1 corrective workers, all PM-DECIDE-N rows, V-01 | Solution PRD, Test Report, Product PRD, TaskSpec | V-01 gate: MERGE BLOCKED if V-01 ≠ ✅. Human merge only. |
 
 **Status Legend**: `⬜` not started · `🔄` in progress · `✅` complete · `⛔` blocked · `⏳` PM decision pending
 
@@ -202,7 +202,7 @@
 | PRE-FLIGHT | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/PRE-FLIGHT_report.md` | ✅ |
 | R-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/R-01_report.md` | ⬜ |
 | R-02 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/R-02_report.md` | ⬜ |
-| R-03 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/R-03_report.md` | ⬜ |
+| R-03 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/R-03_report.md` | ✅ |
 | R-04 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/R-04_report.md` | ⬜ |
 | R-05 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/R-05_report.md` | ⬜ |
 | V-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/2603211508/taskspec/dev_history/V-01_report.md` | ⬜ |
