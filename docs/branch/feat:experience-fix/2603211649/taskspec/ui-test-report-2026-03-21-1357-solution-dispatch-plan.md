@@ -35,8 +35,8 @@
 | ✅ | 3 | R-04 | Terminal: canonical restore + durable progress + reconnect dedup | CODEX | R-02 | Solution PRD, Test Report, TaskSpec | Covers F-01, F-02, F-03 client-side |
 | ✅ | 3 | R-05 | ARIA accessibility fixes (sidebar, tabs, icon-only buttons) | CODEX | PRE-FLIGHT | Solution PRD, Test Report | Covers F-04, F-05, F-06; parallel with R-03/R-04 |
 | ✅ | 4 | R-06 | Regression coverage for all six findings (F-01–F-06) | CODEX | R-03, R-04, R-05 | Solution PRD, Test Report, TaskSpec | Extend existing tests; do not replace |
-| 🟧 | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-06 | TaskSpec, Solution PRD, Test Report | Always completes; appends corrective rows if drift |
-| 🟧 | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Solution PRD, Test Report | Terminal gate; human merges |
+| ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-06 | TaskSpec, Solution PRD, Test Report | Always completes; appends corrective rows if drift |
+| ✅ | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Solution PRD, Test Report | Terminal gate; human merges |
 
 Status legend: `⬜` Not started · `🟧` Reassigned · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision (PM-DECIDE rows only)
 
