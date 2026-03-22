@@ -10,6 +10,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { requestHubMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
+import { collectLogInventory } from "../log-retention";
 import {
   AgentTypeSchema,
   FileAttachmentSchema,
@@ -99,6 +100,7 @@ export interface WebInterfaceServerOptions {
   port?: number;
   listenHost?: string;
   token?: string;
+  logDir?: string;
   hubSocketPath?: string;
   httpsEnabled?: boolean;
   tlsCertPath?: string;
@@ -298,6 +300,7 @@ export class WebInterfaceServer {
   private readonly listenHost: string;
   private readonly token: string;
   private readonly hubSocketPath: string;
+  private readonly logDir: string;
   private readonly httpsEnabled: boolean;
   private readonly tlsCertPath: string;
   private readonly tlsKeyPath: string;
@@ -314,6 +317,7 @@ export class WebInterfaceServer {
     this.listenHost = options.listenHost ?? "0.0.0.0";
     this.token = (options.token ?? config.WEB_GUI_TOKEN).trim();
     this.hubSocketPath = options.hubSocketPath ?? config.HUB_SOCKET_PATH;
+    this.logDir = options.logDir ?? config.LOG_DIR;
     this.httpsEnabled = options.httpsEnabled ?? config.WEB_GUI_HTTPS;
     this.tlsCertPath = options.tlsCertPath ?? config.TLS_CERT_PATH;
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
@@ -435,6 +439,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/logs" && request.method === "GET") {
+      await this.handleLogInventoryRequest(response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/run" && request.method === "POST") {
       await this.handleRunRequest(request, response);
       return;
@@ -472,6 +481,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/history_threads" && request.method === "GET") {
       await this.handleHistoryThreadsRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/progress/") && request.method === "GET") {
+      await this.handleProgressRequest(request, response);
       return;
     }
 
@@ -533,6 +547,11 @@ export class WebInterfaceServer {
     );
 
     this.respondJson(response, 200, parseInstancesContent(result.content));
+  }
+
+  private async handleLogInventoryRequest(response: http.ServerResponse): Promise<void> {
+    const inventory = await collectLogInventory(this.logDir);
+    this.respondJson(response, 200, inventory);
   }
 
   private async handleRunRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -660,6 +679,33 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleProgressRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = threadQuerySchema.parse({
+      thread_id: decodeURIComponent(requestUrl.pathname.slice("/api/progress/".length))
+    });
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "monitor_manual_update",
+          thread_id: query.thread_id,
+          target: query.thread_id,
+          content: `/mupdate thread=${query.thread_id}`
+        })
+      )
+    );
+
+    if (result.status === "error") {
+      const statusCode = /no registered agent instance found/i.test(result.content) ? 404 : 502;
+      this.respondJson(response, statusCode, { error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+
+    this.respondJson(response, 200, result);
   }
 
   private async handleFileWriteRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -1172,7 +1218,7 @@ export class WebInterfaceServer {
     if (lower.includes("enoent") || lower.includes("econnrefused")) {
       return "Hub is not reachable — is the hub process running?";
     }
-    if (lower.includes("no active instance") || lower.includes("no active agent")) {
+    if (lower.includes("no active instance") || lower.includes("no active agent") || lower.includes("no registered agent instance found")) {
       return "No active agent session — spawn or attach one first.";
     }
     if (lower.includes("timeout") || lower.includes("timed out")) {

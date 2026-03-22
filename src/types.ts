@@ -23,7 +23,9 @@ export const BUILT_IN_INTENTS = [
   "push",
   "capture_interval",
   "history",
-  "set_auto_approve"
+  "set_auto_approve",
+  "register_service",
+  "unregister_service"
  ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);

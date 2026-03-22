@@ -28,6 +28,24 @@ test("hub layout pulls viewport baseline from shared css", async () => {
   assert.match(indexHtml, /<link\s+rel="stylesheet"\s+href="layout-base\.css"\s*\/?>/);
 });
 
+test("hub layout exposes provider selection and persists spawn preferences", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="spawn-provider"/);
+  assert.match(indexHtml, /SPAWN_PROVIDER_STORAGE_KEY/);
+  assert.match(indexHtml, /SPAWN_AUTO_APPROVE_STORAGE_KEY/);
+  assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
+});
+
+test("hub layout renders log footprint monitoring from the main page", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="log-overview"/);
+  assert.match(indexHtml, /id="log-list"/);
+  assert.match(indexHtml, /\/api\/logs/);
+  assert.match(indexHtml, /function renderLogInventory\(payload\)/);
+});
+
 test("bridge layout does not hard-cap content width on large screens", async () => {
   const bridgeHtml = await fs.promises.readFile(path.join(publicDir, "bridge.html"), "utf8");
 
@@ -64,7 +82,7 @@ test("terminal approval actions use dedicated terminal_input API", async () => {
 
   assert.match(terminalHtml, /\/api\/terminal_input/);
   assert.match(terminalHtml, /Allow for this session/);
-  assert.match(terminalHtml, /sendTerminalText\(opt\.key\)/);
+  assert.match(terminalHtml, /sendTerminalText\(opt\.(submit|key)\)/);
 });
 
 test("terminal explorer renders a collapsible directory tree", async () => {
@@ -89,7 +107,26 @@ test("terminal chat history restores from local storage and disables replay when
   assert.match(terminalHtml, /CHAT_HISTORY_STORAGE_KEY/);
   assert.match(terminalHtml, /restoreChatHistory\(\)/);
   assert.match(terminalHtml, /restoreServerChatHistory\(entries\)/);
+  assert.match(terminalHtml, /serverHistoryRestored = restoreServerChatHistory\(entries\)/);
   assert.match(terminalHtml, /replay_lines=/);
+});
+
+test("terminal canonical restore polls durable progress and suppresses reconnect replay when history is authoritative", async () => {
+  const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
+
+  assert.match(terminalHtml, /\/api\/progress\//);
+  assert.match(terminalHtml, /buildProgressMessageKey/);
+  assert.match(terminalHtml, /activeProgressMessageKey/);
+  assert.match(terminalHtml, /clearActiveProgressBubble/);
+  assert.match(terminalHtml, /serverHistoryRestored \? 0 : 100/);
+});
+
+test("terminal chat keeps a content-fingerprint dedupe safety net for replayed agent bubbles", async () => {
+  const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
+
+  assert.match(terminalHtml, /makeBubbleContentFingerprint/);
+  assert.match(terminalHtml, /hasRecentBubbleWithContentFingerprint/);
+  assert.match(terminalHtml, /data-content-fingerprint/);
 });
 
 test("terminal layout includes sidebar session history and model picker", async () => {
@@ -102,6 +139,8 @@ test("terminal layout includes sidebar session history and model picker", async 
   assert.match(terminalHtml, /\/api\/models\?thread_id=/);
   assert.match(terminalHtml, /fetchWithAuth\("\/api\/models",\s*\{/);
   assert.match(terminalHtml, /Model: unavailable/);
+  assert.match(terminalHtml, /Model: Custom\.\.\./);
+  assert.match(terminalHtml, /window\.prompt\("Enter provider model id:"/);
 });
 
 test("terminal mobile header keeps overflow menu on the top-right and renders current-model fallback", async () => {
@@ -119,6 +158,7 @@ test("terminal chat prioritizes structured /api/run result to avoid pane replay 
   assert.match(terminalHtml, /runCommand\(cmd\)\s*\.then/);
   assert.match(terminalHtml, /renderAgentContent\(resultContent\)/);
   assert.match(terminalHtml, /lastFlushedContent = stripAnsi\(resultContent\)/);
+  assert.match(terminalHtml, /chatBuffer = ""/);
 });
 
 test("terminal explorer directory rows expose keyboard accessible toggles", async () => {

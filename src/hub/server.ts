@@ -556,7 +556,7 @@ export class HubServer {
       return;
     }
 
-    this.recordAgentPushConversationSafe(event.thread_id, completionResult.content, completionResult.trace_id);
+    this.recordAgentPushConversationSafe(event.thread_id, completionResult.content, completionResult.trace_id, "final_reply");
     for (const sessionTarget of sessionTargets) {
       const replyChannel = this.router.resolveReplyChannelForSession(sessionTarget);
       await this.resultSender
@@ -712,7 +712,7 @@ export class HubServer {
           continue;
         }
 
-        this.recordAgentPushConversationSafe(threadId, progressResult.content, progressResult.trace_id);
+        this.recordAgentPushConversationSafe(threadId, progressResult.content, progressResult.trace_id, "progress");
         for (const target of targetsToNotify) {
           await this.resultSender
             .sendResult(this.buildHistoryBackedResult(progressResult), target.replyChannel)
@@ -934,7 +934,7 @@ export class HubServer {
       timestamp: new Date().toISOString()
     });
 
-    this.recordAgentPushConversationSafe(threadId, content, traceId);
+    this.recordAgentPushConversationSafe(threadId, content, traceId, "progress");
 
     for (const subscriber of subscribers) {
       await this.resultSender
@@ -996,11 +996,21 @@ export class HubServer {
     return candidate.isWithinRunCompletionCooldown?.(threadId, RUN_COMPLETION_COOLDOWN_MS) ?? false;
   }
 
-  private recordAgentPushConversationSafe(threadId: string, content: string, traceId: string): void {
+  private recordAgentPushConversationSafe(
+    threadId: string,
+    content: string,
+    traceId: string,
+    eventKindHint: "progress" | "final_reply" = "progress"
+  ): void {
     const candidate = this.router as unknown as {
-      recordAgentPushConversation?: (id: string, rawContent: string, traceId: string | null) => void;
+      recordAgentPushConversation?: (
+        id: string,
+        rawContent: string,
+        traceId: string | null,
+        eventKindHint?: "progress" | "final_reply"
+      ) => void;
     };
-    candidate.recordAgentPushConversation?.(threadId, content, traceId);
+    candidate.recordAgentPushConversation?.(threadId, content, traceId, eventKindHint);
   }
 
   private getRegistryInstanceSafe(threadId: string): { auto_approve?: boolean } | null {

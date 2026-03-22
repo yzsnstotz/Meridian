@@ -1,7 +1,8 @@
 import net from "node:net";
 
 const IPC_SEND_TIMEOUT_MS = 5000;
-const IPC_REQUEST_TIMEOUT_MS = 30000;
+// Long-running pane_bridge providers such as Gemini can legitimately exceed 30s.
+const IPC_REQUEST_TIMEOUT_MS = 120000;
 
 export function sendIpcMessage<T extends object>(socketPath: string, payload: T): Promise<void> {
   return new Promise((resolve, reject) => {

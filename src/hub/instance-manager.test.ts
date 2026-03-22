@@ -321,6 +321,101 @@ test("pane capture uses visible pane with -e to preserve ANSI/controls", async (
   assert.ok(!/-S\s+-?\d+/.test(lastCapture), "visible capture must not use -S (scrollback); use visible pane only");
 });
 
+test("spawn pane_bridge waits for Gemini screen prompt readiness before returning", async () => {
+  const registry = new InstanceRegistry();
+  const execCalls: string[] = [];
+  let messagePollCount = 0;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    paneBridgeUsePtyWrapper: false,
+    geminiPanePromptSettleMs: 40,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      return Buffer.from("", "utf8");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2302) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "stable" }),
+      getMessages: async () => {
+        messagePollCount += 1;
+        return [
+          {
+            role: "agent",
+            content: [
+              "Gemini CLI v0.34.0",
+              "Signed in with Google: user@example.com",
+              "? for shortcuts",
+              "Shift+Tab to accept edits",
+              ">   Type your message or @path/to/file"
+            ].join("\n")
+          }
+        ];
+      }
+    })
+  });
+  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 20;
+
+  const threadId = await manager.spawn("gemini", "pane_bridge");
+
+  assert.equal(threadId, "gemini_01");
+  assert.ok(messagePollCount >= 3, "spawn should wait for a stable Gemini prompt");
+  assert.ok(!execCalls.some((command) => command.includes("capture-pane")), "Gemini readiness should use agent messages");
+});
+
+test("spawn pane_bridge waits for Gemini footer chrome to settle before returning", async () => {
+  const registry = new InstanceRegistry();
+  let messagePollCount = 0;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    paneBridgeUsePtyWrapper: false,
+    geminiPaneFooterSettleMs: 40,
+    execSyncFn: (() => Buffer.from("", "utf8")) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2303) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "stable" }),
+      getMessages: async () => {
+        messagePollCount += 1;
+        if (messagePollCount < 2) {
+          return [{ role: "agent", content: "" }];
+        }
+        return [
+          {
+            role: "agent",
+            content: [
+              "Gemini CLI v0.34.0",
+              "We're making changes to Gemini CLI that may impact your workflow.",
+              "? for shortcuts",
+              "Shift+Tab to accept edits"
+            ].join("\n")
+          }
+        ];
+      }
+    })
+  });
+  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 20;
+
+  const threadId = await manager.spawn("gemini", "pane_bridge");
+
+  assert.equal(threadId, "gemini_01");
+  assert.ok(messagePollCount >= 4, "spawn should wait for stable Gemini footer chrome");
+});
+
 test("pane_bridge uses attach --url when running in port mode", async () => {
   const registry = new InstanceRegistry();
   const execCalls: string[] = [];
@@ -337,7 +432,18 @@ test("pane_bridge uses attach --url when running in port mode", async () => {
     clientFactory: () => ({
       connect: async () => undefined,
       disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => [
+        {
+          role: "agent",
+          content: [
+            "Gemini CLI v0.34.0",
+            "? for shortcuts",
+            "Shift+Tab to accept edits",
+            ">   Type your message or @path/to/file"
+          ].join("\n")
+        }
+      ]
     })
   });
 
@@ -357,6 +463,7 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
     socketPathFactory: socketPathForThread,
+    geminiPanePromptSettleMs: 40,
     execSyncFn: ((command: string) => {
       execCalls.push(command);
       return Buffer.from("");
@@ -381,6 +488,118 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
   assert.equal(message, `Sent approval action 'allow' to ${threadId}.`);
   assert.equal(execCalls.length, 1);
   assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'2' 'Enter'/);
+});
+
+test("sendTerminalInput falls back to Gemini allow-for-session key when prompt inspection fails", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 2205,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString(),
+    auto_approve: false
+  });
+
+  const execCalls: string[] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      if (command.includes("capture-pane")) {
+        throw new Error("capture failed");
+      }
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2205) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const message = manager.sendTerminalInput("gemini_01", "all");
+
+  assert.equal(message, "Sent approval action 'all' to gemini_01.");
+  assert.equal(execCalls.length, 2);
+  assert.match(execCalls[0] ?? "", /tmux capture-pane -e -p -t 'agent_gemini_01'/);
+  assert.match(execCalls[1] ?? "", /tmux send-keys -t 'agent_gemini_01' '2' 'Enter'/);
+});
+
+test("sendTerminalInput derives Gemini option numbers from the live approval prompt", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 2207,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString(),
+    auto_approve: false
+  });
+
+  const execCalls: string[] = [];
+  const approvalFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      if (command.includes("capture-pane")) {
+        return approvalFrame;
+      }
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2207) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  execCalls.length = 0;
+  const message = manager.sendTerminalInput("gemini_01", "skip");
+
+  assert.equal(message, "Sent approval action 'skip' to gemini_01.");
+  assert.equal(execCalls.length, 2);
+  assert.match(execCalls[0] ?? "", /tmux capture-pane -e -p -t 'agent_gemini_01'/);
+  assert.match(execCalls[1] ?? "", /tmux send-keys -t 'agent_gemini_01' '4' 'Enter'/);
 });
 
 test("sendTerminalInput forwards raw terminal text to tmux pane", async () => {
@@ -575,7 +794,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   });
 
   const result = await manager.rehydrateFromState({
-    version: 1,
+    version: 2,
     updated_at: new Date().toISOString(),
     instances: [
       {
@@ -587,7 +806,8 @@ test("rehydrateFromState restores live instances and session bindings", async ()
         pid: 6501,
         tmux_pane: null,
         status: "idle",
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        auto_approve: false
       },
       {
         thread_id: "codex_02",
@@ -598,7 +818,8 @@ test("rehydrateFromState restores live instances and session bindings", async ()
         pid: 6502,
         tmux_pane: null,
         status: "idle",
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        auto_approve: false
       }
     ],
     session_bindings: {

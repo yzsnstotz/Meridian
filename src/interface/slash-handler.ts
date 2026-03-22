@@ -1,5 +1,5 @@
 import type { BridgeMode, Intent } from "../types";
-import { APPROVAL_HELP_TEXT, normalizeApprovalAction } from "../shared/approval";
+import { APPROVAL_HELP_TEXT, normalizeApprovalSelection } from "../shared/approval";
 
 type SlashIntent = Intent | "help" | "service_restart" | "browse";
 type PickerIntent = "spawn" | "attach" | "kill" | "switch_model";
@@ -33,7 +33,7 @@ const HELP_MESSAGE = [
   "/detach [thread=<thread_id>]",
   "/reboot thread=<thread_id>",
   "/gui [thread=<thread_id>]",
-  "/approve <run|allow|all|skip> [thread=<thread_id>]",
+  "/approve <run|allow|all|skip|number> [thread=<thread_id>]",
   "/autoapprove on|off|status [thread=<thread_id>]",
   "/model",
   "/model [thread=<thread_id>]",
@@ -140,7 +140,7 @@ function parsePositiveInteger(value: string, field: string): number {
 function parseApprovalCommand(rawArgs: string, args: Record<string, string>, restTokens: string[]): string {
   const bareAction = restTokens.find((token) => !token.includes("=")) ?? "";
   const rawAction = (args.action ?? bareAction ?? rawArgs).trim();
-  const action = normalizeApprovalAction(rawAction);
+  const action = normalizeApprovalSelection(rawAction);
   if (!action) {
     throw new Error(`/approve action is invalid. ${APPROVAL_HELP_TEXT}`);
   }

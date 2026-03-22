@@ -127,8 +127,8 @@ test("ResultSender sends oversized content as a temporary text file and removes 
 
   assert.equal(textSendCount, 0);
   assert.equal(capturedFilename, `meridian-${traceId}.txt`);
-  assert.match(capturedContent, new RegExp(`trace=${traceId}`));
-  assert.doesNotMatch(capturedContent, /Use \/detail trace=/);
+  assert.doesNotMatch(capturedContent, new RegExp(`trace=${traceId}`));
+  assert.doesNotMatch(capturedContent, /\/detail trace=/);
   assert.equal(fs.existsSync(capturedFilePath), false);
 });
 
@@ -293,6 +293,7 @@ test("ResultSender avoids adding /detail hint for short summary content", async 
   );
 
   assert.doesNotMatch(sentText, /\/detail trace=/);
+  assert.doesNotMatch(sentText, /^trace=/);
 });
 
 test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", async () => {

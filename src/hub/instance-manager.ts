@@ -9,9 +9,15 @@ import { buildCursorSpawnArgs } from "../agents/cursor";
 import { buildGeminiSpawnArgs } from "../agents/gemini";
 import { config } from "../config";
 import { createLogger } from "../logger";
-import { APPROVAL_HELP_TEXT, approvalActionToTmuxKeys, normalizeApprovalAction } from "../shared/approval";
+import {
+  APPROVAL_HELP_TEXT,
+  approvalActionToTmuxKeys,
+  normalizeApprovalAction,
+  selectApprovalOptionInput
+} from "../shared/approval";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { ProviderModelCatalog } from "../shared/model-catalog";
+import { normalizeVisibleText } from "../shared/terminal-text";
 import type {
   AgentInstance,
   AgentInstanceStatus,
@@ -30,6 +36,7 @@ interface StatusClient {
   connect: (endpoint: string) => Promise<void>;
   disconnect: () => void;
   getStatus: () => Promise<Record<string, unknown>>;
+  getMessages?: () => Promise<Record<string, unknown>[]>;
 }
 
 export interface InstanceStatus {
@@ -68,6 +75,8 @@ export interface InstanceManagerOptions {
   paneBridgeUsePtyWrapper?: boolean;
   /** When pane delta has no overlap (full-screen redraw), write last K lines to log instead of skipping. Default 50. */
   paneDeltaTailLinesWhenNoOverlap?: number;
+  geminiPanePromptSettleMs?: number;
+  geminiPaneFooterSettleMs?: number;
 }
 
 const SESSION_THREAD_PLACEHOLDERS = new Set(["active", "all", "global", "pending", "unbound", "none"]);
@@ -112,6 +121,8 @@ export class InstanceManager {
   private readonly now: () => Date;
   private readonly paneBridgeUsePtyWrapper: boolean;
   private readonly paneDeltaTailLinesWhenNoOverlap: number;
+  private readonly geminiPanePromptSettleMs: number;
+  private readonly geminiPaneFooterSettleMs: number;
   private agentapiSocketSupportCache: boolean | null = null;
   private agentapiAttachSocketSupportCache: boolean | null = null;
   private paneCaptureIntervalMs: number = config.PANE_CAPTURE_INTERVAL_MS;
@@ -146,6 +157,8 @@ export class InstanceManager {
     this.paneBridgeUsePtyWrapper = options.paneBridgeUsePtyWrapper ?? false;
     this.paneDeltaTailLinesWhenNoOverlap =
       options.paneDeltaTailLinesWhenNoOverlap ?? PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP;
+    this.geminiPanePromptSettleMs = options.geminiPanePromptSettleMs ?? 1500;
+    this.geminiPaneFooterSettleMs = options.geminiPaneFooterSettleMs ?? 20000;
   }
 
   async spawn(
@@ -322,12 +335,9 @@ export class InstanceManager {
 
     const action = normalizeApprovalAction(rawInput);
     const keys = action
-      ? approvalActionToTmuxKeys(action)
+      ? this.approvalActionToTmuxKeys(action, instance)
       : this.rawTerminalInputToTmuxKeys(rawInput);
-    const escapedKeys = keys.map((key) => this.shellEscape(key)).join(" ");
-    this.execSyncFn(`tmux send-keys -t ${this.shellEscape(instance.tmux_pane)} ${escapedKeys}`, {
-      stdio: "ignore"
-    });
+    this.sendTmuxKeys(instance.tmux_pane, keys);
 
     this.log.info(
       {
@@ -359,6 +369,35 @@ export class InstanceManager {
       keys.push("Enter");
     }
     return keys;
+  }
+
+  private approvalActionToTmuxKeys(
+    action: "run" | "allow" | "all" | "skip",
+    instance: AgentInstance
+  ): string[] {
+    if (instance.agent_type === "gemini") {
+      try {
+        const visibleText = this.captureVisibleTmuxText(instance.tmux_pane ?? instance.thread_id);
+        const selectedInput = selectApprovalOptionInput(visibleText, action);
+        if (selectedInput) {
+          return [selectedInput, "Enter"];
+        }
+      } catch {
+        // Fall through to provider defaults when the current prompt cannot be inspected.
+      }
+
+      // Gemini defaults when no structured prompt can be parsed.
+      if (action === "run") {
+        return ["1", "Enter"];
+      }
+      if (action === "allow" || action === "all") {
+        return ["2", "Enter"];
+      }
+      if (action === "skip") {
+        return ["3", "Enter"];
+      }
+    }
+    return approvalActionToTmuxKeys(action);
   }
 
   snapshotState(): PersistedHubState {
@@ -630,6 +669,7 @@ export class InstanceManager {
         const attachArgs = this.buildAgentAttachCliArgs(endpointBinding);
         if (attachArgs) {
           this.spawnInTmuxSession(threadId, tmuxSession, attachArgs);
+          await this.assertPaneBridgePromptReady(threadId, tmuxSession, type, socketPath);
         }
       } catch (error) {
         await this.killInternal(threadId, false).catch(() => undefined);
@@ -784,6 +824,209 @@ export class InstanceManager {
     await this.killInternal(threadId, false).catch(() => undefined);
     throw new Error(
       `Agent instance failed readiness check for thread_id=${threadId}: ${lastError ?? "unknown startup error"}`
+    );
+  }
+
+  private async assertPaneBridgePromptReady(
+    threadId: string,
+    tmuxSession: string,
+    agentType: AgentType,
+    endpoint: string
+  ): Promise<void> {
+    if (agentType !== "gemini") {
+      return;
+    }
+
+    const client = this.clientFactory(threadId);
+    if (typeof client.getMessages === "function") {
+      await client.connect(endpoint);
+      try {
+        await this.assertGeminiScreenReady(threadId, client);
+        return;
+      } finally {
+        client.disconnect();
+      }
+    }
+
+    await this.assertGeminiPromptReadyFromTmux(threadId, tmuxSession);
+  }
+
+  private async assertGeminiScreenReady(threadId: string, client: StatusClient): Promise<void> {
+    let footerVisibleAtMs: number | null = null;
+    let promptVisibleAtMs: number | null = null;
+    let lastVisibleText = "";
+
+    for (let attempt = 0; attempt < this.startupAttempts; attempt += 1) {
+      const child = this.children.get(threadId);
+      if (!child || !this.isChildRunning(child)) {
+        const exitCode = child?.exitCode ?? null;
+        const signal = child?.signalCode ?? null;
+        throw new Error(
+          `Gemini pane prompt did not stabilize for thread_id=${threadId}: ` +
+          `agentapi process exited before pane prompt became ready (exit_code=${exitCode}, signal=${signal})`
+        );
+      }
+
+      try {
+        const messages = await client.getMessages?.();
+        const visibleText = normalizeVisibleText(this.extractLatestAgentScreenText(messages ?? []));
+        const lower = visibleText.toLowerCase();
+        const promptVisible = lower.includes("type your message or @path/to/file");
+        const waitingForAuth = lower.includes("waiting for auth");
+        const footerVisible = lower.includes("? for shortcuts") && lower.includes("shift+tab to accept edits");
+        const nowMs = Date.now();
+
+        if (promptVisible && !waitingForAuth) {
+          promptVisibleAtMs ??= nowMs;
+          if (nowMs - promptVisibleAtMs >= this.geminiPanePromptSettleMs) {
+            return;
+          }
+        } else {
+          promptVisibleAtMs = null;
+        }
+
+        if (footerVisible && !waitingForAuth) {
+          footerVisibleAtMs ??= nowMs;
+          if (nowMs - footerVisibleAtMs >= this.geminiPaneFooterSettleMs) {
+            return;
+          }
+        } else {
+          footerVisibleAtMs = null;
+        }
+
+        lastVisibleText = visibleText;
+      } catch (error) {
+        if (attempt === 0) {
+          this.log.warn(
+            {
+              operation: "pane_prompt_probe_failed",
+              thread_id: threadId,
+              attempt,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Initial Gemini screen readiness probe failed"
+          );
+        }
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, this.startupDelayMs);
+      });
+    }
+
+    const preview = lastVisibleText ? lastVisibleText.slice(0, 240) : "";
+    throw new Error(
+      `Gemini pane prompt did not stabilize for thread_id=${threadId}` +
+      (preview ? `: last_visible_text=${JSON.stringify(preview)}` : "")
+    );
+  }
+
+  private async assertGeminiPromptReadyFromTmux(threadId: string, tmuxSession: string): Promise<void> {
+    let stablePromptPolls = 0;
+    let lastVisibleText = "";
+    let startupNoticeDismissed = false;
+
+    for (let attempt = 0; attempt < this.startupAttempts; attempt += 1) {
+      const child = this.children.get(threadId);
+      if (!child || !this.isChildRunning(child)) {
+        const exitCode = child?.exitCode ?? null;
+        const signal = child?.signalCode ?? null;
+        throw new Error(
+          `Gemini pane prompt did not stabilize for thread_id=${threadId}: ` +
+          `agentapi process exited before pane prompt became ready (exit_code=${exitCode}, signal=${signal})`
+        );
+      }
+
+      try {
+        const visibleText = this.captureVisibleTmuxText(tmuxSession);
+        const lower = visibleText.toLowerCase();
+        const promptVisible = lower.includes("type your message or @path/to/file");
+        const waitingForAuth = lower.includes("waiting for auth");
+        const startupNoticeVisible = this.isGeminiStartupNoticeVisible(lower);
+
+        if (startupNoticeVisible && !waitingForAuth && !startupNoticeDismissed) {
+          this.sendTmuxKeys(tmuxSession, ["Enter"]);
+          startupNoticeDismissed = true;
+          stablePromptPolls = 0;
+          lastVisibleText = visibleText;
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, this.startupDelayMs);
+          });
+          continue;
+        }
+
+        if (promptVisible && !waitingForAuth && !startupNoticeVisible) {
+          stablePromptPolls += 1;
+          if (stablePromptPolls >= 2) {
+            return;
+          }
+        } else {
+          stablePromptPolls = 0;
+        }
+        lastVisibleText = visibleText;
+      } catch (error) {
+        if (attempt === 0) {
+          this.log.warn(
+            {
+              operation: "pane_prompt_probe_failed",
+              thread_id: threadId,
+              tmux_session: tmuxSession,
+              attempt,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Initial Gemini pane prompt readiness probe failed"
+          );
+        }
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, this.startupDelayMs);
+      });
+    }
+
+    const preview = lastVisibleText ? lastVisibleText.slice(0, 240) : "";
+    throw new Error(
+      `Gemini pane prompt did not stabilize for thread_id=${threadId}` +
+      (preview ? `: last_visible_text=${JSON.stringify(preview)}` : "")
+    );
+  }
+
+  private extractLatestAgentScreenText(messages: Record<string, unknown>[]): string {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (!candidate) {
+        continue;
+      }
+      const role = typeof candidate.role === "string" ? candidate.role.toLowerCase() : "";
+      if (role !== "agent" && role !== "assistant") {
+        continue;
+      }
+      if (typeof candidate.content === "string") {
+        return candidate.content;
+      }
+    }
+    return "";
+  }
+
+  private captureVisibleTmuxText(tmuxTarget: string): string {
+    const rawSnapshot = this.execSyncFn(
+      `tmux capture-pane -e -p -t ${this.shellEscape(tmuxTarget)}`,
+      { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }
+    );
+    return normalizeVisibleText(this.toText(rawSnapshot));
+  }
+
+  private sendTmuxKeys(tmuxTarget: string, keys: string[]): void {
+    const escapedKeys = keys.map((key) => this.shellEscape(key)).join(" ");
+    this.execSyncFn(`tmux send-keys -t ${this.shellEscape(tmuxTarget)} ${escapedKeys}`, {
+      stdio: "ignore"
+    });
+  }
+
+  private isGeminiStartupNoticeVisible(normalizedLowerText: string): boolean {
+    return (
+      normalizedLowerText.includes("we're making changes to gemini cli") ||
+      normalizedLowerText.includes("goo.gle/geminicli-updates")
     );
   }
 

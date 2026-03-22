@@ -2,21 +2,33 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
 
+import type { ChannelAdapter } from "../../../src/hub/channel-adapter";
 import { HubServer } from "../../../src/hub/server";
 import { HubRouter } from "../../../src/hub/router";
 import { InstanceManager } from "../../../src/hub/instance-manager";
 import { InstanceRegistry } from "../../../src/hub/registry";
 import { PaneBroadcaster } from "../../../src/hub/pane-broadcaster";
+import { ResultSender } from "../../../src/hub/result-sender";
+import { SocketChannelAdapter } from "../../../src/hub/socket-adapter";
 import type { HubResult, ReplyChannel } from "../../../src/types";
 
 const stubAgentapiPath = path.resolve(path.join(__dirname, "..", "..", "fixtures", "stub-agentapi.mjs"));
 
-/**
- * No-op ResultSender so integration tests do not call Telegram API.
- */
-class NoOpResultSender {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async sendResult(result: HubResult, replyChannel: ReplyChannel): Promise<void> {}
+/** Telegram/Web no-op so tests never call external APIs; socket replies are delivered for A2A / meridian-roles. */
+class NoOpTelegramAdapter implements ChannelAdapter {
+  readonly channel = "telegram" as const;
+  canHandle(replyChannel: ReplyChannel): boolean {
+    return replyChannel.channel === "telegram";
+  }
+  async send(_result: HubResult, _replyChannel: ReplyChannel): Promise<void> {}
+}
+
+class NoOpWebAdapter implements ChannelAdapter {
+  readonly channel = "web" as const;
+  canHandle(replyChannel: ReplyChannel): boolean {
+    return replyChannel.channel === "web";
+  }
+  async send(_result: HubResult, _replyChannel: ReplyChannel): Promise<void> {}
 }
 
 export interface IntegrationHubContext {
@@ -62,7 +74,7 @@ export async function startIntegrationHub(): Promise<IntegrationHubContext> {
   const hubServer = new HubServer({
     socketPath: hubSocketPath,
     router,
-    resultSender: new NoOpResultSender() as never,
+    resultSender: new ResultSender([new SocketChannelAdapter(), new NoOpTelegramAdapter(), new NoOpWebAdapter()]),
     paneBroadcaster: new PaneBroadcaster({ logDir }),
     staticServiceEndpoints: []
   });

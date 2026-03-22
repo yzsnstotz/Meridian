@@ -107,6 +107,36 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
   assert.match(String((seenMessages[0]?.reply_channel as { chat_id?: string }).chat_id), /^web:/);
 });
 
+test("Web Interface Server returns log inventory for an authorized request", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-logs-"));
+
+  try {
+    await fs.promises.mkdir(path.join(logDir, "GUI"), { recursive: true });
+    await fs.promises.writeFile(path.join(logDir, "hub.log"), "1234567890");
+    await fs.promises.writeFile(path.join(logDir, "GUI", "gui-pane-codex_01.log"), "1234");
+
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/logs?token=secret-token`);
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as {
+        root: string;
+        total_bytes: number;
+        files: Array<{ path: string; size_bytes: number }>;
+      };
+      assert.equal(payload.root, logDir);
+      assert.equal(payload.total_bytes, 14);
+      assert.deepEqual(
+        payload.files.map((entry) => entry.path),
+        ["hub.log", "GUI/gui-pane-codex_01.log"]
+      );
+    }, {
+      logDir
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
 test("Web Interface Server lists files from instance working directory", async () => {
   const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-files-"));
   await fs.promises.mkdir(path.join(repoDir, "src"), { recursive: true });
@@ -248,15 +278,26 @@ test("Web Interface Server returns persisted thread history", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/history?thread_id=codex_01&token=secret-token`);
     assert.equal(response.status, 200);
-    const payload = (await response.json()) as Array<{ type: string; content: string }>;
+    const payload = (await response.json()) as Array<{
+      sequence: number;
+      event_kind: string;
+      source: string;
+      type: string;
+      content: string;
+      replace_key: string | null;
+    }>;
     assert.deepEqual(payload, [
       {
         id: "entry-1",
+        sequence: 1,
+        event_kind: "user_send",
+        source: "user",
         type: "user",
         content: "hello",
         details_text: "",
         trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
-        timestamp: "2026-03-09T00:00:00.000Z"
+        timestamp: "2026-03-09T00:00:00.000Z",
+        replace_key: null
       }
     ]);
   }, {
@@ -270,13 +311,66 @@ test("Web Interface Server returns persisted thread history", async () => {
         content: JSON.stringify([
           {
             id: "entry-1",
+            sequence: 1,
+            event_kind: "user_send",
+            source: "user",
             type: "user",
             content: "hello",
             details_text: "",
             trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
-            timestamp: "2026-03-09T00:00:00.000Z"
+            timestamp: "2026-03-09T00:00:00.000Z",
+            replace_key: null
           }
         ]),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
+test("Web Interface Server returns authenticated thread progress snapshots", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/progress/codex_01?token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { status: string; content: string; trace_id: string; thread_id: string };
+    assert.equal(payload.status, "partial");
+    assert.equal(payload.thread_id, "codex_01");
+    assert.equal(payload.content, "Task is running...");
+    assert.equal(payload.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "monitor_manual_update");
+      assert.equal(message.thread_id, "codex_01");
+      assert.equal(message.target, "codex_01");
+      return {
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        source: "codex",
+        status: "partial",
+        content: "Task is running...",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
+test("Web Interface Server returns explicit not-found for invalid progress threads", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/progress/missing-thread?token=secret-token`);
+    assert.equal(response.status, 404);
+    const payload = (await response.json()) as { error: string };
+    assert.match(payload.error, /no active agent session/i);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "monitor_manual_update");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "missing-thread",
+        source: "codex",
+        status: "error",
+        content: "No registered agent instance found for thread_id=missing-thread",
         attachments: [],
         timestamp: new Date().toISOString()
       };

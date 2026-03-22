@@ -5,3 +5,7 @@ dist/
 .DS_Store
 bin/agentapi
 .context/
+docs/
+skills/
+Meridian-roles/
+meridian-roles/

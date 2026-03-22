@@ -623,6 +623,69 @@ test("HubRouter waits past transient spinner frames and returns stabilized reply
   assert.equal(result.content, `${finalFrame}`);
 });
 
+test("HubRouter prefers Gemini edit approval over transient POST /message chrome", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:50731",
+    pid: 101,
+    tmux_pane: "agent_gemini_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let callCount = 0;
+  const editApprovalFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "Press Ctrl+O to expand pasted text                            1 GEMINI.md file" }),
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount <= 1) {
+          return [{ id: 40, role: "agent", content: "old frame" }];
+        }
+        return [{ id: 41, role: "agent", content: editApprovalFrame }];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.match(result.content, /^Waiting for approval\.\.\./);
+  assert.match(result.content, /Apply this change\?/);
+  assert.doesNotMatch(result.content, /Press Ctrl\+O to expand pasted text/);
+});
+
 test("HubRouter combines multi-part agent replies after run", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -1696,6 +1759,62 @@ test("HubRouter normalizes pane action-required frames into compact actionable c
   assert.doesNotMatch(result.content, /╭|╰|│/);
 });
 
+test("HubRouter normalizes Gemini edit approval frames into compact actionable content", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 101,
+    tmux_pane: "agent_gemini_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const actionRequiredFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
+    "│                                                                              │",
+    "│ 5   .DS_Store                                                                │",
+    "│ 6   bin/agentapi                                                             │",
+    "│ 7   .context/                                                                │",
+    "│ 8 + docs/                                                                    │",
+    "│ Apply this change?                                                           │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. Modify with external editor                                             │",
+    "│   4. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => [{ id: 1, role: "agent", content: actionRequiredFrame }]
+    })
+  });
+
+  const result = await router.buildProgressResultForThread(
+    "gemini_01",
+    "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
+  );
+
+  assert.equal(result.status, "partial");
+  assert.match(result.content, /^Waiting for approval\.\.\./);
+  assert.match(result.content, /Apply this change\?/);
+  assert.match(result.content, /Edit \.gitignore: \.context\/ => \.context\//);
+  assert.match(result.content, /4\.\s*No, suggest changes/);
+  assert.doesNotMatch(result.content, /╭|╰|│/);
+});
+
 test("HubRouter returns one-time manual monitor update without subscribing", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -1901,13 +2020,131 @@ test("HubRouter exposes conversation history after a run", async () => {
       payload: { content: "", attachments: [] }
     })
   );
-  const parsed = JSON.parse(historyResult.content) as Array<{ type: string; content: string }>;
+  const parsed = JSON.parse(historyResult.content) as Array<{
+    sequence: number;
+    event_kind: string;
+    source: string;
+    type: string;
+    content: string;
+    replace_key: string | null;
+  }>;
 
   assert.equal(parsed.length, 2);
+  assert.equal(parsed[0]?.sequence, 1);
+  assert.equal(parsed[0]?.event_kind, "user_send");
+  assert.equal(parsed[0]?.source, "user");
   assert.equal(parsed[0]?.type, "user");
   assert.equal(parsed[0]?.content, "ship it");
+  assert.equal(parsed[0]?.replace_key, null);
+  assert.equal(parsed[1]?.sequence, 2);
+  assert.equal(parsed[1]?.event_kind, "final_reply");
+  assert.equal(parsed[1]?.source, "codex");
   assert.equal(parsed[1]?.type, "agent");
   assert.equal(parsed[1]?.content, "done");
+  assert.equal(parsed[1]?.replace_key, null);
+});
+
+test("HubRouter coalesces same-trace progress snapshots and replaces them with the final reply", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "coalesce_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-coalesce_01.sock",
+    pid: 701,
+    tmux_pane: "agent_coalesce_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+  const traceId = "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8";
+
+  router.recordAgentPushConversation("coalesce_01", "Task is running...", traceId);
+  router.recordAgentPushConversation("coalesce_01", "Still running...", traceId);
+
+  const progressOnly = router.getConversationHistoryForThread("coalesce_01");
+  assert.equal(progressOnly.length, 1);
+  assert.equal(progressOnly[0]?.event_kind, "progress");
+  assert.equal(progressOnly[0]?.content, "Still running...");
+  assert.equal(progressOnly[0]?.replace_key, `${traceId}:progress`);
+
+  router.recordAgentPushConversation("coalesce_01", "done", traceId, "final_reply");
+
+  const withFinal = router.getConversationHistoryForThread("coalesce_01");
+  assert.equal(withFinal.length, 1);
+  assert.equal(withFinal[0]?.event_kind, "final_reply");
+  assert.equal(withFinal[0]?.content, "done");
+  assert.equal(withFinal[0]?.replace_key, null);
+});
+
+test("HubRouter removes unresolved approval events once terminal input resolves them", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "approval_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-approval_01.sock",
+    pid: 702,
+    tmux_pane: "agent_approval_01",
+    status: "waiting",
+    created_at: new Date().toISOString()
+  });
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 2,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    sendTerminalInput: (threadId: string, rawInput: string) => `Sent approval action '${rawInput}' to ${threadId}.`,
+    getAttachedThread: () => "approval_01",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+  const traceId = "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8";
+
+  router.recordAgentPushConversation(
+    "approval_01",
+    "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+    traceId
+  );
+
+  let history = router.getConversationHistoryForThread("approval_01");
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.event_kind, "approval");
+
+  await router.route(
+    baseMessage({
+      trace_id: traceId,
+      intent: "terminal_input",
+      thread_id: "active",
+      target: "active",
+      payload: {
+        content: "allow",
+        attachments: []
+      },
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100"
+      }
+    })
+  );
+
+  history = router.getConversationHistoryForThread("approval_01");
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.event_kind, "terminal_input");
+  assert.equal(history[0]?.content, "allow");
 });
 
 test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {
