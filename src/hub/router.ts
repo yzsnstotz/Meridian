@@ -124,6 +124,10 @@ function isReplaceableConversationEventKind(eventKind: ConversationEventKind): e
   return eventKind === "progress" || eventKind === "approval";
 }
 
+function isSupersededByFinalReplyConversationEventKind(eventKind: ConversationEventKind): eventKind is "progress" {
+  return eventKind === "progress";
+}
+
 function encodeSessionId(chatId: string, botId: string | undefined): string {
   return botId ? `${botId}:${chatId}` : chatId;
 }
@@ -516,7 +520,6 @@ export class HubRouter {
     const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
     if (message.payload.content?.trim()) {
       this.recordUserConversationEntry(threadId, message.payload.content.trim(), message.trace_id, "terminal_input");
-      this.resolveApprovalConversationEntry(threadId);
       this.persistStateSafely();
     }
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
@@ -1867,7 +1870,10 @@ export class HubRouter {
         if (!existing) {
           continue;
         }
-        if (existing.trace_id === entry.trace_id && isReplaceableConversationEventKind(existing.event_kind)) {
+        if (
+          existing.trace_id === entry.trace_id &&
+          isSupersededByFinalReplyConversationEventKind(existing.event_kind)
+        ) {
           history.splice(index, 1);
         }
       }
@@ -1920,23 +1926,6 @@ export class HubRouter {
       replace_key: entry.replace_key
     });
     this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
-  }
-
-  private resolveApprovalConversationEntry(threadId: string): void {
-    const history = this.readConversationHistory(threadId);
-    const activeTraceId = this.activeRunsByThread.get(threadId)?.traceId ?? null;
-    for (let index = history.length - 1; index >= 0; index -= 1) {
-      const entry = history[index];
-      if (!entry || entry.event_kind !== "approval") {
-        continue;
-      }
-      if (activeTraceId && entry.trace_id && entry.trace_id !== activeTraceId) {
-        continue;
-      }
-      history.splice(index, 1);
-      this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
-      return;
-    }
   }
 
   private rehydrateLocalState(state: PersistedHubState): void {

@@ -31,7 +31,7 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|------:|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Validate paths, env contract, typecheck, and targeted baseline tests | CODEX | — | Investigation Report, Solution PRD, Config, Package | Passed on retry: env contract aligned and all required baseline checks completed on `feat/experience-fix` |
-| 🟧 | 1 | R-01 | Canonical immutable conversation-event timeline and compatibility path | CODEX | PRE-FLIGHT | Investigation Report, Solution PRD, TaskSpec | Foundation for restore, dedup, and approval persistence |
+| ✅ | 1 | R-01 | Canonical immutable conversation-event timeline and compatibility path | CODEX | PRE-FLIGHT | Investigation Report, Solution PRD, TaskSpec | Durable approval prompts now survive resolution and legacy migration |
 | 🟧 | 2 | R-02 | Structured hub/web history and progress contract | CODEX | R-01 | Investigation Report, Solution PRD, Config | Single source of truth for liveness and history payloads |
 | 🟧 | 3 | R-03 | Terminal authoritative restore, reconnect discipline, and durable liveness | CODEX | R-02 | Investigation Report, Solution PRD, TaskSpec | Chat-visible state must come from server-owned history/progress |
 | ⬜ | 4 | R-04 | Behavioral regression coverage for reconnect, restore, and quiet-period liveness | CODEX | R-02, R-03 | Investigation Report, Solution PRD, TaskSpec | DISC-01 closer; replace string-only protection with behavior checks |

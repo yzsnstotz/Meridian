@@ -2080,7 +2080,7 @@ test("HubRouter coalesces same-trace progress snapshots and replaces them with t
   assert.equal(withFinal[0]?.replace_key, null);
 });
 
-test("HubRouter removes unresolved approval events once terminal input resolves them", async () => {
+test("HubRouter keeps approval prompts durable after terminal input and final reply", async () => {
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "approval_01",
@@ -2142,9 +2142,20 @@ test("HubRouter removes unresolved approval events once terminal input resolves 
   );
 
   history = router.getConversationHistoryForThread("approval_01");
-  assert.equal(history.length, 1);
-  assert.equal(history[0]?.event_kind, "terminal_input");
-  assert.equal(history[0]?.content, "allow");
+  assert.equal(history.length, 2);
+  assert.equal(history[0]?.event_kind, "approval");
+  assert.match(history[0]?.content ?? "", /^Waiting for approval\.\.\./);
+  assert.equal(history[1]?.event_kind, "terminal_input");
+  assert.equal(history[1]?.content, "allow");
+
+  router.recordAgentPushConversation("approval_01", "done", traceId, "final_reply");
+
+  history = router.getConversationHistoryForThread("approval_01");
+  assert.equal(history.length, 3);
+  assert.equal(history[0]?.event_kind, "approval");
+  assert.equal(history[1]?.event_kind, "terminal_input");
+  assert.equal(history[2]?.event_kind, "final_reply");
+  assert.equal(history[2]?.content, "done");
 });
 
 test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {
