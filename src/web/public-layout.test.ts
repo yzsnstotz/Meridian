@@ -118,6 +118,10 @@ test("terminal canonical restore polls durable progress and suppresses reconnect
   assert.match(terminalHtml, /buildProgressMessageKey/);
   assert.match(terminalHtml, /activeProgressMessageKey/);
   assert.match(terminalHtml, /clearActiveProgressBubble/);
+  assert.match(terminalHtml, /maybeResolveProgressFromServerHistory/);
+  assert.match(terminalHtml, /findLatestPendingHistoryEntry/);
+  assert.match(terminalHtml, /display_text/);
+  assert.match(terminalHtml, /runPending \|\| activeProgressMessageKey/);
   assert.match(terminalHtml, /serverHistoryRestored \? 0 : 100/);
 });
 

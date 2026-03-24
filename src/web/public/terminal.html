@@ -1425,6 +1425,28 @@
         activeProgressTraceId = "";
       }
 
+      function maybeResolveProgressFromServerHistory(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return false;
+        var latestPendingEntry = findLatestPendingHistoryEntry(entries);
+        if (latestPendingEntry) {
+          cacheServerHistory(entries);
+          return false;
+        }
+        var latestFinalEntry = findLatestFinalHistoryEntry(entries);
+        if (!latestFinalEntry) return false;
+        cacheServerHistory(entries);
+        clearActiveProgressBubble();
+        addChatBubble(latestFinalEntry.content || "", latestFinalEntry.type || "agent", latestFinalEntry.details_text || "", {
+          persist: false,
+          messageKey: buildHistoryMessageKey(latestFinalEntry)
+        });
+        lastFlushedContent = stripAnsi(latestFinalEntry.content || "");
+        lastRunResultAtMs = Date.now();
+        showChatTyping(false);
+        refreshSessionList();
+        return true;
+      }
+
       function resolveApprovalOptions(selectedToken) {
         if (!chatMessagesEl) return;
         var containers = chatMessagesEl.querySelectorAll(".chat-options[data-approval-prompt='true'], .chat-yn-options[data-approval-prompt='true']");
@@ -1789,7 +1811,7 @@
 
       function restoreServerChatHistory(entries) {
         if (!Array.isArray(entries) || entries.length === 0) return false;
-        var latestPendingEntry = null;
+        var latestPendingEntry = findLatestPendingHistoryEntry(entries);
         chatHistoryHydrating = true;
         try {
           for (var i = 0; i < entries.length; i++) {
@@ -1799,11 +1821,6 @@
               dedupe: false,
               messageKey: buildHistoryMessageKey(entry)
             });
-            if (entry.event_kind === "progress" || entry.event_kind === "approval") {
-              latestPendingEntry = entry;
-            } else if (entry.event_kind === "final_reply") {
-              latestPendingEntry = null;
-            }
           }
         } finally {
           chatHistoryHydrating = false;
@@ -1817,6 +1834,32 @@
           activeProgressTraceId = "";
         }
         return true;
+      }
+
+      function findLatestPendingHistoryEntry(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return null;
+        var latestPendingEntry = null;
+        for (var i = 0; i < entries.length; i++) {
+          var entry = entries[i];
+          if (!entry) continue;
+          if (entry.event_kind === "progress" || entry.event_kind === "approval") {
+            latestPendingEntry = entry;
+          } else if (entry.event_kind === "final_reply") {
+            latestPendingEntry = null;
+          }
+        }
+        return latestPendingEntry;
+      }
+
+      function findLatestFinalHistoryEntry(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return null;
+        for (var i = entries.length - 1; i >= 0; i--) {
+          var entry = entries[i];
+          if (entry && entry.event_kind === "final_reply") {
+            return entry;
+          }
+        }
+        return null;
       }
 
       function addChatBubble(content, type, detailsText, options) {
@@ -2096,7 +2139,7 @@
         if (!chatBuffer.trim()) { chatBuffer = ""; return; }
         // While a run is in-flight, suppress pane-stream chat — the run
         // result will be the authoritative reply for this turn.
-        if (runPending) {
+        if (runPending || activeProgressMessageKey) {
           chatBuffer = "";
           showChatTyping(false);
           return;
@@ -2317,8 +2360,11 @@
       }
 
       function renderProgressSnapshot(snapshot) {
-        if (!snapshot || typeof snapshot.content !== "string") return;
-        var content = snapshot.content.trim();
+        if (!snapshot) return;
+        var content = typeof snapshot.display_text === "string" ? snapshot.display_text.trim() : "";
+        if (!content && typeof snapshot.content === "string") {
+          content = snapshot.content.trim();
+        }
         if (!content) return;
         var traceId = typeof snapshot.trace_id === "string" ? snapshot.trace_id.toLowerCase() : "";
         var nextMessageKey = buildProgressMessageKey(traceId);
@@ -2333,21 +2379,39 @@
 
       function pollThreadProgress() {
         if (!shouldPollProgress()) return;
+        var shouldSyncHistory = Boolean(serverHistoryRestored && activeProgressMessageKey && !runPending);
+        var historyPromise = shouldSyncHistory
+          ? fetchThreadHistory().catch(function() {
+              return null;
+            })
+          : Promise.resolve(null);
+        var progressUnavailable = false;
         fetchThreadProgress()
           .then(function(snapshot) {
             renderProgressSnapshot(snapshot);
+            return historyPromise;
           })
           .catch(function(err) {
             var message = err && err.message ? err.message : "";
             if (/no active agent session|no registered agent instance found/i.test(message)) {
+              progressUnavailable = true;
+            }
+            return historyPromise;
+          })
+          .then(function(entries) {
+            if (entries && maybeResolveProgressFromServerHistory(entries)) {
+              progressUnavailable = true;
+              return null;
+            }
+            if (progressUnavailable) {
               stopProgressPolling();
               clearActiveProgressBubble();
-              return null;
+              showChatTyping(false);
             }
             return null;
           })
           .finally(function() {
-            if (shouldPollProgress()) {
+            if (!progressUnavailable && shouldPollProgress()) {
               scheduleProgressPoll(PROGRESS_POLL_INTERVAL_MS);
             }
           });
@@ -2786,6 +2850,13 @@
           var msg = JSON.parse(ev.data);
           if (msg.type === "pane_output" && msg.chunk) {
             if (term && typeof term.write === "function") term.write(msg.chunk);
+            if (activeProgressMessageKey) {
+              chatBuffer = "";
+              clearTimeout(chatTimer);
+              clearTimeout(chatTypingTimer);
+              showChatTyping(false);
+              return;
+            }
             chatBuffer += msg.chunk;
             if (maybeRenderLiveApprovalPrompt()) {
               return;
