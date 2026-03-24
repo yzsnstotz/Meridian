@@ -60,6 +60,37 @@ test("HubRouter routes run intent through AgentAPIClient", async () => {
   assert.equal(result.content, "done");
 });
 
+test("HubRouter reply intent returns payload content as result", async () => {
+  const registry = new InstanceRegistry();
+  const router = new HubRouter(registry);
+  const result = await router.route(
+    baseMessage({
+      intent: "reply",
+      target: "global",
+      thread_id: "dispatcher-demo",
+      payload: { content: "Dispatcher summary text", attachments: [] }
+    })
+  );
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "Dispatcher summary text");
+  assert.equal(result.thread_id, "dispatcher-demo");
+});
+
+test("HubRouter reply intent errors on empty payload", async () => {
+  const registry = new InstanceRegistry();
+  const router = new HubRouter(registry);
+  const result = await router.route(
+    baseMessage({
+      intent: "reply",
+      target: "global",
+      thread_id: "dispatcher-demo",
+      payload: { content: "   ", attachments: [] }
+    })
+  );
+  assert.equal(result.status, "error");
+  assert.match(result.content, /non-empty payload/);
+});
+
 test("HubRouter detail reuses conversation history details produced for pane/chat", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -152,6 +183,126 @@ test("HubRouter run logs getMessages_threw and uses fallback when getMessages() 
     "Agent is processing...",
     "fallback content should surface a neutral progress message when getMessages() throws on an ACK response"
   );
+  const history = router.getConversationHistoryForThread("gemini_01");
+  assert.equal(history.length, 2);
+  assert.equal(history[1]?.event_kind, "progress");
+  assert.equal(history[1]?.content, "Agent is processing...");
+  assert.equal(history[1]?.replace_key, "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99d:progress");
+});
+
+test("HubRouter stores immediate approval replies as approval history so GUI can resume them", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-gemini_01.sock",
+    pid: 202,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const approvalFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Shell git status                                                          │",
+    "│                                                                              │",
+    "│ git status                                                                   │",
+    "│ Allow execution of: 'git'?                                                   │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: approvalFrame }),
+      getStatus: async () => ({ status: "waiting" })
+    })
+  });
+
+  const traceId = "7d7a1efe-7919-4e8a-b287-75bcfb9018e5";
+  const result = await router.route(
+    baseMessage({
+      trace_id: traceId,
+      thread_id: "gemini_01",
+      target: "gemini_01",
+      payload: {
+        content: "check git status",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.match(result.content, /^Waiting for approval\.\.\./);
+
+  const history = router.getConversationHistoryForThread("gemini_01");
+  assert.equal(history.length, 2);
+  assert.equal(history[1]?.event_kind, "approval");
+  assert.match(history[1]?.content ?? "", /^Waiting for approval\.\.\./);
+  assert.equal(history[1]?.replace_key, `${traceId}:approval`);
+});
+
+test("HubRouter keeps Codex working placeholders pending instead of storing them as final replies", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_02",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_02.sock",
+    pid: 203,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const placeholder = [
+    "• Working (0s • esc to interrupt)",
+    "",
+    "› Explain this codebase",
+    "",
+    "  gpt-5.4 xhigh · 100% left · ~/work/Meridian"
+  ].join("\n");
+
+  const router = new HubRouter(registry, {
+    statePath: "/tmp/meridian-router-codex-placeholder-state.json",
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: placeholder }),
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const traceId = "7f11d341-f0f3-4542-a70f-aa60cd215ded";
+  const result = await router.route(
+    baseMessage({
+      trace_id: traceId,
+      thread_id: "codex_02",
+      target: "codex_02",
+      payload: {
+        content: "Explain this codebase",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "Agent is processing...");
+
+  const history = router.getConversationHistoryForThread("codex_02");
+  assert.equal(history.length, 2);
+  assert.equal(history[1]?.event_kind, "progress");
+  assert.equal(history[1]?.replace_key, `${traceId}:progress`);
+  assert.equal(history[1]?.content, "Agent is processing...");
 });
 
 test("HubRouter forwards agent response files as HubResult attachments", async () => {
@@ -2080,7 +2231,7 @@ test("HubRouter coalesces same-trace progress snapshots and replaces them with t
   assert.equal(withFinal[0]?.replace_key, null);
 });
 
-test("HubRouter removes unresolved approval events once terminal input resolves them", async () => {
+test("HubRouter converts resolved approval prompts into pending progress so restore can keep following the same trace", async () => {
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "approval_01",
@@ -2142,9 +2293,136 @@ test("HubRouter removes unresolved approval events once terminal input resolves 
   );
 
   history = router.getConversationHistoryForThread("approval_01");
-  assert.equal(history.length, 1);
-  assert.equal(history[0]?.event_kind, "terminal_input");
-  assert.equal(history[0]?.content, "allow");
+  assert.equal(history.length, 2);
+  assert.deepEqual(
+    history.map((entry) => entry.event_kind),
+    ["progress", "terminal_input"]
+  );
+  assert.equal(history[0]?.content, "Task is running...");
+  assert.equal(history[0]?.replace_key, `${traceId}:progress`);
+  assert.equal(history[1]?.content, "allow");
+});
+
+test("HubRouter persists the final reply after approval once the same run trace completes", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "approval_followup_01",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-approval_followup_01.sock",
+    pid: 703,
+    tmux_pane: null,
+    status: "waiting",
+    created_at: new Date().toISOString()
+  });
+
+  const approvalFrame = [
+    "Waiting for approval...",
+    "Run this command?",
+    "1. Allow once",
+    "2. Allow for this session",
+    "3. No, suggest changes"
+  ].join("\n");
+  const runTraceId = "c98f24d6-b304-43ba-b712-54bcbbcb4e94";
+  const finalSummary = [
+    `[[MERIDIAN_SUMMARY_BEGIN id=${runTraceId}]]`,
+    "git status is clean.",
+    `[[MERIDIAN_SUMMARY_END id=${runTraceId}]]`
+  ].join("\n");
+
+  let approved = false;
+  let clientInvocation = 0;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 2,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    sendTerminalInput: (threadId: string, rawInput: string) => {
+      approved = true;
+      return `Sent approval action '${rawInput}' to ${threadId}.`;
+    },
+    getAttachedThread: () => "approval_followup_01",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-approval-followup-state.json",
+    clientFactory: () => {
+      clientInvocation += 1;
+      if (clientInvocation === 1) {
+        return {
+          connect: async () => undefined,
+          disconnect: () => undefined,
+          sendMessage: async () => ({ content: approvalFrame }),
+          getStatus: async () => ({ status: "waiting" }),
+          getMessages: async () => {
+            throw new Error("GET /messages unavailable during initial approval response");
+          }
+        };
+      }
+
+      return {
+        connect: async () => undefined,
+        disconnect: () => undefined,
+        sendMessage: async () => ({ content: "unused" }),
+        getStatus: async () => ({ status: approved ? "idle" : "waiting" }),
+        getMessages: async () => {
+          if (!approved) {
+            return [{ id: 1, role: "assistant", content: approvalFrame }];
+          }
+          return [{ id: 2, role: "assistant", content: finalSummary }];
+        }
+      };
+    }
+  });
+
+  const runResult = await router.route(
+    baseMessage({
+      trace_id: runTraceId,
+      thread_id: "approval_followup_01",
+      target: "approval_followup_01",
+      payload: {
+        content: "check git status",
+        attachments: []
+      }
+    })
+  );
+  assert.match(runResult.content, /^Waiting for approval\.\.\./);
+
+  await router.route(
+    baseMessage({
+      trace_id: "bb327572-4b15-4d6e-9dc4-42802441c843",
+      intent: "terminal_input",
+      thread_id: "active",
+      target: "active",
+      payload: {
+        content: "allow",
+        attachments: []
+      },
+      reply_channel: {
+        channel: "telegram",
+        chat_id: "100"
+      }
+    })
+  );
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, 1200);
+  });
+
+  const history = router.getConversationHistoryForThread("approval_followup_01");
+  assert.deepEqual(
+    history.map((entry) => entry.event_kind),
+    ["user_send", "terminal_input", "final_reply"]
+  );
+  assert.equal(history[2]?.trace_id, runTraceId);
+  assert.equal(history[2]?.content, "git status is clean.");
 });
 
 test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {

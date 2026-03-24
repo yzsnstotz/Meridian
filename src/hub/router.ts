@@ -299,6 +299,7 @@ export class HubRouter {
   private readonly activeRunsByThread = new Map<string, ActiveRunState>();
   private readonly completedRunsByThread = new Map<string, CompletedRunRecord>();
   private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
+  private readonly pendingRunFollowups = new Set<string>();
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -447,6 +448,8 @@ export class HubRouter {
           return this.handleRegisterService(message);
         case "unregister_service":
           return this.handleUnregisterService(message);
+        case "reply":
+          return this.handleReply(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -495,7 +498,7 @@ export class HubRouter {
         instance.thread_id,
         { attachments }
       );
-      this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+      this.recordRunConversationOutcome(threadId, content, message.trace_id, message.payload.content);
       return result;
     } finally {
       const activeRun = this.activeRunsByThread.get(instance.thread_id);
@@ -1624,6 +1627,31 @@ export class HubRouter {
     );
   }
 
+  /**
+   * Deliver arbitrary text (e.g. dispatcher completion summary) to `message.reply_channel`.
+   * Used by meridian-roles and other callers that need a terminal user-visible message without a new agent run.
+   */
+  private handleReply(message: HubMessage): HubResult {
+    const content = message.payload.content?.trim() ?? "";
+    if (!content) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        "reply intent requires non-empty payload.content",
+        message.thread_id
+      );
+    }
+
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      content,
+      message.thread_id
+    );
+  }
+
   private parseSessionTarget(session: string): { chatId: string; botId?: string } | null {
     if (!session || session.startsWith("web:")) return null;
     const separatorIndex = session.indexOf(":");
@@ -1816,6 +1844,38 @@ export class HubRouter {
     });
   }
 
+  private recordRunConversationOutcome(
+    threadId: string,
+    content: string,
+    traceId: string,
+    inputText: string
+  ): void {
+    if (this.shouldKeepRunConversationPending(content)) {
+      this.recordAgentPushConversation(threadId, content, traceId);
+      this.schedulePendingRunFinalization(threadId, traceId, inputText);
+      return;
+    }
+
+    this.recordAgentConversationEntry(threadId, content, traceId, inputText);
+    this.persistStateSafely();
+  }
+
+  private shouldKeepRunConversationPending(content: string): boolean {
+    const normalized = content.trim();
+    if (!normalized) {
+      return true;
+    }
+    if (normalized === "Agent is processing..." || normalized === "Task is running...") {
+      return true;
+    }
+    if (isApprovalPrompt(content)) {
+      return true;
+    }
+
+    const kind = classifyAgentOutput(content).kind;
+    return kind === "transient" || kind === "action_required";
+  }
+
   private summarizeConversationContent(rawContent: string, traceId: string | null): string {
     const normalized = stripSummaryProtocolTags(stripMeridianContentFraming(rawContent)).trim();
     const extracted = traceId ? extractSummaryBlocks(rawContent, traceId) : { summary: null, residual: normalized, incomplete: false };
@@ -1933,9 +1993,89 @@ export class HubRouter {
       if (activeTraceId && entry.trace_id && entry.trace_id !== activeTraceId) {
         continue;
       }
-      history.splice(index, 1);
+      const traceId = entry.trace_id ?? activeTraceId ?? null;
+      const replaceKey = this.buildReplaceKey(threadId, traceId, "progress");
+      for (let candidateIndex = history.length - 1; candidateIndex >= 0; candidateIndex -= 1) {
+        if (candidateIndex === index) {
+          continue;
+        }
+        const candidate = history[candidateIndex];
+        if (!candidate || candidate.replace_key !== replaceKey) {
+          continue;
+        }
+        history.splice(candidateIndex, 1);
+        if (candidateIndex < index) {
+          index -= 1;
+        }
+      }
+      history[index] = {
+        ...entry,
+        event_kind: "progress",
+        type: conversationEntryTypeForEventKind("progress"),
+        content: "Task is running...",
+        details_text: "",
+        raw_content: "Task is running...",
+        timestamp: this.now().toISOString(),
+        replace_key: replaceKey
+      };
       this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
       return;
+    }
+  }
+
+  private schedulePendingRunFinalization(threadId: string, traceId: string, inputText: string): void {
+    const followupKey = `${threadId}:${traceId}`;
+    if (this.pendingRunFollowups.has(followupKey)) {
+      return;
+    }
+
+    const instance = this.resolveInstance(threadId);
+    if (!instance) {
+      return;
+    }
+
+    this.pendingRunFollowups.add(followupKey);
+    void this.finalizePendingRunInBackground(instance, threadId, traceId, inputText, followupKey);
+  }
+
+  private async finalizePendingRunInBackground(
+    instance: AgentInstance,
+    threadId: string,
+    traceId: string,
+    inputText: string,
+    followupKey: string
+  ): Promise<void> {
+    const client = this.clientFactory(instance.thread_id);
+    try {
+      await client.connect(instance.socket_path);
+      const completedReply = await this.waitForAgentReply(client, null, traceId, {
+        trace_id: traceId,
+        thread_id: threadId
+      });
+      if (!completedReply) {
+        return;
+      }
+
+      const content = this.formatRunContent(threadId, completedReply);
+      if (this.shouldKeepRunConversationPending(content)) {
+        return;
+      }
+
+      this.recordAgentConversationEntry(threadId, content, traceId, inputText);
+      this.persistStateSafely();
+    } catch (error) {
+      this.log.warn(
+        {
+          trace_id: traceId,
+          thread_id: threadId,
+          reason: "pending_run_followup_failed",
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Pending run finalization watcher failed"
+      );
+    } finally {
+      this.pendingRunFollowups.delete(followupKey);
+      client.disconnect();
     }
   }
 
@@ -2131,9 +2271,7 @@ export class HubRouter {
         return null;
       }
 
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, delayMs);
-      });
+      await this.sleep(delayMs);
     }
 
     if (fallbackCandidate && fallbackTail && !this.isNonFinalTerminalFrame(fallbackTail)) {
@@ -2155,6 +2293,13 @@ export class HubRouter {
       return null;
     }
     return fallbackCandidate;
+  }
+
+  private sleep(delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, delayMs);
+      timer.unref();
+    });
   }
 
   private async resolveFallbackRunContent(

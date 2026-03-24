@@ -88,7 +88,9 @@ const IMMEDIATE_INTENTS = new Set([
   "history",
   "list",
   "list_models",
+  "monitor_manual_update",
   "push",
+  "reply",
   "status",
   "terminal_input",
   "capture_interval"

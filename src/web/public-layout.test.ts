@@ -116,9 +116,19 @@ test("terminal canonical restore polls durable progress and suppresses reconnect
 
   assert.match(terminalHtml, /\/api\/progress\//);
   assert.match(terminalHtml, /buildProgressMessageKey/);
+  assert.match(terminalHtml, /isPendingHistoryEntry/);
+  assert.match(terminalHtml, /reconcileBootstrapProgress/);
+  assert.match(terminalHtml, /shouldBootstrapLiveProgress/);
+  assert.match(terminalHtml, /serverHistoryAuthoritative/);
   assert.match(terminalHtml, /activeProgressMessageKey/);
   assert.match(terminalHtml, /clearActiveProgressBubble/);
-  assert.match(terminalHtml, /serverHistoryRestored \? 0 : 100/);
+  assert.match(terminalHtml, /esc to interrupt/);
+  assert.match(terminalHtml, /var historyHasPending = entries\.some\(isPendingHistoryEntry\);/);
+  assert.match(terminalHtml, /var latestPendingIndex = -1;/);
+  assert.match(terminalHtml, /if \(isPendingHistoryEntry\(renderEntry\) && renderIndex !== latestPendingIndex\)/);
+  assert.match(terminalHtml, /serverHistoryAuthoritative \? 0 : 100/);
+  assert.match(terminalHtml, /serverHistoryAuthoritative = !latestPendingEntry/);
+  assert.doesNotMatch(terminalHtml, /if \(!threadId \|\| !token \|\| activeProgressMessageKey\)/);
 });
 
 test("terminal chat keeps a content-fingerprint dedupe safety net for replayed agent bubbles", async () => {
