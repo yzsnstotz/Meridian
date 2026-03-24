@@ -32,7 +32,7 @@
 |--------|------:|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Validate paths, env contract, typecheck, and targeted baseline tests | CODEX | — | Investigation Report, Solution PRD, Config, Package | Passed on retry: env contract aligned and all required baseline checks completed on `feat/experience-fix` |
 | ✅ | 1 | R-01 | Canonical immutable conversation-event timeline and compatibility path | CODEX | PRE-FLIGHT | Investigation Report, Solution PRD, TaskSpec | Durable approval prompts now survive resolution and legacy migration |
-| 🟧 | 2 | R-02 | Structured hub/web history and progress contract | CODEX | R-01 | Investigation Report, Solution PRD, Config | Single source of truth for liveness and history payloads |
+| ✅ | 2 | R-02 | Structured hub/web history and progress contract | CODEX | R-01 | Investigation Report, Solution PRD, Config | `/api/history` stays canonical and `/api/progress/:threadId` now returns structured phase/wait-state snapshots |
 | 🟧 | 3 | R-03 | Terminal authoritative restore, reconnect discipline, and durable liveness | CODEX | R-02 | Investigation Report, Solution PRD, TaskSpec | Chat-visible state must come from server-owned history/progress |
 | ⬜ | 4 | R-04 | Behavioral regression coverage for reconnect, restore, and quiet-period liveness | CODEX | R-02, R-03 | Investigation Report, Solution PRD, TaskSpec | DISC-01 closer; replace string-only protection with behavior checks |
 | ⬜ | 4 | R-05 | Runtime accessibility verification hardening for F-04/F-05/F-06 | CODEX | R-03 | Investigation Report, Solution PRD, TaskSpec | Verify served DOM first; source edits only if runtime proves drift |

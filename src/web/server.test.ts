@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import type { HubMessage } from "../types";
+import type { HubMessage, ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
 process.env.ALLOWED_USER_IDS ??= "123456789";
@@ -333,22 +333,65 @@ test("Web Interface Server returns authenticated thread progress snapshots", asy
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/progress/codex_01?token=secret-token`);
     assert.equal(response.status, 200);
-    const payload = (await response.json()) as { status: string; content: string; trace_id: string; thread_id: string };
+    const payload = (await response.json()) as ThreadProgressSnapshot;
     assert.equal(payload.status, "partial");
     assert.equal(payload.thread_id, "codex_01");
     assert.equal(payload.content, "Task is running...");
     assert.equal(payload.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+    assert.equal(payload.display_text, "Task is running...");
+    assert.equal(payload.event_kind, "progress");
+    assert.equal(payload.phase, "running");
+    assert.equal(payload.waiting_for_input, false);
+    assert.match(payload.updated_at, /T/);
   }, {
     requestHub: async (message: HubMessage) => {
       assert.equal(message.intent, "monitor_manual_update");
       assert.equal(message.thread_id, "codex_01");
       assert.equal(message.target, "codex_01");
+      const updatedAt = new Date().toISOString();
       return {
         trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
         thread_id: "codex_01",
         source: "codex",
         status: "partial",
         content: "Task is running...",
+        progress: {
+          trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+          thread_id: "codex_01",
+          source: "codex",
+          status: "partial",
+          event_kind: "progress",
+          phase: "running",
+          waiting_for_input: false,
+          content: "Task is running...",
+          display_text: "Task is running...",
+          updated_at: updatedAt
+        },
+        attachments: [],
+        timestamp: updatedAt
+      };
+    }
+  });
+});
+
+test("Web Interface Server derives structured progress snapshots from legacy partial results", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/progress/codex_01?token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as ThreadProgressSnapshot;
+    assert.equal(payload.phase, "waiting_for_input");
+    assert.equal(payload.event_kind, "approval");
+    assert.equal(payload.waiting_for_input, true);
+    assert.match(payload.content, /^Waiting for approval\.\.\./);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "monitor_manual_update");
+      return {
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        source: "codex",
+        status: "partial",
+        content: "Waiting for approval...\nRun this command?\n1. Allow once",
         attachments: [],
         timestamp: new Date().toISOString()
       };

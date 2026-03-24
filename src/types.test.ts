@@ -12,7 +12,8 @@ import {
   PaneOutputChunkSchema,
   PaneSubscribeRequestSchema,
   PaneUnsubscribeRequestSchema,
-  ServiceEndpointSchema
+  ServiceEndpointSchema,
+  ThreadProgressSnapshotSchema
 } from "./types";
 
 function buildHubMessage(overrides: Record<string, unknown> = {}) {
@@ -146,6 +147,35 @@ test("HubResultSchema accepts optional Telegram inline keyboards", () => {
   });
 
   assert.equal(parsed.telegram_inline_keyboard?.inline_keyboard[0]?.[0]?.text, "Open GUI");
+});
+
+test("HubResultSchema accepts optional structured progress snapshots", () => {
+  const progress = ThreadProgressSnapshotSchema.parse({
+    trace_id: randomUUID(),
+    thread_id: "claude_01",
+    source: "codex",
+    status: "partial",
+    event_kind: "progress",
+    phase: "running",
+    waiting_for_input: false,
+    content: "Task is running...",
+    display_text: "Task is running...",
+    updated_at: new Date().toISOString()
+  });
+
+  const parsed = HubResultSchema.parse({
+    trace_id: progress.trace_id,
+    thread_id: "claude_01",
+    source: "codex",
+    status: "partial",
+    content: progress.content,
+    progress,
+    attachments: [],
+    timestamp: progress.updated_at
+  });
+
+  assert.equal(parsed.progress?.phase, "running");
+  assert.equal(parsed.progress?.content, "Task is running...");
 });
 
 test("pane IPC schemas parse subscribe, output, and unsubscribe messages", () => {

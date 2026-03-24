@@ -44,6 +44,26 @@ export type HubResultStatus = z.infer<typeof HubResultStatusSchema>;
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
+export const ThreadProgressEventKindSchema = z.enum(["progress", "approval"]);
+export type ThreadProgressEventKind = z.infer<typeof ThreadProgressEventKindSchema>;
+
+export const ThreadProgressPhaseSchema = z.enum(["running", "waiting_for_input"]);
+export type ThreadProgressPhase = z.infer<typeof ThreadProgressPhaseSchema>;
+
+export const ThreadProgressSnapshotSchema = z.object({
+  trace_id: z.string().uuid(),
+  thread_id: z.string().min(1),
+  source: AgentTypeSchema,
+  status: z.literal("partial"),
+  event_kind: ThreadProgressEventKindSchema,
+  phase: ThreadProgressPhaseSchema,
+  waiting_for_input: z.boolean(),
+  content: z.string(),
+  display_text: z.string(),
+  updated_at: z.string().datetime()
+});
+export type ThreadProgressSnapshot = z.infer<typeof ThreadProgressSnapshotSchema>;
+
 export const FileAttachmentSchema = z.object({
   path: z.string().min(1),
   filename: z.string().min(1).optional(),
@@ -139,6 +159,7 @@ export const HubResultSchema = z.object({
   content: z.string(),
   summary_text: z.string().optional(),
   details_text: z.string().optional(),
+  progress: ThreadProgressSnapshotSchema.optional(),
   attachments: z.array(FileAttachmentSchema).default([]),
   telegram_inline_keyboard: TelegramInlineKeyboardSchema.optional(),
   timestamp: z.string().datetime()

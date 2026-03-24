@@ -18,6 +18,7 @@ import {
   HubResultSchema,
   PaneOutputChunkSchema,
   PaneOutputNotAvailableSchema,
+  ThreadProgressSnapshotSchema,
   type FileAttachment,
   type HubMessage,
   type HubResult,
@@ -79,6 +80,27 @@ const pushToggleBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
   enabled: z.boolean().optional()
 });
+
+function coerceProgressSnapshot(result: HubResult) {
+  if (result.progress) {
+    return ThreadProgressSnapshotSchema.parse(result.progress);
+  }
+
+  const content = result.content.trim() || "Task is running...";
+  const waitingForInput = /^waiting for approval/i.test(content);
+  return ThreadProgressSnapshotSchema.parse({
+    trace_id: result.trace_id,
+    thread_id: result.thread_id,
+    source: result.source,
+    status: "partial",
+    event_kind: waitingForInput ? "approval" : "progress",
+    phase: waitingForInput ? "waiting_for_input" : "running",
+    waiting_for_input: waitingForInput,
+    content,
+    display_text: content,
+    updated_at: result.timestamp
+  });
+}
 
 const captureIntervalBodySchema = z.object({
   interval_ms: z.coerce.number().int().min(2000).max(30000)
@@ -571,7 +593,7 @@ export class WebInterfaceServer {
       )
     );
 
-    this.respondJson(response, 200, result);
+    this.respondJson(response, 200, coerceProgressSnapshot(result));
   }
 
   private async handleThreadActionRequest(
@@ -594,7 +616,7 @@ export class WebInterfaceServer {
       )
     );
 
-    this.respondJson(response, 200, result);
+    this.respondJson(response, 200, coerceProgressSnapshot(result));
   }
 
   private async handleSpawnRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -616,7 +638,7 @@ export class WebInterfaceServer {
       )
     );
 
-    this.respondJson(response, 200, result);
+    this.respondJson(response, 200, coerceProgressSnapshot(result));
   }
 
   private async handleFilesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -705,7 +727,7 @@ export class WebInterfaceServer {
       return;
     }
 
-    this.respondJson(response, 200, result);
+    this.respondJson(response, 200, coerceProgressSnapshot(result));
   }
 
   private async handleFileWriteRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

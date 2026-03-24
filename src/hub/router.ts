@@ -14,13 +14,15 @@ import {
   AgentTypeSchema,
   HubMessageSchema,
   HubResultSchema,
+  ThreadProgressSnapshotSchema,
   type AgentInstance,
   type AgentType,
   type FileAttachment,
   type HubMessage,
   type HubResult,
   type ReplyChannel,
-  type ServiceEndpoint
+  type ServiceEndpoint,
+  type ThreadProgressSnapshot
 } from "../types";
 import { InstanceManager } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
@@ -1044,24 +1046,17 @@ export class HubRouter {
   }
 
   async buildProgressResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
-    const instance = this.resolveInstance(threadId);
-    const client = this.clientFactory(instance.thread_id);
-    await client.connect(instance.socket_path);
-
-    try {
-      const content = await this.resolveProgressContent(client, threadId);
-      return HubResultSchema.parse({
-        trace_id: this.activeRunsByThread.get(threadId)?.traceId ?? traceId ?? randomUUID(),
-        thread_id: threadId,
-        source: instance.agent_type,
-        status: "partial",
-        content,
-        attachments: [],
-        timestamp: this.now().toISOString()
-      });
-    } finally {
-      client.disconnect();
-    }
+    const snapshot = await this.buildProgressSnapshotForThread(threadId, traceId);
+    return HubResultSchema.parse({
+      trace_id: snapshot.trace_id,
+      thread_id: threadId,
+      source: snapshot.source,
+      status: "partial",
+      content: snapshot.content,
+      progress: snapshot,
+      attachments: [],
+      timestamp: snapshot.updated_at
+    });
   }
 
   setInstanceStatus(threadId: string, status: string): void {
@@ -1279,23 +1274,45 @@ export class HubRouter {
     return this.formatRunContent(threadId, "Task completed.");
   }
 
-  private async resolveProgressContent(client: AgentClient, threadId: string): Promise<string> {
-    if (!client.getMessages) {
-      return this.formatRunContent(threadId, "Task is running...");
-    }
+  private async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
+    const instance = this.resolveInstance(threadId);
+    const client = this.clientFactory(instance.thread_id);
+    await client.connect(instance.socket_path);
 
     try {
-      const messages = await client.getMessages();
-      const snapshots = this.extractAgentMessageSnapshots(messages);
-      const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
-      if (latest) {
-        return this.formatRunContent(threadId, latest.content);
-      }
-    } catch {
-      // Best effort only; interval updates continue on the next tick.
-    }
+      const resolvedTraceId = this.resolveProgressTraceId(threadId, traceId);
+      const historyEntry = this.findLatestConversationEntryForTrace(threadId, resolvedTraceId);
+      const pendingEntry =
+        historyEntry && isReplaceableConversationEventKind(historyEntry.event_kind)
+          ? historyEntry
+          : null;
+      const latestSnapshot = await this.getLatestProgressSnapshot(client, threadId);
+      const waitingForInput =
+        latestSnapshot?.kind === "action_required" ||
+        historyEntry?.event_kind === "approval" ||
+        instance.status === "waiting";
+      const displayText = this.formatRunContent(
+        threadId,
+        latestSnapshot?.content ||
+          pendingEntry?.content ||
+          (waitingForInput ? "Waiting for approval..." : "Task is running...")
+      );
 
-    return this.formatRunContent(threadId, "Task is running...");
+      return ThreadProgressSnapshotSchema.parse({
+        trace_id: resolvedTraceId,
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "partial",
+        event_kind: waitingForInput ? "approval" : "progress",
+        phase: waitingForInput ? "waiting_for_input" : "running",
+        waiting_for_input: waitingForInput,
+        content: displayText,
+        display_text: displayText,
+        updated_at: this.now().toISOString()
+      });
+    } finally {
+      client.disconnect();
+    }
   }
 
   private pickLatestStableSnapshot(snapshots: AgentMessageSnapshot[]): AgentMessageSnapshot | null {
@@ -2018,6 +2035,37 @@ export class HubRouter {
     return (latest?.sequence ?? 0) + 1;
   }
 
+  private resolveProgressTraceId(threadId: string, traceId: string | null): string {
+    const activeTraceId = this.activeRunsByThread.get(threadId)?.traceId;
+    if (activeTraceId) {
+      return activeTraceId;
+    }
+
+    const history = this.readConversationHistory(threadId);
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (entry?.trace_id) {
+        return entry.trace_id;
+      }
+    }
+
+    return traceId ?? randomUUID();
+  }
+
+  private findLatestConversationEntryForTrace(threadId: string, traceId: string | null): ConversationHistoryEntry | null {
+    const history = this.readConversationHistory(threadId);
+    if (traceId) {
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const entry = history[index];
+        if (entry?.trace_id === traceId) {
+          return entry;
+        }
+      }
+    }
+
+    return history[history.length - 1] ?? null;
+  }
+
   private trimConversationHistory(history: ConversationHistoryEntry[]): ConversationHistoryEntry[] {
     history.sort((left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp));
     if (history.length > THREAD_HISTORY_LIMIT) {
@@ -2030,6 +2078,27 @@ export class HubRouter {
     return [...(this.conversationHistoryByThread.get(threadId) ?? [])].sort(
       (left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp)
     );
+  }
+
+  private async getLatestProgressSnapshot(client: AgentClient, threadId: string): Promise<AgentMessageSnapshot | null> {
+    if (!client.getMessages) {
+      return null;
+    }
+
+    try {
+      const messages = await client.getMessages();
+      const snapshots = this.extractAgentMessageSnapshots(messages);
+      const latest = this.pickLatestStableSnapshot(snapshots);
+      if (!latest) {
+        return null;
+      }
+      return {
+        ...latest,
+        content: this.formatRunContent(threadId, latest.content)
+      };
+    } catch {
+      return null;
+    }
   }
 
   private normalizeMonitorUpdateIntervalSec(candidate: number | undefined): number {

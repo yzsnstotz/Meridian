@@ -1666,6 +1666,10 @@ test("HubRouter builds monitor progress result from latest agent output", async 
   );
   assert.equal(result.status, "partial");
   assert.equal(result.content, "live pane output");
+  assert.equal(result.progress?.phase, "running");
+  assert.equal(result.progress?.event_kind, "progress");
+  assert.equal(result.progress?.waiting_for_input, false);
+  assert.equal(result.progress?.display_text, "live pane output");
 });
 
 test("HubRouter keeps the latest stable progress reply when the newest frame is transient", async () => {
@@ -1706,6 +1710,8 @@ test("HubRouter keeps the latest stable progress reply when the newest frame is 
 
   assert.equal(result.status, "partial");
   assert.equal(result.content, "actual stable reply");
+  assert.equal(result.progress?.content, "actual stable reply");
+  assert.equal(result.progress?.phase, "running");
 });
 
 test("HubRouter normalizes pane action-required frames into compact actionable content", async () => {
@@ -1757,6 +1763,9 @@ test("HubRouter normalizes pane action-required frames into compact actionable c
   assert.match(result.content, /Run this command\?/);
   assert.match(result.content, /git status && git remote -v && git log -n 3/);
   assert.doesNotMatch(result.content, /╭|╰|│/);
+  assert.equal(result.progress?.phase, "waiting_for_input");
+  assert.equal(result.progress?.event_kind, "approval");
+  assert.equal(result.progress?.waiting_for_input, true);
 });
 
 test("HubRouter normalizes Gemini edit approval frames into compact actionable content", async () => {
@@ -1813,6 +1822,44 @@ test("HubRouter normalizes Gemini edit approval frames into compact actionable c
   assert.match(result.content, /Edit \.gitignore: \.context\/ => \.context\//);
   assert.match(result.content, /4\.\s*No, suggest changes/);
   assert.doesNotMatch(result.content, /╭|╰|│/);
+  assert.equal(result.progress?.phase, "waiting_for_input");
+  assert.equal(result.progress?.event_kind, "approval");
+  assert.equal(result.progress?.waiting_for_input, true);
+});
+
+test("HubRouter falls back to canonical pending history for structured progress snapshots", async () => {
+  const registry = new InstanceRegistry();
+  const traceId = "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8";
+  registry.register({
+    thread_id: "codex_02",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-codex_02.sock",
+    pid: 101,
+    tmux_pane: "agent_codex_02",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => []
+    })
+  });
+
+  router.recordAgentPushConversation("codex_02", "Still running...", traceId);
+
+  const result = await router.buildProgressResultForThread("codex_02", traceId);
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.content, "Still running...");
+  assert.equal(result.progress?.trace_id, traceId);
+  assert.equal(result.progress?.content, "Still running...");
+  assert.equal(result.progress?.phase, "running");
 });
 
 test("HubRouter returns one-time manual monitor update without subscribing", async () => {
