@@ -593,7 +593,7 @@ export class WebInterfaceServer {
       )
     );
 
-    this.respondJson(response, 200, coerceProgressSnapshot(result));
+    this.respondJson(response, 200, result);
   }
 
   private async handleThreadActionRequest(
@@ -616,7 +616,7 @@ export class WebInterfaceServer {
       )
     );
 
-    this.respondJson(response, 200, coerceProgressSnapshot(result));
+    this.respondJson(response, 200, result);
   }
 
   private async handleSpawnRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -638,7 +638,7 @@ export class WebInterfaceServer {
       )
     );
 
-    this.respondJson(response, 200, coerceProgressSnapshot(result));
+    this.respondJson(response, 200, result);
   }
 
   private async handleFilesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

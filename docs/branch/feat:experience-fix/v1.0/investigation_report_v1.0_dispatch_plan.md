@@ -34,8 +34,8 @@
 | ✅ | 1 | R-01 | Canonical immutable conversation-event timeline and compatibility path | CODEX | PRE-FLIGHT | Investigation Report, Solution PRD, TaskSpec | Durable approval prompts now survive resolution and legacy migration |
 | ✅ | 2 | R-02 | Structured hub/web history and progress contract | CODEX | R-01 | Investigation Report, Solution PRD, Config | `/api/history` stays canonical and `/api/progress/:threadId` now returns structured phase/wait-state snapshots |
 | ✅ | 3 | R-03 | Terminal authoritative restore, reconnect discipline, and durable liveness | CODEX | R-02 | Investigation Report, Solution PRD, TaskSpec | Restored pending threads now keep pane replay out of chat and resolve completion from server-owned history/progress |
-| ⬜ | 4 | R-04 | Behavioral regression coverage for reconnect, restore, and quiet-period liveness | CODEX | R-02, R-03 | Investigation Report, Solution PRD, TaskSpec | DISC-01 closer; replace string-only protection with behavior checks |
-| ⬜ | 4 | R-05 | Runtime accessibility verification hardening for F-04/F-05/F-06 | CODEX | R-03 | Investigation Report, Solution PRD, TaskSpec | Verify served DOM first; source edits only if runtime proves drift |
+| ✅ | 4 | R-04 | Behavioral regression coverage for reconnect, restore, and quiet-period liveness | CODEX | R-02, R-03 | Investigation Report, Solution PRD, TaskSpec | Runtime-oriented terminal tests now cover restore, reconnect replay suppression, keyed liveness, and final-resolution behavior |
+| ✅ | 4 | R-05 | Runtime accessibility verification hardening for F-04/F-05/F-06 | CODEX | R-03 | Investigation Report, Solution PRD, TaskSpec | Served `terminal.html` verified F-04/F-05/F-06 on a live local web instance; no markup drift found, runtime and regression evidence captured |
 | 🟧 | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-04, R-05 | TaskSpec, Investigation Report, Solution PRD | Requires runtime evidence for F-04/F-05/F-06 |
 | 🟧 | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Investigation Report, Solution PRD | Terminal gate; human merges |
 

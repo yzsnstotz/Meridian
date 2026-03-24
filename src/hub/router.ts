@@ -2146,9 +2146,11 @@ export class HubRouter {
 
     const maxAttempts = 120;
     const delayMs = 500;
+    const maxUnchangedSnapshotPolls = 3;
     let fallbackCandidate: string | null = null;
     let fallbackTail: string | null = null;
     let stablePolls = 0;
+    let unchangedSnapshotPolls = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
@@ -2161,8 +2163,18 @@ export class HubRouter {
         const snapshots = this.extractAgentMessageSnapshots(messages, traceId);
         const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
         const combinedReply = this.combineNewAgentReplySnapshots(snapshots, previousSnapshot);
+        const hasNewAgentReply = latest ? this.isNewAgentReply(latest, previousSnapshot) : false;
 
-        if (latest && combinedReply && this.isNewAgentReply(latest, previousSnapshot)) {
+        if (latest && previousSnapshot && !hasNewAgentReply) {
+          unchangedSnapshotPolls += 1;
+          if (unchangedSnapshotPolls >= maxUnchangedSnapshotPolls) {
+            return null;
+          }
+        } else {
+          unchangedSnapshotPolls = 0;
+        }
+
+        if (latest && combinedReply && hasNewAgentReply) {
           const changedCandidate = fallbackCandidate !== combinedReply;
           if (changedCandidate) {
             fallbackCandidate = combinedReply;

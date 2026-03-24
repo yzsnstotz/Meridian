@@ -12,6 +12,7 @@ process.env.ALLOWED_USER_IDS ??= "123456789";
 process.env.MERIDIAN_DISABLE_WEB_AUTOSTART = "true";
 
 const webServerModulePromise = import("./server");
+const repoStaticDir = path.resolve(__dirname, "public");
 
 async function createStaticDir(): Promise<string> {
   const staticDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-static-"));
@@ -62,6 +63,27 @@ test("Web Interface Server rejects unauthenticated requests", async () => {
   });
 
   assert.equal(hubCallCount, 0);
+});
+
+test("Web Interface Server serves terminal markup with accessible labels and tab semantics", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/terminal.html`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
+
+    const html = await response.text();
+    assert.match(html, /<button[^>]*id="menu-toggle"[^>]*aria-label="Toggle menu"/);
+    assert.match(html, /<button[^>]*id="overflow-menu-btn"[^>]*aria-label="More actions"/);
+    assert.match(html, /<button[^>]*id="refresh-files"[^>]*aria-label="Refresh files"/);
+    assert.match(html, /<div class="tabs"[^>]*role="tablist"[^>]*aria-label="Workspace views"/);
+    assert.match(html, /<div class="tab active"[^>]*data-view="terminal"[^>]*role="tab"[^>]*aria-selected="true"/);
+    assert.match(html, /<div class="tab"[^>]*data-view="editor"[^>]*role="tab"[^>]*aria-selected="false"/);
+    assert.match(html, /<nav class="mobile-nav"[^>]*role="tablist"[^>]*aria-label="Mobile views"/);
+    assert.match(html, /<div class="nav-item active"[^>]*data-view="chat"[^>]*role="tab"[^>]*aria-selected="true"/);
+    assert.match(html, /<div class="nav-item"[^>]*data-view="editor"[^>]*role="tab"[^>]*aria-selected="false"/);
+  }, {
+    staticDir: repoStaticDir
+  });
 });
 
 test("Web Interface Server returns instance JSON for an authorized request", async () => {
