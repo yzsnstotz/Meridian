@@ -31,15 +31,15 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|------:|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Validate paths, env contract, typecheck, and targeted baseline tests | CODEX | — | Investigation Report, Solution PRD, Config, Package | Passed on retry: env contract aligned and all required baseline checks completed on `feat/experience-fix` |
-| ⬜ | 1 | R-01 | Canonical immutable conversation-event timeline and compatibility path | OPUS | PRE-FLIGHT | Investigation Report, Solution PRD, TaskSpec | Foundation for restore, dedup, and approval persistence |
-| ⬜ | 2 | R-02 | Structured hub/web history and progress contract | OPUS | R-01 | Investigation Report, Solution PRD, Config | Single source of truth for liveness and history payloads |
-| ⬜ | 3 | R-03 | Terminal authoritative restore, reconnect discipline, and durable liveness | OPUS | R-02 | Investigation Report, Solution PRD, TaskSpec | Chat-visible state must come from server-owned history/progress |
+| 🟧 | 1 | R-01 | Canonical immutable conversation-event timeline and compatibility path | CODEX | PRE-FLIGHT | Investigation Report, Solution PRD, TaskSpec | Foundation for restore, dedup, and approval persistence |
+| 🟧 | 2 | R-02 | Structured hub/web history and progress contract | CODEX | R-01 | Investigation Report, Solution PRD, Config | Single source of truth for liveness and history payloads |
+| 🟧 | 3 | R-03 | Terminal authoritative restore, reconnect discipline, and durable liveness | CODEX | R-02 | Investigation Report, Solution PRD, TaskSpec | Chat-visible state must come from server-owned history/progress |
 | ⬜ | 4 | R-04 | Behavioral regression coverage for reconnect, restore, and quiet-period liveness | CODEX | R-02, R-03 | Investigation Report, Solution PRD, TaskSpec | DISC-01 closer; replace string-only protection with behavior checks |
 | ⬜ | 4 | R-05 | Runtime accessibility verification hardening for F-04/F-05/F-06 | CODEX | R-03 | Investigation Report, Solution PRD, TaskSpec | Verify served DOM first; source edits only if runtime proves drift |
-| ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | OPUS | R-04, R-05 | TaskSpec, Investigation Report, Solution PRD | Requires runtime evidence for F-04/F-05/F-06 |
-| ⬜ | Ω | PR-REVIEW | PR Alignment Review | OPUS | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Investigation Report, Solution PRD | Terminal gate; human merges |
+| 🟧 | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-04, R-05 | TaskSpec, Investigation Report, Solution PRD | Requires runtime evidence for F-04/F-05/F-06 |
+| 🟧 | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Investigation Report, Solution PRD | Terminal gate; human merges |
 
-Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision
+Status legend: `⬜` Not started · `🟧` Reassigned · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision
 
 ## Batch Execution Details
 
@@ -55,7 +55,7 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 - Workers: `R-01`
 - Priority: P0
-- Model: OPUS
+- Model: CODEX
 - Agent notes: Establish the canonical event model first. Downstream workers must not invent their own event identities or replace semantics.
 - Completion gate: Persisted state supports canonical ordered events and a safe compatibility path.
 
@@ -63,7 +63,7 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 - Workers: `R-02`
 - Priority: P0
-- Model: OPUS
+- Model: CODEX
 - Agent notes: History and liveness contracts must come from one hub-owned source of truth. Preserve auth and invalid-thread behavior.
 - Completion gate: `/api/history` and `/api/progress/:threadId` align on structured, testable payloads.
 
@@ -71,7 +71,7 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 - Workers: `R-03`
 - Priority: P0
-- Model: OPUS
+- Model: CODEX
 - Agent notes: The terminal must stop treating pane replay as a second chat source. Refresh, reconnect, and quiet periods must converge on one transcript.
 - Completion gate: Mid-run restore, reconnect, and final completion resolve to a single authoritative chat state.
 
@@ -85,8 +85,8 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Terminal Batches
 
-- `DELTA-CHECK` (Ω): Model OPUS. Always completes with a report and any required corrective/PM rows.
-- `PR-REVIEW` (Ω): Model OPUS. Runs after DELTA-CHECK and all corrective/PM rows are `✅`.
+- `DELTA-CHECK` (Ω): Model CODEX. Always completes with a report and any required corrective/PM rows.
+- `PR-REVIEW` (Ω): Model CODEX. Runs after DELTA-CHECK and all corrective/PM rows are `✅`.
 
 ## PM Flags Summary
 
