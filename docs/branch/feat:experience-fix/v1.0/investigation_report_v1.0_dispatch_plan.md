@@ -37,7 +37,7 @@
 | ✅ | 4 | R-04 | Behavioral regression coverage for reconnect, restore, and quiet-period liveness | CODEX | R-02, R-03 | Investigation Report, Solution PRD, TaskSpec | Runtime-oriented terminal tests now cover restore, reconnect replay suppression, keyed liveness, and final-resolution behavior |
 | ✅ | 4 | R-05 | Runtime accessibility verification hardening for F-04/F-05/F-06 | CODEX | R-03 | Investigation Report, Solution PRD, TaskSpec | Served `terminal.html` verified F-04/F-05/F-06 on a live local web instance; no markup drift found, runtime and regression evidence captured |
 | ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-04, R-05 | TaskSpec, Investigation Report, Solution PRD | Delta report recorded one auto-correctable F-03 drift: `monitor_manual_update` blocks behind active runs |
-| ⬜ | Ω+1 | R-06 | Restore non-blocking manual progress updates and queue-level liveness coverage | CODEX | DELTA-CHECK | TaskSpec, Investigation Report, Solution PRD | AUTO from DELTA-CHECK: restore `monitor_manual_update` immediate handling and reinstate the deleted queue regression test |
+| ✅ | Ω+1 | R-06 | Restore non-blocking manual progress updates and queue-level liveness coverage | CODEX | DELTA-CHECK | TaskSpec, Investigation Report, Solution PRD | AUTO from DELTA-CHECK: restored `monitor_manual_update` immediate handling, reinstated queue regression coverage, and verified the active-run probe resolves immediately |
 | 🟧 | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Investigation Report, Solution PRD | Terminal gate; human merges |
 
 Status legend: `⬜` Not started · `🟧` Reassigned · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision
