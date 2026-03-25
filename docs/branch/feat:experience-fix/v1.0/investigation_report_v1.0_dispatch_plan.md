@@ -38,7 +38,7 @@
 | ✅ | 4 | R-05 | Runtime accessibility verification hardening for F-04/F-05/F-06 | CODEX | R-03 | Investigation Report, Solution PRD, TaskSpec | Served `terminal.html` verified F-04/F-05/F-06 on a live local web instance; no markup drift found, runtime and regression evidence captured |
 | ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX | R-04, R-05 | TaskSpec, Investigation Report, Solution PRD | Delta report recorded one auto-correctable F-03 drift: `monitor_manual_update` blocks behind active runs |
 | ✅ | Ω+1 | R-06 | Restore non-blocking manual progress updates and queue-level liveness coverage | CODEX | DELTA-CHECK | TaskSpec, Investigation Report, Solution PRD | AUTO from DELTA-CHECK: restored `monitor_manual_update` immediate handling, reinstated queue regression coverage, and verified the active-run probe resolves immediately |
-| 🟧 | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Investigation Report, Solution PRD | Terminal gate; human merges |
+| ✅ | Ω | PR-REVIEW | PR Alignment Review | CODEX | DELTA-CHECK, all Ω+1 workers, all PM-DECIDE rows | TaskSpec, Investigation Report, Solution PRD | Terminal gate complete on 2026-03-25; merge blocked on direct-run fallback approval/progress regressions |
 
 Status legend: `⬜` Not started · `🟧` Reassigned · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision
 
