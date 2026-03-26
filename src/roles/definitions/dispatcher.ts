@@ -385,7 +385,7 @@ export class DispatcherRole implements BaseRole {
       },
       mode: "bridge",
       reply_channel: replyChannel,
-      suppress_reply: true
+      suppress_reply: false
     };
   }
 
