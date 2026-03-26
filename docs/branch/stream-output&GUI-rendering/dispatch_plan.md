@@ -1,7 +1,7 @@
 # Dispatch Plan — Streaming Output & GUI Rendering v1.0
 
 - **TaskSpec**: `/Users/yzliu/work/Meridian/docs/branch/stream-output&GUI-rendering/taskspec_v1.0.md`
-- **Branch**: `feat/experience-fix`
+- **Branch**: `stream-output&GUI-rendering`
 - **Date**: 2026-03-26
 
 ---
@@ -31,7 +31,7 @@
 |--------|-------|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Environment Health Check | CODEX | — | — | Gates all batches; typecheck + test baseline |
 | ✅ | 1 | N-01 | Stream Types & NDJSON Infrastructure | CODEX | — | Main PRD, Investigation Report | Foundation types; all parsers depend on this |
-| ⬜ | 1 | N-02 | DiffEngine | CODEX | — | Main PRD | PRD §4.2 exact implementation |
+| ✅ | 1 | N-02 | DiffEngine | CODEX | — | Main PRD | PRD §4.2 exact implementation |
 | ⬜ | 1 | N-03 | A2A Adapter | CODEX | — | Main PRD | PRD §4.4 mapping tables |
 | ⬜ | 2 | N-04 | Claude Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `claude-sample.ndjson`; CLI schema NOT API schema |
 | ⬜ | 2 | N-05 | Gemini Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `gemini-sample.ndjson`; flat string, not array |
