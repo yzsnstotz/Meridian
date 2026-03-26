@@ -207,6 +207,8 @@ export const AgentInstanceSchema = z.object({
   tmux_pane: z.string().nullable(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
+  supportsStream: z.boolean().optional(),
+  codexSessionId: z.string().min(1).optional(),
   restart_safe: z.boolean().optional(),
   auto_approve: z.boolean().default(false)
 });
