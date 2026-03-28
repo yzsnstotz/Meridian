@@ -34,7 +34,7 @@
 | ✅ | 1 | N-02 | DiffEngine | CODEX | — | Main PRD | PRD §4.2 exact implementation |
 | ✅ | 1 | N-03 | A2A Adapter | CODEX | — | Main PRD | PRD §4.4 mapping tables |
 | ✅ | 2 | N-04 | Claude Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `claude-sample.ndjson`; CLI schema NOT API schema |
-| ⬜ | 2 | N-05 | Gemini Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `gemini-sample.ndjson`; flat string, not array |
+| ✅ | 2 | N-05 | Gemini Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `gemini-sample.ndjson`; flat string, not array |
 | ⬜ | 2 | N-06 | Codex Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `codex-sample.jsonl`; lifecycle events |
 | ⬜ | 2 | R-01 | Claude Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json --verbose --include-partial-messages` |
 | ⬜ | 2 | R-02 | Gemini Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json` |
