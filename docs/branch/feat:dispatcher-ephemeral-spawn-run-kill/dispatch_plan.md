@@ -40,8 +40,8 @@
 | ✅ | 2 | N-04 | run.ts tool | CODEX-XHIGH | N-01 | PRD v2.1, Investigation Report | Hub IPC + no timeout |
 | ✅ | 2 | N-05 | kill.ts + notify.ts + update-status.ts | CODEX | N-01 | PRD v2.1 | 3 simpler tools |
 | ✅ | 3 | N-06 | Dispatcher launch wrapper (Tool Gateway CLI) | CODEX-XHIGH | N-02 | PRD v2.2, Investigation Report v2.2 | meridian-tool spawn + run CLI wrapper |
-| ⬜ | 3 | N-07 | Prompt builder | CODEX-HIGH | N-05 | PRD v2.1, Investigation Report v2.1 | System prompt with `npx tsx` tool refs |
-| ⬜ | 3 | N-08 | Session metadata + thread sidecar + restart recovery | CODEX-XHIGH | N-05 | PRD v2.2, Investigation Report v2.2 | Session metadata + sidecar + pause/resume + restart recovery |
+| ✅ | 3 | N-07 | Prompt builder | CODEX-HIGH | N-05 | PRD v2.1, Investigation Report v2.1 | System prompt with `npx tsx` tool refs |
+| 🔄 | 3 | N-08 | Session metadata + thread sidecar + restart recovery | CODEX-XHIGH | N-05 | PRD v2.2, Investigation Report v2.2 | Session metadata + sidecar + pause/resume + restart recovery |
 | ⬜ | 4 | N-09 | agent-dispatcher.ts role definition | CODEX-XHIGH | R-01, N-06, N-07, N-08 | PRD v2.2, TaskSpec v1.2 | Wires all components; replaces R-01 stub |
 | ⬜ | 5 | N-10 | HTTP API: start (spawn+run Dispatcher) + pause/resume + channels | CODEX-XHIGH | N-09 | PRD v2.2, TaskSpec v1.2 | Spawn+run Dispatcher via launcher; PM Flag #1 multi-channel |
 | ⬜ | 6 | N-11 | GUI: Agent Dispatcher dashboard | CODEX | N-10 | PRD v2.2, TaskSpec v1.2 | Dashboard + detail + start form + channel dropdown |
