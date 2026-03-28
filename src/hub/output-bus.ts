@@ -97,9 +97,9 @@ function normalizeFinalizeDelta(traceId: string, result: unknown): OutputDelta {
 export class OutputBus {
   private readonly diffEngine: DiffEngine;
   private readonly a2aAdapter: A2AAdapterLike;
-  private readonly adapterOutput: OutputBusDispatchSink | null;
-  private readonly websocketOutput: OutputBusDispatchSink | null;
-  private readonly recordOutput: OutputBusRecordHook | null;
+  private adapterOutput: OutputBusDispatchSink | null;
+  private websocketOutput: OutputBusDispatchSink | null;
+  private recordOutput: OutputBusRecordHook | null;
 
   constructor(options: OutputBusOptions = {}) {
     this.diffEngine = options.diffEngine ?? new DiffEngine();
@@ -107,6 +107,18 @@ export class OutputBus {
     this.adapterOutput = options.adapterOutput ?? null;
     this.websocketOutput = options.websocketOutput ?? null;
     this.recordOutput = options.recordOutput ?? null;
+  }
+
+  setAdapterOutput(sink: OutputBusDispatchSink | null | undefined): void {
+    this.adapterOutput = sink ?? null;
+  }
+
+  setWebsocketOutput(sink: OutputBusDispatchSink | null | undefined): void {
+    this.websocketOutput = sink ?? null;
+  }
+
+  setRecordOutput(hook: OutputBusRecordHook | null | undefined): void {
+    this.recordOutput = hook ?? null;
   }
 
   pushDelta(traceId: string, delta: OutputDelta): void {

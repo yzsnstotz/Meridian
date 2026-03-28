@@ -1276,6 +1276,10 @@ export class HubRouter {
     });
   }
 
+  getOutputBus(): OutputBus {
+    return this.outputBus;
+  }
+
   setInstanceStatus(threadId: string, status: string): void {
     const normalizedStatus = this.normalizeMonitorStatus(status);
     if (!normalizedStatus) {
@@ -1491,7 +1495,7 @@ export class HubRouter {
     return this.formatRunContent(threadId, "Task completed.");
   }
 
-  private async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
+  async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
     const instance = this.resolveInstance(threadId);
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);

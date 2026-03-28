@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { config } from "../config";
-import type { HubResult, ReplyChannel, ServiceEndpoint } from "../types";
+import type { HubResult, ReplyChannel, ServiceEndpoint, ThreadProgressSnapshot } from "../types";
 import { PaneBroadcaster } from "./pane-broadcaster";
 import type { ResultSender } from "./result-sender";
 import type { HubRouter } from "./router";
@@ -10,12 +10,13 @@ import { HubServer, resolveStaticServiceEndpoints } from "./server";
 
 class FakeRouter {
   readonly completionCalls: Array<{ threadId: string; traceId: string | null }> = [];
-  readonly progressCalls: Array<{ threadId: string; traceId: string | null }> = [];
+  readonly progressSnapshotCalls: Array<{ threadId: string; traceId: string | null }> = [];
+  readonly recordCalls: Array<{ threadId: string; rawContent: string; traceId: string | null; eventKindHint?: "progress" | "final_reply" }> = [];
   readonly statusCalls: Array<{ threadId: string; status: string }> = [];
   readonly forceDispatchCalls: string[] = [];
   attachedSessionsByThread = new Map<string, string[]>();
   monitorSubscribersByThread = new Map<string, string[]>();
-  dueDispatches: Array<{ threadId: string; chatId: string }> = [];
+  dueDispatches: Array<{ threadId: string; chatId: string; botId?: string; replyChannel: ReplyChannel }> = [];
 
   async initialize(): Promise<void> {
     return;
@@ -60,17 +61,29 @@ class FakeRouter {
     return [...this.dueDispatches];
   }
 
-  async buildProgressResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
-    this.progressCalls.push({ threadId, traceId });
+  async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
+    this.progressSnapshotCalls.push({ threadId, traceId });
     return {
-      trace_id: traceId ?? "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+      trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
       thread_id: threadId,
       source: "codex",
       status: "partial",
+      event_kind: "progress",
+      phase: "running",
+      waiting_for_input: false,
       content: `progress`,
-      attachments: [],
-      timestamp: new Date().toISOString()
+      display_text: "progress",
+      updated_at: new Date().toISOString()
     };
+  }
+
+  recordAgentPushConversation(
+    threadId: string,
+    rawContent: string,
+    traceId: string | null,
+    eventKindHint?: "progress" | "final_reply"
+  ): void {
+    this.recordCalls.push({ threadId, rawContent, traceId, eventKindHint });
   }
 
   isThreadRunning(threadId: string): boolean {
@@ -260,8 +273,16 @@ test("HubServer sends completion to /update subscribers even without attach", as
 test("HubServer flushes periodic monitor progress updates for due subscriptions", async () => {
   const fakeRouter = new FakeRouter();
   fakeRouter.dueDispatches = [
-    { threadId: "codex_01", chatId: "chat-a" },
-    { threadId: "codex_01", chatId: "chat-b" }
+    {
+      threadId: "codex_01",
+      chatId: "chat-a",
+      replyChannel: { channel: "telegram", chat_id: "chat-a" }
+    },
+    {
+      threadId: "codex_01",
+      chatId: "chat-b",
+      replyChannel: { channel: "telegram", chat_id: "chat-b" }
+    }
   ];
   const fakeResultSender = new FakeResultSender();
   const server = new HubServer({
@@ -270,12 +291,23 @@ test("HubServer flushes periodic monitor progress updates for due subscriptions"
   });
 
   await (server as unknown as { flushMonitorProgressUpdates: () => Promise<void> }).flushMonitorProgressUpdates();
+  await (server as unknown as { flushMonitorProgressUpdates: () => Promise<void> }).flushMonitorProgressUpdates();
 
-  assert.equal(fakeRouter.progressCalls.length, 1);
+  assert.equal(fakeRouter.progressSnapshotCalls.length, 2);
   const expectedCalls = config.TELEGRAM_PUSH_WHITELIST_ONLY ? 0 : 2;
   assert.equal(fakeResultSender.calls.length, expectedCalls);
   if (expectedCalls > 0) {
     assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "partial"));
+    assert.ok(fakeResultSender.calls.every((entry) => entry.result.content === "progress"));
+    assert.deepEqual(
+      fakeRouter.recordCalls,
+      [{
+        threadId: "codex_01",
+        rawContent: "progress",
+        traceId: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        eventKindHint: "progress"
+      }]
+    );
   }
 });
 

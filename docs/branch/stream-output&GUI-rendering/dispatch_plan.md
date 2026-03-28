@@ -46,7 +46,7 @@
 | ✅ | 3 | R-04 | Router Summary Injection Skip | CODEX-HIGH | N-01 | Main PRD, Investigation Report | Gate appendSummaryProtocolPrompt on !supportsStream |
 | ✅ | 4 | N-07 | OutputBus | CODEX-XHIGH | N-02, N-03 | Main PRD, Investigation Report | Implemented `src/hub/output-bus.ts` with dual fan-out plus the missing N-01/N-02/N-03 shared contracts needed by this checkout |
 | ✅ | 4 | R-05 | State Store replace_key Narrowing | CODEX | — | Main PRD, Investigation Report | Keep for approval, remove for progress |
-| ⬜ | 5 | R-06 | Hub Server flushMonitorProgressUpdates Refactor | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Ticker stays; push through OutputBus |
+| ✅ | 5 | R-06 | Hub Server flushMonitorProgressUpdates Refactor | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Ticker stays; push through OutputBus |
 | ⬜ | 5 | R-07 | Pane Broadcaster → OutputBus Integration | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Push accumulator through OutputBus; pane bridge untouched |
 | ✅ | 5 | R-08 | Stream Consumption in Router (handleRun) | CODEX-XHIGH | N-07, R-03, R-04 | Main PRD, Investigation Report | Direct stdout parsing; bypasses agentapi; fallback to bridge polling |
 | ⬜ | 6 | R-09 | WebSocket A2A Push Format | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Add a2a_message type alongside pane_output |
