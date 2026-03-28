@@ -82,6 +82,82 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["config-link"].href).toBe("/role/does-not-exist-xyz/config");
   });
 
+  it("renders agent-dispatcher role detail with session log and dispatch plan status", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/role/agent-dispatcher-f",
+      elements: {
+        "role-title": createElement("Loading role…"),
+        "role-subtitle": createElement("Fetching dispatcher detail."),
+        "role-summary": createElement(),
+        "role-panel-links": createElement(),
+        "role-tasks-panel": createElement(),
+        "role-tasks": createContainer([{ stale: true }]),
+        "role-tasks-empty": createElement("No tasks have been recorded for this role."),
+        "prompts-link": createElement(),
+        "config-link": createElement(),
+        "dispatcher-session-panel": createElement(),
+        "dispatcher-session-log": createElement(),
+        "dispatch-plan-panel": createElement(),
+        "dispatch-plan-empty": createElement("No dispatch plan rows available."),
+        "dispatch-plan-table-shell": createElement(),
+        "dispatch-plan-body": createElement()
+      },
+      fetchImpl: async () => createJsonResponse(200, {
+        thread_id: "agent-dispatcher-f",
+        role_type: "agent-dispatcher",
+        status: "paused",
+        tasks: [],
+        dispatcher_thread_id: "dispatcher-thread-123",
+        current_worker: "N-11",
+        agent_type: "codex",
+        mode: "bridge",
+        session_log: [
+          "Detail for trace=trace-123 thread=dispatcher-thread-123",
+          "",
+          "Your message:",
+          "Run worker N-11",
+          "",
+          "Agent reply:",
+          "Updated the GUI dashboard."
+        ],
+        dispatch_plan: {
+          rows: [
+            {
+              status: "✅",
+              batch: "5",
+              worker: "N-10",
+              task: "API Layer",
+              model: "CODEX-XHIGH",
+              depends_on: "N-09"
+            },
+            {
+              status: "🔄",
+              batch: "6",
+              worker: "N-11",
+              task: "GUI",
+              model: "CODEX",
+              depends_on: "N-10"
+            }
+          ]
+        }
+      })
+    });
+
+    await page.hooks.setupRoleDetail();
+
+    expect(page.elements["role-title"].textContent).toBe("agent-dispatcher-f");
+    expect(page.elements["role-subtitle"].textContent).toBe("Dispatcher control session.");
+    expect(page.elements["role-panel-links"].hidden).toBe(true);
+    expect(page.elements["role-tasks-panel"].hidden).toBe(true);
+    expect(page.elements["dispatcher-session-panel"].hidden).toBe(false);
+    expect(page.elements["dispatch-plan-panel"].hidden).toBe(false);
+    expect(page.elements["dispatcher-session-log"].textContent).toContain("Updated the GUI dashboard.");
+    expect(page.elements["dispatch-plan-empty"].hidden).toBe(true);
+    expect(page.elements["dispatch-plan-table-shell"].hidden).toBe(false);
+    expect(page.elements["dispatch-plan-body"].innerHTML).toContain("N-11");
+    expect(page.elements["role-summary"].innerHTML).toContain("dispatcher-thread-123");
+  });
+
   it("loads and saves dispatcher config JSON in the browser client", async () => {
     const patchBodies: unknown[] = [];
     const page = await loadBrowserApp({

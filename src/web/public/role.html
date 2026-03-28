@@ -19,7 +19,7 @@
       <section class="panel">
         <div class="panel-heading">
           <h2>Role Summary</h2>
-          <div class="panel-links">
+          <div id="role-panel-links" class="panel-links">
             <a id="prompts-link" class="ghost-link" href="/">Prompt Editor</a>
             <a id="config-link" class="ghost-link" href="/">Config Editor</a>
           </div>
@@ -27,7 +27,42 @@
         <dl id="role-summary" class="summary-grid"></dl>
       </section>
 
-      <section class="panel">
+      <section id="dispatcher-session-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatcher Session</h2>
+            <p class="muted">Auto-refreshes every 3 seconds.</p>
+          </div>
+        </div>
+        <pre id="dispatcher-session-log" class="log-tail">No dispatcher session detail available yet.</pre>
+      </section>
+
+      <section id="dispatch-plan-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Plan Status</h2>
+            <p class="muted">Parsed from the active dispatch plan file.</p>
+          </div>
+        </div>
+        <div id="dispatch-plan-empty" class="empty-state">No dispatch plan rows available.</div>
+        <div id="dispatch-plan-table-shell" class="table-shell" hidden>
+          <table class="status-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Batch</th>
+                <th>Worker</th>
+                <th>Task</th>
+                <th>Model</th>
+                <th>Depends On</th>
+              </tr>
+            </thead>
+            <tbody id="dispatch-plan-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="role-tasks-panel" class="panel">
         <div class="panel-heading">
           <h2>DAG Tasks</h2>
           <p class="muted">Auto-refreshes every 3 seconds.</p>

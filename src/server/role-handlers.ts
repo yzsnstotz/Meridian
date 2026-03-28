@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { z } from "zod";
@@ -14,6 +15,7 @@ import {
 import type { PromptStoreRoleBinding } from "../roles/prompt-store";
 import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
+import { ThreadTracker, type DispatchThreadState, type WorkerThreadEntry } from "../roles/agent-dispatcher/session-manager";
 import { StateStore } from "../state-store";
 import {
   AgentDispatcherConfigSchema,
@@ -75,6 +77,7 @@ export interface RoleHandlersOptions {
   registry: RoleRegistry;
   stateStore?: PersistableStateStore;
   listReplyChannels?: () => Promise<ReplyChannel[]>;
+  getThreadDetail?: (threadId: string) => Promise<string>;
   log?: Logger;
 }
 
@@ -93,10 +96,51 @@ export interface RoleConfigResponse {
   config: DispatcherEditorConfig;
 }
 
+export interface DispatchPlanRow {
+  status: string;
+  batch: string;
+  worker: string;
+  task: string;
+  model: string;
+  depends_on: string;
+  prds_to_attach?: string;
+  notes?: string;
+}
+
+export interface RoleDetailResponse {
+  thread_id: string;
+  role_type: string;
+  status: string;
+  taskspec?: string;
+  system_prompt?: string;
+  tasks: Array<{
+    task_id: string;
+    status: string;
+    depends_on: string[];
+    trace_id?: string;
+    result_summary?: string;
+    instruction: string;
+  }>;
+  dispatch_plan_path?: string;
+  command_file_path?: string;
+  dispatcher_thread_id?: string | null;
+  current_worker?: string | null;
+  last_log_line?: string | null;
+  user_reply_channels?: ReplyChannel[];
+  agent_type?: string;
+  mode?: string;
+  kill_policy?: string;
+  session_log?: string[];
+  dispatch_plan?: {
+    rows: DispatchPlanRow[];
+  };
+}
+
 export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const stateStore = options.stateStore ?? new StateStore();
   const log = options.log ?? console;
   const listReplyChannels = options.listReplyChannels ?? (async () => []);
+  const getThreadDetail = options.getThreadDetail;
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   const handlers: RoleHandlers = {
@@ -157,7 +201,10 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             writeJson(response, 200, await listRoles(stateStore));
             return true;
           case "get-role":
-            writeJson(response, 200, await getRole(stateStore, route.threadId));
+            writeJson(response, 200, await getRole(stateStore, route.threadId, {
+              log,
+              getThreadDetail
+            }));
             return true;
           case "get-config":
             writeJson(response, 200, await handlers.getConfig(route.threadId));
@@ -334,22 +381,12 @@ async function listRoles(stateStore: PersistableStateStore): Promise<
 
 async function getRole(
   stateStore: PersistableStateStore,
-  threadId: string
-): Promise<{
-  thread_id: string;
-  role_type: string;
-  status: string;
-  taskspec?: string;
-  system_prompt?: string;
-  tasks: Array<{
-    task_id: string;
-    status: string;
-    depends_on: string[];
-    trace_id?: string;
-    result_summary?: string;
-    instruction: string;
-  }>;
-}> {
+  threadId: string,
+  options: {
+    log: Logger;
+    getThreadDetail?: (threadId: string) => Promise<string>;
+  }
+): Promise<RoleDetailResponse> {
   const state = await loadState(stateStore);
   const role = state.roles.find((entry) => entry.threadId === threadId);
   if (!role) {
@@ -358,7 +395,7 @@ async function getRole(
 
   const config = parseDispatcherConfig(role.config);
 
-  return {
+  const response: RoleDetailResponse = {
     thread_id: role.threadId,
     role_type: role.roleType,
     status: role.status,
@@ -372,6 +409,48 @@ async function getRole(
       result_summary: task.result_summary,
       instruction: task.instruction
     }))
+  };
+
+  if (role.roleType !== "agent-dispatcher") {
+    return response;
+  }
+
+  const agentDispatcherConfig = parseAgentDispatcherConfig(role.config);
+  if (!agentDispatcherConfig) {
+    return response;
+  }
+
+  const trackerState = await loadDispatchThreadState(agentDispatcherConfig.dispatch_plan_path, options.log);
+  const dispatchPlanRows = await loadDispatchPlanRows(agentDispatcherConfig.dispatch_plan_path, options.log);
+  const currentWorker = resolveCurrentWorker(dispatchPlanRows, trackerState);
+  const currentWorkerEntry = currentWorker ? trackerState.workers[currentWorker] ?? null : null;
+  const sessionLog = await loadDispatcherSessionLog(
+    trackerState.dispatcher_thread_id,
+    options.getThreadDetail,
+    {
+      currentWorker,
+      currentWorkerEntry,
+      dispatchPlanPath: agentDispatcherConfig.dispatch_plan_path,
+      roleStatus: role.status
+    },
+    options.log
+  );
+
+  return {
+    ...response,
+    dispatch_plan_path: agentDispatcherConfig.dispatch_plan_path,
+    command_file_path: agentDispatcherConfig.command_file_path,
+    dispatcher_thread_id: trackerState.dispatcher_thread_id,
+    current_worker: currentWorker,
+    last_log_line: extractLastLogLine(sessionLog),
+    user_reply_channels: agentDispatcherConfig.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
+    agent_type: agentDispatcherConfig.agent_type,
+    mode: agentDispatcherConfig.mode,
+    kill_policy: agentDispatcherConfig.kill_policy,
+    session_log: sessionLog,
+    dispatch_plan: {
+      rows: dispatchPlanRows
+    }
   };
 }
 
@@ -451,6 +530,11 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
 
 function parseDispatcherConfig(config: unknown): DispatcherConfig | null {
   const parsed = DispatcherConfigSchema.safeParse(config);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseAgentDispatcherConfig(config: unknown): AgentDispatcherConfig | null {
+  const parsed = AgentDispatcherConfigSchema.safeParse(config);
   return parsed.success ? parsed.data : null;
 }
 
@@ -642,4 +726,217 @@ function getStatusCode(error: unknown): number {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
+}
+
+async function loadDispatchThreadState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadState> {
+  try {
+    return await new ThreadTracker(dispatchPlanPath).load();
+  } catch (error) {
+    log.warn("Failed to read agent-dispatcher sidecar", {
+      dispatchPlanPath,
+      error: getErrorMessage(error)
+    });
+
+    return {
+      dispatcher_thread_id: null,
+      workers: {}
+    };
+  }
+}
+
+async function loadDispatchPlanRows(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanRow[]> {
+  try {
+    const markdown = await fs.readFile(dispatchPlanPath, "utf8");
+    return parseDispatchPlanRows(markdown);
+  } catch (error) {
+    log.warn("Failed to read dispatch plan for agent-dispatcher detail", {
+      dispatchPlanPath,
+      error: getErrorMessage(error)
+    });
+    return [];
+  }
+}
+
+async function loadDispatcherSessionLog(
+  dispatcherThreadId: string | null,
+  getThreadDetail: ((threadId: string) => Promise<string>) | undefined,
+  fallbackContext: {
+    currentWorker: string | null;
+    currentWorkerEntry: WorkerThreadEntry | null;
+    dispatchPlanPath: string;
+    roleStatus: string;
+  },
+  log: Logger
+): Promise<string[]> {
+  const fallbackLog = buildFallbackSessionLog(fallbackContext, dispatcherThreadId);
+  if (!dispatcherThreadId || !getThreadDetail) {
+    return fallbackLog;
+  }
+
+  try {
+    const detail = await getThreadDetail(dispatcherThreadId);
+    const lines = splitLogLines(detail);
+    return lines.length > 0 ? lines : fallbackLog;
+  } catch (error) {
+    log.warn("Failed to fetch dispatcher session detail", {
+      dispatcherThreadId,
+      error: getErrorMessage(error)
+    });
+    return fallbackLog;
+  }
+}
+
+function resolveCurrentWorker(rows: DispatchPlanRow[], trackerState: DispatchThreadState): string | null {
+  const inProgressWorker = rows.find((row) => row.status === "🔄")?.worker;
+  if (inProgressWorker) {
+    return inProgressWorker;
+  }
+
+  const trackedWorkers = Object.entries(trackerState.workers).sort((left, right) => {
+    return Date.parse(right[1].started_at) - Date.parse(left[1].started_at);
+  });
+
+  return trackedWorkers[0]?.[0] ?? null;
+}
+
+function extractLastLogLine(lines: string[]): string | null {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (line) {
+      return line;
+    }
+  }
+
+  return null;
+}
+
+function buildFallbackSessionLog(
+  context: {
+    currentWorker: string | null;
+    currentWorkerEntry: WorkerThreadEntry | null;
+    dispatchPlanPath: string;
+    roleStatus: string;
+  },
+  dispatcherThreadId: string | null
+): string[] {
+  const lines = [
+    `Role status: ${context.roleStatus}`,
+    `Dispatch plan: ${context.dispatchPlanPath}`,
+    `Dispatcher thread: ${dispatcherThreadId ?? "pending"}`,
+    `Current worker: ${context.currentWorker ?? "idle"}`
+  ];
+
+  if (context.currentWorkerEntry) {
+    lines.push(`Worker thread: ${context.currentWorkerEntry.thread_id}`);
+    lines.push(`Worker started: ${context.currentWorkerEntry.started_at}`);
+  }
+
+  return lines;
+}
+
+function splitLogLines(content: string): string[] {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line, index, lines) => line.length > 0 || (index > 0 && lines[index - 1] !== ""));
+}
+
+function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
+  const lines = markdown.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const headerCells = parseTableRow(lines[index]);
+    if (!headerCells) {
+      continue;
+    }
+
+    const columnIndex = indexDispatchPlanColumns(headerCells);
+    if (!columnIndex) {
+      continue;
+    }
+
+    const separatorCells = parseTableRow(lines[index + 1]);
+    if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
+      continue;
+    }
+
+    const rows: DispatchPlanRow[] = [];
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowCells = parseTableRow(lines[rowIndex]);
+      if (!rowCells || rowCells.length !== headerCells.length) {
+        break;
+      }
+
+      rows.push({
+        status: rowCells[columnIndex.status],
+        batch: rowCells[columnIndex.batch],
+        worker: rowCells[columnIndex.worker],
+        task: rowCells[columnIndex.task],
+        model: rowCells[columnIndex.model],
+        depends_on: rowCells[columnIndex.depends_on],
+        prds_to_attach: columnIndex.prds_to_attach === -1 ? undefined : rowCells[columnIndex.prds_to_attach],
+        notes: columnIndex.notes === -1 ? undefined : rowCells[columnIndex.notes]
+      });
+    }
+
+    return rows;
+  }
+
+  return [];
+}
+
+function indexDispatchPlanColumns(headerCells: string[]): {
+  status: number;
+  batch: number;
+  worker: number;
+  task: number;
+  model: number;
+  depends_on: number;
+  prds_to_attach: number;
+  notes: number;
+} | null {
+  const normalizedHeaders = headerCells.map(normalizeTableHeader);
+  const status = normalizedHeaders.indexOf("status");
+  const batch = normalizedHeaders.indexOf("batch");
+  const worker = normalizedHeaders.indexOf("worker");
+  const task = normalizedHeaders.indexOf("task");
+  const model = normalizedHeaders.indexOf("model");
+  const dependsOn = normalizedHeaders.indexOf("depends_on");
+
+  if ([status, batch, worker, task, model, dependsOn].some((index) => index === -1)) {
+    return null;
+  }
+
+  return {
+    status,
+    batch,
+    worker,
+    task,
+    model,
+    depends_on: dependsOn,
+    prds_to_attach: normalizedHeaders.indexOf("prds_to_attach"),
+    notes: normalizedHeaders.indexOf("notes")
+  };
+}
+
+function normalizeTableHeader(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function parseTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|")) {
+    return null;
+  }
+
+  const withoutLeadingPipe = trimmed.slice(1);
+  const normalized = withoutLeadingPipe.endsWith("|")
+    ? withoutLeadingPipe.slice(0, -1)
+    : withoutLeadingPipe;
+
+  return normalized.split("|").map((cell) => cell.trim());
+}
+
+function isSeparatorRow(cells: string[]): boolean {
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
 }

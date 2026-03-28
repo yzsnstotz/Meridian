@@ -56,6 +56,84 @@
         </form>
       </section>
 
+      <section class="panel panel-form">
+        <div class="panel-heading">
+          <div>
+            <h2>Start Agent Dispatcher</h2>
+            <p class="muted">Launch the dispatcher controller against a dispatch plan and reply-channel set.</p>
+          </div>
+        </div>
+        <form id="start-agent-dispatcher-form" class="stack">
+          <label class="field">
+            <span>dispatch_plan_path</span>
+            <input
+              name="dispatch_plan_path"
+              type="text"
+              placeholder="/abs/path/to/dispatch_plan.md"
+              required
+            />
+          </label>
+
+          <label class="field">
+            <span>command_file_path</span>
+            <input
+              name="command_file_path"
+              type="text"
+              placeholder="/abs/path/to/agent_dispatch_command.md"
+              required
+            />
+          </label>
+
+          <label class="field">
+            <span>user_reply_channels</span>
+            <select id="agent-dispatcher-channel-select" name="user_reply_channels" multiple size="5"></select>
+          </label>
+
+          <div class="summary-grid">
+            <label class="field">
+              <span>agent_type</span>
+              <select name="agent_type">
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>mode</span>
+              <select name="mode">
+                <option value="bridge">bridge</option>
+                <option value="pane_bridge">pane_bridge</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>kill_policy</span>
+              <select name="kill_policy">
+                <option value="always">always</option>
+                <option value="on_success">on_success</option>
+                <option value="never">never</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="primary-button">Start Agent Dispatcher</button>
+            <p id="agent-dispatcher-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Active Agent Dispatchers</h2>
+            <p class="muted">Live status, current worker, and latest dispatcher tail.</p>
+          </div>
+        </div>
+        <div id="agent-dispatchers-empty" class="empty-state">No active agent dispatchers.</div>
+        <div id="agent-dispatchers-list" class="card-grid"></div>
+      </section>
+
       <section class="panel">
         <div class="panel-heading">
           <h2>Active Roles</h2>

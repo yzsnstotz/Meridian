@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -223,6 +226,102 @@ describe("role config handlers", () => {
     });
   });
 
+  it("returns enriched agent-dispatcher detail for the dashboard and role view", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 5 | N-10 | API Layer | CODEX-XHIGH | N-09 | PRD v2.2 | ready |",
+      "| 🔄 | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | running |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      dispatcher_thread_id: "dispatcher-thread-123",
+      workers: {
+        "N-11": {
+          thread_id: "worker-thread-456",
+          started_at: "2026-03-28T00:00:00.000Z"
+        }
+      }
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        [
+          "Detail for trace=trace-123 thread=dispatcher-thread-123",
+          "",
+          "Your message:",
+          "Run worker N-11",
+          "",
+          "Agent reply:",
+          "Updated the GUI dashboard."
+        ].join("\n")
+      );
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-detail",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-detail")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-detail",
+        role_type: "agent-dispatcher",
+        status: "active",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        current_worker: "N-11",
+        last_log_line: "Updated the GUI dashboard.",
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        session_log: expect.arrayContaining([
+          "Your message:",
+          "Agent reply:",
+          "Updated the GUI dashboard."
+        ]),
+        dispatch_plan: {
+          rows: [
+            expect.objectContaining({
+              status: "✅",
+              worker: "N-10"
+            }),
+            expect.objectContaining({
+              status: "🔄",
+              worker: "N-11"
+            })
+          ]
+        }
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects runtime-only and non-editor fields in config patches", async () => {
     const harness = createHarness(createPersistedState({
       tasks: [],
@@ -418,7 +517,8 @@ describe("role config handlers", () => {
 function createHarness(
   initialState?: AppState,
   stateStore = new MemoryStateStore(initialState ?? null),
-  replyChannels: ReplyChannel[] | Error = []
+  replyChannels: ReplyChannel[] | Error = [],
+  threadDetail: string | Error | null = null
 ) {
   const log = createLogger();
   const registry = new RoleRegistry();
@@ -473,6 +573,13 @@ function createHarness(
         }
 
         return structuredClone(replyChannels);
+      },
+      getThreadDetail: async () => {
+        if (threadDetail instanceof Error) {
+          throw threadDetail;
+        }
+
+        return threadDetail ?? "";
       },
       log
     })

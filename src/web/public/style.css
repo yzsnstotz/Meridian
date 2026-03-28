@@ -41,6 +41,7 @@ a {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -169,6 +170,7 @@ dt {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -181,6 +183,10 @@ textarea {
 textarea {
   resize: vertical;
   min-height: 120px;
+}
+
+select[multiple] {
+  min-height: 160px;
 }
 
 textarea[readonly],
@@ -271,6 +277,18 @@ button:disabled {
   font-size: 0.95rem;
 }
 
+.role-card-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.role-card-preview {
+  margin: 0 0 14px;
+  color: var(--muted);
+  line-height: 1.5;
+  min-height: 3em;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -286,6 +304,11 @@ button:disabled {
 .status-running {
   color: var(--accent);
   background: rgba(134, 215, 255, 0.12);
+}
+
+.status-paused {
+  color: #ffd98a;
+  background: rgba(255, 217, 138, 0.12);
 }
 
 .status-completed,
@@ -340,6 +363,45 @@ dd {
   border: 1px dashed var(--line-strong);
   border-radius: 16px;
   color: var(--muted);
+}
+
+.log-tail {
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(7, 11, 18, 0.9);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.table-shell {
+  overflow-x: auto;
+}
+
+.status-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.status-table th,
+.status-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.status-table th {
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 @media (max-width: 720px) {

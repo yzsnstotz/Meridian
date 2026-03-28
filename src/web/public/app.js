@@ -28,18 +28,35 @@ async function setupDashboard() {
   const empty = document.getElementById("roles-empty");
   const feedback = document.getElementById("dashboard-feedback");
   const form = document.getElementById("create-role-form");
+  const agentDispatcherList = document.getElementById("agent-dispatchers-list");
+  const agentDispatcherEmpty = document.getElementById("agent-dispatchers-empty");
+  const agentDispatcherForm = document.getElementById("start-agent-dispatcher-form");
+  const agentDispatcherFeedback = document.getElementById("agent-dispatcher-feedback");
+  const channelSelect = document.getElementById("agent-dispatcher-channel-select");
   const refreshButton = document.querySelector('[data-action="refresh-roles"]');
 
-  if (!list || !empty || !feedback || !form) {
+  if (
+    !list
+    || !empty
+    || !feedback
+    || !form
+    || !agentDispatcherList
+    || !agentDispatcherEmpty
+    || !agentDispatcherForm
+    || !agentDispatcherFeedback
+    || !channelSelect
+  ) {
     return;
   }
 
   async function refreshRoles() {
     const roles = await fetchJson("/api/roles");
     list.replaceChildren();
+    agentDispatcherList.replaceChildren();
 
     if (!Array.isArray(roles) || roles.length === 0) {
       empty.hidden = false;
+      agentDispatcherEmpty.hidden = false;
       return;
     }
 
@@ -81,6 +98,102 @@ async function setupDashboard() {
           feedback.textContent = getErrorMessage(error);
         }
       });
+    });
+
+    const agentDispatcherRoles = roles.filter((role) => role.role_type === "agent-dispatcher");
+    if (agentDispatcherRoles.length === 0) {
+      agentDispatcherEmpty.hidden = false;
+      return;
+    }
+
+    const details = await Promise.all(agentDispatcherRoles.map(async (role) => {
+      try {
+        return await fetchJson(`/api/role/${encodeURIComponent(role.thread_id)}`);
+      } catch {
+        return {
+          ...role,
+          dispatcher_thread_id: null,
+          current_worker: null,
+          last_log_line: "Dispatcher detail unavailable."
+        };
+      }
+    }));
+
+    agentDispatcherEmpty.hidden = true;
+
+    details.forEach((detail) => {
+      const isPaused = detail.status === "paused";
+      const controlAction = isPaused ? "resume" : "pause";
+      const controlLabel = isPaused ? "Resume" : "Pause";
+      const card = document.createElement("article");
+      card.className = "role-card";
+      card.innerHTML = `
+        <div class="role-card-header">
+          <div class="role-card-stack">
+            <code>${escapeHtml(detail.thread_id)}</code>
+            <span class="muted">dispatcher_thread_id: ${escapeHtml(detail.dispatcher_thread_id || "pending")}</span>
+          </div>
+          <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
+        </div>
+        <dl class="meta-grid">
+          <div><dt>current worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
+          <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+        </dl>
+        <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
+        <div class="card-actions">
+          <a class="ghost-link" href="/role/${encodeURIComponent(detail.thread_id)}">Open detail</a>
+          <button
+            type="button"
+            class="ghost-button"
+            data-dispatcher-id="${escapeHtml(detail.thread_id)}"
+            data-dispatcher-action="${controlAction}"
+          >${controlLabel}</button>
+        </div>
+      `;
+      agentDispatcherList.appendChild(card);
+    });
+
+    agentDispatcherList.querySelectorAll("[data-dispatcher-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const threadId = button.getAttribute("data-dispatcher-id");
+        const action = button.getAttribute("data-dispatcher-action");
+        if (!threadId || !action) {
+          return;
+        }
+
+        try {
+          agentDispatcherFeedback.textContent = `${action === "pause" ? "Pausing" : "Resuming"} ${threadId}…`;
+          const response = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/${action}`, {
+            method: "POST"
+          });
+          agentDispatcherFeedback.textContent = `Dispatcher ${threadId} is now ${response.status}.`;
+          await refreshRoles();
+        } catch (error) {
+          agentDispatcherFeedback.textContent = getErrorMessage(error);
+        }
+      });
+    });
+  }
+
+  async function loadReplyChannels() {
+    const response = await fetchJson("/api/channels");
+    channelSelect.replaceChildren();
+
+    if (!Array.isArray(response.channels) || response.channels.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No reply channels available";
+      option.disabled = true;
+      channelSelect.appendChild(option);
+      return;
+    }
+
+    response.channels.forEach((replyChannel, index) => {
+      const option = document.createElement("option");
+      option.value = JSON.stringify(replyChannel);
+      option.textContent = formatReplyChannelLabel(replyChannel);
+      option.selected = index === 0;
+      channelSelect.appendChild(option);
     });
   }
 
@@ -127,17 +240,77 @@ async function setupDashboard() {
     }
   });
 
+  agentDispatcherForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    agentDispatcherFeedback.textContent = "Starting agent dispatcher…";
+
+    const selectedChannels = Array.from(channelSelect.selectedOptions)
+      .map((option) => {
+        try {
+          return JSON.parse(option.value);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    if (selectedChannels.length === 0) {
+      agentDispatcherFeedback.textContent = "Select at least one reply channel.";
+      return;
+    }
+
+    const formData = new FormData(agentDispatcherForm);
+    const payload = {
+      dispatch_plan_path: normalizeText(formData.get("dispatch_plan_path")),
+      command_file_path: normalizeText(formData.get("command_file_path")),
+      user_reply_channels: selectedChannels,
+      agent_type: normalizeText(formData.get("agent_type")) || "claude",
+      mode: normalizeText(formData.get("mode")) || "bridge",
+      kill_policy: normalizeText(formData.get("kill_policy")) || "always"
+    };
+
+    try {
+      const created = await fetchJson("/api/agent-dispatcher/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      agentDispatcherFeedback.textContent = `Dispatcher ${created.dispatcher_id} started.`;
+      agentDispatcherForm.reset();
+      Array.from(channelSelect.options).forEach((option, index) => {
+        option.selected = index === 0 && !option.disabled;
+      });
+      await refreshRoles();
+      window.location.href = `/role/${encodeURIComponent(created.dispatcher_id)}`;
+    } catch (error) {
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
+    }
+  });
+
   refreshButton?.addEventListener("click", () => {
-    void refreshRoles().catch((error) => {
-      feedback.textContent = getErrorMessage(error);
+    void Promise.all([loadReplyChannels(), refreshRoles()]).catch((error) => {
+      const message = getErrorMessage(error);
+      feedback.textContent = message;
+      agentDispatcherFeedback.textContent = message;
     });
   });
 
   try {
+    await loadReplyChannels();
     await refreshRoles();
   } catch (error) {
-    feedback.textContent = getErrorMessage(error);
+    const message = getErrorMessage(error);
+    feedback.textContent = message;
+    agentDispatcherFeedback.textContent = message;
   }
+
+  window.setInterval(() => {
+    void refreshRoles().catch((error) => {
+      const message = getErrorMessage(error);
+      feedback.textContent = message;
+      agentDispatcherFeedback.textContent = message;
+    });
+  }, POLL_INTERVAL_MS);
 }
 
 async function setupRoleDetail() {
@@ -153,6 +326,14 @@ async function setupRoleDetail() {
   const empty = document.getElementById("role-tasks-empty");
   const promptsLink = document.getElementById("prompts-link");
   const configLink = document.getElementById("config-link");
+  const panelLinks = document.getElementById("role-panel-links");
+  const roleTasksPanel = document.getElementById("role-tasks-panel");
+  const dispatcherSessionPanel = document.getElementById("dispatcher-session-panel");
+  const dispatcherSessionLog = document.getElementById("dispatcher-session-log");
+  const dispatchPlanPanel = document.getElementById("dispatch-plan-panel");
+  const dispatchPlanEmpty = document.getElementById("dispatch-plan-empty");
+  const dispatchPlanTableShell = document.getElementById("dispatch-plan-table-shell");
+  const dispatchPlanBody = document.getElementById("dispatch-plan-body");
 
   if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink || !configLink) {
     return;
@@ -164,17 +345,72 @@ async function setupRoleDetail() {
 
   const render = async () => {
     const detail = await fetchJson(`/api/role/${encodeURIComponent(threadId)}`);
+    const isAgentDispatcher = detail.role_type === "agent-dispatcher";
 
     title.textContent = detail.thread_id;
-    subtitle.textContent = detail.taskspec ? "Inferred dispatch enabled." : "Explicit task DAG.";
+    subtitle.textContent = isAgentDispatcher
+      ? "Dispatcher control session."
+      : (detail.taskspec ? "Inferred dispatch enabled." : "Explicit task DAG.");
     empty.textContent = defaultEmptyMessage;
 
-    summary.innerHTML = `
-      <div><dt>role_type</dt><dd>${escapeHtml(detail.role_type)}</dd></div>
-      <div><dt>status</dt><dd><span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span></dd></div>
-      <div><dt>tasks</dt><dd>${escapeHtml(String(detail.tasks.length))}</dd></div>
-      <div><dt>mode</dt><dd>${detail.taskspec ? "taskspec" : "task list"}</dd></div>
-    `;
+    summary.innerHTML = isAgentDispatcher
+      ? `
+        <div><dt>role_type</dt><dd>${escapeHtml(detail.role_type)}</dd></div>
+        <div><dt>status</dt><dd><span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span></dd></div>
+        <div><dt>dispatcher_thread_id</dt><dd><code>${escapeHtml(detail.dispatcher_thread_id || "pending")}</code></dd></div>
+        <div><dt>current_worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
+        <div><dt>agent_type</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+        <div><dt>mode</dt><dd>${escapeHtml(detail.mode || "—")}</dd></div>
+      `
+      : `
+        <div><dt>role_type</dt><dd>${escapeHtml(detail.role_type)}</dd></div>
+        <div><dt>status</dt><dd><span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span></dd></div>
+        <div><dt>tasks</dt><dd>${escapeHtml(String(detail.tasks.length))}</dd></div>
+        <div><dt>mode</dt><dd>${detail.taskspec ? "taskspec" : "task list"}</dd></div>
+      `;
+
+    if (panelLinks) {
+      panelLinks.hidden = isAgentDispatcher;
+    }
+    if (roleTasksPanel) {
+      roleTasksPanel.hidden = isAgentDispatcher;
+    }
+    if (dispatcherSessionPanel) {
+      dispatcherSessionPanel.hidden = !isAgentDispatcher;
+    }
+    if (dispatchPlanPanel) {
+      dispatchPlanPanel.hidden = !isAgentDispatcher;
+    }
+
+    if (isAgentDispatcher) {
+      tasks.replaceChildren();
+      empty.hidden = true;
+
+      if (dispatcherSessionLog) {
+        const sessionLines = Array.isArray(detail.session_log) && detail.session_log.length > 0
+          ? detail.session_log
+          : ["No dispatcher session detail available yet."];
+        dispatcherSessionLog.textContent = sessionLines.join("\n");
+      }
+
+      if (dispatchPlanBody && dispatchPlanEmpty && dispatchPlanTableShell) {
+        const rows = Array.isArray(detail.dispatch_plan?.rows) ? detail.dispatch_plan.rows : [];
+        dispatchPlanBody.innerHTML = rows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.status)}</td>
+            <td>${escapeHtml(row.batch)}</td>
+            <td><code>${escapeHtml(row.worker)}</code></td>
+            <td>${escapeHtml(row.task)}</td>
+            <td>${escapeHtml(row.model)}</td>
+            <td>${escapeHtml(row.depends_on || "—")}</td>
+          </tr>
+        `).join("");
+        dispatchPlanEmpty.hidden = rows.length > 0;
+        dispatchPlanTableShell.hidden = rows.length === 0;
+      }
+
+      return;
+    }
 
     tasks.replaceChildren();
     if (!Array.isArray(detail.tasks) || detail.tasks.length === 0) {
@@ -208,12 +444,38 @@ async function setupRoleDetail() {
   try {
     await render();
   } catch (error) {
-    renderRoleDetailError({ title, subtitle, summary, tasks, empty }, getErrorMessage(error));
+    renderRoleDetailError({
+      title,
+      subtitle,
+      summary,
+      tasks,
+      empty,
+      dispatcherSessionPanel,
+      dispatcherSessionLog,
+      dispatchPlanPanel,
+      dispatchPlanBody,
+      dispatchPlanEmpty,
+      dispatchPlanTableShell,
+      roleTasksPanel
+    }, getErrorMessage(error));
   }
 
   window.setInterval(() => {
     void render().catch((error) => {
-      renderRoleDetailError({ title, subtitle, summary, tasks, empty }, getErrorMessage(error));
+      renderRoleDetailError({
+        title,
+        subtitle,
+        summary,
+        tasks,
+        empty,
+        dispatcherSessionPanel,
+        dispatcherSessionLog,
+        dispatchPlanPanel,
+        dispatchPlanBody,
+        dispatchPlanEmpty,
+        dispatchPlanTableShell,
+        roleTasksPanel
+      }, getErrorMessage(error));
     });
   }, POLL_INTERVAL_MS);
 }
@@ -420,6 +682,33 @@ function renderRoleDetailError(elements, message) {
   elements.tasks.replaceChildren();
   elements.empty.textContent = "Role data unavailable.";
   elements.empty.hidden = false;
+  if (elements.roleTasksPanel) {
+    elements.roleTasksPanel.hidden = false;
+  }
+  if (elements.dispatcherSessionPanel) {
+    elements.dispatcherSessionPanel.hidden = true;
+  }
+  if (elements.dispatchPlanPanel) {
+    elements.dispatchPlanPanel.hidden = true;
+  }
+  if (elements.dispatcherSessionLog) {
+    elements.dispatcherSessionLog.textContent = "Role data unavailable.";
+  }
+  if (elements.dispatchPlanBody) {
+    elements.dispatchPlanBody.innerHTML = "";
+  }
+  if (elements.dispatchPlanEmpty) {
+    elements.dispatchPlanEmpty.textContent = "Role data unavailable.";
+    elements.dispatchPlanEmpty.hidden = false;
+  }
+  if (elements.dispatchPlanTableShell) {
+    elements.dispatchPlanTableShell.hidden = true;
+  }
+}
+
+function formatReplyChannelLabel(replyChannel) {
+  const name = replyChannel.chat_name || replyChannel.bot_name || replyChannel.chat_id;
+  return `${replyChannel.channel} · ${name}`;
 }
 
 async function fetchJson(url, options) {

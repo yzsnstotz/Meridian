@@ -145,6 +145,20 @@ export class A2AClient {
     }
   }
 
+  async getThreadDetail(threadId: string, traceId?: string): Promise<HubResult> {
+    if (!this.running) {
+      throw new Error("A2A client has not been started");
+    }
+
+    await this.ensureRegistered();
+    const result = await this.sendRequest(this.buildDetailMessage(threadId, traceId));
+    if (result.status !== "success") {
+      throw new Error(`detail failed: ${result.content}`);
+    }
+
+    return result;
+  }
+
   private async ensureRegistered(): Promise<void> {
     if (this.registered) {
       return;
@@ -302,6 +316,23 @@ export class A2AClient {
       reply_channel: this.buildServiceReplyChannel(),
       payload: {
         content: JSON.stringify({ kind: "reply_channels" }),
+        attachments: []
+      }
+    };
+  }
+
+  private buildDetailMessage(threadId: string, traceId?: string): HubMessage {
+    return {
+      trace_id: randomUUID(),
+      thread_id: threadId,
+      actor_id: this.serviceId,
+      intent: "detail",
+      target: threadId,
+      priority: 5,
+      mode: "bridge",
+      reply_channel: this.buildServiceReplyChannel(),
+      payload: {
+        content: traceId ?? "",
         attachments: []
       }
     };

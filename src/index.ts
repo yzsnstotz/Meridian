@@ -44,6 +44,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     registry,
     stateStore,
     listReplyChannels: () => client.listReplyChannels(),
+    getThreadDetail: async (threadId) => (await client.getThreadDetail(threadId)).content,
     log
   });
   const promptStore = new PromptStore({

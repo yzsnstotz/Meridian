@@ -44,7 +44,7 @@
 | ✅ | 3 | N-08 | Session metadata + thread sidecar + restart recovery | CODEX-XHIGH | N-05 | PRD v2.2, Investigation Report v2.2 | Session metadata + sidecar + pause/resume + restart recovery |
 | ✅ | 4 | N-09 | agent-dispatcher.ts role definition | CODEX-XHIGH | R-01, N-06, N-07, N-08 | PRD v2.2, TaskSpec v1.2 | Wires all components; replaces R-01 stub |
 | ✅ | 5 | N-10 | HTTP API: start (spawn+run Dispatcher) + pause/resume + channels | CODEX-XHIGH | N-09 | PRD v2.2, TaskSpec v1.2 | Spawn+run Dispatcher via launcher; PM Flag #1 multi-channel |
-| ⬜ | 6 | N-11 | GUI: Agent Dispatcher dashboard | CODEX | N-10 | PRD v2.2, TaskSpec v1.2 | Dashboard + detail + start form + channel dropdown |
+| ✅ | 6 | N-11 | GUI: Agent Dispatcher dashboard | CODEX | N-10 | PRD v2.2, TaskSpec v1.2 | Dashboard + detail + start form + channel dropdown |
 | ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | R-01, N-01–N-11 | TaskSpec v1.2, PRD v2.2 | One pass only |
 | ⬜ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec v1.2, PRD v2.2 | Terminal gate; human merges |
 
