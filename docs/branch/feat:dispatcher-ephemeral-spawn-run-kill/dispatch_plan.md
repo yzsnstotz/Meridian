@@ -36,8 +36,8 @@
 | ✅ | 1 | R-01 | RoleRunner bypass for agent-dispatcher | CODEX | — | PRD v2.1, Investigation Report | 3 surgical edits + stub |
 | ✅ | 1 | N-01 | Tool Gateway infrastructure | CODEX-XHIGH | — | PRD v2.1, Investigation Report | registry + loader + ipc-bridge |
 | ✅ | 2 | N-02 | CLI entry point (meridian-tool) | CODEX | N-01 | PRD v2.1 | `npx tsx` invocation |
-| ⬜ | 2 | N-03 | spawn.ts tool | CODEX-XHIGH | N-01 | PRD v2.1, Investigation Report | Hub IPC + JSON regex |
-| ⬜ | 2 | N-04 | run.ts tool | CODEX-XHIGH | N-01 | PRD v2.1, Investigation Report | Hub IPC + no timeout |
+| ✅ | 2 | N-03 | spawn.ts tool | CODEX-XHIGH | N-01 | PRD v2.1, Investigation Report | Hub IPC + JSON regex |
+| 🔄 | 2 | N-04 | run.ts tool | CODEX-XHIGH | N-01 | PRD v2.1, Investigation Report | Hub IPC + no timeout |
 | ⬜ | 2 | N-05 | kill.ts + notify.ts + update-status.ts | CODEX | N-01 | PRD v2.1 | 3 simpler tools |
 | ⬜ | 3 | N-06 | Dispatcher launch wrapper (Tool Gateway CLI) | CODEX-XHIGH | N-02 | PRD v2.2, Investigation Report v2.2 | meridian-tool spawn + run CLI wrapper |
 | ⬜ | 3 | N-07 | Prompt builder | CODEX-HIGH | N-05 | PRD v2.1, Investigation Report v2.1 | System prompt with `npx tsx` tool refs |
