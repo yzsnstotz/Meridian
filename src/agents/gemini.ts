@@ -22,7 +22,7 @@ export function buildGeminiSpawnArgs(
   void mode;
   void tmuxSession;
   const args = ["server", `--type=${geminiAgentConfig.type}`, endpointFlag];
-  args.push("--", geminiAgentConfig.command);
+  args.push("--", geminiAgentConfig.command, "--output-format", "stream-json");
   if (modelId) {
     args.push("--model", modelId);
   }
