@@ -68,7 +68,7 @@ export async function runCli(argv: string[], deps: CliDeps = defaultDeps, io: Cl
 
     const result = await deps.executeToolCommand(registry, getToolName(parsed), parsed.params);
     writeJson(io.stdout, result);
-    return result.ok ? 0 : 1;
+    return getExitCode(getToolName(parsed), result);
   } catch (error) {
     if (registry) {
       writeUsage(io.stderr, registry.list());
@@ -166,6 +166,14 @@ function getToolName(parsed: ParsedArgs): string {
   }
 
   return parsed.toolName;
+}
+
+function getExitCode(toolName: string, result: ToolResult): number {
+  if (toolName === "kill") {
+    return 0;
+  }
+
+  return result.ok ? 0 : 1;
 }
 
 function toParamName(flag: string): string {

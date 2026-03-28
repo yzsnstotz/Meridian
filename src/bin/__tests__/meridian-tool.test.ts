@@ -82,6 +82,40 @@ describe("runCli", () => {
     });
     expect(io.stderr()).toBe("");
   });
+
+  it("keeps kill non-fatal even when the tool returns ok:false", async () => {
+    const registry = new ToolRegistry();
+    const io = createIo();
+
+    registry.register({
+      name: "kill",
+      description: "Kill a worker",
+      params: {
+        thread_id: {
+          type: "string",
+          required: true
+        }
+      },
+      execute: vi.fn().mockResolvedValue({
+        ok: false,
+        error: "thread not found",
+        data: {
+          thread_id: "thread-404"
+        }
+      })
+    });
+
+    const exitCode = await runCli(["kill", "--thread-id", "thread-404"], createDeps(registry), io.streams);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(io.stdout())).toEqual({
+      ok: false,
+      error: "thread not found",
+      data: {
+        thread_id: "thread-404"
+      }
+    });
+  });
 });
 
 function createDeps(registry: ToolRegistry): CliDeps {
