@@ -107,6 +107,32 @@ describe("RoleRunner", () => {
     expect(role.onInboundResult).toHaveBeenCalledWith(sampleResult);
   });
 
+  it("forwards pause and resume lifecycle signals to the active role", async () => {
+    const { role } = createMockRole("agent-dispatcher-1", {}, "agent-dispatcher");
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(role);
+
+    await expect(runner.pauseRole(role.threadId)).resolves.toBe(true);
+    await expect(runner.resumeRole(role.threadId)).resolves.toBe(true);
+
+    expect(role.onStatusChange).toHaveBeenNthCalledWith(1, "agent-dispatcher-1", "paused");
+    expect(role.onStatusChange).toHaveBeenNthCalledWith(2, "agent-dispatcher-1", "active");
+    expect(runner.getRole(role.threadId)).toBe(role);
+  });
+
+  it("returns false when pausing or resuming an inactive role", async () => {
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await expect(runner.pauseRole("missing-role")).resolves.toBe(false);
+    await expect(runner.resumeRole("missing-role")).resolves.toBe(false);
+    expect(runner.getRole("missing-role")).toBeNull();
+  });
+
   it("silently ignores inbound results for unknown thread_id", async () => {
     const logger = createLogger();
     const { role } = createMockRole();

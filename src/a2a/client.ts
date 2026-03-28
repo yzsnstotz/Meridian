@@ -3,7 +3,15 @@ import net from "node:net";
 
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../config";
 import type { Logger } from "../roles/base-role";
-import { AgentInstanceSchema, HubResultSchema, type AgentInstance, type HubMessage, type HubResult } from "../types";
+import {
+  AgentInstanceSchema,
+  HubResultSchema,
+  ReplyChannelSchema,
+  type AgentInstance,
+  type HubMessage,
+  type HubResult,
+  type ReplyChannel
+} from "../types";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
@@ -116,6 +124,24 @@ export class A2AClient {
       return AgentInstanceSchema.array().parse(JSON.parse(result.content));
     } catch (error) {
       throw new Error(`list failed: invalid AgentInstance[] response: ${asError(error).message}`);
+    }
+  }
+
+  async listReplyChannels(): Promise<ReplyChannel[]> {
+    if (!this.running) {
+      throw new Error("A2A client has not been started");
+    }
+
+    await this.ensureRegistered();
+    const result = await this.sendRequest(this.buildListReplyChannelsMessage());
+    if (result.status !== "success") {
+      throw new Error(`list reply channels failed: ${result.content}`);
+    }
+
+    try {
+      return parseReplyChannels(result.content);
+    } catch (error) {
+      throw new Error(`list reply channels failed: invalid ReplyChannel[] response: ${asError(error).message}`);
     }
   }
 
@@ -259,6 +285,23 @@ export class A2AClient {
       reply_channel: this.buildServiceReplyChannel(),
       payload: {
         content: "",
+        attachments: []
+      }
+    };
+  }
+
+  private buildListReplyChannelsMessage(): HubMessage {
+    return {
+      trace_id: randomUUID(),
+      thread_id: "list_reply_channels",
+      actor_id: this.serviceId,
+      intent: "list",
+      target: "global",
+      priority: 5,
+      mode: "bridge",
+      reply_channel: this.buildServiceReplyChannel(),
+      payload: {
+        content: JSON.stringify({ kind: "reply_channels" }),
         attachments: []
       }
     };
@@ -419,6 +462,15 @@ function stripServicePrefix(serviceId: string): string {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function parseReplyChannels(rawContent: string): ReplyChannel[] {
+  const parsed = JSON.parse(rawContent) as unknown;
+  const candidate = typeof parsed === "object" && parsed !== null && "channels" in parsed
+    ? (parsed as { channels?: unknown }).channels
+    : parsed;
+
+  return ReplyChannelSchema.array().parse(candidate);
 }
 
 function isStoppedRegistrationError(error: unknown): boolean {

@@ -43,6 +43,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     runner,
     registry,
     stateStore,
+    listReplyChannels: () => client.listReplyChannels(),
     log
   });
   const promptStore = new PromptStore({

@@ -8,7 +8,7 @@ import { DispatcherRole } from "../../roles/definitions";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
 import { createRoleHandlers, type RoleHandlers } from "../role-handlers";
-import type { AppState, DispatcherConfig } from "../../types";
+import type { AppState, DispatcherConfig, ReplyChannel } from "../../types";
 
 class MemoryStateStore {
   private currentState: AppState | null;
@@ -124,6 +124,102 @@ describe("role config handlers", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       ok: true,
       role_type: "agent-dispatcher"
+    });
+  });
+
+  it("starts an agent-dispatcher role and returns both dispatcher ids", async () => {
+    const harness = createHarness();
+    const request = createJsonRequest("POST", "/api/agent-dispatcher/start", {
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channel: {
+        channel: "telegram",
+        chat_id: "telegram:ops"
+      },
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always"
+    });
+    const response = createJsonResponse();
+
+    const handled = await harness.roleHandlers.handle(request, response.raw);
+
+    expect(handled).toBe(true);
+    expect(response.statusCode).toBe(201);
+    expect(JSON.parse(response.body)).toEqual({
+      ok: true,
+      dispatcher_id: expect.stringMatching(/^agent-dispatcher-/),
+      dispatcher_thread_id: "dispatcher-thread-123"
+    });
+  });
+
+  it("pauses and resumes an active agent-dispatcher role through the dedicated routes", async () => {
+    const harness = createHarness();
+    const startResponse = await invokeJson<{ ok: true; dispatcher_id: string; dispatcher_thread_id: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/start",
+      {
+        thread_id: "agent-dispatcher-live",
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ]
+      }
+    );
+
+    expect(startResponse.dispatcher_id).toBe("agent-dispatcher-live");
+
+    await expect(invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-live/pause")).resolves.toEqual({
+      ok: true,
+      status: "paused"
+    });
+    expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-live")?.status).toBe("paused");
+
+    await expect(invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-live/resume")).resolves.toEqual({
+      ok: true,
+      status: "active"
+    });
+    expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-live")?.status).toBe("active");
+  });
+
+  it("lists reply channels from the injected channel registry", async () => {
+    const harness = createHarness(undefined, undefined, [
+      {
+        channel: "telegram",
+        chat_id: "telegram:dispatch-room",
+        chat_name: "Dispatch Room"
+      },
+      {
+        channel: "web",
+        chat_id: "web:ops"
+      }
+    ]);
+
+    await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
+      channels: [
+        {
+          channel: "telegram",
+          chat_id: "telegram:dispatch-room",
+          chat_name: "Dispatch Room"
+        },
+        {
+          channel: "web",
+          chat_id: "web:ops"
+        }
+      ]
+    });
+  });
+
+  it("falls back to an empty channel list when the registry lookup fails", async () => {
+    const harness = createHarness(undefined, undefined, new Error("hub unavailable"));
+
+    await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
+      channels: []
     });
   });
 
@@ -319,7 +415,11 @@ describe("role config handlers", () => {
   });
 });
 
-function createHarness(initialState?: AppState, stateStore = new MemoryStateStore(initialState ?? null)) {
+function createHarness(
+  initialState?: AppState,
+  stateStore = new MemoryStateStore(initialState ?? null),
+  replyChannels: ReplyChannel[] | Error = []
+) {
   const log = createLogger();
   const registry = new RoleRegistry();
   const runner = new RoleRunner({
@@ -367,6 +467,13 @@ function createHarness(initialState?: AppState, stateStore = new MemoryStateStor
       runner,
       registry,
       stateStore,
+      listReplyChannels: async () => {
+        if (replyChannels instanceof Error) {
+          throw replyChannels;
+        }
+
+        return structuredClone(replyChannels);
+      },
       log
     })
   };
@@ -379,6 +486,15 @@ async function createRole(roleHandlers: RoleHandlers, body: unknown): Promise<vo
 
   expect(handled).toBe(true);
   expect(response.statusCode).toBe(201);
+}
+
+async function invokeJson<T = unknown>(roleHandlers: RoleHandlers, method: string, url: string, body?: unknown): Promise<T> {
+  const request = createJsonRequest(method, url, body);
+  const response = createJsonResponse();
+  const handled = await roleHandlers.handle(request, response.raw);
+
+  expect(handled).toBe(true);
+  return JSON.parse(response.body) as T;
 }
 
 function createPersistedState(config: DispatcherConfig): AppState {

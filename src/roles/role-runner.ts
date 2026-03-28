@@ -46,6 +46,18 @@ export class RoleRunner {
     this.roles.delete(threadId);
   }
 
+  getRole(threadId: string): BaseRole | null {
+    return this.roles.get(threadId) ?? null;
+  }
+
+  async pauseRole(threadId: string): Promise<boolean> {
+    return this.updateRoleStatus(threadId, "paused");
+  }
+
+  async resumeRole(threadId: string): Promise<boolean> {
+    return this.updateRoleStatus(threadId, "active");
+  }
+
   async dispatch(result: HubResult): Promise<void> {
     let role = this.roles.get(result.thread_id);
     if (!role) {
@@ -81,5 +93,15 @@ export class RoleRunner {
       }
     }
     return undefined;
+  }
+
+  private async updateRoleStatus(threadId: string, status: string): Promise<boolean> {
+    const role = this.roles.get(threadId);
+    if (!role) {
+      return false;
+    }
+
+    await role.onStatusChange(threadId, status);
+    return true;
   }
 }

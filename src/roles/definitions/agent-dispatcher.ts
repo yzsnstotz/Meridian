@@ -204,6 +204,10 @@ export class AgentDispatcherRole implements BaseRole {
     });
   }
 
+  getDispatcherThreadId(): string | null {
+    return this.sessionManager?.getDispatcherThreadId() ?? null;
+  }
+
   private getPrimaryReplyChannel() {
     const replyChannel = this.config.user_reply_channels[0];
     if (!replyChannel) {

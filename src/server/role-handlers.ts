@@ -28,12 +28,16 @@ import {
   type AgentDispatcherConfig,
   type DispatcherConfig,
   type DispatcherEditorConfig,
+  type ReplyChannel,
   type RoleType,
   type RoleState
 } from "../types";
 import type { Logger } from "../roles/base-role";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
+type DispatcherThreadAwareRole = {
+  getDispatcherThreadId(): string | null;
+};
 
 const CreateRoleBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
@@ -55,10 +59,14 @@ const CreateRoleBodySchema = z.object({
 });
 
 type RoleRouteMatch =
+  | { kind: "list-channels" }
   | { kind: "list-roles" }
   | { kind: "get-role"; threadId: string }
   | { kind: "get-config"; threadId: string }
   | { kind: "create-role" }
+  | { kind: "start-agent-dispatcher" }
+  | { kind: "pause-dispatcher"; threadId: string }
+  | { kind: "resume-dispatcher"; threadId: string }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string };
 
@@ -66,6 +74,7 @@ export interface RoleHandlersOptions {
   runner: RoleRunner;
   registry: RoleRegistry;
   stateStore?: PersistableStateStore;
+  listReplyChannels?: () => Promise<ReplyChannel[]>;
   log?: Logger;
 }
 
@@ -87,6 +96,7 @@ export interface RoleConfigResponse {
 export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const stateStore = options.stateStore ?? new StateStore();
   const log = options.log ?? console;
+  const listReplyChannels = options.listReplyChannels ?? (async () => []);
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   const handlers: RoleHandlers = {
@@ -140,6 +150,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
       try {
         switch (route.kind) {
+          case "list-channels":
+            writeJson(response, 200, await getChannels());
+            return true;
           case "list-roles":
             writeJson(response, 200, await listRoles(stateStore));
             return true;
@@ -154,6 +167,15 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             writeJson(response, 201, created);
             return true;
           }
+          case "start-agent-dispatcher":
+            writeJson(response, 201, await startAgentDispatcher(await readJsonBody(request)));
+            return true;
+          case "pause-dispatcher":
+            writeJson(response, 200, await setAgentDispatcherStatus(route.threadId, "paused"));
+            return true;
+          case "resume-dispatcher":
+            writeJson(response, 200, await setAgentDispatcherStatus(route.threadId, "active"));
+            return true;
           case "patch-config":
             writeJson(response, 200, await handlers.patchConfig(route.threadId, await readJsonBody(request)));
             return true;
@@ -175,7 +197,80 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   return handlers;
 
   async function createRole(body: unknown): Promise<{ ok: true; thread_id: string; role_type: RoleType }> {
-    const { threadId, roleType, config } = normalizeCreateBody(body);
+    const { threadId, roleType } = await activateRole(body);
+    return { ok: true, thread_id: threadId, role_type: roleType };
+  }
+
+  async function startAgentDispatcher(body: unknown): Promise<{
+    ok: true;
+    dispatcher_id: string;
+    dispatcher_thread_id: string;
+  }> {
+    const { threadId, roleType, role } = await activateRole(body, "agent-dispatcher");
+    if (roleType !== "agent-dispatcher") {
+      activeRoles.delete(threadId);
+      await options.runner.deactivate(threadId).catch(() => undefined);
+      throw createHttpError(500, `Expected agent-dispatcher role for thread_id=${threadId}`);
+    }
+
+    const dispatcherThreadId = extractDispatcherThreadId(role);
+    if (!dispatcherThreadId) {
+      activeRoles.delete(threadId);
+      await options.runner.deactivate(threadId).catch(() => undefined);
+      throw createHttpError(500, `Dispatcher thread was not recorded for thread_id=${threadId}`);
+    }
+
+    return {
+      ok: true,
+      dispatcher_id: threadId,
+      dispatcher_thread_id: dispatcherThreadId
+    };
+  }
+
+  async function setAgentDispatcherStatus(
+    threadId: string,
+    status: "active" | "paused"
+  ): Promise<{ ok: true; status: "active" | "paused" }> {
+    const activeRole = activeRoles.get(threadId);
+    if (!activeRole || activeRole.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const updated = status === "paused"
+      ? await options.runner.pauseRole(threadId)
+      : await options.runner.resumeRole(threadId);
+    if (!updated) {
+      activeRoles.delete(threadId);
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    return {
+      ok: true,
+      status
+    };
+  }
+
+  async function getChannels(): Promise<{ channels: ReplyChannel[] }> {
+    try {
+      return {
+        channels: ReplyChannelSchema.array().parse(await listReplyChannels())
+      };
+    } catch (error) {
+      log.warn("Reply channel lookup failed; returning empty list", {
+        error: getErrorMessage(error)
+      });
+
+      return { channels: [] };
+    }
+  }
+
+  async function activateRole(
+    body: unknown,
+    forcedRoleType?: RoleType
+  ): Promise<{ threadId: string; roleType: RoleType; role: ReturnType<RoleRegistry["create"]> }> {
+    const { threadId, roleType, config } = forcedRoleType
+      ? normalizeCreateBody(body, forcedRoleType)
+      : normalizeCreateBody(body);
     if (activeRoles.has(threadId)) {
       throw createHttpError(409, `Role already active for thread_id=${threadId}`);
     }
@@ -194,7 +289,11 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       throw error;
     }
 
-    return { ok: true, thread_id: threadId, role_type: actualRoleType };
+    return {
+      threadId,
+      roleType: actualRoleType,
+      role
+    };
   }
 
   async function deleteRole(threadId: string): Promise<{ ok: true }> {
@@ -284,13 +383,28 @@ function normalizeCreateBody(body: unknown): {
   threadId: string;
   roleType: RoleType;
   config: DispatcherConfig | AgentDispatcherConfig;
+}
+function normalizeCreateBody(body: unknown, forcedRoleType: RoleType): {
+  threadId: string;
+  roleType: RoleType;
+  config: DispatcherConfig | AgentDispatcherConfig;
+}
+function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
+  threadId: string;
+  roleType: RoleType;
+  config: DispatcherConfig | AgentDispatcherConfig;
 } {
   const parsed = CreateRoleBodySchema.safeParse(body);
   if (!parsed.success) {
     throw createHttpError(400, "Invalid body for role creation");
   }
 
-  const roleType = parsed.data.role_type ?? parsed.data.roleType ?? "dispatcher";
+  const requestedRoleType = parsed.data.role_type ?? parsed.data.roleType;
+  if (forcedRoleType && requestedRoleType && requestedRoleType !== forcedRoleType) {
+    throw createHttpError(400, `role_type must be ${forcedRoleType}`);
+  }
+
+  const roleType = forcedRoleType ?? requestedRoleType ?? "dispatcher";
   if (roleType !== "dispatcher" && roleType !== "agent-dispatcher") {
     throw createHttpError(400, `Unsupported role_type=${roleType}`);
   }
@@ -338,6 +452,17 @@ function normalizeCreateBody(body: unknown): {
 function parseDispatcherConfig(config: unknown): DispatcherConfig | null {
   const parsed = DispatcherConfigSchema.safeParse(config);
   return parsed.success ? parsed.data : null;
+}
+
+function extractDispatcherThreadId(role: ReturnType<RoleRegistry["create"]>): string | null {
+  if (!("getDispatcherThreadId" in role)) {
+    return null;
+  }
+
+  const dispatcherThreadId = (role as DispatcherThreadAwareRole).getDispatcherThreadId();
+  return typeof dispatcherThreadId === "string" && dispatcherThreadId.trim().length > 0
+    ? dispatcherThreadId
+    : null;
 }
 
 interface RoleConfigContext {
@@ -434,6 +559,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     return { kind: "list-roles" };
   }
 
+  if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "channels") {
+    return { kind: "list-channels" };
+  }
+
   if (method === "GET" && parts.length === 3 && parts[0] === "api" && parts[1] === "role") {
     return { kind: "get-role", threadId: parts[2] };
   }
@@ -444,6 +573,30 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
 
   if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "role") {
     return { kind: "create-role" };
+  }
+
+  if (method === "POST" && parts.length === 3 && parts[0] === "api" && parts[1] === "agent-dispatcher" && parts[2] === "start") {
+    return { kind: "start-agent-dispatcher" };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 4
+    && parts[0] === "api"
+    && parts[1] === "agent-dispatcher"
+    && parts[3] === "pause"
+  ) {
+    return { kind: "pause-dispatcher", threadId: parts[2] };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 4
+    && parts[0] === "api"
+    && parts[1] === "agent-dispatcher"
+    && parts[3] === "resume"
+  ) {
+    return { kind: "resume-dispatcher", threadId: parts[2] };
   }
 
   if (method === "PATCH" && parts.length === 4 && parts[0] === "api" && parts[1] === "role" && parts[3] === "config") {
