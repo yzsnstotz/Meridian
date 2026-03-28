@@ -99,7 +99,7 @@ export class AgentDispatcherRole implements BaseRole {
       const systemPrompt = this.buildPrompt({
         dispatch_plan_path: this.config.dispatch_plan_path,
         command_file_path: this.config.command_file_path,
-        user_reply_channel: JSON.stringify(this.getPrimaryReplyChannel())
+        user_reply_channels: JSON.stringify(this.config.user_reply_channels)
       });
 
       const inProgressWorkers = await this.readPlanWorkersByStatus(this.config.dispatch_plan_path, "🔄");

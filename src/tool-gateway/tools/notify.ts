@@ -6,12 +6,14 @@ import { ReplyChannelSchema, type HubMessage, type ReplyChannel } from "../../ty
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
+const MERIDIAN_REPLY_CHANNEL_ENV = "MERIDIAN_REPLY_CHANNEL";
+const MERIDIAN_REPLY_CHANNELS_ENV = "MERIDIAN_REPLY_CHANNELS";
 const NOTIFY_THREAD_ID = "notify";
 const NOTIFY_CONNECT_TIMEOUT_MS = 10_000;
 
 const notifyTool: ToolDefinition = {
   name: "notify",
-  description: "Send a notification to the configured Meridian reply channel",
+  description: "Send a notification to the configured Meridian reply channel or channels",
   params: {
     message: {
       type: "string",
@@ -27,6 +29,11 @@ const notifyTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Optional JSON override for the Meridian reply channel"
+    },
+    reply_channels: {
+      type: "string",
+      required: false,
+      description: "Optional JSON array override for Meridian reply channels"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -39,8 +46,12 @@ const notifyTool: ToolDefinition = {
     }
 
     try {
-      const replyChannel = parseReplyChannel(params.reply_channel ?? process.env.MERIDIAN_REPLY_CHANNEL);
-      await sendFireAndForget(buildNotifyMessage(message, params.urgency, replyChannel));
+      const replyChannels = resolveReplyChannels(params);
+      await Promise.all(
+        replyChannels.map((replyChannel) =>
+          sendFireAndForget(buildNotifyMessage(message, params.urgency, replyChannel))
+        )
+      );
       return { ok: true };
     } catch (error) {
       return {
@@ -71,11 +82,39 @@ function buildNotifyMessage(message: string, urgency: string | undefined, replyC
   };
 }
 
-function parseReplyChannel(rawValue: string | undefined): ReplyChannel {
-  if (!rawValue || rawValue.trim().length === 0) {
-    throw new Error("Missing reply channel: pass --reply-channel or set MERIDIAN_REPLY_CHANNEL");
+function resolveReplyChannels(params: Record<string, string>): ReplyChannel[] {
+  const explicitReplyChannels = requireParam(params.reply_channels);
+  if (explicitReplyChannels) {
+    return parseReplyChannels(explicitReplyChannels);
   }
 
+  const explicitReplyChannel = requireParam(params.reply_channel);
+  if (explicitReplyChannel) {
+    return [parseReplyChannel(explicitReplyChannel)];
+  }
+
+  const envReplyChannels = requireParam(process.env[MERIDIAN_REPLY_CHANNELS_ENV]);
+  if (envReplyChannels) {
+    return parseReplyChannels(envReplyChannels);
+  }
+
+  const envReplyChannel = requireParam(process.env[MERIDIAN_REPLY_CHANNEL_ENV]);
+  if (envReplyChannel) {
+    return [parseReplyChannel(envReplyChannel)];
+  }
+
+  throw new Error(
+    "Missing reply channel: pass --reply-channels/--reply-channel or set MERIDIAN_REPLY_CHANNELS/MERIDIAN_REPLY_CHANNEL"
+  );
+}
+
+function parseReplyChannels(rawValue: string): ReplyChannel[] {
+  const parsed = JSON.parse(rawValue) as unknown;
+  const replyChannels = ReplyChannelSchema.array().min(1).parse(parsed);
+  return replyChannels.map((replyChannel) => ({ ...replyChannel }));
+}
+
+function parseReplyChannel(rawValue: string): ReplyChannel {
   const parsed = JSON.parse(rawValue) as unknown;
   return ReplyChannelSchema.parse(parsed);
 }

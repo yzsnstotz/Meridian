@@ -7,19 +7,19 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channel: "{\"channel\":\"telegram\",\"chat_id\":\"123\"}"
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"},{\"channel\":\"email\",\"chat_id\":\"ops@example.com\"}]"
     });
 
     expect(prompt).toContain("dispatch_plan_path: /tmp/dispatch_plan.md");
     expect(prompt).toContain("command_file_path: /tmp/agent_dispatch_command.md");
-    expect(prompt).toContain('user_reply_channel: {"channel":"telegram","chat_id":"123"}');
+    expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"email","chat_id":"ops@example.com"}]');
   });
 
   it("does not leave template markers in the output", () => {
     const prompt = buildSystemPrompt({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channel: "{\"channel\":\"telegram\",\"chat_id\":\"123\"}"
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]"
     });
 
     expect(prompt).not.toContain("{{");
@@ -30,7 +30,7 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channel: "{\"channel\":\"telegram\",\"chat_id\":\"123\"}"
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]"
     });
 
     expect(prompt).toContain("npx tsx src/bin/meridian-tool.ts");
@@ -38,7 +38,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("spawn --agent-type <type> --mode <mode>");
     expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
     expect(prompt).toContain("kill --thread-id <id>");
-    expect(prompt).toContain("notify --message \"<text>\" --urgency <level>");
+    expect(prompt).toContain("notify --message \"<text>\" --urgency <level> --reply-channels '<json-array>'");
     expect(prompt).toContain("update-status --plan <path> --worker <id> --status <status>");
   });
 });

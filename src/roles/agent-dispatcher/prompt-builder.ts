@@ -1,7 +1,7 @@
 export interface PromptVars {
   dispatch_plan_path: string;
   command_file_path: string;
-  user_reply_channel: string;
+  user_reply_channels: string;
 }
 
 const TOOL_ENTRYPOINT = "npx tsx src/bin/meridian-tool.ts";
@@ -9,7 +9,7 @@ const TOOL_ENTRYPOINT = "npx tsx src/bin/meridian-tool.ts";
 export function buildSystemPrompt(vars: PromptVars): string {
   const dispatchPlanPath = requireNonEmpty(vars.dispatch_plan_path, "dispatch_plan_path");
   const commandFilePath = requireNonEmpty(vars.command_file_path, "command_file_path");
-  const userReplyChannel = requireNonEmpty(vars.user_reply_channel, "user_reply_channel");
+  const userReplyChannels = requireNonEmpty(vars.user_reply_channels, "user_reply_channels");
 
   return [
     "# Role Definition",
@@ -89,14 +89,14 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "   Kill is best-effort and must not block forward progress.",
     "",
     "4. notify",
-    `   Command: \`${TOOL_ENTRYPOINT} notify --message \"<text>\" --urgency <level>\``,
+    `   Command: \`${TOOL_ENTRYPOINT} notify --message \"<text>\" --urgency <level> --reply-channels '<json-array>'\``,
     "   Success example:",
     "   ```json",
     "   {",
     '     "ok": true',
     "   }",
     "   ```",
-    "   Before calling notify, either ensure `MERIDIAN_REPLY_CHANNEL` is set or append `--reply-channel \'<json>\'` with the runtime channel shown below.",
+    "   Use the runtime `user_reply_channels` JSON array below when you need to fan out a notification to every selected reply channel.",
     "",
     "5. update-status",
     `   Command: \`${TOOL_ENTRYPOINT} update-status --plan <path> --worker <id> --status <status>\``,
@@ -138,8 +138,8 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "# Runtime Context",
     `dispatch_plan_path: ${dispatchPlanPath}`,
     `command_file_path: ${commandFilePath}`,
-    `user_reply_channel: ${userReplyChannel}`,
-    "Use the runtime `user_reply_channel` JSON exactly when you need to send a notify override."
+    `user_reply_channels: ${userReplyChannels}`,
+    "Use the runtime `user_reply_channels` JSON array exactly when you need to send a notify override."
   ].join("\n");
 }
 
