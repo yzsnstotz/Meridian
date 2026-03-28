@@ -8,6 +8,7 @@ test("DiffEngine emits only the appended suffix for continuous snapshots", () =>
 
   assert.equal(engine.diff("trace-1", "hello"), "hello");
   assert.equal(engine.diff("trace-1", "hello world"), " world");
+  assert.equal(engine.diff("trace-1", "hello world!"), "!");
 });
 
 test("DiffEngine falls back to the full snapshot on non-continuous resets", () => {

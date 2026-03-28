@@ -21,7 +21,15 @@ export function buildClaudeCliArgs(
   modelId?: string,
   autoApprove?: boolean
 ): string[] {
-  const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
+  const args = [
+    claudeAgentConfig.command,
+    "--allowedTools",
+    allowedTools.join(" "),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
+  ];
   if (modelId) {
     args.push("--model", modelId);
   }
@@ -46,6 +54,21 @@ export function buildClaudeSpawnArgs(
 }
 
 export function buildClaudeStreamArgs(modelId?: string, autoApprove?: boolean): string[] {
-  const [command, ...cliArgs] = buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId, autoApprove);
-  return [command, "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", ...cliArgs];
+  const args = [
+    claudeAgentConfig.command,
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--allowedTools",
+    claudeAgentConfig.allowedTools.join(" ")
+  ];
+  if (modelId) {
+    args.push("--model", modelId);
+  }
+  if (autoApprove === true) {
+    args.push("--dangerously-skip-permissions");
+  }
+  return args;
 }

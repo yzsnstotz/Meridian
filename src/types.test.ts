@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 import {
+  AgentInstanceSchema,
   BuiltInIntentSchema,
   HubMessageSchema,
   HubResultSchema,
@@ -130,6 +131,24 @@ test("MonitorEventSchema accepts optional agent_type and last_known_pid", () => 
   assert.equal(parsed.agent_type, "claude");
   assert.equal(parsed.last_known_pid, 64339);
   assert.equal(parsed.details?.reason, "HEALTHCHECK_TIMEOUT_PID_GONE");
+});
+
+test("AgentInstanceSchema accepts optional stream capability fields", () => {
+  const parsed = AgentInstanceSchema.parse({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/codex.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString(),
+    supportsStream: true,
+    codexSessionId: "session-123"
+  });
+
+  assert.equal(parsed.supportsStream, true);
+  assert.equal(parsed.codexSessionId, "session-123");
 });
 
 test("HubResultSchema accepts optional Telegram inline keyboards", () => {

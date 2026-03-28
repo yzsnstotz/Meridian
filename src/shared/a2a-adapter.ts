@@ -13,12 +13,12 @@ export interface A2AMessage {
   agentId?: string;
 }
 
-export interface A2AAdapter {
+export interface A2AAdapterLike {
   outputDeltaToA2A(delta: OutputDelta): A2AMessage;
   hubResultStatusToTaskState(status: HubResultStatus): A2ATaskState;
 }
 
-function outputPhaseToTaskState(phase: OutputDelta["phase"]): A2ATaskState {
+function outputDeltaPhaseToTaskState(phase: OutputDelta["phase"]): A2ATaskState {
   switch (phase) {
     case "working":
       return "working";
@@ -29,6 +29,23 @@ function outputPhaseToTaskState(phase: OutputDelta["phase"]): A2ATaskState {
   }
 }
 
+export function outputDeltaToA2A(delta: OutputDelta): A2AMessage {
+  const parts: A2APart[] = [];
+
+  if (delta.text !== undefined) {
+    parts.push({ type: "text", text: delta.text });
+  }
+
+  if (delta.data !== undefined) {
+    parts.push({ type: "data", data: delta.data });
+  }
+
+  return {
+    taskId: delta.traceId,
+    taskState: outputDeltaPhaseToTaskState(delta.phase),
+    parts
+  };
+}
 export function hubResultStatusToTaskState(status: HubResultStatus): A2ATaskState {
   switch (status) {
     case "partial":
@@ -41,24 +58,7 @@ export function hubResultStatusToTaskState(status: HubResultStatus): A2ATaskStat
   }
 }
 
-export function outputDeltaToA2A(delta: OutputDelta): A2AMessage {
-  const parts: A2APart[] = [];
-
-  if (typeof delta.text === "string") {
-    parts.push({ type: "text", text: delta.text });
-  }
-  if (delta.data !== undefined) {
-    parts.push({ type: "data", data: delta.data });
-  }
-
-  return {
-    taskId: delta.traceId,
-    taskState: outputPhaseToTaskState(delta.phase),
-    parts
-  };
-}
-
-export class DefaultA2AAdapter implements A2AAdapter {
+export class A2AAdapter {
   outputDeltaToA2A(delta: OutputDelta): A2AMessage {
     return outputDeltaToA2A(delta);
   }
@@ -67,3 +67,5 @@ export class DefaultA2AAdapter implements A2AAdapter {
     return hubResultStatusToTaskState(status);
   }
 }
+
+export { A2AAdapter as DefaultA2AAdapter };

@@ -1,48 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { A2A_TASK_STATES, hubResultStatusToTaskState, outputDeltaToA2A } from "./a2a-adapter";
+import { A2AAdapter, A2A_TASK_STATES, hubResultStatusToTaskState, outputDeltaToA2A } from "./a2a-adapter";
 
 test("A2A adapter exports the canonical task states", () => {
   assert.deepEqual(A2A_TASK_STATES, ["working", "completed", "failed"]);
 });
 
-test("outputDeltaToA2A maps text deltas to working messages", () => {
+test("outputDeltaToA2A maps working text deltas to A2A messages", () => {
   const message = outputDeltaToA2A({
     traceId: "trace-1",
     phase: "working",
-    text: "partial",
+    text: "partial output",
     final: false
   });
 
   assert.deepEqual(message, {
     taskId: "trace-1",
     taskState: "working",
-    parts: [{ type: "text", text: "partial" }]
+    parts: [{ type: "text", text: "partial output" }]
   });
 });
 
-test("outputDeltaToA2A maps result data to completed messages", () => {
+test("outputDeltaToA2A maps result data deltas to completed A2A messages", () => {
+  const payload = { summary: "done" };
   const message = outputDeltaToA2A({
     traceId: "trace-2",
     phase: "result",
-    data: { usage: 42 },
+    data: payload,
     final: true
   });
 
   assert.deepEqual(message, {
     taskId: "trace-2",
     taskState: "completed",
-    parts: [{ type: "data", data: { usage: 42 } }]
+    parts: [{ type: "data", data: payload }]
   });
 });
 
-test("outputDeltaToA2A includes both text and data when both exist", () => {
+test("outputDeltaToA2A preserves both text and data parts for failed deltas", () => {
+  const payload = { code: "E_FAIL" };
   const message = outputDeltaToA2A({
     traceId: "trace-3",
     phase: "error",
-    text: "failed",
-    data: { code: "E_FAIL" },
+    text: "request failed",
+    data: payload,
     final: true
   });
 
@@ -50,15 +52,48 @@ test("outputDeltaToA2A includes both text and data when both exist", () => {
     taskId: "trace-3",
     taskState: "failed",
     parts: [
-      { type: "text", text: "failed" },
-      { type: "data", data: { code: "E_FAIL" } }
+      { type: "text", text: "request failed" },
+      { type: "data", data: payload }
     ]
   });
 });
 
-test("hubResultStatusToTaskState follows the PRD mapping table", () => {
+test("outputDeltaToA2A returns an empty parts array when no payload fields are present", () => {
+  const message = outputDeltaToA2A({
+    traceId: "trace-4",
+    phase: "working",
+    final: false
+  });
+
+  assert.deepEqual(message, {
+    taskId: "trace-4",
+    taskState: "working",
+    parts: []
+  });
+});
+
+test("hubResultStatusToTaskState maps all HubResult statuses to A2A task states", () => {
   assert.equal(hubResultStatusToTaskState("partial"), "working");
   assert.equal(hubResultStatusToTaskState("success"), "completed");
   assert.equal(hubResultStatusToTaskState("error"), "failed");
   assert.equal(hubResultStatusToTaskState("timeout"), "failed");
+});
+
+test("A2AAdapter exposes the conversion helpers as instance methods", () => {
+  const adapter = new A2AAdapter();
+
+  assert.equal(adapter.hubResultStatusToTaskState("success"), "completed");
+  assert.deepEqual(
+    adapter.outputDeltaToA2A({
+      traceId: "trace-5",
+      phase: "result",
+      text: "done",
+      final: true
+    }),
+    {
+      taskId: "trace-5",
+      taskState: "completed",
+      parts: [{ type: "text", text: "done" }]
+    }
+  );
 });

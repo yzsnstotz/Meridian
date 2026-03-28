@@ -4,8 +4,8 @@ const log = createLogger("stream_ndjson");
 
 export function parseNdjsonLine(line: string): unknown {
   const trimmed = line.trim();
-  if (!trimmed) {
-    return null;
+  if (trimmed.length === 0) {
+    return undefined;
   }
 
   try {
@@ -18,32 +18,37 @@ export function parseNdjsonLine(line: string): unknown {
       },
       "Skipping malformed NDJSON line"
     );
-    return null;
+    return undefined;
   }
 }
 
 export async function* splitNdjsonStream(stream: AsyncIterable<Buffer | string>): AsyncIterable<unknown> {
+  const decoder = new TextDecoder();
   let buffered = "";
 
   for await (const chunk of stream) {
-    buffered += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    const lines = buffered.split(/\r?\n/);
-    buffered = lines.pop() ?? "";
+    buffered += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
 
-    for (const line of lines) {
+    while (true) {
+      const newlineIndex = buffered.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
+
+      const line = buffered.slice(0, newlineIndex).replace(/\r$/, "");
+      buffered = buffered.slice(newlineIndex + 1);
+
       const parsed = parseNdjsonLine(line);
-      if (parsed !== null) {
+      if (parsed !== undefined) {
         yield parsed;
       }
     }
   }
 
-  if (!buffered.trim()) {
-    return;
-  }
-
-  const parsed = parseNdjsonLine(buffered);
-  if (parsed !== null) {
+  buffered += decoder.decode();
+  const trailingLine = buffered.replace(/\r$/, "");
+  const parsed = parseNdjsonLine(trailingLine);
+  if (parsed !== undefined) {
     yield parsed;
   }
 }

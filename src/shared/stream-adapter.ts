@@ -1,10 +1,11 @@
 export const OUTPUT_PHASES = ["working", "result", "error"] as const;
-export type OutputPhase = (typeof OUTPUT_PHASES)[number];
+export type OutputDeltaPhase = (typeof OUTPUT_PHASES)[number];
+export type OutputPhase = OutputDeltaPhase;
 
 export interface OutputDelta {
   traceId: string;
   spanId?: string;
-  phase: OutputPhase;
+  phase: OutputDeltaPhase;
   text?: string;
   data?: unknown;
   final: boolean;

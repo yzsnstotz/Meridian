@@ -1,4 +1,4 @@
-import type { A2AAdapter, A2AMessage } from "../shared/a2a-adapter";
+import type { A2AAdapterLike, A2AMessage } from "../shared/a2a-adapter";
 import { DefaultA2AAdapter } from "../shared/a2a-adapter";
 import { DiffEngine } from "../shared/diff-engine";
 import type { OutputDelta } from "../shared/stream-adapter";
@@ -19,7 +19,7 @@ export type OutputBusRecordHook = (
 
 export interface OutputBusOptions {
   diffEngine?: DiffEngine;
-  a2aAdapter?: A2AAdapter;
+  a2aAdapter?: A2AAdapterLike;
   adapterOutput?: OutputBusDispatchSink;
   websocketOutput?: OutputBusDispatchSink;
   recordOutput?: OutputBusRecordHook;
@@ -96,7 +96,7 @@ function normalizeFinalizeDelta(traceId: string, result: unknown): OutputDelta {
 
 export class OutputBus {
   private readonly diffEngine: DiffEngine;
-  private readonly a2aAdapter: A2AAdapter;
+  private readonly a2aAdapter: A2AAdapterLike;
   private readonly adapterOutput: OutputBusDispatchSink | null;
   private readonly websocketOutput: OutputBusDispatchSink | null;
   private readonly recordOutput: OutputBusRecordHook | null;

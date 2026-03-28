@@ -3,7 +3,21 @@ import { test } from "node:test";
 
 import { buildGeminiSpawnArgs, buildGeminiStreamArgs } from "./gemini";
 
-test("buildGeminiSpawnArgs keeps the bridge launch path unchanged", () => {
+test("buildGeminiSpawnArgs includes stream-json output by default", () => {
+  const args = buildGeminiSpawnArgs("bridge", null, "--socket=/tmp/gemini.sock");
+
+  assert.deepEqual(args, [
+    "server",
+    "--type=gemini",
+    "--socket=/tmp/gemini.sock",
+    "--",
+    "gemini",
+    "--output-format",
+    "stream-json"
+  ]);
+});
+
+test("buildGeminiSpawnArgs preserves model selection with stream-json output", () => {
   const args = buildGeminiSpawnArgs("bridge", null, "--socket=/tmp/gemini.sock", "gemini-2.5-pro");
 
   assert.deepEqual(args, [
@@ -12,6 +26,8 @@ test("buildGeminiSpawnArgs keeps the bridge launch path unchanged", () => {
     "--socket=/tmp/gemini.sock",
     "--",
     "gemini",
+    "--output-format",
+    "stream-json",
     "--model",
     "gemini-2.5-pro"
   ]);

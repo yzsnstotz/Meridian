@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-03-25T21:43:05.244Z","session_id":"90918503-8e03-4289-8696-eaf65e2508b6","model":"auto-gemini-3"}
+{"type":"message","timestamp":"2026-03-25T21:43:05.245Z","role":"user","content":"say hello in one sentence\n"}
+{"type":"message","timestamp":"2026-03-25T21:43:08.408Z","role":"assistant","content":"Hello! How can I help you with the Meridian project today?","delta":true}
+{"type":"result","timestamp":"2026-03-25T21:43:08.448Z","status":"success","stats":{"total_tokens":10112,"input_tokens":9896,"output_tokens":49,"cached":0,"input":9896,"duration_ms":3204,"tool_calls":0,"models":{"gemini-2.5-flash-lite":{"total_tokens":2740,"input_tokens":2537,"output_tokens":36},"gemini-3-flash-preview":{"total_tokens":7372,"input_tokens":7359,"output_tokens":13}}}}
