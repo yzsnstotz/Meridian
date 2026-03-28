@@ -73,3 +73,60 @@ test("loadPersistedHubState preserves migrated approval prompts alongside termin
     fs.rmSync(statePath, { force: true });
   }
 });
+
+test("loadPersistedHubState coalesces migrated approval prompts using the narrowed replace_key", () => {
+  const statePath = `/tmp/meridian-state-store-${process.pid}-${Date.now()}-approval.json`;
+  const nowIso = new Date().toISOString();
+  const approvalTraceId = "4f461d95-0157-4f90-bb4d-a63f2bfb1ed8";
+
+  fs.writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        version: 1,
+        updated_at: nowIso,
+        instances: [],
+        session_bindings: {},
+        push_subscriptions: {},
+        conversation_history: {
+          mixed_legacy: [
+            {
+              id: "approval-1",
+              type: "agent",
+              content: "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+              details_text: "",
+              raw_content: "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+              trace_id: approvalTraceId,
+              timestamp: "2026-03-25T00:00:00.000Z"
+            },
+            {
+              id: "approval-2",
+              type: "agent",
+              content: "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+              details_text: "",
+              raw_content: "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+              trace_id: approvalTraceId,
+              timestamp: "2026-03-25T00:00:01.000Z"
+            }
+          ]
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  try {
+    const loaded = loadPersistedHubState(statePath, nowIso);
+    const history = loaded.conversation_history?.mixed_legacy ?? [];
+
+    assert.equal(loaded.version, 2);
+    assert.equal(history.length, 1);
+    assert.equal(history[0]?.event_kind, "approval");
+    assert.equal(history[0]?.replace_key, `${approvalTraceId}:approval`);
+    assert.match(history[0]?.content ?? "", /^Waiting for approval\.\.\./);
+  } finally {
+    fs.rmSync(statePath, { force: true });
+  }
+});

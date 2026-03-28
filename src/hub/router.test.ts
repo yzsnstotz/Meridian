@@ -2222,7 +2222,7 @@ test("HubRouter exposes conversation history after a run", async () => {
   assert.equal(parsed[1]?.replace_key, null);
 });
 
-test("HubRouter coalesces same-trace progress snapshots and replaces them with the final reply", () => {
+test("HubRouter appends same-trace progress snapshots and replaces them with the final reply", () => {
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "coalesce_01",
@@ -2244,10 +2244,13 @@ test("HubRouter coalesces same-trace progress snapshots and replaces them with t
   router.recordAgentPushConversation("coalesce_01", "Still running...", traceId);
 
   const progressOnly = router.getConversationHistoryForThread("coalesce_01");
-  assert.equal(progressOnly.length, 1);
+  assert.equal(progressOnly.length, 2);
   assert.equal(progressOnly[0]?.event_kind, "progress");
-  assert.equal(progressOnly[0]?.content, "Still running...");
-  assert.equal(progressOnly[0]?.replace_key, `${traceId}:progress`);
+  assert.equal(progressOnly[0]?.content, "Task is running...");
+  assert.equal(progressOnly[0]?.replace_key, null);
+  assert.equal(progressOnly[1]?.event_kind, "progress");
+  assert.equal(progressOnly[1]?.content, "Still running...");
+  assert.equal(progressOnly[1]?.replace_key, null);
 
   router.recordAgentPushConversation("coalesce_01", "done", traceId, "final_reply");
 
@@ -2256,6 +2259,45 @@ test("HubRouter coalesces same-trace progress snapshots and replaces them with t
   assert.equal(withFinal[0]?.event_kind, "final_reply");
   assert.equal(withFinal[0]?.content, "done");
   assert.equal(withFinal[0]?.replace_key, null);
+});
+
+test("HubRouter keeps approval prompts replaceable while progress entries append", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "approval_replace_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-approval_replace_01.sock",
+    pid: 703,
+    tmux_pane: "agent_approval_replace_01",
+    status: "waiting",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+  const traceId = "2f461d95-0157-4f90-bb4d-a63f2bfb1ed9";
+
+  router.recordAgentPushConversation("approval_replace_01", "Still running...", traceId);
+  router.recordAgentPushConversation(
+    "approval_replace_01",
+    "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+    traceId
+  );
+  router.recordAgentPushConversation(
+    "approval_replace_01",
+    "Waiting for approval...\nRun this command?\n1. Allow once\n2. Allow for this session\n3. No, suggest changes",
+    traceId
+  );
+
+  const history = router.getConversationHistoryForThread("approval_replace_01");
+  assert.equal(history.length, 2);
+  assert.equal(history[0]?.event_kind, "progress");
+  assert.equal(history[0]?.replace_key, null);
+  assert.equal(history[1]?.event_kind, "approval");
+  assert.equal(history[1]?.replace_key, `${traceId}:approval`);
+  assert.match(history[1]?.content ?? "", /^Waiting for approval\.\.\./);
 });
 
 test("HubRouter keeps approval prompts durable after terminal input and final reply", async () => {

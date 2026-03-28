@@ -70,7 +70,11 @@ function buildReplaceKey(
   threadId: string,
   traceId: string | null,
   eventKind: Extract<ConversationEventKind, "progress" | "approval">
-): string {
+): string | null {
+  if (eventKind !== "approval") {
+    return null;
+  }
+
   return traceId ? `${traceId}:${eventKind}` : `${threadId}:${eventKind}`;
 }
 

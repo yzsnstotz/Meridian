@@ -39,10 +39,10 @@
 | ✅ | 2 | N-06 | Codex Stream Parser | CODEX | N-01 | Investigation Report | Parser and tests complete; prior Claude spawn-arg gate cleared after R-01 test updates |
 | ✅ | 2 | R-01 | Claude Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json --verbose --include-partial-messages` |
 | ✅ | 2 | R-02 | Gemini Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json` |
-| ⬜ | 3 | R-03 | Stream Spawn Architecture (All Agents) | CODEX-XHIGH | N-04, N-05, N-06 | Main PRD, Investigation Report | Generic spawnStreamAgent + per-agent stream arg builders; bypasses agentapi |
+| ✅ | 3 | R-03 | Stream Spawn Architecture (All Agents) | CODEX-XHIGH | N-04, N-05, N-06 | Main PRD, Investigation Report | Generic spawnStreamAgent + per-agent stream arg builders; bypasses agentapi |
 | ✅ | 3 | R-04 | Router Summary Injection Skip | CODEX-HIGH | N-01 | Main PRD, Investigation Report | Gate appendSummaryProtocolPrompt on !supportsStream |
 | ⬜ | 4 | N-07 | OutputBus | CODEX-XHIGH | N-02, N-03 | Main PRD, Investigation Report | Central convergence; dual fan-out per PM Resolution #2 |
-| ⬜ | 4 | R-05 | State Store replace_key Narrowing | CODEX | — | Main PRD, Investigation Report | Keep for approval, remove for progress |
+| ✅ | 4 | R-05 | State Store replace_key Narrowing | CODEX | — | Main PRD, Investigation Report | Keep for approval, remove for progress |
 | ⬜ | 5 | R-06 | Hub Server flushMonitorProgressUpdates Refactor | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Ticker stays; push through OutputBus |
 | ⬜ | 5 | R-07 | Pane Broadcaster → OutputBus Integration | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Push accumulator through OutputBus; pane bridge untouched |
 | ⬜ | 5 | R-08 | Stream Consumption in Router (handleRun) | CODEX-XHIGH | N-07, R-03, R-04 | Main PRD, Investigation Report | Direct stdout parsing; bypasses agentapi; fallback to bridge polling |
