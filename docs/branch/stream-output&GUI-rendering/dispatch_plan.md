@@ -41,7 +41,7 @@
 | ✅ | 2 | R-02 | Gemini Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json` |
 | ✅ | 3 | R-03 | Stream Spawn Architecture (All Agents) | CODEX-XHIGH | N-04, N-05, N-06 | Main PRD, Investigation Report | Generic spawnStreamAgent + per-agent stream arg builders; bypasses agentapi |
 | ✅ | 3 | R-04 | Router Summary Injection Skip | CODEX-HIGH | N-01 | Main PRD, Investigation Report | Gate appendSummaryProtocolPrompt on !supportsStream |
-| ⬜ | 4 | N-07 | OutputBus | CODEX-XHIGH | N-02, N-03 | Main PRD, Investigation Report | Central convergence; dual fan-out per PM Resolution #2 |
+| ✅ | 4 | N-07 | OutputBus | CODEX-XHIGH | N-02, N-03 | Main PRD, Investigation Report | Implemented `src/hub/output-bus.ts` with dual fan-out plus the missing N-01/N-02/N-03 shared contracts needed by this checkout |
 | ✅ | 4 | R-05 | State Store replace_key Narrowing | CODEX | — | Main PRD, Investigation Report | Keep for approval, remove for progress |
 | ⬜ | 5 | R-06 | Hub Server flushMonitorProgressUpdates Refactor | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Ticker stays; push through OutputBus |
 | ⬜ | 5 | R-07 | Pane Broadcaster → OutputBus Integration | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Push accumulator through OutputBus; pane bridge untouched |
