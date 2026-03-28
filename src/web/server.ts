@@ -81,6 +81,25 @@ const pushToggleBodySchema = z.object({
   enabled: z.boolean().optional()
 });
 
+const a2aPartSchema = z.union([
+  z.object({
+    type: z.literal("text"),
+    text: z.string()
+  }),
+  z.object({
+    type: z.literal("data"),
+    data: z.unknown()
+  })
+]);
+
+const a2aWebSocketMessageSchema = z.object({
+  type: z.literal("a2a_message"),
+  taskId: z.string().min(1),
+  taskState: z.enum(["working", "completed", "failed"]),
+  parts: z.array(a2aPartSchema),
+  agentId: z.string().min(1).optional()
+});
+
 function coerceProgressSnapshot(result: HubResult) {
   if (result.progress) {
     return ThreadProgressSnapshotSchema.parse(result.progress);
@@ -1016,13 +1035,18 @@ export class WebInterfaceServer {
           if (paneOutput.success) {
             outbound = JSON.stringify(paneOutput.data);
           } else {
-            const unavailable = PaneOutputNotAvailableSchema.parse(parsed);
-            outbound = JSON.stringify(unavailable);
+            const a2aMessage = a2aWebSocketMessageSchema.safeParse(parsed);
+            if (a2aMessage.success) {
+              outbound = JSON.stringify(a2aMessage.data);
+            } else {
+              const unavailable = PaneOutputNotAvailableSchema.parse(parsed);
+              outbound = JSON.stringify(unavailable);
+            }
           }
         } catch (error) {
           this.logger.warn(
             { err: error instanceof Error ? error.message : String(error), thread_id: threadId },
-            "Dropping malformed pane output payload"
+            "Dropping malformed WebSocket bridge payload"
           );
           continue;
         }

@@ -657,6 +657,81 @@ test("Web Interface Server bridges pane output over WebSocket", async () => {
   }
 });
 
+test("Web Interface Server bridges A2A messages over WebSocket", async () => {
+  const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-a2a-"));
+  const socketPath = path.join(socketDir, "hub.sock");
+
+  const hubServer = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    let buffer = "";
+
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const frames = buffer.split("\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const payload = frame.trim();
+        if (!payload) {
+          continue;
+        }
+        const parsed = JSON.parse(payload) as { type: string };
+        if (parsed.type === "subscribe_pane_output") {
+          socket.write(
+            `${JSON.stringify({
+              type: "a2a_message",
+              taskId: "trace-a2a-1",
+              taskState: "working",
+              parts: [{ type: "text", text: "partial output" }]
+            })}\n`
+          );
+        }
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => hubServer.listen(socketPath, resolve));
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const ws = new WebSocket(`${baseUrl.replace("http://", "ws://")}/ws/terminal?thread_id=codex_01&token=secret-token`);
+      const payload = await new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket payload")), 2000);
+
+        ws.addEventListener("message", (event) => {
+          clearTimeout(timeout);
+          resolve(String(event.data));
+        });
+        ws.addEventListener("error", () => {
+          clearTimeout(timeout);
+          reject(new Error("WebSocket failed"));
+        });
+      });
+
+      const parsed = JSON.parse(payload) as {
+        type: string;
+        taskId: string;
+        taskState: string;
+        parts: Array<{ type: string; text?: string }>;
+      };
+      assert.deepEqual(parsed, {
+        type: "a2a_message",
+        taskId: "trace-a2a-1",
+        taskState: "working",
+        parts: [{ type: "text", text: "partial output" }]
+      });
+      await new Promise<void>((resolve) => {
+        ws.addEventListener("close", () => resolve(), { once: true });
+        ws.close();
+      });
+    }, {
+      hubSocketPath: socketPath
+    });
+  } finally {
+    hubServer.close();
+    await fs.promises.rm(socketDir, { recursive: true, force: true });
+  }
+});
+
 test("WebSocket pane bridge accepts replay_lines override from query", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-replay-"));
   const socketPath = path.join(socketDir, "hub.sock");

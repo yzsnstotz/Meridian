@@ -47,9 +47,9 @@
 | ✅ | 4 | N-07 | OutputBus | CODEX-XHIGH | N-02, N-03 | Main PRD, Investigation Report | Implemented `src/hub/output-bus.ts` with dual fan-out plus the missing N-01/N-02/N-03 shared contracts needed by this checkout |
 | ✅ | 4 | R-05 | State Store replace_key Narrowing | CODEX | — | Main PRD, Investigation Report | Keep for approval, remove for progress |
 | ✅ | 5 | R-06 | Hub Server flushMonitorProgressUpdates Refactor | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Ticker stays; push through OutputBus |
-| ⬜ | 5 | R-07 | Pane Broadcaster → OutputBus Integration | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Push accumulator through OutputBus; pane bridge untouched |
+| ✅ | 5 | R-07 | Pane Broadcaster → OutputBus Integration | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Implementation complete; repo-wide `node --test --import tsx 'src/**/*.test.ts'` and `npx tsc --noEmit` both pass cleanly |
 | ✅ | 5 | R-08 | Stream Consumption in Router (handleRun) | CODEX-XHIGH | N-07, R-03, R-04 | Main PRD, Investigation Report | Direct stdout parsing; bypasses agentapi; fallback to bridge polling |
-| ⬜ | 6 | R-09 | WebSocket A2A Push Format | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Add a2a_message type alongside pane_output |
+| ✅ | 6 | R-09 | WebSocket A2A Push Format | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Hub socket subscriptions now forward `a2a_message` frames from OutputBus alongside `pane_output`; full typecheck + full test suite pass |
 | ⬜ | 6 | R-10 | GUI Consumption Layer | CODEX | R-09 | Main PRD, Investigation Report | A2A-driven append rendering; rAF throttling |
 | ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | All above | TaskSpec, Main PRD, Investigation Report | One pass only after all implementation workers in Batches 0-6 are `✅`. Findings → append corrective workers. |
 | ⬜ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec, Main PRD, Investigation Report | Terminal gate; human merges |
