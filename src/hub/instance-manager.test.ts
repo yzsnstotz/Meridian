@@ -159,6 +159,10 @@ test("spawn stores auto_approve in the registry when requested", async () => {
     "claude",
     "--allowedTools",
     "Bash Edit Replace",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
     "--dangerously-skip-permissions"
   ]);
 });
@@ -191,7 +195,11 @@ test("spawn claude bridge includes --allowedTools args", async () => {
     "--",
     "claude",
     "--allowedTools",
-    "Bash Edit Replace"
+    "Bash Edit Replace",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
   ]);
 });
 
@@ -276,7 +284,11 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
     "--",
     "claude",
     "--allowedTools",
-    "Bash Edit Replace"
+    "Bash Edit Replace",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
   ]);
 });
 

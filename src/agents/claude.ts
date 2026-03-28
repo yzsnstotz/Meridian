@@ -21,7 +21,15 @@ export function buildClaudeCliArgs(
   modelId?: string,
   autoApprove?: boolean
 ): string[] {
-  const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
+  const args = [
+    claudeAgentConfig.command,
+    "--allowedTools",
+    allowedTools.join(" "),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
+  ];
   if (modelId) {
     args.push("--model", modelId);
   }

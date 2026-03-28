@@ -6,7 +6,15 @@ import { buildClaudeCliArgs, buildClaudeSpawnArgs, DEFAULT_CLAUDE_ALLOWED_TOOLS 
 test("buildClaudeCliArgs omits skip-permissions flag by default", () => {
   const args = buildClaudeCliArgs();
 
-  assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" ")]);
+  assert.deepEqual(args, [
+    "claude",
+    "--allowedTools",
+    DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
+  ]);
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
 });
 
@@ -17,6 +25,10 @@ test("buildClaudeCliArgs appends skip-permissions flag for auto-approve", () => 
     "claude",
     "--allowedTools",
     DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
     "--dangerously-skip-permissions"
   ]);
 });
@@ -32,6 +44,10 @@ test("buildClaudeSpawnArgs threads auto-approve to the provider CLI", () => {
     "claude",
     "--allowedTools",
     DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
     "--model",
     "claude-3",
     "--dangerously-skip-permissions"
