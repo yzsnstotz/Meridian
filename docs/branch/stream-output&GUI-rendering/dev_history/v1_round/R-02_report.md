@@ -17,5 +17,6 @@
 - Unit tests: PASS (298 tests in full suite; targeted Gemini agent tests also passed)
 
 ## Blockers / Notes
-- No blockers encountered.
-- Batch 2 is fully `✅` after R-02 completion.
+- No implementation blockers encountered.
+- Batch 2 is fully `✅` on `stream-output&GUI-rendering`.
+- The dispatch instruction to commit/push on `feat/experience-fix` is currently stale for this repo state: that branch still shows Batch 1/2 as `⬜` and is missing prerequisite files such as `src/shared/stream-adapter.ts` and `src/shared/stream-parsers/gemini.ts`.
