@@ -19,4 +19,4 @@
 - Unit tests: PASS (296 full-suite tests; Claude agent file: 3 tests; instance manager file: 27 tests)
 
 ## Blockers / Notes
-- Batch 2 is still in progress: `N-06` and `R-02` remain incomplete, so this worker was not pushed.
+- Batch 2 is still in progress: `R-02` remains incomplete. The earlier `N-06` Claude spawn-arg gate is now cleared.

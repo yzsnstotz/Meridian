@@ -35,7 +35,7 @@
 | ✅ | 1 | N-03 | A2A Adapter | CODEX | — | Main PRD | PRD §4.4 mapping tables |
 | ✅ | 2 | N-04 | Claude Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `claude-sample.ndjson`; CLI schema NOT API schema |
 | ✅ | 2 | N-05 | Gemini Stream Parser | CODEX | N-01 | Investigation Report | Use fixture `gemini-sample.ndjson`; flat string, not array |
-| ⛔ | 2 | N-06 | Codex Stream Parser | CODEX | N-01 | Investigation Report | Implementation complete; full-suite gate blocked by unrelated `instance-manager` Claude spawn-arg tests |
+| ✅ | 2 | N-06 | Codex Stream Parser | CODEX | N-01 | Investigation Report | Parser and tests complete; prior Claude spawn-arg gate cleared after R-01 test updates |
 | ✅ | 2 | R-01 | Claude Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json --verbose --include-partial-messages` |
 | ⬜ | 2 | R-02 | Gemini Spawn Args | CODEX | N-01 | Main PRD, Investigation Report | Add `--output-format stream-json` |
 | ⬜ | 3 | R-03 | Stream Spawn Architecture (All Agents) | 🟧 CODEX | N-04, N-05, N-06 | Main PRD, Investigation Report | Generic spawnStreamAgent + per-agent stream arg builders; bypasses agentapi |
