@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentInstance, HubResult } from "../../types";
+import { RoleTypeSchema, type AgentInstance, type HubResult, type RoleType } from "../../types";
 import type { BaseRole, Logger, RoleContext } from "../base-role";
 import { RoleRegistry } from "../role-registry";
 import { RoleRunner } from "../role-runner";
@@ -41,11 +41,15 @@ function createLogger(): Logger {
   };
 }
 
-function createMockRole(threadId = "dispatcher-1", config: unknown = { enabled: true }) {
+function createMockRole(
+  threadId = "dispatcher-1",
+  config: unknown = { enabled: true },
+  roleType: RoleType = "dispatcher"
+) {
   let capturedContext: RoleContext | undefined;
 
   const role = {
-    roleType: "dispatcher" as const,
+    roleType,
     threadId,
     config,
     onActivate: vi.fn(async (ctx: RoleContext) => {
@@ -63,6 +67,11 @@ function createMockRole(threadId = "dispatcher-1", config: unknown = { enabled: 
 }
 
 describe("RoleRunner", () => {
+  it("accepts the agent-dispatcher role type", () => {
+    expect(RoleTypeSchema.parse("dispatcher")).toBe("dispatcher");
+    expect(RoleTypeSchema.parse("agent-dispatcher")).toBe("agent-dispatcher");
+  });
+
   it("activates a role with the shared context", async () => {
     const logger = createLogger();
     const sendToHub = vi.fn(async () => {});
@@ -141,6 +150,39 @@ describe("RoleRunner", () => {
     expect(role.onInboundResult).toHaveBeenCalledWith({
       ...sampleResult,
       thread_id: "codex_01",
+      trace_id: traceId
+    });
+  });
+
+  it("falls back to trace_id correlation for agent-dispatcher results routed to an agent thread", async () => {
+    const traceId = "123e4567-e89b-12d3-a456-426614174001";
+    const { role } = createMockRole(
+      "agent-dispatcher-trace",
+      {
+        tasks: [
+          {
+            task_id: "task-a",
+            result_trace_id: traceId
+          }
+        ]
+      },
+      "agent-dispatcher"
+    );
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(role);
+    await runner.dispatch({
+      ...sampleResult,
+      thread_id: "codex_02",
+      trace_id: traceId
+    });
+
+    expect(role.onInboundResult).toHaveBeenCalledTimes(1);
+    expect(role.onInboundResult).toHaveBeenCalledWith({
+      ...sampleResult,
+      thread_id: "codex_02",
       trace_id: traceId
     });
   });

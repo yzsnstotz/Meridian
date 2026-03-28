@@ -127,7 +127,7 @@ export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
 // ─── meridian-roles specific types ──────────────────────────────────────────────
 
-export const RoleTypeSchema = z.enum(["dispatcher"]);
+export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher"]);
 export type RoleType = z.infer<typeof RoleTypeSchema>;
 
 export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed"]);

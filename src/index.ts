@@ -1,6 +1,7 @@
 import { GUI_PORT } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
+import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "./roles/definitions";
 import { PromptStore } from "./roles/prompt-store";
 import { RoleRegistry } from "./roles/role-registry";
@@ -30,6 +31,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });
 
   registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
 
   const roleHandlers = createRoleHandlers({
     runner,

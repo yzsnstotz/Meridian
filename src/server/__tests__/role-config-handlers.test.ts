@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { describe, expect, it } from "vitest";
 
+import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "../../roles/definitions";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
@@ -96,6 +97,24 @@ describe("role config handlers", () => {
     await expect(harness.roleHandlers.getConfig("missing-role")).rejects.toMatchObject({
       statusCode: 404,
       message: "Role not found for thread_id=missing-role"
+    });
+  });
+
+  it("accepts agent-dispatcher role creation payloads", async () => {
+    const harness = createHarness();
+    const request = createJsonRequest("POST", "/api/role", {
+      role_type: "agent-dispatcher",
+      tasks: []
+    });
+    const response = createJsonResponse();
+
+    const handled = await harness.roleHandlers.handle(request, response.raw);
+
+    expect(handled).toBe(true);
+    expect(response.statusCode).toBe(201);
+    expect(JSON.parse(response.body)).toMatchObject({
+      ok: true,
+      role_type: "agent-dispatcher"
     });
   });
 
@@ -301,6 +320,10 @@ function createHarness(initialState?: AppState, stateStore = new MemoryStateStor
   });
 
   registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  registry.register(
+    "agent-dispatcher",
+    (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore })
+  );
 
   return {
     stateStore,

@@ -66,7 +66,7 @@ export class RoleRunner {
 
   private findRoleByInboundTrace(result: HubResult): BaseRole | undefined {
     for (const candidate of this.roles.values()) {
-      if (candidate.roleType !== "dispatcher") {
+      if (candidate.roleType !== "dispatcher" && candidate.roleType !== "agent-dispatcher") {
         continue;
       }
 

@@ -25,6 +25,7 @@ import {
   type AppState,
   type DispatcherConfig,
   type DispatcherEditorConfig,
+  type RoleType,
   type RoleState
 } from "../types";
 import type { Logger } from "../roles/base-role";
@@ -163,7 +164,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
   return handlers;
 
-  async function createRole(body: unknown): Promise<{ ok: true; thread_id: string; role_type: "dispatcher" }> {
+  async function createRole(body: unknown): Promise<{ ok: true; thread_id: string; role_type: RoleType }> {
     const { threadId, roleType, config } = normalizeCreateBody(body);
     if (activeRoles.has(threadId)) {
       throw createHttpError(409, `Role already active for thread_id=${threadId}`);
@@ -270,7 +271,7 @@ async function loadState(stateStore: PersistableStateStore): Promise<AppState> {
 
 function normalizeCreateBody(body: unknown): {
   threadId: string;
-  roleType: "dispatcher";
+  roleType: RoleType;
   config: DispatcherConfig;
 } {
   const parsed = CreateRoleBodySchema.safeParse(body);
@@ -278,11 +279,11 @@ function normalizeCreateBody(body: unknown): {
     throw createHttpError(400, "Invalid body for role creation");
   }
 
-  const threadId = parsed.data.thread_id ?? parsed.data.threadId ?? `dispatcher-${randomUUID().slice(0, 8)}`;
   const roleType = parsed.data.role_type ?? parsed.data.roleType ?? "dispatcher";
-  if (roleType !== "dispatcher") {
+  if (roleType !== "dispatcher" && roleType !== "agent-dispatcher") {
     throw createHttpError(400, `Unsupported role_type=${roleType}`);
   }
+  const threadId = parsed.data.thread_id ?? parsed.data.threadId ?? `${roleType}-${randomUUID().slice(0, 8)}`;
 
   const nestedConfig = typeof parsed.data.config === "object" && parsed.data.config !== null
     ? parsed.data.config
