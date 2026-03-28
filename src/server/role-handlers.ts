@@ -16,13 +16,16 @@ import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
 import { StateStore } from "../state-store";
 import {
+  AgentDispatcherConfigSchema,
   AppStateSchema,
   DispatchTaskSchema,
   DispatcherConfigSchema,
   DispatcherEditorConfigPatchSchema,
   ReplyChannelSchema,
   RoleTypeSchema,
+  shouldUseAgentDispatcherConfig,
   type AppState,
+  type AgentDispatcherConfig,
   type DispatcherConfig,
   type DispatcherEditorConfig,
   type RoleType,
@@ -41,6 +44,13 @@ const CreateRoleBodySchema = z.object({
   taskspec: z.string().optional(),
   system_prompt: z.string().optional(),
   user_reply_channel: ReplyChannelSchema.optional(),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
+  dispatch_plan_path: z.string().min(1).optional(),
+  command_file_path: z.string().min(1).optional(),
+  agent_type: z.string().min(1).optional(),
+  mode: z.string().min(1).optional(),
+  kill_policy: z.string().min(1).optional(),
+  use_agent_dispatcher: z.boolean().optional(),
   config: z.unknown().optional()
 });
 
@@ -171,8 +181,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     }
 
     const role = options.registry.create(roleType, threadId, config);
+    const actualRoleType = role.roleType;
     activeRoles.set(threadId, {
-      roleType,
+      roleType: actualRoleType,
       config: role.config
     });
 
@@ -183,7 +194,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       throw error;
     }
 
-    return { ok: true, thread_id: threadId, role_type: roleType };
+    return { ok: true, thread_id: threadId, role_type: actualRoleType };
   }
 
   async function deleteRole(threadId: string): Promise<{ ok: true }> {
@@ -272,7 +283,7 @@ async function loadState(stateStore: PersistableStateStore): Promise<AppState> {
 function normalizeCreateBody(body: unknown): {
   threadId: string;
   roleType: RoleType;
-  config: DispatcherConfig;
+  config: DispatcherConfig | AgentDispatcherConfig;
 } {
   const parsed = CreateRoleBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -294,11 +305,25 @@ function normalizeCreateBody(body: unknown): {
     tasks: parsed.data.tasks ?? (nestedConfig as { tasks?: unknown }).tasks,
     taskspec: parsed.data.taskspec ?? (nestedConfig as { taskspec?: unknown }).taskspec,
     system_prompt: parsed.data.system_prompt ?? (nestedConfig as { system_prompt?: unknown }).system_prompt,
+    dispatch_plan_path:
+      parsed.data.dispatch_plan_path ?? (nestedConfig as { dispatch_plan_path?: unknown }).dispatch_plan_path,
+    command_file_path:
+      parsed.data.command_file_path ?? (nestedConfig as { command_file_path?: unknown }).command_file_path,
     user_reply_channel:
-      parsed.data.user_reply_channel ?? (nestedConfig as { user_reply_channel?: unknown }).user_reply_channel
+      parsed.data.user_reply_channel ?? (nestedConfig as { user_reply_channel?: unknown }).user_reply_channel,
+    user_reply_channels:
+      parsed.data.user_reply_channels ?? (nestedConfig as { user_reply_channels?: unknown }).user_reply_channels,
+    agent_type: parsed.data.agent_type ?? (nestedConfig as { agent_type?: unknown }).agent_type,
+    mode: parsed.data.mode ?? (nestedConfig as { mode?: unknown }).mode,
+    kill_policy: parsed.data.kill_policy ?? (nestedConfig as { kill_policy?: unknown }).kill_policy,
+    use_agent_dispatcher:
+      parsed.data.use_agent_dispatcher
+      ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
   };
 
-  const config = DispatcherConfigSchema.safeParse(rawConfig);
+  const config = (roleType === "agent-dispatcher" || shouldUseAgentDispatcherConfig(rawConfig))
+    ? AgentDispatcherConfigSchema.safeParse(rawConfig)
+    : DispatcherConfigSchema.safeParse(rawConfig);
   if (!config.success) {
     throw createHttpError(400, "Invalid dispatcher config");
   }

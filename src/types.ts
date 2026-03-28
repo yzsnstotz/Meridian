@@ -178,6 +178,49 @@ export const DispatcherConfigSchema = z.object({
 });
 export type DispatcherConfig = z.infer<typeof DispatcherConfigSchema>;
 
+export const KillPolicySchema = z.enum(["always", "on_success", "never"]);
+export type KillPolicy = z.infer<typeof KillPolicySchema>;
+
+export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
+  dispatch_plan_path: z.string().min(1),
+  command_file_path: z.string().min(1),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
+  agent_type: AgentTypeSchema.default("claude"),
+  mode: BridgeModeSchema.default("bridge"),
+  kill_policy: KillPolicySchema.default("always"),
+  use_agent_dispatcher: z.boolean().optional()
+})
+  .superRefine((value, ctx) => {
+    const hasReplyChannels = Array.isArray(value.user_reply_channels) && value.user_reply_channels.length > 0;
+    if (!hasReplyChannels && !value.user_reply_channel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["user_reply_channels"],
+        message: "user_reply_channels is required"
+      });
+    }
+  })
+  .transform((value) => {
+    const userReplyChannels = value.user_reply_channels?.map(cloneReplyChannel)
+      ?? (value.user_reply_channel ? [cloneReplyChannel(value.user_reply_channel)] : []);
+    const primaryReplyChannel = userReplyChannels[0];
+
+    return {
+      ...value,
+      user_reply_channel: primaryReplyChannel ? cloneReplyChannel(primaryReplyChannel) : undefined,
+      user_reply_channels: userReplyChannels,
+      use_agent_dispatcher: value.use_agent_dispatcher ?? true
+    };
+  });
+export type AgentDispatcherConfig = z.infer<typeof AgentDispatcherConfigSchema>;
+
+export function shouldUseAgentDispatcherConfig(config: unknown): boolean {
+  return typeof config === "object"
+    && config !== null
+    && "use_agent_dispatcher" in config
+    && (config as { use_agent_dispatcher?: unknown }).use_agent_dispatcher === true;
+}
+
 // ─── State persistence schema ───────────────────────────────────────────────────
 
 export const RoleStateSchema = z.object({
@@ -199,3 +242,7 @@ export const AppStateSchema = z.object({
   promptStore: PromptStoreSchema
 });
 export type AppState = z.infer<typeof AppStateSchema>;
+
+function cloneReplyChannel(replyChannel: ReplyChannel): ReplyChannel {
+  return { ...replyChannel };
+}

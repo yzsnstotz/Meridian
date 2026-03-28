@@ -104,7 +104,16 @@ describe("role config handlers", () => {
     const harness = createHarness();
     const request = createJsonRequest("POST", "/api/role", {
       role_type: "agent-dispatcher",
-      tasks: []
+      config: {
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:pm"
+          }
+        ]
+      }
     });
     const response = createJsonResponse();
 
@@ -322,7 +331,34 @@ function createHarness(initialState?: AppState, stateStore = new MemoryStateStor
   registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
   registry.register(
     "agent-dispatcher",
-    (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore })
+    (threadId, config) => new AgentDispatcherRole(threadId, config, {
+      stateStore,
+      buildSystemPrompt: () => "test system prompt",
+      launchDispatcher: async () => ({
+        ok: true,
+        threadId: "dispatcher-thread-123"
+      }),
+      sessionManagerFactory: () => ({
+        getDispatcherThreadId: () => "dispatcher-thread-123",
+        initSession: async () => undefined,
+        isPaused: () => false,
+        onRestart: async () => ({
+          staleWorkersKilled: [],
+          dispatcherRestarted: true
+        }),
+        setPaused: () => undefined
+      }),
+      readWorkersByStatus: async () => [],
+      threadTrackerFactory: () => ({
+        load: async () => ({
+          dispatcher_thread_id: null,
+          workers: {}
+        }),
+        save: async () => undefined
+      }),
+      killThread: async () => undefined,
+      signalDispatcher: async () => undefined
+    })
   );
 
   return {

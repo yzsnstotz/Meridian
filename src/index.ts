@@ -10,6 +10,7 @@ import { createPromptHandlers } from "./server/prompt-handlers";
 import { HttpServer } from "./server/http-server";
 import { createRoleHandlers } from "./server/role-handlers";
 import { StateStore } from "./state-store";
+import { shouldUseAgentDispatcherConfig } from "./types";
 
 export * from "./types";
 export * from "./config";
@@ -30,7 +31,12 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   });
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });
 
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  registry.register(
+    "dispatcher",
+    (threadId, config) => shouldUseAgentDispatcherConfig(config)
+      ? new AgentDispatcherRole(threadId, config, { stateStore })
+      : new DispatcherRole(threadId, config, { stateStore })
+  );
   registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
 
   const roleHandlers = createRoleHandlers({
