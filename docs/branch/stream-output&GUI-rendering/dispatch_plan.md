@@ -1,8 +1,11 @@
-# Dispatch Plan — Streaming Output & GUI Rendering v1.0
+# Dispatch Plan — Streaming Output & GUI Rendering v1.1
 
+- **Version**: v1.1
 - **TaskSpec**: `/Users/yzliu/work/Meridian/docs/branch/stream-output&GUI-rendering/taskspec_v1.0.md`
-- **Branch**: `feat/experience-fix`
-- **Date**: 2026-03-26
+- **Dispatch Command**: `/Users/yzliu/work/Meridian/docs/branch/stream-output&GUI-rendering/agent_dispatch_command.md`
+- **Spec Branch**: `stream-output&GUI-rendering`
+- **Execution Branch**: `feat/experience-fix`
+- **Date**: 2026-03-28
 
 ---
 
@@ -45,10 +48,10 @@
 | ✅ | 4 | R-05 | State Store replace_key Narrowing | CODEX | — | Main PRD, Investigation Report | Keep for approval, remove for progress |
 | ⬜ | 5 | R-06 | Hub Server flushMonitorProgressUpdates Refactor | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Ticker stays; push through OutputBus |
 | ⬜ | 5 | R-07 | Pane Broadcaster → OutputBus Integration | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Push accumulator through OutputBus; pane bridge untouched |
-| ⬜ | 5 | R-08 | Stream Consumption in Router (handleRun) | CODEX-XHIGH | N-07, R-03, R-04 | Main PRD, Investigation Report | Direct stdout parsing; bypasses agentapi; fallback to bridge polling |
+| ✅ | 5 | R-08 | Stream Consumption in Router (handleRun) | CODEX-XHIGH | N-07, R-03, R-04 | Main PRD, Investigation Report | Direct stdout parsing; bypasses agentapi; fallback to bridge polling |
 | ⬜ | 6 | R-09 | WebSocket A2A Push Format | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Add a2a_message type alongside pane_output |
 | ⬜ | 6 | R-10 | GUI Consumption Layer | CODEX | R-09 | Main PRD, Investigation Report | A2A-driven append rendering; rAF throttling |
-| ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | All implementation Workers | TaskSpec, Main PRD, Investigation Report | One pass only. Findings → append corrective workers. |
+| ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | All above | TaskSpec, Main PRD, Investigation Report | One pass only after all implementation workers in Batches 0-6 are `✅`. Findings → append corrective workers. |
 | ⬜ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec, Main PRD, Investigation Report | Terminal gate; human merges |
 
 Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision
@@ -57,9 +60,10 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ## Batch Execution Details
 
+Master Dispatch Table is the authoritative worker inventory. Batch notes below provide coordination guidance only and intentionally avoid re-listing the full worker roster.
+
 ### Batch 0 — Environment Health Check
 
-- **Workers**: PRE-FLIGHT
 - **Priority**: P0 — gates entire dispatch
 - **Model**: CODEX
 - **Agent Notes**: Run typecheck (`npx tsc --noEmit`) and test suite (`node --test --import tsx src/**/*.test.ts`). If either fails, report `⛔ BLOCKED` with error details.
@@ -67,7 +71,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch 1 — Foundation Types
 
-- **Workers**: N-01, N-02, N-03 (all parallel)
 - **Priority**: P0 (N-01), P1 (N-02, N-03)
 - **Model**: CODEX (all)
 - **Agent Notes**:
@@ -78,7 +81,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch 2 — Stream Parsers + Simple Spawn Args
 
-- **Workers**: N-04, N-05, N-06, R-01, R-02 (all parallel)
 - **Priority**: P0 (all)
 - **Model**: CODEX (all)
 - **Agent Notes**:
@@ -90,7 +92,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch 3 — Stream Spawn Architecture + Router Changes
 
-- **Workers**: R-03, R-04 (parallel)
 - **Priority**: P0 (both)
 - **Model Assignments**: R-03 → CODEX-XHIGH, R-04 → CODEX-HIGH
 - **Agent Notes**:
@@ -103,7 +104,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch 4 — OutputBus + State Store
 
-- **Workers**: N-07, R-05 (parallel)
 - **Priority**: P0 (N-07), P1 (R-05)
 - **Model Assignments**: N-07 → CODEX-XHIGH, R-05 → CODEX
 - **Agent Notes**:
@@ -115,7 +115,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch 5 — Server Integration
 
-- **Workers**: R-06, R-07, R-08 (parallel)
 - **Priority**: P1 (R-06, R-07), P0 (R-08)
 - **Model Assignments**: R-06 → CODEX-HIGH, R-07 → CODEX-HIGH, R-08 → CODEX-XHIGH
 - **Agent Notes**:
@@ -129,7 +128,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch 6 — Frontend
 
-- **Workers**: R-09, R-10 (sequential — R-10 depends on R-09)
 - **Priority**: P1 (both)
 - **Model Assignments**: R-09 → CODEX-HIGH, R-10 → CODEX
 - **Agent Notes**:
@@ -141,7 +139,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch Ω — Delta Check
 
-- **Workers**: DELTA-CHECK
 - **Priority**: P0
 - **Model**: CODEX-XHIGH
 - **Agent Notes**: One pass only. Diff all completed work against TaskSpec acceptance criteria. Produce findings report. If ≤5 corrective workers needed, append to this dispatch plan. If >5, escalate to PM.
@@ -149,7 +146,6 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ### Batch Ω+1 — PR Review
 
-- **Workers**: PR-REVIEW
 - **Priority**: P0
 - **Model**: CODEX-XHIGH
 - **Agent Notes**: Terminal gate. Review full `git diff main..HEAD` against PRD and TaskSpec. Produce per-file verdict table. Human merges.
@@ -173,16 +169,8 @@ Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔
 
 ## Completion Tracking
 
-| Batch | Start Date | End Date | Report Files |
-|-------|------------|----------|--------------|
-| 0 | — | — | `dev_history/v1_round/PRE-FLIGHT_report.md` |
-| 1 | — | — | `dev_history/v1_round/N-01_report.md`, `N-02_report.md`, `N-03_report.md` |
-| 2 | — | — | `dev_history/v1_round/N-04_report.md`, `N-05_report.md`, `N-06_report.md`, `R-01_report.md`, `R-02_report.md` |
-| 3 | — | — | `dev_history/v1_round/R-03_report.md`, `R-04_report.md` |
-| 4 | — | — | `dev_history/v1_round/N-07_report.md`, `R-05_report.md` |
-| 5 | — | — | `dev_history/v1_round/R-06_report.md`, `R-07_report.md`, `R-08_report.md` |
-| 6 | — | — | `dev_history/v1_round/R-09_report.md`, `R-10_report.md` |
-| Ω | — | — | `dev_history/v1_round/delta_check_report.md` |
-| Ω+1 | — | — | `dev_history/v1_round/pr_review_report.md` |
-
-All report paths relative to `/Users/yzliu/work/Meridian/docs/branch/stream-output&GUI-rendering/`.
+- **Report directory**: `dev_history/v1_round/`
+- **Worker report naming**: `[WORKER_ID]_report.md` for PRE-FLIGHT and batches 1-6
+- **Delta Check report**: `dev_history/v1_round/delta_check_report.md`
+- **PR Review report**: `dev_history/v1_round/pr_review_report.md`
+- All report paths are relative to `/Users/yzliu/work/Meridian/docs/branch/stream-output&GUI-rendering/`.

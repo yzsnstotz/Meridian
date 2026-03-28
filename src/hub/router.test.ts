@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 
 process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
 
 import { config } from "../config";
 import type { HubMessage } from "../types";
+import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { HubRouter } from "./router";
 
@@ -26,6 +29,30 @@ function baseMessage(overrides: Partial<HubMessage> = {}): HubMessage {
     },
     ...overrides
   };
+}
+
+function createClosedProcess(exitCode = 0, stderrChunks: string[] = []) {
+  const process = new EventEmitter() as EventEmitter & {
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    stderr: Readable;
+    kill: () => boolean;
+  };
+
+  process.exitCode = null;
+  process.signalCode = null;
+  process.stderr = Readable.from(stderrChunks);
+  process.kill = () => {
+    process.signalCode = "SIGTERM";
+    return true;
+  };
+
+  queueMicrotask(() => {
+    process.exitCode = exitCode;
+    process.emit("close", exitCode, null);
+  });
+
+  return process;
 }
 
 test("HubRouter routes run intent through AgentAPIClient", async () => {
@@ -74,24 +101,40 @@ test("HubRouter run skips summary protocol injection when instance supports stre
     created_at: new Date().toISOString()
   });
 
-  let callCount = 0;
-  let sentContent = "";
+  let connectCount = 0;
+  let spawnPrompt = "";
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    spawnStreamAgent: (_threadId: string, _agentType: string, _args: string[], prompt: string) => {
+      spawnPrompt = prompt;
+      return {
+        stdout: Readable.from([
+          [
+            '{"type":"message","session_id":"gemini-session-1","role":"assistant","content":"stream reply"}',
+            '{"type":"result","session_id":"gemini-session-1","status":"success"}'
+          ].join("\n") + "\n"
+        ]),
+        process: createClosedProcess()
+      };
+    }
+  };
   const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
     clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      sendMessage: async (content: string) => {
-        sentContent = content;
-        return { ok: true };
+      connect: async () => {
+        connectCount += 1;
       },
-      getStatus: async () => ({ status: "idle" }),
-      getMessages: async () => {
-        callCount += 1;
-        if (callCount === 1) {
-          return [];
-        }
-        return [{ id: 1, role: "agent", content: "stream reply" }];
-      }
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" })
     })
   });
 
@@ -109,8 +152,9 @@ test("HubRouter run skips summary protocol injection when instance supports stre
 
   assert.equal(result.status, "success");
   assert.equal(result.content, "stream reply");
-  assert.equal(sentContent, "ship it");
-  assert.doesNotMatch(sentContent, /MERIDIAN_SUMMARY_/);
+  assert.equal(spawnPrompt, "ship it");
+  assert.doesNotMatch(spawnPrompt, /MERIDIAN_SUMMARY_/);
+  assert.equal(connectCount, 0);
 });
 
 test("HubRouter run still injects summary protocol when streaming is disabled or unavailable", async () => {
@@ -175,6 +219,231 @@ test("HubRouter run still injects summary protocol when streaming is disabled or
     assert.match(sentContent, /\[\[MERIDIAN_SUMMARY_BEGIN id=<trace_id>\]\]/);
     assert.match(sentContent, /\[\[MERIDIAN_SUMMARY_END id=<trace_id>\]\]/);
   }
+});
+
+test("HubRouter streams Codex stdout through OutputBus and resumes using codexSessionId", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_stream_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_stream_01.sock",
+    pid: 301,
+    tmux_pane: null,
+    status: "idle",
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+
+  const spawnCalls: Array<{ args: string[]; prompt: string }> = [];
+  const pushed: Array<{ traceId: string; delta: unknown }> = [];
+  let connectCount = 0;
+  const payloads = [
+    [
+      '{"type":"thread.started","thread_id":"codex-session-123"}',
+      '{"type":"item.completed","thread_id":"codex-session-123","item":{"id":"msg-1","type":"agent_message","text":"first answer"}}',
+      '{"type":"turn.completed","thread_id":"codex-session-123","usage":{"total_tokens":12}}'
+    ].join("\n") + "\n",
+    [
+      '{"type":"item.completed","thread_id":"codex-session-123","item":{"id":"msg-2","type":"agent_message","text":"follow up"}}',
+      '{"type":"turn.completed","thread_id":"codex-session-123","usage":{"total_tokens":8}}'
+    ].join("\n") + "\n"
+  ];
+  let spawnIndex = 0;
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    spawnStreamAgent: (_threadId: string, _agentType: string, args: string[], prompt: string) => {
+      spawnCalls.push({ args, prompt });
+      const stdout = Readable.from([payloads[spawnIndex] ?? ""]);
+      spawnIndex += 1;
+      return {
+        stdout,
+        process: createClosedProcess()
+      };
+    }
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    outputBus: new OutputBus({
+      websocketOutput: (traceId, _message, delta) => {
+        pushed.push({ traceId, delta });
+      }
+    }),
+    clientFactory: () => ({
+      connect: async () => {
+        connectCount += 1;
+      },
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const first = await router.route(
+    baseMessage({
+      trace_id: "aaaaaaa1-1111-4111-8111-111111111111",
+      thread_id: "codex_stream_01",
+      target: "codex_stream_01",
+      payload: {
+        content: "hello",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(first.status, "success");
+  assert.equal(first.content, "first answer");
+  assert.equal(connectCount, 0);
+  assert.deepEqual(spawnCalls[0], {
+    args: ["codex", "exec", "--json"],
+    prompt: "hello"
+  });
+  assert.equal(registry.get("codex_stream_01")?.codexSessionId, "codex-session-123");
+
+  const second = await router.route(
+    baseMessage({
+      trace_id: "bbbbbbb2-2222-4222-8222-222222222222",
+      thread_id: "codex_stream_01",
+      target: "codex_stream_01",
+      payload: {
+        content: "next",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(second.status, "success");
+  assert.equal(second.content, "follow up");
+  assert.deepEqual(spawnCalls[1], {
+    args: ["codex", "exec", "resume", "codex-session-123", "--json"],
+    prompt: "next"
+  });
+  assert.deepEqual(pushed, [
+    {
+      traceId: "aaaaaaa1-1111-4111-8111-111111111111",
+      delta: {
+        traceId: "aaaaaaa1-1111-4111-8111-111111111111",
+        spanId: "msg-1",
+        phase: "working",
+        text: "first answer",
+        final: false
+      }
+    },
+    {
+      traceId: "aaaaaaa1-1111-4111-8111-111111111111",
+      delta: {
+        traceId: "aaaaaaa1-1111-4111-8111-111111111111",
+        phase: "result",
+        data: { total_tokens: 12 },
+        final: true
+      }
+    },
+    {
+      traceId: "bbbbbbb2-2222-4222-8222-222222222222",
+      delta: {
+        traceId: "bbbbbbb2-2222-4222-8222-222222222222",
+        spanId: "msg-2",
+        phase: "working",
+        text: "follow up",
+        final: false
+      }
+    },
+    {
+      traceId: "bbbbbbb2-2222-4222-8222-222222222222",
+      delta: {
+        traceId: "bbbbbbb2-2222-4222-8222-222222222222",
+        phase: "result",
+        data: { total_tokens: 8 },
+        final: true
+      }
+    }
+  ]);
+});
+
+test("HubRouter falls back to agentapi bridge after three stream failures", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_stream_02",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-gemini_stream_02.sock",
+    pid: 302,
+    tmux_pane: null,
+    status: "idle",
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+
+  let spawnAttempts = 0;
+  let connectCount = 0;
+  let sentContent = "";
+  let messagePolls = 0;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    spawnStreamAgent: () => {
+      spawnAttempts += 1;
+      throw new Error("spawn failed");
+    }
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    clientFactory: () => ({
+      connect: async () => {
+        connectCount += 1;
+      },
+      disconnect: () => undefined,
+      sendMessage: async (content: string) => {
+        sentContent = content;
+        return { ok: true };
+      },
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        messagePolls += 1;
+        if (messagePolls === 1) {
+          return [];
+        }
+        return [{ id: 1, role: "agent", content: "bridge reply" }];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "ccccccc3-3333-4333-8333-333333333333",
+      thread_id: "gemini_stream_02",
+      target: "gemini_stream_02",
+      payload: {
+        content: "ship it",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "bridge reply");
+  assert.equal(spawnAttempts, 3);
+  assert.equal(connectCount, 1);
+  assert.equal(registry.get("gemini_stream_02")?.supportsStream, false);
+  assert.match(sentContent, /^ship it\n\nMeridian protocol requirement \(must follow exactly\):/);
 });
 
 test("HubRouter detail reuses conversation history details produced for pane/chat", async () => {

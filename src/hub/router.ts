@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
 
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { buildClaudeStreamArgs } from "../agents/claude";
+import { buildCodexExecArgs, buildCodexResumeArgs } from "../agents/codex";
+import { buildGeminiStreamArgs } from "../agents/gemini";
 import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
 import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
+import { createClaudeStreamParser } from "../shared/stream-parsers/claude";
+import { createCodexStreamParser, extractThreadId } from "../shared/stream-parsers/codex";
+import { createGeminiStreamParser } from "../shared/stream-parsers/gemini";
+import { streamFromSpawn, type OutputDelta } from "../shared/stream-adapter";
 import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { sendIpcRequest } from "../shared/ipc";
@@ -25,6 +33,7 @@ import {
   type ThreadProgressSnapshot
 } from "../types";
 import { InstanceManager } from "./instance-manager";
+import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { ServiceRegistry } from "./service-registry";
 import {
@@ -138,6 +147,7 @@ export interface HubRouterOptions {
   clientFactory?: (threadId: string) => AgentClient;
   instanceManager?: InstanceManager;
   now?: () => Date;
+  outputBus?: OutputBus;
   statePath?: string;
   serviceRegistry?: ServiceRegistry;
 }
@@ -297,6 +307,7 @@ export class HubRouter {
   private readonly clientFactory: (threadId: string) => AgentClient;
   private readonly instanceManager: InstanceManager;
   private readonly now: () => Date;
+  private readonly outputBus: OutputBus;
   private readonly statePath: string;
   private readonly serviceRegistry: ServiceRegistry;
   private readonly monitorUpdateSubscriptionsByThread = new Map<string, Map<string, MonitorUpdateSubscription>>();
@@ -317,6 +328,7 @@ export class HubRouter {
       });
     this.instanceManager = options.instanceManager ?? new InstanceManager(this.registry);
     this.now = options.now ?? (() => new Date());
+    this.outputBus = options.outputBus ?? new OutputBus();
     this.statePath = options.statePath ?? config.MERIDIAN_STATE_PATH;
     this.serviceRegistry = options.serviceRegistry ?? new ServiceRegistry();
   }
@@ -470,16 +482,26 @@ export class HubRouter {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
     const client = this.clientFactory(instance.thread_id);
-    await client.connect(instance.socket_path);
+    let clientConnected = false;
     this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id });
     this.recordUserConversationEntry(threadId, message.payload.content, message.trace_id, "user_send");
     this.persistStateSafely();
 
     try {
+      if (instance.supportsStream) {
+        const streamContent = await this.tryHandleStreamRun(message, threadId);
+        if (streamContent !== null) {
+          const content = this.formatRunContent(instance.thread_id, streamContent);
+          const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id);
+          this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+          return result;
+        }
+      }
+
+      await client.connect(instance.socket_path);
+      clientConnected = true;
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
-      const runContent = instance.supportsStream
-        ? message.payload.content
-        : appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
+      const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
       const response = await client.sendMessage(runContent, message.payload.attachments);
       this.registry.setStatus(instance.thread_id, "running");
       const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
@@ -516,6 +538,199 @@ export class HubRouter {
       }
       client.disconnect();
     }
+  }
+
+  private async tryHandleStreamRun(message: HubMessage, threadId: string): Promise<string | null> {
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.runStreamAttempt(message, threadId);
+      } catch (error) {
+        const summary = error instanceof Error ? error.message : String(error);
+        this.log.warn(
+          {
+            trace_id: message.trace_id,
+            thread_id: threadId,
+            attempt,
+            max_attempts: maxAttempts,
+            err: summary
+          },
+          "Direct stream run attempt failed"
+        );
+      }
+    }
+
+    this.registry.setSupportsStream(threadId, false);
+    this.log.warn(
+      {
+        trace_id: message.trace_id,
+        thread_id: threadId,
+        attempts: maxAttempts
+      },
+      "Disabled direct streaming after repeated failures; falling back to agentapi bridge"
+    );
+    return null;
+  }
+
+  private async runStreamAttempt(message: HubMessage, threadId: string): Promise<string> {
+    const instance = this.resolveInstance(threadId);
+    const args = this.buildStreamArgs(instance);
+    const prompt = this.buildStreamPrompt(message.payload.content, message.payload.attachments);
+    const parser = this.createStreamParser(instance);
+    const { stdout, process } = this.instanceManager.spawnStreamAgent(threadId, instance.agent_type, args, prompt);
+    const stderrSummary = this.captureProcessStderr(process);
+    let finalDelta: OutputDelta | null = null;
+    let streamedText = "";
+    let explicitResultText: string | null = null;
+
+    this.registry.setStatus(threadId, "running");
+
+    try {
+      for await (const delta of streamFromSpawn(stdout, parser)) {
+        this.outputBus.pushDelta(message.trace_id, delta);
+
+        if (typeof delta.text === "string") {
+          if (delta.phase === "working") {
+            streamedText += delta.text;
+          } else if (delta.phase === "result") {
+            explicitResultText = delta.text;
+          }
+        }
+
+        if (delta.final) {
+          finalDelta = delta;
+        }
+      }
+
+      const { exitCode, signal } = await this.awaitChildExit(process);
+      if (finalDelta && this.isRecoverableStreamError(finalDelta)) {
+        throw new Error(finalDelta.text ?? "Stream transport error");
+      }
+      if (!finalDelta) {
+        throw new Error(this.describeStreamExit(exitCode, signal, stderrSummary()));
+      }
+      if (exitCode !== 0 && finalDelta.phase !== "error") {
+        throw new Error(this.describeStreamExit(exitCode, signal, stderrSummary()));
+      }
+
+      if (finalDelta.phase === "error") {
+        return finalDelta.text ?? explicitResultText ?? (streamedText || "Task failed.");
+      }
+
+      return explicitResultText ?? (streamedText || "Task completed.");
+    } finally {
+      if (process.exitCode === null && process.signalCode === null) {
+        process.kill();
+      }
+    }
+  }
+
+  private buildStreamArgs(instance: AgentInstance): string[] {
+    if (instance.agent_type === "claude") {
+      return buildClaudeStreamArgs(instance.model_id, instance.auto_approve);
+    }
+    if (instance.agent_type === "gemini") {
+      return buildGeminiStreamArgs(instance.model_id);
+    }
+    if (instance.agent_type === "codex") {
+      return instance.codexSessionId
+        ? buildCodexResumeArgs(instance.codexSessionId, instance.model_id, instance.auto_approve)
+        : buildCodexExecArgs(instance.model_id, instance.auto_approve);
+    }
+
+    throw new Error(`Direct streaming is not supported for agent_type=${instance.agent_type}`);
+  }
+
+  private createStreamParser(instance: AgentInstance): (event: unknown) => OutputDelta | null {
+    if (instance.agent_type === "claude") {
+      return createClaudeStreamParser();
+    }
+    if (instance.agent_type === "gemini") {
+      return createGeminiStreamParser();
+    }
+    if (instance.agent_type === "codex") {
+      const parser = createCodexStreamParser();
+      return (event: unknown) => {
+        const codexThreadId = extractThreadId(event);
+        if (codexThreadId) {
+          this.registry.setCodexSessionId(instance.thread_id, codexThreadId);
+        }
+        return parser(event);
+      };
+    }
+
+    return () => null;
+  }
+
+  private buildStreamPrompt(content: string, attachments: HubMessage["payload"]["attachments"] = []): string {
+    if (attachments.length === 0) {
+      return content;
+    }
+
+    const omitted = attachments
+      .map((item) => item.filename || item.path)
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    if (omitted.length === 0) {
+      return content;
+    }
+
+    return `${content}\n\n[attachments omitted by transport: ${omitted.join(", ")}]`;
+  }
+
+  private captureProcessStderr(process: ChildProcess): () => string {
+    const chunks: string[] = [];
+    process.stderr?.on("data", (chunk: Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      if (!text) {
+        return;
+      }
+      chunks.push(text);
+      if (chunks.length > 8) {
+        chunks.shift();
+      }
+    });
+
+    return () => chunks.join("").trim();
+  }
+
+  private async awaitChildExit(process: ChildProcess): Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }> {
+    if (process.exitCode !== null || process.signalCode !== null) {
+      return {
+        exitCode: process.exitCode,
+        signal: process.signalCode
+      };
+    }
+
+    return await new Promise((resolve) => {
+      process.once("close", (exitCode: number | null, signal: NodeJS.Signals | null) => {
+        resolve({ exitCode, signal });
+      });
+    });
+  }
+
+  private isRecoverableStreamError(delta: OutputDelta): boolean {
+    if (delta.phase !== "error") {
+      return false;
+    }
+
+    if (!delta.data || typeof delta.data !== "object") {
+      return false;
+    }
+
+    const record = delta.data as Record<string, unknown>;
+    return record.type === "stream_error" && record.recoverable === true;
+  }
+
+  private describeStreamExit(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string): string {
+    const status =
+      exitCode !== null
+        ? `exit_code=${exitCode}`
+        : signal
+          ? `signal=${signal}`
+          : "stream ended without a final delta";
+
+    return stderr ? `Direct stream process failed (${status}): ${stderr}` : `Direct stream process failed (${status})`;
   }
 
   private handleTerminalInput(message: HubMessage): HubResult {
