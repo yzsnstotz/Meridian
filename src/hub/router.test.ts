@@ -60,6 +60,123 @@ test("HubRouter routes run intent through AgentAPIClient", async () => {
   assert.equal(result.content, "done");
 });
 
+test("HubRouter run skips summary protocol injection when instance supports streaming", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_stream_01",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-gemini_stream_01.sock",
+    pid: 111,
+    tmux_pane: null,
+    status: "idle",
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+
+  let callCount = 0;
+  let sentContent = "";
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async (content: string) => {
+        sentContent = content;
+        return { ok: true };
+      },
+      getStatus: async () => ({ status: "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return [];
+        }
+        return [{ id: 1, role: "agent", content: "stream reply" }];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "11111111-1111-4111-8111-111111111111",
+      thread_id: "gemini_stream_01",
+      target: "gemini_stream_01",
+      payload: {
+        content: "ship it",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.content, "stream reply");
+  assert.equal(sentContent, "ship it");
+  assert.doesNotMatch(sentContent, /MERIDIAN_SUMMARY_/);
+});
+
+test("HubRouter run still injects summary protocol when streaming is disabled or unavailable", async () => {
+  for (const scenario of [
+    { label: "disabled", supportsStream: false as const },
+    { label: "unavailable", supportsStream: undefined as undefined }
+  ]) {
+    const registry = new InstanceRegistry();
+    registry.register({
+      thread_id: `gemini_${scenario.label}_01`,
+      agent_type: "gemini",
+      mode: "bridge",
+      socket_path: `/tmp/agentapi-gemini_${scenario.label}_01.sock`,
+      pid: 120,
+      tmux_pane: null,
+      status: "idle",
+      ...(scenario.supportsStream === undefined ? {} : { supportsStream: scenario.supportsStream }),
+      created_at: new Date().toISOString()
+    });
+
+    let callCount = 0;
+    let sentContent = "";
+    const traceId =
+      scenario.supportsStream === false
+        ? "22222222-2222-4222-8222-222222222222"
+        : "33333333-3333-4333-8333-333333333333";
+    const router = new HubRouter(registry, {
+      clientFactory: () => ({
+        connect: async () => undefined,
+        disconnect: () => undefined,
+        sendMessage: async (content: string) => {
+          sentContent = content;
+          return { ok: true };
+        },
+        getStatus: async () => ({ status: "idle" }),
+        getMessages: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return [];
+          }
+          return [{ id: 1, role: "agent", content: "bridge reply" }];
+        }
+      })
+    });
+
+    const result = await router.route(
+      baseMessage({
+        trace_id: traceId,
+        thread_id: `gemini_${scenario.label}_01`,
+        target: `gemini_${scenario.label}_01`,
+        payload: {
+          content: "ship it",
+          attachments: []
+        }
+      })
+    );
+
+    assert.equal(result.status, "success");
+    assert.equal(result.content, "bridge reply");
+    assert.match(sentContent, /^ship it\n\nMeridian protocol requirement \(must follow exactly\):/);
+    assert.match(sentContent, new RegExp(`trace_id=${traceId}`, "i"));
+    assert.match(sentContent, /\[\[MERIDIAN_SUMMARY_BEGIN id=<trace_id>\]\]/);
+    assert.match(sentContent, /\[\[MERIDIAN_SUMMARY_END id=<trace_id>\]\]/);
+  }
+});
+
 test("HubRouter detail reuses conversation history details produced for pane/chat", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -111,6 +228,17 @@ test("HubRouter detail reuses conversation history details produced for pane/cha
   assert.equal(detailResult.status, "success");
   assert.match(detailResult.content, /Your message:\nship it/);
   assert.match(detailResult.content, /Agent reply:\nfinal answer/);
+});
+
+test("HubRouter summarizeConversationContent falls back to normalized content without summary tags", () => {
+  const router = new HubRouter(new InstanceRegistry());
+  const summary = (
+    router as unknown as {
+      summarizeConversationContent: (rawContent: string, traceId: string | null) => string;
+    }
+  ).summarizeConversationContent("  Plain reply without summary tags.  ", "44444444-4444-4444-8444-444444444444");
+
+  assert.equal(summary, "Plain reply without summary tags.");
 });
 
 test("HubRouter run logs getMessages_threw and uses fallback when getMessages() throws", async () => {

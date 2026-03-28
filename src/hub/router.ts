@@ -477,7 +477,9 @@ export class HubRouter {
 
     try {
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
-      const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
+      const runContent = instance.supportsStream
+        ? message.payload.content
+        : appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
       const response = await client.sendMessage(runContent, message.payload.attachments);
       this.registry.setStatus(instance.thread_id, "running");
       const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
