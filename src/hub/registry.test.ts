@@ -56,3 +56,26 @@ test("setAutoApprove returns undefined for unknown thread", () => {
   const registry = new InstanceRegistry();
   assert.equal(registry.setAutoApprove("nonexistent", true), undefined);
 });
+
+test("registry updates stream metadata without mutating identity", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const streamEnabled = registry.setSupportsStream("codex_01", true);
+  assert.equal(streamEnabled?.thread_id, "codex_01");
+  assert.equal(streamEnabled?.agent_type, "codex");
+  assert.equal(streamEnabled?.supportsStream, true);
+
+  const sessionTracked = registry.setCodexSessionId("codex_01", "session-123");
+  assert.equal(sessionTracked?.codexSessionId, "session-123");
+  assert.equal(registry.get("codex_01")?.codexSessionId, "session-123");
+});

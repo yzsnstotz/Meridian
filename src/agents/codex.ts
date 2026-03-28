@@ -32,3 +32,25 @@ export function buildCodexSpawnArgs(
   }
   return args;
 }
+
+export function buildCodexExecArgs(modelId?: string, autoApprove?: boolean): string[] {
+  const args = [codexAgentConfig.command, "exec", "--json"];
+  if (modelId) {
+    args.push("--model", modelId);
+  }
+  if (autoApprove === true) {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  }
+  return args;
+}
+
+export function buildCodexResumeArgs(sessionId: string, modelId?: string, autoApprove?: boolean): string[] {
+  const args = [codexAgentConfig.command, "exec", "resume", sessionId, "--json"];
+  if (modelId) {
+    args.push("--model", modelId);
+  }
+  if (autoApprove === true) {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  }
+  return args;
+}

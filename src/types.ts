@@ -200,6 +200,8 @@ export const AgentInstanceSchema = z.object({
   thread_id: z.string().min(1),
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
+  supportsStream: z.boolean().optional(),
+  codexSessionId: z.string().min(1).optional(),
   mode: BridgeModeSchema,
   socket_path: z.string().min(1),
   working_dir: z.string().min(1).optional(),

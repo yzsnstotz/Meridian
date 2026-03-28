@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
+import { buildClaudeStreamArgs } from "../agents/claude";
 import { InstanceManager } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
 
@@ -12,6 +14,9 @@ class FakeChildProcess extends EventEmitter {
   killed = false;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  stdin = new PassThrough();
+  stdout = new PassThrough();
+  stderr = new PassThrough();
 
   constructor(pid: number) {
     super();
@@ -66,6 +71,7 @@ test("spawn registers instance and uses bridge args", async () => {
   assert.equal(instance?.socket_path, socketPath);
   assert.equal(instance?.pid, 1101);
   assert.equal(instance?.restart_safe, true);
+  assert.equal(instance?.supportsStream, true);
   assert.equal(spawnCalls[0]?.detached, true);
   assert.deepEqual(spawnCalls[0]?.args, ["server", "--type=codex", `--socket=${socketPath}`, "--", "codex"]);
 });
@@ -278,6 +284,56 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
     "--allowedTools",
     "Bash Edit Replace"
   ]);
+});
+
+test("spawnStreamAgent launches a provider CLI directly and pipes the prompt over stdin", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "claude_01",
+    agent_type: "claude",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-claude_01.sock",
+    working_dir: "/tmp",
+    pid: 999,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const spawnCalls: Array<{ command: string; args: string[]; options?: Record<string, unknown> }> = [];
+  const child = new FakeChildProcess(3301);
+  const manager = new InstanceManager(registry, {
+    spawnFn: ((command: string, args: string[], options?: Record<string, unknown>) => {
+      spawnCalls.push({ command, args, options });
+      return child as never;
+    }) as never
+  });
+
+  const result = manager.spawnStreamAgent(
+    "claude_01",
+    "claude",
+    buildClaudeStreamArgs("claude-3", true),
+    "Summarize this"
+  );
+
+  assert.equal(result.process, child);
+  assert.equal(result.stdout, child.stdout);
+  assert.equal(spawnCalls[0]?.command, "claude");
+  assert.deepEqual(spawnCalls[0]?.args, [
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--allowedTools",
+    "Bash Edit Replace",
+    "--model",
+    "claude-3",
+    "--dangerously-skip-permissions"
+  ]);
+  assert.equal(spawnCalls[0]?.options?.cwd, "/tmp");
+  assert.deepEqual(spawnCalls[0]?.options?.stdio, ["pipe", "pipe", "pipe"]);
+  assert.equal(child.stdin.read()?.toString("utf8"), "Summarize this");
 });
 
 test("pane capture uses visible pane with -e to preserve ANSI/controls", async () => {

@@ -52,20 +52,22 @@ export class InstanceRegistry {
   }
 
   setStatus(threadId: string, status: AgentInstanceStatus): AgentInstance | undefined {
-    const existing = this.instances.get(threadId);
-    if (!existing) {
-      return undefined;
-    }
-
-    const updated: AgentInstance = {
-      ...existing,
-      status
-    };
-    this.instances.set(threadId, updated);
-    return { ...updated };
+    return this.update(threadId, { status });
   }
 
   setAutoApprove(threadId: string, value: boolean): AgentInstance | undefined {
+    return this.update(threadId, { auto_approve: value });
+  }
+
+  setSupportsStream(threadId: string, value: boolean): AgentInstance | undefined {
+    return this.update(threadId, { supportsStream: value });
+  }
+
+  setCodexSessionId(threadId: string, value: string | undefined): AgentInstance | undefined {
+    return this.update(threadId, { codexSessionId: value });
+  }
+
+  private update(threadId: string, patch: Partial<AgentInstance>): AgentInstance | undefined {
     const existing = this.instances.get(threadId);
     if (!existing) {
       return undefined;
@@ -73,7 +75,9 @@ export class InstanceRegistry {
 
     const updated: AgentInstance = {
       ...existing,
-      auto_approve: value
+      ...patch,
+      thread_id: existing.thread_id,
+      agent_type: existing.agent_type
     };
     this.instances.set(threadId, updated);
     return { ...updated };

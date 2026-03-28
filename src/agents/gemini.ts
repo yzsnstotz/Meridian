@@ -28,3 +28,11 @@ export function buildGeminiSpawnArgs(
   }
   return args;
 }
+
+export function buildGeminiStreamArgs(modelId?: string): string[] {
+  const args = [geminiAgentConfig.command, "--output-format", "stream-json"];
+  if (modelId) {
+    args.push("--model", modelId);
+  }
+  return args;
+}

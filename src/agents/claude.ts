@@ -44,3 +44,8 @@ export function buildClaudeSpawnArgs(
   args.push("--", ...buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId, autoApprove));
   return args;
 }
+
+export function buildClaudeStreamArgs(modelId?: string, autoApprove?: boolean): string[] {
+  const [command, ...cliArgs] = buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId, autoApprove);
+  return [command, "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", ...cliArgs];
+}

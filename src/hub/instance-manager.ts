@@ -60,6 +60,11 @@ export interface RehydrationResult {
   pruned_thread_ids: string[];
 }
 
+export interface StreamSpawnResult {
+  stdout: NodeJS.ReadableStream;
+  process: ChildProcess;
+}
+
 export interface InstanceManagerOptions {
   agentapiBinPath?: string;
   logDir?: string;
@@ -169,6 +174,47 @@ export class InstanceManager {
     autoApprove?: boolean
   ): Promise<string> {
     return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId, autoApprove);
+  }
+
+  spawnStreamAgent(threadId: string, agentType: AgentType, args: string[], prompt: string): StreamSpawnResult {
+    if (args.length === 0 || !args[0]) {
+      throw new Error(`Cannot spawn stream agent for thread_id=${threadId}: missing command`);
+    }
+
+    const instance = this.registry.get(threadId);
+    const spawnWorkdir = this.resolveWorkdir(instance?.working_dir ?? this.agentWorkdir);
+    const childEnv = this.buildChildEnv();
+    const [command, ...commandArgs] = args;
+
+    this.log.info(
+      {
+        operation: "stream_spawn_launch",
+        thread_id: threadId,
+        agent_type: agentType,
+        working_directory: spawnWorkdir,
+        command,
+        args: commandArgs,
+        child_path: this.summarizePath(childEnv.PATH)
+      },
+      "Launching direct stream agent process"
+    );
+
+    const child = this.spawnFn(command, commandArgs, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv,
+      cwd: spawnWorkdir
+    });
+
+    if (!child.stdin || !child.stdout) {
+      child.kill();
+      throw new Error(`Failed to capture stdio for stream agent thread_id=${threadId}`);
+    }
+
+    child.stdin.end(prompt);
+    return {
+      stdout: child.stdout,
+      process: child
+    };
   }
 
   async kill(threadId: string): Promise<void> {
@@ -647,6 +693,7 @@ export class InstanceManager {
         thread_id: threadId,
         agent_type: type,
         model_id: modelId,
+        supportsStream: this.supportsStreaming(type),
         mode,
         socket_path: socketPath,
         working_dir: spawnWorkdir,
@@ -734,6 +781,7 @@ export class InstanceManager {
       thread_id: threadId,
       agent_type: type,
       model_id: modelId,
+      supportsStream: this.supportsStreaming(type),
       mode,
       socket_path: socketPath,
       working_dir: spawnWorkdir,
@@ -1191,6 +1239,10 @@ export class InstanceManager {
       }
     }
     return `${type}_${String(maxIndex + 1).padStart(2, "0")}`;
+  }
+
+  private supportsStreaming(type: AgentType): boolean {
+    return type === "claude" || type === "codex" || type === "gemini";
   }
 
   private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string, autoApprove?: boolean): string[] {
