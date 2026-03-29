@@ -1113,6 +1113,11 @@
       var PROGRESS_POLL_INTERVAL_MS = 3000;
       var activeProgressMessageKey = "";
       var activeProgressTraceId = "";
+      var a2aTaskStates = new Map();
+      var a2aTaskOutputElements = new Map();
+      var pendingA2ARenderTaskIds = new Set();
+      var a2aRenderFrame = 0;
+      var completedA2AResults = new Map();
       var serverHistoryRestored = false;
       var modelCatalogState = null;
       var CUSTOM_MODEL_OPTION_VALUE = "__custom__";
@@ -1377,6 +1382,187 @@
       function buildProgressMessageKey(traceId) {
         var normalizedTraceId = typeof traceId === "string" ? traceId.trim().toLowerCase() : "";
         return "progress:" + (normalizedTraceId || threadId || "active");
+      }
+
+      function buildA2AWorkingMessageKey(taskId) {
+        return "a2a:working:" + (taskId || threadId || "active");
+      }
+
+      function normalizeTaskId(taskId) {
+        return typeof taskId === "string" ? taskId.trim().toLowerCase() : "";
+      }
+
+      function getOrCreateA2ATaskState(taskId) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        var state = a2aTaskStates.get(normalizedTaskId);
+        if (!state) {
+          state = {
+            taskId: normalizedTaskId,
+            taskState: "working",
+            workingText: "",
+            dataDetails: []
+          };
+          a2aTaskStates.set(normalizedTaskId, state);
+        }
+        return state;
+      }
+
+      function hasActiveA2AStream() {
+        var iterator = a2aTaskStates.values();
+        for (var next = iterator.next(); !next.done; next = iterator.next()) {
+          if (next.value && next.value.taskState === "working") {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function serializeA2AData(value) {
+        if (value === undefined) return "";
+        if (typeof value === "string") return value;
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch (e) {
+          return String(value);
+        }
+      }
+
+      function collectA2APayload(parts) {
+        var payload = {
+          text: "",
+          dataText: ""
+        };
+        if (!Array.isArray(parts)) return payload;
+        var dataParts = [];
+        for (var i = 0; i < parts.length; i++) {
+          var part = parts[i];
+          if (!part || typeof part !== "object") continue;
+          if (part.type === "text" && typeof part.text === "string") {
+            payload.text += part.text;
+          } else if (part.type === "data") {
+            var serialized = serializeA2AData(part.data);
+            if (serialized) dataParts.push(serialized);
+          }
+        }
+        payload.dataText = dataParts.join("\n\n");
+        return payload;
+      }
+
+      function rememberA2AOutputElement(taskId, messageKey) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        if (!normalizedTaskId || !messageKey) return;
+        var bubble = bubbleElementsByKey[messageKey];
+        if (bubble) {
+          a2aTaskOutputElements.set(normalizedTaskId, bubble);
+        }
+      }
+
+      // Batch high-frequency working deltas into one render per frame.
+      function scheduleA2ARender(taskId) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        if (!normalizedTaskId) return;
+        pendingA2ARenderTaskIds.add(normalizedTaskId);
+        if (a2aRenderFrame) return;
+        a2aRenderFrame = requestAnimationFrame(function() {
+          a2aRenderFrame = 0;
+          var taskIds = Array.from(pendingA2ARenderTaskIds.values());
+          pendingA2ARenderTaskIds.clear();
+          for (var i = 0; i < taskIds.length; i++) {
+            var currentTaskId = taskIds[i];
+            var state = a2aTaskStates.get(currentTaskId);
+            if (!state || state.taskState !== "working") continue;
+            var content = stripAnsi(state.workingText || "").trim();
+            var details = state.dataDetails.join("\n\n").trim();
+            if (!content) {
+              content = details ? "Update received." : "";
+            }
+            if (!content) continue;
+            var messageKey = buildA2AWorkingMessageKey(currentTaskId);
+            addChatBubble(content, "agent", details, {
+              messageKey: messageKey,
+              dedupe: false,
+              persist: false
+            });
+            rememberA2AOutputElement(currentTaskId, messageKey);
+          }
+          if (hasActiveA2AStream()) {
+            showChatTyping(true, "Agent is responding...");
+          }
+        });
+      }
+
+      function finalizeA2ATask(taskId, taskState, parts) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        if (!normalizedTaskId) return;
+
+        var state = a2aTaskStates.get(normalizedTaskId) || getOrCreateA2ATaskState(normalizedTaskId);
+        state.taskState = taskState;
+        var payload = collectA2APayload(parts);
+        var finalText = stripMeridianNoise(stripAnsi(payload.text || "")).trim();
+        var workingText = stripMeridianNoise(stripAnsi(state.workingText || "")).trim();
+        var dataDetails = payload.dataText.trim();
+        var finalContent = finalText || dataDetails || workingText;
+        if (!finalContent) {
+          finalContent = taskState === "failed" ? "Error: Agent run failed." : "Completed.";
+        }
+        if (taskState === "failed" && finalContent.indexOf("Error:") !== 0) {
+          finalContent = "Error: " + finalContent;
+        }
+
+        var detailsBlocks = [];
+        if (taskState === "failed" && workingText) {
+          detailsBlocks.push("Working output:\n" + workingText);
+        }
+        if (dataDetails && dataDetails !== finalContent) {
+          detailsBlocks.push("Structured payload:\n" + dataDetails);
+        }
+        var details = detailsBlocks.join("\n\n").trim();
+        var workingMessageKey = buildA2AWorkingMessageKey(normalizedTaskId);
+        clearBubbleByKey(workingMessageKey);
+        a2aTaskOutputElements.delete(normalizedTaskId);
+        pendingA2ARenderTaskIds.delete(normalizedTaskId);
+        addChatBubble(finalContent, "agent", details, {
+          messageKey: buildTraceMessageKey("agent", normalizedTaskId),
+          dedupe: false
+        });
+        rememberA2AOutputElement(normalizedTaskId, buildTraceMessageKey("agent", normalizedTaskId));
+        completedA2AResults.set(normalizedTaskId, {
+          taskState: taskState,
+          content: finalContent
+        });
+        if (activeProgressTraceId === normalizedTaskId || activeProgressMessageKey === workingMessageKey) {
+          clearActiveProgressBubble();
+        }
+        if (!hasActiveA2AStream()) {
+          showChatTyping(false);
+        }
+      }
+
+      function handleA2AMessage(msg) {
+        if (!msg || typeof msg !== "object") return;
+        var taskId = normalizeTaskId(msg.taskId);
+        if (!taskId) return;
+        if (!lastSubmittedTraceId) {
+          lastSubmittedTraceId = taskId;
+        }
+
+        if (msg.taskState === "working") {
+          stopProgressPolling();
+          clearActiveProgressBubble();
+          var workingState = getOrCreateA2ATaskState(taskId);
+          workingState.taskState = "working";
+          var workingPayload = collectA2APayload(msg.parts);
+          if (workingPayload.text) {
+            workingState.workingText += workingPayload.text;
+          }
+          if (workingPayload.dataText) {
+            workingState.dataDetails.push(workingPayload.dataText);
+          }
+          scheduleA2ARender(taskId);
+          return;
+        }
+
+        finalizeA2ATask(taskId, msg.taskState === "failed" ? "failed" : "completed", msg.parts);
       }
 
       function makeBubbleContentFingerprint(content, type) {
@@ -2848,13 +3034,20 @@
       function handleWsMessage(ev) {
         try {
           var msg = JSON.parse(ev.data);
+          if (msg.type === "a2a_message") {
+            handleA2AMessage(msg);
+            return;
+          }
           if (msg.type === "pane_output" && msg.chunk) {
             if (term && typeof term.write === "function") term.write(msg.chunk);
-            if (activeProgressMessageKey) {
+            var suppressPaneChat = activeProgressMessageKey || hasActiveA2AStream();
+            if (suppressPaneChat) {
               chatBuffer = "";
               clearTimeout(chatTimer);
               clearTimeout(chatTypingTimer);
-              showChatTyping(false);
+              if (!hasActiveA2AStream()) {
+                showChatTyping(false);
+              }
               return;
             }
             chatBuffer += msg.chunk;
@@ -2867,7 +3060,7 @@
             var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
             chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
             chatTypingTimer = setTimeout(function() {
-              if (!runPending && !activeProgressMessageKey) {
+              if (!runPending && !activeProgressMessageKey && !hasActiveA2AStream()) {
                 showChatTyping(false);
               }
             }, 3000);
@@ -3017,12 +3210,19 @@
             if (data && typeof data.trace_id === "string") {
               lastSubmittedTraceId = data.trace_id.toLowerCase();
             }
+            var a2aResult = lastSubmittedTraceId ? completedA2AResults.get(lastSubmittedTraceId) : null;
             clearActiveProgressBubble();
             if (!resultContent) return;
             // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
             lastFlushedContent = stripAnsi(resultContent);
             lastRunResultAtMs = Date.now();
-            renderAgentContent(resultContent);
+            if (!a2aResult) {
+              renderAgentContent(resultContent);
+            } else {
+              completedA2AResults.delete(lastSubmittedTraceId);
+              lastSubmittedInput = "";
+              lastSubmittedTraceId = "";
+            }
             refreshSessionList();
             // The structured run result is authoritative for completed turns.
             chatBuffer = "";
@@ -3449,6 +3649,14 @@
         stopProgressPolling();
         activeProgressMessageKey = "";
         activeProgressTraceId = "";
+        a2aTaskStates.clear();
+        a2aTaskOutputElements.clear();
+        pendingA2ARenderTaskIds.clear();
+        completedA2AResults.clear();
+        if (a2aRenderFrame) {
+          cancelAnimationFrame(a2aRenderFrame);
+          a2aRenderFrame = 0;
+        }
       });
 
       // Overflow menu mirrors for mobile: Focus, Push, Filters
