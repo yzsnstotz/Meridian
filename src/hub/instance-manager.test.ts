@@ -74,6 +74,8 @@ test("spawn registers instance and uses bridge args", async () => {
   assert.equal(instance?.supportsStream, true);
   assert.equal(spawnCalls[0]?.detached, true);
   assert.deepEqual(spawnCalls[0]?.args, ["server", "--type=codex", `--socket=${socketPath}`, "--", "codex"]);
+
+  await manager.kill(threadId);
 });
 
 test("spawn falls back to --port when server does not support --socket", async () => {
@@ -100,6 +102,8 @@ test("spawn falls back to --port when server does not support --socket", async (
   assert.equal(threadId, "codex_01");
   assert.match(portArg ?? "", /^--port=\d+$/);
   assert.match(instance?.socket_path ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
+
+  await manager.kill(threadId);
 });
 
 test("spawn forwards selected model to provider CLI", async () => {
@@ -133,6 +137,8 @@ test("spawn forwards selected model to provider CLI", async () => {
     "--model",
     "gpt-5.4"
   ]);
+
+  await manager.kill(threadId);
 });
 
 test("spawn stores auto_approve in the registry when requested", async () => {
@@ -171,6 +177,8 @@ test("spawn stores auto_approve in the registry when requested", async () => {
     "--include-partial-messages",
     "--dangerously-skip-permissions"
   ]);
+
+  await manager.kill(threadId);
 });
 
 test("spawn claude bridge includes --allowedTools args", async () => {
@@ -207,6 +215,8 @@ test("spawn claude bridge includes --allowedTools args", async () => {
     "--verbose",
     "--include-partial-messages"
   ]);
+
+  await manager.kill(threadId);
 });
 
 test("spawn codex bridge includes auto-approve flag when requested", async () => {
@@ -239,6 +249,8 @@ test("spawn codex bridge includes auto-approve flag when requested", async () =>
     "codex",
     "--approval-policy=auto-approve"
   ]);
+
+  await manager.kill(threadId);
 });
 
 test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge", async () => {
@@ -296,6 +308,8 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
     "--verbose",
     "--include-partial-messages"
   ]);
+
+  await manager.kill(threadId);
 });
 
 test("spawnStreamAgent launches a provider CLI directly and pipes the prompt over stdin", () => {
@@ -387,6 +401,8 @@ test("pane capture uses visible pane with -e to preserve ANSI/controls", async (
   assert.ok(lastCapture.includes("-p"), "capture-pane must use -p for stdout");
   assert.ok(lastCapture.includes("-t"), "capture-pane must target tmux session with -t");
   assert.ok(!/-S\s+-?\d+/.test(lastCapture), "visible capture must not use -S (scrollback); use visible pane only");
+
+  await manager.kill(threadId);
 });
 
 test("spawn pane_bridge waits for Gemini screen prompt readiness before returning", async () => {
@@ -436,6 +452,8 @@ test("spawn pane_bridge waits for Gemini screen prompt readiness before returnin
   assert.equal(threadId, "gemini_01");
   assert.ok(messagePollCount >= 3, "spawn should wait for a stable Gemini prompt");
   assert.ok(!execCalls.some((command) => command.includes("capture-pane")), "Gemini readiness should use agent messages");
+
+  await manager.kill(threadId);
 });
 
 test("spawn pane_bridge waits for Gemini footer chrome to settle before returning", async () => {
@@ -482,6 +500,8 @@ test("spawn pane_bridge waits for Gemini footer chrome to settle before returnin
 
   assert.equal(threadId, "gemini_01");
   assert.ok(messagePollCount >= 4, "spawn should wait for stable Gemini footer chrome");
+
+  await manager.kill(threadId);
 });
 
 test("pane_bridge uses attach --url when running in port mode", async () => {
@@ -522,6 +542,8 @@ test("pane_bridge uses attach --url when running in port mode", async () => {
   assert.match(execCalls[1] ?? "", /tmux new-session -d -s .*agent_codex_01/);
   assert.match(execCalls[1] ?? "", /'attach'/);
   assert.match(execCalls[1] ?? "", /'--url=http:\/\/127\.0\.0\.1:\d+'/);
+
+  await manager.kill(threadId);
 });
 
 test("sendTerminalInput forwards approval action to tmux pane", async () => {
@@ -556,6 +578,8 @@ test("sendTerminalInput forwards approval action to tmux pane", async () => {
   assert.equal(message, `Sent approval action 'allow' to ${threadId}.`);
   assert.equal(execCalls.length, 1);
   assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'2' 'Enter'/);
+
+  await manager.kill(threadId);
 });
 
 test("sendTerminalInput falls back to Gemini allow-for-session key when prompt inspection fails", () => {
@@ -701,6 +725,8 @@ test("sendTerminalInput forwards raw terminal text to tmux pane", async () => {
   assert.equal(message, `Sent terminal input to ${threadId}.`);
   assert.equal(execCalls.length, 1);
   assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'\/model' 'Enter'/);
+
+  await manager.kill(threadId);
 });
 
 test("sendTerminalInput rejects bridge threads", async () => {
@@ -727,6 +753,8 @@ test("sendTerminalInput rejects bridge threads", async () => {
     () => manager.sendTerminalInput(threadId, "run"),
     /terminal_input requires a pane_bridge thread with tmux/
   );
+
+  await manager.kill(threadId);
 });
 
 test("spawn retries after transient readiness failure", async () => {

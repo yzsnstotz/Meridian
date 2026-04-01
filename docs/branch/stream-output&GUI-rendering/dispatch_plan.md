@@ -51,7 +51,7 @@
 | ✅ | 5 | R-08 | Stream Consumption in Router (handleRun) | CODEX-XHIGH | N-07, R-03, R-04 | Main PRD, Investigation Report | Direct stdout parsing; bypasses agentapi; fallback to bridge polling |
 | ✅ | 6 | R-09 | WebSocket A2A Push Format | CODEX-HIGH | N-07 | Main PRD, Investigation Report | Hub socket subscriptions now forward `a2a_message` frames from OutputBus alongside `pane_output`; full typecheck + full test suite pass |
 | ✅ | 6 | R-10 | GUI Consumption Layer | CODEX | R-09 | Main PRD, Investigation Report | A2A-driven append rendering; rAF throttling |
-| ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | All above | TaskSpec, Main PRD, Investigation Report | One pass only after all implementation workers in Batches 0-6 are `✅`. Findings → append corrective workers. |
+| ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | All above | TaskSpec, Main PRD, Investigation Report | Delta Check Report written; full `npx tsc --noEmit -p tsconfig.json` and `node --test --import tsx 'src/**/*.test.ts'` rerun pass cleanly |
 | ⬜ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec, Main PRD, Investigation Report | Terminal gate; human merges |
 
 Status legend: `⬜` Not started · `🔄` In progress · `✅` Complete · `⛔` Blocked · `⏳` Awaiting PM decision
