@@ -26,6 +26,7 @@ const TRANSIENT_SUBSTRING_HINTS = [
   "assessing the git situation",
   "analyzing push parameters",
   "(esc to cancel",
+  "esc to interrupt",
   "? for shortcuts",
   "hide individual footer elements",
   "show or hide the bottom status bar",
@@ -43,6 +44,7 @@ const TRANSIENT_LINE_PATTERNS = [
   /^\[thread=[^\]]*\]$/,
   /^thread=[^\s]+\s+trace=[0-9a-f-]+/,
   /^trace=[0-9a-f-]+$/,
+  /^[•·]\s*working\s*\(/,
   /^(?:gemini|claude|codex|cursor)\.md$/,
   /^(?:tip|shortcut):\s/,
 ];

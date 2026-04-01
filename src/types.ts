@@ -25,8 +25,9 @@ export const BUILT_IN_INTENTS = [
   "history",
   "set_auto_approve",
   "register_service",
-  "unregister_service"
- ] as const;
+  "unregister_service",
+  "reply"
+] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
 export const IntentSchema = z.union([BuiltInIntentSchema, z.string().min(1)]);

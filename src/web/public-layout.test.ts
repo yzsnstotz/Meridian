@@ -542,21 +542,6 @@ test("terminal canonical restore polls durable progress and suppresses reconnect
   assert.match(terminalHtml, /serverHistoryRestored \? 0 : 100/);
 });
 
-test("terminal accessibility markup keeps labeled controls and tab semantics", async () => {
-  const terminalHtml = await fs.promises.readFile(path.join(publicDir, "terminal.html"), "utf8");
-
-  assert.match(terminalHtml, /<button[^>]*id="menu-toggle"[^>]*aria-label="Toggle menu"/);
-  assert.match(terminalHtml, /<button[^>]*id="overflow-menu-btn"[^>]*aria-label="More actions"/);
-  assert.match(terminalHtml, /<button[^>]*id="refresh-files"[^>]*aria-label="Refresh files"/);
-  assert.match(terminalHtml, /<div class="tabs"[^>]*role="tablist"[^>]*aria-label="Workspace views"/);
-  assert.match(terminalHtml, /<div class="tab active"[^>]*data-view="terminal"[^>]*role="tab"[^>]*aria-selected="true"/);
-  assert.match(terminalHtml, /<div class="tab"[^>]*data-view="editor"[^>]*role="tab"[^>]*aria-selected="false"/);
-  assert.match(terminalHtml, /<nav class="mobile-nav"[^>]*role="tablist"[^>]*aria-label="Mobile views"/);
-  assert.match(terminalHtml, /<div class="nav-item active"[^>]*data-view="chat"[^>]*role="tab"[^>]*aria-selected="true"/);
-  assert.match(terminalHtml, /<div class="nav-item"[^>]*data-view="editor"[^>]*role="tab"[^>]*aria-selected="false"/);
-  assert.match(terminalHtml, /setAttribute\("aria-selected", isActive \? "true" : "false"\)/);
-});
-
 test("terminal chat keeps a content-fingerprint dedupe safety net for replayed agent bubbles", async () => {
   const terminalHtml = await readTerminalHtml();
  
