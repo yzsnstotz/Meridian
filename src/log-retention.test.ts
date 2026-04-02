@@ -13,14 +13,15 @@ test("collectLogInventory returns recursive log files sorted by size", async () 
     await fs.promises.mkdir(path.join(logDir, "GUI"), { recursive: true });
     await fs.promises.writeFile(path.join(logDir, "hub.log"), "1234567890");
     await fs.promises.writeFile(path.join(logDir, "GUI", "gui-pane-codex_01.log"), "1234");
+    await fs.promises.writeFile(path.join(logDir, "GUI", "a2a-gemini_01.log"), "12");
 
     const inventory = await collectLogInventory(logDir, new Date("2026-03-23T00:00:00.000Z"));
 
     assert.equal(inventory.root, logDir);
-    assert.equal(inventory.total_bytes, 14);
+    assert.equal(inventory.total_bytes, 16);
     assert.deepEqual(
       inventory.files.map((entry) => entry.path),
-      ["hub.log", "GUI/gui-pane-codex_01.log"]
+      ["hub.log", "GUI/gui-pane-codex_01.log", "GUI/a2a-gemini_01.log"]
     );
   } finally {
     await fs.promises.rm(logDir, { recursive: true, force: true });

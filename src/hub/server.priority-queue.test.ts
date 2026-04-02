@@ -326,3 +326,104 @@ test("list_models bypasses the global queue while a run is still in flight", asy
   const runResult = await runPromise;
   assert.equal(runResult?.content, "run");
 });
+
+test("monitor_manual_update bypasses the global queue while a run is still in flight", async () => {
+  let releaseRun: () => void = () => undefined;
+  const runBlocked = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+
+  const fakeRouter = {
+    async initialize(): Promise<void> {
+      return;
+    },
+    async route(message: HubMessage): Promise<HubResult> {
+      if (message.intent === "run") {
+        await runBlocked;
+      }
+      return {
+        trace_id: message.trace_id,
+        thread_id: message.thread_id,
+        source: "codex",
+        status: "success",
+        content: message.intent,
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    },
+    setInstanceStatus(): void {
+      return;
+    },
+    getAttachedSessionsForThread(): string[] {
+      return [];
+    },
+    getMonitorUpdateSubscribersForThread(): string[] {
+      return [];
+    },
+    resolveSourceForThread(): "codex" {
+      return "codex";
+    },
+    collectDueMonitorUpdateDispatches(): [] {
+      return [];
+    },
+    isThreadRunning(): boolean {
+      return false;
+    },
+    forceMonitorUpdateDispatchNow(): void {
+      return;
+    },
+    resolveInstanceForThread(): null {
+      return null;
+    },
+    registerServiceEndpoint(): void {
+      return;
+    }
+  };
+
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: new FakeResultSender() as unknown as ResultSender,
+    staticServiceEndpoints: []
+  });
+  const accessor = server as unknown as EnqueueMessage;
+
+  const runPromise = accessor.enqueueMessage(
+    JSON.stringify({
+      trace_id: randomUUID(),
+      thread_id: "codex_01",
+      actor_id: "tg:123",
+      intent: "run",
+      target: "codex_01",
+      payload: { content: "hello", attachments: [] },
+      mode: "bridge",
+      reply_channel: { channel: "telegram", chat_id: "telegram:999" },
+      suppress_reply: true
+    })
+  );
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  const progressPromise = accessor.enqueueMessage(
+    JSON.stringify({
+      trace_id: randomUUID(),
+      thread_id: "codex_01",
+      actor_id: "tg:123",
+      intent: "monitor_manual_update",
+      target: "codex_01",
+      payload: { content: "", attachments: [] },
+      mode: "bridge",
+      reply_channel: { channel: "telegram", chat_id: "telegram:999" },
+      suppress_reply: true
+    })
+  );
+
+  const progressResult = await Promise.race([
+    progressPromise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("monitor_manual_update was blocked by run")), 200))
+  ]);
+  assert.equal(progressResult?.content, "monitor_manual_update");
+
+  releaseRun();
+  const runResult = await runPromise;
+  assert.equal(runResult?.content, "run");
+});

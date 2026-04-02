@@ -2,20 +2,33 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { config } from "../config";
-import type { HubResult, ReplyChannel, ServiceEndpoint } from "../types";
+import { classifyAgentOutput } from "../shared/agent-output";
+import type { HubResult, ReplyChannel, ServiceEndpoint, ThreadProgressSnapshot } from "../types";
 import { PaneBroadcaster } from "./pane-broadcaster";
+import { OutputBus } from "./output-bus";
 import type { ResultSender } from "./result-sender";
 import type { HubRouter } from "./router";
 import { HubServer, resolveStaticServiceEndpoints } from "./server";
 
 class FakeRouter {
   readonly completionCalls: Array<{ threadId: string; traceId: string | null }> = [];
-  readonly progressCalls: Array<{ threadId: string; traceId: string | null }> = [];
+  readonly progressSnapshotCalls: Array<{ threadId: string; traceId: string | null }> = [];
+  readonly recordCalls: Array<{ threadId: string; rawContent: string; traceId: string | null; eventKindHint?: "progress" | "final_reply" }> = [];
   readonly statusCalls: Array<{ threadId: string; status: string }> = [];
   readonly forceDispatchCalls: string[] = [];
   attachedSessionsByThread = new Map<string, string[]>();
   monitorSubscribersByThread = new Map<string, string[]>();
-  dueDispatches: Array<{ threadId: string; chatId: string }> = [];
+  pushSubscriptionsByThread = new Map<
+    string,
+    Array<{ chatId: string; botId?: string; replyChannel: ReplyChannel }>
+  >();
+  activeRunTraceByThread = new Map<string, string>();
+  activeRuns = new Set<string>();
+  latestConversationEntryByKey = new Map<
+    string,
+    { raw_content?: string; content?: string; details_text?: string }
+  >();
+  dueDispatches: Array<{ threadId: string; chatId: string; botId?: string; replyChannel: ReplyChannel }> = [];
 
   async initialize(): Promise<void> {
     return;
@@ -60,17 +73,34 @@ class FakeRouter {
     return [...this.dueDispatches];
   }
 
-  async buildProgressResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
-    this.progressCalls.push({ threadId, traceId });
+  async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
+    this.progressSnapshotCalls.push({ threadId, traceId });
     return {
-      trace_id: traceId ?? "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+      trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
       thread_id: threadId,
       source: "codex",
       status: "partial",
+      event_kind: "progress",
+      phase: "running",
+      waiting_for_input: false,
       content: `progress`,
-      attachments: [],
-      timestamp: new Date().toISOString()
+      display_text: "progress",
+      updated_at: new Date().toISOString()
     };
+  }
+
+  recordAgentPushConversation(
+    threadId: string,
+    rawContent: string,
+    traceId: string | null,
+    eventKindHint?: "progress" | "final_reply"
+  ): void {
+    this.recordCalls.push({ threadId, rawContent, traceId, eventKindHint });
+    this.latestConversationEntryByKey.set(this.makeConversationKey(threadId, traceId), {
+      raw_content: rawContent,
+      content: rawContent,
+      details_text: rawContent
+    });
   }
 
   isThreadRunning(threadId: string): boolean {
@@ -90,6 +120,33 @@ class FakeRouter {
     return;
   }
 
+  getPushSubscriptionsForThread(
+    threadId: string
+  ): Array<{ chatId: string; botId?: string; replyChannel: ReplyChannel }> {
+    return this.pushSubscriptionsByThread.get(threadId) ?? [];
+  }
+
+  isRunActiveForThread(threadId: string): boolean {
+    return this.activeRuns.has(threadId);
+  }
+
+  isWithinRunCompletionCooldown(): boolean {
+    return false;
+  }
+
+  getActiveRunTraceId(threadId: string): string | null {
+    return this.activeRunTraceByThread.get(threadId) ?? null;
+  }
+
+  getLatestConversationEntry(
+    threadId: string,
+    traceId?: string | null,
+    type: "user" | "agent" | null = null
+  ): { raw_content?: string; content?: string; details_text?: string } | null {
+    void type;
+    return this.latestConversationEntryByKey.get(this.makeConversationKey(threadId, traceId ?? null)) ?? null;
+  }
+
   resolveReplyChannelForSession(session: string): ReplyChannel {
     const separatorIndex = session.indexOf(":");
     if (separatorIndex <= 0) {
@@ -105,6 +162,10 @@ class FakeRouter {
       bot_id: candidateBotId
     };
   }
+
+  private makeConversationKey(threadId: string, traceId: string | null): string {
+    return `${threadId}::${traceId ?? "null"}`;
+  }
 }
 
 class FakeResultSender {
@@ -117,6 +178,7 @@ class FakeResultSender {
 
 class FakePaneBroadcaster {
   readonly subscribeCalls: Array<{ threadId: string }> = [];
+  private pushCallback: ((threadId: string, chunk: string) => void) | null = null;
 
   async subscribe(): Promise<{ kind: "not_available"; payload: { type: "not_available"; thread_id: string; reason: string } }> {
     this.subscribeCalls.push({ threadId: "codex_01" });
@@ -134,12 +196,29 @@ class FakePaneBroadcaster {
     return true;
   }
 
+  registerPushCallback(callback: (threadId: string, chunk: string) => void): void {
+    this.pushCallback = callback;
+  }
+
+  emitPush(threadId: string, chunk: string): void {
+    this.pushCallback?.(threadId, chunk);
+  }
+
   cleanupSocket(): void {
     return;
   }
 
   close(): void {
     return;
+  }
+}
+
+class InspectableOutputBus extends OutputBus {
+  readonly snapshots: Array<{ traceId: string; snapshot: string }> = [];
+
+  override pushSnapshot(traceId: string, snapshot: string): void {
+    this.snapshots.push({ traceId, snapshot });
+    super.pushSnapshot(traceId, snapshot);
   }
 }
 
@@ -260,8 +339,16 @@ test("HubServer sends completion to /update subscribers even without attach", as
 test("HubServer flushes periodic monitor progress updates for due subscriptions", async () => {
   const fakeRouter = new FakeRouter();
   fakeRouter.dueDispatches = [
-    { threadId: "codex_01", chatId: "chat-a" },
-    { threadId: "codex_01", chatId: "chat-b" }
+    {
+      threadId: "codex_01",
+      chatId: "chat-a",
+      replyChannel: { channel: "telegram", chat_id: "chat-a" }
+    },
+    {
+      threadId: "codex_01",
+      chatId: "chat-b",
+      replyChannel: { channel: "telegram", chat_id: "chat-b" }
+    }
   ];
   const fakeResultSender = new FakeResultSender();
   const server = new HubServer({
@@ -270,12 +357,23 @@ test("HubServer flushes periodic monitor progress updates for due subscriptions"
   });
 
   await (server as unknown as { flushMonitorProgressUpdates: () => Promise<void> }).flushMonitorProgressUpdates();
+  await (server as unknown as { flushMonitorProgressUpdates: () => Promise<void> }).flushMonitorProgressUpdates();
 
-  assert.equal(fakeRouter.progressCalls.length, 1);
+  assert.equal(fakeRouter.progressSnapshotCalls.length, 2);
   const expectedCalls = config.TELEGRAM_PUSH_WHITELIST_ONLY ? 0 : 2;
   assert.equal(fakeResultSender.calls.length, expectedCalls);
   if (expectedCalls > 0) {
     assert.ok(fakeResultSender.calls.every((entry) => entry.result.status === "partial"));
+    assert.ok(fakeResultSender.calls.every((entry) => entry.result.content === "progress"));
+    assert.deepEqual(
+      fakeRouter.recordCalls,
+      [{
+        threadId: "codex_01",
+        rawContent: "progress",
+        traceId: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        eventKindHint: "progress"
+      }]
+    );
   }
 });
 
@@ -401,10 +499,17 @@ test("HubServer routes subscribe_pane_output payloads through PaneBroadcaster", 
 
   const writes: string[] = [];
   await (server as unknown as {
-    handleSocketPayload: (socket: { writable: boolean; end: (chunk?: string) => void }, raw: string, closeOnComplete: boolean) => Promise<void>;
+    handleSocketPayload: (
+      socket: { writable: boolean; write: (chunk: string) => void; end: (chunk?: string) => void },
+      raw: string,
+      closeOnComplete: boolean
+    ) => Promise<void>;
   }).handleSocketPayload(
     {
       writable: true,
+      write: (chunk: string) => {
+        writes.push(chunk);
+      },
       end: (chunk?: string) => {
         if (chunk) {
           writes.push(chunk);
@@ -420,4 +525,97 @@ test("HubServer routes subscribe_pane_output payloads through PaneBroadcaster", 
 
   assert.deepEqual(paneBroadcaster.subscribeCalls, [{ threadId: "codex_01" }]);
   assert.equal(JSON.parse(writes[0] ?? "{}").type, "not_available");
+});
+
+test("HubServer routes approval pane pushes through OutputBus using the active trace id", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.pushSubscriptionsByThread.set("codex_01", [
+    {
+      chatId: "chat-push",
+      replyChannel: { channel: "telegram", chat_id: "chat-push" }
+    }
+  ]);
+  fakeRouter.activeRuns.add("codex_01");
+  fakeRouter.activeRunTraceByThread.set("codex_01", "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+
+  const fakeResultSender = new FakeResultSender();
+  const paneBroadcaster = new FakePaneBroadcaster();
+  const outputBus = new InspectableOutputBus();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender,
+    paneBroadcaster: paneBroadcaster as unknown as PaneBroadcaster,
+    outputBus
+  });
+
+  (server as unknown as { registerPushCallback: () => void }).registerPushCallback();
+  const approvalFrame = [
+    "╭──────────────────────────────────────────────────────────────────────────────╮",
+    "│ Action Required                                                              │",
+    "│                                                                              │",
+    "│ ?  Shell git status && git remote -v && git log -n 3 [current working direc… │",
+    "│                                                                              │",
+    "│ git status && git remote -v && git log -n 3                                  │",
+    "│ Allow execution of: 'git, git, git'?                                         │",
+    "│                                                                              │",
+    "│ ● 1. Allow once                                                              │",
+    "│   2. Allow for this session                                                  │",
+    "│   3. No, suggest changes (esc)                                               │",
+    "│                                                                              │",
+    "╰──────────────────────────────────────────────────────────────────────────────╯"
+  ].join("\n");
+  const approvalPrompt = classifyAgentOutput(approvalFrame);
+  assert.equal(approvalPrompt.kind, "action_required");
+
+  paneBroadcaster.emitPush("codex_01", approvalFrame);
+  await (server as unknown as { flushPushAccumulator: (threadId: string) => Promise<void> }).flushPushAccumulator("codex_01");
+
+  assert.deepEqual(outputBus.snapshots, [
+    {
+      traceId: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+      snapshot: approvalPrompt.text
+    }
+  ]);
+  assert.equal(fakeResultSender.calls.length, 1);
+  assert.equal(fakeResultSender.calls[0]?.result.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+  assert.equal(fakeResultSender.calls[0]?.replyChannel.chat_id, "chat-push");
+  assert.match(fakeResultSender.calls[0]?.result.content ?? "", /^Waiting for approval\.\.\./);
+  assert.deepEqual(fakeRouter.recordCalls, [
+    {
+      threadId: "codex_01",
+      rawContent: approvalPrompt.text,
+      traceId: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+      eventKindHint: "progress"
+    }
+  ]);
+});
+
+test("HubServer still suppresses non-approval pane pushes while a run is active", async () => {
+  const fakeRouter = new FakeRouter();
+  fakeRouter.pushSubscriptionsByThread.set("codex_01", [
+    {
+      chatId: "chat-push",
+      replyChannel: { channel: "telegram", chat_id: "chat-push" }
+    }
+  ]);
+  fakeRouter.activeRuns.add("codex_01");
+  fakeRouter.activeRunTraceByThread.set("codex_01", "2f461d95-0157-4f90-bb4d-a63f2bfb1ed9");
+
+  const fakeResultSender = new FakeResultSender();
+  const paneBroadcaster = new FakePaneBroadcaster();
+  const outputBus = new InspectableOutputBus();
+  const server = new HubServer({
+    router: fakeRouter as unknown as HubRouter,
+    resultSender: fakeResultSender as unknown as ResultSender,
+    paneBroadcaster: paneBroadcaster as unknown as PaneBroadcaster,
+    outputBus
+  });
+
+  (server as unknown as { registerPushCallback: () => void }).registerPushCallback();
+  paneBroadcaster.emitPush("codex_01", "Implemented the requested changes.");
+  await (server as unknown as { flushPushAccumulator: (threadId: string) => Promise<void> }).flushPushAccumulator("codex_01");
+
+  assert.deepEqual(outputBus.snapshots, []);
+  assert.equal(fakeResultSender.calls.length, 0);
+  assert.deepEqual(fakeRouter.recordCalls, []);
 });

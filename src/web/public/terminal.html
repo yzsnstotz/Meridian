@@ -51,7 +51,11 @@
       flex-wrap: wrap;
     }
 
-    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1 1 auto; overflow: visible; }
+    .header-left { display: flex; align-items: flex-start; gap: 0.5rem; min-width: 0; flex: 1 1 auto; overflow: visible; }
+    .header-title-block { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; flex: 1 1 auto; }
+    .header-repo { max-width: 100%; }
+    .header-repo-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-color); line-height: 1.25; word-break: break-word; }
+    .header-repo-path { font-size: 0.65rem; color: var(--text-dim); font-family: "SF Mono", "Fira Code", ui-monospace, monospace; line-height: 1.35; word-break: break-all; }
     .header-right { display: flex; align-items: center; gap: 0.5rem; flex: 0 1 auto; min-width: 0; }
     .focus-toggle {
       background: transparent;
@@ -606,6 +610,27 @@
     .header-overflow .overflow-dropdown button.active {
       color: var(--accent-color);
     }
+    .header-overflow .overflow-dropdown .overflow-trace-copy {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.2rem;
+      text-align: left;
+      font-weight: 500;
+    }
+    .header-overflow .overflow-dropdown .overflow-trace-copy:disabled {
+      cursor: default;
+      opacity: 0.65;
+    }
+    .header-overflow .overflow-dropdown .overflow-trace-copy:not(:disabled) {
+      cursor: pointer;
+    }
+    .header-overflow .overflow-dropdown .overflow-trace-copy:not(:disabled):hover {
+      background: var(--surface-hover);
+    }
+    .overflow-trace-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+    .overflow-trace-value { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; font-size: 0.68rem; line-height: 1.3; word-break: break-all; color: #e2e8f0; max-width: 100%; }
+    .overflow-trace-hint { font-size: 0.62rem; color: var(--text-dim); }
     @media (max-width: 768px) {
       .header-overflow { display: flex; align-items: center; }
       .header-right .btn-action { display: none; }
@@ -879,7 +904,13 @@
     <div class="header-left">
       <button class="back-btn" aria-label="Go back" onclick="location.href='index.html'"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></button>
       <button id="menu-toggle" class="back-btn" aria-label="Toggle menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg></button>
-      <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+      <div class="header-title-block">
+        <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+        <div id="header-repo" class="header-repo hidden">
+          <div id="header-repo-name" class="header-repo-name"></div>
+          <div id="header-repo-path" class="header-repo-path"></div>
+        </div>
+      </div>
     </div>
     <div class="header-right">
       <div class="header-overflow">
@@ -889,6 +920,11 @@
           <button type="button" id="overflow-push">Push OFF</button>
           <button type="button" id="overflow-filters">Filters</button>
           <div class="overflow-divider"></div>
+          <button type="button" id="overflow-copy-trace" class="overflow-trace-copy" disabled aria-label="Copy last trace ID">
+            <span class="overflow-trace-label">Last trace</span>
+            <span id="overflow-trace-value" class="overflow-trace-value">—</span>
+            <span class="overflow-trace-hint">Tap to copy</span>
+          </button>
           <button type="button" id="overflow-reboot">Reboot</button>
           <button type="button" id="overflow-clear-chat">Clear Chat</button>
           <button type="button" class="kill" id="overflow-kill">Kill</button>
@@ -1113,6 +1149,13 @@
       var PROGRESS_POLL_INTERVAL_MS = 3000;
       var activeProgressMessageKey = "";
       var activeProgressTraceId = "";
+      /** Most recent trace UUID seen this session (for overflow menu + copy). */
+      var latestKnownTraceId = "";
+      var a2aTaskStates = new Map();
+      var a2aTaskOutputElements = new Map();
+      var pendingA2ARenderTaskIds = new Set();
+      var a2aRenderFrame = 0;
+      var completedA2AResults = new Map();
       var serverHistoryRestored = false;
       var modelCatalogState = null;
       var CUSTOM_MODEL_OPTION_VALUE = "__custom__";
@@ -1379,6 +1422,215 @@
         return "progress:" + (normalizedTraceId || threadId || "active");
       }
 
+      function traceIdFromMessageKey(key) {
+        if (!key || typeof key !== "string") return "";
+        var m = key.match(/:trace:([0-9a-fA-F-]{36})/);
+        return m && m[1] ? m[1].toLowerCase() : "";
+      }
+
+      function recordLatestTraceId(raw) {
+        if (raw == null || typeof raw !== "string") return;
+        var t = raw.trim();
+        if (!t) return;
+        latestKnownTraceId = t.toLowerCase();
+        syncOverflowTraceRow();
+      }
+
+      function syncOverflowTraceRow() {
+        var valEl = document.getElementById("overflow-trace-value");
+        var btn = document.getElementById("overflow-copy-trace");
+        if (!valEl || !btn) return;
+        if (!latestKnownTraceId) {
+          valEl.textContent = "—";
+          btn.disabled = true;
+          return;
+        }
+        valEl.textContent = latestKnownTraceId;
+        btn.disabled = false;
+      }
+
+      function buildA2AWorkingMessageKey(taskId) {
+        return "a2a:working:" + (taskId || threadId || "active");
+      }
+
+      function normalizeTaskId(taskId) {
+        return typeof taskId === "string" ? taskId.trim().toLowerCase() : "";
+      }
+
+      function getOrCreateA2ATaskState(taskId) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        var state = a2aTaskStates.get(normalizedTaskId);
+        if (!state) {
+          state = {
+            taskId: normalizedTaskId,
+            taskState: "working",
+            workingText: "",
+            dataDetails: []
+          };
+          a2aTaskStates.set(normalizedTaskId, state);
+        }
+        return state;
+      }
+
+      function hasActiveA2AStream() {
+        var iterator = a2aTaskStates.values();
+        for (var next = iterator.next(); !next.done; next = iterator.next()) {
+          if (next.value && next.value.taskState === "working") {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function serializeA2AData(value) {
+        if (value === undefined) return "";
+        if (typeof value === "string") return value;
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch (e) {
+          return String(value);
+        }
+      }
+
+      function collectA2APayload(parts) {
+        var payload = {
+          text: "",
+          dataText: ""
+        };
+        if (!Array.isArray(parts)) return payload;
+        var dataParts = [];
+        for (var i = 0; i < parts.length; i++) {
+          var part = parts[i];
+          if (!part || typeof part !== "object") continue;
+          if (part.type === "text" && typeof part.text === "string") {
+            payload.text += part.text;
+          } else if (part.type === "data") {
+            var serialized = serializeA2AData(part.data);
+            if (serialized) dataParts.push(serialized);
+          }
+        }
+        payload.dataText = dataParts.join("\n\n");
+        return payload;
+      }
+
+      function rememberA2AOutputElement(taskId, messageKey) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        if (!normalizedTaskId || !messageKey) return;
+        var bubble = bubbleElementsByKey[messageKey];
+        if (bubble) {
+          a2aTaskOutputElements.set(normalizedTaskId, bubble);
+        }
+      }
+
+      // Batch high-frequency working deltas into one render per frame.
+      function scheduleA2ARender(taskId) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        if (!normalizedTaskId) return;
+        pendingA2ARenderTaskIds.add(normalizedTaskId);
+        if (a2aRenderFrame) return;
+        a2aRenderFrame = requestAnimationFrame(function() {
+          a2aRenderFrame = 0;
+          var taskIds = Array.from(pendingA2ARenderTaskIds.values());
+          pendingA2ARenderTaskIds.clear();
+          for (var i = 0; i < taskIds.length; i++) {
+            var currentTaskId = taskIds[i];
+            var state = a2aTaskStates.get(currentTaskId);
+            if (!state || state.taskState !== "working") continue;
+            var content = stripAnsi(state.workingText || "").trim();
+            var details = state.dataDetails.join("\n\n").trim();
+            if (!content) {
+              content = details ? "Update received." : "";
+            }
+            if (!content) continue;
+            var messageKey = buildA2AWorkingMessageKey(currentTaskId);
+            addChatBubble(content, "agent", details, {
+              messageKey: messageKey,
+              dedupe: false,
+              persist: false
+            });
+            rememberA2AOutputElement(currentTaskId, messageKey);
+          }
+          if (hasActiveA2AStream()) {
+            showChatTyping(true, "Agent is responding...");
+          }
+        });
+      }
+
+      function finalizeA2ATask(taskId, taskState, parts) {
+        var normalizedTaskId = normalizeTaskId(taskId);
+        if (!normalizedTaskId) return;
+
+        var state = a2aTaskStates.get(normalizedTaskId) || getOrCreateA2ATaskState(normalizedTaskId);
+        state.taskState = taskState;
+        var payload = collectA2APayload(parts);
+        var finalText = stripMeridianNoise(stripAnsi(payload.text || "")).trim();
+        var workingText = stripMeridianNoise(stripAnsi(state.workingText || "")).trim();
+        var dataDetails = payload.dataText.trim();
+        var finalContent = finalText || dataDetails || workingText;
+        if (!finalContent) {
+          finalContent = taskState === "failed" ? "Error: Agent run failed." : "Completed.";
+        }
+        if (taskState === "failed" && finalContent.indexOf("Error:") !== 0) {
+          finalContent = "Error: " + finalContent;
+        }
+
+        var detailsBlocks = [];
+        if (taskState === "failed" && workingText) {
+          detailsBlocks.push("Working output:\n" + workingText);
+        }
+        if (dataDetails && dataDetails !== finalContent) {
+          detailsBlocks.push("Structured payload:\n" + dataDetails);
+        }
+        var details = detailsBlocks.join("\n\n").trim();
+        var workingMessageKey = buildA2AWorkingMessageKey(normalizedTaskId);
+        clearBubbleByKey(workingMessageKey);
+        a2aTaskOutputElements.delete(normalizedTaskId);
+        pendingA2ARenderTaskIds.delete(normalizedTaskId);
+        addChatBubble(finalContent, "agent", details, {
+          messageKey: buildTraceMessageKey("agent", normalizedTaskId),
+          dedupe: false
+        });
+        rememberA2AOutputElement(normalizedTaskId, buildTraceMessageKey("agent", normalizedTaskId));
+        completedA2AResults.set(normalizedTaskId, {
+          taskState: taskState,
+          content: finalContent
+        });
+        if (activeProgressTraceId === normalizedTaskId || activeProgressMessageKey === workingMessageKey) {
+          clearActiveProgressBubble();
+        }
+        if (!hasActiveA2AStream()) {
+          showChatTyping(false);
+        }
+      }
+
+      function handleA2AMessage(msg) {
+        if (!msg || typeof msg !== "object") return;
+        var taskId = normalizeTaskId(msg.taskId);
+        if (!taskId) return;
+        recordLatestTraceId(taskId);
+        if (!lastSubmittedTraceId) {
+          lastSubmittedTraceId = taskId;
+        }
+
+        if (msg.taskState === "working") {
+          stopProgressPolling();
+          clearActiveProgressBubble();
+          var workingState = getOrCreateA2ATaskState(taskId);
+          workingState.taskState = "working";
+          var workingPayload = collectA2APayload(msg.parts);
+          if (workingPayload.text) {
+            workingState.workingText += workingPayload.text;
+          }
+          if (workingPayload.dataText) {
+            workingState.dataDetails.push(workingPayload.dataText);
+          }
+          scheduleA2ARender(taskId);
+          return;
+        }
+
+        finalizeA2ATask(taskId, msg.taskState === "failed" ? "failed" : "completed", msg.parts);
+      }
+
       function makeBubbleContentFingerprint(content, type) {
         var normalizedContent = stripMeridianNoise(stripSummaryProtocolTags(stripAnsi(content || ""))).trim().toLowerCase();
         return normalizedContent ? [type || "agent", normalizedContent].join("::") : "";
@@ -1423,6 +1675,28 @@
         }
         activeProgressMessageKey = "";
         activeProgressTraceId = "";
+      }
+
+      function maybeResolveProgressFromServerHistory(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return false;
+        var latestPendingEntry = findLatestPendingHistoryEntry(entries);
+        if (latestPendingEntry) {
+          cacheServerHistory(entries);
+          return false;
+        }
+        var latestFinalEntry = findLatestFinalHistoryEntry(entries);
+        if (!latestFinalEntry) return false;
+        cacheServerHistory(entries);
+        clearActiveProgressBubble();
+        addChatBubble(latestFinalEntry.content || "", latestFinalEntry.type || "agent", latestFinalEntry.details_text || "", {
+          persist: false,
+          messageKey: buildHistoryMessageKey(latestFinalEntry)
+        });
+        lastFlushedContent = stripAnsi(latestFinalEntry.content || "");
+        lastRunResultAtMs = Date.now();
+        showChatTyping(false);
+        refreshSessionList();
+        return true;
       }
 
       function resolveApprovalOptions(selectedToken) {
@@ -1771,6 +2045,11 @@
         } finally {
           chatHistoryHydrating = false;
         }
+        for (var li = 0; li < history.length; li++) {
+          var mk = history[li] && history[li].messageKey;
+          var tid = traceIdFromMessageKey(mk || "");
+          if (tid) recordLatestTraceId(tid);
+        }
         return true;
       }
 
@@ -1789,7 +2068,7 @@
 
       function restoreServerChatHistory(entries) {
         if (!Array.isArray(entries) || entries.length === 0) return false;
-        var latestPendingEntry = null;
+        var latestPendingEntry = findLatestPendingHistoryEntry(entries);
         chatHistoryHydrating = true;
         try {
           for (var i = 0; i < entries.length; i++) {
@@ -1799,11 +2078,6 @@
               dedupe: false,
               messageKey: buildHistoryMessageKey(entry)
             });
-            if (entry.event_kind === "progress" || entry.event_kind === "approval") {
-              latestPendingEntry = entry;
-            } else if (entry.event_kind === "final_reply") {
-              latestPendingEntry = null;
-            }
           }
         } finally {
           chatHistoryHydrating = false;
@@ -1816,7 +2090,37 @@
           activeProgressMessageKey = "";
           activeProgressTraceId = "";
         }
+        for (var hi = 0; hi < entries.length; hi++) {
+          var te = entries[hi];
+          if (te && te.trace_id) recordLatestTraceId(te.trace_id);
+        }
         return true;
+      }
+
+      function findLatestPendingHistoryEntry(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return null;
+        var latestPendingEntry = null;
+        for (var i = 0; i < entries.length; i++) {
+          var entry = entries[i];
+          if (!entry) continue;
+          if (entry.event_kind === "progress" || entry.event_kind === "approval") {
+            latestPendingEntry = entry;
+          } else if (entry.event_kind === "final_reply") {
+            latestPendingEntry = null;
+          }
+        }
+        return latestPendingEntry;
+      }
+
+      function findLatestFinalHistoryEntry(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return null;
+        for (var i = entries.length - 1; i >= 0; i--) {
+          var entry = entries[i];
+          if (entry && entry.event_kind === "final_reply") {
+            return entry;
+          }
+        }
+        return null;
       }
 
       function addChatBubble(content, type, detailsText, options) {
@@ -2096,7 +2400,7 @@
         if (!chatBuffer.trim()) { chatBuffer = ""; return; }
         // While a run is in-flight, suppress pane-stream chat — the run
         // result will be the authoritative reply for this turn.
-        if (runPending) {
+        if (runPending || activeProgressMessageKey) {
           chatBuffer = "";
           showChatTyping(false);
           return;
@@ -2317,8 +2621,11 @@
       }
 
       function renderProgressSnapshot(snapshot) {
-        if (!snapshot || typeof snapshot.content !== "string") return;
-        var content = snapshot.content.trim();
+        if (!snapshot) return;
+        var content = typeof snapshot.display_text === "string" ? snapshot.display_text.trim() : "";
+        if (!content && typeof snapshot.content === "string") {
+          content = snapshot.content.trim();
+        }
         if (!content) return;
         var traceId = typeof snapshot.trace_id === "string" ? snapshot.trace_id.toLowerCase() : "";
         var nextMessageKey = buildProgressMessageKey(traceId);
@@ -2327,27 +2634,46 @@
         }
         activeProgressMessageKey = nextMessageKey;
         activeProgressTraceId = traceId;
+        recordLatestTraceId(traceId);
         addChatBubble(content, "agent", "", { messageKey: nextMessageKey });
         showChatTyping(false);
       }
 
       function pollThreadProgress() {
         if (!shouldPollProgress()) return;
+        var shouldSyncHistory = Boolean(serverHistoryRestored && activeProgressMessageKey && !runPending);
+        var historyPromise = shouldSyncHistory
+          ? fetchThreadHistory().catch(function() {
+              return null;
+            })
+          : Promise.resolve(null);
+        var progressUnavailable = false;
         fetchThreadProgress()
           .then(function(snapshot) {
             renderProgressSnapshot(snapshot);
+            return historyPromise;
           })
           .catch(function(err) {
             var message = err && err.message ? err.message : "";
             if (/no active agent session|no registered agent instance found/i.test(message)) {
+              progressUnavailable = true;
+            }
+            return historyPromise;
+          })
+          .then(function(entries) {
+            if (entries && maybeResolveProgressFromServerHistory(entries)) {
+              progressUnavailable = true;
+              return null;
+            }
+            if (progressUnavailable) {
               stopProgressPolling();
               clearActiveProgressBubble();
-              return null;
+              showChatTyping(false);
             }
             return null;
           })
           .finally(function() {
-            if (shouldPollProgress()) {
+            if (!progressUnavailable && shouldPollProgress()) {
               scheduleProgressPoll(PROGRESS_POLL_INTERVAL_MS);
             }
           });
@@ -2784,8 +3110,22 @@
       function handleWsMessage(ev) {
         try {
           var msg = JSON.parse(ev.data);
+          if (msg.type === "a2a_message") {
+            handleA2AMessage(msg);
+            return;
+          }
           if (msg.type === "pane_output" && msg.chunk) {
             if (term && typeof term.write === "function") term.write(msg.chunk);
+            var suppressPaneChat = activeProgressMessageKey || hasActiveA2AStream();
+            if (suppressPaneChat) {
+              chatBuffer = "";
+              clearTimeout(chatTimer);
+              clearTimeout(chatTypingTimer);
+              if (!hasActiveA2AStream()) {
+                showChatTyping(false);
+              }
+              return;
+            }
             chatBuffer += msg.chunk;
             if (maybeRenderLiveApprovalPrompt()) {
               return;
@@ -2796,7 +3136,7 @@
             var containsBoundary = /\n\n|(?:^|\n)(?:\$|>|#)\s/m.test(msg.chunk);
             chatTimer = setTimeout(flushChatBuffer, containsBoundary ? 240 : CHAT_FLUSH_WINDOW_MS);
             chatTypingTimer = setTimeout(function() {
-              if (!runPending && !activeProgressMessageKey) {
+              if (!runPending && !activeProgressMessageKey && !hasActiveA2AStream()) {
                 showChatTyping(false);
               }
             }, 3000);
@@ -2945,13 +3285,21 @@
             var resultContent = data && typeof data.content === "string" ? data.content.trim() : "";
             if (data && typeof data.trace_id === "string") {
               lastSubmittedTraceId = data.trace_id.toLowerCase();
+              recordLatestTraceId(data.trace_id);
             }
+            var a2aResult = lastSubmittedTraceId ? completedA2AResults.get(lastSubmittedTraceId) : null;
             clearActiveProgressBubble();
             if (!resultContent) return;
             // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
             lastFlushedContent = stripAnsi(resultContent);
             lastRunResultAtMs = Date.now();
-            renderAgentContent(resultContent);
+            if (!a2aResult) {
+              renderAgentContent(resultContent);
+            } else {
+              completedA2AResults.delete(lastSubmittedTraceId);
+              lastSubmittedInput = "";
+              lastSubmittedTraceId = "";
+            }
             refreshSessionList();
             // The structured run result is authoritative for completed turns.
             chatBuffer = "";
@@ -3329,18 +3677,60 @@
         if (overflowDropdown) overflowDropdown.classList.add("open");
         if (overflowBtn) overflowBtn.setAttribute("aria-expanded", "true");
       }
-      if (overflowBtn) {
+        if (overflowBtn) {
         overflowBtn.addEventListener("click", function(e) {
           e.preventDefault();
           e.stopPropagation();
           var isOpen = overflowDropdown && overflowDropdown.classList.toggle("open");
           overflowBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+          if (isOpen) syncOverflowTraceRow();
         });
       }
       document.addEventListener("click", function(e) {
         if (overflowDropdown && overflowDropdown.classList.contains("open") && overflowBtn && !overflowBtn.contains(e.target) && !overflowDropdown.contains(e.target)) closeOverflow();
       });
       if (overflowDropdown) overflowDropdown.addEventListener("click", function(e) { e.stopPropagation(); });
+      var overflowCopyTraceBtn = document.getElementById("overflow-copy-trace");
+      if (overflowCopyTraceBtn) {
+        overflowCopyTraceBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!latestKnownTraceId || overflowCopyTraceBtn.disabled) return;
+          var text = latestKnownTraceId;
+          var hintEl = overflowCopyTraceBtn.querySelector(".overflow-trace-hint");
+          var defaultHint = "Tap to copy";
+          function setHint(msg) {
+            if (hintEl) hintEl.textContent = msg;
+          }
+          function finish(ok) {
+            setHint(ok ? "Copied" : "Copy failed");
+            setTimeout(function() {
+              setHint(defaultHint);
+            }, 1600);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function() { finish(true); }).catch(function() { copyFallback(); });
+          } else {
+            copyFallback();
+          }
+          function copyFallback() {
+            try {
+              var ta = document.createElement("textarea");
+              ta.value = text;
+              ta.setAttribute("readonly", "");
+              ta.style.position = "fixed";
+              ta.style.left = "-9999px";
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand("copy");
+              document.body.removeChild(ta);
+              finish(true);
+            } catch (err) {
+              finish(false);
+            }
+          }
+        });
+      }
       document.getElementById("overflow-reboot").addEventListener("click", function(e) {
         e.preventDefault();
         closeOverflow();
@@ -3378,6 +3768,16 @@
         stopProgressPolling();
         activeProgressMessageKey = "";
         activeProgressTraceId = "";
+        a2aTaskStates.clear();
+        a2aTaskOutputElements.clear();
+        pendingA2ARenderTaskIds.clear();
+        completedA2AResults.clear();
+        if (a2aRenderFrame) {
+          cancelAnimationFrame(a2aRenderFrame);
+          a2aRenderFrame = 0;
+        }
+        latestKnownTraceId = "";
+        syncOverflowTraceRow();
       });
 
       // Overflow menu mirrors for mobile: Focus, Push, Filters
@@ -3436,6 +3836,41 @@
       });
 
       document.getElementById("thread-label").textContent = threadId || "No session";
+
+      (function loadRepoHeaderForThread() {
+        function repoBasenameFromPath(p) {
+          if (p == null || typeof p !== "string" || !String(p).trim()) return "";
+          var s = String(p).replace(/[/\\]+$/, "");
+          var i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+          return i >= 0 ? s.slice(i + 1) : s;
+        }
+        var repoWrap = document.getElementById("header-repo");
+        var repoNameEl = document.getElementById("header-repo-name");
+        var repoPathEl = document.getElementById("header-repo-path");
+        if (!threadId || !repoWrap || !repoNameEl || !repoPathEl) return;
+        if (!window.MeridianWeb || !window.MeridianWeb.fetchWithAuth) return;
+        window.MeridianWeb.fetchWithAuth("/api/instances")
+          .then(function (res) {
+            return res.json();
+          })
+          .then(function (data) {
+            var list = Array.isArray(data) ? data : [];
+            var inst = list.find(function (x) {
+              return x && x.thread_id === threadId;
+            });
+            var wd = inst && inst.working_dir;
+            if (!wd || typeof wd !== "string" || !wd.trim()) {
+              repoWrap.classList.add("hidden");
+              return;
+            }
+            repoNameEl.textContent = repoBasenameFromPath(wd);
+            repoPathEl.textContent = wd;
+            repoWrap.classList.remove("hidden");
+          })
+          .catch(function () {
+            repoWrap.classList.add("hidden");
+          });
+      })();
 
       // Mobile: default to chat view
       if (isMobile()) {

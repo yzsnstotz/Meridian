@@ -66,6 +66,7 @@ function classifyLogPath(relativePath: string): "active" | "session" | "other" {
     basename.startsWith("pane-") ||
     basename.startsWith("agentapi-") ||
     basename.startsWith("gui-pane-") ||
+    basename.startsWith("a2a-") ||
     basename.endsWith("-stdout.log")
   ) {
     return "session";

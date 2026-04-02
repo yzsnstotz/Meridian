@@ -12,6 +12,19 @@ test("classifyAgentOutput marks spinner frames as transient noise", () => {
   assert.equal(result.kind, "transient");
 });
 
+test("classifyAgentOutput marks Codex working placeholders as transient", () => {
+  const frame = [
+    "• Working (0s • esc to interrupt)",
+    "",
+    "› Explain this codebase",
+    "",
+    "  gpt-5.4 xhigh · 100% left · ~/work/Meridian"
+  ].join("\n");
+
+  const result = classifyAgentOutput(frame);
+  assert.equal(result.kind, "transient");
+});
+
 test("classifyAgentOutput normalizes action-required terminal frames", () => {
   const frame = [
     "╭──────────────────────────────────────────────────────────────────────────────╮",

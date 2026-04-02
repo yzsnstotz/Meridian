@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 import {
+  AgentInstanceSchema,
   BuiltInIntentSchema,
   HubMessageSchema,
   HubResultSchema,
@@ -12,7 +13,8 @@ import {
   PaneOutputChunkSchema,
   PaneSubscribeRequestSchema,
   PaneUnsubscribeRequestSchema,
-  ServiceEndpointSchema
+  ServiceEndpointSchema,
+  ThreadProgressSnapshotSchema
 } from "./types";
 
 function buildHubMessage(overrides: Record<string, unknown> = {}) {
@@ -35,11 +37,12 @@ function buildHubMessage(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("IntentSchema includes detach, reboot, gui, and detail", () => {
+test("IntentSchema includes detach, reboot, gui, detail, and reply", () => {
   assert.equal(BuiltInIntentSchema.parse("detach"), "detach");
   assert.equal(BuiltInIntentSchema.parse("reboot"), "reboot");
   assert.equal(BuiltInIntentSchema.parse("gui"), "gui");
   assert.equal(BuiltInIntentSchema.parse("detail"), "detail");
+  assert.equal(BuiltInIntentSchema.parse("reply"), "reply");
   assert.equal(IntentSchema.parse("delegate"), "delegate");
 });
 
@@ -131,6 +134,24 @@ test("MonitorEventSchema accepts optional agent_type and last_known_pid", () => 
   assert.equal(parsed.details?.reason, "HEALTHCHECK_TIMEOUT_PID_GONE");
 });
 
+test("AgentInstanceSchema accepts optional stream capability fields", () => {
+  const parsed = AgentInstanceSchema.parse({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/codex.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString(),
+    supportsStream: true,
+    codexSessionId: "session-123"
+  });
+
+  assert.equal(parsed.supportsStream, true);
+  assert.equal(parsed.codexSessionId, "session-123");
+});
+
 test("HubResultSchema accepts optional Telegram inline keyboards", () => {
   const parsed = HubResultSchema.parse({
     trace_id: randomUUID(),
@@ -146,6 +167,35 @@ test("HubResultSchema accepts optional Telegram inline keyboards", () => {
   });
 
   assert.equal(parsed.telegram_inline_keyboard?.inline_keyboard[0]?.[0]?.text, "Open GUI");
+});
+
+test("HubResultSchema accepts optional structured progress snapshots", () => {
+  const progress = ThreadProgressSnapshotSchema.parse({
+    trace_id: randomUUID(),
+    thread_id: "claude_01",
+    source: "codex",
+    status: "partial",
+    event_kind: "progress",
+    phase: "running",
+    waiting_for_input: false,
+    content: "Task is running...",
+    display_text: "Task is running...",
+    updated_at: new Date().toISOString()
+  });
+
+  const parsed = HubResultSchema.parse({
+    trace_id: progress.trace_id,
+    thread_id: "claude_01",
+    source: "codex",
+    status: "partial",
+    content: progress.content,
+    progress,
+    attachments: [],
+    timestamp: progress.updated_at
+  });
+
+  assert.equal(parsed.progress?.phase, "running");
+  assert.equal(parsed.progress?.content, "Task is running...");
 });
 
 test("pane IPC schemas parse subscribe, output, and unsubscribe messages", () => {

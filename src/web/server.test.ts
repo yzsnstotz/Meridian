@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import type { HubMessage } from "../types";
+import { config } from "../config";
+import type { HubMessage, ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
 process.env.ALLOWED_USER_IDS ??= "123456789";
@@ -129,6 +130,55 @@ test("Web Interface Server returns log inventory for an authorized request", asy
         payload.files.map((entry) => entry.path),
         ["hub.log", "GUI/gui-pane-codex_01.log"]
       );
+    }, {
+      logDir
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server returns log file contents for an authorized request", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-logfile-"));
+
+  try {
+    await fs.promises.writeFile(path.join(logDir, "hub.log"), "line1\nline2\n");
+
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(
+        `${baseUrl}/api/log_file?token=secret-token&path=${encodeURIComponent("hub.log")}`
+      );
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as { path: string; content: string; truncated: boolean };
+      assert.equal(payload.path, "hub.log");
+      assert.equal(payload.content, "line1\nline2\n");
+      assert.equal(payload.truncated, false);
+    }, {
+      logDir
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server clears a log file for an authorized POST", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-logclear-"));
+
+  try {
+    await fs.promises.writeFile(path.join(logDir, "hub.log"), "line1\nline2\n");
+
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/log_file/clear?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: "hub.log" })
+      });
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as { ok: boolean; path: string };
+      assert.equal(payload.ok, true);
+      assert.equal(payload.path, "hub.log");
+      const after = await fs.promises.readFile(path.join(logDir, "hub.log"), "utf8");
+      assert.equal(after, "");
     }, {
       logDir
     });
@@ -333,22 +383,65 @@ test("Web Interface Server returns authenticated thread progress snapshots", asy
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/progress/codex_01?token=secret-token`);
     assert.equal(response.status, 200);
-    const payload = (await response.json()) as { status: string; content: string; trace_id: string; thread_id: string };
+    const payload = (await response.json()) as ThreadProgressSnapshot;
     assert.equal(payload.status, "partial");
     assert.equal(payload.thread_id, "codex_01");
     assert.equal(payload.content, "Task is running...");
     assert.equal(payload.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+    assert.equal(payload.display_text, "Task is running...");
+    assert.equal(payload.event_kind, "progress");
+    assert.equal(payload.phase, "running");
+    assert.equal(payload.waiting_for_input, false);
+    assert.match(payload.updated_at, /T/);
   }, {
     requestHub: async (message: HubMessage) => {
       assert.equal(message.intent, "monitor_manual_update");
       assert.equal(message.thread_id, "codex_01");
       assert.equal(message.target, "codex_01");
+      const updatedAt = new Date().toISOString();
       return {
         trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
         thread_id: "codex_01",
         source: "codex",
         status: "partial",
         content: "Task is running...",
+        progress: {
+          trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+          thread_id: "codex_01",
+          source: "codex",
+          status: "partial",
+          event_kind: "progress",
+          phase: "running",
+          waiting_for_input: false,
+          content: "Task is running...",
+          display_text: "Task is running...",
+          updated_at: updatedAt
+        },
+        attachments: [],
+        timestamp: updatedAt
+      };
+    }
+  });
+});
+
+test("Web Interface Server derives structured progress snapshots from legacy partial results", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/progress/codex_01?token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as ThreadProgressSnapshot;
+    assert.equal(payload.phase, "waiting_for_input");
+    assert.equal(payload.event_kind, "approval");
+    assert.equal(payload.waiting_for_input, true);
+    assert.match(payload.content, /^Waiting for approval\.\.\./);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "monitor_manual_update");
+      return {
+        trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+        thread_id: "codex_01",
+        source: "codex",
+        status: "partial",
+        content: "Waiting for approval...\nRun this command?\n1. Allow once",
         attachments: [],
         timestamp: new Date().toISOString()
       };
@@ -592,6 +685,81 @@ test("Web Interface Server bridges pane output over WebSocket", async () => {
   }
 });
 
+test("Web Interface Server bridges A2A messages over WebSocket", async () => {
+  const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-a2a-"));
+  const socketPath = path.join(socketDir, "hub.sock");
+
+  const hubServer = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    let buffer = "";
+
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const frames = buffer.split("\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const payload = frame.trim();
+        if (!payload) {
+          continue;
+        }
+        const parsed = JSON.parse(payload) as { type: string };
+        if (parsed.type === "subscribe_pane_output") {
+          socket.write(
+            `${JSON.stringify({
+              type: "a2a_message",
+              taskId: "trace-a2a-1",
+              taskState: "working",
+              parts: [{ type: "text", text: "partial output" }]
+            })}\n`
+          );
+        }
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => hubServer.listen(socketPath, resolve));
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const ws = new WebSocket(`${baseUrl.replace("http://", "ws://")}/ws/terminal?thread_id=codex_01&token=secret-token`);
+      const payload = await new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket payload")), 2000);
+
+        ws.addEventListener("message", (event) => {
+          clearTimeout(timeout);
+          resolve(String(event.data));
+        });
+        ws.addEventListener("error", () => {
+          clearTimeout(timeout);
+          reject(new Error("WebSocket failed"));
+        });
+      });
+
+      const parsed = JSON.parse(payload) as {
+        type: string;
+        taskId: string;
+        taskState: string;
+        parts: Array<{ type: string; text?: string }>;
+      };
+      assert.deepEqual(parsed, {
+        type: "a2a_message",
+        taskId: "trace-a2a-1",
+        taskState: "working",
+        parts: [{ type: "text", text: "partial output" }]
+      });
+      await new Promise<void>((resolve) => {
+        ws.addEventListener("close", () => resolve(), { once: true });
+        ws.close();
+      });
+    }, {
+      hubSocketPath: socketPath
+    });
+  } finally {
+    hubServer.close();
+    await fs.promises.rm(socketDir, { recursive: true, force: true });
+  }
+});
+
 test("WebSocket pane bridge accepts replay_lines override from query", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-replay-"));
   const socketPath = path.join(socketDir, "hub.sock");
@@ -656,5 +824,160 @@ test("WebSocket pane bridge accepts replay_lines override from query", async () 
   } finally {
     hubServer.close();
     await fs.promises.rm(socketDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server lists spawn repo choices under AGENT_WORKDIR", async () => {
+  const subDir = path.join(config.AGENT_WORKDIR, `meridian-web-spawn-list-${Date.now()}`);
+  await fs.promises.mkdir(subDir, { recursive: true });
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/spawn_repos?token=secret-token`);
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as { root: string; repos: Array<{ name: string }> };
+      assert.equal(payload.root, path.resolve(config.AGENT_WORKDIR));
+      assert.ok(payload.repos.some((r) => r.name === path.basename(subDir)));
+    });
+  } finally {
+    await fs.promises.rm(subDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selected", async () => {
+  const subDir = path.join(config.AGENT_WORKDIR, `meridian-web-spawn-repo-${Date.now()}`);
+  await fs.promises.mkdir(subDir, { recursive: true });
+  const hubMessages: HubMessage[] = [];
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "codex",
+          mode: "pane_bridge",
+          repo: path.basename(subDir)
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(hubMessages.length, 1);
+      assert.equal(hubMessages[0]?.intent, "spawn");
+      assert.equal(hubMessages[0]?.payload.spawn_dir, subDir);
+    }, {
+      requestHub: async (message: HubMessage) => {
+        hubMessages.push(message);
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_new",
+          source: "codex",
+          status: "success",
+          content: "{}",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(subDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server rejects spawn when repo and spawn_dir are both set", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "codex",
+        repo: "a",
+        spawn_dir: "/tmp/b"
+      })
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server rejects spawn_dir outside AGENT_WORKDIR", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "codex",
+        spawn_dir: "/"
+      })
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server spawn_repos browse lists nested directories", async () => {
+  const outer = path.join(config.AGENT_WORKDIR, `meridian-browse-outer-${Date.now()}`);
+  const inner = path.join(outer, "inner");
+  await fs.promises.mkdir(inner, { recursive: true });
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const relOuter = path.basename(outer);
+      const response = await fetch(
+        `${baseUrl}/api/spawn_repos/browse?token=secret-token&relative=${encodeURIComponent(relOuter)}`
+      );
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as {
+        relative: string;
+        parent_relative: string | null;
+        entries: Array<{ name: string }>;
+      };
+      assert.equal(payload.relative, relOuter);
+      assert.equal(payload.parent_relative, "");
+      assert.ok(payload.entries.some((e) => e.name === "inner"));
+    });
+  } finally {
+    await fs.promises.rm(outer, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server spawn_repos browse rejects path traversal", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(
+      `${baseUrl}/api/spawn_repos/browse?token=secret-token&relative=${encodeURIComponent("../..")}`
+    );
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server forwards nested repo path to Hub", async () => {
+  const outer = path.join(config.AGENT_WORKDIR, `meridian-nested-repo-${Date.now()}`);
+  const inner = path.join(outer, "deep");
+  await fs.promises.mkdir(inner, { recursive: true });
+  const hubMessages: HubMessage[] = [];
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const rel = `${path.basename(outer)}/deep`;
+      const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "codex",
+          mode: "pane_bridge",
+          repo: rel
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(hubMessages[0]?.payload.spawn_dir, inner);
+    }, {
+      requestHub: async (message: HubMessage) => {
+        hubMessages.push(message);
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_new",
+          source: "codex",
+          status: "success",
+          content: "{}",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(outer, { recursive: true, force: true });
   }
 });

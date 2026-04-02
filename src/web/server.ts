@@ -18,6 +18,7 @@ import {
   HubResultSchema,
   PaneOutputChunkSchema,
   PaneOutputNotAvailableSchema,
+  ThreadProgressSnapshotSchema,
   type FileAttachment,
   type HubMessage,
   type HubResult,
@@ -42,7 +43,14 @@ const threadActionBodySchema = z.object({
 const spawnRequestBodySchema = z.object({
   type: z.enum(["claude", "codex", "gemini", "cursor"]).default("codex"),
   mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge"),
-  auto_approve: z.boolean().default(false)
+  auto_approve: z.boolean().default(false),
+  /** Subdirectory name under `config.AGENT_WORKDIR` (GUI picker). */
+  repo: z.string().optional(),
+  /**
+   * Absolute working directory for the new agent (validated under AGENT_WORKDIR).
+   * External integrations may send this instead of `repo`.
+   */
+  spawn_dir: z.string().optional()
 });
 
 const filesQuerySchema = z.object({
@@ -53,6 +61,17 @@ const filesQuerySchema = z.object({
 const fileReadQuerySchema = z.object({
   thread_id: z.string().min(1),
   path: z.string().min(1)
+});
+
+const logFileReadQuerySchema = z.object({
+  path: z.string().min(1)
+});
+
+const logFileClearBodySchema = z.object({
+  path: z
+    .string()
+    .min(1)
+    .refine((value) => value.toLowerCase().endsWith(".log"), { message: "Path must be a .log file" })
 });
 
 const threadQuerySchema = z.object({
@@ -79,6 +98,46 @@ const pushToggleBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
   enabled: z.boolean().optional()
 });
+
+const a2aPartSchema = z.union([
+  z.object({
+    type: z.literal("text"),
+    text: z.string()
+  }),
+  z.object({
+    type: z.literal("data"),
+    data: z.unknown()
+  })
+]);
+
+const a2aWebSocketMessageSchema = z.object({
+  type: z.literal("a2a_message"),
+  taskId: z.string().min(1),
+  taskState: z.enum(["working", "completed", "failed"]),
+  parts: z.array(a2aPartSchema),
+  agentId: z.string().min(1).optional()
+});
+
+function coerceProgressSnapshot(result: HubResult) {
+  if (result.progress) {
+    return ThreadProgressSnapshotSchema.parse(result.progress);
+  }
+
+  const content = result.content.trim() || "Task is running...";
+  const waitingForInput = /^waiting for approval/i.test(content);
+  return ThreadProgressSnapshotSchema.parse({
+    trace_id: result.trace_id,
+    thread_id: result.thread_id,
+    source: result.source,
+    status: "partial",
+    event_kind: waitingForInput ? "approval" : "progress",
+    phase: waitingForInput ? "waiting_for_input" : "running",
+    waiting_for_input: waitingForInput,
+    content,
+    display_text: content,
+    updated_at: result.timestamp
+  });
+}
 
 const captureIntervalBodySchema = z.object({
   interval_ms: z.coerce.number().int().min(2000).max(30000)
@@ -294,6 +353,51 @@ async function listRepoEntries(rootDir: string, maxDepth: number): Promise<RepoE
   return result;
 }
 
+const MAX_LOG_VIEW_BYTES = 2 * 1024 * 1024;
+
+async function readLogFileForView(
+  logDir: string,
+  relativePath: string
+): Promise<{ path: string; content: string; truncated: boolean }> {
+  const absolutePath = resolvePathWithinRoot(logDir, relativePath);
+  const stats = await fs.promises.stat(absolutePath);
+  if (!stats.isFile()) {
+    const err = new Error("Not a file") as NodeJS.ErrnoException;
+    err.code = "EISDIR";
+    throw err;
+  }
+  if (stats.size <= MAX_LOG_VIEW_BYTES) {
+    const content = await fs.promises.readFile(absolutePath, "utf8");
+    return { path: relativePath, content, truncated: false };
+  }
+  const handle = await fs.promises.open(absolutePath, "r");
+  try {
+    const toRead = Math.min(stats.size, MAX_LOG_VIEW_BYTES);
+    const buffer = Buffer.alloc(toRead);
+    await handle.read(buffer, 0, toRead, stats.size - toRead);
+    let text = buffer.toString("utf8");
+    const nl = text.indexOf("\n");
+    if (nl >= 0 && nl < text.length - 1) {
+      text = text.slice(nl + 1);
+    }
+    const prefix = `[... large file (${stats.size} bytes); showing last ${toRead} bytes ...]\n`;
+    return { path: relativePath, content: prefix + text, truncated: true };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function clearLogFileOnDisk(logDir: string, relativePath: string): Promise<void> {
+  const absolutePath = resolvePathWithinRoot(logDir, relativePath);
+  const stats = await fs.promises.stat(absolutePath);
+  if (!stats.isFile()) {
+    const err = new Error("Not a file") as NodeJS.ErrnoException;
+    err.code = "EISDIR";
+    throw err;
+  }
+  await fs.promises.truncate(absolutePath, 0);
+}
+
 export class WebInterfaceServer {
   private readonly enabled: boolean;
   private readonly port: number;
@@ -444,6 +548,16 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/log_file" && request.method === "GET") {
+      await this.handleLogFileReadRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/log_file/clear" && request.method === "POST") {
+      await this.handleLogFileClearRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/run" && request.method === "POST") {
       await this.handleRunRequest(request, response);
       return;
@@ -461,6 +575,16 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/detach" && request.method === "POST") {
       await this.handleThreadActionRequest(request, response, "detach");
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/spawn_repos/browse" && request.method === "GET") {
+      await this.handleSpawnReposBrowseRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/spawn_repos" && request.method === "GET") {
+      await this.handleSpawnReposRequest(response);
       return;
     }
 
@@ -554,6 +678,70 @@ export class WebInterfaceServer {
     this.respondJson(response, 200, inventory);
   }
 
+  private async handleLogFileReadRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    let query: z.infer<typeof logFileReadQuerySchema>;
+    try {
+      query = logFileReadQuerySchema.parse({
+        path: requestUrl.searchParams.get("path")
+      });
+    } catch {
+      this.respondJson(response, 400, { error: "Invalid path parameter" });
+      return;
+    }
+    try {
+      const result = await readLogFileForView(this.logDir, query.path);
+      this.respondJson(response, 200, result);
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & Error;
+      if (e.message === "Invalid relative file path" || e.message === "Resolved path escapes working directory") {
+        this.respondJson(response, 400, { error: e.message });
+        return;
+      }
+      if (e.code === "ENOENT") {
+        this.respondJson(response, 404, { error: "Log file not found" });
+        return;
+      }
+      if (e.code === "EISDIR") {
+        this.respondJson(response, 404, { error: "Not a file" });
+        return;
+      }
+      this.logger.warn({ err: e }, "log file read failed");
+      this.respondJson(response, 500, { error: "Failed to read log file" });
+    }
+  }
+
+  private async handleLogFileClearRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    let body: z.infer<typeof logFileClearBodySchema>;
+    try {
+      body = logFileClearBodySchema.parse(await this.readJsonBody(request));
+    } catch {
+      this.respondJson(response, 400, { error: "Invalid request body (expected { path: string } for a .log file)" });
+      return;
+    }
+    try {
+      await clearLogFileOnDisk(this.logDir, body.path);
+      this.logger.info({ path: body.path }, "log file cleared via web UI");
+      this.respondJson(response, 200, { ok: true, path: body.path });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & Error;
+      if (e.message === "Invalid relative file path" || e.message === "Resolved path escapes working directory") {
+        this.respondJson(response, 400, { error: e.message });
+        return;
+      }
+      if (e.code === "ENOENT") {
+        this.respondJson(response, 404, { error: "Log file not found" });
+        return;
+      }
+      if (e.code === "EISDIR") {
+        this.respondJson(response, 404, { error: "Not a file" });
+        return;
+      }
+      this.logger.warn({ err: e }, "log file clear failed");
+      this.respondJson(response, 500, { error: "Failed to clear log file" });
+    }
+  }
+
   private async handleRunRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = runRequestBodySchema.parse(await this.readJsonBody(request));
@@ -597,10 +785,34 @@ export class WebInterfaceServer {
     this.respondJson(response, 200, result);
   }
 
+  private async handleSpawnReposRequest(response: http.ServerResponse): Promise<void> {
+    const root = path.resolve(config.AGENT_WORKDIR);
+    let repos: Array<{ name: string }> = [];
+    try {
+      const entries = await fs.promises.readdir(root, { withFileTypes: true });
+      repos = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({ name: entry.name }))
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .slice(0, 64);
+    } catch {
+      repos = [];
+    }
+    this.respondJson(response, 200, { root, repos });
+  }
+
   private async handleSpawnRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = spawnRequestBodySchema.parse(await this.readJsonBody(request));
     const hostHeader = request.headers.host;
+    let spawnDir: string | undefined;
+    try {
+      spawnDir = await this.resolveSpawnDirectoryForSpawnRequest(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.respondJson(response, 400, { error: message });
+      return;
+    }
     const result = HubResultSchema.parse(
       await this.requestHub(
         this.buildHubMessage({
@@ -611,12 +823,126 @@ export class WebInterfaceServer {
           content: "",
           mode: body.mode,
           autoApprove: body.auto_approve,
-          guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined
+          guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined,
+          spawnDir
         })
       )
     );
 
     this.respondJson(response, 200, result);
+  }
+
+  /**
+   * Resolves optional `repo` (relative to AGENT_WORKDIR) or `spawn_dir` (absolute) to a directory
+   * that stays under AGENT_WORKDIR. Hub receives `spawn_dir` in the message payload.
+   */
+  private async resolveSpawnDirectoryForSpawnRequest(
+    body: z.infer<typeof spawnRequestBodySchema>
+  ): Promise<string | undefined> {
+    const root = path.resolve(config.AGENT_WORKDIR);
+    const rawSpawnDir = body.spawn_dir?.trim();
+    const rawRepo = body.repo?.trim();
+    if (rawSpawnDir && rawRepo) {
+      throw new Error("Specify only one of spawn_dir or repo");
+    }
+    if (rawSpawnDir) {
+      return this.assertDirectoryUnderAgentRoot(path.resolve(rawSpawnDir), root);
+    }
+    if (rawRepo) {
+      const normalized = normalizeRelativePath(rawRepo);
+      const parts = normalized.split("/").filter(Boolean);
+      const resolved = path.resolve(root, ...parts);
+      return this.assertDirectoryUnderAgentRoot(resolved, root);
+    }
+    return undefined;
+  }
+
+  private async handleSpawnReposBrowseRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const rawParam = requestUrl.searchParams.get("relative") ?? "";
+    let relativeNormalized = "";
+    try {
+      if (rawParam.trim()) {
+        relativeNormalized = normalizeRelativePath(rawParam);
+      }
+    } catch {
+      this.respondJson(response, 400, { error: "Invalid relative path" });
+      return;
+    }
+
+    const root = path.resolve(config.AGENT_WORKDIR);
+    const resolvedDir = relativeNormalized
+      ? path.resolve(root, ...relativeNormalized.split("/").filter(Boolean))
+      : root;
+
+    if (resolvedDir !== root && !resolvedDir.startsWith(`${root}${path.sep}`)) {
+      this.respondJson(response, 400, { error: "Path outside workspace" });
+      return;
+    }
+
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(resolvedDir);
+    } catch {
+      this.respondJson(response, 404, { error: "Directory not found" });
+      return;
+    }
+    if (!stats.isDirectory()) {
+      this.respondJson(response, 400, { error: "Not a directory" });
+      return;
+    }
+
+    const entries: Array<{ name: string; kind: "directory" }> = [];
+    try {
+      const dirents = await fs.promises.readdir(resolvedDir, { withFileTypes: true });
+      for (const entry of dirents) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        if (entry.name.startsWith(".")) {
+          continue;
+        }
+        entries.push({ name: entry.name, kind: "directory" });
+      }
+    } catch {
+      // keep empty entries on read errors
+    }
+
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    const limited = entries.slice(0, 64);
+
+    let parent_relative: string | null = null;
+    if (relativeNormalized) {
+      const parts = relativeNormalized.split("/").filter(Boolean);
+      parts.pop();
+      parent_relative = parts.length ? parts.join("/") : "";
+    }
+
+    this.respondJson(response, 200, {
+      root,
+      relative: relativeNormalized,
+      parent_relative,
+      entries: limited
+    });
+  }
+
+  private async assertDirectoryUnderAgentRoot(resolvedPath: string, agentRoot: string): Promise<string> {
+    if (resolvedPath !== agentRoot && !resolvedPath.startsWith(`${agentRoot}${path.sep}`)) {
+      throw new Error("Working directory must be under AGENT_WORKDIR");
+    }
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(resolvedPath);
+    } catch {
+      throw new Error(`Working directory does not exist: ${resolvedPath}`);
+    }
+    if (!stats.isDirectory()) {
+      throw new Error(`Working directory is not a directory: ${resolvedPath}`);
+    }
+    return resolvedPath;
   }
 
   private async handleFilesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -705,7 +1031,7 @@ export class WebInterfaceServer {
       return;
     }
 
-    this.respondJson(response, 200, result);
+    this.respondJson(response, 200, coerceProgressSnapshot(result));
   }
 
   private async handleFileWriteRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -994,13 +1320,18 @@ export class WebInterfaceServer {
           if (paneOutput.success) {
             outbound = JSON.stringify(paneOutput.data);
           } else {
-            const unavailable = PaneOutputNotAvailableSchema.parse(parsed);
-            outbound = JSON.stringify(unavailable);
+            const a2aMessage = a2aWebSocketMessageSchema.safeParse(parsed);
+            if (a2aMessage.success) {
+              outbound = JSON.stringify(a2aMessage.data);
+            } else {
+              const unavailable = PaneOutputNotAvailableSchema.parse(parsed);
+              outbound = JSON.stringify(unavailable);
+            }
           }
         } catch (error) {
           this.logger.warn(
             { err: error instanceof Error ? error.message : String(error), thread_id: threadId },
-            "Dropping malformed pane output payload"
+            "Dropping malformed WebSocket bridge payload"
           );
           continue;
         }
@@ -1126,6 +1457,8 @@ export class WebInterfaceServer {
     mode?: "bridge" | "pane_bridge";
     autoApprove?: boolean;
     guiHostPortOverride?: string;
+    /** Passed through to Hub `payload.spawn_dir` (agent working directory). */
+    spawnDir?: string;
   }): HubMessage {
     return HubMessageSchema.parse({
       trace_id: randomUUID(),
@@ -1138,7 +1471,8 @@ export class WebInterfaceServer {
         attachments: params.attachments ?? [],
         reply_to: null,
         ...(params.autoApprove !== undefined && { auto_approve: params.autoApprove }),
-        ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride })
+        ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride }),
+        ...(params.spawnDir && { spawn_dir: params.spawnDir })
       },
       mode: params.mode ?? "bridge",
       suppress_reply: true,

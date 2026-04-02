@@ -62,11 +62,19 @@ export type PersistedHubState = z.input<typeof PersistedHubStateSchema>;
 export type PersistedPushSubscription = z.input<typeof PersistedPushSubscriptionSchema>;
 export type PersistedConversationHistoryEntry = z.input<typeof PersistedConversationHistoryEntrySchema>;
 
+function isSupersededByFinalReplyEventKind(eventKind: ConversationEventKind): eventKind is "progress" {
+  return eventKind === "progress";
+}
+
 function buildReplaceKey(
   threadId: string,
   traceId: string | null,
   eventKind: Extract<ConversationEventKind, "progress" | "approval">
-): string {
+): string | null {
+  if (eventKind !== "approval") {
+    return null;
+  }
+
   return traceId ? `${traceId}:${eventKind}` : `${threadId}:${eventKind}`;
 }
 
@@ -123,7 +131,7 @@ function migrateLegacyConversationHistory(
           if (!existing) {
             continue;
           }
-          if (existing.trace_id === entry.trace_id && (existing.event_kind === "progress" || existing.event_kind === "approval")) {
+          if (existing.trace_id === entry.trace_id && isSupersededByFinalReplyEventKind(existing.event_kind)) {
             nextEntries.splice(migratedIndex, 1);
           }
         }

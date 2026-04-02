@@ -21,7 +21,15 @@ export function buildClaudeCliArgs(
   modelId?: string,
   autoApprove?: boolean
 ): string[] {
-  const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
+  const args = [
+    claudeAgentConfig.command,
+    "--allowedTools",
+    allowedTools.join(" "),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
+  ];
   if (modelId) {
     args.push("--model", modelId);
   }
@@ -42,5 +50,25 @@ export function buildClaudeSpawnArgs(
   void tmuxSession;
   const args = ["server", `--type=${claudeAgentConfig.type}`, endpointFlag];
   args.push("--", ...buildClaudeCliArgs(claudeAgentConfig.allowedTools, modelId, autoApprove));
+  return args;
+}
+
+export function buildClaudeStreamArgs(modelId?: string, autoApprove?: boolean): string[] {
+  const args = [
+    claudeAgentConfig.command,
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--allowedTools",
+    claudeAgentConfig.allowedTools.join(" ")
+  ];
+  if (modelId) {
+    args.push("--model", modelId);
+  }
+  if (autoApprove === true) {
+    args.push("--dangerously-skip-permissions");
+  }
   return args;
 }

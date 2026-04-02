@@ -6,6 +6,7 @@ import { config, type AppConfig } from "../config";
 import { createLogger } from "../logger";
 import { MonitorEventSchema, type MonitorEvent } from "../monitor/events";
 import { buildAgentErrorInlineKeyboard } from "../shared/telegram-controls";
+import type { A2AMessage } from "../shared/a2a-adapter";
 import {
   AgentTypeSchema,
   HubMessageSchema,
@@ -18,9 +19,11 @@ import {
   type AgentType,
   type HubMessage,
   type HubResult,
-  type ReplyChannel
+  type ReplyChannel,
+  type ThreadProgressSnapshot
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
+import { appendA2AWebSocketLog } from "./a2a-websocket-log";
 import { PaneBroadcaster } from "./pane-broadcaster";
 import { ResultSender, shouldPushTelegramProactive } from "./result-sender";
 import { TelegramChannelAdapter } from "../interface/adapters/telegram-adapter";
@@ -28,6 +31,8 @@ import { WebChannelAdapter } from "../interface/adapters/web-adapter";
 import { SocketChannelAdapter } from "./socket-adapter";
 import { InstanceRegistry } from "./registry";
 import { classifyAgentOutput } from "../shared/agent-output";
+import type { OutputDelta } from "../shared/stream-adapter";
+import { OutputBus } from "./output-bus";
 import { HubRouter, type MonitorUpdateDispatch, type PushDeliveryTarget } from "./router";
 
 interface InboundEnvelope {
@@ -42,6 +47,7 @@ export interface HubServerOptions {
   resultSender?: ResultSender;
   paneBroadcaster?: PaneBroadcaster;
   staticServiceEndpoints?: ServiceEndpoint[];
+  outputBus?: OutputBus;
 }
 
 export function resolveStaticServiceEndpoints(appConfig: AppConfig = config): ServiceEndpoint[] {
@@ -88,6 +94,7 @@ const IMMEDIATE_INTENTS = new Set([
   "history",
   "list",
   "list_models",
+  "monitor_manual_update",
   "push",
   "status",
   "terminal_input",
@@ -106,6 +113,22 @@ interface PushDedupState {
   sentAtMs: number;
 }
 
+interface MonitorProgressDispatchContext {
+  threadId: string;
+  source: AgentType;
+  snapshot: string;
+  targets: MonitorUpdateDispatch[];
+  timestamp: string;
+}
+
+interface OutputBusDeliveryContext {
+  threadId: string;
+  source: AgentType;
+  timestamp: string;
+  replyChannels: ReplyChannel[];
+  historyBacked: boolean;
+}
+
 const PUSH_DEDUP_TAIL_CHARS = 600;
 
 export class HubServer {
@@ -113,6 +136,7 @@ export class HubServer {
   private readonly socketPath: string;
   private readonly router: HubRouter;
   private readonly resultSender: ResultSender;
+  private readonly outputBus: OutputBus;
   private readonly paneBroadcaster: PaneBroadcaster;
   private readonly staticServiceEndpoints: ServiceEndpoint[];
   private server: net.Server | null = null;
@@ -125,17 +149,27 @@ export class HubServer {
   private priorityQueueDraining = false;
   private readonly pushAccumulators = new Map<string, PushAccumulator>();
   private readonly lastPushDedupByThread = new Map<string, PushDedupState>();
+  private readonly monitorProgressContextByTrace = new Map<string, MonitorProgressDispatchContext>();
+  private readonly outputBusDeliveryContextByTrace = new Map<string, OutputBusDeliveryContext>();
+  private readonly outputBusThreadByTrace = new Map<string, string>();
+  private readonly websocketSubscribersByThread = new Map<string, Set<net.Socket>>();
 
   constructor(options: HubServerOptions = {}) {
     this.socketPath = options.socketPath ?? config.HUB_SOCKET_PATH;
-    this.router = options.router ?? new HubRouter(new InstanceRegistry());
+    this.router =
+      options.router ??
+      new HubRouter(new InstanceRegistry(), options.outputBus ? { outputBus: options.outputBus } : {});
     this.resultSender = options.resultSender ?? new ResultSender([
       new SocketChannelAdapter(),
       new TelegramChannelAdapter(),
       new WebChannelAdapter()
     ]);
+    this.outputBus = options.outputBus ?? this.resolveOutputBusFromRouter(this.router);
     this.paneBroadcaster = options.paneBroadcaster ?? new PaneBroadcaster();
     this.staticServiceEndpoints = options.staticServiceEndpoints ?? resolveStaticServiceEndpoints();
+    this.outputBus.setAdapterOutput((traceId, _message, delta) => this.dispatchOutputBusDelta(traceId, delta));
+    this.outputBus.setWebsocketOutput((traceId, message) => this.dispatchOutputBusWebsocketMessage(traceId, message));
+    this.outputBus.setRecordOutput((traceId) => this.recordMonitorProgressSnapshot(traceId));
   }
 
   async start(): Promise<void> {
@@ -195,11 +229,13 @@ export class HubServer {
       });
 
       socket.on("error", (error) => {
+        this.cleanupWebsocketSubscriptions(socket);
         this.paneBroadcaster.cleanupSocket(socket);
         this.log.error({ trace_id: null, thread_id: null, err: String(error) }, "Hub socket connection failed");
       });
 
       socket.on("close", () => {
+        this.cleanupWebsocketSubscriptions(socket);
         this.paneBroadcaster.cleanupSocket(socket);
       });
     });
@@ -240,19 +276,21 @@ export class HubServer {
     const parsed = JSON.parse(raw) as unknown;
     const subscribeRequest = PaneSubscribeRequestSchema.safeParse(parsed);
     if (subscribeRequest.success) {
+      this.registerWebsocketSubscriber(subscribeRequest.data.thread_id, socket);
       const result = await this.paneBroadcaster.subscribe(
         socket,
         this.router.resolveInstanceForThread(subscribeRequest.data.thread_id),
         subscribeRequest.data
       );
       if (result.kind === "not_available" && socket.writable) {
-        socket.end(JSON.stringify(result.payload));
+        socket.write(`${JSON.stringify(result.payload)}\n`);
       }
       return;
     }
 
     const unsubscribeRequest = PaneUnsubscribeRequestSchema.safeParse(parsed);
     if (unsubscribeRequest.success) {
+      this.unregisterWebsocketSubscriber(unsubscribeRequest.data.thread_id, socket);
       this.paneBroadcaster.unsubscribe(socket, unsubscribeRequest.data.thread_id);
       if (closeOnComplete && socket.writable) {
         socket.end();
@@ -384,6 +422,7 @@ export class HubServer {
         return cachedResult;
       }
 
+      this.outputBusThreadByTrace.set(message.trace_id, message.thread_id);
       const result = await this.router.route(message);
       const validatedResult = HubResultSchema.parse(result);
       this.cacheIdempotencyResult(message, validatedResult);
@@ -430,6 +469,10 @@ export class HubServer {
         });
       }
       return fallbackResult;
+    } finally {
+      if (message) {
+        this.outputBusThreadByTrace.delete(message.trace_id);
+      }
     }
   }
 
@@ -685,14 +728,14 @@ export class HubServer {
           continue;
         }
 
-        const traceId = randomUUID();
-        let progressResult: HubResult;
+        const requestedTraceId = randomUUID();
+        let progressSnapshot: ThreadProgressSnapshot;
         try {
-          progressResult = await this.router.buildProgressResultForThread(threadId, traceId);
+          progressSnapshot = await this.router.buildProgressSnapshotForThread(threadId, requestedTraceId);
         } catch (error) {
           this.log.error(
             {
-              trace_id: traceId,
+              trace_id: requestedTraceId,
               thread_id: threadId,
               err: error instanceof Error ? error.message : String(error)
             },
@@ -700,6 +743,8 @@ export class HubServer {
           );
           continue;
         }
+        const traceId = progressSnapshot.trace_id;
+        const progressResult = this.buildMonitorProgressResult(progressSnapshot);
         if (!shouldPushTelegramProactive(progressResult)) {
           this.log.info(
             {
@@ -712,27 +757,125 @@ export class HubServer {
           continue;
         }
 
-        this.recordAgentPushConversationSafe(threadId, progressResult.content, progressResult.trace_id, "progress");
-        for (const target of targetsToNotify) {
-          await this.resultSender
-            .sendResult(this.buildHistoryBackedResult(progressResult), target.replyChannel)
-            .catch((error) => {
-              this.log.error(
-                {
-                  trace_id: traceId,
-                  thread_id: threadId,
-                  target: target.replyChannel.chat_id,
-                  bot_id: target.replyChannel.bot_id ?? null,
-                  err: error instanceof Error ? error.message : String(error)
-                },
-                "Failed to deliver monitor progress update"
-              );
-            });
+        const replyChannels = targetsToNotify.map((target) =>
+          target.replyChannel ?? {
+            channel: "telegram",
+            chat_id: target.chatId,
+            ...(target.botId ? { bot_id: target.botId } : {})
+          }
+        );
+        this.monitorProgressContextByTrace.set(traceId, {
+          threadId,
+          source: progressSnapshot.source,
+          snapshot: progressSnapshot.content,
+          targets: targetsToNotify,
+          timestamp: progressSnapshot.updated_at
+        });
+        this.outputBusDeliveryContextByTrace.set(traceId, {
+          threadId,
+          source: progressSnapshot.source,
+          timestamp: progressSnapshot.updated_at,
+          replyChannels,
+          historyBacked: false
+        });
+        try {
+          this.outputBus.pushSnapshot(traceId, progressSnapshot.content);
+        } finally {
+          this.outputBusDeliveryContextByTrace.delete(traceId);
+          this.monitorProgressContextByTrace.delete(traceId);
         }
       }
     } finally {
       this.monitorProgressInFlight = false;
     }
+  }
+
+  private resolveOutputBusFromRouter(router: HubRouter): OutputBus {
+    const candidate = router as unknown as { getOutputBus?: () => OutputBus };
+    return candidate.getOutputBus?.() ?? new OutputBus();
+  }
+
+  private buildMonitorProgressResult(snapshot: ThreadProgressSnapshot): HubResult {
+    return HubResultSchema.parse({
+      trace_id: snapshot.trace_id,
+      thread_id: snapshot.thread_id,
+      source: snapshot.source,
+      status: "partial",
+      content: snapshot.content,
+      progress: snapshot,
+      attachments: [],
+      timestamp: snapshot.updated_at
+    });
+  }
+
+  private async dispatchOutputBusDelta(traceId: string, delta: OutputDelta): Promise<void> {
+    const context = this.outputBusDeliveryContextByTrace.get(traceId);
+    if (!context) {
+      return;
+    }
+
+    const result = HubResultSchema.parse({
+      trace_id: traceId,
+      thread_id: context.threadId,
+      source: context.source,
+      status: delta.phase === "error" ? "error" : delta.phase === "result" ? "success" : "partial",
+      content: delta.text ?? "",
+      attachments: [],
+      timestamp: context.timestamp
+    });
+    const outbound = context.historyBacked ? this.buildHistoryBackedResult(result) : result;
+
+    for (const replyChannel of context.replyChannels) {
+      await this.resultSender.sendResult(outbound, replyChannel).catch((error) => {
+        this.log.error(
+          {
+            trace_id: traceId,
+            thread_id: context.threadId,
+            target: replyChannel.chat_id,
+            bot_id: replyChannel.bot_id ?? null,
+            err: error instanceof Error ? error.message : String(error)
+          },
+          "Failed to deliver monitor progress update"
+        );
+      });
+    }
+  }
+
+  private dispatchOutputBusWebsocketMessage(traceId: string, message: A2AMessage): void {
+    const threadId =
+      this.outputBusDeliveryContextByTrace.get(traceId)?.threadId ?? this.outputBusThreadByTrace.get(traceId) ?? null;
+    if (!threadId) {
+      return;
+    }
+
+    const payload = JSON.stringify({
+      type: "a2a_message",
+      ...message
+    });
+    appendA2AWebSocketLog(config.LOG_DIR, threadId, payload);
+
+    const subscribers = this.websocketSubscribersByThread.get(threadId);
+    if (!subscribers || subscribers.size === 0) {
+      return;
+    }
+
+    for (const socket of [...subscribers]) {
+      if (!this.writeWebsocketPayload(socket, payload)) {
+        subscribers.delete(socket);
+      }
+    }
+
+    if (subscribers.size === 0) {
+      this.websocketSubscribersByThread.delete(threadId);
+    }
+  }
+
+  private recordMonitorProgressSnapshot(traceId: string): void {
+    const context = this.monitorProgressContextByTrace.get(traceId);
+    if (!context) {
+      return;
+    }
+    this.recordAgentPushConversationSafe(context.threadId, context.snapshot, traceId, "progress");
   }
 
   private groupMonitorDispatchesByThread(dispatches: MonitorUpdateDispatch[]): Map<string, MonitorUpdateDispatch[]> {
@@ -841,9 +984,6 @@ export class HubServer {
 
   private registerPushCallback(): void {
     this.paneBroadcaster.registerPushCallback((threadId: string, chunk: string) => {
-      if (this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId)) {
-        return;
-      }
       const subscribers = this.getPushSubscriptionsForThreadSafe(threadId);
       if (subscribers.length === 0) {
         return;
@@ -866,6 +1006,43 @@ export class HubServer {
       timer.unref();
       this.pushAccumulators.set(threadId, { chunks: [chunk], timer });
     });
+  }
+
+  private registerWebsocketSubscriber(threadId: string, socket: net.Socket): void {
+    const existing = this.websocketSubscribersByThread.get(threadId);
+    if (existing) {
+      existing.add(socket);
+      return;
+    }
+    this.websocketSubscribersByThread.set(threadId, new Set([socket]));
+  }
+
+  private unregisterWebsocketSubscriber(threadId: string, socket: net.Socket): void {
+    const existing = this.websocketSubscribersByThread.get(threadId);
+    if (!existing) {
+      return;
+    }
+    existing.delete(socket);
+    if (existing.size === 0) {
+      this.websocketSubscribersByThread.delete(threadId);
+    }
+  }
+
+  private cleanupWebsocketSubscriptions(socket: net.Socket): void {
+    for (const [threadId, subscribers] of this.websocketSubscribersByThread.entries()) {
+      subscribers.delete(socket);
+      if (subscribers.size === 0) {
+        this.websocketSubscribersByThread.delete(threadId);
+      }
+    }
+  }
+
+  private writeWebsocketPayload(socket: net.Socket, payload: string): boolean {
+    if (socket.destroyed || !socket.writable) {
+      return false;
+    }
+    socket.write(`${payload}\n`);
+    return true;
   }
 
   private async flushPushAccumulator(threadId: string): Promise<void> {
@@ -913,7 +1090,7 @@ export class HubServer {
       return;
     }
 
-    const traceId = randomUUID();
+    const traceId = this.getActiveRunTraceIdSafe(threadId) ?? randomUUID();
     const source = this.router.resolveSourceForThread(threadId);
     const normalizedText = classification.text.trim();
     const content = normalizedText.trim();
@@ -924,33 +1101,18 @@ export class HubServer {
       return;
     }
 
-    const result: HubResult = HubResultSchema.parse({
-      trace_id: traceId,
-      thread_id: threadId,
-      source,
-      status: "success",
-      content,
-      attachments: [],
-      timestamp: new Date().toISOString()
-    });
-
     this.recordAgentPushConversationSafe(threadId, content, traceId, "progress");
-
-    for (const subscriber of subscribers) {
-      await this.resultSender
-        .sendResult(this.buildHistoryBackedResult(result), subscriber.replyChannel)
-        .catch((error) => {
-          this.log.error(
-            {
-              trace_id: traceId,
-              thread_id: threadId,
-              target: subscriber.replyChannel.chat_id,
-              bot_id: subscriber.replyChannel.bot_id ?? null,
-              err: error instanceof Error ? error.message : String(error)
-            },
-            "Failed to deliver push agent text"
-          );
-        });
+    this.outputBusDeliveryContextByTrace.set(traceId, {
+      threadId,
+      source,
+      timestamp: new Date().toISOString(),
+      replyChannels: subscribers.map((subscriber) => subscriber.replyChannel),
+      historyBacked: true
+    });
+    try {
+      this.outputBus.pushSnapshot(traceId, content);
+    } finally {
+      this.outputBusDeliveryContextByTrace.delete(traceId);
     }
 
     this.log.info(
@@ -960,7 +1122,7 @@ export class HubServer {
         kind: classification.kind,
         subscriber_count: subscribers.length
       },
-      "Push agent text delivered"
+      "Push agent text dispatched through OutputBus"
     );
   }
 
@@ -994,6 +1156,13 @@ export class HubServer {
       isWithinRunCompletionCooldown?: (id: string, cooldownMs: number) => boolean;
     };
     return candidate.isWithinRunCompletionCooldown?.(threadId, RUN_COMPLETION_COOLDOWN_MS) ?? false;
+  }
+
+  private getActiveRunTraceIdSafe(threadId: string): string | null {
+    const candidate = this.router as unknown as {
+      getActiveRunTraceId?: (id: string) => string | null;
+    };
+    return candidate.getActiveRunTraceId?.(threadId) ?? null;
   }
 
   private recordAgentPushConversationSafe(
@@ -1149,6 +1318,9 @@ export class HubServer {
     }
     this.pushAccumulators.clear();
     this.lastPushDedupByThread.clear();
+    this.outputBusDeliveryContextByTrace.clear();
+    this.outputBusThreadByTrace.clear();
+    this.websocketSubscribersByThread.clear();
   }
 
   private async removeStaleSocket(): Promise<void> {
