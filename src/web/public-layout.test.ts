@@ -368,10 +368,20 @@ function createTerminalBehaviorHarness(html: string): {
     console
   };
 
+  context.latestKnownTraceId = "";
+  context.recordLatestTraceId = (raw: unknown) => {
+    if (raw == null || typeof raw !== "string") return;
+    const t = raw.trim();
+    if (!t) return;
+    context.latestKnownTraceId = t.toLowerCase();
+  };
+  context.syncOverflowTraceRow = () => undefined;
+
   bindTerminalFunctions(html, context, [
     "buildTraceMessageKey",
     "buildHistoryMessageKey",
     "buildProgressMessageKey",
+    "traceIdFromMessageKey",
     "findLatestPendingHistoryEntry",
     "findLatestFinalHistoryEntry",
     "restoreServerChatHistory",
@@ -449,8 +459,11 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
 
   assert.match(indexHtml, /id="spawn-provider"/);
+  assert.match(indexHtml, /id="btn-spawn-workspace"/);
+  assert.match(indexHtml, /\/api\/spawn_repos\/browse/);
   assert.match(indexHtml, /SPAWN_PROVIDER_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_AUTO_APPROVE_STORAGE_KEY/);
+  assert.match(indexHtml, /SPAWN_REPO_STORAGE_KEY/);
   assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
 });
 
@@ -460,6 +473,10 @@ test("hub layout renders log footprint monitoring from the main page", async () 
   assert.match(indexHtml, /id="log-overview"/);
   assert.match(indexHtml, /id="log-list"/);
   assert.match(indexHtml, /\/api\/logs/);
+  assert.match(indexHtml, /\/api\/log_file/);
+  assert.match(indexHtml, /\/api\/log_file\/clear/);
+  assert.match(indexHtml, /function clearLogFile\(/);
+  assert.match(indexHtml, /id="log-view-dialog"/);
   assert.match(indexHtml, /function renderLogInventory\(payload\)/);
 });
 

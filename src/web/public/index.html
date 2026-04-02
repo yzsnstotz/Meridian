@@ -63,11 +63,121 @@
 
     .toolbar {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       margin-bottom: 2rem;
       gap: 1rem;
       flex-wrap: wrap;
+    }
+    .toolbar-main {
+      flex: 1;
+      min-width: 0;
+    }
+    .spawn-controls-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      width: 100%;
+    }
+    .spawn-row-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) auto;
+      gap: 0.75rem 0.875rem;
+      align-items: stretch;
+      width: 100%;
+    }
+    .spawn-row-bottom {
+      width: 100%;
+    }
+    .spawn-row-bottom .toggle {
+      width: 100%;
+      box-sizing: border-box;
+      justify-content: flex-start;
+    }
+    .btn-workspace {
+      min-width: 0;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--border-color);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-color);
+      font-size: 0.875rem;
+      text-align: left;
+      cursor: pointer;
+      font-family: inherit;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .btn-workspace:hover {
+      border-color: rgba(59, 130, 246, 0.45);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .toolbar-live {
+      flex-shrink: 0;
+      padding-top: 0.35rem;
+    }
+    .spawn-workspace-dialog {
+      max-width: min(520px, 94vw);
+    }
+    .spawn-breadcrumb {
+      padding: 0.5rem 1rem;
+      font-size: 0.72rem;
+      font-family: "SF Mono", "Fira Code", monospace;
+      color: var(--text-dim);
+      word-break: break-all;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .spawn-dir-list {
+      max-height: min(48vh, 320px);
+      overflow-y: auto;
+      padding: 0.35rem 0;
+    }
+    .spawn-dir-row {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 0.65rem 1rem;
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      border-radius: 0.35rem;
+    }
+    .spawn-dir-row:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .spawn-dir-empty {
+      padding: 0.75rem 1rem;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+    .spawn-workspace-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-top: 1px solid rgba(148, 163, 184, 0.14);
+      justify-content: flex-end;
+    }
+    .spawn-workspace-actions button {
+      padding: 0.5rem 0.85rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-color);
+      font-size: 0.8125rem;
+      cursor: pointer;
+    }
+    .spawn-workspace-actions button.primary {
+      background: var(--accent-color);
+      border-color: var(--accent-color);
+      color: #fff;
+    }
+    .spawn-workspace-actions button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
 
     .overview-panel {
@@ -124,11 +234,149 @@
     }
 
     .log-item {
+      position: relative;
       border: 1px solid rgba(148, 163, 184, 0.14);
       border-radius: 0.85rem;
       background: rgba(255, 255, 255, 0.03);
       padding: 0.8rem 0.9rem;
+      padding-right: 2.35rem;
       min-width: 0;
+    }
+
+    .log-item-open {
+      display: block;
+      width: 100%;
+      text-align: left;
+      cursor: pointer;
+      font: inherit;
+      color: inherit;
+      border: none;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .log-item:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(148, 163, 184, 0.28);
+    }
+
+    .log-item-open:focus-visible {
+      outline: 2px solid var(--accent-color);
+      outline-offset: 2px;
+      border-radius: 0.35rem;
+    }
+
+    .log-item-clear {
+      position: absolute;
+      top: 0.55rem;
+      right: 0.5rem;
+      z-index: 2;
+      width: 1.85rem;
+      height: 1.85rem;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 0.45rem;
+      background: rgba(255, 255, 255, 0.06);
+      cursor: pointer;
+      font-size: 0.95rem;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .log-item-clear:hover {
+      background: rgba(248, 113, 113, 0.2);
+    }
+
+    .log-item-clear:focus-visible {
+      outline: 2px solid var(--accent-color);
+      outline-offset: 2px;
+    }
+
+    .log-view-dialog {
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 0.85rem;
+      background: rgba(15, 18, 28, 0.98);
+      color: var(--text-primary, #e2e8f0);
+      padding: 0;
+      max-width: min(920px, 92vw);
+      width: 100%;
+      max-height: 85vh;
+    }
+
+    .log-view-dialog::backdrop {
+      background: rgba(0, 0, 0, 0.62);
+    }
+
+    .log-view-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    }
+
+    .log-view-head h3 {
+      margin: 0;
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: "SF Mono", "Fira Code", monospace;
+      word-break: break-all;
+      line-height: 1.35;
+    }
+
+    .log-view-close {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      border: none;
+      border-radius: 0.5rem;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-dim, #94a3b8);
+      font-size: 1.25rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .log-view-close:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
+    .log-view-body {
+      margin: 0;
+      padding: 1rem;
+      max-height: min(62vh, 520px);
+      overflow: auto;
+      font-size: 0.72rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+      color: #cbd5e1;
+    }
+
+    .log-view-banner {
+      padding: 0.5rem 1rem;
+      font-size: 0.78rem;
+      color: #fbbf24;
+      border-bottom: 1px solid rgba(251, 191, 36, 0.2);
+      background: rgba(251, 191, 36, 0.06);
+    }
+
+    .log-view-error {
+      padding: 0.5rem 1rem;
+      color: #f87171;
+      font-size: 0.8rem;
+      border-bottom: 1px solid rgba(248, 113, 113, 0.2);
     }
 
     .log-item-path {
@@ -137,6 +385,7 @@
       line-height: 1.4;
       color: #dbe7ff;
       word-break: break-all;
+      padding-right: 0.25rem;
     }
 
     .log-item-meta {
@@ -259,6 +508,27 @@
       gap: 0.5rem;
     }
 
+    .card-repo {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      min-width: 0;
+    }
+    .card-repo-name {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #fff;
+      line-height: 1.25;
+      word-break: break-word;
+    }
+    .card-repo-path {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.7rem;
+      line-height: 1.35;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+
     .thread-id {
       font-family: "SF Mono", "Fira Code", monospace;
       font-weight: 600;
@@ -298,6 +568,9 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 0.75rem;
+    }
+    .card-secondary-body .detail-item.span-2 {
+      grid-column: 1 / -1;
     }
     .detail-item { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
     .detail-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.025em; }
@@ -420,6 +693,9 @@
     .fab svg { width: 24px; height: 24px; }
 
     @media (max-width: 640px) {
+      .spawn-row-top {
+        grid-template-columns: 1fr;
+      }
       #app { padding: 1rem; padding-bottom: 5rem; }
       .card-grid { grid-template-columns: 1fr; gap: 0.75rem; }
       header { padding: calc(1rem + var(--safe-area-inset-top)) 1rem 1rem; }
@@ -455,25 +731,46 @@
 
     <div id="content" class="hidden">
       <div class="toolbar">
-        <div class="spawn-controls">
-          <select id="spawn-provider" class="select" aria-label="Spawn provider">
-            <option value="codex">Provider: Codex</option>
-            <option value="claude">Provider: Claude</option>
-            <option value="gemini">Provider: Gemini</option>
-            <option value="cursor">Provider: Cursor</option>
-          </select>
-          <button id="btn-spawn" class="btn btn-primary">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-            New Session
-          </button>
-          <label class="toggle" for="spawn-auto-approve">
-            <input id="spawn-auto-approve" type="checkbox" />
-            <span>Auto-approve agent prompts</span>
-          </label>
+        <div class="toolbar-main">
+          <div class="spawn-controls-grid">
+            <div class="spawn-row-top">
+              <select id="spawn-provider" class="select" aria-label="Spawn provider">
+                <option value="codex">Provider: Codex</option>
+                <option value="claude">Provider: Claude</option>
+                <option value="gemini">Provider: Gemini</option>
+                <option value="cursor">Provider: Cursor</option>
+              </select>
+              <button type="button" id="btn-spawn-workspace" class="btn-workspace" aria-haspopup="dialog" aria-controls="spawn-workspace-dialog">
+                Workspace: default
+              </button>
+              <button id="btn-spawn" class="btn btn-primary">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                New Session
+              </button>
+            </div>
+            <div class="spawn-row-bottom">
+              <label class="toggle" for="spawn-auto-approve">
+                <input id="spawn-auto-approve" type="checkbox" />
+                <span>Auto-approve agent prompts</span>
+              </label>
+            </div>
+          </div>
         </div>
-        <div id="refresh-indicator" style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.5rem;">
+        <div id="refresh-indicator" class="toolbar-live" style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.5rem;">
           <div class="status-dot active"></div>
           Live
+        </div>
+      </div>
+
+      <div id="grid" class="card-grid">
+        <!-- Cards injected here -->
+      </div>
+
+      <div id="empty-state" class="hidden">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--border-color)"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+        <div>
+          <h3 style="margin-bottom: 0.5rem">No active sessions</h3>
+          <p>Spawn an agent to start coding.</p>
         </div>
       </div>
 
@@ -492,18 +789,6 @@
           <div class="log-empty">Loading log sizes…</div>
         </div>
       </section>
-
-      <div id="grid" class="card-grid">
-        <!-- Cards injected here -->
-      </div>
-      
-      <div id="empty-state" class="hidden">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--border-color)"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-        <div>
-          <h3 style="margin-bottom: 0.5rem">No active sessions</h3>
-          <p>Spawn an agent to start coding.</p>
-        </div>
-      </div>
     </div>
 
     <div id="loading">
@@ -520,6 +805,30 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
   </button>
 
+  <dialog id="spawn-workspace-dialog" class="log-view-dialog spawn-workspace-dialog" aria-labelledby="spawn-workspace-title">
+    <div class="log-view-head">
+      <h3 id="spawn-workspace-title">Workspace folder</h3>
+      <button type="button" id="spawn-workspace-close" class="log-view-close" aria-label="Close">×</button>
+    </div>
+    <div id="spawn-workspace-breadcrumb" class="spawn-breadcrumb"></div>
+    <div id="spawn-workspace-list" class="spawn-dir-list"></div>
+    <div class="spawn-workspace-actions">
+      <button type="button" id="spawn-workspace-up">Up</button>
+      <button type="button" id="spawn-workspace-default">Use default root</button>
+      <button type="button" id="spawn-workspace-use" class="primary">Use this folder</button>
+    </div>
+  </dialog>
+
+  <dialog id="log-view-dialog" class="log-view-dialog" aria-labelledby="log-view-title">
+    <div class="log-view-head">
+      <h3 id="log-view-title">Log file</h3>
+      <button type="button" id="log-view-close" class="log-view-close" aria-label="Close">×</button>
+    </div>
+    <div id="log-view-banner" class="log-view-banner hidden"></div>
+    <div id="log-view-error" class="log-view-error hidden"></div>
+    <pre id="log-view-body" class="log-view-body"></pre>
+  </dialog>
+
   <script src="app.js"></script>
   <script>
     (function () {
@@ -534,10 +843,45 @@
       var logTotalSizeEl = document.getElementById("log-total-size");
       var logFileCountEl = document.getElementById("log-file-count");
       var logListEl = document.getElementById("log-list");
+      var logViewDialogEl = document.getElementById("log-view-dialog");
+      var logViewTitleEl = document.getElementById("log-view-title");
+      var logViewBodyEl = document.getElementById("log-view-body");
+      var logViewErrorEl = document.getElementById("log-view-error");
+      var logViewBannerEl = document.getElementById("log-view-banner");
+      var logViewCloseEl = document.getElementById("log-view-close");
       var providerEl = document.getElementById("spawn-provider");
       var autoApproveEl = document.getElementById("spawn-auto-approve");
       var SPAWN_PROVIDER_STORAGE_KEY = "meridian_spawn_provider";
       var SPAWN_AUTO_APPROVE_STORAGE_KEY = "meridian_spawn_auto_approve";
+      var SPAWN_REPO_STORAGE_KEY = "meridian_spawn_repo";
+      /** Relative path under AGENT_WORKDIR (segments with /), or "" for default root. */
+      var spawnRepoRelative = "";
+      var browseRelative = "";
+      var spawnWorkspaceDialogEl = document.getElementById("spawn-workspace-dialog");
+      var spawnWorkspaceBreadcrumbEl = document.getElementById("spawn-workspace-breadcrumb");
+      var spawnWorkspaceListEl = document.getElementById("spawn-workspace-list");
+      var btnSpawnWorkspace = document.getElementById("btn-spawn-workspace");
+      var spawnWorkspaceUpBtn = document.getElementById("spawn-workspace-up");
+      var spawnWorkspaceUseBtn = document.getElementById("spawn-workspace-use");
+      var spawnWorkspaceDefaultBtn = document.getElementById("spawn-workspace-default");
+      var spawnWorkspaceCloseBtn = document.getElementById("spawn-workspace-close");
+      var lastBrowsePayload = null;
+
+      function joinRelativePath(base, name) {
+        var n = name == null ? "" : String(name);
+        if (!base || !String(base).trim()) return n;
+        return String(base).replace(/\/+$/, "") + "/" + n;
+      }
+
+      function updateWorkspaceButton() {
+        if (!btnSpawnWorkspace) return;
+        var rel = spawnRepoRelative || "";
+        if (!rel.trim()) {
+          btnSpawnWorkspace.textContent = "Workspace: default (AGENT_WORKDIR)";
+        } else {
+          btnSpawnWorkspace.textContent = "Workspace: " + rel;
+        }
+      }
 
       function loadSpawnPreferences() {
         try {
@@ -550,14 +894,77 @@
           if (autoApproveEl) {
             autoApproveEl.checked = localStorage.getItem(SPAWN_AUTO_APPROVE_STORAGE_KEY) === "true";
           }
-        } catch (e) {}
+          var savedRepo = localStorage.getItem(SPAWN_REPO_STORAGE_KEY);
+          spawnRepoRelative = savedRepo && typeof savedRepo === "string" ? savedRepo : "";
+        } catch (e) {
+          spawnRepoRelative = "";
+        }
+        updateWorkspaceButton();
       }
 
       function saveSpawnPreferences() {
         try {
           if (providerEl) localStorage.setItem(SPAWN_PROVIDER_STORAGE_KEY, providerEl.value || "codex");
           if (autoApproveEl) localStorage.setItem(SPAWN_AUTO_APPROVE_STORAGE_KEY, autoApproveEl.checked ? "true" : "false");
+          localStorage.setItem(SPAWN_REPO_STORAGE_KEY, spawnRepoRelative || "");
         } catch (e) {}
+      }
+
+      function renderSpawnBrowse(payload) {
+        lastBrowsePayload = payload;
+        if (!spawnWorkspaceBreadcrumbEl || !spawnWorkspaceListEl) return;
+        var root = payload && payload.root ? String(payload.root) : "";
+        var rel = payload && payload.relative != null ? String(payload.relative) : "";
+        browseRelative = rel;
+        spawnWorkspaceBreadcrumbEl.textContent = root + (rel ? "/" + rel.replace(/\//g, "/") : "");
+        spawnWorkspaceListEl.innerHTML = "";
+        var entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
+        if (!entries.length) {
+          var empty = document.createElement("div");
+          empty.className = "spawn-dir-empty";
+          empty.textContent = "No subfolders here.";
+          spawnWorkspaceListEl.appendChild(empty);
+        } else {
+          for (var i = 0; i < entries.length; i++) {
+            var en = entries[i];
+            if (!en || en.kind !== "directory" || !en.name) continue;
+            var row = document.createElement("button");
+            row.type = "button";
+            row.className = "spawn-dir-row";
+            row.setAttribute("data-dir-name", en.name);
+            row.textContent = en.name + " →";
+            spawnWorkspaceListEl.appendChild(row);
+          }
+        }
+        if (spawnWorkspaceUpBtn) {
+          var canUp = payload && payload.parent_relative != null;
+          spawnWorkspaceUpBtn.disabled = !canUp;
+        }
+      }
+
+      function fetchSpawnBrowse(rel) {
+        if (!window.MeridianWeb.ensureToken()) return Promise.resolve();
+        var q = rel && String(rel).trim() ? ("?relative=" + encodeURIComponent(String(rel).trim())) : "";
+        return window.MeridianWeb.fetchWithAuth("/api/spawn_repos/browse" + q)
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) throw new Error((body && body.error) ? body.error : ("HTTP " + res.status));
+              renderSpawnBrowse(body);
+            });
+          });
+      }
+
+      function openSpawnWorkspaceDialog() {
+        if (!spawnWorkspaceDialogEl || !window.MeridianWeb.ensureToken()) return;
+        browseRelative = spawnRepoRelative || "";
+        fetchSpawnBrowse(browseRelative).catch(function () {
+          if (spawnWorkspaceListEl) spawnWorkspaceListEl.innerHTML = '<div class="spawn-dir-empty">Failed to load folders.</div>';
+        });
+        if (spawnWorkspaceDialogEl.showModal) spawnWorkspaceDialogEl.showModal();
+      }
+
+      function closeSpawnWorkspaceDialog() {
+        if (spawnWorkspaceDialogEl && spawnWorkspaceDialogEl.close) spawnWorkspaceDialogEl.close();
       }
 
       function showState(state) {
@@ -578,6 +985,29 @@
           if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
           return d.toLocaleDateString();
         } catch (e) { return s; }
+      }
+
+      function repoBasenameFromPath(p) {
+        if (p == null || typeof p !== "string" || !String(p).trim()) return "";
+        var s = String(p).replace(/[/\\]+$/, "");
+        var i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+        return i >= 0 ? s.slice(i + 1) : s;
+      }
+
+      function formatAttachedInterfaceLabel(inst) {
+        var id = inst.attached_interface;
+        var labels = inst.attached_labels;
+        if (id != null && String(id).trim()) {
+          var idStr = String(id).trim();
+          if (Array.isArray(labels) && labels.length && typeof labels[0] === "string" && labels[0].trim()) {
+            return idStr + " — " + labels[0].trim();
+          }
+          return idStr;
+        }
+        if (Array.isArray(labels) && labels.length) {
+          return labels.map(function (x) { return String(x); }).join("; ");
+        }
+        return "—";
       }
 
       function formatBytes(bytes) {
@@ -611,15 +1041,33 @@
           card.className = "instance-card";
           
           var isActive = inst.status === "running";
+          var wd = inst.working_dir;
+          var repoName = wd ? repoBasenameFromPath(wd) : "";
+          var repoBlock = wd
+            ? '<div class="card-repo">' +
+                '<span class="card-repo-name">' + escapeHtml(repoName) + "</span>" +
+                '<span class="card-repo-path">' + escapeHtml(wd) + "</span>" +
+              "</div>"
+            : '<div class="card-repo">' +
+                '<span class="card-repo-name" style="color:var(--text-dim);font-weight:500">No repo path</span>' +
+              "</div>";
+          var lastAt = inst.last_interaction_at || inst.updated_at || inst.created_at;
+          var lastInteractionLabel = inst.last_interaction_at
+            ? formatDate(inst.last_interaction_at)
+            : "—";
+          var lastTrace = inst.last_trace_id && String(inst.last_trace_id).trim()
+            ? String(inst.last_trace_id).trim()
+            : "—";
           
           card.innerHTML = `
             <div class="card-head">
               <span class="thread-id">${escapeHtml(inst.thread_id)}</span>
               <div class="status-dot ${isActive ? "active" : ""}"></div>
             </div>
+            ${repoBlock}
             <div class="card-footer">
               <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(inst.status || "offline")}</span>
-              <span>${escapeHtml(formatDate(inst.updated_at || inst.created_at))}</span>
+              <span title="${escapeHtml(lastAt || "")}">${escapeHtml(formatDate(lastAt))}</span>
             </div>
             <details class="card-secondary">
               <summary>More info</summary>
@@ -631,6 +1079,18 @@
                 <div class="detail-item">
                   <span class="detail-label">Mode</span>
                   <span class="detail-value">${escapeHtml(inst.mode || "bridge")}</span>
+                </div>
+                <div class="detail-item span-2">
+                  <span class="detail-label">Attached interface</span>
+                  <span class="detail-value">${escapeHtml(formatAttachedInterfaceLabel(inst))}</span>
+                </div>
+                <div class="detail-item span-2">
+                  <span class="detail-label">Last trace ID</span>
+                  <span class="detail-value" style="font-family:SF Mono,Fira Code,monospace;font-size:0.8rem">${escapeHtml(lastTrace)}</span>
+                </div>
+                <div class="detail-item span-2">
+                  <span class="detail-label">Last interaction</span>
+                  <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
                 </div>
                 <a class="role-link" href="http://localhost:7701/role/${encodeURIComponent(inst.thread_id)}" style="display:none">角色配置 →</a>
               </div>
@@ -671,16 +1131,75 @@
 
         logListEl.innerHTML = files.map(function (entry) {
           var updatedLabel = entry.updated_at ? formatDate(entry.updated_at) : "unknown";
+          var rel = entry.path || "";
           return (
             '<div class="log-item">' +
-              '<div class="log-item-path">' + escapeHtml(entry.path || "") + '</div>' +
-              '<div class="log-item-meta">' +
-                '<span>' + escapeHtml(updatedLabel) + '</span>' +
-                '<span class="log-item-size">' + escapeHtml(formatBytes(entry.size_bytes || 0)) + '</span>' +
-              '</div>' +
+              '<button type="button" class="log-item-open" data-log-path="' + escapeHtml(rel) + '" title="View log contents">' +
+                '<div class="log-item-path">' + escapeHtml(rel) + '</div>' +
+                '<div class="log-item-meta">' +
+                  '<span>' + escapeHtml(updatedLabel) + '</span>' +
+                  '<span class="log-item-size">' + escapeHtml(formatBytes(entry.size_bytes || 0)) + '</span>' +
+                '</div>' +
+              '</button>' +
+              '<button type="button" class="log-item-clear" data-log-path="' + escapeHtml(rel) + '" title="Clear this log file" aria-label="Clear log file">⛔️</button>' +
             '</div>'
           );
         }).join("");
+      }
+
+      function clearLogFile(relativePath) {
+        if (!window.MeridianWeb.ensureToken()) return;
+        if (!confirm("Clear this log file? Its contents will be removed.")) return;
+        window.MeridianWeb.fetchWithAuth("/api/log_file/clear", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: relativePath })
+        })
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) {
+                alert(body.error || ("HTTP " + res.status));
+                return;
+              }
+              fetchList();
+            });
+          })
+          .catch(function () {
+            alert("Network error");
+          });
+      }
+
+      function openLogViewer(relativePath) {
+        if (!logViewDialogEl || !logViewTitleEl || !logViewBodyEl || !logViewErrorEl || !logViewBannerEl) return;
+        if (!window.MeridianWeb.ensureToken()) return;
+        logViewTitleEl.textContent = relativePath || "Log file";
+        logViewBodyEl.textContent = "Loading…";
+        logViewErrorEl.textContent = "";
+        logViewErrorEl.classList.add("hidden");
+        logViewBannerEl.textContent = "";
+        logViewBannerEl.classList.add("hidden");
+        if (logViewDialogEl.showModal) logViewDialogEl.showModal();
+        window.MeridianWeb.fetchWithAuth("/api/log_file?path=" + encodeURIComponent(relativePath))
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) {
+                logViewBodyEl.textContent = "";
+                logViewErrorEl.textContent = (body && body.error) ? body.error : ("HTTP " + res.status);
+                logViewErrorEl.classList.remove("hidden");
+                return;
+              }
+              logViewBodyEl.textContent = typeof body.content === "string" ? body.content : "";
+              if (body.truncated) {
+                logViewBannerEl.textContent = "Large file: showing the last portion only (full file exceeds view limit).";
+                logViewBannerEl.classList.remove("hidden");
+              }
+            });
+          })
+          .catch(function () {
+            logViewBodyEl.textContent = "";
+            logViewErrorEl.textContent = "Network error";
+            logViewErrorEl.classList.remove("hidden");
+          });
       }
 
       function escapeHtml(s) {
@@ -726,14 +1245,18 @@
         if (!window.MeridianWeb.ensureToken()) return;
         btnSpawn.disabled = true;
         saveSpawnPreferences();
+        var repoPayload = {};
+        if (spawnRepoRelative && String(spawnRepoRelative).trim()) {
+          repoPayload.repo = String(spawnRepoRelative).trim();
+        }
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+          body: JSON.stringify(Object.assign({
             type: providerEl && providerEl.value ? providerEl.value : "codex",
             mode: "pane_bridge",
             auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
-          })
+          }, repoPayload))
         })
           .then(function (res) {
             return res.json().then(function (body) {
@@ -748,6 +1271,66 @@
       btnSpawn.addEventListener("click", spawn);
       if (providerEl) providerEl.addEventListener("change", saveSpawnPreferences);
       if (autoApproveEl) autoApproveEl.addEventListener("change", saveSpawnPreferences);
+
+      if (btnSpawnWorkspace) btnSpawnWorkspace.addEventListener("click", openSpawnWorkspaceDialog);
+      if (spawnWorkspaceCloseBtn) spawnWorkspaceCloseBtn.addEventListener("click", closeSpawnWorkspaceDialog);
+      if (spawnWorkspaceUpBtn) {
+        spawnWorkspaceUpBtn.addEventListener("click", function () {
+          if (!lastBrowsePayload || lastBrowsePayload.parent_relative == null) return;
+          fetchSpawnBrowse(lastBrowsePayload.parent_relative).catch(function () {});
+        });
+      }
+      if (spawnWorkspaceUseBtn) {
+        spawnWorkspaceUseBtn.addEventListener("click", function () {
+          spawnRepoRelative = browseRelative || "";
+          updateWorkspaceButton();
+          saveSpawnPreferences();
+          closeSpawnWorkspaceDialog();
+        });
+      }
+      if (spawnWorkspaceDefaultBtn) {
+        spawnWorkspaceDefaultBtn.addEventListener("click", function () {
+          spawnRepoRelative = "";
+          updateWorkspaceButton();
+          saveSpawnPreferences();
+          closeSpawnWorkspaceDialog();
+        });
+      }
+      if (spawnWorkspaceListEl) {
+        spawnWorkspaceListEl.addEventListener("click", function (e) {
+          var row = e.target.closest(".spawn-dir-row");
+          if (!row || !spawnWorkspaceListEl.contains(row)) return;
+          var name = row.getAttribute("data-dir-name");
+          if (!name) return;
+          var next = joinRelativePath(browseRelative, name);
+          fetchSpawnBrowse(next).catch(function () {});
+        });
+      }
+
+      if (logListEl) {
+        logListEl.addEventListener("click", function (e) {
+          var clearBtn = e.target.closest(".log-item-clear");
+          if (clearBtn && logListEl.contains(clearBtn)) {
+            e.preventDefault();
+            e.stopPropagation();
+            var clearPath = clearBtn.getAttribute("data-log-path");
+            if (clearPath == null || clearPath === "") return;
+            clearLogFile(clearPath);
+            return;
+          }
+          var openBtn = e.target.closest(".log-item-open");
+          if (!openBtn || !logListEl.contains(openBtn)) return;
+          var relPath = openBtn.getAttribute("data-log-path");
+          if (relPath == null || relPath === "") return;
+          e.preventDefault();
+          openLogViewer(relPath);
+        });
+      }
+      if (logViewCloseEl && logViewDialogEl) {
+        logViewCloseEl.addEventListener("click", function () {
+          logViewDialogEl.close();
+        });
+      }
 
       // FAB (mobile) triggers same spawn
       var fabBtn = document.getElementById("fab-spawn");

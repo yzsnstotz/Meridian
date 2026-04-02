@@ -23,6 +23,7 @@ import {
   type ThreadProgressSnapshot
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
+import { appendA2AWebSocketLog } from "./a2a-websocket-log";
 import { PaneBroadcaster } from "./pane-broadcaster";
 import { ResultSender, shouldPushTelegramProactive } from "./result-sender";
 import { TelegramChannelAdapter } from "../interface/adapters/telegram-adapter";
@@ -847,15 +848,16 @@ export class HubServer {
       return;
     }
 
-    const subscribers = this.websocketSubscribersByThread.get(threadId);
-    if (!subscribers || subscribers.size === 0) {
-      return;
-    }
-
     const payload = JSON.stringify({
       type: "a2a_message",
       ...message
     });
+    appendA2AWebSocketLog(config.LOG_DIR, threadId, payload);
+
+    const subscribers = this.websocketSubscribersByThread.get(threadId);
+    if (!subscribers || subscribers.size === 0) {
+      return;
+    }
 
     for (const socket of [...subscribers]) {
       if (!this.writeWebsocketPayload(socket, payload)) {

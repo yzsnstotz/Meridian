@@ -51,7 +51,11 @@
       flex-wrap: wrap;
     }
 
-    .header-left { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1 1 auto; overflow: visible; }
+    .header-left { display: flex; align-items: flex-start; gap: 0.5rem; min-width: 0; flex: 1 1 auto; overflow: visible; }
+    .header-title-block { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; flex: 1 1 auto; }
+    .header-repo { max-width: 100%; }
+    .header-repo-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-color); line-height: 1.25; word-break: break-word; }
+    .header-repo-path { font-size: 0.65rem; color: var(--text-dim); font-family: "SF Mono", "Fira Code", ui-monospace, monospace; line-height: 1.35; word-break: break-all; }
     .header-right { display: flex; align-items: center; gap: 0.5rem; flex: 0 1 auto; min-width: 0; }
     .focus-toggle {
       background: transparent;
@@ -606,6 +610,27 @@
     .header-overflow .overflow-dropdown button.active {
       color: var(--accent-color);
     }
+    .header-overflow .overflow-dropdown .overflow-trace-copy {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.2rem;
+      text-align: left;
+      font-weight: 500;
+    }
+    .header-overflow .overflow-dropdown .overflow-trace-copy:disabled {
+      cursor: default;
+      opacity: 0.65;
+    }
+    .header-overflow .overflow-dropdown .overflow-trace-copy:not(:disabled) {
+      cursor: pointer;
+    }
+    .header-overflow .overflow-dropdown .overflow-trace-copy:not(:disabled):hover {
+      background: var(--surface-hover);
+    }
+    .overflow-trace-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+    .overflow-trace-value { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; font-size: 0.68rem; line-height: 1.3; word-break: break-all; color: #e2e8f0; max-width: 100%; }
+    .overflow-trace-hint { font-size: 0.62rem; color: var(--text-dim); }
     @media (max-width: 768px) {
       .header-overflow { display: flex; align-items: center; }
       .header-right .btn-action { display: none; }
@@ -879,7 +904,13 @@
     <div class="header-left">
       <button class="back-btn" aria-label="Go back" onclick="location.href='index.html'"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></button>
       <button id="menu-toggle" class="back-btn" aria-label="Toggle menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg></button>
-      <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+      <div class="header-title-block">
+        <h1>Meridian <span id="thread-label" class="thread-badge">...</span></h1>
+        <div id="header-repo" class="header-repo hidden">
+          <div id="header-repo-name" class="header-repo-name"></div>
+          <div id="header-repo-path" class="header-repo-path"></div>
+        </div>
+      </div>
     </div>
     <div class="header-right">
       <div class="header-overflow">
@@ -889,6 +920,11 @@
           <button type="button" id="overflow-push">Push OFF</button>
           <button type="button" id="overflow-filters">Filters</button>
           <div class="overflow-divider"></div>
+          <button type="button" id="overflow-copy-trace" class="overflow-trace-copy" disabled aria-label="Copy last trace ID">
+            <span class="overflow-trace-label">Last trace</span>
+            <span id="overflow-trace-value" class="overflow-trace-value">—</span>
+            <span class="overflow-trace-hint">Tap to copy</span>
+          </button>
           <button type="button" id="overflow-reboot">Reboot</button>
           <button type="button" id="overflow-clear-chat">Clear Chat</button>
           <button type="button" class="kill" id="overflow-kill">Kill</button>
@@ -1113,6 +1149,8 @@
       var PROGRESS_POLL_INTERVAL_MS = 3000;
       var activeProgressMessageKey = "";
       var activeProgressTraceId = "";
+      /** Most recent trace UUID seen this session (for overflow menu + copy). */
+      var latestKnownTraceId = "";
       var a2aTaskStates = new Map();
       var a2aTaskOutputElements = new Map();
       var pendingA2ARenderTaskIds = new Set();
@@ -1384,6 +1422,33 @@
         return "progress:" + (normalizedTraceId || threadId || "active");
       }
 
+      function traceIdFromMessageKey(key) {
+        if (!key || typeof key !== "string") return "";
+        var m = key.match(/:trace:([0-9a-fA-F-]{36})/);
+        return m && m[1] ? m[1].toLowerCase() : "";
+      }
+
+      function recordLatestTraceId(raw) {
+        if (raw == null || typeof raw !== "string") return;
+        var t = raw.trim();
+        if (!t) return;
+        latestKnownTraceId = t.toLowerCase();
+        syncOverflowTraceRow();
+      }
+
+      function syncOverflowTraceRow() {
+        var valEl = document.getElementById("overflow-trace-value");
+        var btn = document.getElementById("overflow-copy-trace");
+        if (!valEl || !btn) return;
+        if (!latestKnownTraceId) {
+          valEl.textContent = "—";
+          btn.disabled = true;
+          return;
+        }
+        valEl.textContent = latestKnownTraceId;
+        btn.disabled = false;
+      }
+
       function buildA2AWorkingMessageKey(taskId) {
         return "a2a:working:" + (taskId || threadId || "active");
       }
@@ -1542,6 +1607,7 @@
         if (!msg || typeof msg !== "object") return;
         var taskId = normalizeTaskId(msg.taskId);
         if (!taskId) return;
+        recordLatestTraceId(taskId);
         if (!lastSubmittedTraceId) {
           lastSubmittedTraceId = taskId;
         }
@@ -1979,6 +2045,11 @@
         } finally {
           chatHistoryHydrating = false;
         }
+        for (var li = 0; li < history.length; li++) {
+          var mk = history[li] && history[li].messageKey;
+          var tid = traceIdFromMessageKey(mk || "");
+          if (tid) recordLatestTraceId(tid);
+        }
         return true;
       }
 
@@ -2018,6 +2089,10 @@
         } else {
           activeProgressMessageKey = "";
           activeProgressTraceId = "";
+        }
+        for (var hi = 0; hi < entries.length; hi++) {
+          var te = entries[hi];
+          if (te && te.trace_id) recordLatestTraceId(te.trace_id);
         }
         return true;
       }
@@ -2559,6 +2634,7 @@
         }
         activeProgressMessageKey = nextMessageKey;
         activeProgressTraceId = traceId;
+        recordLatestTraceId(traceId);
         addChatBubble(content, "agent", "", { messageKey: nextMessageKey });
         showChatTyping(false);
       }
@@ -3209,6 +3285,7 @@
             var resultContent = data && typeof data.content === "string" ? data.content.trim() : "";
             if (data && typeof data.trace_id === "string") {
               lastSubmittedTraceId = data.trace_id.toLowerCase();
+              recordLatestTraceId(data.trace_id);
             }
             var a2aResult = lastSubmittedTraceId ? completedA2AResults.get(lastSubmittedTraceId) : null;
             clearActiveProgressBubble();
@@ -3600,18 +3677,60 @@
         if (overflowDropdown) overflowDropdown.classList.add("open");
         if (overflowBtn) overflowBtn.setAttribute("aria-expanded", "true");
       }
-      if (overflowBtn) {
+        if (overflowBtn) {
         overflowBtn.addEventListener("click", function(e) {
           e.preventDefault();
           e.stopPropagation();
           var isOpen = overflowDropdown && overflowDropdown.classList.toggle("open");
           overflowBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+          if (isOpen) syncOverflowTraceRow();
         });
       }
       document.addEventListener("click", function(e) {
         if (overflowDropdown && overflowDropdown.classList.contains("open") && overflowBtn && !overflowBtn.contains(e.target) && !overflowDropdown.contains(e.target)) closeOverflow();
       });
       if (overflowDropdown) overflowDropdown.addEventListener("click", function(e) { e.stopPropagation(); });
+      var overflowCopyTraceBtn = document.getElementById("overflow-copy-trace");
+      if (overflowCopyTraceBtn) {
+        overflowCopyTraceBtn.addEventListener("click", function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!latestKnownTraceId || overflowCopyTraceBtn.disabled) return;
+          var text = latestKnownTraceId;
+          var hintEl = overflowCopyTraceBtn.querySelector(".overflow-trace-hint");
+          var defaultHint = "Tap to copy";
+          function setHint(msg) {
+            if (hintEl) hintEl.textContent = msg;
+          }
+          function finish(ok) {
+            setHint(ok ? "Copied" : "Copy failed");
+            setTimeout(function() {
+              setHint(defaultHint);
+            }, 1600);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function() { finish(true); }).catch(function() { copyFallback(); });
+          } else {
+            copyFallback();
+          }
+          function copyFallback() {
+            try {
+              var ta = document.createElement("textarea");
+              ta.value = text;
+              ta.setAttribute("readonly", "");
+              ta.style.position = "fixed";
+              ta.style.left = "-9999px";
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand("copy");
+              document.body.removeChild(ta);
+              finish(true);
+            } catch (err) {
+              finish(false);
+            }
+          }
+        });
+      }
       document.getElementById("overflow-reboot").addEventListener("click", function(e) {
         e.preventDefault();
         closeOverflow();
@@ -3657,6 +3776,8 @@
           cancelAnimationFrame(a2aRenderFrame);
           a2aRenderFrame = 0;
         }
+        latestKnownTraceId = "";
+        syncOverflowTraceRow();
       });
 
       // Overflow menu mirrors for mobile: Focus, Push, Filters
@@ -3715,6 +3836,41 @@
       });
 
       document.getElementById("thread-label").textContent = threadId || "No session";
+
+      (function loadRepoHeaderForThread() {
+        function repoBasenameFromPath(p) {
+          if (p == null || typeof p !== "string" || !String(p).trim()) return "";
+          var s = String(p).replace(/[/\\]+$/, "");
+          var i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+          return i >= 0 ? s.slice(i + 1) : s;
+        }
+        var repoWrap = document.getElementById("header-repo");
+        var repoNameEl = document.getElementById("header-repo-name");
+        var repoPathEl = document.getElementById("header-repo-path");
+        if (!threadId || !repoWrap || !repoNameEl || !repoPathEl) return;
+        if (!window.MeridianWeb || !window.MeridianWeb.fetchWithAuth) return;
+        window.MeridianWeb.fetchWithAuth("/api/instances")
+          .then(function (res) {
+            return res.json();
+          })
+          .then(function (data) {
+            var list = Array.isArray(data) ? data : [];
+            var inst = list.find(function (x) {
+              return x && x.thread_id === threadId;
+            });
+            var wd = inst && inst.working_dir;
+            if (!wd || typeof wd !== "string" || !wd.trim()) {
+              repoWrap.classList.add("hidden");
+              return;
+            }
+            repoNameEl.textContent = repoBasenameFromPath(wd);
+            repoPathEl.textContent = wd;
+            repoWrap.classList.remove("hidden");
+          })
+          .catch(function () {
+            repoWrap.classList.add("hidden");
+          });
+      })();
 
       // Mobile: default to chat view
       if (isMobile()) {

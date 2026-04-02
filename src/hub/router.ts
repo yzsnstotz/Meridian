@@ -766,13 +766,25 @@ export class HubRouter {
       const attachment = this.instanceManager.getThreadAttachment(instance.thread_id);
       const attachable = this.instanceManager.isThreadAttachableBySession(instance.thread_id, requestSessionId);
       const attachedLabels = attachment.sessions.map((session) => this.describeAttachedSession(session));
+      const history = this.readConversationHistory(instance.thread_id);
+      const lastEntry = history[history.length - 1] ?? null;
+      let lastTraceId: string | null = null;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const candidate = history[index]?.trace_id;
+        if (typeof candidate === "string" && candidate.trim()) {
+          lastTraceId = candidate.trim();
+          break;
+        }
+      }
       return {
         ...instance,
         attached: attachment.sessions.length > 0,
         attached_sessions: attachment.sessions,
         attached_labels: attachedLabels,
         attached_interface: attachment.interface_id,
-        attachable
+        attachable,
+        last_trace_id: lastTraceId,
+        last_interaction_at: lastEntry?.timestamp ?? null
       };
     });
     const content = listedInstances.length === 0 ? "No active agent instances." : JSON.stringify(listedInstances, null, 2);

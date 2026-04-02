@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { config } from "../config";
 import type { HubMessage, ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
@@ -129,6 +130,55 @@ test("Web Interface Server returns log inventory for an authorized request", asy
         payload.files.map((entry) => entry.path),
         ["hub.log", "GUI/gui-pane-codex_01.log"]
       );
+    }, {
+      logDir
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server returns log file contents for an authorized request", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-logfile-"));
+
+  try {
+    await fs.promises.writeFile(path.join(logDir, "hub.log"), "line1\nline2\n");
+
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(
+        `${baseUrl}/api/log_file?token=secret-token&path=${encodeURIComponent("hub.log")}`
+      );
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as { path: string; content: string; truncated: boolean };
+      assert.equal(payload.path, "hub.log");
+      assert.equal(payload.content, "line1\nline2\n");
+      assert.equal(payload.truncated, false);
+    }, {
+      logDir
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server clears a log file for an authorized POST", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-logclear-"));
+
+  try {
+    await fs.promises.writeFile(path.join(logDir, "hub.log"), "line1\nline2\n");
+
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/log_file/clear?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: "hub.log" })
+      });
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as { ok: boolean; path: string };
+      assert.equal(payload.ok, true);
+      assert.equal(payload.path, "hub.log");
+      const after = await fs.promises.readFile(path.join(logDir, "hub.log"), "utf8");
+      assert.equal(after, "");
     }, {
       logDir
     });
@@ -774,5 +824,160 @@ test("WebSocket pane bridge accepts replay_lines override from query", async () 
   } finally {
     hubServer.close();
     await fs.promises.rm(socketDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server lists spawn repo choices under AGENT_WORKDIR", async () => {
+  const subDir = path.join(config.AGENT_WORKDIR, `meridian-web-spawn-list-${Date.now()}`);
+  await fs.promises.mkdir(subDir, { recursive: true });
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/spawn_repos?token=secret-token`);
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as { root: string; repos: Array<{ name: string }> };
+      assert.equal(payload.root, path.resolve(config.AGENT_WORKDIR));
+      assert.ok(payload.repos.some((r) => r.name === path.basename(subDir)));
+    });
+  } finally {
+    await fs.promises.rm(subDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selected", async () => {
+  const subDir = path.join(config.AGENT_WORKDIR, `meridian-web-spawn-repo-${Date.now()}`);
+  await fs.promises.mkdir(subDir, { recursive: true });
+  const hubMessages: HubMessage[] = [];
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "codex",
+          mode: "pane_bridge",
+          repo: path.basename(subDir)
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(hubMessages.length, 1);
+      assert.equal(hubMessages[0]?.intent, "spawn");
+      assert.equal(hubMessages[0]?.payload.spawn_dir, subDir);
+    }, {
+      requestHub: async (message: HubMessage) => {
+        hubMessages.push(message);
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_new",
+          source: "codex",
+          status: "success",
+          content: "{}",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(subDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server rejects spawn when repo and spawn_dir are both set", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "codex",
+        repo: "a",
+        spawn_dir: "/tmp/b"
+      })
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server rejects spawn_dir outside AGENT_WORKDIR", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "codex",
+        spawn_dir: "/"
+      })
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server spawn_repos browse lists nested directories", async () => {
+  const outer = path.join(config.AGENT_WORKDIR, `meridian-browse-outer-${Date.now()}`);
+  const inner = path.join(outer, "inner");
+  await fs.promises.mkdir(inner, { recursive: true });
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const relOuter = path.basename(outer);
+      const response = await fetch(
+        `${baseUrl}/api/spawn_repos/browse?token=secret-token&relative=${encodeURIComponent(relOuter)}`
+      );
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as {
+        relative: string;
+        parent_relative: string | null;
+        entries: Array<{ name: string }>;
+      };
+      assert.equal(payload.relative, relOuter);
+      assert.equal(payload.parent_relative, "");
+      assert.ok(payload.entries.some((e) => e.name === "inner"));
+    });
+  } finally {
+    await fs.promises.rm(outer, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server spawn_repos browse rejects path traversal", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(
+      `${baseUrl}/api/spawn_repos/browse?token=secret-token&relative=${encodeURIComponent("../..")}`
+    );
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server forwards nested repo path to Hub", async () => {
+  const outer = path.join(config.AGENT_WORKDIR, `meridian-nested-repo-${Date.now()}`);
+  const inner = path.join(outer, "deep");
+  await fs.promises.mkdir(inner, { recursive: true });
+  const hubMessages: HubMessage[] = [];
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const rel = `${path.basename(outer)}/deep`;
+      const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "codex",
+          mode: "pane_bridge",
+          repo: rel
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(hubMessages[0]?.payload.spawn_dir, inner);
+    }, {
+      requestHub: async (message: HubMessage) => {
+        hubMessages.push(message);
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_new",
+          source: "codex",
+          status: "success",
+          content: "{}",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(outer, { recursive: true, force: true });
   }
 });
