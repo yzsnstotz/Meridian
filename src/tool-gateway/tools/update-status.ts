@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 
+import { ThreadTracker } from "../../roles/agent-dispatcher/session-manager";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const STATUS_MAP = {
@@ -28,6 +29,11 @@ const updateStatusTool: ToolDefinition = {
       type: "string",
       required: true,
       description: "Worker status: in_progress, done, or failed"
+    },
+    thread_id: {
+      type: "string",
+      required: false,
+      description: "Worker thread identifier to persist in dispatch_threads.json when setting in_progress"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -57,9 +63,11 @@ const updateStatusTool: ToolDefinition = {
 
     try {
       const normalizedStatus = parseRequestedStatus(requestedStatus);
+      const workerThreadId = requireParam(params.thread_id);
       const markdown = await fs.readFile(planPath, "utf8");
       const updated = updateWorkerStatusInMarkdown(markdown, worker, normalizedStatus);
       await fs.writeFile(planPath, updated, "utf8");
+      await syncWorkerThreadState(planPath, worker, normalizedStatus, workerThreadId);
       return {
         ok: true,
         data: {
@@ -158,6 +166,30 @@ function replaceLine(lines: string[], index: number, nextLine: string): string[]
 
 function preserveTrailingNewline(original: string, updated: string): string {
   return original.endsWith("\n") ? `${updated}\n` : updated;
+}
+
+async function syncWorkerThreadState(
+  planPath: string,
+  worker: string,
+  status: RequestedStatus,
+  threadId: string | null
+): Promise<void> {
+  const tracker = new ThreadTracker(planPath);
+
+  if (status === "in_progress") {
+    if (!threadId) {
+      return;
+    }
+
+    await tracker.recordWorker(worker, threadId);
+    return;
+  }
+
+  if (!(await tracker.exists())) {
+    return;
+  }
+
+  await tracker.removeWorker(worker);
 }
 
 function requireParam(value: string | undefined): string | null {

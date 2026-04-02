@@ -4,7 +4,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "../../roles/definitions";
@@ -250,6 +250,7 @@ describe("role config handlers", () => {
     }, null, 2)}\n`, "utf8");
 
     try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
       const harness = createHarness(
         undefined,
         undefined,
@@ -262,7 +263,8 @@ describe("role config handlers", () => {
           "",
           "Agent reply:",
           "Updated the GUI dashboard."
-        ].join("\n")
+        ].join("\n"),
+        attachToThread
       );
 
       await createRole(harness.roleHandlers, {
@@ -317,6 +319,7 @@ describe("role config handlers", () => {
           ]
         }
       });
+      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -518,7 +521,8 @@ function createHarness(
   initialState?: AppState,
   stateStore = new MemoryStateStore(initialState ?? null),
   replyChannels: ReplyChannel[] | Error = [],
-  threadDetail: string | Error | null = null
+  threadDetail: string | Error | null = null,
+  attachToThread: ((threadId: string) => Promise<void>) | Error | null = null
 ) {
   const log = createLogger();
   const registry = new RoleRegistry();
@@ -580,6 +584,13 @@ function createHarness(
         }
 
         return threadDetail ?? "";
+      },
+      attachToThread: async (threadId) => {
+        if (attachToThread instanceof Error) {
+          throw attachToThread;
+        }
+
+        await attachToThread?.(threadId);
       },
       log
     })

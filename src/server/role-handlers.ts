@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import net from "node:net";
 
 import { z } from "zod";
 
+import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import {
   applyEditableDispatcherConfig,
   cloneDispatcherConfig,
@@ -23,6 +25,7 @@ import {
   DispatchTaskSchema,
   DispatcherConfigSchema,
   DispatcherEditorConfigPatchSchema,
+  HubResultSchema,
   ReplyChannelSchema,
   RoleTypeSchema,
   shouldUseAgentDispatcherConfig,
@@ -30,6 +33,7 @@ import {
   type AgentDispatcherConfig,
   type DispatcherConfig,
   type DispatcherEditorConfig,
+  type HubMessage,
   type ReplyChannel,
   type RoleType,
   type RoleState
@@ -78,6 +82,7 @@ export interface RoleHandlersOptions {
   stateStore?: PersistableStateStore;
   listReplyChannels?: () => Promise<ReplyChannel[]>;
   getThreadDetail?: (threadId: string) => Promise<string>;
+  attachToThread?: (threadId: string) => Promise<void>;
   log?: Logger;
 }
 
@@ -141,6 +146,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const log = options.log ?? console;
   const listReplyChannels = options.listReplyChannels ?? (async () => []);
   const getThreadDetail = options.getThreadDetail;
+  const attachToThread = options.attachToThread ?? defaultAttachToThread;
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   const handlers: RoleHandlers = {
@@ -203,7 +209,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           case "get-role":
             writeJson(response, 200, await getRole(stateStore, route.threadId, {
               log,
-              getThreadDetail
+              getThreadDetail,
+              attachToThread
             }));
             return true;
           case "get-config":
@@ -385,6 +392,7 @@ async function getRole(
   options: {
     log: Logger;
     getThreadDetail?: (threadId: string) => Promise<string>;
+    attachToThread?: (threadId: string) => Promise<void>;
   }
 ): Promise<RoleDetailResponse> {
   const state = await loadState(stateStore);
@@ -427,6 +435,7 @@ async function getRole(
   const sessionLog = await loadDispatcherSessionLog(
     trackerState.dispatcher_thread_id,
     options.getThreadDetail,
+    options.attachToThread,
     {
       currentWorker,
       currentWorkerEntry,
@@ -760,6 +769,7 @@ async function loadDispatchPlanRows(dispatchPlanPath: string, log: Logger): Prom
 async function loadDispatcherSessionLog(
   dispatcherThreadId: string | null,
   getThreadDetail: ((threadId: string) => Promise<string>) | undefined,
+  attachToThread: ((threadId: string) => Promise<void>) | undefined,
   fallbackContext: {
     currentWorker: string | null;
     currentWorkerEntry: WorkerThreadEntry | null;
@@ -771,6 +781,17 @@ async function loadDispatcherSessionLog(
   const fallbackLog = buildFallbackSessionLog(fallbackContext, dispatcherThreadId);
   if (!dispatcherThreadId || !getThreadDetail) {
     return fallbackLog;
+  }
+
+  if (attachToThread) {
+    try {
+      await attachToThread(dispatcherThreadId);
+    } catch (error) {
+      log.warn("Failed to attach dispatcher session before detail fetch", {
+        dispatcherThreadId,
+        error: getErrorMessage(error)
+      });
+    }
   }
 
   try {
@@ -939,4 +960,104 @@ function parseTableRow(line: string): string[] | null {
 
 function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+const ATTACH_CONNECT_TIMEOUT_MS = 5_000;
+const ATTACH_RESPONSE_TIMEOUT_MS = 30_000;
+
+async function defaultAttachToThread(threadId: string): Promise<void> {
+  const result = await sendHubRequest(buildAttachMessage(threadId));
+  if (result.status !== "success") {
+    throw new Error(`attach failed: ${result.content}`);
+  }
+}
+
+function buildAttachMessage(threadId: string): HubMessage {
+  return {
+    trace_id: randomUUID(),
+    thread_id: threadId,
+    actor_id: ROLES_SERVICE_ID,
+    intent: "attach",
+    target: threadId,
+    priority: 5,
+    mode: "bridge",
+    reply_channel: {
+      channel: "web",
+      chat_id: ROLES_SERVICE_ID
+    },
+    payload: {
+      content: "",
+      attachments: []
+    }
+  };
+}
+
+function sendHubRequest(message: HubMessage): Promise<z.infer<typeof HubResultSchema>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let rawResponse = "";
+    const socket = net.createConnection(HUB_SOCKET_PATH);
+    const connectTimeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.destroy(new Error(`Attach connect timed out after ${ATTACH_CONNECT_TIMEOUT_MS}ms`));
+    }, ATTACH_CONNECT_TIMEOUT_MS);
+
+    const fail = (error: unknown): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(connectTimeout);
+      socket.destroy();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      rawResponse += chunk;
+    });
+    socket.once("connect", () => {
+      if (settled) {
+        return;
+      }
+
+      clearTimeout(connectTimeout);
+      socket.setTimeout(ATTACH_RESPONSE_TIMEOUT_MS);
+
+      try {
+        socket.write(JSON.stringify(message));
+        socket.end();
+      } catch (error) {
+        fail(error);
+      }
+    });
+    socket.once("timeout", () => {
+      fail(new Error(`Attach request timed out after ${ATTACH_RESPONSE_TIMEOUT_MS}ms`));
+    });
+    socket.once("error", fail);
+    socket.once("close", () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(connectTimeout);
+
+      if (!rawResponse.trim()) {
+        reject(new Error("Attach request completed without a response body"));
+        return;
+      }
+
+      try {
+        resolve(HubResultSchema.parse(JSON.parse(rawResponse)));
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  });
 }
