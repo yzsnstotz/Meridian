@@ -24,7 +24,7 @@ export interface ParsedSlashCommand {
 const HELP_MESSAGE = [
   "Available commands:",
   "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge> [dir=<absolute_path>]",
-  "/restart Rebuild and restart Meridian service",
+  "/restart Rebuild/restart Meridian service or meridian-roles (inline menu)",
   "/browse",
   "/kill thread=<thread_id>",
   "/info",

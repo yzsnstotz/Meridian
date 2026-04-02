@@ -228,6 +228,40 @@
     }
 
     .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
+    }
+
+    .log-group {
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 0.75rem 0.75rem 0.85rem;
+    }
+
+    .log-group-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.65rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: rgba(226, 232, 240, 0.9);
+      text-transform: uppercase;
+    }
+
+    .log-group-title span {
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+    }
+
+    .log-group-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 0.7rem;
@@ -1129,20 +1163,73 @@
           return;
         }
 
-        logListEl.innerHTML = files.map(function (entry) {
-          var updatedLabel = entry.updated_at ? formatDate(entry.updated_at) : "unknown";
-          var rel = entry.path || "";
+        function parseUpdatedAtMs(value) {
+          if (!value) return 0;
+          var t = Date.parse(String(value));
+          return isFinite(t) ? t : 0;
+        }
+
+        function categoryLabel(cat) {
+          if (cat === "active") return "Active logs";
+          if (cat === "session") return "Session logs";
+          if (cat === "other") return "Other logs";
+          return "Logs";
+        }
+
+        var groupsByCategory = {};
+        files.forEach(function (entry) {
+          var cat = entry && entry.category ? String(entry.category) : "other";
+          if (!groupsByCategory[cat]) groupsByCategory[cat] = [];
+          groupsByCategory[cat].push(entry);
+        });
+
+        var groupOrder = Object.keys(groupsByCategory).map(function (cat) {
+          var entries = groupsByCategory[cat] || [];
+          var newest = 0;
+          for (var i = 0; i < entries.length; i++) {
+            var ms = parseUpdatedAtMs(entries[i] && entries[i].updated_at);
+            if (ms > newest) newest = ms;
+          }
+          return { category: cat, newestMs: newest, count: entries.length };
+        });
+
+        groupOrder.sort(function (a, b) {
+          return (b.newestMs - a.newestMs) || a.category.localeCompare(b.category);
+        });
+
+        function renderEntry(entry) {
+          var updatedLabel = entry && entry.updated_at ? formatDate(entry.updated_at) : "unknown";
+          var rel = entry && entry.path ? String(entry.path) : "";
           return (
             '<div class="log-item">' +
               '<button type="button" class="log-item-open" data-log-path="' + escapeHtml(rel) + '" title="View log contents">' +
                 '<div class="log-item-path">' + escapeHtml(rel) + '</div>' +
                 '<div class="log-item-meta">' +
                   '<span>' + escapeHtml(updatedLabel) + '</span>' +
-                  '<span class="log-item-size">' + escapeHtml(formatBytes(entry.size_bytes || 0)) + '</span>' +
+                  '<span class="log-item-size">' + escapeHtml(formatBytes(entry && entry.size_bytes || 0)) + '</span>' +
                 '</div>' +
               '</button>' +
               '<button type="button" class="log-item-clear" data-log-path="' + escapeHtml(rel) + '" title="Clear this log file" aria-label="Clear log file">⛔️</button>' +
             '</div>'
+          );
+        }
+
+        logListEl.innerHTML = groupOrder.map(function (group) {
+          var entries = (groupsByCategory[group.category] || []).slice();
+          entries.sort(function (a, b) {
+            return parseUpdatedAtMs(b && b.updated_at) - parseUpdatedAtMs(a && a.updated_at) ||
+              String(a && a.path || "").localeCompare(String(b && b.path || ""));
+          });
+          return (
+            '<section class="log-group" data-log-category="' + escapeHtml(group.category) + '">' +
+              '<div class="log-group-title">' +
+                escapeHtml(categoryLabel(group.category)) +
+                '<span>' + escapeHtml(String(group.count)) + '</span>' +
+              '</div>' +
+              '<div class="log-group-grid">' +
+                entries.map(renderEntry).join("") +
+              '</div>' +
+            '</section>'
           );
         }).join("");
       }

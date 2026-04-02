@@ -122,13 +122,17 @@ test("Web Interface Server returns log inventory for an authorized request", asy
       const payload = (await response.json()) as {
         root: string;
         total_bytes: number;
-        files: Array<{ path: string; size_bytes: number }>;
+        files: Array<{ path: string; size_bytes: number; category: string }>;
       };
       assert.equal(payload.root, logDir);
       assert.equal(payload.total_bytes, 14);
       assert.deepEqual(
         payload.files.map((entry) => entry.path),
         ["hub.log", "GUI/gui-pane-codex_01.log"]
+      );
+      assert.deepEqual(
+        payload.files.map((entry) => entry.category),
+        ["active", "session"]
       );
     }, {
       logDir

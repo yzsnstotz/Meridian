@@ -293,6 +293,7 @@ function createTerminalBehaviorHarness(html: string): {
     activeProgressTraceId: "",
     lastFlushedContent: "",
     lastRunResultAtMs: 0,
+    serverHistoryAuthoritative: false,
     document: {
       body: new FakeElement("body"),
       createElement(tagName: string) {
@@ -382,6 +383,8 @@ function createTerminalBehaviorHarness(html: string): {
     "buildHistoryMessageKey",
     "buildProgressMessageKey",
     "traceIdFromMessageKey",
+    "isProgressPlaceholderText",
+    "isPendingHistoryEntry",
     "findLatestPendingHistoryEntry",
     "findLatestFinalHistoryEntry",
     "restoreServerChatHistory",
@@ -421,6 +424,7 @@ function createReconnectHarness(html: string): {
     WS_MAX_RECONNECT_ATTEMPTS: 20,
     initialReplayLines: 200,
     serverHistoryRestored: true,
+    serverHistoryAuthoritative: true,
     WebSocket: FakeWebSocket,
     handleWsMessage: () => undefined,
     addChatBubble: () => undefined,
@@ -478,6 +482,9 @@ test("hub layout renders log footprint monitoring from the main page", async () 
   assert.match(indexHtml, /function clearLogFile\(/);
   assert.match(indexHtml, /id="log-view-dialog"/);
   assert.match(indexHtml, /function renderLogInventory\(payload\)/);
+  assert.match(indexHtml, /class="log-group"/);
+  assert.match(indexHtml, /function categoryLabel\(cat\)/);
+  assert.match(indexHtml, /groupOrder\.sort/);
 });
 
 test("bridge layout does not hard-cap content width on large screens", async () => {
@@ -554,9 +561,13 @@ test("terminal canonical restore polls durable progress and suppresses reconnect
   assert.match(terminalHtml, /clearActiveProgressBubble/);
   assert.match(terminalHtml, /maybeResolveProgressFromServerHistory/);
   assert.match(terminalHtml, /findLatestPendingHistoryEntry/);
+  assert.match(terminalHtml, /isPendingHistoryEntry/);
+  assert.match(terminalHtml, /reconcileBootstrapProgress/);
+  assert.match(terminalHtml, /shouldBootstrapLiveProgress/);
   assert.match(terminalHtml, /display_text/);
   assert.match(terminalHtml, /runPending \|\| activeProgressMessageKey/);
-  assert.match(terminalHtml, /serverHistoryRestored \? 0 : 100/);
+  assert.match(terminalHtml, /serverHistoryAuthoritative/);
+  assert.match(terminalHtml, /serverHistoryAuthoritative \? 0 : 100/);
 });
 
 test("terminal chat keeps a content-fingerprint dedupe safety net for replayed agent bubbles", async () => {
@@ -656,7 +667,7 @@ test("terminal reconnect requests zero replay lines after authoritative history 
   connectWebSocket();
   assert.match(urls[0] ?? "", /replay_lines=0/);
 
-  context.serverHistoryRestored = false;
+  context.serverHistoryAuthoritative = false;
   context.wsReconnectAttempts = 1;
   connectWebSocket();
   assert.match(urls[1] ?? "", /replay_lines=100/);

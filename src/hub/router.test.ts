@@ -2622,7 +2622,7 @@ test("HubRouter keeps approval prompts replaceable while progress entries append
   assert.match(history[1]?.content ?? "", /^Waiting for approval\.\.\./);
 });
 
-test("HubRouter keeps approval prompts durable after terminal input and final reply", async () => {
+test("HubRouter converts resolved approval prompts into pending progress after terminal input", async () => {
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "approval_01",
@@ -2685,19 +2685,19 @@ test("HubRouter keeps approval prompts durable after terminal input and final re
 
   history = router.getConversationHistoryForThread("approval_01");
   assert.equal(history.length, 2);
-  assert.equal(history[0]?.event_kind, "approval");
-  assert.match(history[0]?.content ?? "", /^Waiting for approval\.\.\./);
+  assert.equal(history[0]?.event_kind, "progress");
+  assert.equal(history[0]?.content, "Task is running...");
+  assert.equal(history[0]?.replace_key, `${traceId}:progress`);
   assert.equal(history[1]?.event_kind, "terminal_input");
   assert.equal(history[1]?.content, "allow");
 
   router.recordAgentPushConversation("approval_01", "done", traceId, "final_reply");
 
   history = router.getConversationHistoryForThread("approval_01");
-  assert.equal(history.length, 3);
-  assert.equal(history[0]?.event_kind, "approval");
-  assert.equal(history[1]?.event_kind, "terminal_input");
-  assert.equal(history[2]?.event_kind, "final_reply");
-  assert.equal(history[2]?.content, "done");
+  assert.equal(history.length, 2);
+  assert.equal(history[0]?.event_kind, "terminal_input");
+  assert.equal(history[1]?.event_kind, "final_reply");
+  assert.equal(history[1]?.content, "done");
 });
 
 test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {

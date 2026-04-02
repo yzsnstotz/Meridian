@@ -328,6 +328,7 @@ export class HubRouter {
   private readonly activeRunsByThread = new Map<string, ActiveRunState>();
   private readonly completedRunsByThread = new Map<string, CompletedRunRecord>();
   private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
+  private readonly pendingRunFollowups = new Set<string>();
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -785,6 +786,7 @@ export class HubRouter {
     const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
     if (message.payload.content?.trim()) {
       this.recordUserConversationEntry(threadId, message.payload.content.trim(), message.trace_id, "terminal_input");
+      this.resolveApprovalConversationEntry(threadId);
       this.persistStateSafely();
     }
     return this.buildResult(message, "success", instance.agent_type, content, threadId);
@@ -2224,6 +2226,97 @@ export class HubRouter {
     this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
   }
 
+  private resolveApprovalConversationEntry(threadId: string): void {
+    const history = this.readConversationHistory(threadId);
+    const activeTraceId = this.activeRunsByThread.get(threadId)?.traceId ?? null;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (!entry || entry.event_kind !== "approval") {
+        continue;
+      }
+      if (activeTraceId && entry.trace_id && entry.trace_id !== activeTraceId) {
+        continue;
+      }
+
+      const traceId = entry.trace_id ?? activeTraceId ?? null;
+      const replaceKey = traceId ? `${traceId}:progress` : `${threadId}:progress`;
+      for (let candidateIndex = history.length - 1; candidateIndex >= 0; candidateIndex -= 1) {
+        if (candidateIndex === index) {
+          continue;
+        }
+        const candidate = history[candidateIndex];
+        if (!candidate || candidate.replace_key !== replaceKey) {
+          continue;
+        }
+        history.splice(candidateIndex, 1);
+        if (candidateIndex < index) {
+          index -= 1;
+        }
+      }
+
+      history[index] = {
+        ...entry,
+        event_kind: "progress",
+        type: conversationEntryTypeForEventKind("progress"),
+        content: "Task is running...",
+        details_text: "",
+        raw_content: "Task is running...",
+        timestamp: this.now().toISOString(),
+        replace_key: replaceKey
+      };
+      this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
+      return;
+    }
+  }
+
+  private schedulePendingRunFinalization(threadId: string, traceId: string, inputText: string): void {
+    const followupKey = `${threadId}:${traceId}`;
+    if (this.pendingRunFollowups.has(followupKey)) {
+      return;
+    }
+
+    this.pendingRunFollowups.add(followupKey);
+    void this.finalizePendingRunInBackground(threadId, traceId, inputText, followupKey);
+  }
+
+  private async finalizePendingRunInBackground(
+    threadId: string,
+    traceId: string,
+    inputText: string,
+    followupKey: string
+  ): Promise<void> {
+    let client: AgentClient | null = null;
+    try {
+      const instance = this.resolveInstance(threadId);
+      client = this.clientFactory(instance.thread_id);
+      await client.connect(instance.socket_path);
+      const completedReply = await this.waitForAgentReply(client, null, traceId, {
+        trace_id: traceId,
+        thread_id: threadId
+      });
+      if (!completedReply || completedReply.kind !== "final") {
+        return;
+      }
+
+      const content = this.formatRunContent(threadId, completedReply.content);
+      this.recordAgentConversationEntry(threadId, content, traceId, inputText);
+      this.persistStateSafely();
+    } catch (error) {
+      this.log.warn(
+        {
+          trace_id: traceId,
+          thread_id: threadId,
+          reason: "pending_run_followup_failed",
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Pending run finalization watcher failed"
+      );
+    } finally {
+      this.pendingRunFollowups.delete(followupKey);
+      client?.disconnect();
+    }
+  }
+
   private rehydrateLocalState(state: PersistedHubState): void {
     this.pushSubscriptionsByThread.clear();
     this.conversationHistoryByThread.clear();
@@ -2751,6 +2844,9 @@ export class HubRouter {
   ): HubResult {
     const progress = this.buildPendingRunSnapshot(threadId, message.trace_id, source, fallbackContent);
     this.recordAgentPushConversation(threadId, progress.content, message.trace_id);
+    if (progress.event_kind === "approval") {
+      this.schedulePendingRunFinalization(threadId, message.trace_id, message.payload.content);
+    }
     return HubResultSchema.parse({
       trace_id: message.trace_id,
       thread_id: threadId,

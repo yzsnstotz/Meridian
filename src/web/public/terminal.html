@@ -1157,6 +1157,7 @@
       var a2aRenderFrame = 0;
       var completedA2AResults = new Map();
       var serverHistoryRestored = false;
+      var serverHistoryAuthoritative = false;
       var modelCatalogState = null;
       var CUSTOM_MODEL_OPTION_VALUE = "__custom__";
 
@@ -1631,6 +1632,35 @@
         finalizeA2ATask(taskId, msg.taskState === "failed" ? "failed" : "completed", msg.parts);
       }
 
+      function isProgressPlaceholderText(text) {
+        var normalized = typeof text === "string" ? stripAnsi(text).trim().toLowerCase() : "";
+        return normalized === "agent is processing..." ||
+          normalized === "task is running..." ||
+          /(^|\n)[•·]\s*working\s*\(/i.test(normalized) ||
+          normalized.indexOf("esc to interrupt") >= 0;
+      }
+
+      function isPendingHistoryEntry(entry) {
+        if (!entry || typeof entry !== "object") return false;
+        var eventKind = typeof entry.event_kind === "string" ? entry.event_kind : "";
+        if (eventKind === "progress" || eventKind === "approval") {
+          return true;
+        }
+        if (eventKind !== "final_reply") {
+          return false;
+        }
+
+        var content = typeof entry.content === "string" ? entry.content : "";
+        var rawContent = typeof entry.raw_content === "string" ? entry.raw_content : "";
+        var detailsText = typeof entry.details_text === "string" ? entry.details_text : "";
+
+        if (isProgressPlaceholderText(rawContent) || isProgressPlaceholderText(content)) {
+          return true;
+        }
+
+        return detectApprovalPrompt(rawContent || detailsText || content);
+      }
+
       function makeBubbleContentFingerprint(content, type) {
         var normalizedContent = stripMeridianNoise(stripSummaryProtocolTags(stripAnsi(content || ""))).trim().toLowerCase();
         return normalizedContent ? [type || "agent", normalizedContent].join("::") : "";
@@ -1681,11 +1711,13 @@
         if (!Array.isArray(entries) || entries.length === 0) return false;
         var latestPendingEntry = findLatestPendingHistoryEntry(entries);
         if (latestPendingEntry) {
+          serverHistoryAuthoritative = false;
           cacheServerHistory(entries);
           return false;
         }
         var latestFinalEntry = findLatestFinalHistoryEntry(entries);
         if (!latestFinalEntry) return false;
+        serverHistoryAuthoritative = true;
         cacheServerHistory(entries);
         clearActiveProgressBubble();
         addChatBubble(latestFinalEntry.content || "", latestFinalEntry.type || "agent", latestFinalEntry.details_text || "", {
@@ -2068,11 +2100,32 @@
 
       function restoreServerChatHistory(entries) {
         if (!Array.isArray(entries) || entries.length === 0) return false;
-        var latestPendingEntry = findLatestPendingHistoryEntry(entries);
+        var latestPendingIndex = -1;
+        var latestPendingEntry = null;
+        for (var pendingIndex = 0; pendingIndex < entries.length; pendingIndex++) {
+          var pendingCandidate = entries[pendingIndex];
+          if (isPendingHistoryEntry(pendingCandidate)) {
+            latestPendingIndex = pendingIndex;
+            latestPendingEntry = pendingCandidate;
+          } else if (pendingCandidate && pendingCandidate.event_kind === "final_reply") {
+            latestPendingIndex = -1;
+            latestPendingEntry = null;
+          }
+        }
+
+        var renderEntries = [];
+        for (var renderIndex = 0; renderIndex < entries.length; renderIndex++) {
+          var renderEntry = entries[renderIndex];
+          if (isPendingHistoryEntry(renderEntry) && renderIndex !== latestPendingIndex) {
+            continue;
+          }
+          renderEntries.push(renderEntry);
+        }
+
         chatHistoryHydrating = true;
         try {
-          for (var i = 0; i < entries.length; i++) {
-            var entry = entries[i];
+          for (var i = 0; i < renderEntries.length; i++) {
+            var entry = renderEntries[i];
             addChatBubble(entry.content || "", entry.type || "agent", entry.details_text || "", {
               persist: false,
               dedupe: false,
@@ -2082,7 +2135,8 @@
         } finally {
           chatHistoryHydrating = false;
         }
-        cacheServerHistory(entries);
+        cacheServerHistory(renderEntries);
+        serverHistoryAuthoritative = !latestPendingEntry;
         if (latestPendingEntry) {
           activeProgressMessageKey = buildHistoryMessageKey(latestPendingEntry);
           activeProgressTraceId = latestPendingEntry.trace_id || "";
@@ -2103,7 +2157,7 @@
         for (var i = 0; i < entries.length; i++) {
           var entry = entries[i];
           if (!entry) continue;
-          if (entry.event_kind === "progress" || entry.event_kind === "approval") {
+          if (isPendingHistoryEntry(entry)) {
             latestPendingEntry = entry;
           } else if (entry.event_kind === "final_reply") {
             latestPendingEntry = null;
@@ -2121,6 +2175,48 @@
           }
         }
         return null;
+      }
+
+      function shouldBootstrapLiveProgress(snapshot, historyEntries) {
+        if (!snapshot || typeof snapshot.content !== "string") return false;
+        var content = snapshot.content.trim();
+        if (!content) return false;
+        var entries = Array.isArray(historyEntries) ? historyEntries : [];
+        var historyHasPending = entries.some(isPendingHistoryEntry);
+        if (!historyHasPending && !detectApprovalPrompt(content) && !isProgressPlaceholderText(content)) {
+          return false;
+        }
+
+        var normalizedSnapshot = stripAnsi(content).trim();
+        for (var i = entries.length - 1; i >= 0; i--) {
+          var entry = entries[i];
+          if (!entry || typeof entry !== "object") continue;
+          var entryContent = typeof entry.content === "string" ? entry.content : "";
+          var entryDetails = typeof entry.details_text === "string" ? entry.details_text : "";
+          var normalizedEntry = stripAnsi((entryDetails || entryContent || "")).trim();
+          if (normalizedEntry === normalizedSnapshot) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      function reconcileBootstrapProgress(entries) {
+        if (!threadId || !token) {
+          return Promise.resolve(false);
+        }
+        return fetchThreadProgress()
+          .then(function(snapshot) {
+            if (!shouldBootstrapLiveProgress(snapshot, entries)) {
+              return false;
+            }
+            serverHistoryAuthoritative = false;
+            renderProgressSnapshot(snapshot);
+            return true;
+          })
+          .catch(function() {
+            return false;
+          });
       }
 
       function addChatBubble(content, type, detailsText, options) {
@@ -3090,11 +3186,13 @@
         .then(function(entries) {
           serverHistoryRestored = restoreServerChatHistory(entries);
           if (serverHistoryRestored) {
-            initialReplayLines = 0;
-            if (activeProgressMessageKey) {
-              startProgressPolling();
-            }
-            return true;
+            return reconcileBootstrapProgress(entries).then(function() {
+              initialReplayLines = serverHistoryAuthoritative ? 0 : 200;
+              if (activeProgressMessageKey) {
+                startProgressPolling();
+              }
+              return true;
+            });
           }
           var restoredLocal = restoreChatHistory();
           initialReplayLines = restoredLocal ? 0 : 200;
@@ -3102,6 +3200,7 @@
         })
         .catch(function() {
           serverHistoryRestored = false;
+          serverHistoryAuthoritative = false;
           var restoredLocal = restoreChatHistory();
           initialReplayLines = restoredLocal ? 0 : 200;
           return restoredLocal;
@@ -3146,7 +3245,7 @@
 
       function connectWebSocket() {
         if (!threadId || !token) return;
-        var replayLines = wsReconnectAttempts > 0 ? (serverHistoryRestored ? 0 : 100) : initialReplayLines;
+        var replayLines = wsReconnectAttempts > 0 ? (serverHistoryAuthoritative ? 0 : 100) : initialReplayLines;
         var url = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
         ws = new WebSocket(url);
         ws.onopen = function() {
