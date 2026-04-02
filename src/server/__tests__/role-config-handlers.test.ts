@@ -10,6 +10,7 @@ import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "../../roles/definitions";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
+import updateStatusTool from "../../tool-gateway/tools/update-status";
 import { createRoleHandlers, type RoleHandlers } from "../role-handlers";
 import type { AppState, DispatcherConfig, ReplyChannel } from "../../types";
 
@@ -154,6 +155,137 @@ describe("role config handlers", () => {
       dispatcher_id: expect.stringMatching(/^agent-dispatcher-/),
       dispatcher_thread_id: "dispatcher-thread-123"
     });
+  });
+
+  it("drives /api/agent-dispatcher/start through real sidecar state and detail lookup", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-start-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const commandFilePath = path.join(tempDir, "agent_dispatch_command.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const stateStore = new MemoryStateStore();
+    const log = createLogger();
+    const attachToThread = vi.fn().mockResolvedValue(undefined);
+    const registry = new RoleRegistry();
+    const runner = new RoleRunner({
+      sendToHub: async () => undefined,
+      listInstances: () => [],
+      log
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Demo Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 1 | A-01 | Produce output | CODEX-HIGH | — | Demo PRD | Run the demo worker |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(commandFilePath, "# Worker Command\n", "utf8");
+
+    registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+    registry.register(
+      "agent-dispatcher",
+      (threadId, config) => new AgentDispatcherRole(threadId, config, {
+        stateStore,
+        buildSystemPrompt: () => "test system prompt",
+        launchDispatcher: async () => ({
+          ok: true,
+          threadId: "dispatcher-thread-e2e"
+        }),
+        killThread: async () => undefined,
+        signalDispatcher: async () => undefined
+      })
+    );
+
+    const roleHandlers = createRoleHandlers({
+      runner,
+      registry,
+      stateStore,
+      getThreadDetail: async () => [
+        "Attached dispatcher session",
+        "",
+        "Worker A-01 finished."
+      ].join("\n"),
+      attachToThread: async (threadId) => {
+        await attachToThread(threadId);
+      },
+      log
+    });
+
+    try {
+      await expect(invokeJson<{
+        ok: true;
+        dispatcher_id: string;
+        dispatcher_thread_id: string;
+      }>(roleHandlers, "POST", "/api/agent-dispatcher/start", {
+        thread_id: "agent-dispatcher-e2e",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: commandFilePath,
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      })).resolves.toEqual({
+        ok: true,
+        dispatcher_id: "agent-dispatcher-e2e",
+        dispatcher_thread_id: "dispatcher-thread-e2e"
+      });
+
+      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toContain('"dispatcher_thread_id": "dispatcher-thread-e2e"');
+
+      await expect(updateStatusTool.execute({
+        plan: dispatchPlanPath,
+        worker: "A-01",
+        status: "in_progress",
+        thread_id: "worker-thread-456"
+      })).resolves.toEqual({
+        ok: true,
+        data: {
+          worker: "A-01",
+          status: "in_progress"
+        }
+      });
+
+      await expect(invokeJson(roleHandlers, "GET", "/api/role/agent-dispatcher-e2e")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-e2e",
+        role_type: "agent-dispatcher",
+        status: "active",
+        dispatcher_thread_id: "dispatcher-thread-e2e",
+        current_worker: "A-01",
+        session_log: expect.arrayContaining([
+          "Attached dispatcher session",
+          "Worker A-01 finished."
+        ]),
+        dispatch_plan: {
+          rows: [
+            expect.objectContaining({
+              worker: "A-01",
+              status: "🔄"
+            })
+          ]
+        }
+      });
+      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-e2e");
+
+      await expect(updateStatusTool.execute({
+        plan: dispatchPlanPath,
+        worker: "A-01",
+        status: "done"
+      })).resolves.toEqual({
+        ok: true,
+        data: {
+          worker: "A-01",
+          status: "done"
+        }
+      });
+      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toContain('"workers": {}');
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("pauses and resumes an active agent-dispatcher role through the dedicated routes", async () => {

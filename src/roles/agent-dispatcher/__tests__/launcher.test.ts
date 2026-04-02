@@ -27,6 +27,8 @@ describe("launchDispatcher", () => {
       "spawn",
       "--agent-type",
       "codex",
+      "--spawn-dir",
+      process.cwd(),
       "--mode",
       "bridge"
     ]);

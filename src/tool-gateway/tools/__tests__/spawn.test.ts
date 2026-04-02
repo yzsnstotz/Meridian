@@ -29,6 +29,7 @@ describe("spawn tool", () => {
         target: "claude",
         mode: "bridge",
         payload: {
+          spawn_dir: process.cwd(),
           content: "",
           attachments: []
         }
