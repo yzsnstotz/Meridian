@@ -58,7 +58,10 @@ describe("AgentDispatcherRole", () => {
     expect(harness.buildSystemPrompt).toHaveBeenCalledWith({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]"
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
+      default_agent_type: "codex",
+      default_mode: "bridge",
+      kill_policy: "always"
     });
     expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
     expect(harness.launchDispatcher).toHaveBeenCalledWith({

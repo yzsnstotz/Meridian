@@ -12,6 +12,9 @@ export type AgentType = z.infer<typeof AgentTypeSchema>;
 export const HubResultStatusSchema = z.enum(["success", "error", "partial", "timeout"]);
 export type HubResultStatus = z.infer<typeof HubResultStatusSchema>;
 
+export const HubRunStateSchema = z.enum(["completed", "still_running", "timeout"]);
+export type HubRunState = z.infer<typeof HubRunStateSchema>;
+
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
@@ -99,6 +102,7 @@ export const HubResultSchema = z.object({
   thread_id: z.string().min(1),
   source: AgentTypeSchema,
   status: HubResultStatusSchema,
+  run_state: HubRunStateSchema.optional(),
   content: z.string(),
   summary_text: z.string().optional(),
   details_text: z.string().optional(),

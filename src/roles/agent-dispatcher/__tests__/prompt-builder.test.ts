@@ -3,42 +3,59 @@ import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../prompt-builder";
 
 describe("buildSystemPrompt", () => {
-  it("substitutes all runtime variables", () => {
-    const prompt = buildSystemPrompt({
+  function createVars() {
+    return {
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"},{\"channel\":\"email\",\"chat_id\":\"ops@example.com\"}]"
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]",
+      default_agent_type: "codex",
+      default_mode: "bridge",
+      kill_policy: "always"
+    };
+  }
+
+  it("substitutes all runtime variables", () => {
+    const prompt = buildSystemPrompt({
+      ...createVars(),
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"},{\"channel\":\"web\",\"chat_id\":\"web:ops\"}]"
     });
 
     expect(prompt).toContain("dispatch_plan_path: /tmp/dispatch_plan.md");
     expect(prompt).toContain("command_file_path: /tmp/agent_dispatch_command.md");
-    expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"email","chat_id":"ops@example.com"}]');
+    expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"web","chat_id":"web:ops"}]');
+    expect(prompt).toContain("default_agent_type: codex");
+    expect(prompt).toContain("default_mode: bridge");
+    expect(prompt).toContain("kill_policy: always");
   });
 
   it("does not leave template markers in the output", () => {
-    const prompt = buildSystemPrompt({
-      dispatch_plan_path: "/tmp/dispatch_plan.md",
-      command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]"
-    });
+    const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).not.toContain("{{");
     expect(prompt).not.toContain("}}");
   });
 
-  it("documents the tsx tool entrypoint and all five tools", () => {
-    const prompt = buildSystemPrompt({
-      dispatch_plan_path: "/tmp/dispatch_plan.md",
-      command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]"
-    });
+  it("documents the tsx tool entrypoint and the current CLI surface", () => {
+    const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).toContain("npx tsx src/bin/meridian-tool.ts");
     expect(prompt).not.toContain("npx meridian-tool");
-    expect(prompt).toContain("spawn --agent-type <type> --mode <mode>");
+    expect(prompt).toContain("spawn --agent-type <agent_type> [--spawn-dir <path>] [--mode bridge|pane_bridge]");
     expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
     expect(prompt).toContain("kill --thread-id <id>");
-    expect(prompt).toContain("notify --message \"<text>\" --urgency <level> --reply-channels '<json-array>'");
-    expect(prompt).toContain("update-status --plan <path> --worker <id> --status <status>");
+    expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
+    expect(prompt).toContain("update-status --plan <path> --worker <id> --status <status> [--thread-id <id>]");
+  });
+
+  it("documents deterministic routing, explicit terminal exit, and non-final run handling", () => {
+    const prompt = buildSystemPrompt(createVars());
+
+    expect(prompt).toContain("values starting with `CODEX` -> `codex`");
+    expect(prompt).toContain("values starting with `GEMINI` -> `gemini`");
+    expect(prompt).toContain("send the final completion notify and stop");
+    expect(prompt).toContain("data.run_state");
+    expect(prompt).toContain("still_running");
+    expect(prompt).toContain("timeout");
+    expect(prompt).toContain("do not auto-kill the worker");
   });
 });

@@ -1,4 +1,5 @@
-import type { HubMessage, HubResult } from "../../types";
+import type { HubMessage, HubResult, HubRunState } from "../../types";
+import { readFile } from "node:fs/promises";
 import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
@@ -32,8 +33,8 @@ const runTool: ToolDefinition = {
       return missingParam("thread_id");
     }
 
-    const command = requireParam(params.command, "command");
-    if (!command) {
+    const commandPath = requireParam(params.command, "command");
+    if (!commandPath) {
       return missingParam("command");
     }
 
@@ -50,14 +51,15 @@ const runTool: ToolDefinition = {
     process.once("SIGINT", handleSigint);
 
     try {
-      const result = await sendAndWait(buildRunMessage(threadId, command), 0);
-      return mapRunResult(result, worker);
+      const commandText = await readFile(commandPath, "utf8");
+      const result = await sendAndWait(buildRunMessage(threadId, commandText), 0);
+      return mapRunResult(result, worker, threadId);
     } catch (error) {
       if (interrupted || INTERRUPT_MESSAGES.has(asError(error).message)) {
-        return interruptedResult(worker);
+        return interruptedResult(worker, threadId);
       }
 
-      return failedResult(worker, asError(error).message);
+      return failedResult(worker, threadId, asError(error).message);
     } finally {
       process.removeListener("SIGINT", handleSigint);
     }
@@ -81,31 +83,64 @@ function buildRunMessage(threadId: string, command: string): Partial<HubMessage>
   };
 }
 
-function mapRunResult(result: HubResult, worker: string): ToolResult {
-  if (result.status === "success" || result.status === "partial") {
+function mapRunResult(result: HubResult, worker: string, threadId: string): ToolResult {
+  if (result.status === "error") {
+    return failedResult(worker, threadId, result.content);
+  }
+
+  const runState = inferRunState(result);
+  if (runState !== "completed") {
     return {
       ok: true,
       data: {
         worker,
-        status: "done",
+        thread_id: threadId,
+        status: "in_progress",
+        run_state: runState,
         summary: result.content
       }
     };
   }
 
-  return failedResult(worker, result.content);
+  return {
+    ok: true,
+    data: {
+      worker,
+      thread_id: threadId,
+      status: "done",
+      run_state: "completed",
+      summary: result.content
+    }
+  };
 }
 
-function interruptedResult(worker: string): ToolResult {
-  return failedResult(worker, INTERRUPTED_ERROR);
+function inferRunState(result: HubResult): HubRunState {
+  if (result.run_state) {
+    return result.run_state;
+  }
+
+  if (result.status === "partial") {
+    return "still_running";
+  }
+
+  if (result.status === "timeout") {
+    return "timeout";
+  }
+
+  return "completed";
 }
 
-function failedResult(worker: string, error: string): ToolResult {
+function interruptedResult(worker: string, threadId: string): ToolResult {
+  return failedResult(worker, threadId, INTERRUPTED_ERROR);
+}
+
+function failedResult(worker: string, threadId: string, error: string): ToolResult {
   return {
     ok: false,
     error,
     data: {
       worker,
+      thread_id: threadId,
       status: "failed"
     }
   };
