@@ -28,6 +28,7 @@ import {
   type FileAttachment,
   type HubMessage,
   type HubResult,
+  type HubRunState,
   type ReplyChannel,
   type ServiceEndpoint,
   type ThreadProgressSnapshot
@@ -59,6 +60,17 @@ interface AgentMessageSnapshot {
   content: string;
   kind: AgentOutputKind;
 }
+
+type AgentReplyWaitResult =
+  | {
+      kind: "final";
+      content: string;
+    }
+  | {
+      kind: "non_final";
+      runState: Exclude<HubRunState, "completed">;
+      content: string | null;
+    };
 
 interface SessionAttachmentMetadata {
   channel: string;
@@ -512,10 +524,44 @@ export class HubRouter {
           "Run using fallback content: waitForAgentReply returned null; response body or getLatestAgentMessageSnapshot used as result content"
         );
       }
-      const content = this.formatRunContent(
-        instance.thread_id,
-        agentReply ?? (await this.resolveFallbackRunContent(client, response, previousSnapshot))
-      );
+      if (agentReply?.kind === "final") {
+        const content = this.formatRunContent(instance.thread_id, agentReply.content);
+        const attachments = this.extractResultAttachments(response);
+        const result = this.buildResult(
+          message,
+          "success",
+          instance.agent_type,
+          content,
+          instance.thread_id,
+          { attachments, runState: "completed" }
+        );
+        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+        return result;
+      }
+
+      if (agentReply?.kind === "non_final") {
+        return this.buildPendingRunResult(message, instance.agent_type, instance.thread_id, agentReply.runState, agentReply.content);
+      }
+
+      const fallbackContent = await this.resolveFallbackRunContent(client, response, previousSnapshot);
+      const fallbackClassification = classifyAgentOutput(fallbackContent);
+      if (fallbackContent === "Agent is processing..." || fallbackClassification.kind === "action_required") {
+        const runState: Exclude<HubRunState, "completed"> =
+          fallbackClassification.kind === "action_required"
+            ? "still_running"
+            : (await this.getClientRunActivity(client)) === "active"
+              ? "still_running"
+              : "timeout";
+        return this.buildPendingRunResult(
+          message,
+          instance.agent_type,
+          instance.thread_id,
+          runState,
+          fallbackContent === "Agent is processing..." ? null : fallbackContent
+        );
+      }
+
+      const content = this.formatRunContent(instance.thread_id, fallbackContent);
       const attachments = this.extractResultAttachments(response);
       const result = this.buildResult(
         message,
@@ -523,7 +569,7 @@ export class HubRouter {
         instance.agent_type,
         content,
         instance.thread_id,
-        { attachments }
+        { attachments, runState: "completed" }
       );
       this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
       return result;
@@ -2372,7 +2418,7 @@ export class HubRouter {
     previousSnapshot: AgentMessageSnapshot | null,
     traceId: string,
     runLogContext?: { trace_id: string; thread_id: string }
-  ): Promise<string | null> {
+  ): Promise<AgentReplyWaitResult | null> {
     if (!client.getMessages) {
       this.log.warn(
         { ...runLogContext, reason: "client_has_no_getMessages" },
@@ -2388,13 +2434,14 @@ export class HubRouter {
     let fallbackTail: string | null = null;
     let stablePolls = 0;
     let unchangedSnapshotPolls = 0;
+    let lastKnownRunActivity: "active" | "inactive" | "unknown" = "unknown";
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const messages = await client.getMessages();
         const summaryCandidate = this.extractLatestCompletedSummaryForTrace(messages, traceId);
         if (summaryCandidate) {
-          return summaryCandidate;
+          return { kind: "final", content: summaryCandidate };
         }
 
         const snapshots = this.extractAgentMessageSnapshots(messages, traceId);
@@ -2404,8 +2451,9 @@ export class HubRouter {
 
         if (latest && previousSnapshot && !hasNewAgentReply) {
           unchangedSnapshotPolls += 1;
-          if (unchangedSnapshotPolls >= maxUnchangedSnapshotPolls) {
-            return null;
+          lastKnownRunActivity = await this.getClientRunActivity(client);
+          if (unchangedSnapshotPolls >= maxUnchangedSnapshotPolls && lastKnownRunActivity === "inactive") {
+            return { kind: "non_final", runState: "timeout", content: null };
           }
         } else {
           unchangedSnapshotPolls = 0;
@@ -2421,9 +2469,20 @@ export class HubRouter {
             stablePolls += 1;
           }
 
+          lastKnownRunActivity = await this.getClientRunActivity(client);
+          if (latest.kind === "action_required" && stablePolls >= 1) {
+            return { kind: "non_final", runState: "still_running", content: fallbackCandidate };
+          }
+
           // Stable polls are now fallback-only when no complete summary block is available.
-          if (fallbackCandidate && fallbackTail && !this.isNonFinalTerminalFrame(fallbackTail) && stablePolls >= 2) {
-            return fallbackCandidate;
+          if (
+            fallbackCandidate &&
+            fallbackTail &&
+            !this.isNonFinalTerminalFrame(fallbackTail) &&
+            stablePolls >= 2 &&
+            lastKnownRunActivity !== "active"
+          ) {
+            return { kind: "final", content: fallbackCandidate };
           }
         }
       } catch (error) {
@@ -2444,7 +2503,10 @@ export class HubRouter {
     }
 
     if (fallbackCandidate && fallbackTail && !this.isNonFinalTerminalFrame(fallbackTail)) {
-      return fallbackCandidate;
+      const runState = lastKnownRunActivity === "active" ? "still_running" : "timeout";
+      return lastKnownRunActivity === "active"
+        ? { kind: "non_final", runState, content: fallbackCandidate }
+        : { kind: "final", content: fallbackCandidate };
     }
 
     if (fallbackCandidate === null || (fallbackTail && this.isNonFinalTerminalFrame(fallbackTail))) {
@@ -2459,9 +2521,38 @@ export class HubRouter {
         },
         "waitForAgentReply returning null: no complete summary block within max attempts and fallback did not stabilize"
       );
-      return null;
+      return {
+        kind: "non_final",
+        runState: lastKnownRunActivity === "inactive" ? "timeout" : "still_running",
+        content: fallbackTail && this.isNonFinalTerminalFrame(fallbackTail) ? fallbackCandidate : null
+      };
     }
-    return fallbackCandidate;
+    return { kind: "final", content: fallbackCandidate };
+  }
+
+  private async getClientRunActivity(client: AgentClient): Promise<"active" | "inactive" | "unknown"> {
+    try {
+      const status = await client.getStatus();
+      const rawStatus =
+        typeof status.status === "string"
+          ? status.status.trim().toLowerCase()
+          : typeof status.agent_status === "string"
+            ? status.agent_status.trim().toLowerCase()
+            : "";
+      if (!rawStatus) {
+        return "unknown";
+      }
+      if (rawStatus === "running" || rawStatus === "waiting") {
+        return "active";
+      }
+      if (rawStatus === "idle" || rawStatus === "stopped" || rawStatus === "error") {
+        return "inactive";
+      }
+    } catch {
+      return "unknown";
+    }
+
+    return "unknown";
   }
 
   private async resolveFallbackRunContent(
@@ -2651,6 +2742,65 @@ export class HubRouter {
     return content;
   }
 
+  private buildPendingRunResult(
+    message: HubMessage,
+    source: AgentType,
+    threadId: string,
+    runState: Exclude<HubRunState, "completed">,
+    fallbackContent: string | null
+  ): HubResult {
+    const progress = this.buildPendingRunSnapshot(threadId, message.trace_id, source, fallbackContent);
+    this.recordAgentPushConversation(threadId, progress.content, message.trace_id);
+    return HubResultSchema.parse({
+      trace_id: message.trace_id,
+      thread_id: threadId,
+      source,
+      status: "partial",
+      run_state: runState,
+      content: progress.content,
+      progress,
+      attachments: [],
+      timestamp: progress.updated_at
+    });
+  }
+
+  private buildPendingRunSnapshot(
+    threadId: string,
+    traceId: string,
+    source: AgentType,
+    fallbackContent: string | null
+  ): ThreadProgressSnapshot {
+    const historyEntry = this.findLatestConversationEntryForTrace(threadId, traceId);
+    const pendingEntry =
+      historyEntry && isReplaceableConversationEventKind(historyEntry.event_kind)
+        ? historyEntry
+        : null;
+    const fallbackClassification = fallbackContent ? classifyAgentOutput(fallbackContent) : null;
+    const waitingForInput =
+      fallbackClassification?.kind === "action_required" ||
+      historyEntry?.event_kind === "approval" ||
+      this.registry.get(threadId)?.status === "waiting";
+    const displayText = this.formatRunContent(
+      threadId,
+      fallbackContent?.trim() ||
+        pendingEntry?.content ||
+        (waitingForInput ? "Waiting for approval..." : "Task is running...")
+    );
+
+    return ThreadProgressSnapshotSchema.parse({
+      trace_id: traceId,
+      thread_id: threadId,
+      source,
+      status: "partial",
+      event_kind: waitingForInput ? "approval" : "progress",
+      phase: waitingForInput ? "waiting_for_input" : "running",
+      waiting_for_input: waitingForInput,
+      content: displayText,
+      display_text: displayText,
+      updated_at: this.now().toISOString()
+    });
+  }
+
   private buildResult(
     message: HubMessage,
     status: HubResult["status"],
@@ -2660,6 +2810,7 @@ export class HubRouter {
     options?: {
       attachments?: FileAttachment[];
       telegramInlineKeyboard?: HubResult["telegram_inline_keyboard"];
+      runState?: HubResult["run_state"];
     }
   ): HubResult {
     return HubResultSchema.parse({
@@ -2667,6 +2818,7 @@ export class HubRouter {
       thread_id: threadIdOverride ?? message.thread_id,
       source,
       status,
+      run_state: options?.runState,
       content,
       attachments: options?.attachments ?? [],
       telegram_inline_keyboard: options?.telegramInlineKeyboard,

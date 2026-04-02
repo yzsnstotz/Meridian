@@ -198,6 +198,21 @@ test("HubResultSchema accepts optional structured progress snapshots", () => {
   assert.equal(parsed.progress?.content, "Task is running...");
 });
 
+test("HubResultSchema accepts optional run-state metadata", () => {
+  const parsed = HubResultSchema.parse({
+    trace_id: randomUUID(),
+    thread_id: "claude_01",
+    source: "codex",
+    status: "partial",
+    run_state: "still_running",
+    content: "Task is running...",
+    attachments: [],
+    timestamp: new Date().toISOString()
+  });
+
+  assert.equal(parsed.run_state, "still_running");
+});
+
 test("pane IPC schemas parse subscribe, output, and unsubscribe messages", () => {
   assert.equal(
     PaneSubscribeRequestSchema.parse({
