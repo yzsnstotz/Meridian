@@ -2842,6 +2842,15 @@ export class HubRouter {
     runState: Exclude<HubRunState, "completed">,
     fallbackContent: string | null
   ): HubResult {
+    this.log.warn(
+      {
+        trace_id: message.trace_id,
+        thread_id: threadId,
+        intent: message.intent,
+        run_state: runState
+      },
+      "Returning non-terminal result on terminal wait path"
+    );
     const progress = this.buildPendingRunSnapshot(threadId, message.trace_id, source, fallbackContent);
     this.recordAgentPushConversation(threadId, progress.content, message.trace_id);
     if (progress.event_kind === "approval") {

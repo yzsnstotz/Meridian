@@ -549,6 +549,70 @@ test("HubRouter run logs getMessages_threw and returns a structured pending resu
   assert.equal(result.progress?.phase, "running");
 });
 
+test("HubRouter warns when a terminal wait path returns a non-terminal run result", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_warn_01",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-gemini_warn_01.sock",
+    pid: 202,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const warnCalls: Array<{ context: Record<string, unknown>; message: string }> = [];
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => {
+        throw new Error("HTTP 404 returned for GET /messages");
+      }
+    })
+  });
+
+  (router as unknown as {
+    log: {
+      info: (...args: unknown[]) => void;
+      warn: (context: Record<string, unknown>, message: string) => void;
+      error: (...args: unknown[]) => void;
+    };
+  }).log = {
+    info: () => undefined,
+    warn: (context, message) => {
+      warnCalls.push({ context, message });
+    },
+    error: () => undefined
+  };
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "f4df2e20-0a1f-4d3a-8b5c-0d1a6ad11234",
+      thread_id: "gemini_warn_01",
+      target: "gemini_warn_01"
+    })
+  );
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.run_state, "still_running");
+  assert.deepEqual(
+    warnCalls.find((entry) => entry.message === "Returning non-terminal result on terminal wait path"),
+    {
+      context: {
+        trace_id: "f4df2e20-0a1f-4d3a-8b5c-0d1a6ad11234",
+        thread_id: "gemini_warn_01",
+        intent: "run",
+        run_state: "still_running"
+      },
+      message: "Returning non-terminal result on terminal wait path"
+    }
+  );
+});
+
 test("HubRouter forwards agent response files as HubResult attachments", async () => {
   const registry = new InstanceRegistry();
   registry.register({
