@@ -761,6 +761,64 @@ describe("role config handlers", () => {
       }
     });
   });
+
+  it("logs attach failures with dispatcher thread and role context", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-attach-log-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | running |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      dispatcher_thread_id: "dispatcher-thread-123",
+      workers: {}
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        "Dispatcher detail",
+        new Error("attach failed")
+      );
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-attach-log",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-attach-log")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-attach-log"
+      });
+      expect(harness.log.warn).toHaveBeenCalledWith(
+        "Failed to attach dispatcher session before detail fetch",
+        expect.objectContaining({
+          thread_id: "dispatcher-thread-123",
+          role_id: "agent-dispatcher-attach-log",
+          error: "attach failed"
+        })
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function createHarness(
@@ -851,6 +909,7 @@ function createHarness(
   };
 
   return {
+    log,
     stateStore,
     roleHandlers: createRoleHandlers({
       ...roleHandlersOptions,
@@ -967,9 +1026,9 @@ function cloneState(state: AppState): AppState {
 
 function createLogger() {
   return {
-    debug: () => undefined,
-    info: () => undefined,
-    warn: () => undefined,
-    error: () => undefined
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn()
   };
 }

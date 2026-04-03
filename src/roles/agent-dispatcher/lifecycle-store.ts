@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import type { Logger } from "../base-role";
 import {
   DispatchThreadStateV2Schema,
   type DispatchThreadStateV2,
@@ -37,6 +38,7 @@ const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
 export interface LifecycleStoreOptions {
   beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
   dispatchPlanPath?: string;
+  log?: Pick<Logger, "info">;
   now?: () => string;
 }
 
@@ -45,12 +47,14 @@ export class LifecycleStore {
 
   private readonly beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
   private readonly dispatchPlanPath: string;
+  private readonly log: Pick<Logger, "info">;
   private readonly now: () => string;
 
   constructor(filePath: string, options: LifecycleStoreOptions = {}) {
     this.filePath = filePath;
     this.beforeCommit = options.beforeCommit;
     this.dispatchPlanPath = options.dispatchPlanPath ?? path.join(path.dirname(filePath), DISPATCH_PLAN_FILENAME);
+    this.log = options.log ?? console;
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -91,17 +95,20 @@ export class LifecycleStore {
 
   recordDispatcher(threadId: string): void {
     const state = this.load();
+    const previousStatus = state.dispatcher.status;
     state.dispatcher = {
       thread_id: threadId,
       started_at: this.now(),
       status: "running"
     };
+    this.logTransition("dispatcher", previousStatus, "running", "record_dispatcher");
     this.save(state);
   }
 
   recordWorkerStart(workerId: string, threadId: string, traceId: string, expectedOutputs: string[]): void {
     const state = this.load();
     const nowIso = this.now();
+    const previousStatus = state.workers[workerId]?.status ?? "pending";
 
     state.workers[workerId] = {
       thread_id: threadId,
@@ -113,6 +120,7 @@ export class LifecycleStore {
       hub_result: null
     };
 
+    this.logTransition(workerId, previousStatus, "running", "run_tool_start");
     this.save(state);
   }
 
@@ -123,19 +131,21 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
+    const nextStatus = mapHubResultToLifecycleStatus(hubResult);
     state.workers[workerId] = {
       ...worker,
       thread_id: hubResult.thread_id || worker.thread_id,
       trace_id: hubResult.trace_id || worker.trace_id,
       last_seen_at: hubResult.timestamp,
-      status: mapHubResultToLifecycleStatus(hubResult),
+      status: nextStatus,
       hub_result: hubResult
     };
 
+    this.logTransition(workerId, worker.status, nextStatus, "hub_result");
     this.save(state);
   }
 
-  markAbandoned(workerId: string, _reason: string): void {
+  markAbandoned(workerId: string, reason: string): void {
     const state = this.load();
     const worker = state.workers[workerId];
     if (!worker) {
@@ -148,6 +158,7 @@ export class LifecycleStore {
       last_seen_at: this.now()
     };
 
+    this.logTransition(workerId, worker.status, "abandoned", reason);
     this.save(state);
   }
 
@@ -185,6 +196,20 @@ export class LifecycleStore {
     }
 
     writeFileAtomically(this.dispatchPlanPath, nextPlan);
+  }
+
+  logTransition(workerId: string, fromStatus: LifecycleStatus, toStatus: LifecycleStatus, trigger: string): void {
+    if (fromStatus === toStatus) {
+      return;
+    }
+
+    this.log.info("Lifecycle transition", {
+      event: "worker_transition",
+      worker_id: workerId,
+      from_status: fromStatus,
+      to_status: toStatus,
+      trigger
+    });
   }
 }
 

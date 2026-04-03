@@ -65,7 +65,7 @@ export async function reconcile(
     unchanged: []
   };
 
-  await reconcileDispatcher(state, hubClient, report);
+  await reconcileDispatcher(lifecycleStore, state, hubClient, report);
 
   for (const [workerId, worker] of Object.entries(state.workers)) {
     if (worker.status !== "running") {
@@ -87,6 +87,7 @@ export async function reconcile(
       status: transition.to,
       last_seen_at: nowIso
     };
+    lifecycleStore.logTransition(workerId, worker.status, transition.to, transition.trigger);
     report.changed.push({
       workerId,
       from: worker.status,
@@ -101,6 +102,7 @@ export async function reconcile(
 }
 
 async function reconcileDispatcher(
+  lifecycleStore: LifecycleStore,
   state: ReturnType<LifecycleStore["load"]>,
   hubClient: A2AClient,
   report: ReconciliationReport
@@ -116,6 +118,7 @@ async function reconcileDispatcher(
       ...state.dispatcher,
       status: "abandoned"
     };
+    lifecycleStore.logTransition(DISPATCHER_ENTRY_ID, "running", "abandoned", "dispatcher_thread_missing");
     report.changed.push({
       workerId: DISPATCHER_ENTRY_ID,
       from: "running",
@@ -130,6 +133,12 @@ async function reconcileDispatcher(
       ...state.dispatcher,
       status: "failed"
     };
+    lifecycleStore.logTransition(
+      DISPATCHER_ENTRY_ID,
+      "running",
+      "failed",
+      `hub_status:${observation.rawStatus ?? "failed"}`
+    );
     report.changed.push({
       workerId: DISPATCHER_ENTRY_ID,
       from: "running",

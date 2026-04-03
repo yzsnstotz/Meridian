@@ -67,6 +67,9 @@ export async function sendAndWait(
 
     socket.once("end", () => {
       if (!rawResponse.trim()) {
+        console.warn("Hub callback completed without a response body", {
+          expected_trace_id: traceId
+        });
         rejectWithCleanup(new Error("Hub callback completed without a response body"));
         return;
       }
@@ -74,11 +77,19 @@ export async function sendAndWait(
       try {
         const result = HubResultSchema.parse(JSON.parse(rawResponse));
         if (result.trace_id !== traceId) {
+          console.error("Hub callback trace_id mismatch", {
+            expected_trace_id: traceId,
+            received_trace_id: result.trace_id
+          });
           return;
         }
 
         resolveWithCleanup(result);
       } catch (error) {
+        console.warn("Hub callback body could not be parsed", {
+          expected_trace_id: traceId,
+          error: asError(error).message
+        });
         rejectWithCleanup(error);
       }
     });

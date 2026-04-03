@@ -100,6 +100,66 @@ describe("sendAndWait", () => {
     expect(callbackSocketPath).toBeDefined();
     await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("logs an error when the hub callback trace_id does not match before receiving the correct reply", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const hub = await startHubServer(hubSocketPath, { callbackMode: "mismatch_then_success" });
+    servers.add(hub);
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const message = buildHubMessage();
+    const result = await sendAndWait(message, 200);
+
+    expect(result.trace_id).toBe(message.trace_id);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Hub callback trace_id mismatch",
+      expect.objectContaining({
+        expected_trace_id: message.trace_id,
+        received_trace_id: expect.any(String)
+      })
+    );
+  });
+
+  it("logs a warning when the hub callback body is empty", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const hub = await startHubServer(hubSocketPath, { callbackMode: "empty" });
+    servers.add(hub);
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const message = buildHubMessage();
+
+    await expect(sendAndWait(message, 50)).rejects.toThrow("Hub callback completed without a response body");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Hub callback completed without a response body",
+      expect.objectContaining({
+        expected_trace_id: message.trace_id
+      })
+    );
+  });
+
+  it("logs a warning when the hub callback body cannot be parsed", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const hub = await startHubServer(hubSocketPath, { callbackMode: "invalid_json" });
+    servers.add(hub);
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const message = buildHubMessage();
+
+    await expect(sendAndWait(message, 50)).rejects.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Hub callback body could not be parsed",
+      expect.objectContaining({
+        expected_trace_id: message.trace_id,
+        error: expect.any(String)
+      })
+    );
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
@@ -111,7 +171,7 @@ async function createTempDirectory(): Promise<string> {
 async function startHubServer(
   socketPath: string,
   options: {
-    callbackMode: "success" | "none";
+    callbackMode: "success" | "none" | "mismatch_then_success" | "empty" | "invalid_json";
   }
 ): Promise<TestHubServer> {
   const messages: Record<string, unknown>[] = [];
@@ -147,6 +207,40 @@ async function startHubServer(
 
         void sendCallback(replyChannel.socket_path, response);
       }
+
+      if (options.callbackMode === "mismatch_then_success" && replyChannel?.socket_path) {
+        const traceId = typeof message.trace_id === "string" ? message.trace_id : randomUUID();
+        const threadId = typeof message.thread_id === "string" ? message.thread_id : "dispatcher-1";
+        const callbackSocketPath = replyChannel.socket_path;
+
+        void sendCallback(callbackSocketPath, {
+          trace_id: randomUUID(),
+          thread_id: threadId,
+          source: "codex",
+          status: "success",
+          content: "mismatch",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        }).then(() => {
+          return sendCallback(callbackSocketPath, {
+            trace_id: traceId,
+            thread_id: threadId,
+            source: "codex",
+            status: "success",
+            content: "ok",
+            attachments: [],
+            timestamp: new Date().toISOString()
+          });
+        });
+      }
+
+      if (options.callbackMode === "empty" && replyChannel?.socket_path) {
+        void sendRawCallback(replyChannel.socket_path, "");
+      }
+
+      if (options.callbackMode === "invalid_json" && replyChannel?.socket_path) {
+        void sendRawCallback(replyChannel.socket_path, "{invalid");
+      }
     });
   });
 
@@ -173,9 +267,13 @@ async function startHubServer(
 }
 
 function sendCallback(socketPath: string, response: HubResult): Promise<void> {
+  return sendRawCallback(socketPath, JSON.stringify(response));
+}
+
+function sendRawCallback(socketPath: string, payload: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath, () => {
-      socket.end(JSON.stringify(response));
+      socket.end(payload);
     });
 
     socket.once("close", () => resolve());

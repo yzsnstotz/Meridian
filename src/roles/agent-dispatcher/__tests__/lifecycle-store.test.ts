@@ -358,10 +358,61 @@ describe("LifecycleStore", () => {
     expect(markdown).toContain("| ❌ | 1 | N-04 | Failed row |");
     expect(markdown).toContain("| ❌ | 1 | N-05 | Abandoned row |");
   });
+
+  it("logs structured worker lifecycle transitions", async () => {
+    const info = vi.fn();
+    const harness = await createHarness({
+      log: { info }
+    });
+
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+    harness.store.recordWorkerStart("N-02", "worker-thread-222", "22222222-2222-4222-8222-222222222222", []);
+    harness.store.markAbandoned("N-02", "session_manager_restart");
+
+    expect(info).toHaveBeenNthCalledWith(
+      1,
+      "Lifecycle transition",
+      expect.objectContaining({
+        event: "worker_transition",
+        worker_id: "N-01",
+        from_status: "pending",
+        to_status: "running",
+        trigger: "run_tool_start"
+      })
+    );
+    expect(info).toHaveBeenNthCalledWith(
+      2,
+      "Lifecycle transition",
+      expect.objectContaining({
+        event: "worker_transition",
+        worker_id: "N-01",
+        from_status: "running",
+        to_status: "completed",
+        trigger: "hub_result"
+      })
+    );
+    expect(info).toHaveBeenNthCalledWith(
+      4,
+      "Lifecycle transition",
+      expect.objectContaining({
+        event: "worker_transition",
+        worker_id: "N-02",
+        from_status: "running",
+        to_status: "abandoned",
+        trigger: "session_manager_restart"
+      })
+    );
+  });
 });
 
 async function createHarness(options: {
   dispatchPlanPath?: string;
+  log?: { info: (...args: unknown[]) => void };
   planTemplate?: string;
 } = {}): Promise<{
   directory: string;
@@ -389,7 +440,8 @@ async function createHarness(options: {
     filePath,
     dispatchPlanPath,
     store: new LifecycleStore(filePath, {
-      dispatchPlanPath: options.dispatchPlanPath
+      dispatchPlanPath: options.dispatchPlanPath,
+      log: options.log
     })
   };
 }
