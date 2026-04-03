@@ -2,10 +2,14 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import net from "node:net";
+import path from "node:path";
 
 import { z } from "zod";
 
+import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
+import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
+import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import {
   applyEditableDispatcherConfig,
   cloneDispatcherConfig,
@@ -34,6 +38,7 @@ import {
   type DispatcherConfig,
   type DispatcherEditorConfig,
   type HubMessage,
+  type HubResult,
   type ReplyChannel,
   type RoleType,
   type RoleState
@@ -41,6 +46,7 @@ import {
 import type { Logger } from "../roles/base-role";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
+const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 type DispatcherThreadAwareRole = {
   getDispatcherThreadId(): string | null;
 };
@@ -73,6 +79,7 @@ type RoleRouteMatch =
   | { kind: "start-agent-dispatcher" }
   | { kind: "pause-dispatcher"; threadId: string }
   | { kind: "resume-dispatcher"; threadId: string }
+  | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string };
 
@@ -83,6 +90,7 @@ export interface RoleHandlersOptions {
   listReplyChannels?: () => Promise<ReplyChannel[]>;
   getThreadDetail?: (threadId: string) => Promise<string>;
   attachToThread?: (threadId: string) => Promise<void>;
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>;
   log?: Logger;
 }
 
@@ -147,6 +155,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const listReplyChannels = options.listReplyChannels ?? (async () => []);
   const getThreadDetail = options.getThreadDetail;
   const attachToThread = options.attachToThread ?? defaultAttachToThread;
+  const sendHubRequestImpl = options.sendHubRequest ?? sendHubRequest;
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   const handlers: RoleHandlers = {
@@ -230,6 +239,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           case "resume-dispatcher":
             writeJson(response, 200, await setAgentDispatcherStatus(route.threadId, "active"));
             return true;
+          case "reconcile":
+            writeJson(response, 200, await reconcileActiveDispatcher());
+            return true;
           case "patch-config":
             writeJson(response, 200, await handlers.patchConfig(route.threadId, await readJsonBody(request)));
             return true;
@@ -302,6 +314,19 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       ok: true,
       status
     };
+  }
+
+  async function reconcileActiveDispatcher() {
+    const agentDispatcherConfig = resolveActiveAgentDispatcherConfig(activeRoles);
+    if (!agentDispatcherConfig) {
+      throw createHttpError(404, "No active agent dispatcher is running");
+    }
+
+    const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(agentDispatcherConfig.dispatch_plan_path));
+    return reconcile(lifecycleStore, {
+      serviceId: ROLES_SERVICE_ID,
+      sendRequest: sendHubRequestImpl
+    } as unknown as A2AClient);
   }
 
   async function getChannels(): Promise<{ channels: ReplyChannel[] }> {
@@ -440,6 +465,7 @@ async function getRole(
       currentWorker,
       currentWorkerEntry,
       dispatchPlanPath: agentDispatcherConfig.dispatch_plan_path,
+      roleId: role.threadId,
       roleStatus: role.status
     },
     options.log
@@ -545,6 +571,23 @@ function parseDispatcherConfig(config: unknown): DispatcherConfig | null {
 function parseAgentDispatcherConfig(config: unknown): AgentDispatcherConfig | null {
   const parsed = AgentDispatcherConfigSchema.safeParse(config);
   return parsed.success ? parsed.data : null;
+}
+
+function resolveActiveAgentDispatcherConfig(
+  activeRoles: ReadonlyMap<string, PromptStoreRoleBinding>
+): AgentDispatcherConfig | null {
+  for (const role of activeRoles.values()) {
+    if (role.roleType !== "agent-dispatcher") {
+      continue;
+    }
+
+    const config = parseAgentDispatcherConfig(role.config);
+    if (config) {
+      return config;
+    }
+  }
+
+  return null;
 }
 
 function extractDispatcherThreadId(role: ReturnType<RoleRegistry["create"]>): string | null {
@@ -692,6 +735,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     return { kind: "resume-dispatcher", threadId: parts[2] };
   }
 
+  if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "reconcile") {
+    return { kind: "reconcile" };
+  }
+
   if (method === "PATCH" && parts.length === 4 && parts[0] === "api" && parts[1] === "role" && parts[3] === "config") {
     return { kind: "patch-config", threadId: parts[2] };
   }
@@ -737,6 +784,10 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
+function resolveDispatchThreadPath(dispatchPlanPath: string): string {
+  return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
+}
+
 async function loadDispatchThreadState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadState> {
   try {
     return await new ThreadTracker(dispatchPlanPath).load();
@@ -774,6 +825,7 @@ async function loadDispatcherSessionLog(
     currentWorker: string | null;
     currentWorkerEntry: WorkerThreadEntry | null;
     dispatchPlanPath: string;
+    roleId: string;
     roleStatus: string;
   },
   log: Logger
@@ -788,7 +840,8 @@ async function loadDispatcherSessionLog(
       await attachToThread(dispatcherThreadId);
     } catch (error) {
       log.warn("Failed to attach dispatcher session before detail fetch", {
-        dispatcherThreadId,
+        thread_id: dispatcherThreadId,
+        role_id: fallbackContext.roleId,
         error: getErrorMessage(error)
       });
     }

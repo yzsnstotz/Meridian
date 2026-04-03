@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { A2AClient } from "../../a2a/client";
+import { ROLES_SERVICE_ID } from "../../config";
+import { reconcile } from "../../roles/agent-dispatcher/reconciler";
 import type { HubMessage, HubResult, HubRunState } from "../../types";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { sendAndWait } from "../ipc-bridge";
@@ -64,6 +67,7 @@ const runTool: ToolDefinition = {
 
       const result = await sendAndWait(buildRunMessage(threadId, commandText, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
+      scheduleReconciliation(lifecycleStore);
       return mapRunResult(result, worker, threadId);
     } catch (error) {
       const resolvedError = asError(error);
@@ -104,6 +108,27 @@ function buildRunMessage(threadId: string, command: string, traceId: string): Pa
 
 function createLifecycleStore(commandPath: string): LifecycleStore {
   return new LifecycleStore(path.join(path.dirname(commandPath), DISPATCH_THREADS_FILENAME));
+}
+
+function scheduleReconciliation(lifecycleStore: LifecycleStore): void {
+  setImmediate(() => {
+    try {
+      void reconcile(lifecycleStore, {
+        serviceId: ROLES_SERVICE_ID,
+        sendRequest: (message: HubMessage) => sendAndWait(message, 0)
+      } as unknown as A2AClient).catch((error) => {
+        console.warn("run tool reconciliation failed", {
+          filePath: lifecycleStore.filePath,
+          error: asError(error).message
+        });
+      });
+    } catch (error) {
+      console.warn("run tool reconciliation failed", {
+        filePath: lifecycleStore.filePath,
+        error: asError(error).message
+      });
+    }
+  });
 }
 
 function deriveExpectedOutputs(commandPath: string, workerId: string): string[] {

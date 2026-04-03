@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { lifecycleStoreConstructor } = vi.hoisted(() => ({
+const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
+  reconcileMock: vi.fn().mockResolvedValue({
+    changed: [],
+    unchanged: []
+  }),
   lifecycleStoreConstructor: vi.fn().mockImplementation((filePath: string) => {
     const workers: Record<string, Record<string, unknown>> = {};
 
@@ -52,6 +56,10 @@ vi.mock("node:fs/promises", () => ({
 
 vi.mock("../../../roles/agent-dispatcher/lifecycle-store", () => ({
   LifecycleStore: lifecycleStoreConstructor
+}));
+
+vi.mock("../../../roles/agent-dispatcher/reconciler", () => ({
+  reconcile: reconcileMock
 }));
 
 import { randomUUID } from "node:crypto";
@@ -156,6 +164,45 @@ describe("run tool", () => {
     });
   });
 
+  it("schedules reconciliation after recording the Hub result without blocking the response", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-654",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "R-04",
+        thread_id: "thread-654",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+    expect(reconcileMock).not.toHaveBeenCalled();
+
+    await waitForImmediate();
+
+    expect(reconcileMock).toHaveBeenCalledWith(
+      lifecycleStore,
+      expect.objectContaining({
+        serviceId: "service:meridian-roles",
+        sendRequest: expect.any(Function)
+      })
+    );
+    expect(lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]).toBeLessThan(
+      reconcileMock.mock.invocationCallOrder[0]
+    );
+  });
+
   it("surfaces structured timeout results without flattening them to failure", async () => {
     sendAndWaitMock.mockResolvedValue(buildHubResult("Wait window elapsed", "timeout", "timeout"));
     readFileMock.mockResolvedValue("# command\n");
@@ -175,6 +222,37 @@ describe("run tool", () => {
         run_state: "timeout",
         summary: "Wait window elapsed"
       }
+    });
+  });
+
+  it("swallows reconciliation failures after the run result is returned", async () => {
+    const consoleWarnMock = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    reconcileMock.mockRejectedValueOnce(new Error("Hub unavailable"));
+    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-777",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-05"
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "R-05",
+        thread_id: "thread-777",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+
+    await waitForImmediate();
+
+    expect(consoleWarnMock).toHaveBeenCalledWith("run tool reconciliation failed", {
+      filePath: "/tmp/dispatch/dispatch_threads.json",
+      error: "Hub unavailable"
     });
   });
 
@@ -290,4 +368,9 @@ function buildHubResult(content: string, status: HubResultStatus, runState?: Hub
     attachments: [],
     timestamp: "2026-03-28T00:00:00.000Z"
   };
+}
+
+async function waitForImmediate(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
 }

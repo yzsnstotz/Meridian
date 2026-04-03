@@ -6,13 +6,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "../../roles/definitions";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
 import updateStatusTool from "../../tool-gateway/tools/update-status";
 import { createRoleHandlers, type RoleHandlers } from "../role-handlers";
-import type { AppState, DispatcherConfig, ReplyChannel } from "../../types";
+import type { AppState, DispatcherConfig, HubMessage, HubResult, ReplyChannel } from "../../types";
 
 class MemoryStateStore {
   private currentState: AppState | null;
@@ -235,7 +236,13 @@ describe("role config handlers", () => {
         dispatcher_thread_id: "dispatcher-thread-e2e"
       });
 
-      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toContain('"dispatcher_thread_id": "dispatcher-thread-e2e"');
+      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toSatisfy((raw) => {
+        const parsed = JSON.parse(raw) as {
+          dispatcher?: { thread_id?: string | null };
+        };
+
+        return parsed.dispatcher?.thread_id === "dispatcher-thread-e2e";
+      });
 
       await expect(updateStatusTool.execute({
         plan: dispatchPlanPath,
@@ -320,6 +327,113 @@ describe("role config handlers", () => {
       status: "active"
     });
     expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-live")?.status).toBe("active");
+  });
+
+  it("returns a reconciliation report from POST /api/reconcile for the active agent-dispatcher", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-reconcile-route-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const commandFilePath = path.join(tempDir, "agent_dispatch_command.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const reportPath = path.join(tempDir, "dev_history", "R-04_report.md");
+    const lifecycleStore = new LifecycleStore(sidecarPath);
+
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 4 | R-04 | Reconcile API Endpoint & Post-HubResult Trigger | CODEX | N-02 | TaskSpec v1.1 | |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(commandFilePath, "# Worker Command\n", "utf8");
+    await fs.writeFile(reportPath, "# report\n", "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-03T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "trace-123",
+          started_at: "2026-04-03T00:00:00.000Z",
+          last_seen_at: "2026-04-03T00:00:00.000Z",
+          status: "running",
+          expected_outputs: [reportPath],
+          hub_result: null
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        null,
+        async (message) => {
+          if (message.thread_id === "dispatcher-thread-123") {
+            return buildHubResult('{"status":"running"}');
+          }
+
+          if (message.thread_id === "worker-thread-456") {
+            return buildHubResult('{"status":"completed"}');
+          }
+
+          throw new Error(`Unexpected thread lookup: ${message.thread_id}`);
+        }
+      );
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-reconcile",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: commandFilePath,
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(harness.roleHandlers, "POST", "/api/reconcile")).resolves.toEqual({
+        changed: [
+          {
+            workerId: "R-04",
+            from: "running",
+            to: "completed",
+            trigger: "hub_status:completed:outputs_present"
+          }
+        ],
+        unchanged: ["dispatcher"]
+      });
+      expect(lifecycleStore.load().workers["R-04"]?.status).toBe("completed");
+      expect(lifecycleStore.load().last_reconciled_at).not.toBeNull();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 404 from POST /api/reconcile when no active agent-dispatcher exists", async () => {
+    const harness = createHarness();
+    const request = createJsonRequest("POST", "/api/reconcile");
+    const response = createJsonResponse();
+
+    const handled = await harness.roleHandlers.handle(request, response.raw);
+
+    expect(handled).toBe(true);
+    expect(response.statusCode).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "No active agent dispatcher is running"
+    });
   });
 
   it("lists reply channels from the injected channel registry", async () => {
@@ -654,7 +768,8 @@ function createHarness(
   stateStore = new MemoryStateStore(initialState ?? null),
   replyChannels: ReplyChannel[] | Error = [],
   threadDetail: string | Error | null = null,
-  attachToThread: ((threadId: string) => Promise<void>) | Error | null = null
+  attachToThread: ((threadId: string) => Promise<void>) | Error | null = null,
+  sendHubRequest: ((message: HubMessage) => Promise<HubResult>) | Error | null = null
 ) {
   const log = createLogger();
   const registry = new RoleRegistry();
@@ -697,33 +812,48 @@ function createHarness(
     })
   );
 
+  const roleHandlersOptions = {
+    runner,
+    registry,
+    stateStore,
+    listReplyChannels: async () => {
+      if (replyChannels instanceof Error) {
+        throw replyChannels;
+      }
+
+      return structuredClone(replyChannels);
+    },
+    getThreadDetail: async () => {
+      if (threadDetail instanceof Error) {
+        throw threadDetail;
+      }
+
+      return threadDetail ?? "";
+    },
+    attachToThread: async (threadId: string) => {
+      if (attachToThread instanceof Error) {
+        throw attachToThread;
+      }
+
+      await attachToThread?.(threadId);
+    },
+    ...(sendHubRequest === null
+      ? {}
+      : {
+          sendHubRequest: async (message: HubMessage) => {
+            if (sendHubRequest instanceof Error) {
+              throw sendHubRequest;
+            }
+
+            return sendHubRequest(message);
+          }
+        })
+  };
+
   return {
     stateStore,
     roleHandlers: createRoleHandlers({
-      runner,
-      registry,
-      stateStore,
-      listReplyChannels: async () => {
-        if (replyChannels instanceof Error) {
-          throw replyChannels;
-        }
-
-        return structuredClone(replyChannels);
-      },
-      getThreadDetail: async () => {
-        if (threadDetail instanceof Error) {
-          throw threadDetail;
-        }
-
-        return threadDetail ?? "";
-      },
-      attachToThread: async (threadId) => {
-        if (attachToThread instanceof Error) {
-          throw attachToThread;
-        }
-
-        await attachToThread?.(threadId);
-      },
+      ...roleHandlersOptions,
       log
     })
   };
@@ -745,6 +875,19 @@ async function invokeJson<T = unknown>(roleHandlers: RoleHandlers, method: strin
 
   expect(handled).toBe(true);
   return JSON.parse(response.body) as T;
+}
+
+function buildHubResult(content: string): HubResult {
+  return {
+    trace_id: "trace-123",
+    thread_id: "dispatcher-thread-123",
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content,
+    attachments: [],
+    timestamp: "2026-04-03T00:00:00.000Z"
+  };
 }
 
 function createPersistedState(config: DispatcherConfig): AppState {
