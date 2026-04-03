@@ -34,7 +34,7 @@
 | ✅ | 2 | R-02 | Durable Run Registration | CODEX-XHIGH | N-01 | TaskSpec v1.1 | |
 | ✅ | 3 | N-02 | Reconciler Function | CODEX-XHIGH | N-01, R-01 | Evaluation Doc, TaskSpec v1.1 | |
 | ✅ | 4 | R-03 | Startup Rehydration | CODEX-XHIGH | N-02, R-01 | Evaluation Doc, TaskSpec v1.1 | |
-| 🔄 | 4 | R-04 | Reconcile API Endpoint & Post-HubResult Trigger | CODEX | N-02 | TaskSpec v1.1 | |
+| ✅ | 4 | R-04 | Reconcile API Endpoint & Post-HubResult Trigger | CODEX | N-02 | TaskSpec v1.1 | |
 | ✅ | 5 | R-05 | Plan as Derived View | CODEX-HIGH | N-01 | Evaluation Doc, TaskSpec v1.1 | |
 | 🔄 | 5 | R-06 | Observability Hardening | CODEX | — | Integration Brief, TaskSpec v1.1 | Parallel with R-05; no shared dependencies |
 | ⬜ | 5.5 | BATCH-5-GATE | Batch 5 Integration Verification | CODEX-HIGH | R-05, R-06 | TaskSpec v1.1 | Must pass before V-01 |
