@@ -25,4 +25,7 @@ log "Building project"
 log "Restarting services"
 "${ROOT_DIR}/user_scripts/restart.sh"
 
+log "Restarting meridian-roles"
+"${ROOT_DIR}/user_scripts/restart_meridian_roles.sh"
+
 log "Done"
