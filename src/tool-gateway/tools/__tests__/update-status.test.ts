@@ -95,17 +95,23 @@ describe("update-status tool", () => {
     await expect(fs.readFile(planPath, "utf8")).resolves.toContain("| 🔄 | 2 | N-05 | Tools |");
 
     const sidecar = JSON.parse(await fs.readFile(sidecarPath, "utf8")) as {
-      dispatcher_thread_id: string | null;
-      workers: Record<string, { thread_id: string; started_at: string }>;
+      version: number;
+      dispatcher: { thread_id: string | null; status: string };
+      workers: Record<string, { thread_id: string; started_at: string; status: string }>;
     };
-    expect(sidecar.dispatcher_thread_id).toBeNull();
+    expect(sidecar.version).toBe(2);
+    expect(sidecar.dispatcher).toMatchObject({
+      thread_id: null,
+      status: "pending"
+    });
     expect(sidecar.workers["N-05"]).toMatchObject({
-      thread_id: "worker-thread-456"
+      thread_id: "worker-thread-456",
+      status: "running"
     });
     expect(sidecar.workers["N-05"]?.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("removes a worker sidecar entry when the worker reaches a terminal state", async () => {
+  it("marks a worker completed in the lifecycle sidecar when the worker reaches a terminal state", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-update-status-");
     tempDirectories.add(directory);
     const planPath = `${directory}/dispatch_plan.md`;
@@ -124,13 +130,24 @@ describe("update-status tool", () => {
     await fs.writeFile(
       sidecarPath,
       `${JSON.stringify({
-        dispatcher_thread_id: "dispatcher-thread-123",
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-03-28T11:59:00.000Z",
+          status: "running"
+        },
         workers: {
           "N-05": {
             thread_id: "worker-thread-456",
-            started_at: "2026-03-28T12:00:00.000Z"
+            trace_id: null,
+            started_at: "2026-03-28T12:00:00.000Z",
+            last_seen_at: "2026-03-28T12:00:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null
           }
-        }
+        },
+        last_reconciled_at: null
       }, null, 2)}\n`,
       "utf8"
     );
@@ -150,10 +167,17 @@ describe("update-status tool", () => {
     });
     await expect(fs.readFile(planPath, "utf8")).resolves.toContain("| ✅ | 2 | N-05 | Tools |");
 
-    await expect(fs.readFile(sidecarPath, "utf8")).resolves.toEqual(`${JSON.stringify({
-      dispatcher_thread_id: "dispatcher-thread-123",
-      workers: {}
-    }, null, 2)}\n`);
+    await expect(fs.readFile(sidecarPath, "utf8")).resolves.toSatisfy((raw) => {
+      const sidecar = JSON.parse(raw) as {
+        dispatcher: { thread_id: string | null; status: string };
+        workers: Record<string, { thread_id: string; status: string }>;
+      };
+
+      return sidecar.dispatcher.thread_id === "dispatcher-thread-123"
+        && sidecar.dispatcher.status === "running"
+        && sidecar.workers["N-05"]?.thread_id === "worker-thread-456"
+        && sidecar.workers["N-05"]?.status === "completed";
+    });
   });
 
   it("returns an error for unsupported statuses", async () => {

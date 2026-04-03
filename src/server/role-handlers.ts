@@ -21,7 +21,7 @@ import {
 import type { PromptStoreRoleBinding } from "../roles/prompt-store";
 import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
-import { ThreadTracker, type DispatchThreadState, type WorkerThreadEntry } from "../roles/agent-dispatcher/session-manager";
+import type { DispatchThreadState, WorkerThreadEntry } from "../roles/agent-dispatcher/session-manager";
 import { StateStore } from "../state-store";
 import {
   AgentDispatcherConfigSchema,
@@ -790,7 +790,7 @@ function resolveDispatchThreadPath(dispatchPlanPath: string): string {
 
 async function loadDispatchThreadState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadState> {
   try {
-    return await new ThreadTracker(dispatchPlanPath).load();
+    return toDispatchThreadState(new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath)).load());
   } catch (error) {
     log.warn("Failed to read agent-dispatcher sidecar", {
       dispatchPlanPath,
@@ -802,6 +802,27 @@ async function loadDispatchThreadState(dispatchPlanPath: string, log: Logger): P
       workers: {}
     };
   }
+}
+
+function toDispatchThreadState(lifecycleState: ReturnType<LifecycleStore["load"]>): DispatchThreadState {
+  const workers = Object.fromEntries(
+    Object.entries(lifecycleState.workers)
+      .filter(([, worker]) => worker.status === "running")
+      .map(([workerId, worker]) => [
+        workerId,
+        {
+          thread_id: worker.thread_id,
+          started_at: worker.started_at
+        }
+      ])
+  );
+
+  return {
+    dispatcher_thread_id: lifecycleState.dispatcher.status === "running"
+      ? lifecycleState.dispatcher.thread_id
+      : null,
+    workers
+  };
 }
 
 async function loadDispatchPlanRows(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanRow[]> {

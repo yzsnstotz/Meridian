@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AppState, HubMessage } from "../../../types";
+import type { AppState, DispatchThreadStateV2, HubMessage } from "../../../types";
 import type { Logger, RoleContext } from "../../base-role";
 import { AgentDispatcherRole } from "../agent-dispatcher";
 
@@ -121,18 +121,34 @@ describe("AgentDispatcherRole", () => {
 
   it("onDeactivate kills the dispatcher and tracked worker threads", async () => {
     const harness = createHarness({
-      trackerState: {
-        dispatcher_thread_id: "dispatcher-thread-123",
+      lifecycleState: {
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-03-28T11:59:00.000Z",
+          status: "running"
+        },
         workers: {
           "N-03": {
             thread_id: "worker-thread-333",
-            started_at: "2026-03-28T12:00:00.000Z"
+            trace_id: null,
+            started_at: "2026-03-28T12:00:00.000Z",
+            last_seen_at: "2026-03-28T12:00:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null
           },
           "N-04": {
             thread_id: "worker-thread-444",
-            started_at: "2026-03-28T12:01:00.000Z"
+            trace_id: null,
+            started_at: "2026-03-28T12:01:00.000Z",
+            last_seen_at: "2026-03-28T12:01:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null
           }
-        }
+        },
+        last_reconciled_at: null
       }
     });
     await harness.role.onActivate(harness.context);
@@ -143,19 +159,22 @@ describe("AgentDispatcherRole", () => {
     expect(harness.killThread).toHaveBeenCalledWith("dispatcher-thread-123");
     expect(harness.killThread).toHaveBeenCalledWith("worker-thread-333");
     expect(harness.killThread).toHaveBeenCalledWith("worker-thread-444");
-    expect(harness.trackerState).toEqual({
-      dispatcher_thread_id: null,
-      workers: {}
+    expect(harness.lifecycleState).toEqual({
+      version: 2,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "pending"
+      },
+      workers: {},
+      last_reconciled_at: null
     });
     expect((await harness.stateStore.load())?.roles).toEqual([]);
   });
 });
 
 function createHarness(options: {
-  trackerState?: {
-    dispatcher_thread_id: string | null;
-    workers: Record<string, { thread_id: string; started_at: string }>;
-  };
+  lifecycleState?: DispatchThreadStateV2;
 } = {}) {
   const stateStore = new MemoryStateStore();
   const sessionManager = {
@@ -176,10 +195,17 @@ function createHarness(options: {
   const readWorkersByStatus = vi.fn(async () => []);
   const killThread = vi.fn(async () => undefined);
   const signalDispatcher = vi.fn(async () => undefined);
-  const trackerState = structuredClone(options.trackerState ?? {
-    dispatcher_thread_id: null,
-    workers: {}
-  });
+  const initialLifecycleState: DispatchThreadStateV2 = options.lifecycleState ?? {
+    version: 2,
+    dispatcher: {
+      thread_id: null,
+      started_at: null,
+      status: "pending"
+    },
+    workers: {},
+    last_reconciled_at: null
+  };
+  let lifecycleState: DispatchThreadStateV2 = structuredClone(initialLifecycleState);
 
   const role = new AgentDispatcherRole("agent-dispatcher-role", {
     dispatch_plan_path: "/tmp/dispatch_plan.md",
@@ -199,11 +225,10 @@ function createHarness(options: {
     launchDispatcher,
     sessionManagerFactory: () => sessionManager,
     readWorkersByStatus,
-    threadTrackerFactory: () => ({
-      load: async () => structuredClone(trackerState),
-      save: async (nextState) => {
-        trackerState.dispatcher_thread_id = nextState.dispatcher_thread_id;
-        trackerState.workers = structuredClone(nextState.workers);
+    lifecycleStoreFactory: () => ({
+      load: () => structuredClone(lifecycleState),
+      save: (nextState) => {
+        lifecycleState = structuredClone(nextState);
       }
     }),
     killThread,
@@ -219,7 +244,9 @@ function createHarness(options: {
     readWorkersByStatus,
     killThread,
     signalDispatcher,
-    trackerState,
+    get lifecycleState() {
+      return lifecycleState;
+    },
     context: createRoleContext()
   };
 }

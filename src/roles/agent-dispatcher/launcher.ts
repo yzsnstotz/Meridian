@@ -147,6 +147,8 @@ function buildSpawnArgs(config: LaunchConfig): string[] {
     "spawn",
     "--agent-type",
     config.agentType,
+    "--spawn-dir",
+    process.cwd(),
     "--mode",
     config.mode
   ];

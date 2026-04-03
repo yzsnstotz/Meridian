@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
+import path from "node:path";
 
-import { ThreadTracker } from "../../roles/agent-dispatcher/session-manager";
+import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const STATUS_MAP = {
@@ -64,10 +65,12 @@ const updateStatusTool: ToolDefinition = {
     try {
       const normalizedStatus = parseRequestedStatus(requestedStatus);
       const workerThreadId = requireParam(params.thread_id);
-      const markdown = await fs.readFile(planPath, "utf8");
-      const updated = updateWorkerStatusInMarkdown(markdown, worker, normalizedStatus);
-      await fs.writeFile(planPath, updated, "utf8");
-      await syncWorkerThreadState(planPath, worker, normalizedStatus, workerThreadId);
+      const lifecycleUpdated = await syncWorkerLifecycleState(planPath, worker, normalizedStatus, workerThreadId);
+      if (!lifecycleUpdated) {
+        const markdown = await fs.readFile(planPath, "utf8");
+        const updated = updateWorkerStatusInMarkdown(markdown, worker, normalizedStatus);
+        await fs.writeFile(planPath, updated, "utf8");
+      }
       return {
         ok: true,
         data: {
@@ -168,28 +171,48 @@ function preserveTrailingNewline(original: string, updated: string): string {
   return original.endsWith("\n") ? `${updated}\n` : updated;
 }
 
-async function syncWorkerThreadState(
+async function syncWorkerLifecycleState(
   planPath: string,
   worker: string,
   status: RequestedStatus,
   threadId: string | null
-): Promise<void> {
-  const tracker = new ThreadTracker(planPath);
+): Promise<boolean> {
+  const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(planPath), {
+    dispatchPlanPath: planPath
+  });
+  const state = lifecycleStore.load();
+  const workerState = state.workers[worker];
+  const nowIso = new Date().toISOString();
 
   if (status === "in_progress") {
     if (!threadId) {
-      return;
+      return false;
     }
 
-    await tracker.recordWorker(worker, threadId);
-    return;
+    state.workers[worker] = {
+      thread_id: threadId,
+      trace_id: workerState?.trace_id ?? null,
+      started_at: workerState?.started_at ?? nowIso,
+      last_seen_at: nowIso,
+      status: "running",
+      expected_outputs: [...(workerState?.expected_outputs ?? [])],
+      hub_result: null
+    };
+    lifecycleStore.save(state);
+    return true;
   }
 
-  if (!(await tracker.exists())) {
-    return;
+  if (!workerState) {
+    return false;
   }
 
-  await tracker.removeWorker(worker);
+  state.workers[worker] = {
+    ...workerState,
+    last_seen_at: nowIso,
+    status: status === "done" ? "completed" : "failed"
+  };
+  lifecycleStore.save(state);
+  return true;
 }
 
 function requireParam(value: string | undefined): string | null {
@@ -202,4 +225,8 @@ function asError(error: unknown): Error {
   }
 
   return new Error(String(error));
+}
+
+function resolveDispatchThreadPath(planPath: string): string {
+  return path.join(path.dirname(planPath), "dispatch_threads.json");
 }

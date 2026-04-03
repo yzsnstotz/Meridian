@@ -4,6 +4,7 @@ import { unlink as unlinkFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { LifecycleStore } from "../agent-dispatcher/lifecycle-store";
 import { StateStore } from "../../state-store";
 import {
   AgentDispatcherConfigSchema,
@@ -17,7 +18,6 @@ import { buildSystemPrompt, type PromptVars } from "../agent-dispatcher/prompt-b
 import {
   readWorkersByStatus,
   SessionManager,
-  ThreadTracker,
   type DispatchThreadState,
   type RestartResult,
   type SessionManagerOptions
@@ -30,7 +30,7 @@ type SessionManagerLike = Pick<
   SessionManager,
   "getDispatcherThreadId" | "initSession" | "isPaused" | "onRestart" | "setPaused"
 >;
-type ThreadTrackerLike = Pick<ThreadTracker, "load" | "save">;
+type LifecycleStoreLike = Pick<LifecycleStore, "load" | "save">;
 
 const EMPTY_APP_STATE: AppState = {
   roles: [],
@@ -46,7 +46,7 @@ export interface AgentDispatcherRoleOptions {
   launchDispatcher?: (config: LaunchConfig) => Promise<LaunchResult>;
   sessionManagerFactory?: (threadId: string, options: SessionManagerOptions) => SessionManagerLike;
   readWorkersByStatus?: (dispatchPlanPath: string, status: string) => Promise<string[]>;
-  threadTrackerFactory?: (dispatchPlanPath: string) => ThreadTrackerLike;
+  lifecycleStoreFactory?: (dispatchPlanPath: string) => LifecycleStoreLike;
   killThread?: (threadId: string) => Promise<void>;
   signalDispatcher?: (dispatcherThreadId: string, status: DispatcherLifecycleStatus) => Promise<void>;
 }
@@ -61,7 +61,7 @@ export class AgentDispatcherRole implements BaseRole {
   private readonly launch: (config: LaunchConfig) => Promise<LaunchResult>;
   private readonly createSessionManager: (threadId: string, options: SessionManagerOptions) => SessionManagerLike;
   private readonly readPlanWorkersByStatus: (dispatchPlanPath: string, status: string) => Promise<string[]>;
-  private readonly createThreadTracker: (dispatchPlanPath: string) => ThreadTrackerLike;
+  private readonly createLifecycleStore: (dispatchPlanPath: string) => LifecycleStoreLike;
   private readonly killTrackedThread: (threadId: string) => Promise<void>;
   private readonly signalDispatcherThread: (
     dispatcherThreadId: string,
@@ -79,7 +79,7 @@ export class AgentDispatcherRole implements BaseRole {
     this.launch = options.launchDispatcher ?? launchDispatcher;
     this.createSessionManager = options.sessionManagerFactory ?? defaultSessionManagerFactory;
     this.readPlanWorkersByStatus = options.readWorkersByStatus ?? readWorkersByStatus;
-    this.createThreadTracker = options.threadTrackerFactory ?? defaultThreadTrackerFactory;
+    this.createLifecycleStore = options.lifecycleStoreFactory ?? defaultLifecycleStoreFactory;
     this.killTrackedThread = options.killThread ?? defaultKillThread;
     this.signalDispatcherThread = options.signalDispatcher ?? defaultSignalDispatcher;
   }
@@ -255,12 +255,19 @@ export class AgentDispatcherRole implements BaseRole {
   }
 
   private async loadTrackedThreads(): Promise<DispatchThreadState> {
-    return this.createThreadTracker(this.config.dispatch_plan_path).load();
+    return toDispatchThreadState(this.createLifecycleStore(this.config.dispatch_plan_path).load());
   }
 
   private async resetTrackedThreads(): Promise<void> {
-    await this.createThreadTracker(this.config.dispatch_plan_path).save({
-      dispatcher_thread_id: null,
+    const lifecycleStore = this.createLifecycleStore(this.config.dispatch_plan_path);
+    const lifecycleState = lifecycleStore.load();
+    lifecycleStore.save({
+      ...lifecycleState,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "pending"
+      },
       workers: {}
     });
   }
@@ -311,8 +318,8 @@ function defaultSessionManagerFactory(threadId: string, options: SessionManagerO
   return new SessionManager(threadId, options);
 }
 
-function defaultThreadTrackerFactory(dispatchPlanPath: string): ThreadTrackerLike {
-  return new ThreadTracker(dispatchPlanPath);
+function defaultLifecycleStoreFactory(dispatchPlanPath: string): LifecycleStoreLike {
+  return new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath));
 }
 
 async function defaultKillThread(threadId: string): Promise<void> {
@@ -377,6 +384,31 @@ function buildStatusSignalPrompt(status: DispatcherLifecycleStatus): string {
     "Resume requested by meridian-roles.",
     "Re-read the dispatch plan from disk and continue the dispatch loop from the next eligible worker."
   ].join("\n");
+}
+
+function resolveDispatchThreadPath(dispatchPlanPath: string): string {
+  return path.join(path.dirname(dispatchPlanPath), "dispatch_threads.json");
+}
+
+function toDispatchThreadState(lifecycleState: ReturnType<LifecycleStoreLike["load"]>): DispatchThreadState {
+  const workers = Object.fromEntries(
+    Object.entries(lifecycleState.workers)
+      .filter(([, worker]) => worker.status === "running")
+      .map(([workerId, worker]) => [
+        workerId,
+        {
+          thread_id: worker.thread_id,
+          started_at: worker.started_at
+        }
+      ])
+  );
+
+  return {
+    dispatcher_thread_id: lifecycleState.dispatcher.status === "running"
+      ? lifecycleState.dispatcher.thread_id
+      : null,
+    workers
+  };
 }
 
 function execFile(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {

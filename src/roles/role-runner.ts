@@ -1,8 +1,13 @@
-import { SessionManager, ThreadTracker } from "./agent-dispatcher/session-manager";
+import path from "node:path";
+
+import { LifecycleStore } from "./agent-dispatcher/lifecycle-store";
+import { SessionManager } from "./agent-dispatcher/session-manager";
 import type { AgentInstance, HubMessage, HubResult } from "../types";
 import { AgentDispatcherConfigSchema } from "../types";
 import { StateStore } from "../state-store";
 import type { Awaitable, BaseRole, Logger, RoleContext } from "./base-role";
+
+const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
 export interface RoleRunnerOptions {
   sendToHub(msg: Partial<HubMessage>): Promise<void>;
@@ -148,8 +153,11 @@ async function tryResumeRehydratedAgentDispatcher(role: BaseRole, context: RoleC
     return false;
   }
 
-  const trackerState = await new ThreadTracker(config.dispatch_plan_path).load();
-  if (!trackerState.dispatcher_thread_id) {
+  const lifecycleState = new LifecycleStore(resolveDispatchThreadPath(config.dispatch_plan_path)).load();
+  const dispatcherThreadId = lifecycleState.dispatcher.status === "running"
+    ? lifecycleState.dispatcher.thread_id
+    : null;
+  if (!dispatcherThreadId) {
     return false;
   }
 
@@ -159,7 +167,7 @@ async function tryResumeRehydratedAgentDispatcher(role: BaseRole, context: RoleC
   });
   const sessionManagerInternals = sessionManager as unknown as SessionManagerInternals;
   await sessionManagerInternals.pauseStateReady;
-  sessionManagerInternals.dispatcherThreadId = trackerState.dispatcher_thread_id;
+  sessionManagerInternals.dispatcherThreadId = dispatcherThreadId;
 
   const roleInternals = role as unknown as AgentDispatcherRoleInternals;
   roleInternals.ctx = context;
@@ -175,4 +183,8 @@ function parseAgentDispatcherConfig(role: BaseRole) {
 
   const parsed = AgentDispatcherConfigSchema.safeParse(role.config);
   return parsed.success ? parsed.data : null;
+}
+
+function resolveDispatchThreadPath(dispatchPlanPath: string): string {
+  return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
 }

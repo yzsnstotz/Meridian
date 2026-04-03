@@ -289,7 +289,7 @@ describe("role config handlers", () => {
           status: "done"
         }
       });
-      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toContain('"workers": {}');
+      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toContain('"status": "completed"');
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -858,12 +858,18 @@ function createHarness(
         setPaused: () => undefined
       }),
       readWorkersByStatus: async () => [],
-      threadTrackerFactory: () => ({
-        load: async () => ({
-          dispatcher_thread_id: null,
-          workers: {}
+      lifecycleStoreFactory: () => ({
+        load: () => ({
+          version: 2,
+          dispatcher: {
+            thread_id: null,
+            started_at: null,
+            status: "pending"
+          },
+          workers: {},
+          last_reconciled_at: null
         }),
-        save: async () => undefined
+        save: () => undefined
       }),
       killThread: async () => undefined,
       signalDispatcher: async () => undefined

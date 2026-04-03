@@ -8,8 +8,8 @@ import { StateStore } from "../../../state-store";
 import type { DispatchThreadStateV2 } from "../../../types";
 import { buildEmptyDispatchThreadStateV2, LifecycleStore } from "../lifecycle-store";
 import {
+  DispatchThreadView,
   SessionManager,
-  ThreadTracker,
   type SessionManagerOptions
 } from "../session-manager";
 
@@ -29,7 +29,7 @@ afterEach(async () => {
   tempDirectories.clear();
 });
 
-describe("ThreadTracker", () => {
+describe("DispatchThreadView", () => {
   it("exposes only running lifecycle entries through the legacy tracker view", async () => {
     const harness = await createHarness();
     const lifecycleStore = new LifecycleStore(harness.sidecarPath, {
@@ -75,7 +75,7 @@ describe("ThreadTracker", () => {
       last_reconciled_at: null
     });
 
-    const tracker = new ThreadTracker(harness.dispatchPlanPath, {
+    const tracker = new DispatchThreadView(harness.dispatchPlanPath, {
       lifecycleStore,
       now: () => FIXED_NOW
     });

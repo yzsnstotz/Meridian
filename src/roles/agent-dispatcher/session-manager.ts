@@ -48,7 +48,7 @@ type LifecycleStoreLike = Pick<
   "load" | "save" | "recordDispatcher" | "getWorkersInState" | "markAbandoned"
 >;
 
-export interface ThreadTrackerOptions {
+export interface DispatchThreadViewOptions {
   lifecycleStore?: LifecycleStore;
   now?: () => string;
 }
@@ -72,13 +72,13 @@ const defaultExecFile = (command: string, args: string[]): Promise<{ stdout: str
     });
   });
 
-export class ThreadTracker {
+export class DispatchThreadView {
   readonly dispatchPlanPath: string;
 
   private readonly lifecycleStore: LifecycleStore;
   private readonly now: () => string;
 
-  constructor(dispatchPlanPath: string, options: ThreadTrackerOptions = {}) {
+  constructor(dispatchPlanPath: string, options: DispatchThreadViewOptions = {}) {
     this.dispatchPlanPath = dispatchPlanPath;
     this.now = options.now ?? (() => new Date().toISOString());
     this.lifecycleStore = options.lifecycleStore ?? new LifecycleStore(this.sidecarPath, {

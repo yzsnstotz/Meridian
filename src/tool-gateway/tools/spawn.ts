@@ -73,6 +73,7 @@ function buildSpawnMessage(agentType: string, mode: BridgeMode): Partial<HubMess
     target: agentType,
     mode,
     payload: {
+      spawn_dir: process.cwd(),
       content: "",
       attachments: []
     }

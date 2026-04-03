@@ -310,7 +310,7 @@ async function waitForDemoOutputs(args: {
 
       if (
         finalRaw.trim().length > 0
-        && sidecarRaw.includes('"workers": {}')
+        && sidecarRaw.includes('"status": "completed"')
         && planRaw.includes("| ✅ | 1 | A-01 |")
         && planRaw.includes("| ✅ | 2 | B-01 |")
       ) {
