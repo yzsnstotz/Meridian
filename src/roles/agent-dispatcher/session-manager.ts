@@ -5,7 +5,8 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { StateStore } from "../../state-store";
-import { AppStateSchema, type AppState } from "../../types";
+import { AppStateSchema, type AppState, type DispatchThreadStateV2 } from "../../types";
+import { LifecycleStore } from "./lifecycle-store";
 
 const ACTIVE_STATUS = "active";
 const AGENT_DISPATCHER_ROLE_TYPE = "agent-dispatcher";
@@ -42,21 +43,22 @@ export interface RestartResult {
 }
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
-type FileSystem = Pick<typeof fs, "mkdir" | "writeFile" | "rename" | "unlink" | "readFile">;
+type LifecycleStoreLike = Pick<
+  LifecycleStore,
+  "load" | "save" | "recordDispatcher" | "getWorkersInState" | "markAbandoned"
+>;
 
 export interface ThreadTrackerOptions {
-  fileSystem?: FileSystem;
+  lifecycleStore?: LifecycleStore;
   now?: () => string;
 }
 
 export interface SessionManagerOptions {
   dispatchPlanPath?: string;
   stateStore?: PersistableStateStore;
-  threadTracker?: ThreadTracker;
+  lifecycleStore?: LifecycleStoreLike;
   execFile?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 }
-
-const defaultThreadTrackerFileSystem: FileSystem = fs;
 
 const defaultExecFile = (command: string, args: string[]): Promise<{ stdout: string; stderr: string }> =>
   new Promise((resolve, reject) => {
@@ -73,13 +75,15 @@ const defaultExecFile = (command: string, args: string[]): Promise<{ stdout: str
 export class ThreadTracker {
   readonly dispatchPlanPath: string;
 
-  private readonly fileSystem: FileSystem;
+  private readonly lifecycleStore: LifecycleStore;
   private readonly now: () => string;
 
   constructor(dispatchPlanPath: string, options: ThreadTrackerOptions = {}) {
     this.dispatchPlanPath = dispatchPlanPath;
-    this.fileSystem = options.fileSystem ?? defaultThreadTrackerFileSystem;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.lifecycleStore = options.lifecycleStore ?? new LifecycleStore(this.sidecarPath, {
+      now: this.now
+    });
   }
 
   get sidecarPath(): string {
@@ -88,7 +92,7 @@ export class ThreadTracker {
 
   async exists(): Promise<boolean> {
     try {
-      await this.fileSystem.readFile(this.sidecarPath, "utf8");
+      await fs.access(this.sidecarPath);
       return true;
     } catch (error) {
       if (isMissingFileError(error)) {
@@ -100,15 +104,13 @@ export class ThreadTracker {
   }
 
   async recordDispatcher(threadId: string): Promise<void> {
-    const state = await this.load();
-    state.dispatcher_thread_id = threadId;
-    await this.save(state);
+    this.lifecycleStore.recordDispatcher(threadId);
   }
 
   async clearDispatcher(): Promise<void> {
-    const state = await this.load();
-    state.dispatcher_thread_id = null;
-    await this.save(state);
+    const lifecycleState = this.lifecycleStore.load();
+    lifecycleState.dispatcher = buildPendingDispatcherState();
+    this.lifecycleStore.save(lifecycleState);
   }
 
   async recordWorker(workerId: string, threadId: string): Promise<void> {
@@ -131,34 +133,13 @@ export class ThreadTracker {
   }
 
   async load(): Promise<DispatchThreadState> {
-    try {
-      const raw = await this.fileSystem.readFile(this.sidecarPath, "utf8");
-      return normalizeDispatchThreadState(JSON.parse(raw));
-    } catch (error) {
-      if (isMissingFileError(error)) {
-        return createEmptyDispatchThreadState();
-      }
-
-      throw error;
-    }
+    return toDispatchThreadState(this.lifecycleStore.load());
   }
 
   async save(state: DispatchThreadState): Promise<void> {
     const normalizedState = normalizeDispatchThreadState(state);
-    const sidecarPath = this.sidecarPath;
-    const directory = path.dirname(sidecarPath);
-    const tempFilePath = `${sidecarPath}.tmp`;
-    const payload = `${JSON.stringify(normalizedState, null, 2)}\n`;
-
-    await this.fileSystem.mkdir(directory, { recursive: true });
-
-    try {
-      await this.fileSystem.writeFile(tempFilePath, payload, "utf8");
-      await this.fileSystem.rename(tempFilePath, sidecarPath);
-    } catch (error) {
-      await this.fileSystem.unlink(tempFilePath).catch(() => undefined);
-      throw error;
-    }
+    const previousState = this.lifecycleStore.load();
+    this.lifecycleStore.save(mergeDispatchThreadState(previousState, normalizedState));
   }
 }
 
@@ -167,7 +148,7 @@ export class SessionManager {
   private readonly stateStore: PersistableStateStore;
   private readonly execFile: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
-  private threadTracker: ThreadTracker | null;
+  private lifecycleStore: LifecycleStoreLike | null;
   private dispatchPlanPath: string | null;
   private dispatcherThreadId: string | null = null;
   private paused = false;
@@ -181,8 +162,8 @@ export class SessionManager {
       save: async () => undefined
     };
     this.execFile = options.execFile ?? defaultExecFile;
-    this.threadTracker = options.threadTracker ?? null;
-    this.dispatchPlanPath = options.threadTracker?.dispatchPlanPath ?? options.dispatchPlanPath ?? null;
+    this.lifecycleStore = options.lifecycleStore ?? null;
+    this.dispatchPlanPath = options.dispatchPlanPath ?? null;
     this.pauseStateReady = this.loadPauseState();
   }
 
@@ -190,8 +171,8 @@ export class SessionManager {
     await this.pauseStateReady;
     await this.pauseWriteChain;
 
-    const tracker = this.getThreadTracker(dispatchPlanPath);
-    await tracker.recordDispatcher(dispatcherThreadId);
+    const lifecycleStore = this.getLifecycleStore(dispatchPlanPath);
+    lifecycleStore.recordDispatcher(dispatcherThreadId);
 
     this.dispatcherThreadId = dispatcherThreadId;
     await this.writeRoleStatus(this.paused ? PAUSED_STATUS : ACTIVE_STATUS);
@@ -222,33 +203,27 @@ export class SessionManager {
     await this.pauseStateReady;
     await this.pauseWriteChain;
 
-    const tracker = this.getThreadTracker();
-    const hadSidecar = await tracker.exists();
-    const threadState = await tracker.load();
-    const inProgressWorkers = await readWorkersByStatus(this.requireDispatchPlanPath(), "🔄");
+    const lifecycleStore = this.getLifecycleStore();
+    const lifecycleState = lifecycleStore.load();
+    const runningWorkers = lifecycleStore.getWorkersInState("running");
     const staleWorkersKilled: string[] = [];
-    let sidecarChanged = false;
+    let dispatcherCleared = false;
 
-    if (threadState.dispatcher_thread_id) {
-      await this.killThread(threadState.dispatcher_thread_id);
-      threadState.dispatcher_thread_id = null;
-      sidecarChanged = true;
+    if (lifecycleState.dispatcher.thread_id) {
+      await this.killThread(lifecycleState.dispatcher.thread_id);
+      dispatcherCleared = true;
     }
 
-    for (const workerId of inProgressWorkers) {
-      const workerEntry = threadState.workers[workerId];
-      if (!workerEntry) {
-        continue;
-      }
-
-      await this.killThread(workerEntry.thread_id);
-      delete threadState.workers[workerId];
-      staleWorkersKilled.push(workerId);
-      sidecarChanged = true;
+    for (const worker of runningWorkers) {
+      await this.killThread(worker.thread_id);
+      lifecycleStore.markAbandoned(worker.worker_id, "stale running worker found during restart");
+      staleWorkersKilled.push(worker.worker_id);
     }
 
-    if (hadSidecar && sidecarChanged) {
-      await tracker.save(threadState);
+    if (dispatcherCleared) {
+      const nextState = lifecycleStore.load();
+      nextState.dispatcher = buildPendingDispatcherState();
+      lifecycleStore.save(nextState);
     }
 
     this.dispatcherThreadId = null;
@@ -293,21 +268,23 @@ export class SessionManager {
     });
   }
 
-  private getThreadTracker(dispatchPlanPath?: string): ThreadTracker {
+  private getLifecycleStore(dispatchPlanPath?: string): LifecycleStoreLike {
     if (dispatchPlanPath) {
       this.dispatchPlanPath = dispatchPlanPath;
     }
 
-    if (!this.threadTracker) {
-      this.threadTracker = new ThreadTracker(this.requireDispatchPlanPath());
-      return this.threadTracker;
+    if (!this.lifecycleStore) {
+      this.lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(this.requireDispatchPlanPath()));
     }
 
-    if (dispatchPlanPath && this.threadTracker.dispatchPlanPath !== dispatchPlanPath) {
-      this.threadTracker = new ThreadTracker(dispatchPlanPath);
+    if (dispatchPlanPath && this.lifecycleStore instanceof LifecycleStore) {
+      const expectedPath = resolveDispatchThreadPath(dispatchPlanPath);
+      if (this.lifecycleStore.filePath !== expectedPath) {
+        this.lifecycleStore = new LifecycleStore(expectedPath);
+      }
     }
 
-    return this.threadTracker;
+    return this.lifecycleStore;
   }
 
   private requireDispatchPlanPath(): string {
@@ -400,6 +377,97 @@ function createEmptyDispatchThreadState(): DispatchThreadState {
   return {
     dispatcher_thread_id: null,
     workers: {}
+  };
+}
+
+function resolveDispatchThreadPath(dispatchPlanPath: string): string {
+  return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
+}
+
+function toDispatchThreadState(lifecycleState: DispatchThreadStateV2): DispatchThreadState {
+  const workers = Object.fromEntries(
+    Object.entries(lifecycleState.workers)
+      .filter(([, worker]) => worker.status === "running")
+      .map(([workerId, worker]) => [
+        workerId,
+        {
+          thread_id: worker.thread_id,
+          started_at: worker.started_at
+        }
+      ])
+  );
+
+  return {
+    dispatcher_thread_id: lifecycleState.dispatcher.status === "running"
+      ? lifecycleState.dispatcher.thread_id
+      : null,
+    workers
+  };
+}
+
+function mergeDispatchThreadState(
+  previousState: DispatchThreadStateV2,
+  nextThreadState: DispatchThreadState
+): DispatchThreadStateV2 {
+  const nextWorkers = Object.fromEntries(
+    Object.entries(previousState.workers)
+      .filter(([, worker]) => worker.status !== "running")
+      .map(([workerId, worker]) => [
+        workerId,
+        cloneLifecycleWorkerState(worker)
+      ])
+  );
+
+  Object.entries(nextThreadState.workers).forEach(([workerId, worker]) => {
+    const previousWorker = previousState.workers[workerId];
+    nextWorkers[workerId] = {
+      thread_id: worker.thread_id,
+      trace_id: previousWorker?.trace_id ?? null,
+      started_at: worker.started_at,
+      last_seen_at: previousWorker?.last_seen_at ?? worker.started_at,
+      status: "running",
+      expected_outputs: [...(previousWorker?.expected_outputs ?? [])],
+      hub_result: previousWorker?.hub_result ? cloneHubResult(previousWorker.hub_result) : null
+    };
+  });
+
+  return {
+    ...previousState,
+    dispatcher: nextThreadState.dispatcher_thread_id
+      ? {
+          thread_id: nextThreadState.dispatcher_thread_id,
+          started_at: previousState.dispatcher.thread_id === nextThreadState.dispatcher_thread_id
+            ? previousState.dispatcher.started_at
+            : new Date().toISOString(),
+          status: "running"
+        }
+      : buildPendingDispatcherState(),
+    workers: nextWorkers
+  };
+}
+
+function buildPendingDispatcherState(): DispatchThreadStateV2["dispatcher"] {
+  return {
+    thread_id: null,
+    started_at: null,
+    status: "pending"
+  };
+}
+
+function cloneLifecycleWorkerState(
+  worker: DispatchThreadStateV2["workers"][string]
+): DispatchThreadStateV2["workers"][string] {
+  return {
+    ...worker,
+    expected_outputs: [...worker.expected_outputs],
+    hub_result: worker.hub_result ? cloneHubResult(worker.hub_result) : null
+  };
+}
+
+function cloneHubResult(hubResult: NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]>) {
+  return {
+    ...hubResult,
+    attachments: hubResult.attachments.map((attachment) => ({ ...attachment }))
   };
 }
 

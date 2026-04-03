@@ -5,13 +5,17 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StateStore } from "../../../state-store";
+import type { DispatchThreadStateV2 } from "../../../types";
+import { buildEmptyDispatchThreadStateV2, LifecycleStore } from "../lifecycle-store";
 import {
   SessionManager,
   ThreadTracker,
-  type DispatchThreadState
+  type SessionManagerOptions
 } from "../session-manager";
 
 const tempDirectories = new Set<string>();
+const FIXED_NOW = "2026-03-28T12:00:00.000Z";
+const ABANDONED_NOW = "2026-03-28T12:05:00.000Z";
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -26,69 +30,94 @@ afterEach(async () => {
 });
 
 describe("ThreadTracker", () => {
-  it("records dispatcher and worker thread ids in the sidecar file", async () => {
+  it("exposes only running lifecycle entries through the legacy tracker view", async () => {
     const harness = await createHarness();
-    const tracker = new ThreadTracker(harness.dispatchPlanPath, {
-      now: () => "2026-03-28T12:00:00.000Z"
+    const lifecycleStore = new LifecycleStore(harness.sidecarPath, {
+      now: () => FIXED_NOW
     });
 
-    await tracker.recordDispatcher("dispatcher-thread-123");
-    await tracker.recordWorker("N-03", "worker-thread-456");
-
-    await expect(tracker.getAll()).resolves.toEqual({
-      dispatcher_thread_id: "dispatcher-thread-123",
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: FIXED_NOW,
+        status: "running"
+      },
       workers: {
-        "N-03": {
-          thread_id: "worker-thread-456",
-          started_at: "2026-03-28T12:00:00.000Z"
+        "R-01": {
+          thread_id: "worker-thread-111",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "running",
+          expected_outputs: [],
+          hub_result: null
+        },
+        "N-02": {
+          thread_id: "worker-thread-222",
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "22222222-2222-4222-8222-222222222222",
+            thread_id: "worker-thread-222",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "done",
+            attachments: [],
+            timestamp: FIXED_NOW
+          }
         }
-      }
+      },
+      last_reconciled_at: null
     });
 
-    const saved = JSON.parse(await fs.readFile(harness.sidecarPath, "utf8")) as DispatchThreadState;
-    expect(saved.dispatcher_thread_id).toBe("dispatcher-thread-123");
-    expect(saved.workers["N-03"]?.thread_id).toBe("worker-thread-456");
-  });
-
-  it("removes workers without disturbing dispatcher metadata", async () => {
-    const harness = await createHarness();
     const tracker = new ThreadTracker(harness.dispatchPlanPath, {
-      now: () => "2026-03-28T12:00:00.000Z"
+      lifecycleStore,
+      now: () => FIXED_NOW
     });
-
-    await tracker.recordDispatcher("dispatcher-thread-123");
-    await tracker.recordWorker("R-01", "worker-thread-111");
-    await tracker.removeWorker("R-01");
 
     await expect(tracker.load()).resolves.toEqual({
       dispatcher_thread_id: "dispatcher-thread-123",
-      workers: {}
+      workers: {
+        "R-01": {
+          thread_id: "worker-thread-111",
+          started_at: FIXED_NOW
+        }
+      }
     });
   });
 });
 
 describe("SessionManager", () => {
-  it("initSession writes dispatcher_thread_id to the sidecar", async () => {
+  it("initSession calls lifecycleStore.recordDispatcher", async () => {
     const harness = await createHarness();
+    const lifecycle = createLifecycleStoreMock();
     const manager = new SessionManager("agent-dispatcher-role-1", {
       stateStore: harness.stateStore,
-      dispatchPlanPath: harness.dispatchPlanPath
+      lifecycleStore: lifecycle.store
     });
 
     await manager.initSession("dispatcher-thread-123", harness.dispatchPlanPath);
 
     expect(manager.getDispatcherThreadId()).toBe("dispatcher-thread-123");
-    await expect(readSidecar(harness.sidecarPath)).resolves.toEqual({
-      dispatcher_thread_id: "dispatcher-thread-123",
-      workers: {}
+    expect(lifecycle.store.recordDispatcher).toHaveBeenCalledWith("dispatcher-thread-123");
+    expect(lifecycle.getState().dispatcher).toEqual({
+      thread_id: "dispatcher-thread-123",
+      started_at: FIXED_NOW,
+      status: "running"
     });
   });
 
   it("persists pause and resume state through the state store", async () => {
     const harness = await createHarness();
+    const lifecycle = createLifecycleStoreMock();
     const manager = new SessionManager("agent-dispatcher-role-2", {
       stateStore: harness.stateStore,
-      dispatchPlanPath: harness.dispatchPlanPath
+      lifecycleStore: lifecycle.store
     });
 
     await manager.initSession("dispatcher-thread-123", harness.dispatchPlanPath);
@@ -97,7 +126,7 @@ describe("SessionManager", () => {
 
     const restartedManager = new SessionManager("agent-dispatcher-role-2", {
       stateStore: harness.stateStore,
-      dispatchPlanPath: harness.dispatchPlanPath
+      lifecycleStore: createLifecycleStoreMock().store
     });
     await restartedManager.initSession("dispatcher-thread-456", harness.dispatchPlanPath);
 
@@ -107,36 +136,59 @@ describe("SessionManager", () => {
     await waitForRoleStatus(harness.stateStore, "agent-dispatcher-role-2", "active");
   });
 
-  it("kills stale dispatcher and running worker threads during restart recovery", async () => {
-    const harness = await createHarness({
-      planRows: [
-        ["🔄", "1", "R-01", "Foundation"],
-        ["✅", "2", "N-02", "CLI"],
-        ["🔄", "2", "N-03", "Spawn tool"]
-      ]
-    });
-    const killCalls = vi.fn().mockResolvedValue({ stdout: "{\"ok\":true}\n", stderr: "" });
-    await writeSidecar(harness.sidecarPath, {
-      dispatcher_thread_id: "dispatcher-thread-123",
+  it("kills running lifecycle workers during restart recovery and marks them abandoned", async () => {
+    const harness = await createHarness();
+    const lifecycle = createLifecycleStoreMock({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: FIXED_NOW,
+        status: "running"
+      },
       workers: {
         "R-01": {
           thread_id: "worker-thread-111",
-          started_at: "2026-03-28T12:00:00.000Z"
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "running",
+          expected_outputs: ["report.md"],
+          hub_result: null
         },
         "N-02": {
           thread_id: "worker-thread-222",
-          started_at: "2026-03-28T12:01:00.000Z"
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "completed",
+          expected_outputs: ["done.txt"],
+          hub_result: {
+            trace_id: "22222222-2222-4222-8222-222222222222",
+            thread_id: "worker-thread-222",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "done",
+            attachments: [],
+            timestamp: FIXED_NOW
+          }
         },
         "N-03": {
           thread_id: "worker-thread-333",
-          started_at: "2026-03-28T12:02:00.000Z"
+          trace_id: "33333333-3333-4333-8333-333333333333",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "running",
+          expected_outputs: ["log.txt"],
+          hub_result: null
         }
-      }
+      },
+      last_reconciled_at: null
     });
-
+    const killCalls = vi.fn().mockResolvedValue({ stdout: "{\"ok\":true}\n", stderr: "" });
     const manager = new SessionManager("agent-dispatcher-role-3", {
       stateStore: harness.stateStore,
-      dispatchPlanPath: harness.dispatchPlanPath,
+      lifecycleStore: lifecycle.store,
       execFile: killCalls
     });
 
@@ -146,6 +198,17 @@ describe("SessionManager", () => {
       staleWorkersKilled: ["R-01", "N-03"],
       dispatcherRestarted: true
     });
+    expect(lifecycle.store.getWorkersInState).toHaveBeenCalledWith("running");
+    expect(lifecycle.store.markAbandoned).toHaveBeenNthCalledWith(
+      1,
+      "R-01",
+      "stale running worker found during restart"
+    );
+    expect(lifecycle.store.markAbandoned).toHaveBeenNthCalledWith(
+      2,
+      "N-03",
+      "stale running worker found during restart"
+    );
     expect(killCalls).toHaveBeenCalledTimes(3);
     expect(killCalls).toHaveBeenNthCalledWith(1, "npx", [
       "tsx",
@@ -168,25 +231,23 @@ describe("SessionManager", () => {
       "--thread-id",
       "worker-thread-333"
     ]);
-    await expect(readSidecar(harness.sidecarPath)).resolves.toEqual({
-      dispatcher_thread_id: null,
-      workers: {
-        "N-02": {
-          thread_id: "worker-thread-222",
-          started_at: "2026-03-28T12:01:00.000Z"
-        }
-      }
+    expect(lifecycle.getState().dispatcher).toEqual({
+      thread_id: null,
+      started_at: null,
+      status: "pending"
     });
+    expect(lifecycle.getState().workers["R-01"]?.status).toBe("abandoned");
+    expect(lifecycle.getState().workers["N-02"]?.status).toBe("completed");
+    expect(lifecycle.getState().workers["N-03"]?.status).toBe("abandoned");
   });
 
-  it("skips kill attempts when restart recovery has no sidecar file", async () => {
-    const harness = await createHarness({
-      planRows: [["🔄", "1", "R-01", "Foundation"]]
-    });
+  it("skips kill attempts when lifecycle store has no running dispatcher or workers", async () => {
+    const harness = await createHarness();
+    const lifecycle = createLifecycleStoreMock();
     const killCalls = vi.fn().mockResolvedValue({ stdout: "{\"ok\":true}\n", stderr: "" });
     const manager = new SessionManager("agent-dispatcher-role-4", {
       stateStore: harness.stateStore,
-      dispatchPlanPath: harness.dispatchPlanPath,
+      lifecycleStore: lifecycle.store,
       execFile: killCalls
     });
 
@@ -196,14 +257,14 @@ describe("SessionManager", () => {
       staleWorkersKilled: [],
       dispatcherRestarted: true
     });
+    expect(lifecycle.store.getWorkersInState).toHaveBeenCalledWith("running");
+    expect(lifecycle.store.markAbandoned).not.toHaveBeenCalled();
     expect(killCalls).not.toHaveBeenCalled();
-    await expect(fs.access(harness.sidecarPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(lifecycle.store.save).not.toHaveBeenCalled();
   });
 });
 
-async function createHarness(options: {
-  planRows?: string[][];
-} = {}): Promise<{
+async function createHarness(): Promise<{
   directory: string;
   dispatchPlanPath: string;
   sidecarPath: string;
@@ -214,7 +275,7 @@ async function createHarness(options: {
 
   const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
   const sidecarPath = path.join(directory, "dispatch_threads.json");
-  await fs.writeFile(dispatchPlanPath, buildDispatchPlan(options.planRows), "utf8");
+  await fs.writeFile(dispatchPlanPath, buildDispatchPlan(), "utf8");
 
   return {
     directory,
@@ -224,11 +285,7 @@ async function createHarness(options: {
   };
 }
 
-function buildDispatchPlan(planRows: string[][] = []): string {
-  const rows = planRows.length > 0
-    ? planRows
-    : [["✅", "0", "PRE-FLIGHT", "Ready"]];
-
+function buildDispatchPlan(): string {
   return [
     "# Dispatch Plan",
     "",
@@ -236,17 +293,55 @@ function buildDispatchPlan(planRows: string[][] = []): string {
     "",
     "| Status | Batch | Worker | Task |",
     "|--------|-------|--------|------|",
-    ...rows.map((cells) => `| ${cells.join(" | ")} |`),
+    "| ✅ | 0 | PRE-FLIGHT | Ready |",
     ""
   ].join("\n");
 }
 
-async function readSidecar(sidecarPath: string): Promise<DispatchThreadState> {
-  return JSON.parse(await fs.readFile(sidecarPath, "utf8")) as DispatchThreadState;
-}
+function createLifecycleStoreMock(initialState?: DispatchThreadStateV2): {
+  getState: () => DispatchThreadStateV2;
+  store: NonNullable<SessionManagerOptions["lifecycleStore"]>;
+} {
+  let state = structuredClone(initialState ?? buildEmptyDispatchThreadStateV2());
 
-async function writeSidecar(sidecarPath: string, state: DispatchThreadState): Promise<void> {
-  await fs.writeFile(sidecarPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const store: NonNullable<SessionManagerOptions["lifecycleStore"]> = {
+    load: vi.fn(() => structuredClone(state)),
+    save: vi.fn((nextState) => {
+      state = structuredClone(nextState);
+    }),
+    recordDispatcher: vi.fn((threadId: string) => {
+      state.dispatcher = {
+        thread_id: threadId,
+        started_at: FIXED_NOW,
+        status: "running"
+      };
+    }),
+    getWorkersInState: vi.fn((status) => {
+      return Object.entries(state.workers)
+        .filter(([, worker]) => worker.status === status)
+        .map(([workerId, worker]) => ({
+          worker_id: workerId,
+          ...structuredClone(worker)
+        }));
+    }),
+    markAbandoned: vi.fn((workerId: string) => {
+      const worker = state.workers[workerId];
+      if (!worker) {
+        throw new Error(`Worker not found in lifecycle state: ${workerId}`);
+      }
+
+      state.workers[workerId] = {
+        ...worker,
+        status: "abandoned",
+        last_seen_at: ABANDONED_NOW
+      };
+    })
+  };
+
+  return {
+    store,
+    getState: () => structuredClone(state)
+  };
 }
 
 async function waitForRoleStatus(stateStore: StateStore, threadId: string, status: string): Promise<void> {
