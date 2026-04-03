@@ -1427,7 +1427,7 @@ test("HubRouter builds completion result from latest stable agent message", asyn
     assert.equal(result.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
     assert.equal(result.content, "final completion reply");
     assert.deepEqual(result.telegram_inline_keyboard, {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token" }]]
     });
   } finally {
     config.WEB_GUI_HOST = previousHost;
@@ -1752,7 +1752,7 @@ test("HubRouter returns a clickable Web GUI link", async () => {
     );
 
     assert.equal(result.status, "success");
-    assert.equal(result.content, "http://gui.example.com:3000/?thread=codex_01&token=secret-token");
+    assert.equal(result.content, "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token");
   } finally {
     config.WEB_GUI_HOST = previousHost;
     config.WEB_GUI_PORT = previousPort;
@@ -1801,7 +1801,7 @@ test("HubRouter attach result includes a Web GUI button when available", async (
     );
 
     assert.deepEqual(result.telegram_inline_keyboard, {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token" }]]
     });
   } finally {
     config.WEB_GUI_HOST = previousHost;
@@ -1873,7 +1873,7 @@ test("HubRouter spawn result includes a Web GUI button when available", async ()
 
     assert.equal(spawnedThreadId, "codex_01");
     assert.deepEqual(result.telegram_inline_keyboard, {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token" }]]
     });
   } finally {
     config.WEB_GUI_HOST = previousHost;

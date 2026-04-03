@@ -161,7 +161,7 @@ test("HubResultSchema accepts optional Telegram inline keyboards", () => {
     content: "done",
     attachments: [],
     telegram_inline_keyboard: {
-      inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=claude_01" }]]
+      inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread_id=claude_01" }]]
     },
     timestamp: new Date().toISOString()
   });
