@@ -145,6 +145,38 @@ describe("LifecycleStore", () => {
     expect(harness.store.load().workers["N-01"]?.status).toBe("abandoned");
   });
 
+  it("writes the derived dispatch plan to the configured plan path on lifecycle transitions", async () => {
+    const harness = await createHarness({
+      dispatchPlanPath: path.join(tmpdir(), "meridian-roles-custom-plan", `dispatch_plan-${Date.now()}.md`),
+      planTemplate: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ⬜ | 5 | R-05 | Plan row |",
+        "| ⬜ | 5 | R-06 | Recovery row |",
+        ""
+      ].join("\n")
+    });
+
+    harness.store.recordWorkerStart("R-05", "worker-thread-555", "55555555-5555-4555-8555-555555555555", []);
+    await expect(fsp.readFile(harness.dispatchPlanPath, "utf8")).resolves.toContain("| 🔄 | 5 | R-05 | Plan row |");
+
+    harness.store.recordWorkerResult("R-05", buildHubResult({
+      thread_id: "worker-thread-555",
+      status: "success",
+      timestamp: "2026-04-03T12:05:00.000Z"
+    }));
+    await expect(fsp.readFile(harness.dispatchPlanPath, "utf8")).resolves.toContain("| ✅ | 5 | R-05 | Plan row |");
+
+    harness.store.recordWorkerStart("R-06", "worker-thread-666", "66666666-6666-4666-8666-666666666666", []);
+    harness.store.markAbandoned("R-06", "restart cleanup");
+
+    const markdown = await fsp.readFile(harness.dispatchPlanPath, "utf8");
+    expect(markdown).toContain("| ❌ | 5 | R-06 | Recovery row |");
+    await expect(fsp.access(path.join(harness.directory, "dispatch_plan.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("returns only workers in the requested lifecycle state", async () => {
     const harness = await createHarness();
     harness.store.save({
@@ -328,20 +360,37 @@ describe("LifecycleStore", () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options: {
+  dispatchPlanPath?: string;
+  planTemplate?: string;
+} = {}): Promise<{
   directory: string;
   filePath: string;
+  dispatchPlanPath: string;
   store: LifecycleStore;
 }> {
   const directory = await fsp.mkdtemp(path.join(tmpdir(), "meridian-roles-lifecycle-store-"));
   tempDirectories.add(directory);
 
   const filePath = path.join(directory, "dispatch_threads.json");
+  const dispatchPlanPath = options.dispatchPlanPath ?? path.join(directory, "dispatch_plan.md");
+
+  if (options.dispatchPlanPath) {
+    tempDirectories.add(path.dirname(options.dispatchPlanPath));
+  }
+
+  if (options.planTemplate) {
+    await fsp.mkdir(path.dirname(dispatchPlanPath), { recursive: true });
+    await fsp.writeFile(dispatchPlanPath, options.planTemplate, "utf8");
+  }
 
   return {
     directory,
     filePath,
-    store: new LifecycleStore(filePath)
+    dispatchPlanPath,
+    store: new LifecycleStore(filePath, {
+      dispatchPlanPath: options.dispatchPlanPath
+    })
   };
 }
 

@@ -12,6 +12,7 @@ import {
 } from "../../types";
 
 const EPOCH_ISO = new Date(0).toISOString();
+const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 
 const LegacyWorkerThreadEntrySchema = z.object({
   thread_id: z.string().min(1),
@@ -35,6 +36,7 @@ const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
 
 export interface LifecycleStoreOptions {
   beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
+  dispatchPlanPath?: string;
   now?: () => string;
 }
 
@@ -42,11 +44,13 @@ export class LifecycleStore {
   readonly filePath: string;
 
   private readonly beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
+  private readonly dispatchPlanPath: string;
   private readonly now: () => string;
 
   constructor(filePath: string, options: LifecycleStoreOptions = {}) {
     this.filePath = filePath;
     this.beforeCommit = options.beforeCommit;
+    this.dispatchPlanPath = options.dispatchPlanPath ?? path.join(path.dirname(filePath), DISPATCH_PLAN_FILENAME);
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -81,20 +85,8 @@ export class LifecycleStore {
 
   save(state: DispatchThreadStateV2): void {
     const normalized = DispatchThreadStateV2Schema.parse(state);
-    const directory = path.dirname(this.filePath);
-    const tempFilePath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    const payload = `${JSON.stringify(normalized, null, 2)}\n`;
-
-    fs.mkdirSync(directory, { recursive: true });
-
-    try {
-      fs.writeFileSync(tempFilePath, payload, "utf8");
-      this.beforeCommit?.(tempFilePath, this.filePath);
-      fs.renameSync(tempFilePath, this.filePath);
-    } catch (error) {
-      cleanupTempFile(tempFilePath);
-      throw error;
-    }
+    writeFileAtomically(this.filePath, `${JSON.stringify(normalized, null, 2)}\n`, this.beforeCommit);
+    this.syncPlanView(normalized);
   }
 
   recordDispatcher(threadId: string): void {
@@ -171,54 +163,78 @@ export class LifecycleStore {
   }
 
   toPlanMarkdown(planTemplate: string): string {
-    const state = this.load();
-    const lines = planTemplate.split(/\r?\n/);
+    return renderPlanMarkdown(this.load(), planTemplate);
+  }
 
-    for (let index = 0; index < lines.length - 1; index += 1) {
-      const headerCells = parseTableRow(lines[index]);
-      if (!headerCells) {
-        continue;
+  private syncPlanView(state: DispatchThreadStateV2): void {
+    let planTemplate: string;
+
+    try {
+      planTemplate = fs.readFileSync(this.dispatchPlanPath, "utf8");
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return;
       }
 
-      const statusColumn = headerCells.indexOf("Status");
-      const workerColumn = headerCells.indexOf("Worker");
-      if (statusColumn === -1 || workerColumn === -1) {
-        continue;
-      }
-
-      const separatorCells = parseTableRow(lines[index + 1]);
-      if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
-        continue;
-      }
-
-      let mutated = false;
-      const nextLines = [...lines];
-
-      for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
-        const rowCells = parseTableRow(lines[rowIndex]);
-        if (!rowCells || rowCells.length !== headerCells.length) {
-          break;
-        }
-
-        const workerState = state.workers[rowCells[workerColumn]];
-        if (!workerState) {
-          continue;
-        }
-
-        rowCells[statusColumn] = PLAN_STATUS_SYMBOLS[workerState.status];
-        nextLines[rowIndex] = formatTableRow(rowCells);
-        mutated = true;
-      }
-
-      if (mutated) {
-        return preserveTrailingNewline(planTemplate, nextLines.join("\n"));
-      }
-
-      break;
+      throw error;
     }
 
-    return planTemplate;
+    const nextPlan = renderPlanMarkdown(state, planTemplate);
+    if (nextPlan === planTemplate) {
+      return;
+    }
+
+    writeFileAtomically(this.dispatchPlanPath, nextPlan);
   }
+}
+
+function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string): string {
+  const lines = planTemplate.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const headerCells = parseTableRow(lines[index]);
+    if (!headerCells) {
+      continue;
+    }
+
+    const statusColumn = headerCells.indexOf("Status");
+    const workerColumn = headerCells.indexOf("Worker");
+    if (statusColumn === -1 || workerColumn === -1) {
+      continue;
+    }
+
+    const separatorCells = parseTableRow(lines[index + 1]);
+    if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
+      continue;
+    }
+
+    let mutated = false;
+    const nextLines = [...lines];
+
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowCells = parseTableRow(lines[rowIndex]);
+      if (!rowCells || rowCells.length !== headerCells.length) {
+        break;
+      }
+
+      const workerState = state.workers[rowCells[workerColumn]];
+      if (!workerState) {
+        continue;
+      }
+
+      rowCells[statusColumn] = PLAN_STATUS_SYMBOLS[workerState.status];
+      nextLines[rowIndex] = formatTableRow(rowCells);
+      mutated = true;
+    }
+
+    if (mutated) {
+      return preserveTrailingNewline(planTemplate, nextLines.join("\n"));
+    }
+
+    break;
+  }
+
+  return planTemplate;
 }
 
 export function buildEmptyDispatchThreadStateV2(): DispatchThreadStateV2 {
@@ -340,6 +356,26 @@ function formatTableRow(cells: string[]): string {
 
 function preserveTrailingNewline(original: string, updated: string): string {
   return original.endsWith("\n") ? `${updated}\n` : updated;
+}
+
+function writeFileAtomically(
+  targetFilePath: string,
+  payload: string,
+  beforeCommit?: (tempFilePath: string, targetFilePath: string) => void
+): void {
+  const directory = path.dirname(targetFilePath);
+  const tempFilePath = `${targetFilePath}.${process.pid}.${Date.now()}.tmp`;
+
+  fs.mkdirSync(directory, { recursive: true });
+
+  try {
+    fs.writeFileSync(tempFilePath, payload, "utf8");
+    beforeCommit?.(tempFilePath, targetFilePath);
+    fs.renameSync(tempFilePath, targetFilePath);
+  } catch (error) {
+    cleanupTempFile(tempFilePath);
+    throw error;
+  }
 }
 
 function cleanupTempFile(tempFilePath: string): void {

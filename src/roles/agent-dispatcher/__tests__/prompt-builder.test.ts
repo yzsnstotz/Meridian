@@ -44,14 +44,17 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
     expect(prompt).toContain("kill --thread-id <id>");
     expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
-    expect(prompt).toContain("update-status --plan <path> --worker <id> --status <status> [--thread-id <id>]");
+    expect(prompt).not.toContain("update-status --plan");
+    expect(prompt).not.toContain("update-status --status");
   });
 
-  it("documents deterministic routing, explicit terminal exit, and non-final run handling", () => {
+  it("documents deterministic routing, derived plan writes, explicit terminal exit, and non-final run handling", () => {
     const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).toContain("values starting with `CODEX` -> `codex`");
     expect(prompt).toContain("values starting with `GEMINI` -> `gemini`");
+    expect(prompt).toContain("you never write plan status directly");
+    expect(prompt).toContain("regenerate `dispatch_plan.md`");
     expect(prompt).toContain("send the final completion notify and stop");
     expect(prompt).toContain("data.run_state");
     expect(prompt).toContain("still_running");
