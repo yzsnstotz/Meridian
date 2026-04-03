@@ -37,7 +37,7 @@
 | ✅ | 4 | R-04 | Reconcile API Endpoint & Post-HubResult Trigger | CODEX | N-02 | TaskSpec v1.1 | |
 | ✅ | 5 | R-05 | Plan as Derived View | CODEX-HIGH | N-01 | Evaluation Doc, TaskSpec v1.1 | |
 | ✅ | 5 | R-06 | Observability Hardening | CODEX | — | Integration Brief, TaskSpec v1.1 | Parallel with R-05; no shared dependencies |
-| ⛔ | 5.5 | BATCH-5-GATE | Batch 5 Integration Verification | CODEX-HIGH | R-05, R-06 | TaskSpec v1.1 | Must pass before V-01 |
+| ✅ | 5.5 | BATCH-5-GATE | Batch 5 Integration Verification | CODEX-HIGH | R-05, R-06 | TaskSpec v1.1 | Must pass before V-01 |
 | ⬜ | 6 | V-01 | Live System Verification | HUMAN | R-03, R-04, R-05, R-06 | Evaluation Doc, TaskSpec v1.1 | Cannot be completed by coding agents |
 | ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01, R-01, R-02, N-02, R-03, R-04, R-05, R-06, BATCH-5-GATE | TaskSpec v1.1, Evaluation Doc | Always completes after report. Appends PM-DECIDE + corrective rows as needed. |
 | ⬜ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK, V-01 | TaskSpec v1.1, Evaluation Doc, delta_check_report | Terminal gate; human merges |
