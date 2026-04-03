@@ -1,38 +1,110 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const { lifecycleStoreConstructor } = vi.hoisted(() => ({
+  lifecycleStoreConstructor: vi.fn().mockImplementation((filePath: string) => {
+    const workers: Record<string, Record<string, unknown>> = {};
+
+    return {
+      filePath,
+      recordWorkerStart: vi.fn((workerId: string, threadId: string, traceId: string, expectedOutputs: string[]) => {
+        workers[workerId] = {
+          thread_id: threadId,
+          trace_id: traceId,
+          status: "running",
+          expected_outputs: [...expectedOutputs],
+          hub_result: null
+        };
+      }),
+      recordWorkerResult: vi.fn((workerId: string, hubResult: { status: string; run_state?: string }) => {
+        const worker = workers[workerId];
+        if (!worker) {
+          throw new Error(`Worker not found: ${workerId}`);
+        }
+
+        workers[workerId] = {
+          ...worker,
+          status: hubResult.status === "error"
+            ? "failed"
+            : hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")
+              ? "completed"
+              : "running",
+          hub_result: hubResult
+        };
+      }),
+      load: vi.fn(() => ({
+        workers: structuredClone(workers)
+      }))
+    };
+  })
+}));
+
 vi.mock("../../ipc-bridge", () => ({
   sendAndWait: vi.fn()
+}));
+
+vi.mock("node:crypto", () => ({
+  randomUUID: vi.fn()
 }));
 
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn()
 }));
 
+vi.mock("../../../roles/agent-dispatcher/lifecycle-store", () => ({
+  LifecycleStore: lifecycleStoreConstructor
+}));
+
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
 import type { HubResult, HubResultStatus, HubRunState } from "../../../types";
 import { sendAndWait } from "../../ipc-bridge";
 import runTool from "../run";
-import { readFile } from "node:fs/promises";
 
-const sendAndWaitMock = vi.mocked(sendAndWait);
+type MockLifecycleStore = {
+  filePath: string;
+  recordWorkerStart: ReturnType<typeof vi.fn>;
+  recordWorkerResult: ReturnType<typeof vi.fn>;
+  load: ReturnType<typeof vi.fn>;
+};
+
+const randomUUIDMock = vi.mocked(randomUUID);
 const readFileMock = vi.mocked(readFile);
+const sendAndWaitMock = vi.mocked(sendAndWait);
 
 afterEach(() => {
   vi.clearAllMocks();
+  randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
 });
 
 describe("run tool", () => {
-  it("waits indefinitely and maps successful Hub results to done", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
+  it("records worker start before sendAndWait and records the returned Hub result after success", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
     readFileMock.mockResolvedValue("# command\n");
+    randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
 
     const result = await runTool.execute({
       thread_id: "thread-123",
-      command: "/tmp/agent_dispatch_command.md",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
       worker: "N-04"
     });
 
+    const lifecycleStore = getLifecycleStore();
+
+    expect(lifecycleStoreConstructor).toHaveBeenCalledWith("/tmp/dispatch/dispatch_threads.json");
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "N-04",
+      "thread-123",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/dev_history/N-04_report.md"]
+    );
+    expect(lifecycleStore.recordWorkerStart.mock.invocationCallOrder[0]).toBeLessThan(
+      sendAndWaitMock.mock.invocationCallOrder[0]
+    );
     expect(sendAndWaitMock).toHaveBeenCalledWith(
       {
+        trace_id: "11111111-1111-4111-8111-111111111111",
         thread_id: "thread-123",
         actor_id: "service:meridian-tool",
         priority: 5,
@@ -45,6 +117,10 @@ describe("run tool", () => {
         }
       },
       0
+    );
+    expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", hubResult);
+    expect(sendAndWaitMock.mock.invocationCallOrder[0]).toBeLessThan(
+      lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]
     );
     expect(result).toEqual({
       ok: true,
@@ -64,7 +140,7 @@ describe("run tool", () => {
 
     const result = await runTool.execute({
       thread_id: "thread-234",
-      command: "/tmp/agent_dispatch_command.md",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
       worker: "N-05"
     });
 
@@ -86,7 +162,7 @@ describe("run tool", () => {
 
     const result = await runTool.execute({
       thread_id: "thread-345",
-      command: "/tmp/agent_dispatch_command.md",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
       worker: "N-06"
     });
 
@@ -108,7 +184,7 @@ describe("run tool", () => {
 
     const result = await runTool.execute({
       thread_id: "thread-456",
-      command: "/tmp/agent_dispatch_command.md",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
       worker: "N-04"
     });
 
@@ -123,19 +199,35 @@ describe("run tool", () => {
     });
   });
 
-  it("maps SIGINT cleanup failures to the interrupted contract", async () => {
-    sendAndWaitMock.mockRejectedValue(new Error("Tool Gateway interrupted by SIGINT"));
+  it("leaves the worker in running when sendAndWait throws", async () => {
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    sendAndWaitMock.mockRejectedValue(new Error("Hub timeout after 5000ms"));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
       thread_id: "thread-789",
-      command: "/tmp/agent_dispatch_command.md",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
       worker: "N-04"
     });
 
+    const lifecycleStore = getLifecycleStore();
+
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      thread_id: "thread-789",
+      trace_id: "11111111-1111-4111-8111-111111111111",
+      status: "running",
+      expected_outputs: ["/tmp/dispatch/dev_history/N-04_report.md"],
+      hub_result: null
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "N-04",
+      threadId: "thread-789",
+      error: "Hub timeout after 5000ms"
+    });
     expect(result).toEqual({
       ok: false,
-      error: "interrupted",
+      error: "Hub timeout after 5000ms",
       data: {
         worker: "N-04",
         thread_id: "thread-789",
@@ -143,7 +235,49 @@ describe("run tool", () => {
       }
     });
   });
+
+  it("maps SIGINT cleanup failures to the interrupted contract", async () => {
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    sendAndWaitMock.mockRejectedValue(new Error("Tool Gateway interrupted by SIGINT"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-999",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-07"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["N-07"]).toMatchObject({
+      status: "running"
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "N-07",
+      threadId: "thread-999",
+      error: "Tool Gateway interrupted by SIGINT"
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "interrupted",
+      data: {
+        worker: "N-07",
+        thread_id: "thread-999",
+        status: "failed"
+      }
+    });
+  });
 });
+
+function getLifecycleStore(): MockLifecycleStore {
+  const store = lifecycleStoreConstructor.mock.results.at(-1)?.value as MockLifecycleStore | undefined;
+  if (!store) {
+    throw new Error("LifecycleStore was not constructed");
+  }
+
+  return store;
+}
 
 function buildHubResult(content: string, status: HubResultStatus, runState?: HubRunState): HubResult {
   return {

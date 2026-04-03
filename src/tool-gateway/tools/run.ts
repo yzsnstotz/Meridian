@@ -1,8 +1,14 @@
-import type { HubMessage, HubResult, HubRunState } from "../../types";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
+
+import type { HubMessage, HubResult, HubRunState } from "../../types";
+import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
+const DEV_HISTORY_DIRECTORY = "dev_history";
+const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
 const INTERRUPTED_ERROR = "interrupted";
 const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERRUPTED_ERROR]);
@@ -52,14 +58,26 @@ const runTool: ToolDefinition = {
 
     try {
       const commandText = await readFile(commandPath, "utf8");
-      const result = await sendAndWait(buildRunMessage(threadId, commandText), 0);
+      const traceId = randomUUID();
+      const lifecycleStore = createLifecycleStore(commandPath);
+      lifecycleStore.recordWorkerStart(worker, threadId, traceId, deriveExpectedOutputs(commandPath, worker));
+
+      const result = await sendAndWait(buildRunMessage(threadId, commandText, traceId), 0);
+      lifecycleStore.recordWorkerResult(worker, result);
       return mapRunResult(result, worker, threadId);
     } catch (error) {
-      if (interrupted || INTERRUPT_MESSAGES.has(asError(error).message)) {
+      const resolvedError = asError(error);
+      console.error("run tool execution failed", {
+        worker,
+        threadId,
+        error: resolvedError.message
+      });
+
+      if (interrupted || INTERRUPT_MESSAGES.has(resolvedError.message)) {
         return interruptedResult(worker, threadId);
       }
 
-      return failedResult(worker, threadId, asError(error).message);
+      return failedResult(worker, threadId, resolvedError.message);
     } finally {
       process.removeListener("SIGINT", handleSigint);
     }
@@ -68,8 +86,9 @@ const runTool: ToolDefinition = {
 
 export default runTool;
 
-function buildRunMessage(threadId: string, command: string): Partial<HubMessage> {
+function buildRunMessage(threadId: string, command: string, traceId: string): Partial<HubMessage> {
   return {
+    trace_id: traceId,
     thread_id: threadId,
     actor_id: MERIDIAN_TOOL_ACTOR_ID,
     priority: 5,
@@ -81,6 +100,14 @@ function buildRunMessage(threadId: string, command: string): Partial<HubMessage>
       attachments: []
     }
   };
+}
+
+function createLifecycleStore(commandPath: string): LifecycleStore {
+  return new LifecycleStore(path.join(path.dirname(commandPath), DISPATCH_THREADS_FILENAME));
+}
+
+function deriveExpectedOutputs(commandPath: string, workerId: string): string[] {
+  return [path.join(path.dirname(commandPath), DEV_HISTORY_DIRECTORY, `${workerId}_report.md`)];
 }
 
 function mapRunResult(result: HubResult, worker: string, threadId: string): ToolResult {
