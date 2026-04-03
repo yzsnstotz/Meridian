@@ -31,7 +31,7 @@
 | ✅ | 0 | PF-00 | Cross-Repo Pre-flight Baseline | CODEX-HIGH | — | TaskSpec v1.1 | Gates all workers |
 | ✅ | 1 | N-01 | LifecycleStore (replaces ThreadTracker) | CODEX-XHIGH | PF-00 | Evaluation Doc, TaskSpec v1.1 | Core foundation; all other workers depend on this |
 | ✅ | 2 | R-01 | Wire SessionManager to LifecycleStore | CODEX-XHIGH | N-01 | TaskSpec v1.1 | |
-| 🔄 | 2 | R-02 | Durable Run Registration | CODEX-XHIGH | N-01 | TaskSpec v1.1 | |
+| ✅ | 2 | R-02 | Durable Run Registration | CODEX-XHIGH | N-01 | TaskSpec v1.1 | |
 | ⬜ | 3 | N-02 | Reconciler Function | CODEX-XHIGH | N-01, R-01 | Evaluation Doc, TaskSpec v1.1 | |
 | ⬜ | 4 | R-03 | Startup Rehydration | CODEX-XHIGH | N-02, R-01 | Evaluation Doc, TaskSpec v1.1 | |
 | ⬜ | 4 | R-04 | Reconcile API Endpoint & Post-HubResult Trigger | CODEX | N-02 | TaskSpec v1.1 | |
