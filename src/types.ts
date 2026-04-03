@@ -111,6 +111,43 @@ export const HubResultSchema = z.object({
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
 
+export const LifecycleStatusSchema = z.enum(["pending", "running", "completed", "failed", "abandoned"]);
+export type LifecycleStatus = z.infer<typeof LifecycleStatusSchema>;
+
+export const DispatchLifecycleDispatcherSchema = z.object({
+  thread_id: z.string().min(1).nullable().default(null),
+  started_at: z.string().datetime().nullable().default(null),
+  status: LifecycleStatusSchema.default("pending")
+});
+export type DispatchLifecycleDispatcher = z.infer<typeof DispatchLifecycleDispatcherSchema>;
+
+export const DispatchWorkerStateSchema = z.object({
+  thread_id: z.string().min(1),
+  trace_id: z.string().nullable().default(null),
+  started_at: z.string().datetime(),
+  last_seen_at: z.string().datetime(),
+  status: LifecycleStatusSchema,
+  expected_outputs: z.array(z.string().min(1)).default([]),
+  hub_result: HubResultSchema.nullable().default(null)
+});
+export type DispatchWorkerState = z.infer<typeof DispatchWorkerStateSchema>;
+
+export const DispatchThreadStateV2Schema = z.object({
+  version: z.literal(2),
+  dispatcher: DispatchLifecycleDispatcherSchema.default({
+    thread_id: null,
+    started_at: null,
+    status: "pending"
+  }),
+  workers: z.record(z.string(), DispatchWorkerStateSchema).default({}),
+  last_reconciled_at: z.string().datetime().nullable().default(null)
+});
+export type DispatchThreadStateV2 = z.infer<typeof DispatchThreadStateV2Schema>;
+
+export type LifecycleWorkerEntry = DispatchWorkerState & {
+  worker_id: string;
+};
+
 // ─── Agent Instance (aligned with Meridian) ─────────────────────────────────────
 
 export const AgentInstanceSchema = z.object({

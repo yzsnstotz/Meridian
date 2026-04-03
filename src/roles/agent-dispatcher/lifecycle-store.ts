@@ -1,0 +1,357 @@
+import * as fs from "node:fs";
+import path from "node:path";
+
+import { z } from "zod";
+
+import {
+  DispatchThreadStateV2Schema,
+  type DispatchThreadStateV2,
+  type HubResult,
+  type LifecycleStatus,
+  type LifecycleWorkerEntry
+} from "../../types";
+
+const EPOCH_ISO = new Date(0).toISOString();
+
+const LegacyWorkerThreadEntrySchema = z.object({
+  thread_id: z.string().min(1),
+  started_at: z.string().datetime().optional()
+});
+
+const LegacyDispatchThreadFileSchema = z.object({
+  dispatcher_thread_id: z.string().min(1).nullable().optional(),
+  workers: z
+    .record(z.string(), z.union([z.string().min(1), LegacyWorkerThreadEntrySchema]))
+    .default({})
+});
+
+const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
+  pending: "⬜",
+  running: "🔄",
+  completed: "✅",
+  failed: "❌",
+  abandoned: "❌"
+};
+
+export interface LifecycleStoreOptions {
+  beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
+  now?: () => string;
+}
+
+export class LifecycleStore {
+  readonly filePath: string;
+
+  private readonly beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
+  private readonly now: () => string;
+
+  constructor(filePath: string, options: LifecycleStoreOptions = {}) {
+    this.filePath = filePath;
+    this.beforeCommit = options.beforeCommit;
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  load(): DispatchThreadStateV2 {
+    let raw: string;
+
+    try {
+      raw = fs.readFileSync(this.filePath, "utf8");
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return buildEmptyDispatchThreadStateV2();
+      }
+
+      throw error;
+    }
+
+    if (raw.trim().length === 0) {
+      const emptyState = buildEmptyDispatchThreadStateV2();
+      this.save(emptyState);
+      return emptyState;
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (isDispatchThreadStateV2(parsed)) {
+      return DispatchThreadStateV2Schema.parse(parsed);
+    }
+
+    const migrated = migrateLegacyState(parsed);
+    this.save(migrated);
+    return migrated;
+  }
+
+  save(state: DispatchThreadStateV2): void {
+    const normalized = DispatchThreadStateV2Schema.parse(state);
+    const directory = path.dirname(this.filePath);
+    const tempFilePath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    const payload = `${JSON.stringify(normalized, null, 2)}\n`;
+
+    fs.mkdirSync(directory, { recursive: true });
+
+    try {
+      fs.writeFileSync(tempFilePath, payload, "utf8");
+      this.beforeCommit?.(tempFilePath, this.filePath);
+      fs.renameSync(tempFilePath, this.filePath);
+    } catch (error) {
+      cleanupTempFile(tempFilePath);
+      throw error;
+    }
+  }
+
+  recordDispatcher(threadId: string): void {
+    const state = this.load();
+    state.dispatcher = {
+      thread_id: threadId,
+      started_at: this.now(),
+      status: "running"
+    };
+    this.save(state);
+  }
+
+  recordWorkerStart(workerId: string, threadId: string, traceId: string, expectedOutputs: string[]): void {
+    const state = this.load();
+    const nowIso = this.now();
+
+    state.workers[workerId] = {
+      thread_id: threadId,
+      trace_id: traceId,
+      started_at: nowIso,
+      last_seen_at: nowIso,
+      status: "running",
+      expected_outputs: [...expectedOutputs],
+      hub_result: null
+    };
+
+    this.save(state);
+  }
+
+  recordWorkerResult(workerId: string, hubResult: HubResult): void {
+    const state = this.load();
+    const worker = state.workers[workerId];
+    if (!worker) {
+      throw new Error(`Worker not found in lifecycle state: ${workerId}`);
+    }
+
+    state.workers[workerId] = {
+      ...worker,
+      thread_id: hubResult.thread_id || worker.thread_id,
+      trace_id: hubResult.trace_id || worker.trace_id,
+      last_seen_at: hubResult.timestamp,
+      status: mapHubResultToLifecycleStatus(hubResult),
+      hub_result: hubResult
+    };
+
+    this.save(state);
+  }
+
+  markAbandoned(workerId: string, _reason: string): void {
+    const state = this.load();
+    const worker = state.workers[workerId];
+    if (!worker) {
+      throw new Error(`Worker not found in lifecycle state: ${workerId}`);
+    }
+
+    state.workers[workerId] = {
+      ...worker,
+      status: "abandoned",
+      last_seen_at: this.now()
+    };
+
+    this.save(state);
+  }
+
+  getWorkersInState(status: LifecycleStatus): LifecycleWorkerEntry[] {
+    const state = this.load();
+
+    return Object.entries(state.workers)
+      .filter(([, worker]) => worker.status === status)
+      .map(([workerId, worker]) => ({
+        worker_id: workerId,
+        ...cloneWorker(worker)
+      }));
+  }
+
+  toPlanMarkdown(planTemplate: string): string {
+    const state = this.load();
+    const lines = planTemplate.split(/\r?\n/);
+
+    for (let index = 0; index < lines.length - 1; index += 1) {
+      const headerCells = parseTableRow(lines[index]);
+      if (!headerCells) {
+        continue;
+      }
+
+      const statusColumn = headerCells.indexOf("Status");
+      const workerColumn = headerCells.indexOf("Worker");
+      if (statusColumn === -1 || workerColumn === -1) {
+        continue;
+      }
+
+      const separatorCells = parseTableRow(lines[index + 1]);
+      if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
+        continue;
+      }
+
+      let mutated = false;
+      const nextLines = [...lines];
+
+      for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+        const rowCells = parseTableRow(lines[rowIndex]);
+        if (!rowCells || rowCells.length !== headerCells.length) {
+          break;
+        }
+
+        const workerState = state.workers[rowCells[workerColumn]];
+        if (!workerState) {
+          continue;
+        }
+
+        rowCells[statusColumn] = PLAN_STATUS_SYMBOLS[workerState.status];
+        nextLines[rowIndex] = formatTableRow(rowCells);
+        mutated = true;
+      }
+
+      if (mutated) {
+        return preserveTrailingNewline(planTemplate, nextLines.join("\n"));
+      }
+
+      break;
+    }
+
+    return planTemplate;
+  }
+}
+
+export function buildEmptyDispatchThreadStateV2(): DispatchThreadStateV2 {
+  return {
+    version: 2,
+    dispatcher: {
+      thread_id: null,
+      started_at: null,
+      status: "pending"
+    },
+    workers: {},
+    last_reconciled_at: null
+  };
+}
+
+function isDispatchThreadStateV2(value: unknown): boolean {
+  return typeof value === "object" && value !== null && "version" in value && value.version === 2;
+}
+
+function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
+  const legacyState = LegacyDispatchThreadFileSchema.parse(value);
+  const workers = Object.fromEntries(
+    Object.entries(legacyState.workers).map(([workerId, entry]) => {
+      if (typeof entry === "string") {
+        return [
+          workerId,
+          {
+            thread_id: entry,
+            trace_id: null,
+            started_at: EPOCH_ISO,
+            last_seen_at: EPOCH_ISO,
+            status: "running",
+            expected_outputs: [],
+            hub_result: null
+          }
+        ];
+      }
+
+      const startedAt = entry.started_at ?? EPOCH_ISO;
+      return [
+        workerId,
+        {
+          thread_id: entry.thread_id,
+          trace_id: null,
+          started_at: startedAt,
+          last_seen_at: startedAt,
+          status: "running",
+          expected_outputs: [],
+          hub_result: null
+        }
+      ];
+    })
+  );
+
+  return DispatchThreadStateV2Schema.parse({
+    version: 2,
+    dispatcher: legacyState.dispatcher_thread_id
+      ? {
+          thread_id: legacyState.dispatcher_thread_id,
+          started_at: EPOCH_ISO,
+          status: "running"
+        }
+      : {
+          thread_id: null,
+          started_at: null,
+          status: "pending"
+        },
+    workers,
+    last_reconciled_at: null
+  });
+}
+
+function mapHubResultToLifecycleStatus(hubResult: HubResult): LifecycleStatus {
+  if (hubResult.status === "error") {
+    return "failed";
+  }
+
+  if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
+    return "completed";
+  }
+
+  return "running";
+}
+
+function cloneWorker(worker: DispatchThreadStateV2["workers"][string]): DispatchThreadStateV2["workers"][string] {
+  return {
+    ...worker,
+    expected_outputs: [...worker.expected_outputs],
+    hub_result: worker.hub_result
+      ? {
+          ...worker.hub_result,
+          attachments: worker.hub_result.attachments.map((attachment) => ({ ...attachment }))
+        }
+      : null
+  };
+}
+
+function parseTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|")) {
+    return null;
+  }
+
+  const withoutLeadingPipe = trimmed.slice(1);
+  const normalized = withoutLeadingPipe.endsWith("|")
+    ? withoutLeadingPipe.slice(0, -1)
+    : withoutLeadingPipe;
+
+  return normalized.split("|").map((cell) => cell.trim());
+}
+
+function isSeparatorRow(cells: string[]): boolean {
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function formatTableRow(cells: string[]): string {
+  return `| ${cells.join(" | ")} |`;
+}
+
+function preserveTrailingNewline(original: string, updated: string): string {
+  return original.endsWith("\n") ? `${updated}\n` : updated;
+}
+
+function cleanupTempFile(tempFilePath: string): void {
+  try {
+    fs.unlinkSync(tempFilePath);
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+  }
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
