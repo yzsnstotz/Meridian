@@ -422,6 +422,102 @@ describe("role config handlers", () => {
     }
   });
 
+  it("falls back to persisted agent-dispatcher state for POST /api/reconcile after restart", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-reconcile-persisted-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const commandFilePath = path.join(tempDir, "agent_dispatch_command.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const outputPath = path.join(tempDir, "final.txt");
+    const lifecycleStore = new LifecycleStore(sidecarPath);
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 4 | R-04 | Reconcile API Endpoint & Post-HubResult Trigger | CODEX | N-02 | TaskSpec v1.1 | |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(commandFilePath, "# Worker Command\n", "utf8");
+    await fs.writeFile(outputPath, "done\n", "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-03T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "trace-123",
+          started_at: "2026-04-03T00:00:00.000Z",
+          last_seen_at: "2026-04-03T00:00:00.000Z",
+          status: "running",
+          expected_outputs: [outputPath],
+          hub_result: null
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        {
+          roles: [
+            {
+              threadId: "agent-dispatcher-rehydrated",
+              roleType: "agent-dispatcher",
+              config: {
+                dispatch_plan_path: dispatchPlanPath,
+                command_file_path: commandFilePath,
+                user_reply_channels: [
+                  {
+                    channel: "telegram",
+                    chat_id: "telegram:ops"
+                  }
+                ],
+                agent_type: "codex",
+                mode: "bridge",
+                kill_policy: "always"
+              },
+              status: "needs_reactivation"
+            }
+          ],
+          promptStore: {}
+        },
+        undefined,
+        [],
+        null,
+        null,
+        async (message) => {
+          if (message.thread_id === "dispatcher-thread-123") {
+            return buildHubResult("{\"status\":\"running\"}");
+          }
+
+          if (message.thread_id === "worker-thread-456") {
+            return buildHubResult("{\"status\":\"completed\"}");
+          }
+
+          throw new Error(`Unexpected thread lookup: ${message.thread_id}`);
+        }
+      );
+
+      await expect(invokeJson(harness.roleHandlers, "POST", "/api/reconcile")).resolves.toEqual({
+        changed: [
+          {
+            workerId: "R-04",
+            from: "running",
+            to: "completed",
+            trigger: "hub_status:completed:outputs_present"
+          }
+        ],
+        unchanged: ["dispatcher"]
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns 404 from POST /api/reconcile when no active agent-dispatcher exists", async () => {
     const harness = createHarness();
     const request = createJsonRequest("POST", "/api/reconcile");

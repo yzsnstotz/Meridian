@@ -14,6 +14,7 @@ import {
 
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
+const DEV_HISTORY_DIRECTORY = "dev_history";
 
 const LegacyWorkerThreadEntrySchema = z.object({
   thread_id: z.string().min(1),
@@ -131,7 +132,7 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
-    const nextStatus = mapHubResultToLifecycleStatus(hubResult);
+    const nextStatus = mapHubResultToLifecycleStatus(hubResult, requiresOutputVerification(worker.expected_outputs));
     state.workers[workerId] = {
       ...worker,
       thread_id: hubResult.thread_id || worker.thread_id,
@@ -332,16 +333,24 @@ function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
   });
 }
 
-function mapHubResultToLifecycleStatus(hubResult: HubResult): LifecycleStatus {
+function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilReconciled: boolean): LifecycleStatus {
   if (hubResult.status === "error") {
     return "failed";
   }
 
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
-    return "completed";
+    return deferSuccessUntilReconciled ? "running" : "completed";
   }
 
   return "running";
+}
+
+function requiresOutputVerification(expectedOutputs: string[]): boolean {
+  return expectedOutputs.some((filePath) => !isDevHistoryPath(filePath));
+}
+
+function isDevHistoryPath(filePath: string): boolean {
+  return path.normalize(filePath).split(path.sep).includes(DEV_HISTORY_DIRECTORY);
 }
 
 function cloneWorker(worker: DispatchThreadStateV2["workers"][string]): DispatchThreadStateV2["workers"][string] {

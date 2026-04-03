@@ -91,6 +91,26 @@
 
           <div class="summary-grid">
             <label class="field">
+              <span>manual_reply_channel</span>
+              <select id="agent-dispatcher-manual-channel" name="manual_reply_channel">
+                <option value="web">web</option>
+                <option value="telegram">telegram</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>manual_reply_chat_id</span>
+              <input
+                id="agent-dispatcher-manual-chat-id"
+                name="manual_reply_chat_id"
+                type="text"
+                placeholder="web:ops"
+              />
+            </label>
+          </div>
+
+          <div class="summary-grid">
+            <label class="field">
               <span>agent_type</span>
               <select name="agent_type">
                 <option value="claude">claude</option>

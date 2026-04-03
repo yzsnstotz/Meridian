@@ -22,7 +22,12 @@ import type { PromptStoreRoleBinding } from "../roles/prompt-store";
 import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
 import type { DispatchThreadState, WorkerThreadEntry } from "../roles/agent-dispatcher/session-manager";
-import { StateStore } from "../state-store";
+import {
+  ACTIVE_ROLE_STATUS,
+  NEEDS_REACTIVATION_ROLE_STATUS,
+  PAUSED_ROLE_STATUS,
+  StateStore
+} from "../state-store";
 import {
   AgentDispatcherConfigSchema,
   AppStateSchema,
@@ -317,7 +322,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   }
 
   async function reconcileActiveDispatcher() {
-    const agentDispatcherConfig = resolveActiveAgentDispatcherConfig(activeRoles);
+    const agentDispatcherConfig = await resolveReconciliableAgentDispatcherConfig(stateStore, activeRoles);
     if (!agentDispatcherConfig) {
       throw createHttpError(404, "No active agent dispatcher is running");
     }
@@ -578,6 +583,36 @@ function resolveActiveAgentDispatcherConfig(
 ): AgentDispatcherConfig | null {
   for (const role of activeRoles.values()) {
     if (role.roleType !== "agent-dispatcher") {
+      continue;
+    }
+
+    const config = parseAgentDispatcherConfig(role.config);
+    if (config) {
+      return config;
+    }
+  }
+
+  return null;
+}
+
+async function resolveReconciliableAgentDispatcherConfig(
+  stateStore: PersistableStateStore,
+  activeRoles: ReadonlyMap<string, PromptStoreRoleBinding>
+): Promise<AgentDispatcherConfig | null> {
+  const activeConfig = resolveActiveAgentDispatcherConfig(activeRoles);
+  if (activeConfig) {
+    return activeConfig;
+  }
+
+  const state = await loadState(stateStore);
+  return resolvePersistedAgentDispatcherConfig(state);
+}
+
+function resolvePersistedAgentDispatcherConfig(state: AppState): AgentDispatcherConfig | null {
+  const eligibleStatuses = new Set([ACTIVE_ROLE_STATUS, PAUSED_ROLE_STATUS, NEEDS_REACTIVATION_ROLE_STATUS]);
+
+  for (const role of state.roles) {
+    if (role.roleType !== "agent-dispatcher" || !eligibleStatuses.has(role.status)) {
       continue;
     }
 

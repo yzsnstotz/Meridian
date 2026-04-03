@@ -33,6 +33,8 @@ async function setupDashboard() {
   const agentDispatcherForm = document.getElementById("start-agent-dispatcher-form");
   const agentDispatcherFeedback = document.getElementById("agent-dispatcher-feedback");
   const channelSelect = document.getElementById("agent-dispatcher-channel-select");
+  const manualChannelSelect = document.getElementById("agent-dispatcher-manual-channel");
+  const manualChatIdInput = document.getElementById("agent-dispatcher-manual-chat-id");
   const refreshButton = document.querySelector('[data-action="refresh-roles"]');
 
   if (
@@ -45,6 +47,8 @@ async function setupDashboard() {
     || !agentDispatcherForm
     || !agentDispatcherFeedback
     || !channelSelect
+    || !manualChannelSelect
+    || !manualChatIdInput
   ) {
     return;
   }
@@ -182,7 +186,7 @@ async function setupDashboard() {
     if (!Array.isArray(response.channels) || response.channels.length === 0) {
       const option = document.createElement("option");
       option.value = "";
-      option.textContent = "No reply channels available";
+      option.textContent = "No reply channels available; use manual fallback";
       option.disabled = true;
       channelSelect.appendChild(option);
       return;
@@ -253,8 +257,18 @@ async function setupDashboard() {
         }
       })
       .filter(Boolean);
-    if (selectedChannels.length === 0) {
-      agentDispatcherFeedback.textContent = "Select at least one reply channel.";
+
+    const manualChatId = normalizeText(manualChatIdInput.value);
+    const replyChannels = selectedChannels.length > 0
+      ? selectedChannels
+      : manualChatId
+        ? [{
+            channel: normalizeText(manualChannelSelect.value) || "web",
+            chat_id: manualChatId
+          }]
+        : [];
+    if (replyChannels.length === 0) {
+      agentDispatcherFeedback.textContent = "Select a reply channel or provide a manual fallback chat_id.";
       return;
     }
 
@@ -262,7 +276,7 @@ async function setupDashboard() {
     const payload = {
       dispatch_plan_path: normalizeText(formData.get("dispatch_plan_path")),
       command_file_path: normalizeText(formData.get("command_file_path")),
-      user_reply_channels: selectedChannels,
+      user_reply_channels: replyChannels,
       agent_type: normalizeText(formData.get("agent_type")) || "claude",
       mode: normalizeText(formData.get("mode")) || "bridge",
       kill_policy: normalizeText(formData.get("kill_policy")) || "always"

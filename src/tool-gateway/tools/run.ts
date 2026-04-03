@@ -11,6 +11,7 @@ import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const DEV_HISTORY_DIRECTORY = "dev_history";
+const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
 const INTERRUPTED_ERROR = "interrupted";
@@ -63,7 +64,8 @@ const runTool: ToolDefinition = {
       const commandText = await readFile(commandPath, "utf8");
       const traceId = randomUUID();
       const lifecycleStore = createLifecycleStore(commandPath);
-      lifecycleStore.recordWorkerStart(worker, threadId, traceId, deriveExpectedOutputs(commandPath, worker));
+      const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
+      lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs);
 
       const result = await sendAndWait(buildRunMessage(threadId, commandText, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
@@ -131,8 +133,187 @@ function scheduleReconciliation(lifecycleStore: LifecycleStore): void {
   });
 }
 
-function deriveExpectedOutputs(commandPath: string, workerId: string): string[] {
+async function deriveExpectedOutputs(commandPath: string, workerId: string): Promise<string[]> {
+  const planOutputs = await deriveExpectedOutputsFromPlan(commandPath, workerId);
+  if (planOutputs.length > 0) {
+    return planOutputs;
+  }
+
   return [path.join(path.dirname(commandPath), DEV_HISTORY_DIRECTORY, `${workerId}_report.md`)];
+}
+
+async function deriveExpectedOutputsFromPlan(commandPath: string, workerId: string): Promise<string[]> {
+  const dispatchPlanPath = path.join(path.dirname(commandPath), DISPATCH_PLAN_FILENAME);
+
+  try {
+    const markdown = await readFile(dispatchPlanPath, "utf8");
+    const row = parseDispatchPlanRows(markdown).find((candidate) => candidate.worker === workerId);
+    if (!row?.notes) {
+      return [];
+    }
+
+    return extractExpectedOutputsFromNotes(row.notes, commandPath);
+  } catch {
+    return [];
+  }
+}
+
+function parseDispatchPlanRows(markdown: string): Array<{ worker: string; notes?: string }> {
+  const lines = markdown.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const headerCells = parseTableRow(lines[index]);
+    if (!headerCells) {
+      continue;
+    }
+
+    const workerColumn = headerCells.indexOf("Worker");
+    const notesColumn = headerCells.indexOf("Notes");
+    if (workerColumn === -1) {
+      continue;
+    }
+
+    const separatorCells = parseTableRow(lines[index + 1]);
+    if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
+      continue;
+    }
+
+    const rows: Array<{ worker: string; notes?: string }> = [];
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowCells = parseTableRow(lines[rowIndex]);
+      if (!rowCells || rowCells.length !== headerCells.length) {
+        break;
+      }
+
+      rows.push({
+        worker: rowCells[workerColumn],
+        notes: notesColumn === -1 ? undefined : rowCells[notesColumn]
+      });
+    }
+
+    return rows;
+  }
+
+  return [];
+}
+
+function extractExpectedOutputsFromNotes(notes: string, commandPath: string): string[] {
+  const outputs: string[] = [];
+  const codeSpanPattern = /`([^`]+)`/g;
+
+  for (const match of notes.matchAll(codeSpanPattern)) {
+    const candidatePath = match[1]?.trim();
+    if (!candidatePath || !looksLikeFilePath(candidatePath)) {
+      continue;
+    }
+
+    const spanStart = match.index ?? 0;
+    const context = notes.slice(Math.max(0, spanStart - 120), spanStart).toLowerCase();
+    if (!isOutputContext(context)) {
+      continue;
+    }
+
+    const resolvedPath = resolveExpectedOutputPath(candidatePath, commandPath);
+    if (isLifecycleArtifactPath(resolvedPath, commandPath)) {
+      continue;
+    }
+
+    outputs.push(resolvedPath);
+  }
+
+  return [...new Set(outputs)];
+}
+
+function looksLikeFilePath(value: string): boolean {
+  return /[/.]/.test(value) && !/^[a-z]+:\/\//i.test(value);
+}
+
+function isOutputContext(context: string): boolean {
+  const lastOutputVerb = findLastPatternIndex(context, [
+    /\bwrite\b/g,
+    /\bappend\b/g,
+    /\bcreate\b/g,
+    /\bgenerate\b/g,
+    /\bproduce\b/g,
+    /\bsave\b/g,
+    /\bupdate\b/g,
+    /\boverwrite\b/g
+  ]);
+  const lastInputVerb = findLastPatternIndex(context, [
+    /\bread\b/g,
+    /\bcheck\b/g,
+    /\binspect\b/g,
+    /\bleave\b/g,
+    /\bopen\b/g,
+    /\bverify\b/g
+  ]);
+
+  return lastOutputVerb !== -1 && lastOutputVerb > lastInputVerb;
+}
+
+function findLastPatternIndex(source: string, patterns: RegExp[]): number {
+  let lastIndex = -1;
+
+  patterns.forEach((pattern) => {
+    const matcher = new RegExp(pattern.source, pattern.flags);
+    let match = matcher.exec(source);
+    while (match) {
+      lastIndex = Math.max(lastIndex, match.index);
+      match = matcher.exec(source);
+    }
+  });
+
+  return lastIndex;
+}
+
+function resolveExpectedOutputPath(candidatePath: string, commandPath: string): string {
+  if (path.isAbsolute(candidatePath)) {
+    return path.normalize(candidatePath);
+  }
+
+  if (candidatePath.startsWith("./") || candidatePath.startsWith("../") || !candidatePath.includes("/")) {
+    return path.resolve(path.dirname(commandPath), candidatePath);
+  }
+
+  const commandDirectoryRelative = normalizePathForComparison(path.relative(process.cwd(), path.dirname(commandPath)));
+  const normalizedCandidate = normalizePathForComparison(candidatePath);
+
+  if (commandDirectoryRelative && normalizedCandidate.startsWith(`${commandDirectoryRelative}/`)) {
+    return path.resolve(process.cwd(), candidatePath);
+  }
+
+  return path.resolve(process.cwd(), candidatePath);
+}
+
+function normalizePathForComparison(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
+function isLifecycleArtifactPath(candidatePath: string, commandPath: string): boolean {
+  const commandDirectory = path.dirname(commandPath);
+  const normalizedCandidate = path.normalize(candidatePath);
+
+  return normalizedCandidate === path.join(commandDirectory, DISPATCH_PLAN_FILENAME)
+    || normalizedCandidate === path.join(commandDirectory, DISPATCH_THREADS_FILENAME)
+    || normalizedCandidate.startsWith(path.join(commandDirectory, DEV_HISTORY_DIRECTORY) + path.sep);
+}
+
+function parseTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|")) {
+    return null;
+  }
+
+  const withoutLeadingPipe = trimmed.slice(1);
+  const normalized = withoutLeadingPipe.endsWith("|")
+    ? withoutLeadingPipe.slice(0, -1)
+    : withoutLeadingPipe;
+
+  return normalized.split("|").map((cell) => cell.trim());
+}
+
+function isSeparatorRow(cells: string[]): boolean {
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
 }
 
 function mapRunResult(result: HubResult, worker: string, threadId: string): ToolResult {

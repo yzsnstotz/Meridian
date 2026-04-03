@@ -119,6 +119,24 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("keeps a success HubResult running when real output verification is required", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "test/gui-demo/final.txt"
+    ]);
+
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["N-01"]).toMatchObject({
+      status: "running",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("maps an error HubResult to failed", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

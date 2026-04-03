@@ -25,11 +25,17 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
           throw new Error(`Worker not found: ${workerId}`);
         }
 
+        const expectedOutputs = Array.isArray(worker.expected_outputs)
+          ? worker.expected_outputs as string[]
+          : [];
+        const requiresOutputVerification = expectedOutputs.some((filePath) => !filePath.includes("/dev_history/"));
         workers[workerId] = {
           ...worker,
           status: hubResult.status === "error"
             ? "failed"
-            : hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")
+            : hubResult.status === "success"
+              && (!hubResult.run_state || hubResult.run_state === "completed")
+              && !requiresOutputVerification
               ? "completed"
               : "running",
           hub_result: hubResult
@@ -86,10 +92,16 @@ afterEach(() => {
 });
 
 describe("run tool", () => {
-  it("records worker start before sendAndWait and records the returned Hub result after success", async () => {
+  it("derives expected outputs from dispatch-plan notes before sendAndWait", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     sendAndWaitMock.mockResolvedValue(hubResult);
-    readFileMock.mockResolvedValue("# command\n");
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 4 | N-04 | Ship outputs | CODEX | N-03 | Read `input.txt`, write `final.txt`, and append a line to `audit.txt`. |"
+    ].join("\n"));
     randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
 
     const result = await runTool.execute({
@@ -105,7 +117,7 @@ describe("run tool", () => {
       "N-04",
       "thread-123",
       "11111111-1111-4111-8111-111111111111",
-      ["/tmp/dispatch/dev_history/N-04_report.md"]
+      ["/tmp/dispatch/final.txt", "/tmp/dispatch/audit.txt"]
     );
     expect(lifecycleStore.recordWorkerStart.mock.invocationCallOrder[0]).toBeLessThan(
       sendAndWaitMock.mock.invocationCallOrder[0]
@@ -130,6 +142,42 @@ describe("run tool", () => {
     expect(sendAndWaitMock.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]
     );
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "N-04",
+        thread_id: "thread-123",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+  });
+
+  it("keeps successful workers running until reconciliation verifies real outputs", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 4 | N-04 | Ship outputs | CODEX | N-03 | Read `input.txt`, write `final.txt`, and append a line to `audit.txt`. |"
+    ].join("\n"));
+
+    const result = await runTool.execute({
+      thread_id: "thread-123",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      status: "running",
+      expected_outputs: ["/tmp/dispatch/final.txt", "/tmp/dispatch/audit.txt"],
+      hub_result: hubResult
+    });
     expect(result).toEqual({
       ok: true,
       data: {
@@ -373,4 +421,18 @@ function buildHubResult(content: string, status: HubResultStatus, runState?: Hub
 async function waitForImmediate(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
   await Promise.resolve();
+}
+
+function mockCommandAndPlanReads(commandPath: string, dispatchPlan: string): void {
+  readFileMock.mockImplementation(async (filePath) => {
+    if (filePath === commandPath) {
+      return "# command\n";
+    }
+
+    if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+      return dispatchPlan;
+    }
+
+    throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+  });
 }
