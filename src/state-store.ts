@@ -6,6 +6,13 @@ import { AppStateSchema, type AppState } from "./types";
 
 type FileSystem = Pick<typeof fs, "mkdir" | "writeFile" | "rename" | "unlink" | "readFile">;
 const WRITABLE_STATE_FILE_EXAMPLE = "/tmp/meridian-roles/state.json";
+export const ACTIVE_ROLE_STATUS = "active";
+export const PAUSED_ROLE_STATUS = "paused";
+export const NEEDS_REACTIVATION_ROLE_STATUS = "needs_reactivation";
+
+export function isStartupRehydratableRoleStatus(status: string): boolean {
+  return status === ACTIVE_ROLE_STATUS || status === NEEDS_REACTIVATION_ROLE_STATUS;
+}
 
 export class StateStore {
   constructor(
