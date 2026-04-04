@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "../../roles/definitions";
+import { PromptStore } from "../../roles/prompt-store";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
 import updateStatusTool from "../../tool-gateway/tools/update-status";
@@ -155,6 +156,112 @@ describe("role config handlers", () => {
       ok: true,
       dispatcher_id: expect.stringMatching(/^agent-dispatcher-/),
       dispatcher_thread_id: "dispatcher-thread-123"
+    });
+  });
+
+  it("returns a prompt preview for the agent-dispatcher start form", async () => {
+    const harness = createHarness();
+
+    await expect(invokeJson<{ system_prompt: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/prompt-preview",
+      {
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      }
+    )).resolves.toEqual({
+      system_prompt: expect.stringContaining("dispatch_plan_path: /tmp/dispatch_plan.md")
+    });
+  });
+
+  it("returns view-only agent-dispatcher launch config", async () => {
+    const harness = createHarness();
+
+    await createRole(harness.roleHandlers, {
+      thread_id: "agent-dispatcher-config",
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: [
+        {
+          channel: "telegram",
+          chat_id: "telegram:ops"
+        }
+      ],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always"
+    });
+
+    await expect(harness.roleHandlers.getConfig("agent-dispatcher-config")).resolves.toEqual({
+      thread_id: "agent-dispatcher-config",
+      status: "active",
+      can_edit: false,
+      blocked_reason: "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.",
+      config: {
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      }
+    });
+  });
+
+  it("uses the default agent-dispatcher prompt and restores it when the override is cleared", async () => {
+    const harness = createHarness();
+    const promptStore = new PromptStore({
+      stateStore: harness.stateStore,
+      resolveRole: harness.roleHandlers.resolveRole
+    });
+
+    await createRole(harness.roleHandlers, {
+      thread_id: "agent-dispatcher-prompt",
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: [
+        {
+          channel: "telegram",
+          chat_id: "telegram:ops"
+        }
+      ],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always"
+    });
+
+    await expect(promptStore.getPrompts("agent-dispatcher-prompt")).resolves.toEqual({
+      system_prompt: expect.stringContaining("dispatch_plan_path: /tmp/dispatch_plan.md"),
+      tasks: []
+    });
+
+    await promptStore.setSystemPrompt("agent-dispatcher-prompt", "custom dispatcher prompt");
+    await expect(promptStore.getPrompts("agent-dispatcher-prompt")).resolves.toEqual({
+      system_prompt: "custom dispatcher prompt",
+      tasks: []
+    });
+
+    await promptStore.setSystemPrompt("agent-dispatcher-prompt", "   ");
+    await expect(promptStore.getPrompts("agent-dispatcher-prompt")).resolves.toEqual({
+      system_prompt: expect.stringContaining("dispatch_plan_path: /tmp/dispatch_plan.md"),
+      tasks: []
     });
   });
 

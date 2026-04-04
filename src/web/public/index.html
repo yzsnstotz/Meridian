@@ -67,6 +67,7 @@
           <label class="field">
             <span>dispatch_plan_path</span>
             <input
+              id="agent-dispatcher-dispatch-plan-path"
               name="dispatch_plan_path"
               type="text"
               placeholder="/abs/path/to/dispatch_plan.md"
@@ -77,6 +78,7 @@
           <label class="field">
             <span>command_file_path</span>
             <input
+              id="agent-dispatcher-command-file-path"
               name="command_file_path"
               type="text"
               placeholder="/abs/path/to/agent_dispatch_command.md"
@@ -112,7 +114,7 @@
           <div class="summary-grid">
             <label class="field">
               <span>agent_type</span>
-              <select name="agent_type">
+              <select id="agent-dispatcher-agent-type" name="agent_type">
                 <option value="claude">claude</option>
                 <option value="codex">codex</option>
               </select>
@@ -120,7 +122,7 @@
 
             <label class="field">
               <span>mode</span>
-              <select name="mode">
+              <select id="agent-dispatcher-mode" name="mode">
                 <option value="bridge">bridge</option>
                 <option value="pane_bridge">pane_bridge</option>
               </select>
@@ -128,12 +130,28 @@
 
             <label class="field">
               <span>kill_policy</span>
-              <select name="kill_policy">
+              <select id="agent-dispatcher-kill-policy" name="kill_policy">
                 <option value="always">always</option>
                 <option value="on_success">on_success</option>
                 <option value="never">never</option>
               </select>
             </label>
+          </div>
+
+          <label class="field">
+            <span>system_prompt</span>
+            <textarea
+              id="agent-dispatcher-system-prompt"
+              class="editor-textarea"
+              name="system_prompt"
+              rows="16"
+              spellcheck="false"
+            ></textarea>
+          </label>
+
+          <div class="actions">
+            <button id="agent-dispatcher-prompt-reset" type="button" class="ghost-button">Reset Default Prompt</button>
+            <p class="muted">This starts from the current default prompt and stays editable before launch.</p>
           </div>
 
           <div class="actions">

@@ -35,6 +35,13 @@ async function setupDashboard() {
   const channelSelect = document.getElementById("agent-dispatcher-channel-select");
   const manualChannelSelect = document.getElementById("agent-dispatcher-manual-channel");
   const manualChatIdInput = document.getElementById("agent-dispatcher-manual-chat-id");
+  const dispatchPlanPathInput = document.getElementById("agent-dispatcher-dispatch-plan-path");
+  const commandFilePathInput = document.getElementById("agent-dispatcher-command-file-path");
+  const agentTypeSelect = document.getElementById("agent-dispatcher-agent-type");
+  const modeSelect = document.getElementById("agent-dispatcher-mode");
+  const killPolicySelect = document.getElementById("agent-dispatcher-kill-policy");
+  const agentDispatcherPromptInput = document.getElementById("agent-dispatcher-system-prompt");
+  const agentDispatcherPromptReset = document.getElementById("agent-dispatcher-prompt-reset");
   const refreshButton = document.querySelector('[data-action="refresh-roles"]');
 
   if (
@@ -49,9 +56,20 @@ async function setupDashboard() {
     || !channelSelect
     || !manualChannelSelect
     || !manualChatIdInput
+    || !dispatchPlanPathInput
+    || !commandFilePathInput
+    || !agentTypeSelect
+    || !modeSelect
+    || !killPolicySelect
+    || !agentDispatcherPromptInput
+    || !agentDispatcherPromptReset
   ) {
     return;
   }
+
+  const agentDispatcherDetailCache = new Map();
+  let lastAgentDispatcherPromptPreview = "";
+  let agentDispatcherPromptDirty = false;
 
   async function refreshRoles() {
     const roles = await fetchJson("/api/roles");
@@ -61,6 +79,7 @@ async function setupDashboard() {
       agentDispatcherList.replaceChildren();
       list.dataset.renderSignature = "";
       agentDispatcherList.dataset.renderSignature = "";
+      agentDispatcherDetailCache.clear();
       empty.hidden = false;
       agentDispatcherEmpty.hidden = false;
       return;
@@ -123,13 +142,25 @@ async function setupDashboard() {
       agentDispatcherEmpty.hidden = false;
       agentDispatcherList.replaceChildren();
       agentDispatcherList.dataset.renderSignature = "";
+      agentDispatcherDetailCache.clear();
       return;
     }
 
+    pruneAgentDispatcherDetailCache(agentDispatcherDetailCache, agentDispatcherRoles.map((role) => role.thread_id));
     const details = await Promise.all(agentDispatcherRoles.map(async (role) => {
       try {
-        return await fetchJson(`/api/role/${encodeURIComponent(role.thread_id)}`);
+        const detail = await fetchJson(`/api/role/${encodeURIComponent(role.thread_id)}`);
+        agentDispatcherDetailCache.set(role.thread_id, detail);
+        return detail;
       } catch {
+        const cachedDetail = agentDispatcherDetailCache.get(role.thread_id);
+        if (cachedDetail) {
+          return {
+            ...cachedDetail,
+            status: role.status
+          };
+        }
+
         return {
           ...role,
           dispatcher_thread_id: null,
@@ -231,6 +262,37 @@ async function setupDashboard() {
     });
   }
 
+  async function refreshAgentDispatcherPromptPreview(options = {}) {
+    const replyChannels = collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect, manualChatIdInput);
+    const payload = {
+      dispatch_plan_path: normalizeText(dispatchPlanPathInput.value) || undefined,
+      command_file_path: normalizeText(commandFilePathInput.value) || undefined,
+      agent_type: normalizeText(agentTypeSelect.value) || "claude",
+      mode: normalizeText(modeSelect.value) || "bridge",
+      kill_policy: normalizeText(killPolicySelect.value) || "always"
+    };
+
+    if (replyChannels.length > 0) {
+      payload.user_reply_channels = replyChannels;
+    }
+
+    const response = await fetchJson("/api/agent-dispatcher/prompt-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const nextPrompt = typeof response.system_prompt === "string" ? response.system_prompt : "";
+    const shouldReplacePrompt = options.force === true
+      || !agentDispatcherPromptDirty
+      || agentDispatcherPromptInput.value === lastAgentDispatcherPromptPreview;
+
+    lastAgentDispatcherPromptPreview = nextPrompt;
+    if (shouldReplacePrompt) {
+      agentDispatcherPromptInput.value = nextPrompt;
+      agentDispatcherPromptDirty = false;
+    }
+  }
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     feedback.textContent = "Activating role…";
@@ -278,25 +340,7 @@ async function setupDashboard() {
     event.preventDefault();
     agentDispatcherFeedback.textContent = "Starting agent dispatcher…";
 
-    const selectedChannels = Array.from(channelSelect.selectedOptions)
-      .map((option) => {
-        try {
-          return JSON.parse(option.value);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-
-    const manualChatId = normalizeText(manualChatIdInput.value);
-    const replyChannels = selectedChannels.length > 0
-      ? selectedChannels
-      : manualChatId
-        ? [{
-            channel: normalizeText(manualChannelSelect.value) || "web",
-            chat_id: manualChatId
-          }]
-        : [];
+    const replyChannels = collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect, manualChatIdInput);
     if (replyChannels.length === 0) {
       agentDispatcherFeedback.textContent = "Select a reply channel or provide a manual fallback chat_id.";
       return;
@@ -309,8 +353,15 @@ async function setupDashboard() {
       user_reply_channels: replyChannels,
       agent_type: normalizeText(formData.get("agent_type")) || "claude",
       mode: normalizeText(formData.get("mode")) || "bridge",
-      kill_policy: normalizeText(formData.get("kill_policy")) || "always"
+      kill_policy: normalizeText(formData.get("kill_policy")) || "always",
+      system_prompt: normalizeText(agentDispatcherPromptInput.value)
     };
+
+    Object.keys(payload).forEach((key) => {
+      if (payload[key] === "") {
+        delete payload[key];
+      }
+    });
 
     try {
       const created = await fetchJson("/api/agent-dispatcher/start", {
@@ -324,6 +375,8 @@ async function setupDashboard() {
       Array.from(channelSelect.options).forEach((option, index) => {
         option.selected = index === 0 && !option.disabled;
       });
+      agentDispatcherPromptDirty = false;
+      await refreshAgentDispatcherPromptPreview({ force: true });
       await refreshRoles();
       window.location.href = `/role/${encodeURIComponent(created.dispatcher_id)}`;
     } catch (error) {
@@ -332,15 +385,46 @@ async function setupDashboard() {
   });
 
   refreshButton?.addEventListener("click", () => {
-    void Promise.all([loadReplyChannels(), refreshRoles()]).catch((error) => {
+    void Promise.all([loadReplyChannels(), refreshAgentDispatcherPromptPreview({ force: true }), refreshRoles()]).catch((error) => {
       const message = getErrorMessage(error);
       feedback.textContent = message;
       agentDispatcherFeedback.textContent = message;
     });
   });
 
+  [dispatchPlanPathInput, commandFilePathInput, agentTypeSelect, modeSelect, killPolicySelect]
+    .forEach((element) => {
+      ["input", "change"].forEach((eventName) => {
+        element.addEventListener(eventName, () => {
+          void refreshAgentDispatcherPromptPreview().catch((error) => {
+            agentDispatcherFeedback.textContent = getErrorMessage(error);
+          });
+        });
+      });
+    });
+
+  [channelSelect, manualChannelSelect, manualChatIdInput].forEach((element) => {
+    ["input", "change"].forEach((eventName) => {
+      element.addEventListener(eventName, () => {
+        void refreshAgentDispatcherPromptPreview().catch((error) => {
+          agentDispatcherFeedback.textContent = getErrorMessage(error);
+        });
+      });
+    });
+  });
+
+  agentDispatcherPromptInput.addEventListener("input", () => {
+    agentDispatcherPromptDirty = agentDispatcherPromptInput.value !== lastAgentDispatcherPromptPreview;
+  });
+  agentDispatcherPromptReset.addEventListener("click", () => {
+    void refreshAgentDispatcherPromptPreview({ force: true }).catch((error) => {
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
+    });
+  });
+
   try {
     await loadReplyChannels();
+    await refreshAgentDispatcherPromptPreview({ force: true });
     await refreshRoles();
   } catch (error) {
     const message = getErrorMessage(error);
@@ -424,7 +508,7 @@ async function setupRoleDetail() {
       `;
 
     if (panelLinks) {
-      panelLinks.hidden = isAgentDispatcher;
+      panelLinks.hidden = false;
     }
     if (roleTasksPanel) {
       roleTasksPanel.hidden = isAgentDispatcher;
@@ -570,6 +654,9 @@ async function setupPromptEditor() {
 
   const title = document.getElementById("prompt-title");
   const detailLink = document.getElementById("detail-link");
+  const promptLede = document.getElementById("prompt-lede");
+  const systemPromptHelp = document.getElementById("system-prompt-help");
+  const taskCaption = document.getElementById("prompt-task-caption");
   const feedback = document.getElementById("prompt-feedback");
   const systemForm = document.getElementById("system-prompt-form");
   const systemInput = document.getElementById("system-prompt-input");
@@ -588,9 +675,29 @@ async function setupPromptEditor() {
       fetchJson(`/api/role/${encodeURIComponent(threadId)}/prompts`)
     ]);
 
+    const isAgentDispatcher = detail.role_type === "agent-dispatcher";
     title.textContent = detail.thread_id;
     systemInput.value = prompts.system_prompt || "";
     list.replaceChildren();
+    empty.textContent = isAgentDispatcher
+      ? "Agent dispatchers do not expose per-task templates."
+      : "This dispatcher has no tasks yet.";
+
+    if (promptLede) {
+      promptLede.textContent = isAgentDispatcher
+        ? "Edit the dispatcher control prompt. Saved changes apply the next time the dispatcher session starts."
+        : "Hot-reload prompt overrides for the next task dispatch.";
+    }
+    if (systemPromptHelp) {
+      systemPromptHelp.textContent = isAgentDispatcher
+        ? "Save an empty prompt to restore the system default before the next dispatcher start."
+        : "Saved changes apply to future task dispatches.";
+    }
+    if (taskCaption) {
+      taskCaption.textContent = isAgentDispatcher
+        ? "Agent dispatchers only expose the system prompt."
+        : "Delete a template to fall back to the base instruction.";
+    }
 
     if (!Array.isArray(prompts.tasks) || prompts.tasks.length === 0) {
       empty.hidden = false;
@@ -687,6 +794,8 @@ async function setupConfigEditor() {
 
   const title = document.getElementById("config-title");
   const detailLink = document.getElementById("config-detail-link");
+  const lede = document.getElementById("config-lede");
+  const sectionTitle = document.getElementById("config-section-title");
   const status = document.getElementById("config-status");
   const feedback = document.getElementById("config-feedback");
   const form = document.getElementById("config-form");
@@ -700,8 +809,17 @@ async function setupConfigEditor() {
   detailLink.href = `/role/${encodeURIComponent(threadId)}`;
 
   const applyEditState = (response) => {
+    const isAgentDispatcherConfig = isAgentDispatcherLaunchConfig(response.config);
     input.readOnly = response.can_edit !== true;
     saveButton.disabled = response.can_edit !== true;
+    if (sectionTitle) {
+      sectionTitle.textContent = isAgentDispatcherConfig ? "Launch Config JSON" : "Dispatch Plan JSON";
+    }
+    if (lede) {
+      lede.textContent = isAgentDispatcherConfig
+        ? "Review the saved launch JSON for this agent dispatcher. Prompt content stays on the prompt editor."
+        : "Edit dispatcher JSON for `tasks` and `taskspec`. Prompt content stays on the prompt editor.";
+    }
     status.textContent = response.can_edit
       ? "Only tasks and taskspec are editable here. Runtime task fields are reset on save."
       : response.blocked_reason || "Editing is temporarily unavailable.";
@@ -879,6 +997,50 @@ function formatTimestamp(value) {
     dateStyle: "medium",
     timeStyle: "medium"
   }).format(parsed);
+}
+
+function collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect, manualChatIdInput) {
+  const selectedChannels = Array.from(channelSelect.selectedOptions)
+    .map((option) => {
+      try {
+        return JSON.parse(option.value);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  if (selectedChannels.length > 0) {
+    return selectedChannels;
+  }
+
+  const manualChatId = normalizeText(manualChatIdInput.value);
+  if (!manualChatId) {
+    return [];
+  }
+
+  return [{
+    channel: normalizeText(manualChannelSelect.value) || "web",
+    chat_id: manualChatId
+  }];
+}
+
+function pruneAgentDispatcherDetailCache(cache, threadIds) {
+  const activeThreadIds = new Set(threadIds);
+  Array.from(cache.keys()).forEach((threadId) => {
+    if (!activeThreadIds.has(threadId)) {
+      cache.delete(threadId);
+    }
+  });
+}
+
+function isAgentDispatcherLaunchConfig(config) {
+  return Boolean(
+    config
+    && typeof config === "object"
+    && Object.prototype.hasOwnProperty.call(config, "dispatch_plan_path")
+    && Object.prototype.hasOwnProperty.call(config, "command_file_path")
+  );
 }
 
 function formatReplyChannelLabel(replyChannel) {

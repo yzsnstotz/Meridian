@@ -9,13 +9,16 @@ import { z } from "zod";
 import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
+import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import {
   applyEditableDispatcherConfig,
   cloneDispatcherConfig,
   hasRunningDispatcherTask,
   mergeEditableDispatcherConfig,
+  parseMutableAgentDispatcherConfig,
   parseMutableDispatcherConfig,
+  toEditableAgentDispatcherConfig,
   toEditableDispatcherConfig
 } from "../roles/dispatcher-config-editor";
 import type { PromptStoreRoleBinding } from "../roles/prompt-store";
@@ -29,16 +32,20 @@ import {
 } from "../state-store";
 import {
   AgentDispatcherConfigSchema,
+  AgentTypeSchema,
   AppStateSchema,
+  BridgeModeSchema,
   type DispatchThreadStateV2,
   type DispatchWorkerState,
   DispatchTaskSchema,
   DispatcherConfigSchema,
   DispatcherEditorConfigPatchSchema,
   HubResultSchema,
+  KillPolicySchema,
   ReplyChannelSchema,
   RoleTypeSchema,
   shouldUseAgentDispatcherConfig,
+  type AgentDispatcherEditorConfig,
   type AppState,
   type AgentDispatcherConfig,
   type DispatcherConfig,
@@ -76,9 +83,20 @@ const CreateRoleBodySchema = z.object({
   config: z.unknown().optional()
 });
 
+const AgentDispatcherPromptPreviewBodySchema = z.object({
+  dispatch_plan_path: z.string().min(1).optional(),
+  command_file_path: z.string().min(1).optional(),
+  user_reply_channel: ReplyChannelSchema.optional(),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
+  agent_type: AgentTypeSchema.optional(),
+  mode: BridgeModeSchema.optional(),
+  kill_policy: KillPolicySchema.optional()
+});
+
 type RoleRouteMatch =
   | { kind: "list-channels" }
   | { kind: "list-roles" }
+  | { kind: "preview-agent-dispatcher-prompt" }
   | { kind: "get-role"; threadId: string }
   | { kind: "get-config"; threadId: string }
   | { kind: "create-role" }
@@ -112,7 +130,7 @@ export interface RoleConfigResponse {
   status: string;
   can_edit: boolean;
   blocked_reason?: string;
-  config: DispatcherEditorConfig;
+  config: DispatcherEditorConfig | AgentDispatcherEditorConfig;
 }
 
 export interface DispatchPlanRow {
@@ -188,25 +206,39 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const handlers: RoleHandlers = {
     async getConfig(threadId: string): Promise<RoleConfigResponse> {
       const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
+      if (context.roleType === "agent-dispatcher") {
+        return {
+          thread_id: threadId,
+          status: context.status,
+          can_edit: false,
+          blocked_reason: getAgentDispatcherConfigEditBlockedReason(),
+          config: toEditableAgentDispatcherConfig(context.effectiveConfig)
+        };
+      }
+
       const canEdit = !hasRunningDispatcherTask(context.effectiveConfig);
 
       return {
         thread_id: threadId,
         status: context.status,
         can_edit: canEdit,
-        blocked_reason: canEdit ? undefined : getConfigEditBlockedReason(),
+        blocked_reason: canEdit ? undefined : getDispatcherConfigEditBlockedReason(),
         config: toEditableDispatcherConfig(context.effectiveConfig)
       };
     },
     async patchConfig(threadId: string, body: unknown): Promise<RoleConfigResponse> {
+      const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
+      if (context.roleType === "agent-dispatcher") {
+        throw createHttpError(409, getAgentDispatcherConfigEditBlockedReason());
+      }
+
       const parsed = DispatcherEditorConfigPatchSchema.safeParse(body);
       if (!parsed.success) {
         throw createHttpError(400, "Invalid dispatcher config edit payload");
       }
 
-      const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
       if (hasRunningDispatcherTask(context.effectiveConfig)) {
-        throw createHttpError(409, getConfigEditBlockedReason());
+        throw createHttpError(409, getDispatcherConfigEditBlockedReason());
       }
 
       const nextEditableConfig = mergeEditableDispatcherConfig(context.effectiveConfig, parsed.data);
@@ -241,6 +273,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "list-roles":
             writeJson(response, 200, await listRoles(stateStore));
+            return true;
+          case "preview-agent-dispatcher-prompt":
+            writeJson(response, 200, buildAgentDispatcherPromptPreview(await readJsonBody(request)));
             return true;
           case "get-role":
             writeJson(response, 200, await getRole(stateStore, route.threadId, {
@@ -668,7 +703,8 @@ function extractDispatcherThreadId(role: ReturnType<RoleRegistry["create"]>): st
     : null;
 }
 
-interface RoleConfigContext {
+interface DispatcherRoleConfigContext {
+  roleType: "dispatcher";
   state: AppState;
   roleState: RoleState | null;
   activeConfig: DispatcherConfig | null;
@@ -677,26 +713,66 @@ interface RoleConfigContext {
   status: string;
 }
 
+interface AgentDispatcherRoleConfigContext {
+  roleType: "agent-dispatcher";
+  state: AppState;
+  roleState: RoleState | null;
+  activeConfig: AgentDispatcherConfig | null;
+  persistedConfig: AgentDispatcherConfig | null;
+  effectiveConfig: AgentDispatcherConfig;
+  status: string;
+}
+
+type RoleConfigContext = DispatcherRoleConfigContext | AgentDispatcherRoleConfigContext;
+
 async function loadRoleConfigContext(
   threadId: string,
   stateStore: PersistableStateStore,
   activeRoles: ReadonlyMap<string, PromptStoreRoleBinding>
 ): Promise<RoleConfigContext> {
   const state = await loadState(stateStore);
-  const roleState = state.roles.find((role) => role.threadId === threadId && role.roleType === "dispatcher") ?? null;
-  const activeConfig = parseMutableDispatcherConfig(activeRoles.get(threadId)?.config);
+  const roleState = state.roles.find((role) => role.threadId === threadId) ?? null;
+  const activeRole = activeRoles.get(threadId) ?? null;
+  const resolvedRoleType = activeRole?.roleType === "agent-dispatcher" || roleState?.roleType === "agent-dispatcher"
+    ? "agent-dispatcher"
+    : activeRole?.roleType === "dispatcher" || roleState?.roleType === "dispatcher"
+      ? "dispatcher"
+      : null;
+
+  if (!resolvedRoleType) {
+    throw createHttpError(404, `Role not found for thread_id=${threadId}`);
+  }
+
+  if (resolvedRoleType === "agent-dispatcher") {
+    const activeConfig = parseMutableAgentDispatcherConfig(activeRole?.config);
+    const persistedConfig = roleState ? parseMutableAgentDispatcherConfig(roleState.config) : null;
+    const effectiveConfig = activeConfig ?? persistedConfig;
+
+    if (!effectiveConfig) {
+      throw createHttpError(500, `Invalid agent dispatcher config for thread_id=${threadId}`);
+    }
+
+    return {
+      roleType: resolvedRoleType,
+      state,
+      roleState,
+      activeConfig,
+      persistedConfig,
+      effectiveConfig,
+      status: roleState?.status ?? "active"
+    };
+  }
+
+  const activeConfig = parseMutableDispatcherConfig(activeRole?.config);
   const persistedConfig = roleState ? parseMutableDispatcherConfig(roleState.config) : null;
   const effectiveConfig = activeConfig ?? persistedConfig;
 
   if (!effectiveConfig) {
-    if (roleState || activeRoles.has(threadId)) {
-      throw createHttpError(500, `Invalid dispatcher config for thread_id=${threadId}`);
-    }
-
-    throw createHttpError(404, `Role not found for thread_id=${threadId}`);
+    throw createHttpError(500, `Invalid dispatcher config for thread_id=${threadId}`);
   }
 
   return {
+    roleType: resolvedRoleType,
     state,
     roleState,
     activeConfig,
@@ -766,6 +842,16 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     return { kind: "list-channels" };
   }
 
+  if (
+    method === "POST"
+    && parts.length === 3
+    && parts[0] === "api"
+    && parts[1] === "agent-dispatcher"
+    && parts[2] === "prompt-preview"
+  ) {
+    return { kind: "preview-agent-dispatcher-prompt" };
+  }
+
   if (method === "GET" && parts.length === 3 && parts[0] === "api" && parts[1] === "role") {
     return { kind: "get-role", threadId: parts[2] };
   }
@@ -832,8 +918,36 @@ function createHttpError(statusCode: number, message: string): Error & { statusC
   return error;
 }
 
-function getConfigEditBlockedReason(): string {
+function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: string } {
+  const parsed = AgentDispatcherPromptPreviewBodySchema.safeParse(body);
+  if (!parsed.success) {
+    throw createHttpError(400, "Invalid agent dispatcher prompt preview payload");
+  }
+
+  const userReplyChannels = parsed.data.user_reply_channels
+    ?? (parsed.data.user_reply_channel ? [parsed.data.user_reply_channel] : [{
+      channel: "web" as const,
+      chat_id: "web:ops"
+    }]);
+
+  return {
+    system_prompt: buildSystemPrompt({
+      dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
+      command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
+      user_reply_channels: JSON.stringify(userReplyChannels),
+      default_agent_type: parsed.data.agent_type ?? "claude",
+      default_mode: parsed.data.mode ?? "bridge",
+      kill_policy: parsed.data.kill_policy ?? "always"
+    })
+  };
+}
+
+function getDispatcherConfigEditBlockedReason(): string {
   return "Cannot edit dispatcher config while tasks are running";
+}
+
+function getAgentDispatcherConfigEditBlockedReason(): string {
+  return "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.";
 }
 
 function getStatusCode(error: unknown): number {

@@ -1,3 +1,5 @@
+import type { AgentDispatcherConfig } from "../../types";
+
 export interface PromptVars {
   dispatch_plan_path: string;
   command_file_path: string;
@@ -8,6 +10,22 @@ export interface PromptVars {
 }
 
 const TOOL_ENTRYPOINT = "npx tsx src/bin/meridian-tool.ts";
+
+export function buildSystemPromptFromConfig(
+  config: Pick<
+    AgentDispatcherConfig,
+    "dispatch_plan_path" | "command_file_path" | "user_reply_channels" | "agent_type" | "mode" | "kill_policy"
+  >
+): string {
+  return buildSystemPrompt({
+    dispatch_plan_path: config.dispatch_plan_path,
+    command_file_path: config.command_file_path,
+    user_reply_channels: JSON.stringify(config.user_reply_channels),
+    default_agent_type: config.agent_type,
+    default_mode: config.mode,
+    kill_policy: config.kill_policy
+  });
+}
 
 export function buildSystemPrompt(vars: PromptVars): string {
   const dispatchPlanPath = requireNonEmpty(vars.dispatch_plan_path, "dispatch_plan_path");

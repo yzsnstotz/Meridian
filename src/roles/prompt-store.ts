@@ -1,7 +1,10 @@
 import { StateStore } from "../state-store";
+import { buildSystemPromptFromConfig } from "./agent-dispatcher/prompt-builder";
 import {
+  AgentDispatcherConfigSchema,
   AppStateSchema,
   DispatcherConfigSchema,
+  type AgentDispatcherConfig,
   type AppState,
   type DispatchTask,
   type DispatcherConfig,
@@ -57,9 +60,11 @@ export class PromptStore {
   async getPrompts(threadId: string): Promise<PromptSnapshot> {
     const context = await this.loadThreadContext(threadId);
     const promptEntry = context.state.promptStore[threadId];
+    const promptOverride = normalizeSystemPrompt(promptEntry?.system_prompt, context.roleType);
+    const persistedPrompt = normalizeSystemPrompt(context.config.system_prompt, context.roleType);
 
     return {
-      system_prompt: promptEntry?.system_prompt ?? context.config.system_prompt,
+      system_prompt: promptOverride ?? persistedPrompt ?? context.defaultSystemPrompt,
       tasks: context.config.tasks.map((task) => ({
         task_id: task.task_id,
         instruction: task.instruction,
@@ -71,10 +76,15 @@ export class PromptStore {
   async setSystemPrompt(threadId: string, systemPrompt: string): Promise<void> {
     const context = await this.loadThreadContext(threadId);
     const promptEntry = ensurePromptEntry(context.state.promptStore, threadId);
+    const nextSystemPrompt = normalizeSystemPrompt(systemPrompt, context.roleType);
 
-    promptEntry.system_prompt = systemPrompt;
+    if (nextSystemPrompt === undefined) {
+      delete promptEntry.system_prompt;
+    } else {
+      promptEntry.system_prompt = nextSystemPrompt;
+    }
     applyToKnownConfigs(context, (config) => {
-      config.system_prompt = systemPrompt;
+      config.system_prompt = nextSystemPrompt;
     });
 
     await this.persistContext(context);
@@ -114,28 +124,34 @@ export class PromptStore {
     const state = AppStateSchema.parse((await this.stateStore.load()) ?? { roles: [], promptStore: {} });
     const liveConfig = this.resolveLiveConfig(threadId);
     const persistedRole = findPersistedRole(state, threadId);
-    const persistedConfig = persistedRole ? parseMutableDispatcherConfig(persistedRole.config) : null;
-    const config = liveConfig ?? persistedConfig;
+    const persistedConfig = persistedRole ? parseMutableRoleConfig(persistedRole.config, persistedRole.roleType) : null;
+    const resolvedConfig = liveConfig ?? persistedConfig;
+    const roleType = liveConfig?.roleType ?? persistedConfig?.roleType ?? "dispatcher";
 
-    if (!config) {
+    if (!resolvedConfig) {
       throw new PromptStoreNotFoundError(`Role not found for thread_id=${threadId}`);
     }
 
     return {
       state,
-      config,
+      config: resolvedConfig.config,
       liveConfig,
-      persistedConfig
+      persistedConfig,
+      roleType,
+      defaultSystemPrompt: roleType === "agent-dispatcher" && isAgentDispatcherConfig(resolvedConfig.config)
+        ? buildSystemPromptFromConfig(resolvedConfig.config)
+        : undefined
     };
   }
 
-  private resolveLiveConfig(threadId: string): DispatcherConfig | null {
+  private resolveLiveConfig(threadId: string): PromptRoleConfig | null {
     const binding = this.resolveRole?.(threadId);
-    if (!binding || (binding.roleType && binding.roleType !== "dispatcher")) {
+    if (!binding) {
       return null;
     }
 
-    return parseMutableDispatcherConfig(binding.config);
+    const roleType = binding.roleType === "agent-dispatcher" ? "agent-dispatcher" : "dispatcher";
+    return parseMutableRoleConfig(binding.config, roleType);
   }
 
   private async persistContext(context: PromptThreadContext): Promise<void> {
@@ -150,9 +166,11 @@ export class PromptStore {
 
 interface PromptThreadContext {
   state: AppState;
-  config: DispatcherConfig;
-  liveConfig: DispatcherConfig | null;
-  persistedConfig: DispatcherConfig | null;
+  config: PromptMutableConfig;
+  liveConfig: PromptRoleConfig | null;
+  persistedConfig: PromptRoleConfig | null;
+  roleType: "dispatcher" | "agent-dispatcher";
+  defaultSystemPrompt?: string;
 }
 
 function ensurePromptEntry(promptStore: PromptStoreState, threadId: string) {
@@ -168,30 +186,80 @@ function ensurePromptEntry(promptStore: PromptStoreState, threadId: string) {
 
 function applyToKnownConfigs(
   context: PromptThreadContext,
-  apply: (config: DispatcherConfig) => void
+  apply: (config: PromptMutableConfig) => void
 ): void {
-  const visited = new Set<DispatcherConfig>();
+  const visited = new Set<PromptMutableConfig>();
 
-  for (const config of [context.config, context.liveConfig, context.persistedConfig]) {
-    if (!config || visited.has(config)) {
+  for (const entry of [context.config, context.liveConfig?.config ?? null, context.persistedConfig?.config ?? null]) {
+    if (!entry || visited.has(entry)) {
       continue;
     }
 
-    visited.add(config);
-    apply(config);
+    visited.add(entry);
+    apply(entry);
   }
 }
 
 function findPersistedRole(state: AppState, threadId: string): RoleState | null {
-  return state.roles.find((role) => role.threadId === threadId && role.roleType === "dispatcher") ?? null;
+  return state.roles.find((role) => {
+    return role.threadId === threadId && (role.roleType === "dispatcher" || role.roleType === "agent-dispatcher");
+  }) ?? null;
 }
 
-function parseMutableDispatcherConfig(config: unknown): DispatcherConfig | null {
-  const parsed = DispatcherConfigSchema.safeParse(config);
-  return parsed.success ? (config as DispatcherConfig) : null;
+type PromptMutableConfig = DispatcherConfig | AgentDispatcherConfig;
+
+interface PromptRoleConfig {
+  roleType: "dispatcher" | "agent-dispatcher";
+  config: PromptMutableConfig;
 }
 
-function requireTask(config: DispatcherConfig, taskId: string, threadId: string): DispatchTask {
+function parseMutableRoleConfig(
+  config: unknown,
+  roleType: "dispatcher" | "agent-dispatcher"
+): PromptRoleConfig | null {
+  if (roleType === "agent-dispatcher") {
+    const parsedAgentDispatcher = AgentDispatcherConfigSchema.safeParse(config);
+    if (parsedAgentDispatcher.success) {
+      return {
+        roleType,
+        config: config as AgentDispatcherConfig
+      };
+    }
+
+    return null;
+  }
+
+  const parsedDispatcher = DispatcherConfigSchema.safeParse(config);
+  if (parsedDispatcher.success) {
+    return {
+      roleType: "dispatcher",
+      config: config as DispatcherConfig
+    };
+  }
+
+  return null;
+}
+
+function isAgentDispatcherConfig(config: PromptMutableConfig): config is AgentDispatcherConfig {
+  return AgentDispatcherConfigSchema.safeParse(config).success;
+}
+
+function normalizeSystemPrompt(
+  systemPrompt: string | undefined,
+  roleType: "dispatcher" | "agent-dispatcher"
+): string | undefined {
+  if (roleType !== "agent-dispatcher") {
+    return systemPrompt;
+  }
+
+  if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
+    return undefined;
+  }
+
+  return systemPrompt;
+}
+
+function requireTask(config: PromptMutableConfig, taskId: string, threadId: string): DispatchTask {
   const task = config.tasks.find((candidate) => candidate.task_id === taskId);
   if (!task) {
     throw new PromptStoreNotFoundError(`Task ${taskId} not found for thread_id=${threadId}`);

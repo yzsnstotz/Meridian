@@ -252,8 +252,18 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
       user_reply_channels: userReplyChannels,
       use_agent_dispatcher: value.use_agent_dispatcher ?? true
     };
-  });
+});
 export type AgentDispatcherConfig = z.infer<typeof AgentDispatcherConfigSchema>;
+
+export const AgentDispatcherEditorConfigSchema = z.object({
+  dispatch_plan_path: z.string().min(1),
+  command_file_path: z.string().min(1),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1),
+  agent_type: AgentTypeSchema,
+  mode: BridgeModeSchema,
+  kill_policy: KillPolicySchema
+}).strict();
+export type AgentDispatcherEditorConfig = z.infer<typeof AgentDispatcherEditorConfigSchema>;
 
 export function shouldUseAgentDispatcherConfig(config: unknown): boolean {
   return typeof config === "object"

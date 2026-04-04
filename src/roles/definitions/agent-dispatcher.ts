@@ -14,7 +14,10 @@ import {
   type HubResult
 } from "../../types";
 import { launchDispatcher, type LaunchConfig, type LaunchResult } from "../agent-dispatcher/launcher";
-import { buildSystemPrompt, type PromptVars } from "../agent-dispatcher/prompt-builder";
+import {
+  buildSystemPrompt,
+  type PromptVars
+} from "../agent-dispatcher/prompt-builder";
 import {
   readWorkersByStatus,
   SessionManager,
@@ -96,7 +99,8 @@ export class AgentDispatcherRole implements BaseRole {
     let dispatcherThreadId: string | null = null;
 
     try {
-      const systemPrompt = this.buildPrompt({
+      const configuredSystemPrompt = this.config.system_prompt?.trim();
+      const defaultSystemPrompt = this.buildPrompt({
         dispatch_plan_path: this.config.dispatch_plan_path,
         command_file_path: this.config.command_file_path,
         user_reply_channels: JSON.stringify(this.config.user_reply_channels),
@@ -104,6 +108,9 @@ export class AgentDispatcherRole implements BaseRole {
         default_mode: this.config.mode,
         kill_policy: this.config.kill_policy
       });
+      const systemPrompt = configuredSystemPrompt && configuredSystemPrompt.length > 0
+        ? configuredSystemPrompt
+        : defaultSystemPrompt;
 
       const inProgressWorkers = await this.readPlanWorkersByStatus(this.config.dispatch_plan_path, "🔄");
       if (inProgressWorkers.length > 0) {

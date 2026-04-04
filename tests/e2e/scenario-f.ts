@@ -147,7 +147,7 @@ describe("Scenario F: Config editor and role error states", () => {
 
     expect(page.elements["role-title"].textContent).toBe("agent-dispatcher-f");
     expect(page.elements["role-subtitle"].textContent).toBe("Dispatcher control session.");
-    expect(page.elements["role-panel-links"].hidden).toBe(true);
+    expect(page.elements["role-panel-links"].hidden).toBe(false);
     expect(page.elements["role-tasks-panel"].hidden).toBe(true);
     expect(page.elements["dispatcher-session-panel"].hidden).toBe(false);
     expect(page.elements["dispatch-plan-panel"].hidden).toBe(false);
@@ -156,6 +156,8 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["dispatch-plan-table-shell"].hidden).toBe(false);
     expect(page.elements["dispatch-plan-body"].innerHTML).toContain("N-11");
     expect(page.elements["role-summary"].innerHTML).toContain("dispatcher-thread-123");
+    expect(page.elements["prompts-link"].href).toBe("/role/agent-dispatcher-f/prompts");
+    expect(page.elements["config-link"].href).toBe("/role/agent-dispatcher-f/config");
   });
 
   it("loads and saves dispatcher config JSON in the browser client", async () => {
@@ -279,6 +281,53 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["config-save-button"].disabled).toBe(true);
     expect(page.elements["config-status"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
     expect(page.elements["config-feedback"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
+  });
+
+  it("shows agent-dispatcher launch config as read-only JSON in the browser client", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/role/agent-dispatcher-f/config",
+      elements: {
+        "config-title": createElement("Loading config…"),
+        "config-detail-link": createElement(),
+        "config-lede": createElement(),
+        "config-section-title": createElement(),
+        "config-status": createElement(),
+        "config-feedback": createElement(),
+        "config-form": createFormElement(),
+        "config-input": createInputElement(),
+        "config-save-button": createButtonElement()
+      },
+      fetchImpl: async () => createJsonResponse(200, {
+        thread_id: "agent-dispatcher-f",
+        status: "active",
+        can_edit: false,
+        blocked_reason: "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.",
+        config: {
+          dispatch_plan_path: "/tmp/dispatch_plan.md",
+          command_file_path: "/tmp/agent_dispatch_command.md",
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:ops"
+            }
+          ],
+          agent_type: "codex",
+          mode: "bridge",
+          kill_policy: "always"
+        }
+      })
+    });
+
+    await page.hooks.setupConfigEditor();
+
+    expect(page.elements["config-title"].textContent).toBe("agent-dispatcher-f");
+    expect(page.elements["config-detail-link"].href).toBe("/role/agent-dispatcher-f");
+    expect(page.elements["config-section-title"].textContent).toBe("Launch Config JSON");
+    expect(page.elements["config-input"].readOnly).toBe(true);
+    expect(page.elements["config-save-button"].disabled).toBe(true);
+    expect(page.elements["config-feedback"].textContent)
+      .toBe("Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.");
+    expect(page.elements["config-input"].value).toContain('"dispatch_plan_path": "/tmp/dispatch_plan.md"');
   });
 });
 
