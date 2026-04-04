@@ -30,7 +30,7 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|-------|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Environment Health Check | OPUS | — | — | Build baseline for both repos; gates all workers |
-| ⬜ | 1 | N-01 | Meridian CLI Entry Point & Scaffold | OPUS | — | CLI Integration PRD | Architect CLI structure + command routing |
+| ✅ | 1 | N-01 | Meridian CLI Entry Point & Scaffold | OPUS | — | CLI Integration PRD | Architect CLI structure + command routing |
 | ⬜ | 1 | R-01 | Meridian Auto-Approve Default Change | CODEX | — | CLI Integration PRD | 3 files, straightforward default swap |
 | ⬜ | 1 | R-03 | Meridian-roles Bin Registration | CODEX | — | CLI Integration PRD | package.json + shebang only |
 | ⬜ | 2 | N-02 | Meridian CLI Commands Implementation | OPUS | N-01 | CLI Integration PRD | All 7 commands; largest single worker |

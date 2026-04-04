@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "Meridian Phase 0 calling hub",
+  "bin": {
+    "meridian": "./dist/bin/meridian-cli.js"
+  },
   "engines": {
     "node": "^22.0.0"
   },
