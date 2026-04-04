@@ -667,6 +667,75 @@ describe("role config handlers", () => {
     }
   });
 
+  it("replaces the raw empty detail-cache message with structured dispatcher context", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-empty-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | running |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      dispatcher_thread_id: "dispatcher-thread-123",
+      workers: {
+        "N-11": {
+          thread_id: "worker-thread-456",
+          started_at: "2026-03-28T00:00:00.000Z"
+        }
+      }
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        "No cached detail found. Send a new request first, then run /detail again.",
+        attachToThread
+      );
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-detail",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-detail")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-detail",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        current_worker: "N-11",
+        last_log_line: "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page.",
+        session_log: [
+          "Role status: active",
+          `Dispatch plan: ${dispatchPlanPath}`,
+          "Dispatcher thread: dispatcher-thread-123",
+          "Current worker: N-11",
+          "Worker thread: worker-thread-456",
+          "Worker started: 2026-03-28T00:00:00.000Z",
+          "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
+        ]
+      });
+      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects runtime-only and non-editor fields in config patches", async () => {
     const harness = createHarness(createPersistedState({
       tasks: [],

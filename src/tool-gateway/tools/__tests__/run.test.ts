@@ -212,7 +212,7 @@ describe("run tool", () => {
     });
   });
 
-  it("schedules reconciliation after recording the Hub result without blocking the response", async () => {
+  it("awaits reconciliation before returning terminal results", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     sendAndWaitMock.mockResolvedValue(hubResult);
     readFileMock.mockResolvedValue("# command\n");
@@ -235,10 +235,6 @@ describe("run tool", () => {
         summary: "Worker completed"
       }
     });
-    expect(reconcileMock).not.toHaveBeenCalled();
-
-    await waitForImmediate();
-
     expect(reconcileMock).toHaveBeenCalledWith(
       lifecycleStore,
       expect.objectContaining({
@@ -273,7 +269,7 @@ describe("run tool", () => {
     });
   });
 
-  it("swallows reconciliation failures after the run result is returned", async () => {
+  it("swallows reconciliation failures while still returning the run result", async () => {
     const consoleWarnMock = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     reconcileMock.mockRejectedValueOnce(new Error("Hub unavailable"));
     sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
@@ -295,8 +291,6 @@ describe("run tool", () => {
         summary: "Worker completed"
       }
     });
-
-    await waitForImmediate();
 
     expect(consoleWarnMock).toHaveBeenCalledWith("run tool reconciliation failed", {
       filePath: "/tmp/dispatch/dispatch_threads.json",
@@ -416,11 +410,6 @@ function buildHubResult(content: string, status: HubResultStatus, runState?: Hub
     attachments: [],
     timestamp: "2026-03-28T00:00:00.000Z"
   };
-}
-
-async function waitForImmediate(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await Promise.resolve();
 }
 
 function mockCommandAndPlanReads(commandPath: string, dispatchPlan: string): void {

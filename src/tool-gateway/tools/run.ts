@@ -69,7 +69,7 @@ const runTool: ToolDefinition = {
 
       const result = await sendAndWait(buildRunMessage(threadId, commandText, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
-      scheduleReconciliation(lifecycleStore);
+      await reconcileAfterTerminalResult(lifecycleStore, result);
       return mapRunResult(result, worker, threadId);
     } catch (error) {
       const resolvedError = asError(error);
@@ -112,25 +112,22 @@ function createLifecycleStore(commandPath: string): LifecycleStore {
   return new LifecycleStore(path.join(path.dirname(commandPath), DISPATCH_THREADS_FILENAME));
 }
 
-function scheduleReconciliation(lifecycleStore: LifecycleStore): void {
-  setImmediate(() => {
-    try {
-      void reconcile(lifecycleStore, {
-        serviceId: ROLES_SERVICE_ID,
-        sendRequest: (message: HubMessage) => sendAndWait(message, 0)
-      } as unknown as A2AClient).catch((error) => {
-        console.warn("run tool reconciliation failed", {
-          filePath: lifecycleStore.filePath,
-          error: asError(error).message
-        });
-      });
-    } catch (error) {
-      console.warn("run tool reconciliation failed", {
-        filePath: lifecycleStore.filePath,
-        error: asError(error).message
-      });
-    }
-  });
+async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, result: HubResult): Promise<void> {
+  if (inferRunState(result) !== "completed") {
+    return;
+  }
+
+  try {
+    await reconcile(lifecycleStore, {
+      serviceId: ROLES_SERVICE_ID,
+      sendRequest: (message: HubMessage) => sendAndWait(message, 0)
+    } as unknown as A2AClient);
+  } catch (error) {
+    console.warn("run tool reconciliation failed", {
+      filePath: lifecycleStore.filePath,
+      error: asError(error).message
+    });
+  }
 }
 
 async function deriveExpectedOutputs(commandPath: string, workerId: string): Promise<string[]> {

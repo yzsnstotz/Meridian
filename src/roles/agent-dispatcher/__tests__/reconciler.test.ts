@@ -67,6 +67,40 @@ describe("reconcile", () => {
     expect(statSpy).toHaveBeenCalledWith(outputPath);
   });
 
+  it("marks a running worker completed from a stored successful HubResult when outputs exist", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("test/gui-demo/step1.txt");
+    harness.store.save(buildState({
+      workers: {
+        "A-01": {
+          ...buildRunningWorker("worker-thread-111", outputPath),
+          hub_result: buildTerminalSuccessResult("worker-thread-111")
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["A-01"]?.status).toBe("completed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report).toEqual({
+      changed: [
+        {
+          workerId: "A-01",
+          from: "running",
+          to: "completed",
+          trigger: "hub_result:outputs_present"
+        }
+      ],
+      unchanged: [DISPATCHER_ENTRY_ID]
+    });
+  });
+
   it("marks a running worker failed when Hub reports an error state", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -422,6 +456,19 @@ function buildStatusResult(threadId: string, status: string): HubResult {
         status
       }
     }),
+    attachments: [],
+    timestamp: FIXED_NOW
+  };
+}
+
+function buildTerminalSuccessResult(threadId: string): HubResult {
+  return {
+    trace_id: "11111111-1111-4111-8111-111111111111",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content: "worker finished",
     attachments: [],
     timestamp: FIXED_NOW
   };

@@ -73,8 +73,25 @@ export async function reconcile(
       continue;
     }
 
-    const observation = await queryHubThreadObservation(hubClient, worker.thread_id);
     const outputsPresent = outputsExist(worker.expected_outputs);
+    const recordedResultTransition = determineRecordedResultTransition(worker.hub_result, outputsPresent);
+    if (recordedResultTransition) {
+      state.workers[workerId] = {
+        ...worker,
+        status: recordedResultTransition.to,
+        last_seen_at: nowIso
+      };
+      lifecycleStore.logTransition(workerId, worker.status, recordedResultTransition.to, recordedResultTransition.trigger);
+      report.changed.push({
+        workerId,
+        from: worker.status,
+        to: recordedResultTransition.to,
+        trigger: recordedResultTransition.trigger
+      });
+      continue;
+    }
+
+    const observation = await queryHubThreadObservation(hubClient, worker.thread_id);
     const transition = determineWorkerTransition(observation, outputsPresent, worker.started_at, nowMs, staleTimeoutMs);
 
     if (!transition) {
@@ -186,6 +203,24 @@ function determineWorkerTransition(
         trigger: "thread_missing:stale_timeout"
       };
     }
+  }
+
+  return null;
+}
+
+function determineRecordedResultTransition(
+  hubResult: HubResult | null,
+  outputsPresent: boolean
+): Pick<ReconciliationChange, "to" | "trigger"> | null {
+  if (!hubResult || !outputsPresent) {
+    return null;
+  }
+
+  if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
+    return {
+      to: "completed",
+      trigger: "hub_result:outputs_present"
+    };
   }
 
   return null;

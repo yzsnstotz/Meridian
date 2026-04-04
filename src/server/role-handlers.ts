@@ -906,6 +906,9 @@ async function loadDispatcherSessionLog(
   try {
     const detail = await getThreadDetail(dispatcherThreadId);
     const lines = splitLogLines(detail);
+    if (isEmptyCachedDetailResponse(lines)) {
+      return buildEmptyCachedDetailLog(fallbackContext, dispatcherThreadId);
+    }
     return lines.length > 0 ? lines : fallbackLog;
   } catch (error) {
     log.warn("Failed to fetch dispatcher session detail", {
@@ -962,6 +965,25 @@ function buildFallbackSessionLog(
   }
 
   return lines;
+}
+
+function buildEmptyCachedDetailLog(
+  context: {
+    currentWorker: string | null;
+    currentWorkerEntry: WorkerThreadEntry | null;
+    dispatchPlanPath: string;
+    roleStatus: string;
+  },
+  dispatcherThreadId: string | null
+): string[] {
+  return [
+    ...buildFallbackSessionLog(context, dispatcherThreadId),
+    "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
+  ];
+}
+
+function isEmptyCachedDetailResponse(lines: string[]): boolean {
+  return lines.length === 1 && lines[0] === "No cached detail found. Send a new request first, then run /detail again.";
 }
 
 function splitLogLines(content: string): string[] {
