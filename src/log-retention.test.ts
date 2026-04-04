@@ -23,6 +23,10 @@ test("collectLogInventory returns recursive log files sorted by size", async () 
       inventory.files.map((entry) => entry.path),
       ["hub.log", "GUI/gui-pane-codex_01.log", "GUI/a2a-gemini_01.log"]
     );
+    assert.deepEqual(
+      inventory.files.map((entry) => entry.category),
+      ["active", "session", "session"]
+    );
   } finally {
     await fs.promises.rm(logDir, { recursive: true, force: true });
   }

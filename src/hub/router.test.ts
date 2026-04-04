@@ -510,7 +510,7 @@ test("HubRouter summarizeConversationContent falls back to normalized content wi
   assert.equal(summary, "Plain reply without summary tags.");
 });
 
-test("HubRouter run logs getMessages_threw and uses fallback when getMessages() throws", async () => {
+test("HubRouter run logs getMessages_threw and returns a structured pending result when getMessages() throws", async () => {
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "gemini_01",
@@ -542,12 +542,74 @@ test("HubRouter run logs getMessages_threw and uses fallback when getMessages() 
       target: "gemini_01"
     })
   );
-  assert.equal(result.status, "success");
+  assert.equal(result.status, "partial");
+  assert.equal(result.run_state, "still_running");
   assert.equal(result.source, "gemini");
-  assert.equal(
-    result.content,
-    "Agent is processing...",
-    "fallback content should surface a neutral progress message when getMessages() throws on an ACK response"
+  assert.equal(result.content, "Task is running...");
+  assert.equal(result.progress?.phase, "running");
+});
+
+test("HubRouter warns when a terminal wait path returns a non-terminal run result", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_warn_01",
+    agent_type: "gemini",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-gemini_warn_01.sock",
+    pid: 202,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const warnCalls: Array<{ context: Record<string, unknown>; message: string }> = [];
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => {
+        throw new Error("HTTP 404 returned for GET /messages");
+      }
+    })
+  });
+
+  (router as unknown as {
+    log: {
+      info: (...args: unknown[]) => void;
+      warn: (context: Record<string, unknown>, message: string) => void;
+      error: (...args: unknown[]) => void;
+    };
+  }).log = {
+    info: () => undefined,
+    warn: (context, message) => {
+      warnCalls.push({ context, message });
+    },
+    error: () => undefined
+  };
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "f4df2e20-0a1f-4d3a-8b5c-0d1a6ad11234",
+      thread_id: "gemini_warn_01",
+      target: "gemini_warn_01"
+    })
+  );
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.run_state, "still_running");
+  assert.deepEqual(
+    warnCalls.find((entry) => entry.message === "Returning non-terminal result on terminal wait path"),
+    {
+      context: {
+        trace_id: "f4df2e20-0a1f-4d3a-8b5c-0d1a6ad11234",
+        thread_id: "gemini_warn_01",
+        intent: "run",
+        run_state: "still_running"
+      },
+      message: "Returning non-terminal result on terminal wait path"
+    }
   );
 });
 
@@ -1077,7 +1139,8 @@ test("HubRouter prefers Gemini edit approval over transient POST /message chrome
     })
   );
 
-  assert.equal(result.status, "success");
+  assert.equal(result.status, "partial");
+  assert.equal(result.run_state, "still_running");
   assert.match(result.content, /^Waiting for approval\.\.\./);
   assert.match(result.content, /Apply this change\?/);
   assert.doesNotMatch(result.content, /Press Ctrl\+O to expand pasted text/);
@@ -1250,6 +1313,58 @@ test("HubRouter run ignores incomplete summary block and falls back to stable re
   assert.equal(result.content, "stable fallback output");
 });
 
+test("HubRouter keeps waiting for a delayed same-trace summary while the run stays active", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "gemini_01",
+    agent_type: "gemini",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61114",
+    pid: 204,
+    tmux_pane: "agent_gemini_01",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const traceId = "dbdc1060-a7b9-4999-ac9a-5ad4d1d4ca00";
+  let callCount = 0;
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: callCount < 4 ? "running" : "idle" }),
+      getMessages: async () => {
+        callCount += 1;
+        if (callCount <= 3) {
+          return [{ id: 5, role: "agent", content: "stale old snapshot before run" }];
+        }
+        return [
+          {
+            id: 6,
+            role: "agent",
+            content:
+              "[[MERIDIAN_SUMMARY_BEGIN id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4ca00]]\nfinal dispatcher answer\n[[MERIDIAN_SUMMARY_END id=dbdc1060-a7b9-4999-ac9a-5ad4d1d4ca00]]"
+          }
+        ];
+      }
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: traceId,
+      thread_id: "gemini_01",
+      target: "gemini_01"
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.run_state, "completed");
+  assert.equal(result.content, "final dispatcher answer");
+  assert.equal(callCount, 4);
+});
+
 test("HubRouter run fallback does not reuse stale snapshot from before current run", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -1286,9 +1401,11 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
     })
   );
 
-  assert.equal(result.status, "success");
-  assert.match(result.content, /Agent is processing/);
+  assert.equal(result.status, "partial");
+  assert.equal(result.run_state, "timeout");
+  assert.equal(result.content, "Task is running...");
   assert.doesNotMatch(result.content, /stale old snapshot/);
+  assert.equal(result.progress?.phase, "running");
   assert.ok(callCount <= 5, `expected stale polling to bail out quickly, got ${callCount} getMessages() calls`);
 });
 
@@ -1374,7 +1491,7 @@ test("HubRouter builds completion result from latest stable agent message", asyn
     assert.equal(result.trace_id, "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
     assert.equal(result.content, "final completion reply");
     assert.deepEqual(result.telegram_inline_keyboard, {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token" }]]
     });
   } finally {
     config.WEB_GUI_HOST = previousHost;
@@ -1699,7 +1816,7 @@ test("HubRouter returns a clickable Web GUI link", async () => {
     );
 
     assert.equal(result.status, "success");
-    assert.equal(result.content, "http://gui.example.com:3000/?thread=codex_01&token=secret-token");
+    assert.equal(result.content, "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token");
   } finally {
     config.WEB_GUI_HOST = previousHost;
     config.WEB_GUI_PORT = previousPort;
@@ -1748,7 +1865,7 @@ test("HubRouter attach result includes a Web GUI button when available", async (
     );
 
     assert.deepEqual(result.telegram_inline_keyboard, {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token" }]]
     });
   } finally {
     config.WEB_GUI_HOST = previousHost;
@@ -1820,7 +1937,7 @@ test("HubRouter spawn result includes a Web GUI button when available", async ()
 
     assert.equal(spawnedThreadId, "codex_01");
     assert.deepEqual(result.telegram_inline_keyboard, {
-      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread=codex_01&token=secret-token" }]]
+      inline_keyboard: [[{ text: "🖥 打开 GUI", url: "http://gui.example.com:3000/?thread_id=codex_01&token=secret-token" }]]
     });
   } finally {
     config.WEB_GUI_HOST = previousHost;
@@ -2569,7 +2686,7 @@ test("HubRouter keeps approval prompts replaceable while progress entries append
   assert.match(history[1]?.content ?? "", /^Waiting for approval\.\.\./);
 });
 
-test("HubRouter keeps approval prompts durable after terminal input and final reply", async () => {
+test("HubRouter converts resolved approval prompts into pending progress after terminal input", async () => {
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "approval_01",
@@ -2632,19 +2749,19 @@ test("HubRouter keeps approval prompts durable after terminal input and final re
 
   history = router.getConversationHistoryForThread("approval_01");
   assert.equal(history.length, 2);
-  assert.equal(history[0]?.event_kind, "approval");
-  assert.match(history[0]?.content ?? "", /^Waiting for approval\.\.\./);
+  assert.equal(history[0]?.event_kind, "progress");
+  assert.equal(history[0]?.content, "Task is running...");
+  assert.equal(history[0]?.replace_key, `${traceId}:progress`);
   assert.equal(history[1]?.event_kind, "terminal_input");
   assert.equal(history[1]?.content, "allow");
 
   router.recordAgentPushConversation("approval_01", "done", traceId, "final_reply");
 
   history = router.getConversationHistoryForThread("approval_01");
-  assert.equal(history.length, 3);
-  assert.equal(history[0]?.event_kind, "approval");
-  assert.equal(history[1]?.event_kind, "terminal_input");
-  assert.equal(history[2]?.event_kind, "final_reply");
-  assert.equal(history[2]?.content, "done");
+  assert.equal(history.length, 2);
+  assert.equal(history[0]?.event_kind, "terminal_input");
+  assert.equal(history[1]?.event_kind, "final_reply");
+  assert.equal(history[1]?.content, "done");
 });
 
 test("HubRouter isWithinRunCompletionCooldown returns true after run completes", async () => {

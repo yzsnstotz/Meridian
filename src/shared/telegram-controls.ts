@@ -43,7 +43,7 @@ export function buildWebGuiUrl(threadId: string, hostPortOverride?: string): str
     url.port = String(config.WEB_GUI_PORT);
   }
 
-  url.searchParams.set("thread", threadId);
+  url.searchParams.set("thread_id", threadId);
   if (config.WEB_GUI_TOKEN.trim()) {
     url.searchParams.set("token", config.WEB_GUI_TOKEN.trim());
   }

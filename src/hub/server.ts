@@ -96,6 +96,7 @@ const IMMEDIATE_INTENTS = new Set([
   "list_models",
   "monitor_manual_update",
   "push",
+  "reply",
   "status",
   "terminal_input",
   "capture_interval"
@@ -358,15 +359,22 @@ export class HubServer {
     try {
       while (this.priorityQueue.length > 0) {
         const item = this.priorityQueue.shift()!;
-        try {
-          const result = await this.handleRawPayload(item.raw);
-          item.resolve(result);
-        } catch (error) {
-          item.reject(error);
-        }
+        // Fire-and-forget: allow concurrent item processing so that
+        // inner messages (spawn/run/kill from a running dispatcher agent)
+        // are not starved while the outer handleRun() awaits agent completion.
+        void this.processQueueItem(item);
       }
     } finally {
       this.priorityQueueDraining = false;
+    }
+  }
+
+  private async processQueueItem(item: PriorityQueueItem): Promise<void> {
+    try {
+      const result = await this.handleRawPayload(item.raw);
+      item.resolve(result);
+    } catch (error) {
+      item.reject(error);
     }
   }
 

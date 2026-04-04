@@ -44,6 +44,22 @@
     .header-info h1 { font-size: 1.25rem; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 0.5rem; }
     .header-info p { color: var(--text-dim); font-size: 0.875rem; margin-top: 0.25rem; }
 
+    .header-roles-link {
+      flex-shrink: 0;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--accent-color);
+      text-decoration: none;
+      padding: 0.5rem 0.85rem;
+      border-radius: 0.75rem;
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      background: rgba(59, 130, 246, 0.08);
+      white-space: nowrap;
+    }
+    .header-roles-link:hover {
+      background: rgba(59, 130, 246, 0.15);
+    }
+
     .badge-live {
       font-size: 0.625rem;
       background: rgba(16, 185, 129, 0.1);
@@ -228,6 +244,40 @@
     }
 
     .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
+    }
+
+    .log-group {
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 0.75rem 0.75rem 0.85rem;
+    }
+
+    .log-group-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.65rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: rgba(226, 232, 240, 0.9);
+      text-transform: uppercase;
+    }
+
+    .log-group-title span {
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+    }
+
+    .log-group-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 0.7rem;
@@ -575,6 +625,17 @@
     .detail-item { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
     .detail-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.025em; }
     .detail-value { font-size: 0.875rem; font-weight: 500; color: #fff; word-break: break-all; white-space: normal; overflow: hidden; text-overflow: ellipsis; }
+    .role-link {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      margin-top: 0.25rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--accent-color);
+      text-decoration: none;
+    }
 
     .card-footer {
       border-top: 1px solid var(--border-color);
@@ -721,6 +782,7 @@
       <h1>Meridian <span class="badge-live">Hub</span></h1>
       <p>Manage active coding agents</p>
     </div>
+    <a id="meridian-roles-header-link" class="header-roles-link" href="#" target="_blank" rel="noopener noreferrer" title="meridian-roles web UI (same host, port 7701)">meridian-roles</a>
   </header>
 
   <div id="app">
@@ -866,6 +928,30 @@
       var spawnWorkspaceDefaultBtn = document.getElementById("spawn-workspace-default");
       var spawnWorkspaceCloseBtn = document.getElementById("spawn-workspace-close");
       var lastBrowsePayload = null;
+      var meridianRolesHeaderLink = document.getElementById("meridian-roles-header-link");
+
+      function meridianRolesGuiOrigin() {
+        try {
+          var overrideOrigin = localStorage.getItem("meridian_roles_gui_origin");
+          if (overrideOrigin && String(overrideOrigin).trim()) {
+            return String(overrideOrigin).trim().replace(/\/+$/, "");
+          }
+        } catch (e) {}
+        var h = window.location.hostname;
+        if (!h) {
+          return "http://localhost:7701";
+        }
+        return "http://" + h + ":7701";
+      }
+
+      function syncMeridianRolesHeaderLink() {
+        if (!meridianRolesHeaderLink) return;
+        var base = meridianRolesGuiOrigin();
+        meridianRolesHeaderLink.href = base + "/";
+        meridianRolesHeaderLink.title = "meridian-roles dashboard at " + base + " (set localStorage meridian_roles_gui_origin to override)";
+      }
+
+      syncMeridianRolesHeaderLink();
 
       function joinRelativePath(base, name) {
         var n = name == null ? "" : String(name);
@@ -1035,6 +1121,8 @@
           return;
         }
         emptyStateEl.classList.add("hidden");
+
+        var rolesBase = meridianRolesGuiOrigin();
         
         instances.forEach(function (inst) {
           var card = document.createElement("div");
@@ -1092,7 +1180,7 @@
                   <span class="detail-label">Last interaction</span>
                   <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
                 </div>
-                <a class="role-link" href="http://localhost:7701/role/${encodeURIComponent(inst.thread_id)}" style="display:none">角色配置 →</a>
+                <a class="role-link" href="${rolesBase}/" target="_blank" rel="noopener noreferrer">meridian-roles →</a>
               </div>
             </details>
           `;
@@ -1104,11 +1192,7 @@
           }
           if (roleLinkEl) {
             roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
-            fetch("http://localhost:7701/api/role/" + encodeURIComponent(inst.thread_id))
-              .then(function (res) {
-                if (res.ok) roleLinkEl.style.display = "flex";
-              })
-              .catch(function () {});
+            roleLinkEl.title = "Open meridian-roles. Hub thread IDs are not the same as meridian-roles role IDs.";
           }
           card.addEventListener("click", function () { openInstance(inst); });
           gridEl.appendChild(card);
@@ -1129,20 +1213,73 @@
           return;
         }
 
-        logListEl.innerHTML = files.map(function (entry) {
-          var updatedLabel = entry.updated_at ? formatDate(entry.updated_at) : "unknown";
-          var rel = entry.path || "";
+        function parseUpdatedAtMs(value) {
+          if (!value) return 0;
+          var t = Date.parse(String(value));
+          return isFinite(t) ? t : 0;
+        }
+
+        function categoryLabel(cat) {
+          if (cat === "active") return "Active logs";
+          if (cat === "session") return "Session logs";
+          if (cat === "other") return "Other logs";
+          return "Logs";
+        }
+
+        var groupsByCategory = {};
+        files.forEach(function (entry) {
+          var cat = entry && entry.category ? String(entry.category) : "other";
+          if (!groupsByCategory[cat]) groupsByCategory[cat] = [];
+          groupsByCategory[cat].push(entry);
+        });
+
+        var groupOrder = Object.keys(groupsByCategory).map(function (cat) {
+          var entries = groupsByCategory[cat] || [];
+          var newest = 0;
+          for (var i = 0; i < entries.length; i++) {
+            var ms = parseUpdatedAtMs(entries[i] && entries[i].updated_at);
+            if (ms > newest) newest = ms;
+          }
+          return { category: cat, newestMs: newest, count: entries.length };
+        });
+
+        groupOrder.sort(function (a, b) {
+          return (b.newestMs - a.newestMs) || a.category.localeCompare(b.category);
+        });
+
+        function renderEntry(entry) {
+          var updatedLabel = entry && entry.updated_at ? formatDate(entry.updated_at) : "unknown";
+          var rel = entry && entry.path ? String(entry.path) : "";
           return (
             '<div class="log-item">' +
               '<button type="button" class="log-item-open" data-log-path="' + escapeHtml(rel) + '" title="View log contents">' +
                 '<div class="log-item-path">' + escapeHtml(rel) + '</div>' +
                 '<div class="log-item-meta">' +
                   '<span>' + escapeHtml(updatedLabel) + '</span>' +
-                  '<span class="log-item-size">' + escapeHtml(formatBytes(entry.size_bytes || 0)) + '</span>' +
+                  '<span class="log-item-size">' + escapeHtml(formatBytes(entry && entry.size_bytes || 0)) + '</span>' +
                 '</div>' +
               '</button>' +
               '<button type="button" class="log-item-clear" data-log-path="' + escapeHtml(rel) + '" title="Clear this log file" aria-label="Clear log file">⛔️</button>' +
             '</div>'
+          );
+        }
+
+        logListEl.innerHTML = groupOrder.map(function (group) {
+          var entries = (groupsByCategory[group.category] || []).slice();
+          entries.sort(function (a, b) {
+            return parseUpdatedAtMs(b && b.updated_at) - parseUpdatedAtMs(a && a.updated_at) ||
+              String(a && a.path || "").localeCompare(String(b && b.path || ""));
+          });
+          return (
+            '<section class="log-group" data-log-category="' + escapeHtml(group.category) + '">' +
+              '<div class="log-group-title">' +
+                escapeHtml(categoryLabel(group.category)) +
+                '<span>' + escapeHtml(String(group.count)) + '</span>' +
+              '</div>' +
+              '<div class="log-group-grid">' +
+                entries.map(renderEntry).join("") +
+              '</div>' +
+            '</section>'
           );
         }).join("");
       }

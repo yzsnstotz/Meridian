@@ -709,7 +709,8 @@ function launchRestartDetached(projectRoot: string, scriptPath: string, restartL
 function buildRestartKeyboard(): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   keyboard.text("Restart Service Keep Agents", `${CALLBACK_PREFIX}:restart_service:keep_agents`).row();
-  keyboard.text("Rebuild & Restart Everything", `${CALLBACK_PREFIX}:restart_service:full_rebuild`);
+  keyboard.text("Rebuild & Restart Everything", `${CALLBACK_PREFIX}:restart_service:full_rebuild`).row();
+  keyboard.text("Rebuild & Restart meridian-roles", `${CALLBACK_PREFIX}:restart_service:meridian_roles`);
   return keyboard;
 }
 
@@ -1005,18 +1006,33 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
 
   if (action === "restart_service" && parts[2]) {
     const projectRoot = process.cwd();
-    const scriptName = parts[2] === "keep_agents" ? "user_scripts/restart_keep_agents.sh" : "rebuild-restart.sh";
+    const mode = parts[2];
+    const scriptName =
+      mode === "keep_agents"
+        ? "user_scripts/restart_keep_agents.sh"
+        : mode === "full_rebuild"
+          ? "rebuild-restart.sh"
+          : mode === "meridian_roles"
+            ? "user_scripts/restart_meridian_roles.sh"
+            : null;
+    if (!scriptName) {
+      await ctx.answerCallbackQuery({ text: "Invalid restart option" });
+      return true;
+    }
     const scriptPath = path.resolve(projectRoot, scriptName);
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Restart script not found: ${scriptPath}`);
     }
 
-    const logSuffix = parts[2] === "keep_agents" ? "keep-agents" : "full";
+    const logSuffix =
+      mode === "keep_agents" ? "keep-agents" : mode === "full_rebuild" ? "full" : "meridian-roles";
     const restartLogPath = path.join("/tmp", `meridian-restart-${logSuffix}-${Date.now()}.log`);
     const label =
-      parts[2] === "keep_agents"
+      mode === "keep_agents"
         ? "Restarting Meridian service and preserving live agents"
-        : "Rebuilding project and restarting everything";
+        : mode === "full_rebuild"
+          ? "Rebuilding project and restarting everything"
+          : "Rebuilding meridian-roles and restarting its service";
 
     await ctx.editMessageText(`${label}.\nLog: ${restartLogPath}`);
     if (!launchRestartViaTmux(projectRoot, scriptPath, restartLogPath)) {

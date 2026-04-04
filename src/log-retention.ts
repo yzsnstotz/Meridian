@@ -5,6 +5,7 @@ export interface LogInventoryEntry {
   path: string;
   size_bytes: number;
   updated_at: string;
+  category: "active" | "session" | "other";
 }
 
 export interface LogInventory {
@@ -111,7 +112,12 @@ export async function collectLogInventory(logDir: string, now: Date = new Date()
   return {
     root: logDir,
     total_bytes: files.reduce((sum, entry) => sum + entry.size_bytes, 0),
-    files: files.map(({ absolute_path: _absolutePath, category: _category, ...entry }) => entry),
+    files: files.map((entry) => ({
+      path: entry.path,
+      size_bytes: entry.size_bytes,
+      updated_at: entry.updated_at,
+      category: entry.category
+    })),
     generated_at: now.toISOString()
   };
 }

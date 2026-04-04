@@ -8,6 +8,7 @@
 
   const STORAGE_KEY = "meridian_web_token";
   const FOCUS_MODE_KEY = "meridian_focus_mode";
+  var inMemoryToken = "";
 
   function getQueryParams() {
     const params = {};
@@ -21,44 +22,53 @@
     return params;
   }
 
-  function getToken() {
-    var q = getQueryParams();
-    if (q.token) {
-      return q.token.trim();
-    }
+  function getStoredToken() {
     try {
       var t = sessionStorage.getItem(STORAGE_KEY);
-      return t ? t.trim() : "";
+      var trimmed = t ? t.trim() : "";
+      if (trimmed) {
+        inMemoryToken = trimmed;
+      }
+      return trimmed;
     } catch (e) {
       return "";
     }
   }
 
+  function getToken() {
+    var q = getQueryParams();
+    if (q.token) {
+      var queryToken = q.token.trim();
+      if (queryToken) {
+        inMemoryToken = queryToken;
+      }
+      return queryToken;
+    }
+    if (inMemoryToken) {
+      return inMemoryToken;
+    }
+    return getStoredToken();
+  }
+
   function setToken(token) {
+    var trimmed = token ? token.trim() : "";
+    inMemoryToken = trimmed;
     try {
-      if (token) {
-        sessionStorage.setItem(STORAGE_KEY, token);
+      if (trimmed) {
+        sessionStorage.setItem(STORAGE_KEY, trimmed);
       } else {
         sessionStorage.removeItem(STORAGE_KEY);
       }
     } catch (e) {}
+    return trimmed === "" ? getStoredToken() === "" : getStoredToken() === trimmed;
   }
 
-  // Initialize token from ?token= on first load. Strip token from URL only on hub (index) to avoid leaking in history; keep token in URL on terminal so auth works when sessionStorage is unavailable (e.g. mobile, new tab).
+  // Initialize token from ?token= on first load. Keep the query token intact so the
+  // page still authenticates in browser automation or storage-constrained contexts.
   (function initTokenFromQuery() {
     var q = getQueryParams();
     if (q.token) {
       setToken(q.token.trim());
-      var pathname = window.location.pathname || "/";
-      var isHub = pathname === "/" || pathname === "" || pathname.endsWith("/index.html");
-      if (isHub && window.location.search) {
-        var rest = window.location.search.replace(/[?&]token=[^&]+&?/g, "?").replace(/\?&/, "?").replace(/\?$/, "");
-        var url = pathname;
-        if (rest && rest !== "?") url += rest;
-        if (window.history && window.history.replaceState) {
-          window.history.replaceState({}, "", url);
-        }
-      }
     }
   })();
 

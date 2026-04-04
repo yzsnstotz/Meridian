@@ -325,7 +325,7 @@ test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", a
       content: "ok",
       attachments: [],
       telegram_inline_keyboard: {
-        inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=codex_01" }]]
+        inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread_id=codex_01" }]]
       },
       timestamp: new Date().toISOString()
     },
@@ -336,7 +336,7 @@ test("ResultSender forwards inline keyboard metadata to Telegram sendMessage", a
   );
 
   assert.deepEqual(capturedReplyMarkup, {
-    inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread=codex_01" }]]
+    inline_keyboard: [[{ text: "Open GUI", url: "http://gui.example.com/?thread_id=codex_01" }]]
   });
 });
 
