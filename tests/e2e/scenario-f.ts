@@ -57,6 +57,7 @@ describe("Scenario F: Config editor and role error states", () => {
     const page = await loadBrowserApp({
       pathname: "/role/does-not-exist-xyz",
       elements: {
+        "dashboard-link": createElement(),
         "role-title": createElement("Loading role…"),
         "role-subtitle": createElement("Fetching dispatcher detail."),
         "role-summary": createElement("", "<div>stale summary</div>"),
@@ -82,10 +83,36 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["config-link"].href).toBe("/role/does-not-exist-xyz/config");
   });
 
+  it("binds anchor clicks to explicit location navigation", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/",
+      elements: {},
+      fetchImpl: async () => createJsonResponse(200, {})
+    });
+
+    const link = createElement();
+    link.href = "/role/dispatcher-f";
+    page.hooks.bindLocationNavigation(link);
+
+    expect(page.location.href).toBe("/");
+    expect(page.location.pathname).toBe("/");
+    expect(link.listeners.click).toHaveLength(1);
+
+    await link.listeners.click[0]({
+      preventDefault() {
+        return undefined;
+      }
+    });
+
+    expect(page.location.href).toBe("/role/dispatcher-f");
+    expect(page.location.pathname).toBe("/role/dispatcher-f");
+  });
+
   it("renders agent-dispatcher role detail with session log and dispatch plan status", async () => {
     const page = await loadBrowserApp({
       pathname: "/role/agent-dispatcher-f",
       elements: {
+        "dashboard-link": createElement(),
         "role-title": createElement("Loading role…"),
         "role-subtitle": createElement("Fetching dispatcher detail."),
         "role-summary": createElement(),
@@ -432,8 +459,13 @@ async function getFreePort(): Promise<number> {
 interface BrowserPage {
   elements: Record<string, FakeElement>;
   hooks: {
+    bindLocationNavigation(link: FakeElement): void;
     setupConfigEditor(): Promise<void>;
     setupRoleDetail(): Promise<void>;
+  };
+  location: {
+    href: string;
+    pathname: string;
   };
   submit(id: string): Promise<void>;
 }
@@ -446,6 +478,14 @@ async function loadBrowserApp(options: {
   const appPath = path.resolve("/Users/yzliu/work/Meridian/Meridian-roles/src/web/public/app.js");
   const source = await fs.readFile(appPath, "utf8");
   const documentListeners = new Map<string, Array<() => void>>();
+  const location = {
+    href: options.pathname,
+    pathname: options.pathname,
+    assign(next: string) {
+      this.href = next;
+      this.pathname = next;
+    }
+  };
   const context = {
     console,
     fetch: options.fetchImpl,
@@ -465,22 +505,21 @@ async function loadBrowserApp(options: {
       }
     },
     window: {
-      location: {
-        pathname: options.pathname
-      },
+      location,
       setInterval() {
         return 1;
       }
     }
   };
 
-  const script = new vm.Script(`${source}\nthis.__hooks = { setupConfigEditor, setupRoleDetail };`);
+  const script = new vm.Script(`${source}\nthis.__hooks = { bindLocationNavigation, setupConfigEditor, setupRoleDetail };`);
   vm.createContext(context);
   script.runInContext(context);
 
   return {
     elements: options.elements,
     hooks: (context as { __hooks: BrowserPage["hooks"] }).__hooks,
+    location,
     async submit(id: string) {
       const element = options.elements[id];
       if (!element?.listeners.submit?.[0]) {

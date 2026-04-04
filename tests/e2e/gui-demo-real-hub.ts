@@ -119,10 +119,19 @@ async function waitForDemoOutputs(args: {
         fs.readFile(args.sidecarPath, "utf8"),
         fs.readFile(args.dispatchPlanPath, "utf8")
       ]);
+      const sidecar = JSON.parse(sidecarRaw) as {
+        dispatcher?: { thread_id?: string | null; status?: string | null };
+        workers?: Record<string, { status?: string | null }>;
+      };
+      const workerEntries = sidecar.workers ?? {};
+      const terminalWorkers = ["A-01", "B-01"].every((workerId) => workerEntries[workerId]?.status === "completed");
 
       if (
         finalRaw.trim().length > 0
-        && sidecarRaw.includes('"workers": {}')
+        && typeof sidecar.dispatcher?.thread_id === "string"
+        && sidecar.dispatcher.thread_id.trim().length > 0
+        && sidecar.dispatcher.status === "running"
+        && terminalWorkers
         && planRaw.includes("| ✅ | 1 | A-01 |")
         && planRaw.includes("| ✅ | 2 | B-01 |")
       ) {

@@ -113,6 +113,7 @@ async function setupDashboard() {
             <button type="button" class="danger-button" data-thread="${escapeHtml(role.thread_id)}">Deactivate</button>
           </div>
         `;
+        bindLocationNavigation(card.querySelector("a.ghost-link"));
         list.appendChild(card);
       });
 
@@ -212,6 +213,7 @@ async function setupDashboard() {
             >${controlLabel}</button>
           </div>
         `;
+        bindLocationNavigation(card.querySelector("a.ghost-link"));
         agentDispatcherList.appendChild(card);
       });
 
@@ -452,6 +454,7 @@ async function setupRoleDetail() {
   const summary = document.getElementById("role-summary");
   const tasks = document.getElementById("role-tasks");
   const empty = document.getElementById("role-tasks-empty");
+  const dashboardLink = document.getElementById("dashboard-link");
   const promptsLink = document.getElementById("prompts-link");
   const configLink = document.getElementById("config-link");
   const panelLinks = document.getElementById("role-panel-links");
@@ -471,8 +474,11 @@ async function setupRoleDetail() {
   }
 
   const defaultEmptyMessage = empty.textContent;
+  bindLocationNavigation(dashboardLink);
   promptsLink.href = `/role/${encodeURIComponent(threadId)}/prompts`;
   configLink.href = `/role/${encodeURIComponent(threadId)}/config`;
+  bindLocationNavigation(promptsLink);
+  bindLocationNavigation(configLink);
   let hasRendered = false;
   let lastRenderSignature = "";
 
@@ -1058,6 +1064,34 @@ async function fetchJson(url, options) {
   }
 
   return body;
+}
+
+function bindLocationNavigation(link) {
+  if (!link || typeof link.addEventListener !== "function") {
+    return;
+  }
+
+  link.addEventListener("click", (event) => {
+    const href = typeof link.href === "string" ? link.href : "";
+    if (!href) {
+      return;
+    }
+    if (event && typeof event.preventDefault === "function") {
+      event.preventDefault();
+    }
+    navigateToHref(href);
+  });
+}
+
+function navigateToHref(href) {
+  if (typeof href !== "string" || href.trim().length === 0 || !window.location) {
+    return;
+  }
+  if (typeof window.location.assign === "function") {
+    window.location.assign(href);
+    return;
+  }
+  window.location.href = href;
 }
 
 function decodeThreadId(pattern) {
