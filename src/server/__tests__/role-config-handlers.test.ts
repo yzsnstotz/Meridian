@@ -582,13 +582,49 @@ describe("role config handlers", () => {
       "| 🔄 | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | running |"
     ].join("\n"), "utf8");
     await fs.writeFile(sidecarPath, `${JSON.stringify({
-      dispatcher_thread_id: "dispatcher-thread-123",
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-03-27T23:55:00.000Z",
+        status: "running"
+      },
       workers: {
+        "N-10": {
+          thread_id: "worker-thread-123",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-03-27T23:56:00.000Z",
+          last_seen_at: "2026-03-27T23:57:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "codex_17",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Completed API layer.",
+            details_text: [
+              "Your message:",
+              "Implement N-10 API layer",
+              "",
+              "Agent reply:",
+              "Completed API layer."
+            ].join("\n"),
+            attachments: [],
+            timestamp: "2026-03-27T23:57:00.000Z"
+          }
+        },
         "N-11": {
           thread_id: "worker-thread-456",
-          started_at: "2026-03-28T00:00:00.000Z"
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: "2026-03-28T00:00:00.000Z",
+          last_seen_at: "2026-03-28T00:00:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null
         }
-      }
+      },
+      last_reconciled_at: null
     }, null, 2)}\n`, "utf8");
 
     try {
@@ -647,6 +683,38 @@ describe("role config handlers", () => {
           "Your message:",
           "Agent reply:",
           "Updated the GUI dashboard."
+        ]),
+        dispatch_details: expect.arrayContaining([
+          expect.objectContaining({
+            worker_id: "N-10",
+            status: "completed",
+            task: "API Layer",
+            model: "CODEX-XHIGH",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            command: expect.objectContaining({
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              sender_name: "dispatcher-thread-123",
+              sender_agent_type: "codex",
+              timestamp: "2026-03-27T23:56:00.000Z",
+              content: "Implement N-10 API layer"
+            }),
+            reply: expect.objectContaining({
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              sender_name: "codex_17",
+              sender_agent_type: "codex",
+              timestamp: "2026-03-27T23:57:00.000Z",
+              content: "Completed API layer."
+            })
+          }),
+          expect.objectContaining({
+            worker_id: "N-11",
+            status: "running",
+            task: "GUI",
+            model: "CODEX",
+            trace_id: "22222222-2222-4222-8222-222222222222",
+            command: null,
+            reply: null
+          })
         ]),
         dispatch_plan: {
           rows: [

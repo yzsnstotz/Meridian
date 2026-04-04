@@ -31,10 +31,21 @@
         <div class="panel-heading">
           <div>
             <h2>Dispatcher Session</h2>
-            <p class="muted">Auto-refreshes every 3 seconds.</p>
+            <p class="muted">Raw attached dispatcher detail. Auto-refreshes every 3 seconds.</p>
           </div>
         </div>
         <pre id="dispatcher-session-log" class="log-tail">No dispatcher session detail available yet.</pre>
+      </section>
+
+      <section id="dispatch-details-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Details</h2>
+            <p class="muted">Each worker shows the sent command and the agent reply separately.</p>
+          </div>
+        </div>
+        <div id="dispatch-details-empty" class="empty-state">No dispatch command or reply history is available yet.</div>
+        <div id="dispatch-details-list" class="dispatch-detail-list" hidden></div>
       </section>
 
       <section id="dispatch-plan-panel" class="panel" hidden>

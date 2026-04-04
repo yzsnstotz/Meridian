@@ -379,6 +379,97 @@ dd {
   overflow-x: auto;
 }
 
+.dispatch-detail-list {
+  display: grid;
+  gap: 16px;
+}
+
+.dispatch-detail-card {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(17, 24, 35, 0.96), rgba(10, 15, 23, 0.92));
+}
+
+.dispatch-detail-header,
+.dispatch-message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.dispatch-detail-header {
+  margin-bottom: 14px;
+}
+
+.dispatch-detail-title {
+  display: grid;
+  gap: 6px;
+}
+
+.dispatch-detail-title h3,
+.dispatch-message-header h4 {
+  margin: 0;
+}
+
+.dispatch-detail-subtitle,
+.dispatch-message-caption {
+  margin: 0;
+  color: var(--muted);
+}
+
+.dispatch-detail-messages {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.dispatch-message {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(7, 11, 18, 0.84);
+}
+
+.dispatch-message-label {
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+}
+
+.dispatch-meta {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin: 12px 0;
+}
+
+.dispatch-meta div {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.dispatch-message-content {
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.dispatch-message-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
 .table-shell {
   overflow-x: auto;
 }
@@ -416,7 +507,9 @@ dd {
 
   .panel-heading,
   .role-card-header,
-  .task-card-header {
+  .task-card-header,
+  .dispatch-detail-header,
+  .dispatch-message-header {
     flex-direction: column;
   }
 

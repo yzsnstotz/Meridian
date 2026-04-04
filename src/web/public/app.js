@@ -55,58 +55,74 @@ async function setupDashboard() {
 
   async function refreshRoles() {
     const roles = await fetchJson("/api/roles");
-    list.replaceChildren();
-    agentDispatcherList.replaceChildren();
 
     if (!Array.isArray(roles) || roles.length === 0) {
+      list.replaceChildren();
+      agentDispatcherList.replaceChildren();
+      list.dataset.renderSignature = "";
+      agentDispatcherList.dataset.renderSignature = "";
       empty.hidden = false;
       agentDispatcherEmpty.hidden = false;
       return;
     }
 
     empty.hidden = true;
+    const roleSignature = JSON.stringify(roles.map((role) => ({
+      thread_id: role.thread_id,
+      role_type: role.role_type,
+      status: role.status,
+      task_count: role.task_count
+    })));
 
-    roles.forEach((role) => {
-      const card = document.createElement("article");
-      card.className = "role-card";
-      card.innerHTML = `
-        <div class="role-card-header">
-          <code>${escapeHtml(role.thread_id)}</code>
-          <span class="status-pill status-${escapeHtml(role.status)}">${escapeHtml(role.status)}</span>
-        </div>
-        <dl class="meta-grid">
-          <div><dt>type</dt><dd>${escapeHtml(role.role_type)}</dd></div>
-          <div><dt>tasks</dt><dd>${escapeHtml(String(role.task_count))}</dd></div>
-        </dl>
-        <div class="card-actions">
-          <a class="ghost-link" href="/role/${encodeURIComponent(role.thread_id)}">Open detail</a>
-          <button type="button" class="danger-button" data-thread="${escapeHtml(role.thread_id)}">Deactivate</button>
-        </div>
-      `;
-      list.appendChild(card);
-    });
+    if (list.dataset.renderSignature !== roleSignature) {
+      list.replaceChildren();
 
-    list.querySelectorAll("[data-thread]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const threadId = button.getAttribute("data-thread");
-        if (!threadId) {
-          return;
-        }
-
-        try {
-          feedback.textContent = "Deactivating role…";
-          await fetchJson(`/api/role/${encodeURIComponent(threadId)}`, { method: "DELETE" });
-          feedback.textContent = `Role ${threadId} deactivated.`;
-          await refreshRoles();
-        } catch (error) {
-          feedback.textContent = getErrorMessage(error);
-        }
+      roles.forEach((role) => {
+        const card = document.createElement("article");
+        card.className = "role-card";
+        card.innerHTML = `
+          <div class="role-card-header">
+            <code>${escapeHtml(role.thread_id)}</code>
+            <span class="status-pill status-${escapeHtml(role.status)}">${escapeHtml(role.status)}</span>
+          </div>
+          <dl class="meta-grid">
+            <div><dt>type</dt><dd>${escapeHtml(role.role_type)}</dd></div>
+            <div><dt>tasks</dt><dd>${escapeHtml(String(role.task_count))}</dd></div>
+          </dl>
+          <div class="card-actions">
+            <a class="ghost-link" href="/role/${encodeURIComponent(role.thread_id)}">Open detail</a>
+            <button type="button" class="danger-button" data-thread="${escapeHtml(role.thread_id)}">Deactivate</button>
+          </div>
+        `;
+        list.appendChild(card);
       });
-    });
+
+      list.querySelectorAll("[data-thread]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const threadId = button.getAttribute("data-thread");
+          if (!threadId) {
+            return;
+          }
+
+          try {
+            feedback.textContent = "Deactivating role…";
+            await fetchJson(`/api/role/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+            feedback.textContent = `Role ${threadId} deactivated.`;
+            await refreshRoles();
+          } catch (error) {
+            feedback.textContent = getErrorMessage(error);
+          }
+        });
+      });
+
+      list.dataset.renderSignature = roleSignature;
+    }
 
     const agentDispatcherRoles = roles.filter((role) => role.role_type === "agent-dispatcher");
     if (agentDispatcherRoles.length === 0) {
       agentDispatcherEmpty.hidden = false;
+      agentDispatcherList.replaceChildren();
+      agentDispatcherList.dataset.renderSignature = "";
       return;
     }
 
@@ -124,59 +140,73 @@ async function setupDashboard() {
     }));
 
     agentDispatcherEmpty.hidden = true;
+    const dispatcherSignature = JSON.stringify(details.map((detail) => ({
+      thread_id: detail.thread_id,
+      status: detail.status,
+      dispatcher_thread_id: detail.dispatcher_thread_id,
+      current_worker: detail.current_worker,
+      agent_type: detail.agent_type,
+      last_log_line: detail.last_log_line
+    })));
 
-    details.forEach((detail) => {
-      const isPaused = detail.status === "paused";
-      const controlAction = isPaused ? "resume" : "pause";
-      const controlLabel = isPaused ? "Resume" : "Pause";
-      const card = document.createElement("article");
-      card.className = "role-card";
-      card.innerHTML = `
-        <div class="role-card-header">
-          <div class="role-card-stack">
-            <code>${escapeHtml(detail.thread_id)}</code>
-            <span class="muted">dispatcher_thread_id: ${escapeHtml(detail.dispatcher_thread_id || "pending")}</span>
+    if (agentDispatcherList.dataset.renderSignature !== dispatcherSignature) {
+      agentDispatcherList.replaceChildren();
+
+      details.forEach((detail) => {
+        const isPaused = detail.status === "paused";
+        const controlAction = isPaused ? "resume" : "pause";
+        const controlLabel = isPaused ? "Resume" : "Pause";
+        const card = document.createElement("article");
+        card.className = "role-card";
+        card.innerHTML = `
+          <div class="role-card-header">
+            <div class="role-card-stack">
+              <code>${escapeHtml(detail.thread_id)}</code>
+              <span class="muted">dispatcher_thread_id: ${escapeHtml(detail.dispatcher_thread_id || "pending")}</span>
+            </div>
+            <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
           </div>
-          <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
-        </div>
-        <dl class="meta-grid">
-          <div><dt>current worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
-          <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
-        </dl>
-        <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
-        <div class="card-actions">
-          <a class="ghost-link" href="/role/${encodeURIComponent(detail.thread_id)}">Open detail</a>
-          <button
-            type="button"
-            class="ghost-button"
-            data-dispatcher-id="${escapeHtml(detail.thread_id)}"
-            data-dispatcher-action="${controlAction}"
-          >${controlLabel}</button>
-        </div>
-      `;
-      agentDispatcherList.appendChild(card);
-    });
-
-    agentDispatcherList.querySelectorAll("[data-dispatcher-id]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const threadId = button.getAttribute("data-dispatcher-id");
-        const action = button.getAttribute("data-dispatcher-action");
-        if (!threadId || !action) {
-          return;
-        }
-
-        try {
-          agentDispatcherFeedback.textContent = `${action === "pause" ? "Pausing" : "Resuming"} ${threadId}…`;
-          const response = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/${action}`, {
-            method: "POST"
-          });
-          agentDispatcherFeedback.textContent = `Dispatcher ${threadId} is now ${response.status}.`;
-          await refreshRoles();
-        } catch (error) {
-          agentDispatcherFeedback.textContent = getErrorMessage(error);
-        }
+          <dl class="meta-grid">
+            <div><dt>current worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
+            <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+          </dl>
+          <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
+          <div class="card-actions">
+            <a class="ghost-link" href="/role/${encodeURIComponent(detail.thread_id)}">Open detail</a>
+            <button
+              type="button"
+              class="ghost-button"
+              data-dispatcher-id="${escapeHtml(detail.thread_id)}"
+              data-dispatcher-action="${controlAction}"
+            >${controlLabel}</button>
+          </div>
+        `;
+        agentDispatcherList.appendChild(card);
       });
-    });
+
+      agentDispatcherList.querySelectorAll("[data-dispatcher-id]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const threadId = button.getAttribute("data-dispatcher-id");
+          const action = button.getAttribute("data-dispatcher-action");
+          if (!threadId || !action) {
+            return;
+          }
+
+          try {
+            agentDispatcherFeedback.textContent = `${action === "pause" ? "Pausing" : "Resuming"} ${threadId}…`;
+            const response = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/${action}`, {
+              method: "POST"
+            });
+            agentDispatcherFeedback.textContent = `Dispatcher ${threadId} is now ${response.status}.`;
+            await refreshRoles();
+          } catch (error) {
+            agentDispatcherFeedback.textContent = getErrorMessage(error);
+          }
+        });
+      });
+
+      agentDispatcherList.dataset.renderSignature = dispatcherSignature;
+    }
   }
 
   async function loadReplyChannels() {
@@ -344,6 +374,9 @@ async function setupRoleDetail() {
   const roleTasksPanel = document.getElementById("role-tasks-panel");
   const dispatcherSessionPanel = document.getElementById("dispatcher-session-panel");
   const dispatcherSessionLog = document.getElementById("dispatcher-session-log");
+  const dispatchDetailsPanel = document.getElementById("dispatch-details-panel");
+  const dispatchDetailsEmpty = document.getElementById("dispatch-details-empty");
+  const dispatchDetailsList = document.getElementById("dispatch-details-list");
   const dispatchPlanPanel = document.getElementById("dispatch-plan-panel");
   const dispatchPlanEmpty = document.getElementById("dispatch-plan-empty");
   const dispatchPlanTableShell = document.getElementById("dispatch-plan-table-shell");
@@ -356,9 +389,16 @@ async function setupRoleDetail() {
   const defaultEmptyMessage = empty.textContent;
   promptsLink.href = `/role/${encodeURIComponent(threadId)}/prompts`;
   configLink.href = `/role/${encodeURIComponent(threadId)}/config`;
+  let hasRendered = false;
+  let lastRenderSignature = "";
 
   const render = async () => {
     const detail = await fetchJson(`/api/role/${encodeURIComponent(threadId)}`);
+    const nextRenderSignature = JSON.stringify(detail);
+    if (hasRendered && lastRenderSignature === nextRenderSignature) {
+      return;
+    }
+
     const isAgentDispatcher = detail.role_type === "agent-dispatcher";
 
     title.textContent = detail.thread_id;
@@ -392,6 +432,9 @@ async function setupRoleDetail() {
     if (dispatcherSessionPanel) {
       dispatcherSessionPanel.hidden = !isAgentDispatcher;
     }
+    if (dispatchDetailsPanel) {
+      dispatchDetailsPanel.hidden = !isAgentDispatcher;
+    }
     if (dispatchPlanPanel) {
       dispatchPlanPanel.hidden = !isAgentDispatcher;
     }
@@ -405,6 +448,13 @@ async function setupRoleDetail() {
           ? detail.session_log
           : ["No dispatcher session detail available yet."];
         dispatcherSessionLog.textContent = sessionLines.join("\n");
+      }
+
+      if (dispatchDetailsList && dispatchDetailsEmpty) {
+        const dispatchDetails = Array.isArray(detail.dispatch_details) ? detail.dispatch_details : [];
+        dispatchDetailsList.innerHTML = dispatchDetails.map(renderDispatchDetailCard).join("");
+        dispatchDetailsEmpty.hidden = dispatchDetails.length > 0;
+        dispatchDetailsList.hidden = dispatchDetails.length === 0;
       }
 
       if (dispatchPlanBody && dispatchPlanEmpty && dispatchPlanTableShell) {
@@ -423,12 +473,16 @@ async function setupRoleDetail() {
         dispatchPlanTableShell.hidden = rows.length === 0;
       }
 
+      lastRenderSignature = nextRenderSignature;
+      hasRendered = true;
       return;
     }
 
     tasks.replaceChildren();
     if (!Array.isArray(detail.tasks) || detail.tasks.length === 0) {
       empty.hidden = false;
+      lastRenderSignature = nextRenderSignature;
+      hasRendered = true;
       return;
     }
 
@@ -453,6 +507,9 @@ async function setupRoleDetail() {
       `;
       tasks.appendChild(item);
     });
+
+    lastRenderSignature = nextRenderSignature;
+    hasRendered = true;
   };
 
   try {
@@ -466,6 +523,9 @@ async function setupRoleDetail() {
       empty,
       dispatcherSessionPanel,
       dispatcherSessionLog,
+      dispatchDetailsPanel,
+      dispatchDetailsList,
+      dispatchDetailsEmpty,
       dispatchPlanPanel,
       dispatchPlanBody,
       dispatchPlanEmpty,
@@ -476,6 +536,11 @@ async function setupRoleDetail() {
 
   window.setInterval(() => {
     void render().catch((error) => {
+      if (hasRendered) {
+        console.warn("Role detail refresh failed", error);
+        return;
+      }
+
       renderRoleDetailError({
         title,
         subtitle,
@@ -484,6 +549,9 @@ async function setupRoleDetail() {
         empty,
         dispatcherSessionPanel,
         dispatcherSessionLog,
+        dispatchDetailsPanel,
+        dispatchDetailsList,
+        dispatchDetailsEmpty,
         dispatchPlanPanel,
         dispatchPlanBody,
         dispatchPlanEmpty,
@@ -702,11 +770,22 @@ function renderRoleDetailError(elements, message) {
   if (elements.dispatcherSessionPanel) {
     elements.dispatcherSessionPanel.hidden = true;
   }
+  if (elements.dispatchDetailsPanel) {
+    elements.dispatchDetailsPanel.hidden = true;
+  }
   if (elements.dispatchPlanPanel) {
     elements.dispatchPlanPanel.hidden = true;
   }
   if (elements.dispatcherSessionLog) {
     elements.dispatcherSessionLog.textContent = "Role data unavailable.";
+  }
+  if (elements.dispatchDetailsList) {
+    elements.dispatchDetailsList.innerHTML = "";
+    elements.dispatchDetailsList.hidden = true;
+  }
+  if (elements.dispatchDetailsEmpty) {
+    elements.dispatchDetailsEmpty.textContent = "Role data unavailable.";
+    elements.dispatchDetailsEmpty.hidden = false;
   }
   if (elements.dispatchPlanBody) {
     elements.dispatchPlanBody.innerHTML = "";
@@ -718,6 +797,88 @@ function renderRoleDetailError(elements, message) {
   if (elements.dispatchPlanTableShell) {
     elements.dispatchPlanTableShell.hidden = true;
   }
+}
+
+function renderDispatchDetailCard(detail) {
+  const taskLabel = detail.task ? `${detail.worker_id}: ${detail.task}` : detail.worker_id;
+  const subtitleParts = [detail.model, detail.worker_thread_id].filter(Boolean);
+
+  return `
+    <article class="dispatch-detail-card">
+      <div class="dispatch-detail-header">
+        <div class="dispatch-detail-title">
+          <h3>${escapeHtml(taskLabel)}</h3>
+          <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" · ") || "Worker detail")}</p>
+        </div>
+        <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
+      </div>
+      <dl class="summary-grid">
+        <div><dt>worker</dt><dd><code>${escapeHtml(detail.worker_id || "—")}</code></dd></div>
+        <div><dt>worker_thread</dt><dd><code>${escapeHtml(detail.worker_thread_id || "—")}</code></dd></div>
+        <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "—")}</code></dd></div>
+      </dl>
+      <div class="dispatch-detail-messages">
+        ${renderDispatchMessage("Dispatch Command", detail.command, "No dispatch command captured yet.")}
+        ${renderDispatchMessage("Agent Reply", detail.reply, "No agent reply captured yet.")}
+      </div>
+    </article>
+  `;
+}
+
+function renderDispatchMessage(label, detail, emptyMessage) {
+  const sender = formatDispatchSender(detail);
+  const timestamp = formatTimestamp(detail?.timestamp);
+
+  return `
+    <section class="dispatch-message">
+      <div class="dispatch-message-header">
+        <div>
+          <p class="dispatch-message-label">${escapeHtml(label)}</p>
+          <h4>${escapeHtml(sender)}</h4>
+        </div>
+        <p class="dispatch-message-caption">${escapeHtml(timestamp)}</p>
+      </div>
+      <dl class="dispatch-meta">
+        <div><dt>trace_id</dt><dd><code>${escapeHtml(detail?.trace_id || "—")}</code></dd></div>
+        <div><dt>sender</dt><dd>${escapeHtml(sender)}</dd></div>
+        <div><dt>time</dt><dd>${escapeHtml(timestamp)}</dd></div>
+      </dl>
+      ${detail?.content
+        ? `<pre class="dispatch-message-content">${escapeHtml(detail.content)}</pre>`
+        : `<p class="dispatch-message-empty">${escapeHtml(emptyMessage)}</p>`}
+    </section>
+  `;
+}
+
+function formatDispatchSender(detail) {
+  if (!detail) {
+    return "—";
+  }
+
+  const senderName = typeof detail.sender_name === "string" && detail.sender_name.trim().length > 0
+    ? detail.sender_name.trim()
+    : "unknown";
+  const senderType = typeof detail.sender_agent_type === "string" && detail.sender_agent_type.trim().length > 0
+    ? detail.sender_agent_type.trim()
+    : "";
+
+  return senderType ? `${senderName} · ${senderType}` : senderName;
+}
+
+function formatTimestamp(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return "—";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "medium"
+  }).format(parsed);
 }
 
 function formatReplyChannelLabel(replyChannel) {

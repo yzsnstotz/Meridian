@@ -21,7 +21,6 @@ import {
 import type { PromptStoreRoleBinding } from "../roles/prompt-store";
 import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
-import type { DispatchThreadState, WorkerThreadEntry } from "../roles/agent-dispatcher/session-manager";
 import {
   ACTIVE_ROLE_STATUS,
   NEEDS_REACTIVATION_ROLE_STATUS,
@@ -31,6 +30,8 @@ import {
 import {
   AgentDispatcherConfigSchema,
   AppStateSchema,
+  type DispatchThreadStateV2,
+  type DispatchWorkerState,
   DispatchTaskSchema,
   DispatcherConfigSchema,
   DispatcherEditorConfigPatchSchema,
@@ -125,6 +126,26 @@ export interface DispatchPlanRow {
   notes?: string;
 }
 
+export interface DispatchMessageDetail {
+  trace_id: string | null;
+  sender_name: string;
+  sender_agent_type: string | null;
+  sender_thread_id: string | null;
+  timestamp: string | null;
+  content: string;
+}
+
+export interface DispatchWorkerDetail {
+  worker_id: string;
+  status: string;
+  task: string | null;
+  model: string | null;
+  worker_thread_id: string;
+  trace_id: string | null;
+  command: DispatchMessageDetail | null;
+  reply: DispatchMessageDetail | null;
+}
+
 export interface RoleDetailResponse {
   thread_id: string;
   role_type: string;
@@ -149,6 +170,7 @@ export interface RoleDetailResponse {
   mode?: string;
   kill_policy?: string;
   session_log?: string[];
+  dispatch_details?: DispatchWorkerDetail[];
   dispatch_plan?: {
     rows: DispatchPlanRow[];
   };
@@ -458,12 +480,13 @@ async function getRole(
     return response;
   }
 
-  const trackerState = await loadDispatchThreadState(agentDispatcherConfig.dispatch_plan_path, options.log);
+  const lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
   const dispatchPlanRows = await loadDispatchPlanRows(agentDispatcherConfig.dispatch_plan_path, options.log);
-  const currentWorker = resolveCurrentWorker(dispatchPlanRows, trackerState);
-  const currentWorkerEntry = currentWorker ? trackerState.workers[currentWorker] ?? null : null;
+  const dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
+  const currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
+  const currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
   const sessionLog = await loadDispatcherSessionLog(
-    trackerState.dispatcher_thread_id,
+    dispatcherThreadId,
     options.getThreadDetail,
     options.attachToThread,
     {
@@ -480,7 +503,7 @@ async function getRole(
     ...response,
     dispatch_plan_path: agentDispatcherConfig.dispatch_plan_path,
     command_file_path: agentDispatcherConfig.command_file_path,
-    dispatcher_thread_id: trackerState.dispatcher_thread_id,
+    dispatcher_thread_id: dispatcherThreadId,
     current_worker: currentWorker,
     last_log_line: extractLastLogLine(sessionLog),
     user_reply_channels: agentDispatcherConfig.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
@@ -488,6 +511,15 @@ async function getRole(
     mode: agentDispatcherConfig.mode,
     kill_policy: agentDispatcherConfig.kill_policy,
     session_log: sessionLog,
+    dispatch_details: buildDispatchWorkerDetails(
+      lifecycleState,
+      dispatchPlanRows,
+      {
+        roleId: role.threadId,
+        dispatcherThreadId,
+        dispatcherAgentType: agentDispatcherConfig.agent_type
+      }
+    ),
     dispatch_plan: {
       rows: dispatchPlanRows
     }
@@ -823,9 +855,9 @@ function resolveDispatchThreadPath(dispatchPlanPath: string): string {
   return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
 }
 
-async function loadDispatchThreadState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadState> {
+async function loadDispatchLifecycleState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadStateV2> {
   try {
-    return toDispatchThreadState(new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath)).load());
+    return new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath)).load();
   } catch (error) {
     log.warn("Failed to read agent-dispatcher sidecar", {
       dispatchPlanPath,
@@ -833,31 +865,16 @@ async function loadDispatchThreadState(dispatchPlanPath: string, log: Logger): P
     });
 
     return {
-      dispatcher_thread_id: null,
-      workers: {}
+      version: 2,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "pending"
+      },
+      workers: {},
+      last_reconciled_at: null
     };
   }
-}
-
-function toDispatchThreadState(lifecycleState: ReturnType<LifecycleStore["load"]>): DispatchThreadState {
-  const workers = Object.fromEntries(
-    Object.entries(lifecycleState.workers)
-      .filter(([, worker]) => worker.status === "running")
-      .map(([workerId, worker]) => [
-        workerId,
-        {
-          thread_id: worker.thread_id,
-          started_at: worker.started_at
-        }
-      ])
-  );
-
-  return {
-    dispatcher_thread_id: lifecycleState.dispatcher.status === "running"
-      ? lifecycleState.dispatcher.thread_id
-      : null,
-    workers
-  };
 }
 
 async function loadDispatchPlanRows(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanRow[]> {
@@ -879,7 +896,7 @@ async function loadDispatcherSessionLog(
   attachToThread: ((threadId: string) => Promise<void>) | undefined,
   fallbackContext: {
     currentWorker: string | null;
-    currentWorkerEntry: WorkerThreadEntry | null;
+    currentWorkerEntry: DispatchWorkerState | null;
     dispatchPlanPath: string;
     roleId: string;
     roleStatus: string;
@@ -919,15 +936,124 @@ async function loadDispatcherSessionLog(
   }
 }
 
-function resolveCurrentWorker(rows: DispatchPlanRow[], trackerState: DispatchThreadState): string | null {
+function resolveDispatcherThreadId(lifecycleState: DispatchThreadStateV2): string | null {
+  return lifecycleState.dispatcher.thread_id ?? null;
+}
+
+function buildDispatchWorkerDetails(
+  lifecycleState: DispatchThreadStateV2,
+  dispatchPlanRows: DispatchPlanRow[],
+  context: {
+    roleId: string;
+    dispatcherThreadId: string | null;
+    dispatcherAgentType: string;
+  }
+): DispatchWorkerDetail[] {
+  const dispatchPlanByWorker = new Map(dispatchPlanRows.map((row) => [row.worker, row]));
+
+  return Object.entries(lifecycleState.workers)
+    .sort((left, right) => Date.parse(left[1].started_at) - Date.parse(right[1].started_at))
+    .map(([workerId, worker]) => {
+      const dispatchPlanRow = dispatchPlanByWorker.get(workerId);
+      const conversation = parseDispatchConversation(worker.hub_result?.details_text);
+      const replyContent = resolveDispatchReply(worker.hub_result, conversation.reply);
+
+      return {
+        worker_id: workerId,
+        status: worker.status,
+        task: dispatchPlanRow?.task ?? null,
+        model: dispatchPlanRow?.model ?? null,
+        worker_thread_id: worker.thread_id,
+        trace_id: worker.hub_result?.trace_id ?? worker.trace_id,
+        command: conversation.command
+          ? {
+              trace_id: worker.trace_id,
+              sender_name: context.dispatcherThreadId ?? context.roleId,
+              sender_agent_type: context.dispatcherAgentType,
+              sender_thread_id: context.dispatcherThreadId,
+              timestamp: worker.started_at,
+              content: conversation.command
+            }
+          : null,
+        reply: replyContent
+          ? {
+              trace_id: worker.hub_result?.trace_id ?? worker.trace_id,
+              sender_name: worker.hub_result?.thread_id ?? worker.thread_id,
+              sender_agent_type: worker.hub_result?.source ?? null,
+              sender_thread_id: worker.hub_result?.thread_id ?? worker.thread_id,
+              timestamp: worker.hub_result?.timestamp ?? worker.last_seen_at,
+              content: replyContent
+            }
+          : null
+      };
+    });
+}
+
+function parseDispatchConversation(detailsText: string | undefined): { command: string | null; reply: string | null } {
+  if (!detailsText) {
+    return {
+      command: null,
+      reply: null
+    };
+  }
+
+  const normalized = detailsText.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return {
+      command: null,
+      reply: null
+    };
+  }
+
+  const conversationMatch = normalized.match(/^Your message:\n([\s\S]*?)(?:\n{2,}Agent reply:\n([\s\S]*))?$/);
+  if (conversationMatch) {
+    return {
+      command: normalizeConversationSection(conversationMatch[1]),
+      reply: normalizeConversationSection(conversationMatch[2])
+    };
+  }
+
+  const replyMatch = normalized.match(/(?:^|\n)Agent reply:\n([\s\S]*)$/);
+  return {
+    command: null,
+    reply: normalizeConversationSection(replyMatch?.[1])
+  };
+}
+
+function resolveDispatchReply(hubResult: HubResult | null | undefined, parsedReply: string | null): string | null {
+  if (parsedReply) {
+    return parsedReply;
+  }
+
+  if (!hubResult) {
+    return null;
+  }
+
+  return normalizeConversationSection(hubResult.summary_text)
+    ?? normalizeConversationSection(hubResult.content)
+    ?? normalizeConversationSection(hubResult.details_text);
+}
+
+function normalizeConversationSection(value: string | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveCurrentWorker(rows: DispatchPlanRow[], trackerState: DispatchThreadStateV2): string | null {
   const inProgressWorker = rows.find((row) => row.status === "🔄")?.worker;
   if (inProgressWorker) {
     return inProgressWorker;
   }
 
-  const trackedWorkers = Object.entries(trackerState.workers).sort((left, right) => {
-    return Date.parse(right[1].started_at) - Date.parse(left[1].started_at);
-  });
+  const trackedWorkers = Object.entries(trackerState.workers)
+    .filter(([, worker]) => worker.status === "running")
+    .sort((left, right) => {
+      return Date.parse(right[1].started_at) - Date.parse(left[1].started_at);
+    });
 
   return trackedWorkers[0]?.[0] ?? null;
 }
@@ -946,7 +1072,7 @@ function extractLastLogLine(lines: string[]): string | null {
 function buildFallbackSessionLog(
   context: {
     currentWorker: string | null;
-    currentWorkerEntry: WorkerThreadEntry | null;
+    currentWorkerEntry: DispatchWorkerState | null;
     dispatchPlanPath: string;
     roleStatus: string;
   },
@@ -970,7 +1096,7 @@ function buildFallbackSessionLog(
 function buildEmptyCachedDetailLog(
   context: {
     currentWorker: string | null;
-    currentWorkerEntry: WorkerThreadEntry | null;
+    currentWorkerEntry: DispatchWorkerState | null;
     dispatchPlanPath: string;
     roleStatus: string;
   },
