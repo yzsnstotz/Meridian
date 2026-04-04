@@ -636,10 +636,6 @@
       color: var(--accent-color);
       text-decoration: none;
     }
-    .role-link.role-link--inactive {
-      color: var(--text-dim);
-      font-weight: 500;
-    }
 
     .card-footer {
       border-top: 1px solid var(--border-color);
@@ -1184,7 +1180,7 @@
                   <span class="detail-label">Last interaction</span>
                   <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
                 </div>
-                <a class="role-link role-link--inactive" href="${rolesBase}/role/${encodeURIComponent(inst.thread_id)}">角色配置 →</a>
+                <a class="role-link" href="${rolesBase}/" target="_blank" rel="noopener noreferrer">meridian-roles →</a>
               </div>
             </details>
           `;
@@ -1196,18 +1192,7 @@
           }
           if (roleLinkEl) {
             roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
-            fetch(rolesBase + "/api/role/" + encodeURIComponent(inst.thread_id))
-              .then(function (res) {
-                if (res.ok) {
-                  roleLinkEl.classList.remove("role-link--inactive");
-                  roleLinkEl.title = "Role state found in meridian-roles for this thread.";
-                } else {
-                  roleLinkEl.title = "No role in meridian-roles for this thread_id yet. Open to create one or import tasks; HTTP " + res.status + ".";
-                }
-              })
-              .catch(function () {
-                roleLinkEl.title = "Could not reach meridian-roles at " + rolesBase + ". Is it running on port 7701?";
-              });
+            roleLinkEl.title = "Open meridian-roles. Hub thread IDs are not the same as meridian-roles role IDs.";
           }
           card.addEventListener("click", function () { openInstance(inst); });
           gridEl.appendChild(card);

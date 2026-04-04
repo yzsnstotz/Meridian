@@ -487,14 +487,14 @@ test("hub layout renders log footprint monitoring from the main page", async () 
   assert.match(indexHtml, /groupOrder\.sort/);
 });
 
-test("hub layout restores meridian-roles entrance and host-aware role links", async () => {
+test("hub layout restores the meridian-roles entrance without probing role detail by hub thread id", async () => {
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
 
   assert.match(indexHtml, /id="meridian-roles-header-link"/);
   assert.match(indexHtml, /function meridianRolesGuiOrigin\(\)/);
   assert.match(indexHtml, /meridian_roles_gui_origin/);
-  assert.match(indexHtml, /rolesBase \+ "\/api\/role\/"/);
-  assert.match(indexHtml, /role-link--inactive/);
+  assert.doesNotMatch(indexHtml, /rolesBase \+ "\/api\/role\/"/);
+  assert.match(indexHtml, /Hub thread IDs are not the same as meridian-roles role IDs/);
 });
 
 test("bridge layout does not hard-cap content width on large screens", async () => {

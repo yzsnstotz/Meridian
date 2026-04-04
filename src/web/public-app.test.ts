@@ -81,15 +81,15 @@ function createHarness(options: BrowserHarnessOptions = {}) {
   };
 }
 
-test("hub auth strips token from the URL after persisting it to session storage", () => {
+test("hub auth preserves the query token while persisting it to session storage", () => {
   const harness = createHarness({
     pathname: "/",
     search: "?thread_id=codex_01&token=secret-token"
   });
 
   assert.equal(harness.storageState.meridian_web_token, "secret-token");
-  assert.equal(harness.location.search, "?thread_id=codex_01");
-  assert.deepEqual(harness.replaceStateCalls, ["/?thread_id=codex_01"]);
+  assert.equal(harness.location.search, "?thread_id=codex_01&token=secret-token");
+  assert.deepEqual(harness.replaceStateCalls, []);
   assert.equal(harness.meridianWeb.getToken(), "secret-token");
 });
 

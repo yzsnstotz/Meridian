@@ -8,6 +8,7 @@
 
   const STORAGE_KEY = "meridian_web_token";
   const FOCUS_MODE_KEY = "meridian_focus_mode";
+  var inMemoryToken = "";
 
   function getQueryParams() {
     const params = {};
@@ -24,7 +25,11 @@
   function getStoredToken() {
     try {
       var t = sessionStorage.getItem(STORAGE_KEY);
-      return t ? t.trim() : "";
+      var trimmed = t ? t.trim() : "";
+      if (trimmed) {
+        inMemoryToken = trimmed;
+      }
+      return trimmed;
     } catch (e) {
       return "";
     }
@@ -33,13 +38,21 @@
   function getToken() {
     var q = getQueryParams();
     if (q.token) {
-      return q.token.trim();
+      var queryToken = q.token.trim();
+      if (queryToken) {
+        inMemoryToken = queryToken;
+      }
+      return queryToken;
+    }
+    if (inMemoryToken) {
+      return inMemoryToken;
     }
     return getStoredToken();
   }
 
   function setToken(token) {
     var trimmed = token ? token.trim() : "";
+    inMemoryToken = trimmed;
     try {
       if (trimmed) {
         sessionStorage.setItem(STORAGE_KEY, trimmed);
@@ -50,23 +63,12 @@
     return trimmed === "" ? getStoredToken() === "" : getStoredToken() === trimmed;
   }
 
-  // Initialize token from ?token= on first load. Strip token from the hub URL only
-  // after it was persisted, otherwise keep it so auth still works when storage is
-  // blocked or unavailable (for example some automated browser contexts).
+  // Initialize token from ?token= on first load. Keep the query token intact so the
+  // page still authenticates in browser automation or storage-constrained contexts.
   (function initTokenFromQuery() {
     var q = getQueryParams();
     if (q.token) {
-      var stored = setToken(q.token.trim());
-      var pathname = window.location.pathname || "/";
-      var isHub = pathname === "/" || pathname === "" || pathname.endsWith("/index.html");
-      if (isHub && stored && window.location.search) {
-        var rest = window.location.search.replace(/[?&]token=[^&]+&?/g, "?").replace(/\?&/, "?").replace(/\?$/, "");
-        var url = pathname;
-        if (rest && rest !== "?") url += rest;
-        if (window.history && window.history.replaceState) {
-          window.history.replaceState({}, "", url);
-        }
-      }
+      setToken(q.token.trim());
     }
   })();
 
