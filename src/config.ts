@@ -13,6 +13,7 @@ export const ROLES_SOCKET_PATH = process.env.ROLES_SOCKET_PATH ?? "/tmp/meridian
 export const GUI_PORT = Number(process.env.GUI_PORT ?? 7701);
 export const STATE_FILE_PATH = process.env.STATE_FILE_PATH ?? "/var/lib/meridian-roles/state.json";
 export const ROLES_SERVICE_ID = "service:meridian-roles";
+export const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 2 * 60 * 1000);
 
 function loadEnvFiles(): void {
   const explicitEnvKeys = new Set(Object.keys(process.env));

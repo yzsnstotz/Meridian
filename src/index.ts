@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-import { GUI_PORT } from "./config";
+import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
+import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "./roles/definitions";
 import { PromptStore } from "./roles/prompt-store";
@@ -84,6 +85,13 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log
   });
 
+  const watchdog = new ReconciliationWatchdog({
+    resolveActiveDispatchPlanPaths: () => resolveDispatchPlanPathsFromState(stateStore),
+    hubClient: client,
+    log,
+    intervalMs: RECONCILE_INTERVAL_MS
+  });
+
   await resultServer.listen();
   await httpServer.listen();
   void client.start().catch((error) => {
@@ -93,9 +101,11 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log.warn("A2A client background start failed", error);
   });
   await activatePersistedRoles(startupActivations, registry, runner, log);
+  watchdog.start();
 
   return {
     async close(): Promise<void> {
+      watchdog.stop();
       await Promise.allSettled([httpServer.close(), resultServer.close(), client.stop()]);
     }
   };
@@ -475,6 +485,25 @@ function parseLeadingJsonObject(rawContent: string): unknown {
   }
 
   return null;
+}
+
+async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
+  const state = await loadAppState(stateStore);
+  const eligibleStatuses = new Set(["active", "paused", "needs-reactivation"]);
+  const paths: string[] = [];
+
+  for (const role of state.roles) {
+    if (role.roleType !== "agent-dispatcher" || !eligibleStatuses.has(role.status)) {
+      continue;
+    }
+
+    const config = parseAgentDispatcherConfig(role);
+    if (config) {
+      paths.push(config.dispatch_plan_path);
+    }
+  }
+
+  return [...new Set(paths)];
 }
 
 function parseAgentDispatcherConfig(roleState: RoleState): AgentDispatcherConfig | null {
