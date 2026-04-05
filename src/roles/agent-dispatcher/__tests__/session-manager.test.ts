@@ -51,7 +51,8 @@ describe("DispatchThreadView", () => {
           last_seen_at: FIXED_NOW,
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -69,7 +70,8 @@ describe("DispatchThreadView", () => {
             content: "done",
             attachments: [],
             timestamp: FIXED_NOW
-          }
+          },
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -153,7 +155,8 @@ describe("SessionManager", () => {
           last_seen_at: FIXED_NOW,
           status: "running",
           expected_outputs: ["report.md"],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -171,7 +174,8 @@ describe("SessionManager", () => {
             content: "done",
             attachments: [],
             timestamp: FIXED_NOW
-          }
+          },
+          command_preamble: null
         },
         "N-03": {
           thread_id: "worker-thread-333",
@@ -180,7 +184,8 @@ describe("SessionManager", () => {
           last_seen_at: FIXED_NOW,
           status: "running",
           expected_outputs: ["log.txt"],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null

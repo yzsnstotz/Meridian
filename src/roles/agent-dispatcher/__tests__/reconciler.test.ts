@@ -493,7 +493,8 @@ function buildRunningWorker(
     last_seen_at: startedAt,
     status: "running",
     expected_outputs: [expectedOutput],
-    hub_result: null
+    hub_result: null,
+    command_preamble: null
   };
 }
 

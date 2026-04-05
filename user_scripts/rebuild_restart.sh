@@ -160,7 +160,11 @@ echo "meridian-roles rebuild_restart: launch_mode=${launch_mode}${new_pid:+ pid=
 
 healthy="false"
 healthy_streak=0
-for _ in {1..30}; do
+# Cold start (tsx + Hub probes + reconciliation) can exceed 30s; killing the service on a tight
+# timeout makes Telegram /restart look like "7701 never came up".
+HEALTH_MAX_ATTEMPTS="${HEALTH_MAX_ATTEMPTS:-90}"
+HEALTH_STREAK_REQUIRED="${HEALTH_STREAK_REQUIRED:-3}"
+for _ in $(seq 1 "${HEALTH_MAX_ATTEMPTS}"); do
   if ! service_launcher_is_alive "$new_pid" "$health_session_name"; then
     break
   fi
@@ -168,7 +172,7 @@ for _ in {1..30}; do
   if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "http://127.0.0.1:${GUI_PORT}/" >/dev/null 2>&1; then
     if [[ -S "${ROLES_SOCKET_PATH}" ]]; then
       healthy_streak=$((healthy_streak + 1))
-      if [[ "$healthy_streak" -ge 4 ]]; then
+      if [[ "$healthy_streak" -ge "${HEALTH_STREAK_REQUIRED}" ]]; then
         healthy="true"
         break
       fi

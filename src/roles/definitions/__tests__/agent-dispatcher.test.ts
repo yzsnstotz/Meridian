@@ -155,7 +155,8 @@ describe("AgentDispatcherRole", () => {
             last_seen_at: "2026-03-28T12:00:00.000Z",
             status: "running",
             expected_outputs: [],
-            hub_result: null
+            hub_result: null,
+            command_preamble: null
           },
           "N-04": {
             thread_id: "worker-thread-444",
@@ -164,7 +165,8 @@ describe("AgentDispatcherRole", () => {
             last_seen_at: "2026-03-28T12:01:00.000Z",
             status: "running",
             expected_outputs: [],
-            hub_result: null
+            hub_result: null,
+            command_preamble: null
           }
         },
         last_reconciled_at: null

@@ -524,7 +524,8 @@ describe("role config handlers", () => {
           last_seen_at: "2026-04-03T00:00:00.000Z",
           status: "running",
           expected_outputs: [reportPath],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -616,7 +617,8 @@ describe("role config handlers", () => {
           last_seen_at: "2026-04-03T00:00:00.000Z",
           status: "running",
           expected_outputs: [outputPath],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -725,7 +727,8 @@ describe("role config handlers", () => {
           last_seen_at: "2026-04-05T00:00:00.000Z",
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -815,7 +818,8 @@ describe("role config handlers", () => {
           last_seen_at: "2026-04-05T00:00:00.000Z",
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null

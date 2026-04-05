@@ -455,7 +455,8 @@ function mergeDispatchThreadState(
       last_seen_at: previousWorker?.last_seen_at ?? worker.started_at,
       status: "running",
       expected_outputs: [...(previousWorker?.expected_outputs ?? [])],
-      hub_result: previousWorker?.hub_result ? cloneHubResult(previousWorker.hub_result) : null
+      hub_result: previousWorker?.hub_result ? cloneHubResult(previousWorker.hub_result) : null,
+      command_preamble: previousWorker?.command_preamble ?? null
     };
   });
 

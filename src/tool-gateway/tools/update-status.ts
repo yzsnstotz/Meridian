@@ -196,7 +196,8 @@ async function syncWorkerLifecycleState(
       last_seen_at: nowIso,
       status: "running",
       expected_outputs: [...(workerState?.expected_outputs ?? [])],
-      hub_result: null
+      hub_result: null,
+      command_preamble: workerState?.command_preamble ?? null
     };
     lifecycleStore.save(state);
     return true;

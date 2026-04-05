@@ -286,7 +286,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-03T12:00:00.000Z",
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -299,7 +300,8 @@ describe("LifecycleStore", () => {
             thread_id: "worker-thread-222",
             status: "success",
             timestamp: "2026-04-03T12:01:10.000Z"
-          })
+          }),
+          command_preamble: null
         },
         "N-03": {
           thread_id: "worker-thread-333",
@@ -308,7 +310,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-03T12:02:00.000Z",
           status: "running",
           expected_outputs: ["test/gui-demo/final.txt"],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -381,7 +384,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-03T12:00:00.000Z",
           status: "pending",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -390,7 +394,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-03T12:01:00.000Z",
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         },
         "N-03": {
           thread_id: "worker-thread-333",
@@ -403,7 +408,8 @@ describe("LifecycleStore", () => {
             thread_id: "worker-thread-333",
             status: "success",
             timestamp: "2026-04-03T12:02:10.000Z"
-          })
+          }),
+          command_preamble: null
         },
         "N-04": {
           thread_id: "worker-thread-444",
@@ -417,7 +423,8 @@ describe("LifecycleStore", () => {
             status: "error",
             content: "worker failed",
             timestamp: "2026-04-03T12:03:10.000Z"
-          })
+          }),
+          command_preamble: null
         },
         "N-05": {
           thread_id: "worker-thread-555",
@@ -426,7 +433,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-03T12:04:00.000Z",
           status: "abandoned",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
