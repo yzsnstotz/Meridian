@@ -106,6 +106,32 @@ describe("role config handlers", () => {
     });
   });
 
+  it("returns service health from GET /api/health", async () => {
+    const harness = createHarness(createPersistedState({
+      tasks: [
+        {
+          task_id: "health-check",
+          instruction: "verify service",
+          depends_on: [],
+          status: "pending"
+        }
+      ]
+    }));
+
+    await expect(invokeJson<{
+      ok: true;
+      version: string;
+      uptime: number;
+      agents_count: number;
+      roles_count: number;
+    }>(harness.roleHandlers, "GET", "/api/health")).resolves.toMatchObject({
+      ok: true,
+      version: "1.2.0",
+      agents_count: 1,
+      roles_count: 1
+    });
+  });
+
   it("accepts agent-dispatcher role creation payloads", async () => {
     const harness = createHarness();
     const request = createJsonRequest("POST", "/api/role", {

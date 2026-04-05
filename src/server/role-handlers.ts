@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import net from "node:net";
@@ -94,6 +95,7 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
 });
 
 type RoleRouteMatch =
+  | { kind: "health" }
   | { kind: "list-channels" }
   | { kind: "list-roles" }
   | { kind: "preview-agent-dispatcher-prompt" }
@@ -106,6 +108,8 @@ type RoleRouteMatch =
   | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string };
+
+const PACKAGE_VERSION = readPackageVersion();
 
 export interface RoleHandlersOptions {
   runner: RoleRunner;
@@ -268,6 +272,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
       try {
         switch (route.kind) {
+          case "health":
+            writeJson(response, 200, await getHealth());
+            return true;
           case "list-channels":
             writeJson(response, 200, await getChannels());
             return true;
@@ -403,6 +410,25 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
       return { channels: [] };
     }
+  }
+
+  async function getHealth(): Promise<{
+    ok: true;
+    version: string;
+    uptime: number;
+    agents_count: number;
+    roles_count: number;
+  }> {
+    const state = await loadState(stateStore);
+    const count = state.roles.length;
+
+    return {
+      ok: true,
+      version: PACKAGE_VERSION,
+      uptime: Math.floor(process.uptime()),
+      agents_count: count,
+      roles_count: count
+    };
   }
 
   async function activateRole(
@@ -834,6 +860,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
   const pathname = new URL(url, "http://127.0.0.1").pathname;
   const parts = pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
 
+  if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "health") {
+    return { kind: "health" };
+  }
+
   if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "roles") {
     return { kind: "list-roles" };
   }
@@ -916,6 +946,19 @@ function createHttpError(statusCode: number, message: string): Error & { statusC
   const error = new Error(message) as Error & { statusCode: number };
   error.statusCode = statusCode;
   return error;
+}
+
+function readPackageVersion(): string {
+  try {
+    const packageJson = JSON.parse(fsSync.readFileSync(path.resolve(__dirname, "../../package.json"), "utf8")) as {
+      version?: unknown;
+    };
+    return typeof packageJson.version === "string" && packageJson.version.trim().length > 0
+      ? packageJson.version
+      : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: string } {

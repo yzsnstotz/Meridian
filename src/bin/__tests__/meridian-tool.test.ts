@@ -116,6 +116,37 @@ describe("runCli", () => {
       }
     });
   });
+
+  it("returns an explicit tool exit code for service-unreachable commands", async () => {
+    const registry = new ToolRegistry();
+    const io = createIo();
+
+    registry.register({
+      name: "health",
+      description: "Health check",
+      params: {},
+      execute: vi.fn().mockResolvedValue({
+        ok: false,
+        error: "service unreachable",
+        data: {
+          exit_code: 3,
+          service_unreachable: true
+        }
+      })
+    });
+
+    const exitCode = await runCli(["health"], createDeps(registry), io.streams);
+
+    expect(exitCode).toBe(3);
+    expect(JSON.parse(io.stdout())).toEqual({
+      ok: false,
+      error: "service unreachable",
+      data: {
+        exit_code: 3,
+        service_unreachable: true
+      }
+    });
+  });
 });
 
 function createDeps(registry: ToolRegistry): CliDeps {

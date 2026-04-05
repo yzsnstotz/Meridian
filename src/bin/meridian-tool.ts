@@ -173,7 +173,22 @@ function getExitCode(toolName: string, result: ToolResult): number {
     return 0;
   }
 
+  const explicitExitCode = readExplicitExitCode(result);
+  if (explicitExitCode !== null) {
+    return explicitExitCode;
+  }
+
   return result.ok ? 0 : 1;
+}
+
+function readExplicitExitCode(result: ToolResult): number | null {
+  const { data } = result;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+
+  const exitCode = (data as { exit_code?: unknown }).exit_code;
+  return Number.isInteger(exitCode) ? exitCode as number : null;
 }
 
 function toParamName(flag: string): string {
