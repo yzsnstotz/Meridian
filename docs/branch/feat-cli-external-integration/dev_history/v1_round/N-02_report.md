@@ -59,4 +59,4 @@ $ npx tsx src/bin/meridian-cli.ts spawn --help 2>&1 | grep -E 'provider|model|wo
 ## Notes
 - `src/web/server.test.ts` appears to leave open handles when run as the full file, even though the visible subtests pass. The focused rerun for the new health/CLI coverage exits cleanly and was used for deterministic verification.
 - This worker also closed the PRD gap where the spawn HTTP path still defaulted `auto_approve` to `false` and did not yet forward `provider` alias / `model_id` into the hub payload.
-- Step 5a was intentionally skipped per dispatch override; dispatch-plan state is expected to be updated by the lifecycle store from the Hub result instead of manual markdown edits.
+- Step 5a was intentionally skipped per dispatch override; the expected lifecycle update did not land, so the branch-level dispatch artifacts were reconciled manually on 2026-04-06 to mark `N-02` complete and unblock Batch 3.

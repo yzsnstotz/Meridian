@@ -68,8 +68,8 @@
       "thread_id": "codex_02",
       "trace_id": "2bbd9374-b973-4326-89c9-083399a4f5e4",
       "started_at": "2026-04-05T11:55:03.861Z",
-      "last_seen_at": "2026-04-05T11:55:03.861Z",
-      "status": "running",
+      "last_seen_at": "2026-04-05T16:35:36Z",
+      "status": "completed",
       "expected_outputs": [
         "/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round/N-02_report.md"
       ],
