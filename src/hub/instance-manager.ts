@@ -1124,6 +1124,10 @@ export class InstanceManager {
       } catch {
         // Best effort kill; cleanup continues below.
       }
+      // Wait for the process to actually exit before proceeding with cleanup.
+      // This prevents race conditions when a thread is killed then immediately
+      // re-spawned — the old process may still hold the socket or pane.
+      await this.waitForChildExit(child, threadId);
     } else {
       try {
         process.kill(instance.pid, "SIGTERM");
@@ -1132,6 +1136,8 @@ export class InstanceManager {
           throw error;
         }
       }
+      // For PID-only kills, poll until the process is gone.
+      await this.waitForPidExit(instance.pid, threadId);
     }
 
     if (instance.socket_path.startsWith("/")) {
@@ -1162,6 +1168,42 @@ export class InstanceManager {
       },
       "Agent instance killed"
     );
+  }
+
+  /** Wait for a managed child process to exit, with a timeout. */
+  private async waitForChildExit(child: ChildProcess, threadId: string, timeoutMs = 10_000): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        child.removeListener("exit", onExit);
+        this.log.warn({ thread_id: threadId, timeout_ms: timeoutMs }, "Kill exit wait timed out; proceeding with cleanup");
+        resolve();
+      }, timeoutMs);
+      const onExit = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      child.once("exit", onExit);
+    });
+  }
+
+  /** Poll until a PID is no longer alive, with a timeout. */
+  private async waitForPidExit(pid: number, threadId: string, timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const pollInterval = 200;
+    while (Date.now() < deadline) {
+      try {
+        // Signal 0 checks if process exists without sending a signal.
+        process.kill(pid, 0);
+      } catch {
+        // Process is gone.
+        return;
+      }
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    this.log.warn({ thread_id: threadId, pid, timeout_ms: timeoutMs }, "Kill PID exit wait timed out; proceeding with cleanup");
   }
 
   private watchChildProcess(threadId: string, child: ChildProcess): void {
