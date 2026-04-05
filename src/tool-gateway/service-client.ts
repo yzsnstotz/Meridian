@@ -22,16 +22,33 @@ export interface JsonRequestFailure {
 export type JsonRequestResult<T> = JsonRequestSuccess<T> | JsonRequestFailure;
 
 export async function requestRolesServiceJson<T>(pathname: string): Promise<JsonRequestResult<T>> {
+  return requestRolesService<T>(pathname, {
+    method: "GET",
+    headers: {
+      accept: "application/json"
+    }
+  });
+}
+
+export async function postRolesServiceJson<T>(pathname: string, body: unknown): Promise<JsonRequestResult<T>> {
+  return requestRolesService<T>(pathname, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+async function requestRolesService<T>(pathname: string, init: RequestInit): Promise<JsonRequestResult<T>> {
   const baseUrl = resolveRolesServiceBaseUrl();
   const requestUrl = new URL(pathname, baseUrl);
 
   let response: Response;
   try {
     response = await fetch(requestUrl, {
-      method: "GET",
-      headers: {
-        accept: "application/json"
-      },
+      ...init,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     });
   } catch (error) {

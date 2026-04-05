@@ -223,6 +223,15 @@ export type DispatcherConfig = z.infer<typeof DispatcherConfigSchema>;
 export const KillPolicySchema = z.enum(["always", "on_success", "never"]);
 export type KillPolicy = z.infer<typeof KillPolicySchema>;
 
+export const DispatchModelOverrideSchema = z.object({
+  provider: z.string().min(1),
+  model_id: z.string().min(1)
+});
+export type DispatchModelOverride = z.infer<typeof DispatchModelOverrideSchema>;
+
+export const DispatchModelMapSchema = z.record(z.string().min(1), DispatchModelOverrideSchema);
+export type DispatchModelMap = z.infer<typeof DispatchModelMapSchema>;
+
 export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   dispatch_plan_path: z.string().min(1),
   command_file_path: z.string().min(1),
@@ -230,6 +239,7 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   agent_type: AgentTypeSchema.default("claude"),
   mode: BridgeModeSchema.default("bridge"),
   kill_policy: KillPolicySchema.default("always"),
+  model_map: DispatchModelMapSchema.optional(),
   use_agent_dispatcher: z.boolean().optional()
 })
   .superRefine((value, ctx) => {
