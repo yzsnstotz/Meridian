@@ -36,7 +36,7 @@
 | ✅ | 1 | R-03 | Meridian-roles Bin Registration | CODEX | — | CLI Integration PRD | package.json + shebang only |
 | ⬜ | 2 | N-02 | Meridian CLI Commands Implementation | CODEX-XHIGH | N-01 | CLI Integration PRD | All 7 commands; largest single worker |
 | ✅ | 2 | N-04 | Meridian-roles Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | New tool + API endpoint + LifecycleStore integration |
-| ⬜ | 2 | N-05 | Meridian-roles Dispatch-Status, List-Roles, Health | CODEX-HIGH | R-03 | CLI Integration PRD | 3 new tools, read-only operations |
+| ✅ | 2 | N-05 | Meridian-roles Dispatch-Status, List-Roles, Health | CODEX-HIGH | R-03 | CLI Integration PRD | 3 new tools, read-only operations |
 | ⬜ | 3 | R-02 | Meridian Provider/Model Spawn Enhancement | CODEX-HIGH | N-02 | CLI Integration PRD | Spawn API extension + modelId verification |
 | ⬜ | 3 | N-06 | Meridian-roles Dispatch-Start Tool | CODEX-XHIGH | R-03, N-05 | CLI Integration PRD | model-map parsing + dispatch session start |
 | ⬜ | 3 | R-04 | Meridian-roles GUI Resume Buttons & Stale Viz | CODEX-XHIGH | N-04 | CLI Integration PRD | GUI changes + stale badge rendering |
@@ -161,6 +161,13 @@
 
 All reports written to: `/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round/`
 Corrective worker reports (if needed): `/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round_delta/`
+
+
+
+
+
+
+
 
 
 
