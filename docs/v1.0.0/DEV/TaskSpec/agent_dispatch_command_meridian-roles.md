@@ -154,9 +154,10 @@ Work through each sub-task in your Worker definition sequentially. After each su
 - Fix any failures before moving to the next sub-task
 - Do NOT accumulate failures and fix at the end
 
-### 4c. Scope discipline — HARD RULE
-- Only modify files listed in your Worker's **Deliverables** section
-- If you discover a bug in another Worker's files, document it in your completion report — do NOT fix it silently
+### 4c. Scope discipline
+- **Implementation code**: only modify files listed in your Worker's **Deliverables** section
+- **Workflow artifacts are always in scope**: you are expected to update `dispatch_plan.md` (Steps 4a, 5a), write completion reports to `dev_history/` (Step 5b), perform git commits (Step 5c), and push when the phase gate is met (Step 5d). These are part of the standard taskspec workflow, not scope violations.
+- If you discover a bug in another Worker's implementation files, document it in your completion report — do NOT fix it silently
 - If fixing the bug is required to unblock your task, output `⏸ PAUSE: Blocker in [file]. Scope violation risk. Notifying PM.`
 
 ### 4d. Run full AI Auto-Tests

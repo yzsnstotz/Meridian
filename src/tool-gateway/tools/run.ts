@@ -61,13 +61,14 @@ const runTool: ToolDefinition = {
     process.once("SIGINT", handleSigint);
 
     try {
-      const commandText = await readFile(commandPath, "utf8");
       const traceId = randomUUID();
       const lifecycleStore = createLifecycleStore(commandPath);
+      const workerRow = await resolveWorkerRow(commandPath, worker);
       const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
       lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs);
 
-      const result = await sendAndWait(buildRunMessage(threadId, commandText, traceId), 0);
+      const preamble = buildWorkerPreamble(worker, workerRow, commandPath);
+      const result = await sendAndWait(buildRunMessage(threadId, preamble, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
       return mapRunResult(result, worker, threadId);
@@ -130,6 +131,65 @@ async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, resu
   }
 }
 
+export interface DispatchPlanRow {
+  worker: string;
+  task?: string;
+  model?: string;
+  dependsOn?: string;
+  notes?: string;
+}
+
+function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, commandPath: string): string {
+  const lines: string[] = [];
+
+  if (row?.model) {
+    lines.push(`# Worker Identity`);
+    lines.push(`You are **${row.model}** — worker **${workerId}**.`);
+    lines.push(`Your model tier code is \`${row.model}\`. Claim tasks assigned to this code.`);
+  } else {
+    lines.push(`# Worker Identity`);
+    lines.push(`You are worker **${workerId}**.`);
+  }
+
+  lines.push("");
+
+  if (row?.task) {
+    lines.push(`# Assigned Task`);
+    lines.push(`**${workerId}**: ${row.task}`);
+    if (row.dependsOn) {
+      lines.push(`**Depends On**: ${row.dependsOn}`);
+    }
+    if (row.notes) {
+      lines.push(`**Notes**: ${row.notes}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(`# Status`);
+  lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress) by the lifecycle store. You may still follow all taskspec steps — including status updates, git commits, completion reports, and push — as described in the dispatch command. The lifecycle store will reconcile the final status from the Hub result, so any status you write to the plan is safe and will be corrected if needed.`);
+  lines.push("");
+
+  lines.push(`# Command File`);
+  lines.push(`Read the full dispatch command from disk:`);
+  lines.push("```");
+  lines.push(commandPath);
+  lines.push("```");
+  lines.push(`Open this file and follow all instructions, including Steps 4a through 5d.`);
+
+  return lines.join("\n");
+}
+
+async function resolveWorkerRow(commandPath: string, workerId: string): Promise<DispatchPlanRow | null> {
+  const dispatchPlanPath = path.join(path.dirname(commandPath), DISPATCH_PLAN_FILENAME);
+
+  try {
+    const markdown = await readFile(dispatchPlanPath, "utf8");
+    return parseDispatchPlanRows(markdown).find((candidate) => candidate.worker === workerId) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function deriveExpectedOutputs(commandPath: string, workerId: string): Promise<string[]> {
   const planOutputs = await deriveExpectedOutputsFromPlan(commandPath, workerId);
   if (planOutputs.length > 0) {
@@ -155,7 +215,7 @@ async function deriveExpectedOutputsFromPlan(commandPath: string, workerId: stri
   }
 }
 
-function parseDispatchPlanRows(markdown: string): Array<{ worker: string; notes?: string }> {
+function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
   const lines = markdown.split(/\r?\n/);
 
   for (let index = 0; index < lines.length - 1; index += 1) {
@@ -166,6 +226,9 @@ function parseDispatchPlanRows(markdown: string): Array<{ worker: string; notes?
 
     const workerColumn = headerCells.indexOf("Worker");
     const notesColumn = headerCells.indexOf("Notes");
+    const taskColumn = headerCells.indexOf("Task");
+    const modelColumn = headerCells.indexOf("Model");
+    const dependsOnColumn = headerCells.indexOf("Depends On");
     if (workerColumn === -1) {
       continue;
     }
@@ -175,7 +238,7 @@ function parseDispatchPlanRows(markdown: string): Array<{ worker: string; notes?
       continue;
     }
 
-    const rows: Array<{ worker: string; notes?: string }> = [];
+    const rows: DispatchPlanRow[] = [];
     for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
       const rowCells = parseTableRow(lines[rowIndex]);
       if (!rowCells || rowCells.length !== headerCells.length) {
@@ -184,6 +247,9 @@ function parseDispatchPlanRows(markdown: string): Array<{ worker: string; notes?
 
       rows.push({
         worker: rowCells[workerColumn],
+        task: taskColumn === -1 ? undefined : rowCells[taskColumn],
+        model: modelColumn === -1 ? undefined : rowCells[modelColumn],
+        dependsOn: dependsOnColumn === -1 ? undefined : rowCells[dependsOnColumn],
         notes: notesColumn === -1 ? undefined : rowCells[notesColumn]
       });
     }
