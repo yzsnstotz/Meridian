@@ -12,6 +12,7 @@ import { DispatcherRole } from "../../roles/definitions";
 import { PromptStore } from "../../roles/prompt-store";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
+import killTool from "../../tool-gateway/tools/kill";
 import updateStatusTool from "../../tool-gateway/tools/update-status";
 import { createRoleHandlers, type RoleHandlers } from "../role-handlers";
 import type { AppState, DispatcherConfig, HubMessage, HubResult, ReplyChannel } from "../../types";
@@ -462,6 +463,34 @@ describe("role config handlers", () => {
     expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-live")?.status).toBe("active");
   });
 
+  it("starts a new Hub session via POST /api/agent-dispatcher/:id/start-hub", async () => {
+    const harness = createHarness();
+    const startResponse = await invokeJson<{ ok: true; dispatcher_id: string; dispatcher_thread_id: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/start",
+      {
+        thread_id: "agent-dispatcher-start-hub-route",
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }]
+      }
+    );
+
+    expect(startResponse.dispatcher_id).toBe("agent-dispatcher-start-hub-route");
+
+    await expect(
+      invokeJson<{ ok: true; dispatcher_thread_id: string }>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-start-hub-route/start-hub"
+      )
+    ).resolves.toEqual({
+      ok: true,
+      dispatcher_thread_id: "dispatcher-thread-123"
+    });
+  });
+
   it("returns a reconciliation report from POST /api/reconcile for the active agent-dispatcher", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-reconcile-route-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -665,6 +694,165 @@ describe("role config handlers", () => {
     });
   });
 
+  it("resumes a stuck worker through POST /api/roles/:threadId/worker/:workerId/resume", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-resume-route-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | running |",
+      "| ⬜ | 3 | R-04 | GUI Resume Buttons | CODEX-XHIGH | N-04 | CLI Integration PRD | blocked |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:00:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "worker-thread-456"
+      }
+    });
+
+    try {
+      const harness = createHarness();
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-resume",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-resume/worker/N-04/resume",
+        {
+          action: "skip"
+        }
+      )).resolves.toEqual({
+        ok: true,
+        result: {
+          worker: "N-04",
+          action: "skip",
+          status: "skipped",
+          thread_id: "worker-thread-456",
+          thread_killed: true
+        }
+      });
+
+      expect(killSpy).toHaveBeenCalledWith({
+        thread_id: "worker-thread-456"
+      });
+      expect(lifecycleStore.load().workers["N-04"]?.status).toBe("skipped");
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⛔ SKIPPED | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | running |");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects force-complete without force from the resume worker route", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-resume-route-force-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | running |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: null,
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:00:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness();
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-resume-force",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }]
+      });
+
+      const request = createJsonRequest(
+        "POST",
+        "/api/roles/agent-dispatcher-resume-force/worker/N-04/resume",
+        {
+          action: "force-complete"
+        }
+      );
+      const response = createJsonResponse();
+
+      const handled = await harness.roleHandlers.handle(request, response.raw);
+
+      expect(handled).toBe(true);
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "force-complete requires force=true"
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("lists reply channels from the injected channel registry", async () => {
     const harness = createHarness(undefined, undefined, [
       {
@@ -708,6 +896,11 @@ describe("role config handlers", () => {
 
     await fs.writeFile(dispatchPlanPath, [
       "# Dispatch Plan",
+      "",
+      "| Model | Code | Provider | Model ID | Assign When |",
+      "|-------|------|----------|----------|-------------|",
+      "| Codex XHigh | CODEX-XHIGH | codex | gpt-5.4 xhigh | Architecture and deep integration |",
+      "| Codex | CODEX | codex | gpt-5.4 medium | Straightforward implementation work |",
       "",
       "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
       "|--------|-------|--------|------|-------|------------|----------------|-------|",
@@ -823,11 +1016,13 @@ describe("role config handlers", () => {
             status: "completed",
             task: "API Layer",
             model: "CODEX-XHIGH",
+            applied_model: "gpt-5.4 xhigh",
             trace_id: "11111111-1111-4111-8111-111111111111",
             command: expect.objectContaining({
               trace_id: "11111111-1111-4111-8111-111111111111",
               sender_name: "dispatcher-thread-123",
               sender_agent_type: "codex",
+              sender_model: null,
               timestamp: "2026-03-27T23:56:00.000Z",
               content: "Implement N-10 API layer"
             }),
@@ -835,6 +1030,7 @@ describe("role config handlers", () => {
               trace_id: "11111111-1111-4111-8111-111111111111",
               sender_name: "codex_17",
               sender_agent_type: "codex",
+              sender_model: "gpt-5.4 xhigh",
               timestamp: "2026-03-27T23:57:00.000Z",
               content: "Completed API layer."
             })
@@ -844,6 +1040,7 @@ describe("role config handlers", () => {
             status: "running",
             task: "GUI",
             model: "CODEX",
+            applied_model: "gpt-5.4 medium",
             trace_id: "22222222-2222-4222-8222-222222222222",
             command: null,
             reply: null
@@ -1217,6 +1414,7 @@ function createHarness(
         getDispatcherThreadId: () => "dispatcher-thread-123",
         initSession: async () => undefined,
         isPaused: () => false,
+        prepareFreshDispatcherLaunch: async () => undefined,
         onRestart: async () => ({
           staleWorkersKilled: [],
           dispatcherRestarted: true

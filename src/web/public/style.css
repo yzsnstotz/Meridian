@@ -151,6 +151,35 @@ code,
   color: var(--muted);
 }
 
+.reply-channel-callout {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: rgba(134, 215, 255, 0.07);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.reply-channel-callout strong {
+  color: var(--accent-strong);
+}
+
+.reply-channel-callout code {
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.manual-fallback-wrap.manual-fallback-highlight {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(80, 240, 200, 0.35);
+  background: rgba(80, 240, 200, 0.04);
+}
+
 .stack {
   display: grid;
   gap: 16px;
@@ -304,6 +333,22 @@ button:disabled {
 .status-running {
   color: var(--accent);
   background: rgba(134, 215, 255, 0.12);
+}
+
+.dispatcher-card-actions {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.dispatcher-hub-controls {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.dispatcher-hub-controls .hub-controls-hint {
+  margin-top: 0.75rem;
+  max-width: 52rem;
 }
 
 .status-paused {

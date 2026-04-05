@@ -199,6 +199,30 @@ export class SessionManager {
     void this.pauseWriteChain.catch(() => undefined);
   }
 
+  /**
+   * Best-effort kill of any Hub dispatcher thread recorded on disk or in memory,
+   * reset the lifecycle sidecar dispatcher row to pending, and clear the in-memory thread id.
+   * Use before launching a fresh dispatcher Hub session without deactivating the role.
+   */
+  async prepareFreshDispatcherLaunch(): Promise<void> {
+    await this.pauseStateReady;
+    await this.pauseWriteChain;
+
+    const lifecycleStore = this.getLifecycleStore();
+    const lifecycleState = lifecycleStore.load();
+    const diskThreadId = lifecycleState.dispatcher.thread_id?.trim() || null;
+    const memoryThreadId = this.dispatcherThreadId?.trim() || null;
+    const toKill = [...new Set([diskThreadId, memoryThreadId].filter((id): id is string => Boolean(id)))];
+    for (const hubThreadId of toKill) {
+      await this.killThread(hubThreadId);
+    }
+
+    const nextState = lifecycleStore.load();
+    nextState.dispatcher = buildPendingDispatcherState();
+    lifecycleStore.save(nextState);
+    this.dispatcherThreadId = null;
+  }
+
   async onRestart(): Promise<RestartResult> {
     await this.pauseStateReady;
     await this.pauseWriteChain;
@@ -216,8 +240,12 @@ export class SessionManager {
 
     for (const worker of runningWorkers) {
       await this.killThread(worker.thread_id);
-      lifecycleStore.markAbandoned(worker.worker_id, "stale running worker found during restart");
       staleWorkersKilled.push(worker.worker_id);
+      // Do NOT mark abandoned here. The thread is killed, but the worker's true
+      // outcome (completed with outputs, genuinely abandoned, etc.) must be
+      // determined by the reconciler which checks hub_result, expected outputs,
+      // and stale timeout. Blindly stamping "abandoned" would erase workers that
+      // actually completed successfully before the restart.
     }
 
     if (dispatcherCleared) {

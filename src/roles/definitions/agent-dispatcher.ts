@@ -31,7 +31,12 @@ type PersistableStateStore = Pick<StateStore, "load" | "save">;
 type DispatcherLifecycleStatus = "active" | "paused";
 type SessionManagerLike = Pick<
   SessionManager,
-  "getDispatcherThreadId" | "initSession" | "isPaused" | "onRestart" | "setPaused"
+  | "getDispatcherThreadId"
+  | "initSession"
+  | "isPaused"
+  | "onRestart"
+  | "prepareFreshDispatcherLaunch"
+  | "setPaused"
 >;
 type LifecycleStoreLike = Pick<LifecycleStore, "load" | "save">;
 
@@ -99,38 +104,7 @@ export class AgentDispatcherRole implements BaseRole {
     let dispatcherThreadId: string | null = null;
 
     try {
-      const configuredSystemPrompt = this.config.system_prompt?.trim();
-      const defaultSystemPrompt = this.buildPrompt({
-        dispatch_plan_path: this.config.dispatch_plan_path,
-        command_file_path: this.config.command_file_path,
-        user_reply_channels: JSON.stringify(this.config.user_reply_channels),
-        default_agent_type: this.config.agent_type,
-        default_mode: this.config.mode,
-        kill_policy: this.config.kill_policy
-      });
-      const systemPrompt = configuredSystemPrompt && configuredSystemPrompt.length > 0
-        ? configuredSystemPrompt
-        : defaultSystemPrompt;
-
-      const inProgressWorkers = await this.readPlanWorkersByStatus(this.config.dispatch_plan_path, "🔄");
-      if (inProgressWorkers.length > 0) {
-        await sessionManager.onRestart();
-      }
-
-      const launched = await this.launch({
-        agentType: this.config.agent_type,
-        mode: this.config.mode,
-        systemPrompt,
-        dispatchPlanPath: this.config.dispatch_plan_path,
-        commandFilePath: this.config.command_file_path,
-        userReplyChannel: this.getPrimaryReplyChannel()
-      });
-      if (!launched.ok || !launched.threadId.trim()) {
-        throw new Error(launched.error ?? "Failed to launch dispatcher agent");
-      }
-
-      dispatcherThreadId = launched.threadId;
-      await sessionManager.initSession(dispatcherThreadId, this.config.dispatch_plan_path);
+      dispatcherThreadId = await this.executeDispatcherHubLaunch();
       await this.persistState(sessionManager.isPaused() ? "paused" : "active");
     } catch (error) {
       this.ctx = null;
@@ -143,6 +117,64 @@ export class AgentDispatcherRole implements BaseRole {
 
       throw error;
     }
+  }
+
+  /**
+   * Spawn a new Hub dispatcher thread and record it in the lifecycle sidecar.
+   * Does not clear an existing thread; use when the role is first activated.
+   */
+  private async executeDispatcherHubLaunch(): Promise<string> {
+    const sessionManager = this.requireSessionManager();
+    const inProgressWorkers = await this.readPlanWorkersByStatus(this.config.dispatch_plan_path, "🔄");
+    if (inProgressWorkers.length > 0) {
+      await sessionManager.onRestart();
+    }
+
+    const systemPrompt = this.resolveDispatcherSystemPrompt();
+    const launched = await this.launch({
+      agentType: this.config.agent_type,
+      mode: this.config.mode,
+      systemPrompt,
+      dispatchPlanPath: this.config.dispatch_plan_path,
+      commandFilePath: this.config.command_file_path,
+      dispatcherRoleId: this.threadId,
+      userReplyChannel: this.getPrimaryReplyChannel()
+    });
+    if (!launched.ok || !launched.threadId.trim()) {
+      throw new Error(launched.error ?? "Failed to launch dispatcher agent");
+    }
+
+    const dispatcherThreadId = launched.threadId;
+    await sessionManager.initSession(dispatcherThreadId, this.config.dispatch_plan_path);
+    return dispatcherThreadId;
+  }
+
+  private resolveDispatcherSystemPrompt(): string {
+    const configuredSystemPrompt = this.config.system_prompt?.trim();
+    const defaultSystemPrompt = this.buildPrompt({
+      dispatch_plan_path: this.config.dispatch_plan_path,
+      command_file_path: this.config.command_file_path,
+      user_reply_channels: JSON.stringify(this.config.user_reply_channels),
+      default_agent_type: this.config.agent_type,
+      default_mode: this.config.mode,
+      kill_policy: this.config.kill_policy
+    });
+    return configuredSystemPrompt && configuredSystemPrompt.length > 0
+      ? configuredSystemPrompt
+      : defaultSystemPrompt;
+  }
+
+  /**
+   * Kill any stale Hub dispatcher thread, reset the sidecar dispatcher row, and launch a new Hub session.
+   * For use when dispatcher_thread_id is pending or the in-memory Hub thread is out of sync with disk.
+   */
+  async relaunchHubSession(): Promise<{ dispatcher_thread_id: string }> {
+    const sessionManager = this.requireSessionManager();
+    this.requireContext();
+    await sessionManager.prepareFreshDispatcherLaunch();
+    const dispatcherThreadId = await this.executeDispatcherHubLaunch();
+    await this.persistState(sessionManager.isPaused() ? "paused" : "active");
+    return { dispatcher_thread_id: dispatcherThreadId };
   }
 
   async onDeactivate(): Promise<void> {

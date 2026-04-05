@@ -25,6 +25,19 @@
           </div>
         </div>
         <dl id="role-summary" class="summary-grid"></dl>
+        <div id="agent-dispatcher-hub-controls" class="dispatcher-hub-controls" hidden>
+          <p id="agent-dispatcher-start-hub-feedback" class="feedback" role="status" aria-live="polite"></p>
+          <div class="card-actions">
+            <button type="button" id="agent-dispatcher-start-hub-btn" class="primary-button">
+              Start hub session
+            </button>
+          </div>
+          <p class="muted hub-controls-hint">
+            Spawns or replaces the Hub dispatcher thread. Use when <code>dispatcher_thread_id</code> is
+            <code>pending</code>, or after editing <code>dispatch_threads.json</code>. Pause/Resume only toggles
+            the control session and does not launch Hub.
+          </p>
+        </div>
       </section>
 
       <section id="dispatcher-session-panel" class="panel" hidden>

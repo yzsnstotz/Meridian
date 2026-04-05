@@ -111,7 +111,7 @@ export const HubResultSchema = z.object({
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
 
-export const LifecycleStatusSchema = z.enum(["pending", "running", "completed", "failed", "abandoned"]);
+export const LifecycleStatusSchema = z.enum(["pending", "running", "completed", "failed", "abandoned", "skipped"]);
 export type LifecycleStatus = z.infer<typeof LifecycleStatusSchema>;
 
 export const DispatchLifecycleDispatcherSchema = z.object({
@@ -128,7 +128,8 @@ export const DispatchWorkerStateSchema = z.object({
   last_seen_at: z.string().datetime(),
   status: LifecycleStatusSchema,
   expected_outputs: z.array(z.string().min(1)).default([]),
-  hub_result: HubResultSchema.nullable().default(null)
+  hub_result: HubResultSchema.nullable().default(null),
+  command_preamble: z.string().nullable().default(null)
 });
 export type DispatchWorkerState = z.infer<typeof DispatchWorkerStateSchema>;
 

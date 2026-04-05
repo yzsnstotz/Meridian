@@ -91,7 +91,19 @@
             <select id="agent-dispatcher-channel-select" name="user_reply_channels" multiple size="5"></select>
           </label>
 
-          <div class="summary-grid">
+          <div
+            id="agent-dispatcher-reply-channel-callout"
+            class="reply-channel-callout"
+            role="note"
+            hidden
+          >
+            <strong>Meridian Hub returned no reply channels.</strong>
+            Fill <strong>manual_reply_chat_id</strong> below (for example <code>web:gui-demo</code>) so the
+            dispatcher has a destination for completion messages. This is expected when Hub has not registered
+            web/Telegram channels for this roles service yet.
+          </div>
+
+          <div id="agent-dispatcher-manual-fallback-wrap" class="summary-grid manual-fallback-wrap">
             <label class="field">
               <span>manual_reply_channel</span>
               <select id="agent-dispatcher-manual-channel" name="manual_reply_channel">
@@ -106,7 +118,8 @@
                 id="agent-dispatcher-manual-chat-id"
                 name="manual_reply_chat_id"
                 type="text"
-                placeholder="web:ops"
+                placeholder="web:gui-demo"
+                autocomplete="off"
               />
             </label>
           </div>

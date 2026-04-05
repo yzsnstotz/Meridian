@@ -70,6 +70,7 @@ describe("AgentDispatcherRole", () => {
       systemPrompt: "dispatcher prompt",
       dispatchPlanPath: "/tmp/dispatch_plan.md",
       commandFilePath: "/tmp/agent_dispatch_command.md",
+      dispatcherRoleId: "agent-dispatcher-role",
       userReplyChannel: {
         channel: "telegram",
         chat_id: "telegram:pm"
@@ -117,6 +118,24 @@ describe("AgentDispatcherRole", () => {
     expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(false);
     expect(harness.signalDispatcher).toHaveBeenCalledWith("dispatcher-thread-123", "active");
     expect((await harness.stateStore.load())?.roles[0]?.status).toBe("active");
+  });
+
+  it("relaunchHubSession prepares a fresh launch and spawns a new dispatcher thread", async () => {
+    const harness = createHarness();
+    await harness.role.onActivate(harness.context);
+    harness.launchDispatcher.mockResolvedValueOnce({
+      ok: true,
+      threadId: "dispatcher-thread-456"
+    });
+
+    const result = await harness.role.relaunchHubSession();
+
+    expect(harness.sessionManager.prepareFreshDispatcherLaunch).toHaveBeenCalled();
+    expect(result.dispatcher_thread_id).toBe("dispatcher-thread-456");
+    expect(harness.sessionManager.initSession).toHaveBeenLastCalledWith(
+      "dispatcher-thread-456",
+      "/tmp/dispatch_plan.md"
+    );
   });
 
   it("onDeactivate kills the dispatcher and tracked worker threads", async () => {
@@ -181,6 +200,7 @@ function createHarness(options: {
     getDispatcherThreadId: vi.fn(() => "dispatcher-thread-123"),
     initSession: vi.fn(async () => undefined),
     isPaused: vi.fn(() => false),
+    prepareFreshDispatcherLaunch: vi.fn(async () => undefined),
     onRestart: vi.fn(async () => ({
       staleWorkersKilled: [],
       dispatcherRestarted: true

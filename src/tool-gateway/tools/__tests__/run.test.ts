@@ -117,27 +117,18 @@ describe("run tool", () => {
       "N-04",
       "thread-123",
       "11111111-1111-4111-8111-111111111111",
-      ["/tmp/dispatch/final.txt", "/tmp/dispatch/audit.txt"]
+      ["/tmp/dispatch/final.txt", "/tmp/dispatch/audit.txt"],
+      expect.any(String)
     );
     expect(lifecycleStore.recordWorkerStart.mock.invocationCallOrder[0]).toBeLessThan(
       sendAndWaitMock.mock.invocationCallOrder[0]
     );
-    expect(sendAndWaitMock).toHaveBeenCalledWith(
-      {
-        trace_id: "11111111-1111-4111-8111-111111111111",
-        thread_id: "thread-123",
-        actor_id: "service:meridian-tool",
-        priority: 5,
-        intent: "run",
-        target: "thread-123",
-        mode: "bridge",
-        payload: {
-          content: expect.any(String),
-          attachments: []
-        }
-      },
-      0
-    );
+    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
+    expect(sentPayload.payload.content).toContain("You are **CODEX**");
+    expect(sentPayload.payload.content).toContain("worker **N-04**");
+    expect(sentPayload.payload.content).toContain("**N-04**: Ship outputs");
+    expect(sentPayload.payload.content).toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentPayload.payload.content).not.toContain("# command");
     expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", hubResult);
     expect(sendAndWaitMock.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]

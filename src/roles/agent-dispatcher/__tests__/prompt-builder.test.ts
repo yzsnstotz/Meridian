@@ -43,6 +43,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("spawn --agent-type <agent_type> [--spawn-dir <path>] [--mode bridge|pane_bridge]");
     expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
     expect(prompt).toContain("kill --thread-id <id>");
+    expect(prompt).toContain("resume-worker --plan <dispatch_plan_path> --worker <worker_id>");
     expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
     expect(prompt).not.toContain("update-status --plan");
     expect(prompt).not.toContain("update-status --status");
@@ -53,12 +54,21 @@ describe("buildSystemPrompt", () => {
 
     expect(prompt).toContain("values starting with `CODEX` -> `codex`");
     expect(prompt).toContain("values starting with `GEMINI` -> `gemini`");
-    expect(prompt).toContain("you never write plan status directly");
-    expect(prompt).toContain("regenerate `dispatch_plan.md`");
+    expect(prompt).toContain("you do not need to write plan status yourself");
+    expect(prompt).toContain("marks the worker 🔄 in `dispatch_plan.md`");
     expect(prompt).toContain("send the final completion notify and stop");
     expect(prompt).toContain("data.run_state");
     expect(prompt).toContain("still_running");
     expect(prompt).toContain("timeout");
     expect(prompt).toContain("do not auto-kill the worker");
+    expect(prompt).toContain("every dependency is either `✅` or `⛔ SKIPPED`");
+  });
+
+  it("includes abandoned worker recovery instructions", () => {
+    const prompt = buildSystemPrompt(createVars());
+
+    expect(prompt).toContain("⚠️ ABANDONED");
+    expect(prompt).toContain("resume-worker");
+    expect(prompt).toContain("go back to Step 1a to retry it");
   });
 });

@@ -214,6 +214,62 @@ describe("reconcile", () => {
     });
   });
 
+  it("promotes an abandoned worker to completed when outputs exist on disk", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("dev_history/N-02_report.md");
+    harness.store.save(buildState({
+      workers: {
+        "N-02": {
+          ...buildRunningWorker("worker-thread-111", outputPath),
+          status: "abandoned"
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-02"]?.status).toBe("completed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-02",
+        from: "abandoned",
+        to: "completed",
+        trigger: "thread_missing:outputs_present"
+      }
+    ]);
+  });
+
+  it("leaves an abandoned worker unchanged when outputs are absent and thread is missing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "N-04": {
+          ...buildRunningWorker("worker-thread-444", path.join(harness.directory, "missing-report.md")),
+          status: "abandoned"
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    // Already abandoned, no outputs, stays abandoned (no further demotion)
+    expect(harness.store.load().workers["N-04"]?.status).toBe("abandoned");
+    expect(report).toEqual({
+      changed: [],
+      unchanged: [DISPATCHER_ENTRY_ID, "N-04"]
+    });
+  });
+
   it("does not re-evaluate workers that are already completed", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

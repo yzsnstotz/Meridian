@@ -12,6 +12,7 @@ import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
+import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
 import {
   applyEditableDispatcherConfig,
   cloneDispatcherConfig,
@@ -105,6 +106,8 @@ type RoleRouteMatch =
   | { kind: "start-agent-dispatcher" }
   | { kind: "pause-dispatcher"; threadId: string }
   | { kind: "resume-dispatcher"; threadId: string }
+  | { kind: "start-dispatcher-hub"; threadId: string }
+  | { kind: "resume-worker"; threadId: string; workerId: string }
   | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string };
@@ -152,6 +155,7 @@ export interface DispatchMessageDetail {
   trace_id: string | null;
   sender_name: string;
   sender_agent_type: string | null;
+  sender_model: string | null;
   sender_thread_id: string | null;
   timestamp: string | null;
   content: string;
@@ -162,6 +166,7 @@ export interface DispatchWorkerDetail {
   status: string;
   task: string | null;
   model: string | null;
+  applied_model: string | null;
   worker_thread_id: string;
   trace_id: string | null;
   command: DispatchMessageDetail | null;
@@ -197,6 +202,16 @@ export interface RoleDetailResponse {
     rows: DispatchPlanRow[];
   };
 }
+
+interface DispatchPlanData {
+  rows: DispatchPlanRow[];
+  modelLegend: DispatchPlanModelLegend;
+}
+
+type DispatchPlanModelLegend = Record<string, {
+  provider: string | null;
+  model_id: string | null;
+}>;
 
 export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const stateStore = options.stateStore ?? new StateStore();
@@ -308,6 +323,12 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           case "resume-dispatcher":
             writeJson(response, 200, await setAgentDispatcherStatus(route.threadId, "active"));
             return true;
+          case "start-dispatcher-hub":
+            writeJson(response, 200, await startAgentDispatcherHubSession(route.threadId));
+            return true;
+          case "resume-worker":
+            writeJson(response, 200, await resumeWorkerForRole(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
           case "reconcile":
             writeJson(response, 200, await reconcileActiveDispatcher());
             return true;
@@ -362,6 +383,23 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     };
   }
 
+  async function startAgentDispatcherHubSession(threadId: string): Promise<{
+    ok: true;
+    dispatcher_thread_id: string;
+  }> {
+    try {
+      const result = await options.runner.relaunchAgentDispatcherHub(threadId);
+      return { ok: true, dispatcher_thread_id: result.dispatcher_thread_id };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.includes("not active") || message.includes("not an AgentDispatcherRole")) {
+        throw createHttpError(404, message);
+      }
+
+      throw error;
+    }
+  }
+
   async function setAgentDispatcherStatus(
     threadId: string,
     status: "active" | "paused"
@@ -396,6 +434,36 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       serviceId: ROLES_SERVICE_ID,
       sendRequest: sendHubRequestImpl
     } as unknown as A2AClient);
+  }
+
+  async function resumeWorkerForRole(
+    threadId: string,
+    workerId: string,
+    body: unknown
+  ): Promise<{ ok: true; result: Awaited<ReturnType<typeof executeResumeWorkerAction>> }> {
+    const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
+    if (context.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const parsed = ResumeWorkerActionRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid resume worker payload");
+    }
+
+    if (parsed.data.action === "force-complete" && !parsed.data.force) {
+      throw createHttpError(400, "force-complete requires force=true");
+    }
+
+    return {
+      ok: true,
+      result: await executeResumeWorkerAction({
+        planPath: context.effectiveConfig.dispatch_plan_path,
+        workerId,
+        action: parsed.data.action,
+        force: parsed.data.force ?? false
+      })
+    };
   }
 
   async function getChannels(): Promise<{ channels: ReplyChannel[] }> {
@@ -542,7 +610,8 @@ async function getRole(
   }
 
   const lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
-  const dispatchPlanRows = await loadDispatchPlanRows(agentDispatcherConfig.dispatch_plan_path, options.log);
+  const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
+  const dispatchPlanRows = dispatchPlan.rows;
   const dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
   const currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
   const currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
@@ -575,6 +644,7 @@ async function getRole(
     dispatch_details: buildDispatchWorkerDetails(
       lifecycleState,
       dispatchPlanRows,
+      dispatchPlan.modelLegend,
       {
         roleId: role.threadId,
         dispatcherThreadId,
@@ -900,6 +970,17 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
 
   if (
     method === "POST"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "roles"
+    && parts[3] === "worker"
+    && parts[5] === "resume"
+  ) {
+    return { kind: "resume-worker", threadId: parts[2], workerId: parts[4] };
+  }
+
+  if (
+    method === "POST"
     && parts.length === 4
     && parts[0] === "api"
     && parts[1] === "agent-dispatcher"
@@ -916,6 +997,16 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     && parts[3] === "resume"
   ) {
     return { kind: "resume-dispatcher", threadId: parts[2] };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 4
+    && parts[0] === "api"
+    && parts[1] === "agent-dispatcher"
+    && parts[3] === "start-hub"
+  ) {
+    return { kind: "start-dispatcher-hub", threadId: parts[2] };
   }
 
   if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "reconcile") {
@@ -1034,16 +1125,22 @@ async function loadDispatchLifecycleState(dispatchPlanPath: string, log: Logger)
   }
 }
 
-async function loadDispatchPlanRows(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanRow[]> {
+async function loadDispatchPlanData(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanData> {
   try {
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
-    return parseDispatchPlanRows(markdown);
+    return {
+      rows: parseDispatchPlanRows(markdown),
+      modelLegend: parseDispatchPlanModelLegend(markdown)
+    };
   } catch (error) {
     log.warn("Failed to read dispatch plan for agent-dispatcher detail", {
       dispatchPlanPath,
       error: getErrorMessage(error)
     });
-    return [];
+    return {
+      rows: [],
+      modelLegend: {}
+    };
   }
 }
 
@@ -1100,6 +1197,7 @@ function resolveDispatcherThreadId(lifecycleState: DispatchThreadStateV2): strin
 function buildDispatchWorkerDetails(
   lifecycleState: DispatchThreadStateV2,
   dispatchPlanRows: DispatchPlanRow[],
+  modelLegend: DispatchPlanModelLegend,
   context: {
     roleId: string;
     dispatcherThreadId: string | null;
@@ -1113,23 +1211,27 @@ function buildDispatchWorkerDetails(
     .map(([workerId, worker]) => {
       const dispatchPlanRow = dispatchPlanByWorker.get(workerId);
       const conversation = parseDispatchConversation(worker.hub_result?.details_text);
+      const commandFallback = conversation.command ?? worker.command_preamble ?? null;
       const replyContent = resolveDispatchReply(worker.hub_result, conversation.reply);
+      const appliedModel = resolveAppliedModel(dispatchPlanRow?.model ?? null, modelLegend);
 
       return {
         worker_id: workerId,
         status: worker.status,
         task: dispatchPlanRow?.task ?? null,
         model: dispatchPlanRow?.model ?? null,
+        applied_model: appliedModel,
         worker_thread_id: worker.thread_id,
         trace_id: worker.hub_result?.trace_id ?? worker.trace_id,
-        command: conversation.command
+        command: commandFallback
           ? {
               trace_id: worker.trace_id,
               sender_name: context.dispatcherThreadId ?? context.roleId,
               sender_agent_type: context.dispatcherAgentType,
+              sender_model: null,
               sender_thread_id: context.dispatcherThreadId,
               timestamp: worker.started_at,
-              content: conversation.command
+              content: commandFallback
             }
           : null,
         reply: replyContent
@@ -1137,6 +1239,7 @@ function buildDispatchWorkerDetails(
               trace_id: worker.hub_result?.trace_id ?? worker.trace_id,
               sender_name: worker.hub_result?.thread_id ?? worker.thread_id,
               sender_agent_type: worker.hub_result?.source ?? null,
+              sender_model: appliedModel,
               sender_thread_id: worker.hub_result?.thread_id ?? worker.thread_id,
               timestamp: worker.hub_result?.timestamp ?? worker.last_seen_at,
               content: replyContent
@@ -1320,6 +1423,49 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
   return [];
 }
 
+function parseDispatchPlanModelLegend(markdown: string): DispatchPlanModelLegend {
+  const lines = markdown.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const headerCells = parseTableRow(lines[index]);
+    if (!headerCells) {
+      continue;
+    }
+
+    const columnIndex = indexDispatchModelLegendColumns(headerCells);
+    if (!columnIndex) {
+      continue;
+    }
+
+    const separatorCells = parseTableRow(lines[index + 1]);
+    if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
+      continue;
+    }
+
+    const modelLegend: DispatchPlanModelLegend = {};
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowCells = parseTableRow(lines[rowIndex]);
+      if (!rowCells || rowCells.length !== headerCells.length) {
+        break;
+      }
+
+      const code = rowCells[columnIndex.code];
+      if (!code) {
+        continue;
+      }
+
+      modelLegend[code] = {
+        provider: columnIndex.provider === -1 ? null : readOptionalTableCell(rowCells[columnIndex.provider]),
+        model_id: readOptionalTableCell(rowCells[columnIndex.model_id])
+      };
+    }
+
+    return modelLegend;
+  }
+
+  return {};
+}
+
 function indexDispatchPlanColumns(headerCells: string[]): {
   status: number;
   batch: number;
@@ -1352,6 +1498,44 @@ function indexDispatchPlanColumns(headerCells: string[]): {
     prds_to_attach: normalizedHeaders.indexOf("prds_to_attach"),
     notes: normalizedHeaders.indexOf("notes")
   };
+}
+
+function indexDispatchModelLegendColumns(headerCells: string[]): {
+  code: number;
+  provider: number;
+  model_id: number;
+} | null {
+  const normalizedHeaders = headerCells.map(normalizeTableHeader);
+  const code = normalizedHeaders.indexOf("code");
+  const modelId = normalizedHeaders.indexOf("model_id");
+
+  if (code === -1 || modelId === -1) {
+    return null;
+  }
+
+  return {
+    code,
+    provider: normalizedHeaders.indexOf("provider"),
+    model_id: modelId
+  };
+}
+
+function resolveAppliedModel(modelCode: string | null, modelLegend: DispatchPlanModelLegend): string | null {
+  if (!modelCode) {
+    return null;
+  }
+
+  const resolved = modelLegend[modelCode]?.model_id;
+  return typeof resolved === "string" && resolved.trim().length > 0 ? resolved.trim() : null;
+}
+
+function readOptionalTableCell(value: string | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed !== "—" ? trimmed : null;
 }
 
 function normalizeTableHeader(value: string): string {

@@ -136,7 +136,7 @@ describe("SessionManager", () => {
     await waitForRoleStatus(harness.stateStore, "agent-dispatcher-role-2", "active");
   });
 
-  it("kills running lifecycle workers during restart recovery and marks them abandoned", async () => {
+  it("kills running lifecycle workers during restart but preserves their status for reconciliation", async () => {
     const harness = await createHarness();
     const lifecycle = createLifecycleStoreMock({
       version: 2,
@@ -199,16 +199,8 @@ describe("SessionManager", () => {
       dispatcherRestarted: true
     });
     expect(lifecycle.store.getWorkersInState).toHaveBeenCalledWith("running");
-    expect(lifecycle.store.markAbandoned).toHaveBeenNthCalledWith(
-      1,
-      "R-01",
-      "stale running worker found during restart"
-    );
-    expect(lifecycle.store.markAbandoned).toHaveBeenNthCalledWith(
-      2,
-      "N-03",
-      "stale running worker found during restart"
-    );
+    // onRestart must NOT mark workers abandoned — reconciliation determines final status
+    expect(lifecycle.store.markAbandoned).not.toHaveBeenCalled();
     expect(killCalls).toHaveBeenCalledTimes(3);
     expect(killCalls).toHaveBeenNthCalledWith(1, "npx", [
       "tsx",
@@ -236,9 +228,10 @@ describe("SessionManager", () => {
       started_at: null,
       status: "pending"
     });
-    expect(lifecycle.getState().workers["R-01"]?.status).toBe("abandoned");
+    // Workers stay "running" — reconciler will promote/abandon based on outputs & hub state
+    expect(lifecycle.getState().workers["R-01"]?.status).toBe("running");
     expect(lifecycle.getState().workers["N-02"]?.status).toBe("completed");
-    expect(lifecycle.getState().workers["N-03"]?.status).toBe("abandoned");
+    expect(lifecycle.getState().workers["N-03"]?.status).toBe("running");
   });
 
   it("skips kill attempts when lifecycle store has no running dispatcher or workers", async () => {

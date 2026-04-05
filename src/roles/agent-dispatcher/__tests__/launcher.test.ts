@@ -3,7 +3,12 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { launchDispatcher, type LaunchConfig, type LaunchDispatcherDeps } from "../launcher";
+import {
+  dispatcherHubSystemPromptPath,
+  launchDispatcher,
+  type LaunchConfig,
+  type LaunchDispatcherDeps
+} from "../launcher";
 
 describe("launchDispatcher", () => {
   afterEach(async () => {
@@ -12,10 +17,10 @@ describe("launchDispatcher", () => {
     tempDirectories.length = 0;
   });
 
-  it("spawns the dispatcher, detaches meridian-tool run, and cleans up the temp command file", async () => {
+  it("spawns the dispatcher, detaches meridian-tool run, and keeps the Hub prompt file next to the plan", async () => {
     const harness = await createHarness();
 
-    const result = await launchDispatcher(buildConfig("System prompt text"), harness.deps);
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
 
     expect(result).toEqual({
       ok: true,
@@ -41,7 +46,7 @@ describe("launchDispatcher", () => {
         "--thread-id",
         "dispatcher-thread-123",
         "--command",
-        harness.commandPath,
+        harness.expectedCommandPath,
         "--worker",
         "DISPATCHER"
       ],
@@ -51,11 +56,7 @@ describe("launchDispatcher", () => {
       }
     );
     expect(harness.runProcess.unref).toHaveBeenCalledTimes(1);
-    await expect(fs.readFile(harness.commandPath, "utf8")).resolves.toBe("System prompt text");
-    expect(harness.scheduledCallbacks).toHaveLength(1);
-
-    await harness.scheduledCallbacks[0]();
-    await expect(fs.access(harness.commandPath)).rejects.toThrow();
+    await expect(fs.readFile(harness.expectedCommandPath, "utf8")).resolves.toBe("System prompt text");
   });
 
   it("returns a structured error when meridian-tool spawn fails", async () => {
@@ -63,7 +64,7 @@ describe("launchDispatcher", () => {
       execFileError: new Error("Command failed: npx")
     });
 
-    const result = await launchDispatcher(buildConfig("System prompt text"), harness.deps);
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
 
     expect(result).toEqual({
       ok: false,
@@ -71,7 +72,6 @@ describe("launchDispatcher", () => {
       error: "spawn failed: Command failed: npx"
     });
     expect(harness.spawn).not.toHaveBeenCalled();
-    expect(harness.scheduledCallbacks).toHaveLength(0);
   });
 
   it("returns a parse failure when spawn output does not include a dispatcher thread id", async () => {
@@ -79,7 +79,7 @@ describe("launchDispatcher", () => {
       stdout: "{\"ok\":true,\"data\":{}}"
     });
 
-    const result = await launchDispatcher(buildConfig("System prompt text"), harness.deps);
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
 
     expect(result).toEqual({
       ok: false,
@@ -87,7 +87,7 @@ describe("launchDispatcher", () => {
       error: "Failed to parse spawn response"
     });
     expect(harness.spawn).not.toHaveBeenCalled();
-    await expect(fs.access(harness.commandPath)).rejects.toThrow();
+    await expect(fs.access(harness.expectedCommandPath)).rejects.toThrow();
   });
 
   it("returns the spawned thread id when detached run launch fails", async () => {
@@ -95,15 +95,14 @@ describe("launchDispatcher", () => {
       spawnError: new Error("ENOENT")
     });
 
-    const result = await launchDispatcher(buildConfig("System prompt text"), harness.deps);
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
 
     expect(result).toEqual({
       ok: false,
       threadId: "dispatcher-thread-123",
       error: "run launch failed: ENOENT"
     });
-    expect(harness.scheduledCallbacks).toHaveLength(0);
-    await expect(fs.access(harness.commandPath)).rejects.toThrow();
+    await expect(fs.access(harness.expectedCommandPath)).rejects.toThrow();
   });
 
   it("maps a structured spawn CLI failure without throwing", async () => {
@@ -111,7 +110,7 @@ describe("launchDispatcher", () => {
       stdout: "{\"ok\":false,\"error\":\"Hub rejected spawn\"}"
     });
 
-    const result = await launchDispatcher(buildConfig("System prompt text"), harness.deps);
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
 
     expect(result).toEqual({
       ok: false,
@@ -119,6 +118,19 @@ describe("launchDispatcher", () => {
       error: "spawn failed: Hub rejected spawn"
     });
     expect(harness.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe("dispatcherHubSystemPromptPath", () => {
+  it("places the prompt file in the dispatch plan directory with a sanitized role id", () => {
+    expect(
+      dispatcherHubSystemPromptPath("/Users/proj/docs/dispatch_plan.md", "feat-cli-external-integration")
+    ).toBe(
+      path.join("/Users/proj/docs", ".meridian-roles-dispatcher-prompt-feat-cli-external-integration.md")
+    );
+    expect(dispatcherHubSystemPromptPath("/abs/plan.md", "role/with:bad*chars")).toBe(
+      path.join("/abs", ".meridian-roles-dispatcher-prompt-role_with_bad_chars.md")
+    );
   });
 });
 
@@ -133,14 +145,15 @@ async function createHarness(overrides: {
   execFile: ReturnType<typeof vi.fn>;
   spawn: ReturnType<typeof vi.fn>;
   runProcess: { unref: ReturnType<typeof vi.fn> };
-  commandPath: string;
-  scheduledCallbacks: Array<() => void | Promise<void>>;
+  planDirectory: string;
+  expectedCommandPath: string;
 }> {
   const directory = await fs.mkdtemp("/tmp/meridian-roles-launcher-");
   tempDirectories.push(directory);
+  const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+  await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
+  const expectedCommandPath = dispatcherHubSystemPromptPath(dispatchPlanPath, "test-role");
 
-  const commandPath = path.join(directory, "dispatcher_cmd_test.md");
-  const scheduledCallbacks: Array<() => void | Promise<void>> = [];
   const runProcess = {
     unref: vi.fn()
   };
@@ -167,33 +180,24 @@ async function createHarness(overrides: {
       },
       unlink(filePath) {
         return fs.unlink(filePath);
-      },
-      createCommandFilePath() {
-        return commandPath;
-      },
-      setTimeout(callback) {
-        scheduledCallbacks.push(callback);
-        return {
-          unref: vi.fn()
-        };
-      },
-      cleanupDelayMs: 5_000
+      }
     },
     execFile,
     spawn,
     runProcess,
-    commandPath,
-    scheduledCallbacks
+    planDirectory: directory,
+    expectedCommandPath
   };
 }
 
-function buildConfig(systemPrompt: string): LaunchConfig {
+function buildConfig(planDirectory: string, systemPrompt: string): LaunchConfig {
   return {
     agentType: "codex",
     mode: "bridge",
     systemPrompt,
-    dispatchPlanPath: "/tmp/dispatch_plan.md",
-    commandFilePath: "/tmp/agent_dispatch_command.md",
+    dispatchPlanPath: path.join(planDirectory, "dispatch_plan.md"),
+    commandFilePath: path.join(planDirectory, "agent_dispatch_command.md"),
+    dispatcherRoleId: "test-role",
     userReplyChannel: {
       channel: "telegram",
       chat_id: "telegram:123"

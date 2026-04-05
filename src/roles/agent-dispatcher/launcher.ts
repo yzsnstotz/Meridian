@@ -1,12 +1,9 @@
 import { execFile as nodeExecFile, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { unlink as unlinkFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ReplyChannel } from "../../types";
 
-const CLEANUP_DELAY_MS = 5_000;
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 const MERIDIAN_TOOL_ENTRYPOINT = "src/bin/meridian-tool.ts";
 const EMPTY_THREAD_ID = "";
@@ -15,8 +12,11 @@ export interface LaunchConfig {
   agentType: string;
   mode: string;
   systemPrompt: string;
+  /** Absolute path to dispatch_plan.md (directory is used for the Hub prompt file and meridian-tool run sidecar resolution). */
   dispatchPlanPath: string;
   commandFilePath: string;
+  /** Meridian-roles role thread_id; used for a stable on-disk prompt filename next to the plan. */
+  dispatcherRoleId: string;
   userReplyChannel: ReplyChannel;
 }
 
@@ -33,11 +33,8 @@ export interface LaunchDispatcherDeps {
   };
   writeFile(filePath: string, contents: string): Promise<void>;
   unlink(filePath: string): Promise<void>;
-  createCommandFilePath(): string;
-  setTimeout(callback: () => void | Promise<void>, delayMs: number): {
-    unref?: () => void;
-  };
-  cleanupDelayMs: number;
+  /** Override for tests; production uses the path next to dispatch_plan.md. */
+  resolveDispatcherCommandPath?: (config: LaunchConfig) => string;
 }
 
 const defaultDeps: LaunchDispatcherDeps = {
@@ -61,14 +58,7 @@ const defaultDeps: LaunchDispatcherDeps = {
   },
   unlink(filePath) {
     return unlinkFile(filePath);
-  },
-  createCommandFilePath() {
-    return path.join(tmpdir(), `dispatcher_cmd_${randomUUID()}.md`);
-  },
-  setTimeout(callback, delayMs) {
-    return setTimeout(callback, delayMs);
-  },
-  cleanupDelayMs: CLEANUP_DELAY_MS
+  }
 };
 
 export async function launchDispatcher(
@@ -106,10 +96,12 @@ export async function launchDispatcher(
   }
 
   let commandPath: string | null = null;
-  let runLaunched = false;
+  let detachedRunStarted = false;
 
   try {
-    commandPath = deps.createCommandFilePath();
+    commandPath =
+      deps.resolveDispatcherCommandPath?.(config)
+      ?? dispatcherHubSystemPromptPath(config.dispatchPlanPath, config.dispatcherRoleId);
     await deps.writeFile(commandPath, config.systemPrompt);
 
     const runProcess = deps.spawn("npx", buildRunArgs(parsedSpawn.threadId, commandPath), {
@@ -117,7 +109,7 @@ export async function launchDispatcher(
       stdio: "ignore"
     });
     runProcess.unref();
-    runLaunched = true;
+    detachedRunStarted = true;
 
     return {
       ok: true,
@@ -130,14 +122,26 @@ export async function launchDispatcher(
       error: `run launch failed: ${asError(error).message}`
     };
   } finally {
-    if (!commandPath) {
-      // No temp file was created, so there is nothing to clean up.
-    } else if (runLaunched) {
-      scheduleCleanup(commandPath, deps);
-    } else {
+    if (commandPath && !detachedRunStarted) {
       await deps.unlink(commandPath).catch(() => undefined);
     }
   }
+}
+
+/**
+ * Hub `run --command` must live in the same directory as `dispatch_plan.md` so meridian-tool resolves
+ * `dispatch_threads.json` and the plan from `path.dirname(command)` (see tool-gateway run.ts).
+ */
+export function dispatcherHubSystemPromptPath(dispatchPlanPath: string, dispatcherRoleId: string): string {
+  const planDir = path.dirname(path.resolve(dispatchPlanPath));
+  const safeId = sanitizeDispatcherRoleIdSegment(dispatcherRoleId);
+  return path.join(planDir, `.meridian-roles-dispatcher-prompt-${safeId}.md`);
+}
+
+function sanitizeDispatcherRoleIdSegment(roleId: string): string {
+  const trimmed = roleId.trim();
+  const slug = trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return slug.length > 0 ? slug.slice(0, 120) : "dispatcher";
 }
 
 function buildSpawnArgs(config: LaunchConfig): string[] {
@@ -202,14 +206,6 @@ function parseSpawnResponse(stdout: string): { threadId: string | null; error: s
       error: null
     };
   }
-}
-
-function scheduleCleanup(commandPath: string, deps: LaunchDispatcherDeps): void {
-  const timer = deps.setTimeout(async () => {
-    await deps.unlink(commandPath).catch(() => undefined);
-  }, deps.cleanupDelayMs);
-
-  timer.unref?.();
 }
 
 function asError(error: unknown): Error {

@@ -203,8 +203,14 @@ async function setupDashboard() {
             <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
           </dl>
           <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
-          <div class="card-actions">
+          <div class="card-actions dispatcher-card-actions">
             <a class="ghost-link" href="/role/${encodeURIComponent(detail.thread_id)}">Open detail</a>
+            <button
+              type="button"
+              class="primary-button"
+              data-dispatcher-id="${escapeHtml(detail.thread_id)}"
+              data-dispatcher-action="start-hub"
+            >Start hub session</button>
             <button
               type="button"
               class="ghost-button"
@@ -226,6 +232,16 @@ async function setupDashboard() {
           }
 
           try {
+            if (action === "start-hub") {
+              agentDispatcherFeedback.textContent = `Starting Hub session for ${threadId}…`;
+              const started = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/start-hub`, {
+                method: "POST"
+              });
+              agentDispatcherFeedback.textContent = `Hub session started (${started.dispatcher_thread_id}).`;
+              await refreshRoles();
+              return;
+            }
+
             agentDispatcherFeedback.textContent = `${action === "pause" ? "Pausing" : "Resuming"} ${threadId}…`;
             const response = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/${action}`, {
               method: "POST"
@@ -246,13 +262,35 @@ async function setupDashboard() {
     const response = await fetchJson("/api/channels");
     channelSelect.replaceChildren();
 
+    const callout = document.getElementById("agent-dispatcher-reply-channel-callout");
+    const manualWrap = document.getElementById("agent-dispatcher-manual-fallback-wrap");
+
     if (!Array.isArray(response.channels) || response.channels.length === 0) {
       const option = document.createElement("option");
       option.value = "";
       option.textContent = "No reply channels available; use manual fallback";
       option.disabled = true;
       channelSelect.appendChild(option);
+      if (callout) {
+        callout.hidden = false;
+      }
+      if (manualWrap) {
+        manualWrap.classList.add("manual-fallback-highlight");
+      }
+      if (manualChatIdInput && callout) {
+        manualChatIdInput.setAttribute("aria-describedby", "agent-dispatcher-reply-channel-callout");
+      }
       return;
+    }
+
+    if (callout) {
+      callout.hidden = true;
+    }
+    if (manualWrap) {
+      manualWrap.classList.remove("manual-fallback-highlight");
+    }
+    if (manualChatIdInput) {
+      manualChatIdInput.removeAttribute("aria-describedby");
     }
 
     response.channels.forEach((replyChannel, index) => {
@@ -468,10 +506,15 @@ async function setupRoleDetail() {
   const dispatchPlanEmpty = document.getElementById("dispatch-plan-empty");
   const dispatchPlanTableShell = document.getElementById("dispatch-plan-table-shell");
   const dispatchPlanBody = document.getElementById("dispatch-plan-body");
+  const hubControls = document.getElementById("agent-dispatcher-hub-controls");
+  const startHubBtn = document.getElementById("agent-dispatcher-start-hub-btn");
+  const startHubFeedback = document.getElementById("agent-dispatcher-start-hub-feedback");
 
   if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink || !configLink) {
     return;
   }
+
+  let startHubBound = false;
 
   const defaultEmptyMessage = empty.textContent;
   bindLocationNavigation(dashboardLink);
@@ -533,6 +576,27 @@ async function setupRoleDetail() {
       tasks.replaceChildren();
       empty.hidden = true;
 
+      if (hubControls) {
+        hubControls.hidden = false;
+      }
+
+      if (!startHubBound && startHubBtn && startHubFeedback) {
+        startHubBound = true;
+        startHubBtn.addEventListener("click", async () => {
+          try {
+            startHubFeedback.textContent = "Starting Hub session…";
+            const started = await fetchJson(
+              `/api/agent-dispatcher/${encodeURIComponent(threadId)}/start-hub`,
+              { method: "POST" }
+            );
+            startHubFeedback.textContent = `Hub session started (${started.dispatcher_thread_id}).`;
+            await render();
+          } catch (error) {
+            startHubFeedback.textContent = getErrorMessage(error);
+          }
+        });
+      }
+
       if (dispatcherSessionLog) {
         const sessionLines = Array.isArray(detail.session_log) && detail.session_log.length > 0
           ? detail.session_log
@@ -566,6 +630,10 @@ async function setupRoleDetail() {
       lastRenderSignature = nextRenderSignature;
       hasRendered = true;
       return;
+    }
+
+    if (hubControls) {
+      hubControls.hidden = true;
     }
 
     tasks.replaceChildren();
@@ -620,7 +688,8 @@ async function setupRoleDetail() {
       dispatchPlanBody,
       dispatchPlanEmpty,
       dispatchPlanTableShell,
-      roleTasksPanel
+      roleTasksPanel,
+      hubControls
     }, getErrorMessage(error));
   }
 
@@ -646,7 +715,8 @@ async function setupRoleDetail() {
         dispatchPlanBody,
         dispatchPlanEmpty,
         dispatchPlanTableShell,
-        roleTasksPanel
+        roleTasksPanel,
+        hubControls
       }, getErrorMessage(error));
     });
   }, POLL_INTERVAL_MS);
@@ -921,11 +991,14 @@ function renderRoleDetailError(elements, message) {
   if (elements.dispatchPlanTableShell) {
     elements.dispatchPlanTableShell.hidden = true;
   }
+  if (elements.hubControls) {
+    elements.hubControls.hidden = true;
+  }
 }
 
 function renderDispatchDetailCard(detail) {
   const taskLabel = detail.task ? `${detail.worker_id}: ${detail.task}` : detail.worker_id;
-  const subtitleParts = [detail.model, detail.worker_thread_id].filter(Boolean);
+  const subtitleParts = [detail.model, detail.applied_model, detail.worker_thread_id].filter(Boolean);
 
   return `
     <article class="dispatch-detail-card">
@@ -951,6 +1024,9 @@ function renderDispatchDetailCard(detail) {
 
 function renderDispatchMessage(label, detail, emptyMessage) {
   const sender = formatDispatchSender(detail);
+  const senderModel = typeof detail?.sender_model === "string" && detail.sender_model.trim().length > 0
+    ? detail.sender_model.trim()
+    : "—";
   const timestamp = formatTimestamp(detail?.timestamp);
 
   return `
@@ -965,6 +1041,7 @@ function renderDispatchMessage(label, detail, emptyMessage) {
       <dl class="dispatch-meta">
         <div><dt>trace_id</dt><dd><code>${escapeHtml(detail?.trace_id || "—")}</code></dd></div>
         <div><dt>sender</dt><dd>${escapeHtml(sender)}</dd></div>
+        <div><dt>model</dt><dd>${escapeHtml(senderModel)}</dd></div>
         <div><dt>time</dt><dd>${escapeHtml(timestamp)}</dd></div>
       </dl>
       ${detail?.content
@@ -985,8 +1062,11 @@ function formatDispatchSender(detail) {
   const senderType = typeof detail.sender_agent_type === "string" && detail.sender_agent_type.trim().length > 0
     ? detail.sender_agent_type.trim()
     : "";
+  const senderModel = typeof detail.sender_model === "string" && detail.sender_model.trim().length > 0
+    ? detail.sender_model.trim()
+    : "";
 
-  return senderType ? `${senderName} · ${senderType}` : senderName;
+  return [senderName, senderType, senderModel].filter(Boolean).join(" · ");
 }
 
 function formatTimestamp(value) {
@@ -1078,6 +1158,10 @@ function bindLocationNavigation(link) {
     }
     if (event && typeof event.preventDefault === "function") {
       event.preventDefault();
+    }
+    link.setAttribute("aria-busy", "true");
+    if (document.documentElement && document.documentElement.style) {
+      document.documentElement.style.cursor = "wait";
     }
     navigateToHref(href);
   });

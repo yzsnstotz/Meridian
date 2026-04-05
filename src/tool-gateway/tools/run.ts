@@ -65,9 +65,9 @@ const runTool: ToolDefinition = {
       const lifecycleStore = createLifecycleStore(commandPath);
       const workerRow = await resolveWorkerRow(commandPath, worker);
       const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
-      lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs);
-
       const preamble = buildWorkerPreamble(worker, workerRow, commandPath);
+      lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
+
       const result = await sendAndWait(buildRunMessage(threadId, preamble, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
@@ -166,7 +166,7 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   }
 
   lines.push(`# Status`);
-  lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress) by the lifecycle store. You may still follow all taskspec steps — including status updates, git commits, completion reports, and push — as described in the dispatch command. The lifecycle store will reconcile the final status from the Hub result, so any status you write to the plan is safe and will be corrected if needed.`);
+  lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). The lifecycle store manages all plan status updates automatically — you do not need to write to the dispatch plan yourself.`);
   lines.push("");
 
   lines.push(`# Command File`);
@@ -174,7 +174,11 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   lines.push("```");
   lines.push(commandPath);
   lines.push("```");
-  lines.push(`Open this file and follow all instructions, including Steps 4a through 5d.`);
+  lines.push(`Open this file and follow the instructions with these overrides:`);
+  lines.push(`- **Skip Step 4a** (mark in-progress) — already done for you.`);
+  lines.push(`- **Skip Step 5a** (mark complete in dispatch plan) — the lifecycle store handles this from the Hub result.`);
+  lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
+  lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
 
   return lines.join("\n");
 }

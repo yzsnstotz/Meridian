@@ -63,7 +63,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "1970-01-01T00:00:00.000Z",
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -72,7 +73,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-02T17:21:55.063Z",
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -154,6 +156,58 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("keeps a success HubResult running when content indicates PAUSE", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      content: "⏸ PAUSE — Next eligible task N-02 is assigned to CODEX-XHIGH",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["N-01"]).toMatchObject({
+      status: "running",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
+  it("keeps a success HubResult running when content indicates BLOCKED", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      content: "⛔ BLOCKED — Cannot write to dispatch_plan.md, sandbox restriction",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["N-01"]).toMatchObject({
+      status: "running",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
+  it("defers dev_history-only outputs until reconciled", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("R-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "dev_history/v1_round/R-01_report.md"
+    ]);
+
+    harness.store.recordWorkerResult("R-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["R-01"]).toMatchObject({
+      status: "running",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks workers as abandoned", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
@@ -161,6 +215,26 @@ describe("LifecycleStore", () => {
     harness.store.markAbandoned("N-01", "thread missing after restart");
 
     expect(harness.store.load().workers["N-01"]?.status).toBe("abandoned");
+  });
+
+  it("renders skipped workers as ⛔ SKIPPED in the dispatch plan", async () => {
+    const harness = await createHarness({
+      dispatchPlanPath: path.join(tmpdir(), "meridian-roles-custom-plan", `dispatch-plan-skipped-${Date.now()}.md`),
+      planTemplate: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| 🔄 | 5 | R-06 | Recovery row |",
+        ""
+      ].join("\n")
+    });
+
+    harness.store.recordWorkerStart("R-06", "worker-thread-666", "66666666-6666-4666-8666-666666666666", []);
+    harness.store.setWorkerStatus("R-06", "skipped", "manual_skip");
+
+    expect(harness.store.load().workers["R-06"]?.status).toBe("skipped");
+    await expect(fsp.readFile(harness.dispatchPlanPath, "utf8")).resolves.toContain("| ⛔ SKIPPED | 5 | R-06 | Recovery row |");
   });
 
   it("writes the derived dispatch plan to the configured plan path on lifecycle transitions", async () => {
@@ -191,7 +265,7 @@ describe("LifecycleStore", () => {
     harness.store.markAbandoned("R-06", "restart cleanup");
 
     const markdown = await fsp.readFile(harness.dispatchPlanPath, "utf8");
-    expect(markdown).toContain("| ❌ | 5 | R-06 | Recovery row |");
+    expect(markdown).toContain("| ⚠️ ABANDONED | 5 | R-06 | Recovery row |");
     await expect(fsp.access(path.join(harness.directory, "dispatch_plan.md"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -266,7 +340,8 @@ describe("LifecycleStore", () => {
           last_seen_at: "2026-04-03T12:00:00.000Z",
           status: "running",
           expected_outputs: ["test/gui-demo/final.txt"],
-          hub_result: null
+          hub_result: null,
+          command_preamble: null
         }
       },
       last_reconciled_at: null
@@ -374,7 +449,7 @@ describe("LifecycleStore", () => {
     expect(markdown).toContain("| 🔄 | 1 | N-02 | Running row |");
     expect(markdown).toContain("| ✅ | 1 | N-03 | Completed row |");
     expect(markdown).toContain("| ❌ | 1 | N-04 | Failed row |");
-    expect(markdown).toContain("| ❌ | 1 | N-05 | Abandoned row |");
+    expect(markdown).toContain("| ⚠️ ABANDONED | 1 | N-05 | Abandoned row |");
   });
 
   it("logs structured worker lifecycle transitions", async () => {

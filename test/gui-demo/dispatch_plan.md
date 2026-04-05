@@ -16,8 +16,50 @@
 #
 | Status | Batch | Worker | Task | Model | Depends On | Notes |
 |--------|-------|--------|------|-------|------------|-------|
-| ⬜ | 1 | A-01 | Create `step1.txt` from `input.txt` | CODEX-HIGH | — | Read `test/gui-demo/input.txt`, write `test/gui-demo/step1.txt` with prefix `step1: `, append an audit line to `test/gui-demo/audit.txt`, and report the first line written. |
-| ⬜ | 2 | B-01 | Create `final.txt` from `step1.txt` | GEMINI | A-01 ✅ | Read `test/gui-demo/step1.txt`, write `test/gui-demo/final.txt` with prefix `final: `, append an audit line to `test/gui-demo/audit.txt`, and leave dispatch_threads.json with no active worker entries once the row is terminal. |
+| ✅ | 1 | A-01 | Create `step1.txt` from `input.txt` | CODEX-HIGH | — | Read `test/gui-demo/input.txt`, write `test/gui-demo/step1.txt` with prefix `step1: `, append an audit line to `test/gui-demo/audit.txt`, and report the first line written. |
+| ✅ | 2 | B-01 | Create `final.txt` from `step1.txt` | GEMINI | A-01 ✅ | Read `test/gui-demo/step1.txt`, write `test/gui-demo/final.txt` with prefix `final: `, append an audit line to `test/gui-demo/audit.txt`, and leave dispatch_threads.json with no active worker entries once the row is terminal. |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -14,7 +14,6 @@ import {
 
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
-const DEV_HISTORY_DIRECTORY = "dev_history";
 
 const LegacyWorkerThreadEntrySchema = z.object({
   thread_id: z.string().min(1),
@@ -33,7 +32,8 @@ const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
   running: "🔄",
   completed: "✅",
   failed: "❌",
-  abandoned: "❌"
+  abandoned: "⚠️ ABANDONED",
+  skipped: "⛔ SKIPPED"
 };
 
 export interface LifecycleStoreOptions {
@@ -106,7 +106,13 @@ export class LifecycleStore {
     this.save(state);
   }
 
-  recordWorkerStart(workerId: string, threadId: string, traceId: string, expectedOutputs: string[]): void {
+  recordWorkerStart(
+    workerId: string,
+    threadId: string,
+    traceId: string,
+    expectedOutputs: string[],
+    commandPreamble?: string | null
+  ): void {
     const state = this.load();
     const nowIso = this.now();
     const previousStatus = state.workers[workerId]?.status ?? "pending";
@@ -118,7 +124,8 @@ export class LifecycleStore {
       last_seen_at: nowIso,
       status: "running",
       expected_outputs: [...expectedOutputs],
-      hub_result: null
+      hub_result: null,
+      command_preamble: commandPreamble ?? null
     };
 
     this.logTransition(workerId, previousStatus, "running", "run_tool_start");
@@ -160,6 +167,31 @@ export class LifecycleStore {
     };
 
     this.logTransition(workerId, worker.status, "abandoned", reason);
+    this.save(state);
+  }
+
+  setWorkerStatus(
+    workerId: string,
+    status: LifecycleStatus,
+    trigger: string,
+    options: {
+      clearHubResult?: boolean;
+    } = {}
+  ): void {
+    const state = this.load();
+    const worker = state.workers[workerId];
+    if (!worker) {
+      throw new Error(`Worker not found in lifecycle state: ${workerId}`);
+    }
+
+    state.workers[workerId] = {
+      ...worker,
+      last_seen_at: this.now(),
+      status,
+      hub_result: options.clearHubResult ? null : worker.hub_result
+    };
+
+    this.logTransition(workerId, worker.status, status, trigger);
     this.save(state);
   }
 
@@ -338,6 +370,10 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
     return "failed";
   }
 
+  if (isNonCompletionContent(hubResult.content)) {
+    return "running";
+  }
+
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
     return deferSuccessUntilReconciled ? "running" : "completed";
   }
@@ -345,12 +381,19 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
   return "running";
 }
 
-function requiresOutputVerification(expectedOutputs: string[]): boolean {
-  return expectedOutputs.some((filePath) => !isDevHistoryPath(filePath));
+const NON_COMPLETION_PATTERNS = [
+  /⏸\s*PAUSE/,
+  /⛔\s*BLOCKED/,
+  /PAUSE\s*[—–-]/,
+  /BLOCKED\s*[—–-]/
+];
+
+function isNonCompletionContent(content: string): boolean {
+  return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
 }
 
-function isDevHistoryPath(filePath: string): boolean {
-  return path.normalize(filePath).split(path.sep).includes(DEV_HISTORY_DIRECTORY);
+function requiresOutputVerification(expectedOutputs: string[]): boolean {
+  return expectedOutputs.length > 0;
 }
 
 function cloneWorker(worker: DispatchThreadStateV2["workers"][string]): DispatchThreadStateV2["workers"][string] {

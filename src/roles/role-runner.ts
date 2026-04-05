@@ -6,6 +6,7 @@ import type { AgentInstance, HubMessage, HubResult } from "../types";
 import { AgentDispatcherConfigSchema } from "../types";
 import { StateStore } from "../state-store";
 import type { Awaitable, BaseRole, Logger, RoleContext } from "./base-role";
+import { AgentDispatcherRole } from "./definitions/agent-dispatcher";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
@@ -74,6 +75,19 @@ export class RoleRunner {
 
   async resumeRole(threadId: string): Promise<boolean> {
     return this.updateRoleStatus(threadId, "active");
+  }
+
+  async relaunchAgentDispatcherHub(threadId: string): Promise<{ dispatcher_thread_id: string }> {
+    const role = this.roles.get(threadId);
+    if (!role || role.roleType !== "agent-dispatcher") {
+      throw new Error(`Agent dispatcher not active for thread ${threadId}`);
+    }
+
+    if (!(role instanceof AgentDispatcherRole)) {
+      throw new Error(`Role ${threadId} is not an AgentDispatcherRole instance`);
+    }
+
+    return role.relaunchHubSession();
   }
 
   async dispatch(result: HubResult): Promise<void> {

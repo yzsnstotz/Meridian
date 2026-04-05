@@ -67,8 +67,10 @@ export async function reconcile(
 
   await reconcileDispatcher(lifecycleStore, state, hubClient, report);
 
+  const RECONCILABLE_STATUSES = new Set<string>(["running", "abandoned"]);
+
   for (const [workerId, worker] of Object.entries(state.workers)) {
-    if (worker.status !== "running") {
+    if (!RECONCILABLE_STATUSES.has(worker.status)) {
       report.unchanged.push(workerId);
       continue;
     }
