@@ -8,6 +8,9 @@
 import http from "node:http";
 import net from "node:net";
 
+import { sendIpcRequest } from "../shared/ipc";
+import { HubResultSchema, type HubMessage, type HubResult } from "../types";
+
 // ── Service discovery (env-based, per PRD §6.2) ────────────────────────────
 
 const MERIDIAN_SOCKET = process.env.MERIDIAN_SOCKET ?? "/tmp/hub-core.sock";
@@ -20,6 +23,12 @@ export interface HubConnection {
   socketPath: string | null;
   /** Which transport was verified */
   transport: "http" | "socket";
+}
+
+export interface HubHttpResponse {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  body: unknown;
 }
 
 /**
@@ -57,7 +66,7 @@ export async function hubHttpRequest(
   method: string,
   path: string,
   body?: unknown
-): Promise<unknown> {
+): Promise<HubHttpResponse> {
   const url = new URL(path, MERIDIAN_HTTP);
 
   return new Promise((resolve, reject) => {
@@ -77,11 +86,17 @@ export async function hubHttpRequest(
           data += chunk;
         });
         res.on("end", () => {
+          let parsed: unknown = null;
           try {
-            resolve(JSON.parse(data));
+            parsed = data.trim() ? JSON.parse(data) : null;
           } catch {
-            resolve(data);
+            parsed = data;
           }
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            headers: res.headers,
+            body: parsed
+          });
         });
       }
     );
@@ -98,11 +113,16 @@ export async function hubHttpRequest(
   });
 }
 
+export async function hubSocketRequest(message: HubMessage): Promise<HubResult> {
+  const response = await sendIpcRequest<HubMessage, HubResult>(MERIDIAN_SOCKET, message);
+  return HubResultSchema.parse(response);
+}
+
 // ── Internal transport checks ───────────────────────────────────────────────
 
 function isHttpReachable(baseUrl: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const url = new URL("/api/instances", baseUrl);
+    const url = new URL("/api/health", baseUrl);
     const req = http.request(url, { method: "GET", timeout: 3_000 }, (res) => {
       // Any response means the server is up
       res.resume();

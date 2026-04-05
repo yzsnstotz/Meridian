@@ -1947,7 +1947,7 @@ test("HubRouter spawn result includes a Web GUI button when available", async ()
   }
 });
 
-test("HubRouter forwards auto_approve on spawn", async () => {
+test("HubRouter forwards model_id and auto_approve on spawn", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: Array<{
     type: string;
@@ -2006,6 +2006,7 @@ test("HubRouter forwards auto_approve on spawn", async () => {
       payload: {
         content: "spawn",
         attachments: [],
+        model_id: "o3",
         auto_approve: true
       },
       reply_channel: {
@@ -2022,7 +2023,7 @@ test("HubRouter forwards auto_approve on spawn", async () => {
       type: "codex",
       mode: "bridge",
       workingDirectory: undefined,
-      modelId: undefined,
+      modelId: "o3",
       autoApprove: true
     }
   ]);

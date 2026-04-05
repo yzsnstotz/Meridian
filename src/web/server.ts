@@ -29,6 +29,7 @@ const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const sessionCookieName = "meridian_session";
 const defaultStaticDir = path.join(__dirname, "public");
 const websocketPath = "/ws/terminal";
+const packageVersion = readPackageVersion();
 
 const runRequestBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
@@ -41,9 +42,11 @@ const threadActionBodySchema = z.object({
 });
 
 const spawnRequestBodySchema = z.object({
-  type: z.enum(["claude", "codex", "gemini", "cursor"]).default("codex"),
+  type: AgentTypeSchema.default("codex"),
+  provider: AgentTypeSchema.optional(),
   mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge"),
-  auto_approve: z.boolean().default(false),
+  model_id: z.string().min(1).optional(),
+  auto_approve: z.boolean().default(true),
   /** Subdirectory name under `config.AGENT_WORKDIR` (GUI picker). */
   repo: z.string().optional(),
   /**
@@ -398,6 +401,27 @@ async function clearLogFileOnDisk(logDir: string, relativePath: string): Promise
   await fs.promises.truncate(absolutePath, 0);
 }
 
+function readPackageVersion(): string {
+  try {
+    const packagePath = path.resolve(__dirname, "../../package.json");
+    const raw = fs.readFileSync(packagePath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+async function inferSocketUptimeSeconds(socketPath: string): Promise<number> {
+  try {
+    const stats = await fs.promises.stat(socketPath);
+    const startedAtMs = stats.birthtimeMs > 0 ? stats.birthtimeMs : stats.ctimeMs;
+    return Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+  } catch {
+    return 0;
+  }
+}
+
 export class WebInterfaceServer {
   private readonly enabled: boolean;
   private readonly port: number;
@@ -543,6 +567,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/health" && request.method === "GET") {
+      await this.handleHealthRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/logs" && request.method === "GET") {
       await this.handleLogInventoryRequest(response);
       return;
@@ -671,6 +700,35 @@ export class WebInterfaceServer {
     );
 
     this.respondJson(response, 200, parseInstancesContent(result.content));
+  }
+
+  private async handleHealthRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "list",
+          thread_id: "global",
+          target: "all",
+          content: ""
+        })
+      )
+    );
+
+    if (result.status !== "success") {
+      this.respondJson(response, 503, { ok: false, error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+
+    const instances = parseInstancesContent(result.content);
+    const uptime = await inferSocketUptimeSeconds(this.hubSocketPath);
+    this.respondJson(response, 200, {
+      ok: true,
+      version: packageVersion,
+      uptime,
+      agents_count: instances.length
+    });
   }
 
   private async handleLogInventoryRequest(response: http.ServerResponse): Promise<void> {
@@ -819,12 +877,13 @@ export class WebInterfaceServer {
           sessionId,
           intent: "spawn",
           thread_id: "pending",
-          target: body.type,
+          target: body.provider ?? body.type,
           content: "",
           mode: body.mode,
           autoApprove: body.auto_approve,
           guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined,
-          spawnDir
+          spawnDir,
+          modelId: body.model_id?.trim()
         })
       )
     );
@@ -1459,6 +1518,7 @@ export class WebInterfaceServer {
     guiHostPortOverride?: string;
     /** Passed through to Hub `payload.spawn_dir` (agent working directory). */
     spawnDir?: string;
+    modelId?: string;
   }): HubMessage {
     return HubMessageSchema.parse({
       trace_id: randomUUID(),
@@ -1472,7 +1532,8 @@ export class WebInterfaceServer {
         reply_to: null,
         ...(params.autoApprove !== undefined && { auto_approve: params.autoApprove }),
         ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride }),
-        ...(params.spawnDir && { spawn_dir: params.spawnDir })
+        ...(params.spawnDir && { spawn_dir: params.spawnDir }),
+        ...(params.modelId && { model_id: params.modelId })
       },
       mode: params.mode ?? "bridge",
       suppress_reply: true,

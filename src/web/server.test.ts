@@ -5,8 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { runCli, type CliDependencies } from "../bin/meridian-cli";
 import { config } from "../config";
-import type { HubMessage, ThreadProgressSnapshot } from "../types";
+import type { HubMessage, HubResult, ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
 process.env.ALLOWED_USER_IDS ??= "123456789";
@@ -885,6 +886,40 @@ test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selec
   }
 });
 
+test("Web Interface Server spawn forwards provider alias, model_id, and default auto_approve", async () => {
+  const hubMessages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "claude",
+        mode: "bridge",
+        model_id: "claude-opus-4-6"
+      })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(hubMessages.length, 1);
+    assert.equal(hubMessages[0]?.intent, "spawn");
+    assert.equal(hubMessages[0]?.target, "claude");
+    assert.equal(hubMessages[0]?.payload.model_id, "claude-opus-4-6");
+    assert.equal(hubMessages[0]?.payload.auto_approve, true);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "claude_new",
+        source: "claude",
+        status: "success",
+        content: "{}",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
 test("Web Interface Server rejects spawn when repo and spawn_dir are both set", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
@@ -984,4 +1019,317 @@ test("Web Interface Server forwards nested repo path to Hub", async () => {
   } finally {
     await fs.promises.rm(outer, { recursive: true, force: true });
   }
+});
+
+
+test("Web Interface Server returns health payload for an authorized request", async () => {
+  const socketPath = path.join(os.tmpdir(), `meridian-health-${Date.now()}.sock`);
+  await fs.promises.writeFile(socketPath, "");
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/health?token=secret-token`);
+      assert.equal(response.status, 200);
+      const payload = (await response.json()) as {
+        ok: boolean;
+        version: string;
+        uptime: number;
+        agents_count: number;
+      };
+      assert.equal(payload.ok, true);
+      assert.match(payload.version, /^\d+\.\d+\.\d+/);
+      assert.equal(payload.agents_count, 1);
+      assert.equal(typeof payload.uptime, "number");
+      assert.ok(payload.uptime >= 0);
+    }, {
+      hubSocketPath: socketPath,
+      requestHub: async (message: HubMessage) => {
+        assert.equal(message.intent, "list");
+        return {
+          trace_id: message.trace_id,
+          thread_id: "global",
+          source: "codex",
+          status: "success",
+          content: JSON.stringify([
+            {
+              thread_id: "codex_01",
+              mode: "bridge",
+              status: "running"
+            }
+          ]),
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(socketPath, { force: true });
+  }
+});
+
+function buildCliHubResult(overrides: Partial<HubResult> = {}): HubResult {
+  return {
+    trace_id: "11111111-1111-4111-8111-111111111111",
+    thread_id: "codex_01",
+    source: "codex",
+    status: "success",
+    content: "",
+    attachments: [],
+    timestamp: "2026-04-05T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function createCliDeps(overrides: Partial<CliDependencies> = {}) {
+  const socketCalls: HubMessage[] = [];
+  const httpCalls: Array<{ method: string; route: string; body?: unknown }> = [];
+  let stdout = "";
+  let stderr = "";
+
+  const deps: CliDependencies = {
+    connectToHub: async () => ({
+      httpBase: "http://localhost:3000",
+      socketPath: "/tmp/hub-core.sock",
+      transport: "socket"
+    }),
+    hubHttpRequest: async (method: string, route: string, body?: unknown) => {
+      httpCalls.push({ method, route, body });
+      return {
+        statusCode: 404,
+        headers: {},
+        body: { error: "not found" }
+      };
+    },
+    hubSocketRequest: async (message: HubMessage) => {
+      socketCalls.push(message);
+      return buildCliHubResult();
+    },
+    inferSocketUptimeSeconds: async () => 42,
+    packageVersion: "1.0.0",
+    socketPath: "/tmp/hub-core.sock",
+    now: () => new Date("2026-04-05T01:00:00.000Z"),
+    stdout: (chunk: string) => {
+      stdout += chunk;
+    },
+    stderr: (chunk: string) => {
+      stderr += chunk;
+    },
+    ...overrides
+  };
+
+  return {
+    deps,
+    socketCalls,
+    httpCalls,
+    stdout: () => stdout,
+    stderr: () => stderr
+  };
+}
+
+test("runCli spawn forwards provider, model, workdir, mode, and auto-approve", async () => {
+  const harness = createCliDeps();
+  harness.deps.hubSocketRequest = async (message: HubMessage) => {
+    harness.socketCalls.push(message);
+    return buildCliHubResult({
+      thread_id: "claude_01",
+      source: "claude"
+    });
+  };
+
+  const exitCode = await runCli(
+    ["spawn", "claude", "--model", "claude-opus-4-6", "--workdir", "/tmp/project", "--no-auto-approve", "--mode", "agentapi"],
+    harness.deps
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls.length, 1);
+  assert.equal(harness.socketCalls[0]?.intent, "spawn");
+  assert.equal(harness.socketCalls[0]?.target, "claude");
+  assert.equal(harness.socketCalls[0]?.payload.model_id, "claude-opus-4-6");
+  assert.equal(harness.socketCalls[0]?.payload.spawn_dir, "/tmp/project");
+  assert.equal(harness.socketCalls[0]?.payload.auto_approve, false);
+  assert.equal(harness.socketCalls[0]?.mode, "bridge");
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    thread_id: "claude_01",
+    agent_type: "claude"
+  });
+  assert.equal(harness.stderr(), "");
+});
+
+test("runCli kill sends a kill intent and returns ok", async () => {
+  const harness = createCliDeps();
+
+  const exitCode = await runCli(["kill", "codex_01"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls[0]?.intent, "kill");
+  assert.equal(harness.socketCalls[0]?.thread_id, "codex_01");
+  assert.deepEqual(JSON.parse(harness.stdout()), { ok: true });
+});
+
+test("runCli status formats active agents with uptime", async () => {
+  const harness = createCliDeps();
+  harness.deps.hubSocketRequest = async (message: HubMessage) => {
+    harness.socketCalls.push(message);
+    return buildCliHubResult({
+      thread_id: "global",
+      content: JSON.stringify([
+        {
+          thread_id: "codex_01",
+          agent_type: "codex",
+          model_id: "o3",
+          status: "running",
+          created_at: "2026-04-05T00:00:00.000Z"
+        }
+      ])
+    });
+  };
+
+  const exitCode = await runCli(["status"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls[0]?.intent, "list");
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    agents: [
+      {
+        thread_id: "codex_01",
+        type: "codex",
+        model: "o3",
+        status: "running",
+        uptime: 3600
+      }
+    ]
+  });
+});
+
+test("runCli send routes the message through run intent", async () => {
+  const harness = createCliDeps();
+  harness.deps.hubSocketRequest = async (message: HubMessage) => {
+    harness.socketCalls.push(message);
+    return buildCliHubResult({
+      thread_id: "codex_01",
+      status: "partial",
+      content: "Task is running..."
+    });
+  };
+
+  const exitCode = await runCli(["send", "codex_01", "ship", "it"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls[0]?.intent, "run");
+  assert.equal(harness.socketCalls[0]?.payload.content, "ship it");
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    thread_id: "codex_01",
+    status: "partial"
+  });
+});
+
+test("runCli logs returns conversation history entries", async () => {
+  const harness = createCliDeps();
+  harness.deps.hubSocketRequest = async (message: HubMessage) => {
+    harness.socketCalls.push(message);
+    return buildCliHubResult({
+      thread_id: "codex_01",
+      content: JSON.stringify([
+        {
+          id: "entry-1",
+          event_kind: "final_reply",
+          source: "codex",
+          type: "agent",
+          content: "ok",
+          details_text: "expanded",
+          raw_content: "raw",
+          timestamp: "2026-04-05T00:00:00.000Z"
+        }
+      ])
+    });
+  };
+
+  const exitCode = await runCli(["logs", "codex_01"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls[0]?.intent, "history");
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    thread_id: "codex_01",
+    entries: [
+      {
+        id: "entry-1",
+        event_kind: "final_reply",
+        source: "codex",
+        type: "agent",
+        content: "expanded",
+        raw_content: "raw",
+        timestamp: "2026-04-05T00:00:00.000Z"
+      }
+    ]
+  });
+});
+
+test("runCli autoapprove status resolves the sole active thread when omitted", async () => {
+  const harness = createCliDeps();
+  harness.deps.hubSocketRequest = async (message: HubMessage) => {
+    harness.socketCalls.push(message);
+    return buildCliHubResult({
+      thread_id: "global",
+      content: JSON.stringify([
+        {
+          thread_id: "codex_01",
+          agent_type: "codex",
+          status: "running",
+          auto_approve: true,
+          created_at: "2026-04-05T00:00:00.000Z"
+        }
+      ])
+    });
+  };
+
+  const exitCode = await runCli(["autoapprove", "status"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls.length, 2);
+  assert.equal(harness.socketCalls[0]?.intent, "list");
+  assert.equal(harness.socketCalls[1]?.intent, "list");
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    thread_id: "codex_01",
+    auto_approve: true
+  });
+});
+
+test("runCli health falls back to socket-derived metadata when HTTP health is unavailable", async () => {
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    throw new Error("ECONNREFUSED");
+  };
+  harness.deps.hubSocketRequest = async (message: HubMessage) => {
+    harness.socketCalls.push(message);
+    return buildCliHubResult({
+      thread_id: "global",
+      content: JSON.stringify([
+        {
+          thread_id: "codex_01",
+          agent_type: "codex",
+          status: "running",
+          created_at: "2026-04-05T00:00:00.000Z"
+        }
+      ])
+    });
+  };
+
+  const exitCode = await runCli(["health"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [{ method: "GET", route: "/api/health", body: undefined }]);
+  assert.equal(harness.socketCalls[0]?.intent, "list");
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    version: "1.0.0",
+    uptime: 42,
+    agents_count: 1
+  });
 });

@@ -849,11 +849,12 @@ export class HubRouter {
   private async handleSpawn(message: HubMessage): Promise<HubResult> {
     const type = AgentTypeSchema.parse(message.target);
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
+    const modelId = message.payload.model_id?.trim() || undefined;
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
       spawnDir,
-      undefined,
+      modelId,
       message.payload.auto_approve
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
