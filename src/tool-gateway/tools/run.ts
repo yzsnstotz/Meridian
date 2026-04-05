@@ -200,6 +200,11 @@ async function deriveExpectedOutputs(commandPath: string, workerId: string): Pro
     return planOutputs;
   }
 
+  const completionReportOutput = await deriveExpectedCompletionReportOutput(commandPath, workerId);
+  if (completionReportOutput) {
+    return [completionReportOutput];
+  }
+
   return [path.join(path.dirname(commandPath), DEV_HISTORY_DIRECTORY, `${workerId}_report.md`)];
 }
 
@@ -216,6 +221,16 @@ async function deriveExpectedOutputsFromPlan(commandPath: string, workerId: stri
     return extractExpectedOutputsFromNotes(row.notes, commandPath);
   } catch {
     return [];
+  }
+}
+
+async function deriveExpectedCompletionReportOutput(commandPath: string, workerId: string): Promise<string | null> {
+  try {
+    const command = await readFile(commandPath, "utf8");
+    const templatePath = extractCompletionReportTemplate(command, workerId);
+    return templatePath ? resolveExpectedOutputPath(templatePath, commandPath) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -262,6 +277,22 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
   }
 
   return [];
+}
+
+function extractCompletionReportTemplate(command: string, workerId: string): string | null {
+  const blockMatch = /Write your completion report to:\s*```[\r\n]+([^\r\n`]+)[\r\n]+```/i.exec(command);
+  if (blockMatch?.[1]) {
+    return substituteWorkerId(blockMatch[1], workerId);
+  }
+
+  const specialReportBasename = resolveSpecialReportBasename(workerId);
+  if (!specialReportBasename) {
+    return null;
+  }
+
+  const inlinePattern = new RegExp(`Write to:\\s*\`([^\\\`]*${escapeRegExp(specialReportBasename)})\``, "i");
+  const inlineMatch = inlinePattern.exec(command);
+  return inlineMatch?.[1]?.trim() ?? null;
 }
 
 function extractExpectedOutputsFromNotes(notes: string, commandPath: string): string[] {
@@ -354,6 +385,26 @@ function resolveExpectedOutputPath(candidatePath: string, commandPath: string): 
 
 function normalizePathForComparison(filePath: string): string {
   return filePath.replace(/\\/g, "/");
+}
+
+function substituteWorkerId(templatePath: string, workerId: string): string {
+  return templatePath.replace(/\[WORKER_ID\]/g, workerId).trim();
+}
+
+function resolveSpecialReportBasename(workerId: string): string | null {
+  if (workerId === "DELTA-CHECK") {
+    return "delta_check_report.md";
+  }
+
+  if (workerId === "PR-REVIEW") {
+    return "pr_review_report.md";
+  }
+
+  return null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isLifecycleArtifactPath(candidatePath: string, commandPath: string): boolean {

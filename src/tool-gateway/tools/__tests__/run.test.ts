@@ -181,6 +181,50 @@ describe("run tool", () => {
     });
   });
 
+  it("derives the completion report path from the dispatch command template", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write your completion report to:",
+          "```",
+          "/tmp/dispatch/dev_history/v1_round/[WORKER_ID]_report.md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 4 | N-04 | Resume worker | CODEX | R-03 | No non-report outputs required. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-234",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "N-04",
+      "thread-234",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/dev_history/v1_round/N-04_report.md"],
+      expect.any(String)
+    );
+  });
+
   it("surfaces structured still_running results without flattening them to done", async () => {
     sendAndWaitMock.mockResolvedValue(buildHubResult("Worker still running", "partial", "still_running"));
     readFileMock.mockResolvedValue("# command\n");

@@ -180,14 +180,21 @@ describe("AgentDispatcherRole", () => {
     expect(harness.killThread).toHaveBeenCalledWith("dispatcher-thread-123");
     expect(harness.killThread).toHaveBeenCalledWith("worker-thread-333");
     expect(harness.killThread).toHaveBeenCalledWith("worker-thread-444");
-    expect(harness.lifecycleState).toEqual({
+    expect(harness.lifecycleState).toMatchObject({
       version: 2,
       dispatcher: {
         thread_id: null,
         started_at: null,
         status: "pending"
       },
-      workers: {},
+      workers: {
+        "N-03": {
+          status: "abandoned"
+        },
+        "N-04": {
+          status: "abandoned"
+        }
+      },
       last_reconciled_at: null
     });
     expect((await harness.stateStore.load())?.roles).toEqual([]);

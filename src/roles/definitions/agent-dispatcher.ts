@@ -1,5 +1,6 @@
 import { execFile as nodeExecFile, spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import * as fsSync from "node:fs";
 import { unlink as unlinkFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -199,7 +200,7 @@ export class AgentDispatcherRole implements BaseRole {
     });
 
     await this.resetTrackedThreads().catch((error) => {
-      this.ctx?.log.warn("Agent dispatcher failed to clear dispatch sidecar", {
+      this.ctx?.log.warn("Agent dispatcher failed to reset dispatch lifecycle state", {
         roleThreadId: this.threadId,
         error: asError(error).message
       });
@@ -300,6 +301,20 @@ export class AgentDispatcherRole implements BaseRole {
   private async resetTrackedThreads(): Promise<void> {
     const lifecycleStore = this.createLifecycleStore(this.config.dispatch_plan_path);
     const lifecycleState = lifecycleStore.load();
+    const nowIso = new Date().toISOString();
+    const nextWorkers = Object.fromEntries(
+      Object.entries(lifecycleState.workers).map(([workerId, worker]) => [
+        workerId,
+        worker.status === "running"
+          ? {
+              ...worker,
+              status: resolveStoppedWorkerStatus(worker.expected_outputs),
+              last_seen_at: nowIso
+            }
+          : worker
+      ])
+    );
+
     lifecycleStore.save({
       ...lifecycleState,
       dispatcher: {
@@ -307,7 +322,7 @@ export class AgentDispatcherRole implements BaseRole {
         started_at: null,
         status: "pending"
       },
-      workers: {}
+      workers: nextWorkers
     });
   }
 
@@ -351,6 +366,14 @@ function dedupeThreadIds(values: Array<string | null>): string[] {
   });
 
   return [...unique];
+}
+
+function expectedOutputsExist(expectedOutputs: string[]): boolean {
+  return expectedOutputs.length > 0 && expectedOutputs.every((filePath) => fsSync.existsSync(filePath));
+}
+
+function resolveStoppedWorkerStatus(expectedOutputs: string[]): "completed" | "abandoned" {
+  return expectedOutputsExist(expectedOutputs) ? "completed" : "abandoned";
 }
 
 function defaultSessionManagerFactory(threadId: string, options: SessionManagerOptions): SessionManagerLike {
