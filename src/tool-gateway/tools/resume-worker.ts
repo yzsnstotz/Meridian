@@ -118,6 +118,7 @@ export async function executeResumeWorkerAction(
   thread_id: string | null;
   thread_killed: boolean;
   retry_count: number;
+  prior_failure_reason?: string;
   kill_error?: string;
 }> {
   await assertWorkerExistsInPlan(args.planPath, args.workerId);
@@ -132,6 +133,8 @@ export async function executeResumeWorkerAction(
   if (args.action === "force-complete" && !args.force) {
     throw new Error("force-complete requires force=true");
   }
+
+  const priorFailureReason = extractPriorFailureReason(worker);
 
   const nextStatus = mapActionToStatus(args.action);
   lifecycleStore.setWorkerStatus(
@@ -162,6 +165,7 @@ export async function executeResumeWorkerAction(
     thread_id: threadId,
     thread_killed: threadKilled,
     retry_count: retryCount,
+    ...(priorFailureReason ? { prior_failure_reason: priorFailureReason } : {}),
     ...(killError ? { kill_error: killError } : {})
   };
 }
@@ -248,6 +252,27 @@ function parseTableRow(line: string): string[] | null {
 
 function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function extractPriorFailureReason(
+  worker: { status: string; hub_result: { content?: string; status?: string } | null }
+): string | undefined {
+  if (worker.status !== "failed" || !worker.hub_result) {
+    return undefined;
+  }
+
+  const content = worker.hub_result.content ?? "";
+  if (content.length === 0) {
+    return worker.hub_result.status === "error" ? "hub returned error (no content)" : undefined;
+  }
+
+  const errorMatch = content.match(/"message"\s*:\s*"([^"]{1,200})"/);
+  if (errorMatch) {
+    return errorMatch[1];
+  }
+
+  const MAX_REASON_LENGTH = 200;
+  return content.length > MAX_REASON_LENGTH ? `${content.slice(0, MAX_REASON_LENGTH)}…` : content;
 }
 
 function asError(error: unknown): Error {

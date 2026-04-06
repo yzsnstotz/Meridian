@@ -22,6 +22,8 @@ export interface DispatchStatusWorker extends DispatchPlanWorkerRow {
   lifecycle_status: string | null;
   thread_id: string | null;
   last_seen_at: string | null;
+  retry_count: number;
+  failure_reason: string | null;
   stale: boolean;
   stale_label: string | null;
   stale_duration_minutes: number | null;
@@ -183,6 +185,8 @@ function buildWorkerStatus(
     lifecycle_status: workerState?.status ?? null,
     thread_id: workerState?.thread_id ?? null,
     last_seen_at: workerState?.last_seen_at ?? null,
+    retry_count: workerState?.retry_count ?? 0,
+    failure_reason: extractFailureReason(workerState),
     stale: staleDurationMs !== null,
     stale_label: staleDurationMs === null ? null : "⚠️ STALE",
     stale_duration_minutes: staleDurationMs === null ? null : Math.floor(staleDurationMs / 60_000),
@@ -229,6 +233,32 @@ function summarizeWorkers(workers: DispatchStatusWorker[]): DispatchStatusReport
       stale: 0
     }
   );
+}
+
+function extractFailureReason(workerState: DispatchThreadStateV2["workers"][string] | undefined): string | null {
+  if (!workerState || workerState.status !== "failed") {
+    return null;
+  }
+
+  const hubResult = workerState.hub_result;
+  if (!hubResult) {
+    return null;
+  }
+
+  const content = hubResult.content ?? "";
+  if (content.length === 0) {
+    return hubResult.status === "error" ? "hub returned error (no content)" : null;
+  }
+
+  // Try to extract a concise error message from the content
+  const errorMatch = content.match(/"message"\s*:\s*"([^"]{1,200})"/);
+  if (errorMatch) {
+    return errorMatch[1];
+  }
+
+  // Truncate raw content to a useful summary
+  const MAX_REASON_LENGTH = 200;
+  return content.length > MAX_REASON_LENGTH ? `${content.slice(0, MAX_REASON_LENGTH)}…` : content;
 }
 
 function categorizeStatus(status: string): "pending" | "running" | "completed" | "failed" | "skipped" {
