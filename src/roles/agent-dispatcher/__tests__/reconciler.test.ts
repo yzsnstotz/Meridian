@@ -403,6 +403,80 @@ describe("reconcile", () => {
     });
   });
 
+  it("marks a running worker completed from a stored successful HubResult with inline report when outputs are absent", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-02": {
+          ...buildRunningWorker("worker-thread-222", path.join(harness.directory, "missing-R-02-report.md")),
+          hub_result: buildInlineReportResult("worker-thread-222")
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["R-02"]?.status).toBe("completed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report.changed).toEqual([
+      {
+        workerId: "R-02",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      }
+    ]);
+  });
+
+  it("marks a running worker completed when hub says completed and hub_result has inline report but no output files", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "N-06": {
+          ...buildRunningWorker("worker-thread-666", path.join(harness.directory, "missing-N-06-report.md")),
+          hub_result: buildInlineReportResult("worker-thread-666")
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-06"]?.status).toBe("completed");
+    expect(report.changed[0]?.trigger).toBe("hub_result:inline_report");
+  });
+
+  it("marks a running worker completed when thread is missing and hub_result has inline report", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-02": {
+          ...buildRunningWorker("worker-thread-222", path.join(harness.directory, "missing-report.md")),
+          hub_result: buildInlineReportResult("worker-thread-222")
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["R-02"]?.status).toBe("completed");
+    expect(report.changed[0]?.trigger).toBe("hub_result:inline_report");
+  });
+
   it("uses the default stale timeout when no override is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -538,6 +612,40 @@ function buildMissingThreadResult(threadId: string): HubResult {
     source: "codex",
     status: "error",
     content: `Routing failed: Cannot fetch status; thread_id=${threadId} is not registered`,
+    attachments: [],
+    timestamp: FIXED_NOW
+  };
+}
+
+function buildInlineReportResult(threadId: string): HubResult {
+  return {
+    trace_id: "33333333-3333-4333-8333-333333333333",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content: [
+      "Worker completed. Returning inline completion report.",
+      "",
+      "# R-02 — Completion Report",
+      "",
+      "- **Status**: ✅ Complete",
+      "",
+      "## Files Changed",
+      "- None by this worker.",
+      "",
+      "## Sub-task Results",
+      "| Sub-task | Status |",
+      "|----------|--------|",
+      "| R-02.1 | ✅ |",
+      "",
+      "## AI Auto-Test Results",
+      "```bash",
+      "# tests 126",
+      "# pass 126",
+      "# fail 0",
+      "```"
+    ].join("\n"),
     attachments: [],
     timestamp: FIXED_NOW
   };

@@ -94,7 +94,7 @@ export async function reconcile(
     }
 
     const observation = await queryHubThreadObservation(hubClient, worker.thread_id);
-    const transition = determineWorkerTransition(observation, outputsPresent, worker.started_at, nowMs, staleTimeoutMs);
+    const transition = determineWorkerTransition(observation, outputsPresent, worker.hub_result, worker.started_at, nowMs, staleTimeoutMs);
 
     if (!transition) {
       report.unchanged.push(workerId);
@@ -173,14 +173,24 @@ async function reconcileDispatcher(
 function determineWorkerTransition(
   observation: HubThreadObservation,
   outputsPresent: boolean,
+  hubResult: HubResult | null,
   startedAt: string,
   nowMs: number,
   staleTimeoutMs: number
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
+  const hasInlineReport = hubResult ? containsInlineReport(hubResult.content) : false;
+
   if ((observation.kind === "completed" || observation.kind === "idle") && outputsPresent) {
     return {
       to: "completed",
       trigger: `hub_status:${observation.rawStatus ?? observation.kind}:outputs_present`
+    };
+  }
+
+  if ((observation.kind === "completed" || observation.kind === "idle") && hasInlineReport) {
+    return {
+      to: "completed",
+      trigger: `hub_status:${observation.rawStatus ?? observation.kind}:inline_report`
     };
   }
 
@@ -199,6 +209,13 @@ function determineWorkerTransition(
       };
     }
 
+    if (hasInlineReport) {
+      return {
+        to: "completed",
+        trigger: "thread_missing:inline_report"
+      };
+    }
+
     if (isStale(startedAt, nowMs, staleTimeoutMs)) {
       return {
         to: "abandoned",
@@ -214,15 +231,24 @@ function determineRecordedResultTransition(
   hubResult: HubResult | null,
   outputsPresent: boolean
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
-  if (!hubResult || !outputsPresent) {
+  if (!hubResult) {
     return null;
   }
 
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
-    return {
-      to: "completed",
-      trigger: "hub_result:outputs_present"
-    };
+    if (outputsPresent) {
+      return {
+        to: "completed",
+        trigger: "hub_result:outputs_present"
+      };
+    }
+
+    if (containsInlineReport(hubResult.content)) {
+      return {
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      };
+    }
   }
 
   return null;
@@ -459,4 +485,16 @@ function isStale(startedAt: string, nowMs: number, staleTimeoutMs: number): bool
   }
 
   return nowMs - startedAtMs >= staleTimeoutMs;
+}
+
+const INLINE_REPORT_PATTERNS = [
+  /completion\s+report/i,
+  /##\s*Files\s+Changed/i,
+  /##\s*Sub-task\s+Results/i,
+  /##\s*AI\s+Auto-Test\s+Results/i,
+  /\bStatus\b.*✅\s*Complete/i
+];
+
+function containsInlineReport(content: string): boolean {
+  return INLINE_REPORT_PATTERNS.filter((pattern) => pattern.test(content)).length >= 2;
 }
