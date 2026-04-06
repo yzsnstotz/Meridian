@@ -125,7 +125,8 @@ export class LifecycleStore {
       status: "running",
       expected_outputs: [...expectedOutputs],
       hub_result: null,
-      command_preamble: commandPreamble ?? null
+      command_preamble: commandPreamble ?? null,
+      retry_count: state.workers[workerId]?.retry_count ?? 0
     };
 
     this.logTransition(workerId, previousStatus, "running", "run_tool_start");
@@ -184,11 +185,13 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
+    const isRetry = options.clearHubResult && status === "pending";
     state.workers[workerId] = {
       ...worker,
       last_seen_at: this.now(),
       status,
-      hub_result: options.clearHubResult ? null : worker.hub_result
+      hub_result: options.clearHubResult ? null : worker.hub_result,
+      retry_count: isRetry ? (worker.retry_count ?? 0) + 1 : (worker.retry_count ?? 0)
     };
 
     this.logTransition(workerId, worker.status, status, trigger);
@@ -326,7 +329,8 @@ function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
             last_seen_at: EPOCH_ISO,
             status: "running",
             expected_outputs: [],
-            hub_result: null
+            hub_result: null,
+            retry_count: 0
           }
         ];
       }
@@ -341,7 +345,8 @@ function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
           last_seen_at: startedAt,
           status: "running",
           expected_outputs: [],
-          hub_result: null
+          hub_result: null,
+          retry_count: 0
         }
       ];
     })

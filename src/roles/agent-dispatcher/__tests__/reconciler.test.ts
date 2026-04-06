@@ -606,7 +606,8 @@ function buildRunningWorker(
     status: "running",
     expected_outputs: [expectedOutput],
     hub_result: null,
-    command_preamble: null
+    command_preamble: null,
+    retry_count: 0
   };
 }
 

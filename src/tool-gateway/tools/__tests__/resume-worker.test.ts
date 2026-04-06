@@ -40,14 +40,53 @@ describe("resume-worker tool", () => {
       action: "retry",
       status: "pending",
       thread_id: "worker-thread-456",
-      thread_killed: true
+      thread_killed: true,
+      retry_count: 1
     });
     expect(harness.lifecycleStore.load().workers["N-04"]).toMatchObject({
       status: "pending",
       thread_id: "worker-thread-456",
-      hub_result: null
+      hub_result: null,
+      retry_count: 1
     });
     await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool |");
+  });
+
+  it("increments retry_count on each successive retry", async () => {
+    const harness = await createHarness();
+
+    // First retry
+    await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+    expect(harness.lifecycleStore.load().workers["N-04"]?.retry_count).toBe(1);
+
+    // Simulate the worker running and failing again
+    harness.lifecycleStore.recordWorkerStart("N-04", "thread-2nd", "trace-2nd", []);
+    harness.lifecycleStore.setWorkerStatus("N-04", "failed", "hub_result:provider_error");
+
+    // Second retry
+    const result = await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+    expect(result.retry_count).toBe(2);
+    expect(harness.lifecycleStore.load().workers["N-04"]?.retry_count).toBe(2);
+  });
+
+  it("preserves retry_count across recordWorkerStart", async () => {
+    const harness = await createHarness();
+
+    // Retry once to set retry_count = 1
+    await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+
+    // Simulate worker re-start (recordWorkerStart should preserve retry_count)
+    harness.lifecycleStore.recordWorkerStart("N-04", "thread-new", "trace-new", ["output.txt"]);
+    expect(harness.lifecycleStore.load().workers["N-04"]?.retry_count).toBe(1);
   });
 
   it("marks a worker skipped and preserves the skip symbol in the dispatch plan", async () => {
@@ -108,7 +147,8 @@ describe("resume-worker tool", () => {
         action: "force-complete",
         status: "completed",
         thread_id: "worker-thread-456",
-        thread_killed: true
+        thread_killed: true,
+        retry_count: 0
       }
     });
   });

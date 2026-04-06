@@ -132,7 +132,8 @@ export const DispatchWorkerStateSchema = z.object({
   status: LifecycleStatusSchema,
   expected_outputs: z.array(z.string().min(1)).default([]),
   hub_result: HubResultSchema.nullable().default(null),
-  command_preamble: z.string().nullable().default(null)
+  command_preamble: z.string().nullable().default(null),
+  retry_count: z.number().int().min(0).default(0)
 });
 export type DispatchWorkerState = z.infer<typeof DispatchWorkerStateSchema>;
 

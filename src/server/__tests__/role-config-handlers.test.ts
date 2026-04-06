@@ -893,7 +893,8 @@ describe("role config handlers", () => {
           action: "skip",
           status: "skipped",
           thread_id: "worker-thread-456",
-          thread_killed: true
+          thread_killed: true,
+          retry_count: 0
         }
       });
 

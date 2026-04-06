@@ -64,7 +64,8 @@ describe("LifecycleStore", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -74,7 +75,8 @@ describe("LifecycleStore", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -287,7 +289,8 @@ describe("LifecycleStore", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -301,7 +304,8 @@ describe("LifecycleStore", () => {
             status: "success",
             timestamp: "2026-04-03T12:01:10.000Z"
           }),
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-03": {
           thread_id: "worker-thread-333",
@@ -311,7 +315,8 @@ describe("LifecycleStore", () => {
           status: "running",
           expected_outputs: ["test/gui-demo/final.txt"],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -344,7 +349,8 @@ describe("LifecycleStore", () => {
           status: "running",
           expected_outputs: ["test/gui-demo/final.txt"],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -385,7 +391,8 @@ describe("LifecycleStore", () => {
           status: "pending",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -395,7 +402,8 @@ describe("LifecycleStore", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-03": {
           thread_id: "worker-thread-333",
@@ -409,7 +417,8 @@ describe("LifecycleStore", () => {
             status: "success",
             timestamp: "2026-04-03T12:02:10.000Z"
           }),
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-04": {
           thread_id: "worker-thread-444",
@@ -424,7 +433,8 @@ describe("LifecycleStore", () => {
             content: "worker failed",
             timestamp: "2026-04-03T12:03:10.000Z"
           }),
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-05": {
           thread_id: "worker-thread-555",
@@ -434,7 +444,8 @@ describe("LifecycleStore", () => {
           status: "abandoned",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null

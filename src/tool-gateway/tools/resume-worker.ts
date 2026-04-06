@@ -117,6 +117,7 @@ export async function executeResumeWorkerAction(
   status: LifecycleStatus;
   thread_id: string | null;
   thread_killed: boolean;
+  retry_count: number;
   kill_error?: string;
 }> {
   await assertWorkerExistsInPlan(args.planPath, args.workerId);
@@ -142,6 +143,9 @@ export async function executeResumeWorkerAction(
     }
   );
 
+  const updatedState = lifecycleStore.load();
+  const retryCount = updatedState.workers[args.workerId]?.retry_count ?? 0;
+
   let killError: string | undefined;
   let threadKilled = false;
   const threadId = worker.thread_id;
@@ -157,6 +161,7 @@ export async function executeResumeWorkerAction(
     status: nextStatus,
     thread_id: threadId,
     thread_killed: threadKilled,
+    retry_count: retryCount,
     ...(killError ? { kill_error: killError } : {})
   };
 }
