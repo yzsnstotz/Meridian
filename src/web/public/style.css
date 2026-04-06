@@ -275,6 +275,11 @@ button:disabled {
   color: var(--accent);
 }
 
+.dispatch-plan-feedback {
+  min-height: 1.25rem;
+  margin-bottom: 14px;
+}
+
 .card-grid,
 .task-list {
   display: grid;
@@ -522,7 +527,7 @@ dd {
 .status-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 720px;
+  min-width: 920px;
 }
 
 .status-table th,
@@ -538,6 +543,37 @@ dd {
   font-size: 0.8rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.dispatch-plan-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.stale-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 217, 138, 0.28);
+  background: rgba(255, 217, 138, 0.12);
+  color: #ffd98a;
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.table-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.table-action-button {
+  padding: 7px 12px;
+  font-size: 0.78rem;
 }
 
 @media (max-width: 720px) {

@@ -1013,6 +1013,9 @@ describe("role config handlers", () => {
   });
 
   it("returns enriched agent-dispatcher detail for the dashboard and role view", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-28T01:00:00.000Z"));
+
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -1173,17 +1176,24 @@ describe("role config handlers", () => {
           rows: [
             expect.objectContaining({
               status: "✅",
-              worker: "N-10"
+              worker: "N-10",
+              stale: false
             }),
             expect.objectContaining({
               status: "🔄",
-              worker: "N-11"
+              worker: "N-11",
+              stale: true,
+              stale_label: "⚠️ STALE",
+              stale_duration_minutes: 60,
+              last_seen_at: "2026-03-28T00:00:00.000Z",
+              thread_id: "worker-thread-456"
             })
           ]
         }
       });
       expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
     } finally {
+      vi.useRealTimers();
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });

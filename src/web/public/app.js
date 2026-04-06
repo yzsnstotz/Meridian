@@ -506,6 +506,7 @@ async function setupRoleDetail() {
   const dispatchPlanEmpty = document.getElementById("dispatch-plan-empty");
   const dispatchPlanTableShell = document.getElementById("dispatch-plan-table-shell");
   const dispatchPlanBody = document.getElementById("dispatch-plan-body");
+  const dispatchPlanFeedback = document.getElementById("dispatch-plan-feedback");
   const hubControls = document.getElementById("agent-dispatcher-hub-controls");
   const startHubBtn = document.getElementById("agent-dispatcher-start-hub-btn");
   const startHubFeedback = document.getElementById("agent-dispatcher-start-hub-feedback");
@@ -515,6 +516,7 @@ async function setupRoleDetail() {
   }
 
   let startHubBound = false;
+  let dispatchPlanActionsBound = false;
 
   const defaultEmptyMessage = empty.textContent;
   bindLocationNavigation(dashboardLink);
@@ -611,18 +613,78 @@ async function setupRoleDetail() {
         dispatchDetailsList.hidden = dispatchDetails.length === 0;
       }
 
+      if (!dispatchPlanActionsBound && dispatchPlanBody) {
+        dispatchPlanActionsBound = true;
+        dispatchPlanBody.addEventListener("click", async (event) => {
+          const target = event.target instanceof Element
+            ? event.target.closest("[data-resume-action]")
+            : null;
+          if (!(target instanceof HTMLButtonElement)) {
+            return;
+          }
+
+          const workerId = target.getAttribute("data-worker-id");
+          const action = target.getAttribute("data-resume-action");
+          if (!workerId || !action) {
+            return;
+          }
+
+          if (
+            action === "force-complete"
+            && !window.confirm(
+              `Force Complete will mark ${workerId} as complete and may unblock downstream workers on incomplete output. Continue?`
+            )
+          ) {
+            return;
+          }
+
+          const actionButtons = Array.from(dispatchPlanBody.querySelectorAll("[data-resume-action]"));
+          actionButtons.forEach((button) => {
+            if (button instanceof HTMLButtonElement) {
+              button.disabled = true;
+            }
+          });
+
+          try {
+            if (dispatchPlanFeedback) {
+              dispatchPlanFeedback.textContent = `${formatResumeActionLabel(action)} ${workerId}…`;
+            }
+
+            const payload = action === "force-complete"
+              ? { action, force: true }
+              : { action };
+
+            await fetchJson(
+              `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/resume`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+              }
+            );
+
+            if (dispatchPlanFeedback) {
+              dispatchPlanFeedback.textContent = `${workerId} ${formatResumeActionSuccess(action)}.`;
+            }
+
+            await render();
+          } catch (error) {
+            if (dispatchPlanFeedback) {
+              dispatchPlanFeedback.textContent = getErrorMessage(error);
+            }
+          } finally {
+            actionButtons.forEach((button) => {
+              if (button instanceof HTMLButtonElement) {
+                button.disabled = false;
+              }
+            });
+          }
+        });
+      }
+
       if (dispatchPlanBody && dispatchPlanEmpty && dispatchPlanTableShell) {
         const rows = Array.isArray(detail.dispatch_plan?.rows) ? detail.dispatch_plan.rows : [];
-        dispatchPlanBody.innerHTML = rows.map((row) => `
-          <tr>
-            <td>${escapeHtml(row.status)}</td>
-            <td>${escapeHtml(row.batch)}</td>
-            <td><code>${escapeHtml(row.worker)}</code></td>
-            <td>${escapeHtml(row.task)}</td>
-            <td>${escapeHtml(row.model)}</td>
-            <td>${escapeHtml(row.depends_on || "—")}</td>
-          </tr>
-        `).join("");
+        dispatchPlanBody.innerHTML = rows.map((row) => renderDispatchPlanRow(row)).join("");
         dispatchPlanEmpty.hidden = rows.length > 0;
         dispatchPlanTableShell.hidden = rows.length === 0;
       }
@@ -1022,6 +1084,59 @@ function renderDispatchDetailCard(detail) {
   `;
 }
 
+function renderDispatchPlanRow(row) {
+  return `
+    <tr>
+      <td>${renderDispatchPlanStatus(row)}</td>
+      <td>${escapeHtml(row.batch)}</td>
+      <td><code>${escapeHtml(row.worker)}</code></td>
+      <td>${escapeHtml(row.task)}</td>
+      <td>${escapeHtml(row.model)}</td>
+      <td>${escapeHtml(row.depends_on || "—")}</td>
+      <td>${renderDispatchPlanActions(row)}</td>
+    </tr>
+  `;
+}
+
+function renderDispatchPlanStatus(row) {
+  const staleLabel = formatDispatchPlanStaleLabel(row);
+
+  return `
+    <div class="dispatch-plan-status">
+      <span>${escapeHtml(row.status || "—")}</span>
+      ${staleLabel ? `<span class="stale-pill">${escapeHtml(staleLabel)}</span>` : ""}
+    </div>
+  `;
+}
+
+function renderDispatchPlanActions(row) {
+  if (row?.status !== "🔄") {
+    return '<span class="muted">—</span>';
+  }
+
+  const workerId = escapeHtml(row.worker || "");
+
+  return `
+    <div class="table-action-group">
+      <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Retry</button>
+      <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
+      <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
+    </div>
+  `;
+}
+
+function formatDispatchPlanStaleLabel(row) {
+  if (!row?.stale) {
+    return "";
+  }
+
+  const minutes = typeof row.stale_duration_minutes === "number" && Number.isFinite(row.stale_duration_minutes)
+    ? `${row.stale_duration_minutes}min`
+    : normalizeText(row.stale_duration_human);
+
+  return minutes ? `⚠️ STALE ${minutes}` : "⚠️ STALE";
+}
+
 function renderDispatchMessage(label, detail, emptyMessage) {
   const sender = formatDispatchSender(detail);
   const senderModel = typeof detail?.sender_model === "string" && detail.sender_model.trim().length > 0
@@ -1132,6 +1247,28 @@ function isAgentDispatcherLaunchConfig(config) {
 function formatReplyChannelLabel(replyChannel) {
   const name = replyChannel.chat_name || replyChannel.bot_name || replyChannel.chat_id;
   return `${replyChannel.channel} · ${name}`;
+}
+
+function formatResumeActionLabel(action) {
+  switch (action) {
+    case "skip":
+      return "Skipping";
+    case "force-complete":
+      return "Force completing";
+    default:
+      return "Retrying";
+  }
+}
+
+function formatResumeActionSuccess(action) {
+  switch (action) {
+    case "skip":
+      return "marked skipped";
+    case "force-complete":
+      return "marked complete";
+    default:
+      return "reset to pending";
+  }
 }
 
 async function fetchJson(url, options) {

@@ -12,6 +12,7 @@ import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
+import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
 import {
   applyEditableDispatcherConfig,
@@ -149,6 +150,13 @@ export interface DispatchPlanRow {
   depends_on: string;
   prds_to_attach?: string;
   notes?: string;
+  lifecycle_status?: string | null;
+  thread_id?: string | null;
+  last_seen_at?: string | null;
+  stale?: boolean;
+  stale_label?: string | null;
+  stale_duration_minutes?: number | null;
+  stale_duration_human?: string | null;
 }
 
 export interface DispatchMessageDetail {
@@ -654,7 +662,11 @@ async function getRole(
 
   const lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
   const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
-  const dispatchPlanRows = dispatchPlan.rows;
+  const dispatchPlanRows = await enrichDispatchPlanRows(
+    agentDispatcherConfig.dispatch_plan_path,
+    dispatchPlan.rows,
+    options.log
+  );
   const dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
   const currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
   const currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
@@ -1184,6 +1196,41 @@ async function loadDispatchPlanData(dispatchPlanPath: string, log: Logger): Prom
       rows: [],
       modelLegend: {}
     };
+  }
+}
+
+async function enrichDispatchPlanRows(
+  dispatchPlanPath: string,
+  rows: DispatchPlanRow[],
+  log: Logger
+): Promise<DispatchPlanRow[]> {
+  try {
+    const report = await buildDispatchStatusReport(dispatchPlanPath);
+    const statusByWorker = new Map(report.workers.map((worker) => [worker.worker_id, worker]));
+
+    return rows.map((row) => {
+      const workerStatus = statusByWorker.get(row.worker);
+      if (!workerStatus) {
+        return row;
+      }
+
+      return {
+        ...row,
+        lifecycle_status: workerStatus.lifecycle_status,
+        thread_id: workerStatus.thread_id,
+        last_seen_at: workerStatus.last_seen_at,
+        stale: workerStatus.stale,
+        stale_label: workerStatus.stale_label,
+        stale_duration_minutes: workerStatus.stale_duration_minutes,
+        stale_duration_human: workerStatus.stale_duration_human
+      };
+    });
+  } catch (error) {
+    log.warn("Failed to enrich dispatch plan rows with stale status", {
+      dispatchPlanPath,
+      error: getErrorMessage(error)
+    });
+    return rows;
   }
 }
 
