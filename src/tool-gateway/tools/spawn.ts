@@ -49,7 +49,8 @@ const spawnTool: ToolDefinition = {
     }
 
     const mode = parseBridgeMode(params.mode);
-    const modelId = readOptionalString(params.model_id);
+    const rawModelId = readOptionalString(params.model_id);
+    const { modelId, effort } = parseModelIdWithEffort(rawModelId);
     const spawnDir = readOptionalString(params.spawn_dir) ?? process.cwd();
     const autoApprove = parseOptionalBoolean(params.auto_approve);
 
@@ -58,6 +59,7 @@ const spawnTool: ToolDefinition = {
         agentType,
         mode,
         modelId,
+        effort,
         spawnDir,
         autoApprove
       }), SPAWN_TIMEOUT_MS);
@@ -93,6 +95,7 @@ function buildSpawnMessage(args: {
   agentType: string;
   mode: BridgeMode;
   modelId?: string;
+  effort?: string;
   spawnDir: string;
   autoApprove?: boolean;
 }): Partial<HubMessage> {
@@ -106,11 +109,39 @@ function buildSpawnMessage(args: {
     payload: {
       spawn_dir: args.spawnDir,
       model_id: args.modelId,
+      effort: args.effort,
       auto_approve: args.autoApprove,
       content: "",
       attachments: []
     }
   };
+}
+
+const KNOWN_EFFORT_SUFFIXES = new Set(["low", "medium", "high", "xhigh"]);
+
+export function parseModelIdWithEffort(rawModelId: string | undefined): {
+  modelId?: string;
+  effort?: string;
+} {
+  if (!rawModelId) {
+    return {};
+  }
+
+  const lastSpaceIndex = rawModelId.lastIndexOf(" ");
+  if (lastSpaceIndex === -1) {
+    return { modelId: rawModelId };
+  }
+
+  const candidateEffort = rawModelId.slice(lastSpaceIndex + 1).toLowerCase();
+  if (KNOWN_EFFORT_SUFFIXES.has(candidateEffort)) {
+    const baseModelId = rawModelId.slice(0, lastSpaceIndex).trim();
+    return {
+      modelId: baseModelId.length > 0 ? baseModelId : rawModelId,
+      effort: candidateEffort
+    };
+  }
+
+  return { modelId: rawModelId };
 }
 
 function parseThreadId(content: string): string | null {

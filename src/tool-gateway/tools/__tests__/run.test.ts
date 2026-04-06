@@ -423,6 +423,45 @@ describe("run tool", () => {
       }
     });
   });
+
+  it("grants DELTA-CHECK workers permission to modify the dispatch plan", async () => {
+    sendAndWaitMock.mockResolvedValue(buildHubResult("Delta check done", "success"));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 5 | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01 | One pass only |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-dc",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "DELTA-CHECK"
+    });
+
+    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
+    expect(sentPayload.payload.content).toContain("may add, remove, or modify rows");
+    expect(sentPayload.payload.content).toContain("**must** write your findings");
+    expect(sentPayload.payload.content).not.toContain("you do not need to write to the dispatch plan yourself");
+  });
+
+  it("does not grant plan modification to regular workers", async () => {
+    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker done", "success"));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | N-01 | Build feature | CODEX | — | — |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-n01",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-01"
+    });
+
+    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
+    expect(sentPayload.payload.content).toContain("you do not need to write to the dispatch plan yourself");
+    expect(sentPayload.payload.content).not.toContain("may add, remove, or modify rows");
+  });
 });
 
 function getLifecycleStore(): MockLifecycleStore {

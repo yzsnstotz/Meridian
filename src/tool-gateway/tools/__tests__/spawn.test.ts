@@ -6,7 +6,7 @@ vi.mock("../../ipc-bridge", () => ({
 
 import type { HubResult } from "../../../types";
 import { sendAndWait } from "../../ipc-bridge";
-import spawnTool from "../spawn";
+import spawnTool, { parseModelIdWithEffort } from "../spawn";
 
 const sendAndWaitMock = vi.mocked(sendAndWait);
 
@@ -31,6 +31,7 @@ describe("spawn tool", () => {
         payload: {
           spawn_dir: process.cwd(),
           model_id: undefined,
+          effort: undefined,
           auto_approve: undefined,
           content: "",
           attachments: []
@@ -71,6 +72,7 @@ describe("spawn tool", () => {
         payload: {
           spawn_dir: "/tmp/project",
           model_id: "gpt-5.4",
+          effort: undefined,
           auto_approve: false,
           content: "",
           attachments: []
@@ -103,6 +105,34 @@ describe("spawn tool", () => {
     });
   });
 
+  it("splits effort suffix from model_id and passes it separately in the payload", async () => {
+    sendAndWaitMock.mockResolvedValue(buildHubResult('{"thread_id":"thread-xh"}'));
+
+    const result = await spawnTool.execute({
+      agent_type: "codex",
+      model_id: "gpt-5.4 xhigh"
+    });
+
+    expect(sendAndWaitMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          model_id: "gpt-5.4",
+          effort: "xhigh"
+        })
+      }),
+      60_000
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        thread_id: "thread-xh",
+        agent_type: "codex",
+        mode: "bridge",
+        model_id: "gpt-5.4"
+      }
+    });
+  });
+
   it("returns a parse failure when the Hub response does not contain spawn JSON", async () => {
     sendAndWaitMock.mockResolvedValue(buildHubResult("spawned thread-123"));
 
@@ -114,6 +144,33 @@ describe("spawn tool", () => {
       ok: false,
       error: "Failed to parse spawn response"
     });
+  });
+});
+
+describe("parseModelIdWithEffort", () => {
+  it("returns empty when no model_id is provided", () => {
+    expect(parseModelIdWithEffort(undefined)).toEqual({});
+  });
+
+  it("returns model_id unchanged when no effort suffix", () => {
+    expect(parseModelIdWithEffort("gpt-5.4")).toEqual({ modelId: "gpt-5.4" });
+  });
+
+  it("extracts known effort suffixes", () => {
+    expect(parseModelIdWithEffort("gpt-5.4 low")).toEqual({ modelId: "gpt-5.4", effort: "low" });
+    expect(parseModelIdWithEffort("gpt-5.4 medium")).toEqual({ modelId: "gpt-5.4", effort: "medium" });
+    expect(parseModelIdWithEffort("gpt-5.4 high")).toEqual({ modelId: "gpt-5.4", effort: "high" });
+    expect(parseModelIdWithEffort("gpt-5.4 xhigh")).toEqual({ modelId: "gpt-5.4", effort: "xhigh" });
+  });
+
+  it("is case-insensitive for effort suffix", () => {
+    expect(parseModelIdWithEffort("gpt-5.4 HIGH")).toEqual({ modelId: "gpt-5.4", effort: "high" });
+    expect(parseModelIdWithEffort("gpt-5.4 XHigh")).toEqual({ modelId: "gpt-5.4", effort: "xhigh" });
+  });
+
+  it("does not strip unknown suffixes", () => {
+    expect(parseModelIdWithEffort("gpt-5.4 turbo")).toEqual({ modelId: "gpt-5.4 turbo" });
+    expect(parseModelIdWithEffort("claude-sonnet-4-6")).toEqual({ modelId: "claude-sonnet-4-6" });
   });
 });
 

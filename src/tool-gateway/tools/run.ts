@@ -166,7 +166,11 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   }
 
   lines.push(`# Status`);
-  lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). The lifecycle store manages all plan status updates automatically — you do not need to write to the dispatch plan yourself.`);
+  if (isPlanModifyingWorker(workerId)) {
+    lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). You are a special node that **may add, remove, or modify rows** in the dispatch plan as part of your task. The lifecycle store will reconcile your own row's final status from the Hub result, but you are free to write new rows or update the plan structure.`);
+  } else {
+    lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). The lifecycle store manages all plan status updates automatically — you do not need to write to the dispatch plan yourself.`);
+  }
   lines.push("");
 
   lines.push(`# Command File`);
@@ -176,7 +180,11 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   lines.push("```");
   lines.push(`Open this file and follow the instructions with these overrides:`);
   lines.push(`- **Skip Step 4a** (mark in-progress) — already done for you.`);
-  lines.push(`- **Skip Step 5a** (mark complete in dispatch plan) — the lifecycle store handles this from the Hub result.`);
+  if (isPlanModifyingWorker(workerId)) {
+    lines.push(`- **Step 5a** (dispatch plan updates): you **must** write your findings and any corrective tasks directly into the dispatch plan. Add new worker rows, update statuses, or restructure as needed — this is your primary output.`);
+  } else {
+    lines.push(`- **Skip Step 5a** (mark complete in dispatch plan) — the lifecycle store handles this from the Hub result.`);
+  }
   lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
   lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
 
@@ -389,6 +397,12 @@ function normalizePathForComparison(filePath: string): string {
 
 function substituteWorkerId(templatePath: string, workerId: string): string {
   return templatePath.replace(/\[WORKER_ID\]/g, workerId).trim();
+}
+
+const PLAN_MODIFYING_WORKERS = new Set(["DELTA-CHECK", "PR-REVIEW"]);
+
+function isPlanModifyingWorker(workerId: string): boolean {
+  return PLAN_MODIFYING_WORKERS.has(workerId);
 }
 
 function resolveSpecialReportBasename(workerId: string): string | null {
