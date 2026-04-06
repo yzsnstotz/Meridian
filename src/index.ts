@@ -92,7 +92,33 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     resolveActiveDispatchPlanPaths: () => resolveDispatchPlanPathsFromState(stateStore),
     hubClient: client,
     log,
-    intervalMs: RECONCILE_INTERVAL_MS
+    intervalMs: RECONCILE_INTERVAL_MS,
+    onDispatcherStalled: async (info) => {
+      const threadId = await resolveThreadIdForDispatchPlanPath(stateStore, info.dispatchPlanPath);
+      if (!threadId) {
+        log.warn("Watchdog stall: no persisted agent-dispatcher found for plan", {
+          dispatchPlanPath: info.dispatchPlanPath
+        });
+        return;
+      }
+
+      const existingRole = runner.getRole(threadId);
+      if (existingRole) {
+        log.info("Watchdog stall: relaunching active dispatcher hub session", { threadId });
+        await runner.relaunchAgentDispatcherHub(threadId);
+        return;
+      }
+
+      log.info("Watchdog stall: reactivating persisted dispatcher", { threadId });
+      const state = await loadAppState(stateStore);
+      const roleState = state.roles.find((role) => role.threadId === threadId);
+      if (!roleState?.config) {
+        return;
+      }
+
+      const role = registry.create("agent-dispatcher", threadId, roleState.config);
+      await runner.activate(role, { needsReactivation: true });
+    }
   });
 
   await httpServer.listen();
@@ -486,6 +512,27 @@ function parseLeadingJsonObject(rawContent: string): unknown {
     depth -= 1;
     if (depth === 0) {
       return JSON.parse(trimmed.slice(0, index + 1));
+    }
+  }
+
+  return null;
+}
+
+async function resolveThreadIdForDispatchPlanPath(
+  stateStore: StateStore,
+  dispatchPlanPath: string
+): Promise<string | null> {
+  const state = await loadAppState(stateStore);
+  const eligibleStatuses = new Set(["active", "paused", "needs_reactivation"]);
+
+  for (const role of state.roles) {
+    if (role.roleType !== "agent-dispatcher" || !eligibleStatuses.has(role.status)) {
+      continue;
+    }
+
+    const config = parseAgentDispatcherConfig(role);
+    if (config?.dispatch_plan_path === dispatchPlanPath) {
+      return role.threadId;
     }
   }
 

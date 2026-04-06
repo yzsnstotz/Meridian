@@ -2,17 +2,25 @@ import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import { RECONCILE_INTERVAL_MS } from "../../config";
+import type { DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { LifecycleStore } from "./lifecycle-store";
 import { reconcile, type ReconciliationReport } from "./reconciler";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
+export interface DispatcherStallInfo {
+  dispatchPlanPath: string;
+  dispatcherStatus: string;
+  pendingWorkerCount: number;
+}
+
 export interface WatchdogDeps {
   resolveActiveDispatchPlanPaths: () => Promise<string[]>;
   hubClient: A2AClient;
   log: Logger;
   intervalMs?: number;
+  onDispatcherStalled?: (info: DispatcherStallInfo) => Promise<void>;
 }
 
 export class ReconciliationWatchdog {
@@ -20,6 +28,7 @@ export class ReconciliationWatchdog {
   private readonly hubClient: A2AClient;
   private readonly log: Logger;
   private readonly intervalMs: number;
+  private readonly onDispatcherStalled: ((info: DispatcherStallInfo) => Promise<void>) | null;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -30,6 +39,7 @@ export class ReconciliationWatchdog {
     this.hubClient = deps.hubClient;
     this.log = deps.log;
     this.intervalMs = deps.intervalMs ?? RECONCILE_INTERVAL_MS;
+    this.onDispatcherStalled = deps.onDispatcherStalled ?? null;
   }
 
   start(): void {
@@ -115,6 +125,8 @@ export class ReconciliationWatchdog {
         }
 
         reports.push(report);
+
+        await this.checkForStalledDispatcher(lifecycleStore, dispatchPlanPath);
       } catch (error) {
         this.log.warn("Watchdog reconciliation failed for dispatch plan", {
           dispatchPlanPath,
@@ -125,6 +137,52 @@ export class ReconciliationWatchdog {
 
     return reports;
   }
+  private async checkForStalledDispatcher(
+    lifecycleStore: LifecycleStore,
+    dispatchPlanPath: string
+  ): Promise<void> {
+    if (!this.onDispatcherStalled) {
+      return;
+    }
+
+    const state = lifecycleStore.load();
+    if (state.dispatcher.status === "running") {
+      return;
+    }
+
+    const pendingWorkerCount = countWorkersInStatus(state, "pending");
+    if (pendingWorkerCount === 0) {
+      return;
+    }
+
+    const hasRunningWorkers = countWorkersInStatus(state, "running") > 0;
+    if (hasRunningWorkers) {
+      return;
+    }
+
+    this.log.info("Watchdog detected stalled dispatcher with pending workers", {
+      dispatchPlanPath,
+      dispatcherStatus: state.dispatcher.status,
+      pendingWorkerCount
+    });
+
+    try {
+      await this.onDispatcherStalled({
+        dispatchPlanPath,
+        dispatcherStatus: state.dispatcher.status,
+        pendingWorkerCount
+      });
+    } catch (error) {
+      this.log.warn("Watchdog dispatcher stall callback failed", {
+        dispatchPlanPath,
+        error: asError(error).message
+      });
+    }
+  }
+}
+
+function countWorkersInStatus(state: DispatchThreadStateV2, status: string): number {
+  return Object.values(state.workers).filter((worker) => worker.status === status).length;
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {

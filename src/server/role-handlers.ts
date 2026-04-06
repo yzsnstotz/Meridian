@@ -29,6 +29,7 @@ import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
 import {
   ACTIVE_ROLE_STATUS,
+  isStartupRehydratableRoleStatus,
   NEEDS_REACTIVATION_ROLE_STATUS,
   PAUSED_ROLE_STATUS,
   StateStore
@@ -434,26 +435,27 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     ok: true;
     dispatcher_thread_id: string;
   }> {
-    try {
+    const activeRole = resolveActiveRoleBinding(threadId);
+    if (activeRole && activeRole.roleType === "agent-dispatcher") {
       const result = await options.runner.relaunchAgentDispatcherHub(threadId);
       return { ok: true, dispatcher_thread_id: result.dispatcher_thread_id };
-    } catch (error) {
-      const message = getErrorMessage(error);
-      if (message.includes("not active") || message.includes("not an AgentDispatcherRole")) {
-        throw createHttpError(404, message);
-      }
-
-      throw error;
     }
+
+    const result = await reactivatePersistedAgentDispatcher(threadId);
+    return { ok: true, dispatcher_thread_id: result.dispatcher_thread_id };
   }
 
   async function setAgentDispatcherStatus(
     threadId: string,
     status: "active" | "paused"
   ): Promise<{ ok: true; status: "active" | "paused" }> {
-    const activeRole = resolveActiveRoleBinding(threadId);
+    let activeRole = resolveActiveRoleBinding(threadId);
     if (!activeRole || activeRole.roleType !== "agent-dispatcher") {
-      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+      await reactivatePersistedAgentDispatcher(threadId);
+      activeRole = resolveActiveRoleBinding(threadId);
+      if (!activeRole || activeRole.roleType !== "agent-dispatcher") {
+        throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+      }
     }
 
     const updated = status === "paused"
@@ -546,6 +548,39 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       agents_count: count,
       roles_count: count
     };
+  }
+
+  async function reactivatePersistedAgentDispatcher(
+    threadId: string
+  ): Promise<{ dispatcher_thread_id: string }> {
+    const state = await loadState(stateStore);
+    const persistedRole = resolvePersistedAgentDispatcherRoleState(state, threadId);
+    if (!persistedRole) {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const role = options.registry.create("agent-dispatcher", threadId, persistedRole.config);
+    activeRoles.set(threadId, {
+      roleType: role.roleType,
+      config: role.config
+    });
+
+    try {
+      await options.runner.activate(role, { needsReactivation: true });
+    } catch (error) {
+      activeRoles.delete(threadId);
+      throw error;
+    }
+
+    const dispatcherThreadId = extractDispatcherThreadId(role);
+    if (!dispatcherThreadId) {
+      throw createHttpError(
+        500,
+        `Dispatcher thread was not recorded after reactivation for thread_id=${threadId}`
+      );
+    }
+
+    return { dispatcher_thread_id: dispatcherThreadId };
   }
 
   async function activateRole(
@@ -837,6 +872,23 @@ function resolvePersistedAgentDispatcherConfig(state: AppState): AgentDispatcher
     const config = parseAgentDispatcherConfig(role.config);
     if (config) {
       return config;
+    }
+  }
+
+  return null;
+}
+
+function resolvePersistedAgentDispatcherRoleState(
+  state: AppState,
+  threadId: string
+): RoleState | null {
+  for (const role of state.roles) {
+    if (
+      role.threadId === threadId &&
+      role.roleType === "agent-dispatcher" &&
+      isStartupRehydratableRoleStatus(role.status)
+    ) {
+      return role;
     }
   }
 
@@ -1616,7 +1668,12 @@ function resolveAppliedModel(modelCode: string | null, modelLegend: DispatchPlan
   }
 
   const resolved = modelLegend[modelCode]?.model_id;
-  return typeof resolved === "string" && resolved.trim().length > 0 ? resolved.trim() : null;
+  if (typeof resolved === "string" && resolved.trim().length > 0) {
+    return resolved.trim();
+  }
+
+  // Fall back to the raw model code when the legend has no mapping.
+  return modelCode.trim();
 }
 
 function readOptionalTableCell(value: string | undefined): string | null {

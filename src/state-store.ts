@@ -11,7 +11,7 @@ export const PAUSED_ROLE_STATUS = "paused";
 export const NEEDS_REACTIVATION_ROLE_STATUS = "needs_reactivation";
 
 export function isStartupRehydratableRoleStatus(status: string): boolean {
-  return status === ACTIVE_ROLE_STATUS || status === NEEDS_REACTIVATION_ROLE_STATUS;
+  return status === ACTIVE_ROLE_STATUS || status === PAUSED_ROLE_STATUS || status === NEEDS_REACTIVATION_ROLE_STATUS;
 }
 
 export class StateStore {

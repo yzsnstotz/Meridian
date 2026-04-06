@@ -1515,6 +1515,72 @@ describe("role config handlers", () => {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("reactivates persisted agent-dispatcher when start-dispatcher-hub targets inactive role", async () => {
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "ad-persisted-1",
+          roleType: "agent-dispatcher",
+          config: {
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            tasks: [],
+            user_reply_channels: [{ channel: "web", chat_id: "test" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          },
+          status: "needs_reactivation"
+        }
+      ],
+      promptStore: {}
+    };
+
+    const harness = createHarness(persistedState);
+
+    const result = await invokeJson<{ ok: boolean; dispatcher_thread_id: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/ad-persisted-1/start-hub"
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.dispatcher_thread_id).toBe("dispatcher-thread-123");
+  });
+
+  it("reactivates persisted agent-dispatcher when resume targets inactive role", async () => {
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "ad-persisted-2",
+          roleType: "agent-dispatcher",
+          config: {
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            tasks: [],
+            user_reply_channels: [{ channel: "web", chat_id: "test" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          },
+          status: "active"
+        }
+      ],
+      promptStore: {}
+    };
+
+    const harness = createHarness(persistedState);
+
+    const result = await invokeJson<{ ok: boolean; status: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/ad-persisted-2/resume"
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("active");
+  });
 });
 
 function createHarness(
