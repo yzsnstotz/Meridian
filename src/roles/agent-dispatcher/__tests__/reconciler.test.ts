@@ -477,6 +477,44 @@ describe("reconcile", () => {
     expect(report.changed[0]?.trigger).toBe("hub_result:inline_report");
   });
 
+  it("marks a running worker failed when hub_result is success but content contains a provider error", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "DELTA-CHECK": {
+          ...buildRunningWorker("worker-thread-dc", path.join(harness.directory, "missing-report.md")),
+          hub_result: {
+            trace_id: "44444444-4444-4444-8444-444444444444",
+            thread_id: "worker-thread-dc",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: '■ {"type":"error","status":400,"error":\n{"type":"invalid_request_error","message":"The \'gpt-5.4 xhigh\' model is not\nsupported when using Codex with a ChatGPT account."}}\n\n\n› Improve documentation in @filename',
+            attachments: [],
+            timestamp: "2026-04-03T13:00:00.000Z"
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient(() => buildStatusResult("worker-thread-dc", "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["DELTA-CHECK"]?.status).toBe("failed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "DELTA-CHECK",
+        from: "running",
+        to: "failed",
+        trigger: "hub_result:provider_error"
+      })
+    );
+  });
+
   it("uses the default stale timeout when no override is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

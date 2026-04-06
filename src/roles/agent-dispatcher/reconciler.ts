@@ -236,6 +236,13 @@ function determineRecordedResultTransition(
   }
 
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
+    if (containsProviderError(hubResult.content)) {
+      return {
+        to: "failed",
+        trigger: "hub_result:provider_error"
+      };
+    }
+
     if (outputsPresent) {
       return {
         to: "completed",
@@ -485,6 +492,18 @@ function isStale(startedAt: string, nowMs: number, staleTimeoutMs: number): bool
   }
 
   return nowMs - startedAtMs >= staleTimeoutMs;
+}
+
+const PROVIDER_ERROR_PATTERNS = [
+  /\{"type"\s*:\s*"error"/,
+  /\binvalid_request_error\b/,
+  /\bmodel is not supported\b/i,
+  /\brate_limit_error\b/,
+  /\bauthentication_error\b/
+];
+
+function containsProviderError(content: string): boolean {
+  return PROVIDER_ERROR_PATTERNS.some((pattern) => pattern.test(content));
 }
 
 const INLINE_REPORT_PATTERNS = [
