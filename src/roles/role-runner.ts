@@ -69,6 +69,10 @@ export class RoleRunner {
     return this.roles.get(threadId) ?? null;
   }
 
+  listRoles(): BaseRole[] {
+    return [...this.roles.values()];
+  }
+
   async pauseRole(threadId: string): Promise<boolean> {
     return this.updateRoleStatus(threadId, "paused");
   }

@@ -463,6 +463,56 @@ describe("role config handlers", () => {
     expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-live")?.status).toBe("active");
   });
 
+  it("pauses and resumes a startup-rehydrated agent-dispatcher role", async () => {
+    const config = {
+      tasks: [],
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: [
+        {
+          channel: "telegram" as const,
+          chat_id: "telegram:ops"
+        }
+      ],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always",
+      use_agent_dispatcher: true
+    };
+    const harness = createHarness({
+      roles: [
+        {
+          threadId: "agent-dispatcher-rehydrated",
+          roleType: "agent-dispatcher",
+          config,
+          status: "active"
+        }
+      ],
+      promptStore: {}
+    });
+
+    const role = harness.registry.create("agent-dispatcher", "agent-dispatcher-rehydrated", config);
+    await harness.runner.activate(role, { needsReactivation: false });
+
+    await expect(
+      invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-rehydrated/pause")
+    ).resolves.toEqual({
+      ok: true,
+      status: "paused"
+    });
+    expect((await harness.stateStore.load())?.roles.find((entry) => entry.threadId === "agent-dispatcher-rehydrated")?.status)
+      .toBe("paused");
+
+    await expect(
+      invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-rehydrated/resume")
+    ).resolves.toEqual({
+      ok: true,
+      status: "active"
+    });
+    expect((await harness.stateStore.load())?.roles.find((entry) => entry.threadId === "agent-dispatcher-rehydrated")?.status)
+      .toBe("active");
+  });
+
   it("starts a new Hub session via POST /api/agent-dispatcher/:id/start-hub", async () => {
     const harness = createHarness();
     const startResponse = await invokeJson<{ ok: true; dispatcher_id: string; dispatcher_thread_id: string }>(
@@ -489,6 +539,75 @@ describe("role config handlers", () => {
       ok: true,
       dispatcher_thread_id: "dispatcher-thread-123"
     });
+  });
+
+  it("starts a new Hub session for a startup-rehydrated agent-dispatcher role", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-start-hub-rehydrated-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const config = {
+      tasks: [],
+      dispatch_plan_path: dispatchPlanPath,
+      command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+      user_reply_channels: [
+        {
+          channel: "telegram" as const,
+          chat_id: "telegram:ops"
+        }
+      ],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always",
+      use_agent_dispatcher: true
+    };
+
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness({
+        roles: [
+          {
+            threadId: "agent-dispatcher-rehydrated-start-hub",
+            roleType: "agent-dispatcher",
+            config,
+            status: "active"
+          }
+        ],
+        promptStore: {}
+      });
+
+      const role = harness.registry.create(
+        "agent-dispatcher",
+        "agent-dispatcher-rehydrated-start-hub",
+        config
+      );
+      await harness.runner.activate(role, { needsReactivation: false });
+
+      await expect(
+        invokeJson<{ ok: true; dispatcher_thread_id: string }>(
+          harness.roleHandlers,
+          "POST",
+          "/api/agent-dispatcher/agent-dispatcher-rehydrated-start-hub/start-hub"
+        )
+      ).resolves.toEqual({
+        ok: true,
+        dispatcher_thread_id: "dispatcher-thread-123"
+      });
+
+      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toContain('"thread_id": "dispatcher-thread-123"');
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("returns a reconciliation report from POST /api/reconcile for the active agent-dispatcher", async () => {
@@ -1484,6 +1603,8 @@ function createHarness(
 
   return {
     log,
+    registry,
+    runner,
     stateStore,
     roleHandlers: createRoleHandlers({
       ...roleHandlersOptions,

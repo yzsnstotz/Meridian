@@ -222,9 +222,48 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const sendHubRequestImpl = options.sendHubRequest ?? sendHubRequest;
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
+  function syncActiveRolesFromRunner(): void {
+    const activeThreadIds = new Set<string>();
+
+    for (const liveRole of options.runner.listRoles()) {
+      activeThreadIds.add(liveRole.threadId);
+      activeRoles.set(liveRole.threadId, {
+        roleType: liveRole.roleType,
+        config: liveRole.config
+      });
+    }
+
+    for (const threadId of [...activeRoles.keys()]) {
+      if (!activeThreadIds.has(threadId)) {
+        activeRoles.delete(threadId);
+      }
+    }
+  }
+
+  function resolveActiveRoleBinding(threadId: string): PromptStoreRoleBinding | null {
+    syncActiveRolesFromRunner();
+
+    const cachedRole = activeRoles.get(threadId);
+    if (cachedRole) {
+      return cachedRole;
+    }
+
+    const liveRole = options.runner.getRole(threadId);
+    if (!liveRole) {
+      return null;
+    }
+
+    const binding: PromptStoreRoleBinding = {
+      roleType: liveRole.roleType,
+      config: liveRole.config
+    };
+    activeRoles.set(threadId, binding);
+    return binding;
+  }
+
   const handlers: RoleHandlers = {
     async getConfig(threadId: string): Promise<RoleConfigResponse> {
-      const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
+      const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
       if (context.roleType === "agent-dispatcher") {
         return {
           thread_id: threadId,
@@ -246,7 +285,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       };
     },
     async patchConfig(threadId: string, body: unknown): Promise<RoleConfigResponse> {
-      const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
+      const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
       if (context.roleType === "agent-dispatcher") {
         throw createHttpError(409, getAgentDispatcherConfigEditBlockedReason());
       }
@@ -277,7 +316,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       return handlers.getConfig(threadId);
     },
     resolveRole(threadId: string): PromptStoreRoleBinding | null {
-      return activeRoles.get(threadId) ?? null;
+      return resolveActiveRoleBinding(threadId);
     },
     async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
       const route = matchRoleRoute(request);
@@ -404,7 +443,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     threadId: string,
     status: "active" | "paused"
   ): Promise<{ ok: true; status: "active" | "paused" }> {
-    const activeRole = activeRoles.get(threadId);
+    const activeRole = resolveActiveRoleBinding(threadId);
     if (!activeRole || activeRole.roleType !== "agent-dispatcher") {
       throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
     }
@@ -424,6 +463,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   }
 
   async function reconcileActiveDispatcher() {
+    syncActiveRolesFromRunner();
+
     const agentDispatcherConfig = await resolveReconciliableAgentDispatcherConfig(stateStore, activeRoles);
     if (!agentDispatcherConfig) {
       throw createHttpError(404, "No active agent dispatcher is running");
@@ -441,7 +482,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     workerId: string,
     body: unknown
   ): Promise<{ ok: true; result: Awaited<ReturnType<typeof executeResumeWorkerAction>> }> {
-    const context = await loadRoleConfigContext(threadId, stateStore, activeRoles);
+    const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
     if (context.roleType !== "agent-dispatcher") {
       throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
     }
@@ -506,7 +547,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const { threadId, roleType, config } = forcedRoleType
       ? normalizeCreateBody(body, forcedRoleType)
       : normalizeCreateBody(body);
-    if (activeRoles.has(threadId)) {
+    if (resolveActiveRoleBinding(threadId)) {
       throw createHttpError(409, `Role already active for thread_id=${threadId}`);
     }
 
@@ -532,6 +573,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   }
 
   async function deleteRole(threadId: string): Promise<{ ok: true }> {
+    syncActiveRolesFromRunner();
+
     const state = await loadState(stateStore);
     const exists = state.roles.some((role) => role.threadId === threadId);
     if (!exists && !activeRoles.has(threadId)) {
@@ -824,11 +867,11 @@ type RoleConfigContext = DispatcherRoleConfigContext | AgentDispatcherRoleConfig
 async function loadRoleConfigContext(
   threadId: string,
   stateStore: PersistableStateStore,
-  activeRoles: ReadonlyMap<string, PromptStoreRoleBinding>
+  resolveActiveRole: (threadId: string) => PromptStoreRoleBinding | null
 ): Promise<RoleConfigContext> {
   const state = await loadState(stateStore);
   const roleState = state.roles.find((role) => role.threadId === threadId) ?? null;
-  const activeRole = activeRoles.get(threadId) ?? null;
+  const activeRole = resolveActiveRole(threadId);
   const resolvedRoleType = activeRole?.roleType === "agent-dispatcher" || roleState?.roleType === "agent-dispatcher"
     ? "agent-dispatcher"
     : activeRole?.roleType === "dispatcher" || roleState?.roleType === "dispatcher"

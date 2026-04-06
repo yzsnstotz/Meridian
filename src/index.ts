@@ -17,6 +17,7 @@ import { HttpServer } from "./server/http-server";
 import { createRoleHandlers } from "./server/role-handlers";
 import {
   ACTIVE_ROLE_STATUS,
+  PAUSED_ROLE_STATUS,
   NEEDS_REACTIVATION_ROLE_STATUS,
   StateStore,
   isStartupRehydratableRoleStatus
@@ -65,6 +66,9 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   const startupActivations = await buildStartupActivations(stateStore, client, log);
   await reconcileStartupDispatchers(startupActivations, client, log);
 
+  await resultServer.listen();
+  await activatePersistedRoles(startupActivations, registry, runner, log);
+
   const roleHandlers = createRoleHandlers({
     runner,
     registry,
@@ -84,7 +88,6 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     promptHandlers,
     log
   });
-
   const watchdog = new ReconciliationWatchdog({
     resolveActiveDispatchPlanPaths: () => resolveDispatchPlanPathsFromState(stateStore),
     hubClient: client,
@@ -92,7 +95,6 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     intervalMs: RECONCILE_INTERVAL_MS
   });
 
-  await resultServer.listen();
   await httpServer.listen();
   void client.start().catch((error) => {
     if (error instanceof Error && error.message === "A2A client stopped before register_service completed") {
@@ -100,7 +102,6 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     }
     log.warn("A2A client background start failed", error);
   });
-  await activatePersistedRoles(startupActivations, registry, runner, log);
   watchdog.start();
 
   return {
@@ -169,7 +170,11 @@ async function buildStartupActivations(
     };
 
     if (result.dispatcherConfig) {
-      const nextStatus = result.needsReactivation ? NEEDS_REACTIVATION_ROLE_STATUS : ACTIVE_ROLE_STATUS;
+      const nextStatus = roleState.status === PAUSED_ROLE_STATUS
+        ? PAUSED_ROLE_STATUS
+        : result.needsReactivation
+          ? NEEDS_REACTIVATION_ROLE_STATUS
+          : ACTIVE_ROLE_STATUS;
       if (nextRoleState.status !== nextStatus) {
         nextRoleState.status = nextStatus;
         nextState.roles[index] = nextRoleState;

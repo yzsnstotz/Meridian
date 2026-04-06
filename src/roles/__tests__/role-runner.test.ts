@@ -229,6 +229,21 @@ describe("RoleRunner", () => {
     expect(role.onInboundResult).not.toHaveBeenCalled();
     expect(logger.debug).toHaveBeenCalledTimes(1);
   });
+
+  it("lists the currently active roles", async () => {
+    const first = createMockRole("dispatcher-1").role;
+    const second = createMockRole("agent-dispatcher-1", {}, "agent-dispatcher").role;
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(first);
+    await runner.activate(second);
+    expect(runner.listRoles()).toEqual([first, second]);
+
+    await runner.deactivate(first.threadId);
+    expect(runner.listRoles()).toEqual([second]);
+  });
 });
 
 describe("RoleRegistry", () => {
