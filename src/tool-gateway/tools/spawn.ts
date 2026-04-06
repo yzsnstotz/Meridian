@@ -22,6 +22,21 @@ const spawnTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Bridge mode to use for the spawned agent"
+    },
+    model_id: {
+      type: "string",
+      required: false,
+      description: "Explicit provider model id to use for the spawned agent"
+    },
+    spawn_dir: {
+      type: "string",
+      required: false,
+      description: "Working directory for the spawned agent"
+    },
+    auto_approve: {
+      type: "string",
+      required: false,
+      description: "Whether Meridian should enable auto-approve for the spawned agent"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -34,9 +49,18 @@ const spawnTool: ToolDefinition = {
     }
 
     const mode = parseBridgeMode(params.mode);
+    const modelId = readOptionalString(params.model_id);
+    const spawnDir = readOptionalString(params.spawn_dir) ?? process.cwd();
+    const autoApprove = parseOptionalBoolean(params.auto_approve);
 
     try {
-      const result = await sendAndWait(buildSpawnMessage(agentType, mode), SPAWN_TIMEOUT_MS);
+      const result = await sendAndWait(buildSpawnMessage({
+        agentType,
+        mode,
+        modelId,
+        spawnDir,
+        autoApprove
+      }), SPAWN_TIMEOUT_MS);
       const threadId = parseThreadId(result.content);
       if (!threadId) {
         return {
@@ -50,7 +74,8 @@ const spawnTool: ToolDefinition = {
         data: {
           thread_id: threadId,
           agent_type: agentType,
-          mode
+          mode,
+          model_id: modelId
         }
       };
     } catch (error) {
@@ -64,16 +89,24 @@ const spawnTool: ToolDefinition = {
 
 export default spawnTool;
 
-function buildSpawnMessage(agentType: string, mode: BridgeMode): Partial<HubMessage> {
+function buildSpawnMessage(args: {
+  agentType: string;
+  mode: BridgeMode;
+  modelId?: string;
+  spawnDir: string;
+  autoApprove?: boolean;
+}): Partial<HubMessage> {
   return {
     thread_id: SPAWN_THREAD_ID,
     actor_id: MERIDIAN_TOOL_ACTOR_ID,
     priority: 5,
     intent: "spawn",
-    target: agentType,
-    mode,
+    target: args.agentType,
+    mode: args.mode,
     payload: {
-      spawn_dir: process.cwd(),
+      spawn_dir: args.spawnDir,
+      model_id: args.modelId,
+      auto_approve: args.autoApprove,
       content: "",
       attachments: []
     }
@@ -96,6 +129,27 @@ function parseThreadId(content: string): string | null {
 
 function parseBridgeMode(mode: string | undefined): BridgeMode {
   return mode?.trim() === "pane_bridge" ? "pane_bridge" : "bridge";
+}
+
+function readOptionalString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+
+  throw new Error(`Invalid boolean value: ${value}`);
 }
 
 function toToolError(error: unknown): string {

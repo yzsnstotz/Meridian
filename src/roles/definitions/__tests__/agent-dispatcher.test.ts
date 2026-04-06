@@ -61,7 +61,8 @@ describe("AgentDispatcherRole", () => {
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
       default_agent_type: "codex",
       default_mode: "bridge",
-      kill_policy: "always"
+      kill_policy: "always",
+      resolved_model_map_json: "{}"
     });
     expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
     expect(harness.launchDispatcher).toHaveBeenCalledWith({
@@ -138,6 +139,25 @@ describe("AgentDispatcherRole", () => {
     );
   });
 
+  it("merges config model_map into the dispatcher prompt runtime context", async () => {
+    const harness = createHarness({
+      config: {
+        model_map: {
+          CODEX: {
+            provider: "codex",
+            model_id: "gpt-5.4"
+          }
+        }
+      }
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.buildSystemPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}"
+    }));
+  });
+
   it("onDeactivate kills the dispatcher and tracked worker threads", async () => {
     const harness = createHarness({
       lifecycleState: {
@@ -203,6 +223,7 @@ describe("AgentDispatcherRole", () => {
 
 function createHarness(options: {
   lifecycleState?: DispatchThreadStateV2;
+  config?: Record<string, unknown>;
 } = {}) {
   const stateStore = new MemoryStateStore();
   const sessionManager = {
@@ -247,7 +268,8 @@ function createHarness(options: {
     ],
     agent_type: "codex",
     mode: "bridge",
-    kill_policy: "always"
+    kill_policy: "always",
+    ...(options.config ?? {})
   }, {
     stateStore,
     buildSystemPrompt,

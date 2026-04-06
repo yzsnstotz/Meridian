@@ -30,6 +30,8 @@ describe("spawn tool", () => {
         mode: "bridge",
         payload: {
           spawn_dir: process.cwd(),
+          model_id: undefined,
+          auto_approve: undefined,
           content: "",
           attachments: []
         }
@@ -41,7 +43,48 @@ describe("spawn tool", () => {
       data: {
         thread_id: "thread-123",
         agent_type: "claude",
-        mode: "bridge"
+        mode: "bridge",
+        model_id: undefined
+      }
+    });
+  });
+
+  it("forwards model, workdir, and auto-approve overrides to Hub spawn", async () => {
+    sendAndWaitMock.mockResolvedValue(buildHubResult('{"thread_id":"thread-999"}'));
+
+    const result = await spawnTool.execute({
+      agent_type: "codex",
+      mode: "pane_bridge",
+      model_id: "gpt-5.4",
+      spawn_dir: "/tmp/project",
+      auto_approve: "false"
+    });
+
+    expect(sendAndWaitMock).toHaveBeenCalledWith(
+      {
+        thread_id: "spawn",
+        actor_id: "service:meridian-tool",
+        priority: 5,
+        intent: "spawn",
+        target: "codex",
+        mode: "pane_bridge",
+        payload: {
+          spawn_dir: "/tmp/project",
+          model_id: "gpt-5.4",
+          auto_approve: false,
+          content: "",
+          attachments: []
+        }
+      },
+      60_000
+    );
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        thread_id: "thread-999",
+        agent_type: "codex",
+        mode: "pane_bridge",
+        model_id: "gpt-5.4"
       }
     });
   });

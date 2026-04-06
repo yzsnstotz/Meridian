@@ -19,6 +19,7 @@ import {
   buildSystemPrompt,
   type PromptVars
 } from "../agent-dispatcher/prompt-builder";
+import { resolveDispatchModelMapFromMarkdown } from "../agent-dispatcher/model-routing";
 import {
   readWorkersByStatus,
   SessionManager,
@@ -158,11 +159,21 @@ export class AgentDispatcherRole implements BaseRole {
       user_reply_channels: JSON.stringify(this.config.user_reply_channels),
       default_agent_type: this.config.agent_type,
       default_mode: this.config.mode,
-      kill_policy: this.config.kill_policy
+      kill_policy: this.config.kill_policy,
+      resolved_model_map_json: JSON.stringify(this.resolveDispatchModelMap())
     });
     return configuredSystemPrompt && configuredSystemPrompt.length > 0
       ? configuredSystemPrompt
       : defaultSystemPrompt;
+  }
+
+  private resolveDispatchModelMap() {
+    try {
+      const markdown = fsSync.readFileSync(this.config.dispatch_plan_path, "utf8");
+      return resolveDispatchModelMapFromMarkdown(markdown, this.config.model_map);
+    } catch {
+      return this.config.model_map ?? {};
+    }
   }
 
   /**
@@ -350,6 +361,12 @@ function snapshotConfig(config: AgentDispatcherConfig): AgentDispatcherConfig {
       ...task,
       depends_on: [...task.depends_on]
     })),
+    model_map: config.model_map ? Object.fromEntries(
+      Object.entries(config.model_map).map(([code, entry]) => [
+        code,
+        { ...entry }
+      ])
+    ) : undefined,
     user_reply_channel: config.user_reply_channel ? { ...config.user_reply_channel } : undefined,
     user_reply_channels: config.user_reply_channels.map((replyChannel) => ({ ...replyChannel }))
   };

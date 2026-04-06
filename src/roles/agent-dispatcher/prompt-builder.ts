@@ -7,6 +7,7 @@ export interface PromptVars {
   default_agent_type: string;
   default_mode: string;
   kill_policy: string;
+  resolved_model_map_json?: string;
 }
 
 const TOOL_ENTRYPOINT = "npx tsx src/bin/meridian-tool.ts";
@@ -14,7 +15,13 @@ const TOOL_ENTRYPOINT = "npx tsx src/bin/meridian-tool.ts";
 export function buildSystemPromptFromConfig(
   config: Pick<
     AgentDispatcherConfig,
-    "dispatch_plan_path" | "command_file_path" | "user_reply_channels" | "agent_type" | "mode" | "kill_policy"
+    | "dispatch_plan_path"
+    | "command_file_path"
+    | "user_reply_channels"
+    | "agent_type"
+    | "mode"
+    | "kill_policy"
+    | "model_map"
   >
 ): string {
   return buildSystemPrompt({
@@ -23,7 +30,8 @@ export function buildSystemPromptFromConfig(
     user_reply_channels: JSON.stringify(config.user_reply_channels),
     default_agent_type: config.agent_type,
     default_mode: config.mode,
-    kill_policy: config.kill_policy
+    kill_policy: config.kill_policy,
+    resolved_model_map_json: JSON.stringify(config.model_map ?? {})
   });
 }
 
@@ -34,6 +42,9 @@ export function buildSystemPrompt(vars: PromptVars): string {
   const defaultAgentType = requireNonEmpty(vars.default_agent_type, "default_agent_type");
   const defaultMode = requireNonEmpty(vars.default_mode, "default_mode");
   const killPolicy = requireNonEmpty(vars.kill_policy, "kill_policy");
+  const resolvedModelMapJson = vars.resolved_model_map_json?.trim().length
+    ? vars.resolved_model_map_json.trim()
+    : "{}";
 
   return [
     "# Role Definition",
@@ -47,10 +58,14 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `default_agent_type: ${defaultAgentType}`,
     `default_mode: ${defaultMode}`,
     `kill_policy: ${killPolicy}`,
+    `resolved_model_map_json: ${resolvedModelMapJson}`,
     "Use the runtime `user_reply_channels` JSON array exactly when you need to send a notify override.",
     "",
     "# Routing Rules",
     "Resolve each dispatch-plan `Model` value deterministically before you spawn a worker.",
+    "- First, check `resolved_model_map_json`. Those entries already merge the dispatch-start `model_map` override over the plan's Model Legend, so override precedence is already applied.",
+    "- When a code exists in `resolved_model_map_json`, use its `provider` value as the spawn `agent_type` and pass its `model_id` via `--model-id`.",
+    "- If the dispatch plan uses the legacy Model Legend format without `Provider` / `Model ID`, `resolved_model_map_json` may be empty. In that case, fall back to the provider routing rules below and omit `--model-id` unless attached task docs explicitly require one.",
     "- values starting with `CODEX` -> `codex`",
     "- values starting with `CLAUDE` -> `claude`",
     "- values starting with `GEMINI` -> `gemini`",
@@ -64,7 +79,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `Use only \`${TOOL_ENTRYPOINT} <command>\`. The unpublished CLI alias is invalid in this phase. All commands print JSON on stdout; inspect \`ok\` and \`data.run_state\` before acting.`,
     "",
     "1. spawn",
-    `   Command: \`${TOOL_ENTRYPOINT} spawn --agent-type <agent_type> [--spawn-dir <path>] [--mode bridge|pane_bridge]\``,
+    `   Command: \`${TOOL_ENTRYPOINT} spawn --agent-type <agent_type> [--model-id <model_id>] [--spawn-dir <path>] [--mode bridge|pane_bridge]\``,
     "   Success example:",
     "   ```json",
     "   {",
@@ -72,7 +87,8 @@ export function buildSystemPrompt(vars: PromptVars): string {
     '     "data": {',
     '       "thread_id": "a1b2c3d4",',
     '       "agent_type": "codex",',
-    '       "mode": "bridge"',
+    '       "mode": "bridge",',
+    '       "model_id": "gpt-5.4"',
     "     }",
     "   }",
     "   ```",
@@ -179,7 +195,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "Step 1. Read `dispatch_plan_path`. Choose the first eligible row using this priority:",
     "  a. First, look for rows where Status is `⚠️ ABANDONED` — these are workers that were interrupted (e.g. by a service restart) and need to be retried. Use `" + TOOL_ENTRYPOINT + " resume-worker --plan <dispatch_plan_path> --worker <worker_id> --action retry` to reset the worker to `⬜`, then proceed to spawn and run it normally.",
     "  b. Then, look for rows where Status is `⬜`, Model is not `HUMAN` or `PM`, and every dependency is either `✅` or `⛔ SKIPPED`.",
-    "Step 2. Before `spawn`, derive `agent_type` and `mode` from the routing rules above. Use the runtime defaults when the row does not name an explicit provider or mode override.",
+    "Step 2. Before `spawn`, resolve the row's `Model` code. Prefer `resolved_model_map_json`; when it has an entry, use that exact `provider` and `model_id`. Otherwise derive `agent_type` from the fallback routing rules above. Use the runtime default mode unless the row notes or attached task docs explicitly require `pane_bridge`.",
     "Step 3. Spawn a coding agent with `spawn`. Parse `data.thread_id` from the JSON response.",
     "Step 4. Call `run --thread-id <thread_id> --command <command_file_path> --worker <worker_id>`. The `run` tool automatically: (a) pre-marks the worker 🔄 in `dispatch_plan.md` via the lifecycle store before sending the command, (b) injects the worker's identity (model tier code from the dispatch plan Model column, e.g. `CODEX-HIGH`) and assigned task into the message preamble, and (c) sends the command file path for the agent to read from disk. Workers are free to follow the full taskspec workflow including their own status updates, git commits, completion reports, and push — the lifecycle store reconciles the final status from the Hub result, so worker writes to the plan are safe. As the dispatcher, you do not need to write plan status yourself since the run tool and lifecycle store handle it.",
     "Step 5. Interpret `run` results strictly by JSON shape.",

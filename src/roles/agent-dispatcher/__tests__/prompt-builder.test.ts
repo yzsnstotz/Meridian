@@ -10,7 +10,8 @@ describe("buildSystemPrompt", () => {
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]",
       default_agent_type: "codex",
       default_mode: "bridge",
-      kill_policy: "always"
+      kill_policy: "always",
+      resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}"
     };
   }
 
@@ -26,13 +27,13 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("default_agent_type: codex");
     expect(prompt).toContain("default_mode: bridge");
     expect(prompt).toContain("kill_policy: always");
+    expect(prompt).toContain('resolved_model_map_json: {"CODEX":{"provider":"codex","model_id":"gpt-5.4"}}');
   });
 
   it("does not leave template markers in the output", () => {
     const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).not.toContain("{{");
-    expect(prompt).not.toContain("}}");
   });
 
   it("documents the tsx tool entrypoint and the current CLI surface", () => {
@@ -40,7 +41,7 @@ describe("buildSystemPrompt", () => {
 
     expect(prompt).toContain("npx tsx src/bin/meridian-tool.ts");
     expect(prompt).not.toContain("npx meridian-tool");
-    expect(prompt).toContain("spawn --agent-type <agent_type> [--spawn-dir <path>] [--mode bridge|pane_bridge]");
+    expect(prompt).toContain("spawn --agent-type <agent_type> [--model-id <model_id>] [--spawn-dir <path>] [--mode bridge|pane_bridge]");
     expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
     expect(prompt).toContain("kill --thread-id <id>");
     expect(prompt).toContain("resume-worker --plan <dispatch_plan_path> --worker <worker_id>");
@@ -54,6 +55,9 @@ describe("buildSystemPrompt", () => {
 
     expect(prompt).toContain("values starting with `CODEX` -> `codex`");
     expect(prompt).toContain("values starting with `GEMINI` -> `gemini`");
+    expect(prompt).toContain("resolved_model_map_json");
+    expect(prompt).toContain("override precedence is already applied");
+    expect(prompt).toContain("use that exact `provider` and `model_id`");
     expect(prompt).toContain("you do not need to write plan status yourself");
     expect(prompt).toContain("marks the worker 🔄 in `dispatch_plan.md`");
     expect(prompt).toContain("send the final completion notify and stop");
