@@ -978,7 +978,7 @@
             }
           }
           if (autoApproveEl) {
-            autoApproveEl.checked = localStorage.getItem(SPAWN_AUTO_APPROVE_STORAGE_KEY) === "true";
+            autoApproveEl.checked = localStorage.getItem(SPAWN_AUTO_APPROVE_STORAGE_KEY) !== "false";
           }
           var savedRepo = localStorage.getItem(SPAWN_REPO_STORAGE_KEY);
           spawnRepoRelative = savedRepo && typeof savedRepo === "string" ? savedRepo : "";

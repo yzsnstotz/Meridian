@@ -479,6 +479,7 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   assert.match(indexHtml, /SPAWN_AUTO_APPROVE_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_REPO_STORAGE_KEY/);
   assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
+  assert.match(indexHtml, /localStorage\.getItem\(SPAWN_AUTO_APPROVE_STORAGE_KEY\)\s*!==\s*"false"/);
 });
 
 test("hub layout renders log footprint monitoring from the main page", async () => {

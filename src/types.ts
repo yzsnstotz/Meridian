@@ -221,7 +221,7 @@ export const AgentInstanceSchema = z.object({
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),
-  auto_approve: z.boolean().default(false)
+  auto_approve: z.boolean().default(true)
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 

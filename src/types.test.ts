@@ -156,6 +156,33 @@ test("AgentInstanceSchema accepts optional stream capability fields", () => {
   assert.equal(parsed.reasoning_effort, "high");
 });
 
+test("AgentInstanceSchema defaults auto_approve to true while honoring explicit false", () => {
+  const defaultsApplied = AgentInstanceSchema.parse({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/codex.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+  const explicitFalse = AgentInstanceSchema.parse({
+    thread_id: "codex_02",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/codex-02.sock",
+    pid: 1235,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString(),
+    auto_approve: false
+  });
+
+  assert.equal(defaultsApplied.auto_approve, true);
+  assert.equal(explicitFalse.auto_approve, false);
+});
+
 test("HubResultSchema accepts optional Telegram inline keyboards", () => {
   const parsed = HubResultSchema.parse({
     trace_id: randomUUID(),
