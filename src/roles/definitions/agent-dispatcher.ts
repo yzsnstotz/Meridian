@@ -28,6 +28,7 @@ import {
   type RestartResult,
   type SessionManagerOptions
 } from "../agent-dispatcher/session-manager";
+import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "../agent-dispatcher/tool-entrypoint";
 import type { BaseRole, RoleContext } from "../base-role";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
@@ -48,7 +49,6 @@ const EMPTY_APP_STATE: AppState = {
   promptStore: {}
 };
 const DISPATCHER_STATUS_WORKER_ID = "DISPATCHER-STATUS";
-const MERIDIAN_TOOL_ENTRYPOINT = "src/bin/meridian-tool.ts";
 const SIGNAL_FILE_CLEANUP_DELAY_MS = 5_000;
 
 export interface AgentDispatcherRoleOptions {
@@ -407,13 +407,11 @@ function defaultLifecycleStoreFactory(dispatchPlanPath: string): LifecycleStoreL
 }
 
 async function defaultKillThread(threadId: string): Promise<void> {
-  await execFile("npx", [
-    "tsx",
-    MERIDIAN_TOOL_ENTRYPOINT,
+  await execFile(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
     "kill",
     "--thread-id",
     threadId
-  ]);
+  ]));
 }
 
 async function defaultSignalDispatcher(
@@ -425,10 +423,8 @@ async function defaultSignalDispatcher(
 
   try {
     const child = nodeSpawn(
-      "npx",
-      [
-        "tsx",
-        MERIDIAN_TOOL_ENTRYPOINT,
+      MERIDIAN_TOOL_EXECUTABLE,
+      buildMeridianToolArgs([
         "run",
         "--thread-id",
         dispatcherThreadId,
@@ -436,7 +432,7 @@ async function defaultSignalDispatcher(
         commandPath,
         "--worker",
         DISPATCHER_STATUS_WORKER_ID
-      ],
+      ]),
       {
         detached: true,
         stdio: "ignore"

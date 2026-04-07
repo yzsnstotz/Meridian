@@ -11,6 +11,7 @@ import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const DEV_HISTORY_DIRECTORY = "dev_history";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
@@ -166,7 +167,9 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   }
 
   lines.push(`# Status`);
-  if (isPlanModifyingWorker(workerId)) {
+  if (isDispatcherWorker(workerId)) {
+    lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes, write completion reports, or make git commit/push decisions from this wrapper prompt.`);
+  } else if (isPlanModifyingWorker(workerId)) {
     lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). You are a special node that **may add, remove, or modify rows** in the dispatch plan as part of your task. The lifecycle store will reconcile your own row's final status from the Hub result, but you are free to write new rows or update the plan structure.`);
   } else {
     lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). The lifecycle store manages all plan status updates automatically — you do not need to write to the dispatch plan yourself.`);
@@ -180,13 +183,18 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   lines.push("```");
   lines.push(`Open this file and follow the instructions with these overrides:`);
   lines.push(`- **Skip Step 4a** (mark in-progress) — already done for you.`);
-  if (isPlanModifyingWorker(workerId)) {
+  if (isDispatcherWorker(workerId)) {
+    lines.push(`- Treat any local Meridian tool bootstrap failure (for example \`tsx\`, Node loader startup, IPC socket bind, or sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
+    lines.push(`- Do NOT write Step 5b completion reports, create extra repo artifacts, or reason about git commit/push from this run. Send the required notify once, leave the plan untouched, and stop when the dispatcher prompt says to pause.`);
+  } else if (isPlanModifyingWorker(workerId)) {
     lines.push(`- **Step 5a** (dispatch plan updates): you **must** write your findings and any corrective tasks directly into the dispatch plan. Add new worker rows, update statuses, or restructure as needed — this is your primary output.`);
   } else {
     lines.push(`- **Skip Step 5a** (mark complete in dispatch plan) — the lifecycle store handles this from the Hub result.`);
   }
-  lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
-  lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
+  if (!isDispatcherWorker(workerId)) {
+    lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
+    lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
+  }
 
   return lines.join("\n");
 }
@@ -425,6 +433,10 @@ function substituteWorkerId(templatePath: string, workerId: string): string {
 }
 
 const PLAN_MODIFYING_WORKERS = new Set(["DELTA-CHECK", "PR-REVIEW"]);
+
+function isDispatcherWorker(workerId: string): boolean {
+  return workerId === DISPATCHER_WORKER_ID;
+}
 
 function isPlanModifyingWorker(workerId: string): boolean {
   return PLAN_MODIFYING_WORKERS.has(workerId);

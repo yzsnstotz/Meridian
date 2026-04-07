@@ -4,9 +4,9 @@ import path from "node:path";
 
 import type { ReplyChannel } from "../../types";
 import { resolveDispatchRepoRoot } from "./dispatch-paths";
+import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
 const DISPATCHER_WORKER_ID = "DISPATCHER";
-const MERIDIAN_TOOL_ENTRYPOINT = "src/bin/meridian-tool.ts";
 const EMPTY_THREAD_ID = "";
 
 export interface LaunchConfig {
@@ -70,7 +70,7 @@ export async function launchDispatcher(
 
   let spawnStdout: string;
   try {
-    ({ stdout: spawnStdout } = await deps.execFile("npx", spawnArgs));
+    ({ stdout: spawnStdout } = await deps.execFile(MERIDIAN_TOOL_EXECUTABLE, spawnArgs));
   } catch (error) {
     return {
       ok: false,
@@ -105,7 +105,7 @@ export async function launchDispatcher(
       ?? dispatcherHubSystemPromptPath(config.dispatchPlanPath, config.dispatcherRoleId);
     await deps.writeFile(commandPath, config.systemPrompt);
 
-    const runProcess = deps.spawn("npx", buildRunArgs(parsedSpawn.threadId, commandPath), {
+    const runProcess = deps.spawn(MERIDIAN_TOOL_EXECUTABLE, buildRunArgs(parsedSpawn.threadId, commandPath), {
       detached: true,
       stdio: "ignore"
     });
@@ -146,9 +146,7 @@ function sanitizeDispatcherRoleIdSegment(roleId: string): string {
 }
 
 function buildSpawnArgs(config: LaunchConfig): string[] {
-  return [
-    "tsx",
-    MERIDIAN_TOOL_ENTRYPOINT,
+  return buildMeridianToolArgs([
     "spawn",
     "--agent-type",
     config.agentType,
@@ -156,13 +154,11 @@ function buildSpawnArgs(config: LaunchConfig): string[] {
     resolveDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
     "--mode",
     config.mode
-  ];
+  ]);
 }
 
 function buildRunArgs(threadId: string, commandPath: string): string[] {
-  return [
-    "tsx",
-    MERIDIAN_TOOL_ENTRYPOINT,
+  return buildMeridianToolArgs([
     "run",
     "--thread-id",
     threadId,
@@ -170,7 +166,7 @@ function buildRunArgs(threadId: string, commandPath: string): string[] {
     commandPath,
     "--worker",
     DISPATCHER_WORKER_ID
-  ];
+  ]);
 }
 
 function parseSpawnResponse(stdout: string): { threadId: string | null; error: string | null } {

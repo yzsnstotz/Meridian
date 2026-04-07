@@ -7,11 +7,11 @@ import { z } from "zod";
 import type { StateStore } from "../../state-store";
 import { AppStateSchema, type AppState, type DispatchThreadStateV2 } from "../../types";
 import { LifecycleStore } from "./lifecycle-store";
+import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
 const ACTIVE_STATUS = "active";
 const AGENT_DISPATCHER_ROLE_TYPE = "agent-dispatcher";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
-const MERIDIAN_TOOL_ENTRYPOINT = "src/bin/meridian-tool.ts";
 const PAUSED_STATUS = "paused";
 const EMPTY_APP_STATE: AppState = {
   roles: [],
@@ -325,13 +325,11 @@ export class SessionManager {
 
   private async killThread(threadId: string): Promise<void> {
     try {
-      await this.execFile("npx", [
-        "tsx",
-        MERIDIAN_TOOL_ENTRYPOINT,
+      await this.execFile(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
         "kill",
         "--thread-id",
         threadId
-      ]);
+      ]));
     } catch {
       // Restart recovery is best-effort. Continue even if kill fails.
     }
@@ -456,7 +454,8 @@ function mergeDispatchThreadState(
       status: "running",
       expected_outputs: [...(previousWorker?.expected_outputs ?? [])],
       hub_result: previousWorker?.hub_result ? cloneHubResult(previousWorker.hub_result) : null,
-      command_preamble: previousWorker?.command_preamble ?? null
+      command_preamble: previousWorker?.command_preamble ?? null,
+      retry_count: previousWorker?.retry_count ?? 0
     };
   });
 

@@ -225,6 +225,32 @@ describe("run tool", () => {
     );
   });
 
+  it("keeps the dispatcher wrapper in control-flow mode instead of implementation mode", async () => {
+    const hubResult = buildHubResult("Dispatcher paused", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | Ω+2 | DISPATCHER | Drive the next eligible worker | CODEX | DELTA-CHECK | Controller row. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "dispatcher-thread",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "DISPATCHER"
+    });
+
+    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
+    expect(sentPayload.payload.content).toContain("You are the dispatcher controller.");
+    expect(sentPayload.payload.content).toContain("Treat any local Meridian tool bootstrap failure");
+    expect(sentPayload.payload.content).toContain("create extra repo artifacts");
+    expect(sentPayload.payload.content).not.toContain("completion report): attempt to write the report");
+    expect(sentPayload.payload.content).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+    expect(sentPayload.payload.content).not.toContain("git commit, push");
+  });
+
   it("prefers the DELTA-CHECK-specific report path over the generic completion template", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     sendAndWaitMock.mockResolvedValue(hubResult);

@@ -9,6 +9,7 @@ import {
   type LaunchConfig,
   type LaunchDispatcherDeps
 } from "../launcher";
+import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE, MERIDIAN_TOOL_DISPLAY_COMMAND } from "../tool-entrypoint";
 
 describe("launchDispatcher", () => {
   afterEach(async () => {
@@ -26,9 +27,7 @@ describe("launchDispatcher", () => {
       ok: true,
       threadId: "dispatcher-thread-123"
     });
-    expect(harness.execFile).toHaveBeenCalledWith("npx", [
-      "tsx",
-      "src/bin/meridian-tool.ts",
+    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
       "spawn",
       "--agent-type",
       "codex",
@@ -36,12 +35,10 @@ describe("launchDispatcher", () => {
       harness.planDirectory,
       "--mode",
       "bridge"
-    ]);
+    ]));
     expect(harness.spawn).toHaveBeenCalledWith(
-      "npx",
-      [
-        "tsx",
-        "src/bin/meridian-tool.ts",
+      MERIDIAN_TOOL_EXECUTABLE,
+      buildMeridianToolArgs([
         "run",
         "--thread-id",
         "dispatcher-thread-123",
@@ -49,7 +46,7 @@ describe("launchDispatcher", () => {
         harness.expectedCommandPath,
         "--worker",
         "DISPATCHER"
-      ],
+      ]),
       {
         detached: true,
         stdio: "ignore"
@@ -131,6 +128,11 @@ describe("dispatcherHubSystemPromptPath", () => {
     expect(dispatcherHubSystemPromptPath("/abs/plan.md", "role/with:bad*chars")).toBe(
       path.join("/abs", ".meridian-roles-dispatcher-prompt-role_with_bad_chars.md")
     );
+  });
+
+  it("resolves the meridian-tool command independently of process.cwd()", () => {
+    expect(MERIDIAN_TOOL_DISPLAY_COMMAND).toContain("meridian-tool");
+    expect(MERIDIAN_TOOL_DISPLAY_COMMAND).not.toContain(" src/bin/meridian-tool.ts ");
   });
 });
 

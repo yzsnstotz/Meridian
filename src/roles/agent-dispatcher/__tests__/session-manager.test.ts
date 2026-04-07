@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../../state-store";
 import type { DispatchThreadStateV2 } from "../../../types";
 import { buildEmptyDispatchThreadStateV2, LifecycleStore } from "../lifecycle-store";
+import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "../tool-entrypoint";
 import {
   DispatchThreadView,
   SessionManager,
@@ -52,7 +53,8 @@ describe("DispatchThreadView", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -71,7 +73,8 @@ describe("DispatchThreadView", () => {
             attachments: [],
             timestamp: FIXED_NOW
           },
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -156,7 +159,8 @@ describe("SessionManager", () => {
           status: "running",
           expected_outputs: ["report.md"],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-02": {
           thread_id: "worker-thread-222",
@@ -175,7 +179,8 @@ describe("SessionManager", () => {
             attachments: [],
             timestamp: FIXED_NOW
           },
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         },
         "N-03": {
           thread_id: "worker-thread-333",
@@ -185,7 +190,8 @@ describe("SessionManager", () => {
           status: "running",
           expected_outputs: ["log.txt"],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -207,27 +213,21 @@ describe("SessionManager", () => {
     // onRestart must NOT mark workers abandoned — reconciliation determines final status
     expect(lifecycle.store.markAbandoned).not.toHaveBeenCalled();
     expect(killCalls).toHaveBeenCalledTimes(3);
-    expect(killCalls).toHaveBeenNthCalledWith(1, "npx", [
-      "tsx",
-      "src/bin/meridian-tool.ts",
+    expect(killCalls).toHaveBeenNthCalledWith(1, MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
       "kill",
       "--thread-id",
       "dispatcher-thread-123"
-    ]);
-    expect(killCalls).toHaveBeenNthCalledWith(2, "npx", [
-      "tsx",
-      "src/bin/meridian-tool.ts",
+    ]));
+    expect(killCalls).toHaveBeenNthCalledWith(2, MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
       "kill",
       "--thread-id",
       "worker-thread-111"
-    ]);
-    expect(killCalls).toHaveBeenNthCalledWith(3, "npx", [
-      "tsx",
-      "src/bin/meridian-tool.ts",
+    ]));
+    expect(killCalls).toHaveBeenNthCalledWith(3, MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
       "kill",
       "--thread-id",
       "worker-thread-333"
-    ]);
+    ]));
     expect(lifecycle.getState().dispatcher).toEqual({
       thread_id: null,
       started_at: null,

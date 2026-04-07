@@ -58,6 +58,7 @@ describe("AgentDispatcherRole", () => {
     expect(harness.buildSystemPrompt).toHaveBeenCalledWith({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
+      dispatch_repo_root: "/tmp",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
       default_agent_type: "codex",
       default_mode: "bridge",
@@ -176,7 +177,8 @@ describe("AgentDispatcherRole", () => {
             status: "running",
             expected_outputs: [],
             hub_result: null,
-            command_preamble: null
+            command_preamble: null,
+            retry_count: 0
           },
           "N-04": {
             thread_id: "worker-thread-444",
@@ -186,7 +188,8 @@ describe("AgentDispatcherRole", () => {
             status: "running",
             expected_outputs: [],
             hub_result: null,
-            command_preamble: null
+            command_preamble: null,
+            retry_count: 0
           }
         },
         last_reconciled_at: null
