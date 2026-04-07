@@ -39,6 +39,9 @@ export type BridgeMode = z.infer<typeof BridgeModeSchema>;
 export const AgentTypeSchema = z.enum(["claude", "codex", "gemini", "cursor"]);
 export type AgentType = z.infer<typeof AgentTypeSchema>;
 
+export const ReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
+
 export const HubResultStatusSchema = z.enum(["success", "error", "partial", "timeout"]);
 export type HubResultStatus = z.infer<typeof HubResultStatusSchema>;
 
@@ -126,6 +129,7 @@ export const HubPayloadSchema = z.object({
   reply_to: z.string().nullable().optional(),
   spawn_dir: z.string().min(1).optional(),
   model_id: z.string().min(1).optional(),
+  effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
@@ -206,6 +210,7 @@ export const AgentInstanceSchema = z.object({
   thread_id: z.string().min(1),
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
+  reasoning_effort: ReasoningEffortSchema.optional(),
   supportsStream: z.boolean().optional(),
   codexSessionId: z.string().min(1).optional(),
   mode: BridgeModeSchema,

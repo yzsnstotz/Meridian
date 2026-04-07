@@ -18,11 +18,13 @@ import {
   HubResultSchema,
   PaneOutputChunkSchema,
   PaneOutputNotAvailableSchema,
+  ReasoningEffortSchema,
   ThreadProgressSnapshotSchema,
   type FileAttachment,
   type HubMessage,
   type HubResult,
-  type Intent
+  type Intent,
+  type ReasoningEffort
 } from "../types";
 
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -46,6 +48,7 @@ const spawnRequestBodySchema = z.object({
   provider: AgentTypeSchema.optional(),
   mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge"),
   model_id: z.string().min(1).optional(),
+  effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().default(true),
   /** Subdirectory name under `config.AGENT_WORKDIR` (GUI picker). */
   repo: z.string().optional(),
@@ -883,7 +886,8 @@ export class WebInterfaceServer {
           autoApprove: body.auto_approve,
           guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined,
           spawnDir,
-          modelId: body.model_id?.trim()
+          modelId: body.model_id?.trim(),
+          effort: body.effort
         })
       )
     );
@@ -1519,6 +1523,7 @@ export class WebInterfaceServer {
     /** Passed through to Hub `payload.spawn_dir` (agent working directory). */
     spawnDir?: string;
     modelId?: string;
+    effort?: ReasoningEffort;
   }): HubMessage {
     return HubMessageSchema.parse({
       trace_id: randomUUID(),
@@ -1533,7 +1538,8 @@ export class WebInterfaceServer {
         ...(params.autoApprove !== undefined && { auto_approve: params.autoApprove }),
         ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride }),
         ...(params.spawnDir && { spawn_dir: params.spawnDir }),
-        ...(params.modelId && { model_id: params.modelId })
+        ...(params.modelId && { model_id: params.modelId }),
+        ...(params.effort && { effort: params.effort })
       },
       mode: params.mode ?? "bridge",
       suppress_reply: true,

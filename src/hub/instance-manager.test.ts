@@ -106,7 +106,7 @@ test("spawn falls back to --port when server does not support --socket", async (
   await manager.kill(threadId);
 });
 
-test("spawn forwards selected model to provider CLI", async () => {
+test("spawn forwards selected model and reasoning effort to provider CLI", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
 
@@ -124,18 +124,22 @@ test("spawn forwards selected model to provider CLI", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge", undefined, "gpt-5.4");
+  const threadId = await manager.spawn("codex", "bridge", undefined, "gpt-5.4", true, "xhigh");
 
   assert.equal(threadId, "codex_01");
   assert.equal(registry.get(threadId)?.model_id, "gpt-5.4");
+  assert.equal(registry.get(threadId)?.reasoning_effort, "xhigh");
   assert.deepEqual(spawnCalls[0], [
     "server",
     "--type=codex",
     `--socket=${socketPathForThread(threadId)}`,
     "--",
     "codex",
+    "-c",
+    'model_reasoning_effort="xhigh"',
     "--model",
-    "gpt-5.4"
+    "gpt-5.4",
+    "--approval-policy=auto-approve"
   ]);
 
   await manager.kill(threadId);
@@ -851,7 +855,7 @@ test("attach + status + list + kill + restart lifecycle", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge");
+  const threadId = await manager.spawn("codex", "bridge", undefined, undefined, undefined, "high");
   const attachResult = manager.attach(threadId, "chat-1");
   assert.equal(attachResult.thread_id, threadId);
   assert.equal(manager.getAttachedThread("chat-1"), threadId);
@@ -867,6 +871,7 @@ test("attach + status + list + kill + restart lifecycle", async () => {
   assert.equal(restartedThread, threadId);
   assert.equal(manager.getAttachedThread("chat-1"), threadId);
   assert.equal(registry.get(threadId)?.status, "idle");
+  assert.equal(registry.get(threadId)?.reasoning_effort, "high");
 
   await manager.kill(threadId);
   assert.equal(registry.has(threadId), false);
@@ -953,7 +958,7 @@ test("switchModel keeps thread id and updates selected model", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "pane_bridge", undefined, "gpt-5");
+  const threadId = await manager.spawn("codex", "pane_bridge", undefined, "gpt-5", undefined, "high");
   const switchedThread = await manager.switchModel(threadId, "codex-5.3-max");
   const switched = registry.get(switchedThread);
 
@@ -962,6 +967,7 @@ test("switchModel keeps thread id and updates selected model", async () => {
   assert.equal(switched?.agent_type, "codex");
   assert.equal(switched?.model_id, "codex-5.3-max");
   assert.equal(switched?.mode, "pane_bridge");
+  assert.equal(switched?.reasoning_effort, "high");
 
   await manager.kill(threadId);
 });

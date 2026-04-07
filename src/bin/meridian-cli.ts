@@ -4,7 +4,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { AgentTypeSchema, type AgentType, type BridgeMode, type HubMessage, type HubResult } from "../types";
+import {
+  AgentTypeSchema,
+  ReasoningEffortSchema,
+  type AgentType,
+  type BridgeMode,
+  type HubMessage,
+  type HubResult,
+  type ReasoningEffort
+} from "../types";
 import { connectToHub, hubHttpRequest, hubSocketRequest, type HubConnection, type HubHttpResponse } from "./hub-connection";
 
 const EXIT_SUCCESS = 0;
@@ -125,6 +133,7 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       hint(deps, "Options:");
       hint(deps, "  --provider <claude|codex|gemini|cursor>  Provider alias for agent type");
       hint(deps, "  --model <model-id>                        Explicit provider model id");
+      hint(deps, "  --effort <low|medium|high|xhigh>         Codex reasoning effort override");
       hint(deps, "  --workdir <path>                          Agent working directory");
       hint(deps, "  --auto-approve                            Enable auto-approve (default)");
       hint(deps, "  --no-auto-approve                         Disable auto-approve");
@@ -245,6 +254,24 @@ function parseMode(raw: string | undefined): BridgeMode {
   }
 }
 
+function parseReasoningEffort(raw: string | undefined): ReasoningEffort | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    throw new CliError(EXIT_INVALID_ARGS, "Option --effort requires a value");
+  }
+
+  const parsed = ReasoningEffortSchema.safeParse(normalized);
+  if (!parsed.success) {
+    throw new CliError(EXIT_INVALID_ARGS, `Unsupported reasoning effort: ${raw}`);
+  }
+
+  return parsed.data;
+}
+
 function secondsSince(iso: string | null | undefined, now: Date): number {
   if (!iso) {
     return 0;
@@ -267,6 +294,7 @@ function buildSocketMessage(
     autoApprove?: boolean;
     spawnDir?: string;
     modelId?: string;
+    reasoningEffort?: ReasoningEffort;
   }
 ): HubMessage {
   return {
@@ -281,7 +309,8 @@ function buildSocketMessage(
       reply_to: null,
       ...(params.autoApprove !== undefined && { auto_approve: params.autoApprove }),
       ...(params.spawnDir && { spawn_dir: params.spawnDir }),
-      ...(params.modelId && { model_id: params.modelId })
+      ...(params.modelId && { model_id: params.modelId }),
+      ...(params.reasoningEffort && { effort: params.reasoningEffort })
     },
     mode: params.mode ?? "bridge",
     suppress_reply: true,
@@ -398,6 +427,7 @@ async function handleSpawn(args: string[], deps: CliDependencies): Promise<void>
 
   const provider = parseProvider(expectStringOption(parsed, "provider") ?? parsed.positionals[0]);
   const modelId = expectStringOption(parsed, "model");
+  const reasoningEffort = parseReasoningEffort(expectStringOption(parsed, "effort"));
   const workdir = expectStringOption(parsed, "workdir");
   const autoApprove = expectBooleanOption(parsed, "auto-approve") ?? true;
   const mode = parseMode(expectStringOption(parsed, "mode"));
@@ -412,6 +442,7 @@ async function handleSpawn(args: string[], deps: CliDependencies): Promise<void>
         mode,
         autoApprove,
         modelId,
+        reasoningEffort,
         spawnDir: workdir ? path.resolve(workdir) : undefined
       })
     )

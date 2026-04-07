@@ -1,4 +1,4 @@
-import type { BridgeMode } from "../types";
+import type { BridgeMode, ReasoningEffort } from "../types";
 
 const CODEX_AGENT_TYPE = "codex";
 const CODEX_CLI_COMMAND = "codex";
@@ -13,17 +13,26 @@ export const codexAgentConfig: CodexAgentConfig = {
   command: CODEX_CLI_COMMAND
 };
 
+function appendReasoningEffortConfig(args: string[], reasoningEffort?: ReasoningEffort): void {
+  if (!reasoningEffort) {
+    return;
+  }
+  args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+}
+
 export function buildCodexSpawnArgs(
   mode: BridgeMode,
   tmuxSession: string | null,
   endpointFlag: string,
   modelId?: string,
-  autoApprove?: boolean
+  autoApprove?: boolean,
+  reasoningEffort?: ReasoningEffort
 ): string[] {
   void mode;
   void tmuxSession;
   const args = ["server", `--type=${codexAgentConfig.type}`, endpointFlag];
   args.push("--", codexAgentConfig.command);
+  appendReasoningEffortConfig(args, reasoningEffort);
   if (modelId) {
     args.push("--model", modelId);
   }
@@ -33,8 +42,9 @@ export function buildCodexSpawnArgs(
   return args;
 }
 
-export function buildCodexExecArgs(modelId?: string, autoApprove?: boolean): string[] {
+export function buildCodexExecArgs(modelId?: string, autoApprove?: boolean, reasoningEffort?: ReasoningEffort): string[] {
   const args = [codexAgentConfig.command, "exec", "--json"];
+  appendReasoningEffortConfig(args, reasoningEffort);
   if (modelId) {
     args.push("--model", modelId);
   }
@@ -44,8 +54,14 @@ export function buildCodexExecArgs(modelId?: string, autoApprove?: boolean): str
   return args;
 }
 
-export function buildCodexResumeArgs(sessionId: string, modelId?: string, autoApprove?: boolean): string[] {
+export function buildCodexResumeArgs(
+  sessionId: string,
+  modelId?: string,
+  autoApprove?: boolean,
+  reasoningEffort?: ReasoningEffort
+): string[] {
   const args = [codexAgentConfig.command, "exec", "resume", sessionId, "--json"];
+  appendReasoningEffortConfig(args, reasoningEffort);
   if (modelId) {
     args.push("--model", modelId);
   }

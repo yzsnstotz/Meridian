@@ -682,8 +682,8 @@ export class HubRouter {
     }
     if (instance.agent_type === "codex") {
       return instance.codexSessionId
-        ? buildCodexResumeArgs(instance.codexSessionId, instance.model_id, instance.auto_approve)
-        : buildCodexExecArgs(instance.model_id, instance.auto_approve);
+        ? buildCodexResumeArgs(instance.codexSessionId, instance.model_id, instance.auto_approve, instance.reasoning_effort)
+        : buildCodexExecArgs(instance.model_id, instance.auto_approve, instance.reasoning_effort);
     }
 
     throw new Error(`Direct streaming is not supported for agent_type=${instance.agent_type}`);
@@ -850,12 +850,14 @@ export class HubRouter {
     const type = AgentTypeSchema.parse(message.target);
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
     const modelId = message.payload.model_id?.trim() || undefined;
+    const reasoningEffort = message.payload.effort;
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
       spawnDir,
       modelId,
-      message.payload.auto_approve
+      message.payload.auto_approve,
+      reasoningEffort
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);

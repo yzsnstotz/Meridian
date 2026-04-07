@@ -23,7 +23,8 @@ import type {
   AgentInstanceStatus,
   AgentType,
   BridgeMode,
-  ProviderModelCatalog as ProviderModelCatalogPayload
+  ProviderModelCatalog as ProviderModelCatalogPayload,
+  ReasoningEffort
 } from "../types";
 import { InstanceRegistry } from "./registry";
 import { buildPersistedHubState, type PersistedHubState } from "./state-store";
@@ -171,9 +172,10 @@ export class InstanceManager {
     mode: BridgeMode,
     workingDirectory?: string,
     modelId?: string,
-    autoApprove?: boolean
+    autoApprove?: boolean,
+    reasoningEffort?: ReasoningEffort
   ): Promise<string> {
-    return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId, autoApprove);
+    return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId, autoApprove, reasoningEffort);
   }
 
   spawnStreamAgent(threadId: string, agentType: AgentType, args: string[], prompt: string): StreamSpawnResult {
@@ -333,7 +335,8 @@ export class InstanceManager {
       threadId,
       existing.working_dir,
       existing.model_id,
-      existing.auto_approve
+      existing.auto_approve,
+      existing.reasoning_effort
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -514,7 +517,8 @@ export class InstanceManager {
       threadId,
       existing.working_dir,
       nextModelId,
-      existing.auto_approve
+      existing.auto_approve,
+      existing.reasoning_effort
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -581,13 +585,14 @@ export class InstanceManager {
     threadIdOverride?: string,
     workingDirectory?: string,
     modelId?: string,
-    autoApprove?: boolean
+    autoApprove?: boolean,
+    reasoningEffort?: ReasoningEffort
   ): Promise<string> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
       try {
-        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory, modelId, autoApprove);
+        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory, modelId, autoApprove, reasoningEffort);
       } catch (error) {
         lastError = error;
         if (!this.shouldRetrySpawn(error) || attempt >= this.spawnAttempts) {
@@ -635,7 +640,8 @@ export class InstanceManager {
     threadIdOverride?: string,
     workingDirectory?: string,
     modelId?: string,
-    autoApprove?: boolean
+    autoApprove?: boolean,
+    reasoningEffort?: ReasoningEffort
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
@@ -645,7 +651,7 @@ export class InstanceManager {
       await this.removeSocketPath(socketPath);
     }
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
-    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId, autoApprove);
+    const args = this.buildSpawnArgs(type, endpointBinding.listenArg, modelId, autoApprove, reasoningEffort);
     const childEnv = this.buildChildEnv();
 
     if (tmuxSession) {
@@ -693,6 +699,7 @@ export class InstanceManager {
         thread_id: threadId,
         agent_type: type,
         model_id: modelId,
+        reasoning_effort: reasoningEffort,
         supportsStream: this.supportsStreaming(type),
         mode,
         socket_path: socketPath,
@@ -781,6 +788,7 @@ export class InstanceManager {
       thread_id: threadId,
       agent_type: type,
       model_id: modelId,
+      reasoning_effort: reasoningEffort,
       supportsStream: this.supportsStreaming(type),
       mode,
       socket_path: socketPath,
@@ -1287,9 +1295,15 @@ export class InstanceManager {
     return type === "claude" || type === "codex" || type === "gemini";
   }
 
-  private buildSpawnArgs(type: AgentType, listenArg: string, modelId?: string, autoApprove?: boolean): string[] {
+  private buildSpawnArgs(
+    type: AgentType,
+    listenArg: string,
+    modelId?: string,
+    autoApprove?: boolean,
+    reasoningEffort?: ReasoningEffort
+  ): string[] {
     if (type === "codex") {
-      return buildCodexSpawnArgs("bridge", null, listenArg, modelId, autoApprove);
+      return buildCodexSpawnArgs("bridge", null, listenArg, modelId, autoApprove, reasoningEffort);
     }
     if (type === "claude") {
       return buildClaudeSpawnArgs("bridge", null, listenArg, modelId, autoApprove);

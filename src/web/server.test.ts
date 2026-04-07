@@ -886,7 +886,7 @@ test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selec
   }
 });
 
-test("Web Interface Server spawn forwards provider alias, model_id, and default auto_approve", async () => {
+test("Web Interface Server spawn forwards provider alias, model_id, effort, and default auto_approve", async () => {
   const hubMessages: HubMessage[] = [];
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
@@ -895,7 +895,8 @@ test("Web Interface Server spawn forwards provider alias, model_id, and default 
       body: JSON.stringify({
         provider: "claude",
         mode: "bridge",
-        model_id: "claude-opus-4-6"
+        model_id: "claude-opus-4-6",
+        effort: "xhigh"
       })
     });
     assert.equal(response.status, 200);
@@ -903,6 +904,7 @@ test("Web Interface Server spawn forwards provider alias, model_id, and default 
     assert.equal(hubMessages[0]?.intent, "spawn");
     assert.equal(hubMessages[0]?.target, "claude");
     assert.equal(hubMessages[0]?.payload.model_id, "claude-opus-4-6");
+    assert.equal(hubMessages[0]?.payload.effort, "xhigh");
     assert.equal(hubMessages[0]?.payload.auto_approve, true);
   }, {
     requestHub: async (message: HubMessage) => {
@@ -1126,7 +1128,7 @@ function createCliDeps(overrides: Partial<CliDependencies> = {}) {
   };
 }
 
-test("runCli spawn forwards provider, model, workdir, mode, and auto-approve", async () => {
+test("runCli spawn forwards provider, model, effort, workdir, mode, and auto-approve", async () => {
   const harness = createCliDeps();
   harness.deps.hubSocketRequest = async (message: HubMessage) => {
     harness.socketCalls.push(message);
@@ -1137,7 +1139,19 @@ test("runCli spawn forwards provider, model, workdir, mode, and auto-approve", a
   };
 
   const exitCode = await runCli(
-    ["spawn", "claude", "--model", "claude-opus-4-6", "--workdir", "/tmp/project", "--no-auto-approve", "--mode", "agentapi"],
+    [
+      "spawn",
+      "claude",
+      "--model",
+      "claude-opus-4-6",
+      "--effort",
+      "xhigh",
+      "--workdir",
+      "/tmp/project",
+      "--no-auto-approve",
+      "--mode",
+      "agentapi"
+    ],
     harness.deps
   );
 
@@ -1146,6 +1160,7 @@ test("runCli spawn forwards provider, model, workdir, mode, and auto-approve", a
   assert.equal(harness.socketCalls[0]?.intent, "spawn");
   assert.equal(harness.socketCalls[0]?.target, "claude");
   assert.equal(harness.socketCalls[0]?.payload.model_id, "claude-opus-4-6");
+  assert.equal(harness.socketCalls[0]?.payload.effort, "xhigh");
   assert.equal(harness.socketCalls[0]?.payload.spawn_dir, "/tmp/project");
   assert.equal(harness.socketCalls[0]?.payload.auto_approve, false);
   assert.equal(harness.socketCalls[0]?.mode, "bridge");

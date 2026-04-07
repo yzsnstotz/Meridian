@@ -226,6 +226,7 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   registry.register({
     thread_id: "codex_stream_01",
     agent_type: "codex",
+    reasoning_effort: "xhigh",
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_stream_01.sock",
     pid: 301,
@@ -305,7 +306,7 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   assert.equal(first.content, "first answer");
   assert.equal(connectCount, 0);
   assert.deepEqual(spawnCalls[0], {
-    args: ["codex", "exec", "--json"],
+    args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"'],
     prompt: "hello"
   });
   assert.equal(registry.get("codex_stream_01")?.codexSessionId, "codex-session-123");
@@ -325,7 +326,7 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   assert.equal(second.status, "success");
   assert.equal(second.content, "follow up");
   assert.deepEqual(spawnCalls[1], {
-    args: ["codex", "exec", "resume", "codex-session-123", "--json"],
+    args: ["codex", "exec", "resume", "codex-session-123", "--json", "-c", 'model_reasoning_effort="xhigh"'],
     prompt: "next"
   });
   assert.deepEqual(pushed, [
@@ -1947,7 +1948,7 @@ test("HubRouter spawn result includes a Web GUI button when available", async ()
   }
 });
 
-test("HubRouter forwards model_id and auto_approve on spawn", async () => {
+test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: Array<{
     type: string;
@@ -1955,6 +1956,7 @@ test("HubRouter forwards model_id and auto_approve on spawn", async () => {
     workingDirectory: string | undefined;
     modelId: string | undefined;
     autoApprove: boolean | undefined;
+    reasoningEffort: string | undefined;
   }> = [];
 
   const fakeInstanceManager = {
@@ -1970,9 +1972,10 @@ test("HubRouter forwards model_id and auto_approve on spawn", async () => {
       mode: string,
       workingDirectory?: string,
       modelId?: string,
-      autoApprove?: boolean
+      autoApprove?: boolean,
+      reasoningEffort?: string
     ) => {
-      spawnCalls.push({ type, mode, workingDirectory, modelId, autoApprove });
+      spawnCalls.push({ type, mode, workingDirectory, modelId, autoApprove, reasoningEffort });
       registry.register({
         thread_id: "codex_01",
         agent_type: "codex",
@@ -2007,6 +2010,7 @@ test("HubRouter forwards model_id and auto_approve on spawn", async () => {
         content: "spawn",
         attachments: [],
         model_id: "o3",
+        effort: "xhigh",
         auto_approve: true
       },
       reply_channel: {
@@ -2024,7 +2028,8 @@ test("HubRouter forwards model_id and auto_approve on spawn", async () => {
       mode: "bridge",
       workingDirectory: undefined,
       modelId: "o3",
-      autoApprove: true
+      autoApprove: true,
+      reasoningEffort: "xhigh"
     }
   ]);
   assert.equal(registry.get("codex_01")?.auto_approve, true);

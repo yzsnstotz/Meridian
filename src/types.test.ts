@@ -83,7 +83,7 @@ test("HubMessageSchema parses new idempotency and tracing fields", () => {
   assert.equal(parsed.intent, "detach");
 });
 
-test("HubMessageSchema parses optional auto_approve payload field", () => {
+test("HubMessageSchema parses optional auto_approve and effort payload fields", () => {
   const parsed = HubMessageSchema.parse(
     buildHubMessage({
       intent: "spawn",
@@ -91,12 +91,14 @@ test("HubMessageSchema parses optional auto_approve payload field", () => {
       payload: {
         content: "spawn",
         attachments: [],
+        effort: "xhigh",
         auto_approve: true
       }
     })
   );
 
   assert.equal(parsed.payload.auto_approve, true);
+  assert.equal(parsed.payload.effort, "xhigh");
 });
 
 test("MonitorEventSchema accepts optional span fields", () => {
@@ -138,6 +140,7 @@ test("AgentInstanceSchema accepts optional stream capability fields", () => {
   const parsed = AgentInstanceSchema.parse({
     thread_id: "codex_01",
     agent_type: "codex",
+    reasoning_effort: "high",
     mode: "bridge",
     socket_path: "/tmp/codex.sock",
     pid: 1234,
@@ -150,6 +153,7 @@ test("AgentInstanceSchema accepts optional stream capability fields", () => {
 
   assert.equal(parsed.supportsStream, true);
   assert.equal(parsed.codexSessionId, "session-123");
+  assert.equal(parsed.reasoning_effort, "high");
 });
 
 test("HubResultSchema accepts optional Telegram inline keyboards", () => {
