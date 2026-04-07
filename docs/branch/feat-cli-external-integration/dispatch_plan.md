@@ -46,8 +46,8 @@
 | ✅ | 5 | R-06 | taskspec Skill Update | CODEX | R-02, R-05 | CLI Integration PRD | Model Legend + Dispatch Command template update |
 | ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01, R-01, R-03, N-02, N-04, N-05, R-02, N-06, R-04, R-05, N-03, N-07, R-06 | TaskSpec, CLI Integration PRD | One pass only |
 | ✅ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec, CLI Integration PRD | MERGE BLOCKED — `R-01` still drifts (`src/types.ts`, `src/web/public/index.html`), `delta_check_report.md` is missing, `R-06` was not applied, and unrelated branch drift is present; see Batch Ω+2 |
-| ⬜ | Ω+2 | R-07 | Meridian Auto-Approve Default Reconciliation | CODEX | PR-REVIEW | TaskSpec, CLI Integration PRD | Fix `src/types.ts` and `src/web/public/index.html` to restore default-on auto-approve semantics and add regression coverage |
-| ⬜ | Ω+2 | R-08 | Delta Artifact Repair | CODEX | PR-REVIEW | TaskSpec | Write the missing `dev_history/v1_round/delta_check_report.md` and reconcile DELTA-CHECK evidence with the recorded plan state |
+| ✅ | Ω+2 | R-07 | Meridian Auto-Approve Default Reconciliation | CODEX | PR-REVIEW | TaskSpec, CLI Integration PRD | Fix `src/types.ts` and `src/web/public/index.html` to restore default-on auto-approve semantics and add regression coverage |
+| 🔄 | Ω+2 | R-08 | Delta Artifact Repair | CODEX | PR-REVIEW | TaskSpec | Write the missing `dev_history/v1_round/delta_check_report.md` and reconcile DELTA-CHECK evidence with the recorded plan state |
 | ⬜ | Ω+2 | R-09 | External taskspec Skill Apply | CODEX | PR-REVIEW | CLI Integration PRD | Apply the prepared `/tmp/R-06_SKILL.diff` to `/Users/yzliu/work/skills/taskspec/SKILL.md` in the external repo and attach committed evidence |
 | ⬜ | Ω+2 | R-10 | Feature Branch Scope Isolation | CODEX-HIGH | PR-REVIEW | TaskSpec, CLI Integration PRD | Remove unrelated dispatcher/terminal/manual changes from this PR by splitting or rebasing to a clean feature-only diff |
 | ⬜ | Ω+2 | R-11 | Cross-Repo Review Closure | CODEX-HIGH | PR-REVIEW | TaskSpec, CLI Integration PRD | Attach the Meridian-roles companion diff/reports so the two-repo contract is reviewable as one feature set |
@@ -180,6 +180,110 @@
 
 All reports written to: `/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round/`
 Corrective worker reports (if needed): `/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round_delta/`
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
