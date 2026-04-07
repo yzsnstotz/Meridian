@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
+import type { LaunchConfig, LaunchResult } from "../../roles/agent-dispatcher/launcher";
 import { DispatcherRole } from "../../roles/definitions";
 import { PromptStore } from "../../roles/prompt-store";
 import { RoleRegistry } from "../../roles/role-registry";
@@ -15,7 +16,7 @@ import { RoleRunner } from "../../roles/role-runner";
 import killTool from "../../tool-gateway/tools/kill";
 import updateStatusTool from "../../tool-gateway/tools/update-status";
 import { createRoleHandlers, type RoleHandlers } from "../role-handlers";
-import type { AppState, DispatcherConfig, HubMessage, HubResult, ReplyChannel } from "../../types";
+import type { AppState, DispatcherConfig, DispatchWorkerState, HubMessage, HubResult, ReplyChannel } from "../../types";
 
 class MemoryStateStore {
   private currentState: AppState | null;
@@ -610,6 +611,260 @@ describe("role config handlers", () => {
     }
   });
 
+  it("continues an abandoned worker and restarts dispatcher flow", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-worker-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const reportPath = path.join(tempDir, "dev_history", "v1_round", "delta_check_report.md");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-08": buildLifecycleWorker({
+          thread_id: "worker-thread-stale",
+          status: "abandoned",
+          expected_outputs: [reportPath]
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "worker-thread-stale"
+      }
+    });
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-worker", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-continue-worker/worker/R-08/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "continued",
+        message: "continued: R-08",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        worker: "R-08",
+        resume_result: {
+          worker: "R-08",
+          action: "retry",
+          status: "pending",
+          thread_id: "worker-thread-stale",
+          thread_killed: true,
+          retry_count: 1
+        }
+      });
+
+      expect(killSpy).toHaveBeenCalledWith({
+        thread_id: "worker-thread-stale"
+      });
+      expect(lifecycleStore.load().workers["R-08"]?.status).toBe("pending");
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⬜ | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |");
+    } finally {
+      killSpy.mockRestore();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not continue an abandoned worker while another non-human row is running", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-blocked-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+    const launchDispatcher = vi.fn(async () => ({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 5 | R-07 | Integration Repair | CODEX | — | CLI Integration PRD | running |",
+      "| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-07": buildLifecycleWorker({
+          thread_id: "worker-thread-running",
+          status: "running"
+        }),
+        "R-08": buildLifecycleWorker({
+          thread_id: "worker-thread-stale",
+          status: "abandoned"
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, launchDispatcher);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-blocked", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-continue-blocked/worker/R-08/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "still_blocked",
+        message: "still blocked: running worker(s): R-07",
+        worker: "R-08",
+        running_workers: ["R-07"]
+      });
+
+      expect(launchDispatcher).toHaveBeenCalledTimes(1);
+      expect(lifecycleStore.load().workers["R-08"]?.status).toBe("abandoned");
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores dispatch files when continue hits a local tool bootstrap failure", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-bootstrap-failure-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+    const bootstrapError = "spawn failed: Command failed: listen EPERM: operation not permitted /tmp/tsx-501/84525.pipe";
+    const launchDispatcher = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        threadId: "dispatcher-thread-123"
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        threadId: "",
+        error: bootstrapError
+      });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-08": buildLifecycleWorker({
+          thread_id: "worker-thread-stale",
+          status: "abandoned",
+          retry_count: 2
+        })
+      },
+      last_reconciled_at: null
+    });
+    const originalPlan = await fs.readFile(dispatchPlanPath, "utf8");
+    const originalSidecar = await fs.readFile(sidecarPath, "utf8");
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "worker-thread-stale"
+      }
+    });
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, launchDispatcher);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-bootstrap", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-continue-bootstrap/worker/R-08/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "local_tool_bootstrap_failed",
+        message: `local tool bootstrap failed: ${bootstrapError}`,
+        worker: "R-08",
+        error: bootstrapError
+      });
+
+      expect(launchDispatcher).toHaveBeenCalledTimes(2);
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toBe(originalPlan);
+      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toBe(originalSidecar);
+    } finally {
+      killSpy.mockRestore();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("continues a paused dispatcher and returns it to active state", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-paused-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 5 | R-07 | Integration Repair | CODEX | — | CLI Integration PRD | done |"
+    ].join("\n"), "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-paused", dispatchPlanPath);
+
+      await expect(
+        invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-continue-paused/pause")
+      ).resolves.toEqual({
+        ok: true,
+        status: "paused"
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-paused/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "continued",
+        message: "continued: dispatcher",
+        dispatcher_thread_id: "dispatcher-thread-123"
+      });
+      expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-continue-paused")?.status).toBe("active");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns a reconciliation report from POST /api/reconcile for the active agent-dispatcher", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-reconcile-route-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -644,7 +899,8 @@ describe("role config handlers", () => {
           status: "running",
           expected_outputs: [reportPath],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -737,7 +993,8 @@ describe("role config handlers", () => {
           status: "running",
           expected_outputs: [outputPath],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -847,7 +1104,8 @@ describe("role config handlers", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -939,7 +1197,8 @@ describe("role config handlers", () => {
           status: "running",
           expected_outputs: [],
           hub_result: null,
-          command_preamble: null
+          command_preamble: null,
+          retry_count: 0
         }
       },
       last_reconciled_at: null
@@ -972,6 +1231,136 @@ describe("role config handlers", () => {
       expect(JSON.parse(response.body)).toEqual({
         error: "force-complete requires force=true"
       });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates a tracked worker status through PATCH /api/roles/:threadId/worker/:workerId/status", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-status-route-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-456",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Completed once already.",
+            summary_text: "Completed once already.",
+            details_text: "Agent reply:\nCompleted once already.",
+            attachments: [],
+            timestamp: "2026-04-05T00:10:00.000Z"
+          },
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness();
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-status-update",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }]
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "PATCH",
+        "/api/roles/agent-dispatcher-status-update/worker/N-04/status",
+        {
+          status: "pending"
+        }
+      )).resolves.toEqual({
+        ok: true,
+        result: {
+          worker: "N-04",
+          status: "pending",
+          thread_id: "worker-thread-456",
+          lifecycle_updated: true
+        }
+      });
+
+      expect(lifecycleStore.load().workers["N-04"]?.status).toBe("pending");
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates markdown-only worker rows through PATCH /api/roles/:threadId/worker/:workerId/status", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-status-route-markdown-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 3 | R-04 | GUI Resume Buttons | CODEX-XHIGH | N-04 | CLI Integration PRD | done |"
+    ].join("\n"), "utf8");
+
+    try {
+      const harness = createHarness();
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-status-markdown",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }]
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "PATCH",
+        "/api/roles/agent-dispatcher-status-markdown/worker/R-04/status",
+        {
+          status: "skipped"
+        }
+      )).resolves.toEqual({
+        ok: true,
+        result: {
+          worker: "R-04",
+          status: "skipped",
+          thread_id: null,
+          lifecycle_updated: false
+        }
+      });
+
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⛔ SKIPPED | 3 | R-04 | GUI Resume Buttons | CODEX-XHIGH | N-04 | CLI Integration PRD | done |");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -1263,6 +1652,76 @@ describe("role config handlers", () => {
         ]
       });
       expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose a stale dispatcher thread id after lifecycle marked the dispatcher unavailable", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-stale-thread-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-stale-thread",
+          roleType: "agent-dispatcher",
+          status: "needs_reactivation",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 7 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | awaiting restart |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-04-07T14:00:00.000Z",
+        status: "abandoned"
+      },
+      workers: {},
+      last_reconciled_at: "2026-04-07T14:15:00.000Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
+      const harness = createHarness(persistedState, undefined, [], "unused", attachToThread);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-stale-thread")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-stale-thread",
+        status: "needs_reactivation",
+        dispatcher_thread_id: null,
+        current_worker: null,
+        session_log: [
+          "Role status: needs_reactivation",
+          `Dispatch plan: ${dispatchPlanPath}`,
+          "Dispatcher thread: pending",
+          "Current worker: idle"
+        ]
+      });
+      expect(attachToThread).not.toHaveBeenCalled();
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -1590,7 +2049,8 @@ function createHarness(
   replyChannels: ReplyChannel[] | Error = [],
   threadDetail: string | Error | null = null,
   attachToThread: ((threadId: string) => Promise<void>) | Error | null = null,
-  sendHubRequest: ((message: HubMessage) => Promise<HubResult>) | Error | null = null
+  sendHubRequest: ((message: HubMessage) => Promise<HubResult>) | Error | null = null,
+  launchDispatcher: ((config: LaunchConfig) => Promise<LaunchResult>) | null = null
 ) {
   const log = createLogger();
   const registry = new RoleRegistry();
@@ -1606,10 +2066,10 @@ function createHarness(
     (threadId, config) => new AgentDispatcherRole(threadId, config, {
       stateStore,
       buildSystemPrompt: () => "test system prompt",
-      launchDispatcher: async () => ({
+      launchDispatcher: launchDispatcher ?? (async () => ({
         ok: true,
         threadId: "dispatcher-thread-123"
-      }),
+      })),
       sessionManagerFactory: () => ({
         getDispatcherThreadId: () => "dispatcher-thread-123",
         initSession: async () => undefined,
@@ -1699,6 +2159,28 @@ async function createRole(roleHandlers: RoleHandlers, body: unknown): Promise<vo
   expect(response.statusCode).toBe(201);
 }
 
+async function createAgentDispatcherRole(
+  roleHandlers: RoleHandlers,
+  threadId: string,
+  dispatchPlanPath: string
+): Promise<void> {
+  await createRole(roleHandlers, {
+    thread_id: threadId,
+    role_type: "agent-dispatcher",
+    dispatch_plan_path: dispatchPlanPath,
+    command_file_path: "/tmp/agent_dispatch_command.md",
+    user_reply_channels: [
+      {
+        channel: "telegram",
+        chat_id: "telegram:ops"
+      }
+    ],
+    agent_type: "codex",
+    mode: "bridge",
+    kill_policy: "always"
+  });
+}
+
 async function invokeJson<T = unknown>(roleHandlers: RoleHandlers, method: string, url: string, body?: unknown): Promise<T> {
   const request = createJsonRequest(method, url, body);
   const response = createJsonResponse();
@@ -1732,6 +2214,21 @@ function createPersistedState(config: DispatcherConfig): AppState {
       }
     ],
     promptStore: {}
+  };
+}
+
+function buildLifecycleWorker(overrides: Partial<DispatchWorkerState> = {}): DispatchWorkerState {
+  return {
+    thread_id: "worker-thread-456",
+    trace_id: "11111111-1111-4111-8111-111111111111",
+    started_at: "2026-04-05T00:00:00.000Z",
+    last_seen_at: "2026-04-05T00:00:00.000Z",
+    status: "running",
+    expected_outputs: [],
+    hub_result: null,
+    command_preamble: null,
+    retry_count: 0,
+    ...overrides
   };
 }
 

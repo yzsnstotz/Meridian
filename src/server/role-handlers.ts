@@ -15,6 +15,7 @@ import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
+import { executeUpdateWorkerStatusAction } from "../tool-gateway/tools/update-status";
 import {
   applyEditableDispatcherConfig,
   cloneDispatcherConfig,
@@ -98,6 +99,11 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
   kill_policy: KillPolicySchema.optional()
 });
 
+const UpdateWorkerStatusRequestSchema = z.object({
+  status: z.string().min(1),
+  thread_id: z.string().min(1).optional()
+});
+
 type RoleRouteMatch =
   | { kind: "health" }
   | { kind: "list-channels" }
@@ -109,8 +115,11 @@ type RoleRouteMatch =
   | { kind: "start-agent-dispatcher" }
   | { kind: "pause-dispatcher"; threadId: string }
   | { kind: "resume-dispatcher"; threadId: string }
+  | { kind: "continue-dispatcher"; threadId: string }
   | { kind: "start-dispatcher-hub"; threadId: string }
   | { kind: "resume-worker"; threadId: string; workerId: string }
+  | { kind: "continue-worker"; threadId: string; workerId: string }
+  | { kind: "update-worker-status"; threadId: string; workerId: string }
   | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string };
@@ -211,6 +220,17 @@ export interface RoleDetailResponse {
   dispatch_plan?: {
     rows: DispatchPlanRow[];
   };
+}
+
+export interface ContinueDispatcherResponse {
+  ok: true;
+  status: "continued" | "still_blocked" | "local_tool_bootstrap_failed";
+  message: string;
+  dispatcher_thread_id?: string;
+  worker?: string;
+  running_workers?: string[];
+  resume_result?: Awaited<ReturnType<typeof executeResumeWorkerAction>>;
+  error?: string;
 }
 
 interface DispatchPlanData {
@@ -372,11 +392,20 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           case "resume-dispatcher":
             writeJson(response, 200, await setAgentDispatcherStatus(route.threadId, "active"));
             return true;
+          case "continue-dispatcher":
+            writeJson(response, 200, await continueDispatcherForRole(route.threadId));
+            return true;
           case "start-dispatcher-hub":
             writeJson(response, 200, await startAgentDispatcherHubSession(route.threadId));
             return true;
           case "resume-worker":
             writeJson(response, 200, await resumeWorkerForRole(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
+          case "continue-worker":
+            writeJson(response, 200, await continueDispatcherForRole(route.threadId, route.workerId));
+            return true;
+          case "update-worker-status":
+            writeJson(response, 200, await updateWorkerStatusForRole(route.threadId, route.workerId, await readJsonBody(request)));
             return true;
           case "reconcile":
             writeJson(response, 200, await reconcileActiveDispatcher());
@@ -516,6 +545,106 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         force: parsed.data.force ?? false
       })
     };
+  }
+
+  async function continueDispatcherForRole(threadId: string, workerId?: string): Promise<ContinueDispatcherResponse> {
+    const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
+    if (context.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
+    const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
+    const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
+    const runningWorkers = findRunningNonHumanWorkers(dispatchPlanData.rows);
+    if (runningWorkers.length > 0) {
+      return {
+        ok: true,
+        status: "still_blocked",
+        message: `still blocked: running worker(s): ${runningWorkers.join(", ")}`,
+        ...(workerId ? { worker: workerId } : {}),
+        running_workers: runningWorkers
+      };
+    }
+
+    const snapshot = await snapshotDispatchFiles(dispatchPlanPath);
+    let resumeResult: Awaited<ReturnType<typeof executeResumeWorkerAction>> | undefined;
+
+    try {
+      if (workerId) {
+        resumeResult = await executeResumeWorkerAction({
+          planPath: dispatchPlanPath,
+          workerId,
+          action: "retry"
+        });
+      }
+
+      const started = await startAgentDispatcherHubSession(threadId);
+      if (shouldResumeAfterContinue) {
+        await setAgentDispatcherStatus(threadId, ACTIVE_ROLE_STATUS);
+      }
+
+      return {
+        ok: true,
+        status: "continued",
+        message: workerId ? `continued: ${workerId}` : "continued: dispatcher",
+        dispatcher_thread_id: started.dispatcher_thread_id,
+        ...(workerId ? { worker: workerId } : {}),
+        ...(resumeResult ? { resume_result: resumeResult } : {})
+      };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      await restoreDispatchFiles(snapshot, log);
+      if (isLocalToolBootstrapFailure(message)) {
+        return {
+          ok: true,
+          status: "local_tool_bootstrap_failed",
+          message: `local tool bootstrap failed: ${message}`,
+          ...(workerId ? { worker: workerId } : {}),
+          error: message
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  async function updateWorkerStatusForRole(
+    threadId: string,
+    workerId: string,
+    body: unknown
+  ): Promise<{ ok: true; result: Awaited<ReturnType<typeof executeUpdateWorkerStatusAction>> }> {
+    const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
+    if (context.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const parsed = UpdateWorkerStatusRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid worker status payload");
+    }
+
+    try {
+      return {
+        ok: true,
+        result: await executeUpdateWorkerStatusAction({
+          planPath: context.effectiveConfig.dispatch_plan_path,
+          workerId,
+          status: parsed.data.status,
+          threadId: parsed.data.thread_id ?? null
+        })
+      };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.startsWith("Unsupported status:")) {
+        throw createHttpError(400, message);
+      }
+      if (message.includes("Worker not found")) {
+        throw createHttpError(404, message);
+      }
+
+      throw error;
+    }
   }
 
   async function getChannels(): Promise<{ channels: ReplyChannel[] }> {
@@ -1089,6 +1218,28 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
 
   if (
     method === "POST"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "roles"
+    && parts[3] === "worker"
+    && parts[5] === "continue"
+  ) {
+    return { kind: "continue-worker", threadId: parts[2], workerId: parts[4] };
+  }
+
+  if (
+    method === "PATCH"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "roles"
+    && parts[3] === "worker"
+    && parts[5] === "status"
+  ) {
+    return { kind: "update-worker-status", threadId: parts[2], workerId: parts[4] };
+  }
+
+  if (
+    method === "POST"
     && parts.length === 4
     && parts[0] === "api"
     && parts[1] === "agent-dispatcher"
@@ -1105,6 +1256,16 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     && parts[3] === "resume"
   ) {
     return { kind: "resume-dispatcher", threadId: parts[2] };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 4
+    && parts[0] === "api"
+    && parts[1] === "agent-dispatcher"
+    && parts[3] === "continue"
+  ) {
+    return { kind: "continue-dispatcher", threadId: parts[2] };
   }
 
   if (
@@ -1209,6 +1370,100 @@ function getStatusCode(error: unknown): number {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
+}
+
+interface DispatchFileSnapshot {
+  planPath: string;
+  sidecarPath: string;
+  plan: OptionalFileSnapshot;
+  sidecar: OptionalFileSnapshot;
+}
+
+interface OptionalFileSnapshot {
+  exists: boolean;
+  content: string;
+}
+
+async function snapshotDispatchFiles(dispatchPlanPath: string): Promise<DispatchFileSnapshot> {
+  const sidecarPath = resolveDispatchThreadPath(dispatchPlanPath);
+  const [plan, sidecar] = await Promise.all([
+    readOptionalFile(dispatchPlanPath),
+    readOptionalFile(sidecarPath)
+  ]);
+
+  return {
+    planPath: dispatchPlanPath,
+    sidecarPath,
+    plan,
+    sidecar
+  };
+}
+
+async function readOptionalFile(filePath: string): Promise<OptionalFileSnapshot> {
+  try {
+    return {
+      exists: true,
+      content: await fs.readFile(filePath, "utf8")
+    };
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return {
+        exists: false,
+        content: ""
+      };
+    }
+
+    throw error;
+  }
+}
+
+async function restoreDispatchFiles(snapshot: DispatchFileSnapshot, log: Logger): Promise<void> {
+  try {
+    await Promise.all([
+      restoreOptionalFile(snapshot.planPath, snapshot.plan),
+      restoreOptionalFile(snapshot.sidecarPath, snapshot.sidecar)
+    ]);
+  } catch (error) {
+    log.warn("Failed to restore dispatch files after continue failure", {
+      dispatchPlanPath: snapshot.planPath,
+      error: getErrorMessage(error)
+    });
+  }
+}
+
+async function restoreOptionalFile(filePath: string, snapshot: OptionalFileSnapshot): Promise<void> {
+  if (snapshot.exists) {
+    await fs.writeFile(filePath, snapshot.content, "utf8");
+    return;
+  }
+
+  await fs.rm(filePath, { force: true });
+}
+
+function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {
+  return rows
+    .filter((row) => row.status === "🔄" && !isHumanDispatchRow(row))
+    .map((row) => row.worker)
+    .filter((worker) => worker.trim().length > 0);
+}
+
+function isHumanDispatchRow(row: DispatchPlanRow): boolean {
+  const model = row.model.trim().toUpperCase();
+  return model === "HUMAN" || model === "PM";
+}
+
+function isLocalToolBootstrapFailure(message: string): boolean {
+  return /(?:^|[\s:])(EACCES|ENOENT|EPERM)(?:[\s:]|$)/i.test(message)
+    || message.includes("/tmp/tsx-")
+    || /\btsx\b/i.test(message)
+    || /\brun launch failed\b/i.test(message)
+    || /\bspawn failed: Command failed\b/i.test(message)
+    || /\bspawn failed: spawn\b/i.test(message)
+    || /\bNode (?:CLI )?(?:startup|loader)\b/i.test(message);
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {
@@ -1338,7 +1593,9 @@ async function loadDispatcherSessionLog(
 }
 
 function resolveDispatcherThreadId(lifecycleState: DispatchThreadStateV2): string | null {
-  return lifecycleState.dispatcher.thread_id ?? null;
+  return lifecycleState.dispatcher.status === "running"
+    ? lifecycleState.dispatcher.thread_id ?? null
+    : null;
 }
 
 function buildDispatchWorkerDetails(

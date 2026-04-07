@@ -28,6 +28,12 @@
         <div id="agent-dispatcher-hub-controls" class="dispatcher-hub-controls" hidden>
           <p id="agent-dispatcher-start-hub-feedback" class="feedback" role="status" aria-live="polite"></p>
           <div class="card-actions">
+            <button type="button" id="agent-dispatcher-continue-btn" class="primary-button" hidden>
+              Continue
+            </button>
+            <button type="button" id="agent-dispatcher-lifecycle-btn" class="ghost-button" hidden>
+              Pause
+            </button>
             <button type="button" id="agent-dispatcher-start-hub-btn" class="primary-button">
               Start hub session
             </button>
@@ -65,7 +71,7 @@
         <div class="panel-heading">
           <div>
             <h2>Dispatch Plan Status</h2>
-            <p class="muted">Parsed from the active dispatch plan file.</p>
+            <p class="muted">Parsed from the active dispatch plan file. Redo completed work or override task status here.</p>
           </div>
         </div>
         <p id="dispatch-plan-feedback" class="feedback dispatch-plan-feedback" role="status" aria-live="polite"></p>

@@ -158,7 +158,10 @@ async function setupDashboard() {
         if (cachedDetail) {
           return {
             ...cachedDetail,
-            status: role.status
+            status: role.status,
+            dispatcher_thread_id: role.status === "needs_reactivation"
+              ? null
+              : cachedDetail.dispatcher_thread_id
           };
         }
 
@@ -185,9 +188,7 @@ async function setupDashboard() {
       agentDispatcherList.replaceChildren();
 
       details.forEach((detail) => {
-        const isPaused = detail.status === "paused";
-        const controlAction = isPaused ? "resume" : "pause";
-        const controlLabel = isPaused ? "Resume" : "Pause";
+        const control = resolveDispatcherCardControl(detail);
         const card = document.createElement("article");
         card.className = "role-card";
         card.innerHTML = `
@@ -215,8 +216,8 @@ async function setupDashboard() {
               type="button"
               class="ghost-button"
               data-dispatcher-id="${escapeHtml(detail.thread_id)}"
-              data-dispatcher-action="${controlAction}"
-            >${controlLabel}</button>
+              data-dispatcher-action="${control.action}"
+            >${control.label}</button>
           </div>
         `;
         bindLocationNavigation(card.querySelector("a.ghost-link"));
@@ -242,11 +243,11 @@ async function setupDashboard() {
               return;
             }
 
-            agentDispatcherFeedback.textContent = `${action === "pause" ? "Pausing" : "Resuming"} ${threadId}…`;
+            agentDispatcherFeedback.textContent = formatDispatcherControlProgress(action, threadId);
             const response = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/${action}`, {
               method: "POST"
             });
-            agentDispatcherFeedback.textContent = `Dispatcher ${threadId} is now ${response.status}.`;
+            agentDispatcherFeedback.textContent = formatDispatcherControlResult(action, threadId, response);
             await refreshRoles();
           } catch (error) {
             agentDispatcherFeedback.textContent = getErrorMessage(error);
@@ -509,6 +510,8 @@ async function setupRoleDetail() {
   const dispatchPlanFeedback = document.getElementById("dispatch-plan-feedback");
   const hubControls = document.getElementById("agent-dispatcher-hub-controls");
   const startHubBtn = document.getElementById("agent-dispatcher-start-hub-btn");
+  const continueHubBtn = document.getElementById("agent-dispatcher-continue-btn");
+  const lifecycleHubBtn = document.getElementById("agent-dispatcher-lifecycle-btn");
   const startHubFeedback = document.getElementById("agent-dispatcher-start-hub-feedback");
 
   if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink || !configLink) {
@@ -516,6 +519,8 @@ async function setupRoleDetail() {
   }
 
   let startHubBound = false;
+  let continueHubBound = false;
+  let lifecycleHubBound = false;
   let dispatchPlanActionsBound = false;
 
   const defaultEmptyMessage = empty.textContent;
@@ -577,9 +582,18 @@ async function setupRoleDetail() {
     if (isAgentDispatcher) {
       tasks.replaceChildren();
       empty.hidden = true;
+      const dispatcherControls = resolveDispatcherDetailControls(detail);
 
       if (hubControls) {
         hubControls.hidden = false;
+      }
+      if (continueHubBtn) {
+        continueHubBtn.hidden = !dispatcherControls.showContinue;
+      }
+      if (lifecycleHubBtn) {
+        lifecycleHubBtn.hidden = !dispatcherControls.showLifecycle;
+        lifecycleHubBtn.textContent = dispatcherControls.lifecycleLabel;
+        lifecycleHubBtn.setAttribute("data-dispatcher-action", dispatcherControls.lifecycleAction || "");
       }
 
       if (!startHubBound && startHubBtn && startHubFeedback) {
@@ -595,6 +609,51 @@ async function setupRoleDetail() {
             await render();
           } catch (error) {
             startHubFeedback.textContent = getErrorMessage(error);
+          }
+        });
+      }
+
+      if (!continueHubBound && continueHubBtn && startHubFeedback) {
+        continueHubBound = true;
+        continueHubBtn.addEventListener("click", async () => {
+          try {
+            continueHubBtn.disabled = true;
+            startHubFeedback.textContent = "Continuing dispatcher…";
+            const continued = await fetchJson(
+              `/api/agent-dispatcher/${encodeURIComponent(threadId)}/continue`,
+              { method: "POST" }
+            );
+            startHubFeedback.textContent = formatContinueResult(continued);
+            await render();
+          } catch (error) {
+            startHubFeedback.textContent = getErrorMessage(error);
+          } finally {
+            continueHubBtn.disabled = false;
+          }
+        });
+      }
+
+      if (!lifecycleHubBound && lifecycleHubBtn && startHubFeedback) {
+        lifecycleHubBound = true;
+        lifecycleHubBtn.addEventListener("click", async () => {
+          const action = lifecycleHubBtn.getAttribute("data-dispatcher-action");
+          if (!action || (action !== "pause" && action !== "resume")) {
+            return;
+          }
+
+          try {
+            lifecycleHubBtn.disabled = true;
+            startHubFeedback.textContent = formatDispatcherControlProgress(action, threadId);
+            const response = await fetchJson(
+              `/api/agent-dispatcher/${encodeURIComponent(threadId)}/${action}`,
+              { method: "POST" }
+            );
+            startHubFeedback.textContent = formatDispatcherControlResult(action, threadId, response);
+            await render();
+          } catch (error) {
+            startHubFeedback.textContent = getErrorMessage(error);
+          } finally {
+            lifecycleHubBtn.disabled = false;
           }
         });
       }
@@ -616,21 +675,27 @@ async function setupRoleDetail() {
       if (!dispatchPlanActionsBound && dispatchPlanBody) {
         dispatchPlanActionsBound = true;
         dispatchPlanBody.addEventListener("click", async (event) => {
-          const target = event.target instanceof Element
-            ? event.target.closest("[data-resume-action]")
+          const actionTarget = event.target instanceof Element
+            ? event.target.closest("[data-continue-worker], [data-resume-action], [data-status-apply]")
             : null;
-          if (!(target instanceof HTMLButtonElement)) {
+          if (!(actionTarget instanceof HTMLButtonElement)) {
             return;
           }
 
-          const workerId = target.getAttribute("data-worker-id");
-          const action = target.getAttribute("data-resume-action");
-          if (!workerId || !action) {
+          const workerId = actionTarget.getAttribute("data-worker-id");
+          if (!workerId) {
+            return;
+          }
+
+          const resumeAction = actionTarget.getAttribute("data-resume-action");
+          const isContinueWorker = actionTarget.hasAttribute("data-continue-worker");
+          const isStatusApply = actionTarget.hasAttribute("data-status-apply");
+          if (!isContinueWorker && !resumeAction && !isStatusApply) {
             return;
           }
 
           if (
-            action === "force-complete"
+            resumeAction === "force-complete"
             && !window.confirm(
               `Force Complete will mark ${workerId} as complete and may unblock downstream workers on incomplete output. Continue?`
             )
@@ -638,33 +703,71 @@ async function setupRoleDetail() {
             return;
           }
 
-          const actionButtons = Array.from(dispatchPlanBody.querySelectorAll("[data-resume-action]"));
-          actionButtons.forEach((button) => {
-            if (button instanceof HTMLButtonElement) {
-              button.disabled = true;
-            }
-          });
+          setDispatchPlanControlsDisabled(dispatchPlanBody, true);
 
           try {
-            if (dispatchPlanFeedback) {
-              dispatchPlanFeedback.textContent = `${formatResumeActionLabel(action)} ${workerId}…`;
-            }
-
-            const payload = action === "force-complete"
-              ? { action, force: true }
-              : { action };
-
-            await fetchJson(
-              `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/resume`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
+            if (isContinueWorker) {
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `Continuing ${workerId}…`;
               }
-            );
 
-            if (dispatchPlanFeedback) {
-              dispatchPlanFeedback.textContent = `${workerId} ${formatResumeActionSuccess(action)}.`;
+              const continued = await fetchJson(
+                `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/continue`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" }
+                }
+              );
+
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = formatContinueResult(continued);
+              }
+            } else if (resumeAction) {
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `${formatResumeActionLabel(resumeAction)} ${workerId}…`;
+              }
+
+              const payload = resumeAction === "force-complete"
+                ? { action: resumeAction, force: true }
+                : { action: resumeAction };
+
+              await fetchJson(
+                `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/resume`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload)
+                }
+              );
+
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `${workerId} ${formatResumeActionSuccess(resumeAction)}.`;
+              }
+            } else if (isStatusApply) {
+              const rowElement = actionTarget.closest("tr");
+              const statusSelect = rowElement?.querySelector("[data-worker-status]");
+              if (!(statusSelect instanceof HTMLSelectElement)) {
+                throw new Error(`No status selector found for ${workerId}`);
+              }
+
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusSelect.value)}…`;
+              }
+
+              await fetchJson(
+                `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/status`,
+                {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    status: statusSelect.value
+                  })
+                }
+              );
+
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusSelect.value)}.`;
+              }
             }
 
             await render();
@@ -673,11 +776,7 @@ async function setupRoleDetail() {
               dispatchPlanFeedback.textContent = getErrorMessage(error);
             }
           } finally {
-            actionButtons.forEach((button) => {
-              if (button instanceof HTMLButtonElement) {
-                button.disabled = false;
-              }
-            });
+            setDispatchPlanControlsDisabled(dispatchPlanBody, false);
           }
         });
       }
@@ -751,7 +850,9 @@ async function setupRoleDetail() {
       dispatchPlanEmpty,
       dispatchPlanTableShell,
       roleTasksPanel,
-      hubControls
+      hubControls,
+      continueHubBtn,
+      lifecycleHubBtn
     }, getErrorMessage(error));
   }
 
@@ -778,7 +879,9 @@ async function setupRoleDetail() {
         dispatchPlanEmpty,
         dispatchPlanTableShell,
         roleTasksPanel,
-        hubControls
+        hubControls,
+        continueHubBtn,
+        lifecycleHubBtn
       }, getErrorMessage(error));
     });
   }, POLL_INTERVAL_MS);
@@ -1056,6 +1159,12 @@ function renderRoleDetailError(elements, message) {
   if (elements.hubControls) {
     elements.hubControls.hidden = true;
   }
+  if (elements.continueHubBtn) {
+    elements.continueHubBtn.hidden = true;
+  }
+  if (elements.lifecycleHubBtn) {
+    elements.lifecycleHubBtn.hidden = true;
+  }
 }
 
 function renderDispatchDetailCard(detail) {
@@ -1110,17 +1219,63 @@ function renderDispatchPlanStatus(row) {
 }
 
 function renderDispatchPlanActions(row) {
-  if (row?.status !== "🔄") {
-    return '<span class="muted">—</span>';
+  const workerId = escapeHtml(row.worker || "");
+  const currentStatus = normalizeDispatchPlanStatus(row?.status);
+  const statusEditor = currentStatus === "running"
+    ? ""
+    : renderDispatchPlanStatusEditor(workerId, currentStatus);
+
+  if (currentStatus === "abandoned") {
+    return `
+      <div class="table-action-stack">
+        <div class="table-action-group">
+          <button type="button" class="primary-button table-action-button" data-worker-id="${workerId}" data-continue-worker>Continue</button>
+        </div>
+        ${statusEditor}
+      </div>
+    `;
   }
 
-  const workerId = escapeHtml(row.worker || "");
+  if (currentStatus === "running") {
+    return `
+      <div class="table-action-stack">
+        <div class="table-action-group">
+          <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
+          <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
+          <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
+        </div>
+      </div>
+    `;
+  }
 
   return `
-    <div class="table-action-group">
-      <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Retry</button>
-      <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
-      <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
+    <div class="table-action-stack">
+      <div class="table-action-group">
+        <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
+      </div>
+      ${statusEditor}
+    </div>
+  `;
+}
+
+function renderDispatchPlanStatusEditor(workerId, currentStatus) {
+  const options = [
+    "pending",
+    "completed",
+    "failed",
+    "abandoned",
+    "skipped"
+  ].map((status) => {
+    const selected = status === currentStatus ? " selected" : "";
+    return `<option value="${status}"${selected}>${escapeHtml(formatDispatchStatusLabel(status))}</option>`;
+  }).join("");
+
+  return `
+    <div class="table-status-controls">
+      <select class="table-status-select" data-worker-status aria-label="Update worker status for ${workerId}">
+        ${options}
+      </select>
+      <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-status-apply>Apply</button>
     </div>
   `;
 }
@@ -1249,6 +1404,74 @@ function formatReplyChannelLabel(replyChannel) {
   return `${replyChannel.channel} · ${name}`;
 }
 
+function resolveDispatcherCardControl(detail) {
+  const status = normalizeText(detail?.status);
+  const hasLiveThread = hasLiveDispatcherThread(detail);
+
+  if (status === "paused" && hasLiveThread) {
+    return { action: "resume", label: "Resume" };
+  }
+
+  if (!hasLiveThread || status === "needs_reactivation") {
+    return { action: "continue", label: "Continue" };
+  }
+
+  return { action: "pause", label: "Pause" };
+}
+
+function resolveDispatcherDetailControls(detail) {
+  const status = normalizeText(detail?.status);
+  const hasLiveThread = hasLiveDispatcherThread(detail);
+
+  if (!hasLiveThread || status === "needs_reactivation") {
+    return {
+      showContinue: true,
+      showLifecycle: false,
+      lifecycleAction: null,
+      lifecycleLabel: ""
+    };
+  }
+
+  if (status === "paused") {
+    return {
+      showContinue: false,
+      showLifecycle: true,
+      lifecycleAction: "resume",
+      lifecycleLabel: "Resume"
+    };
+  }
+
+  return {
+    showContinue: false,
+    showLifecycle: true,
+    lifecycleAction: "pause",
+    lifecycleLabel: "Pause"
+  };
+}
+
+function hasLiveDispatcherThread(detail) {
+  return normalizeText(detail?.dispatcher_thread_id).length > 0;
+}
+
+function formatDispatcherControlProgress(action, threadId) {
+  switch (action) {
+    case "continue":
+      return `Continuing ${threadId}…`;
+    case "pause":
+      return `Pausing ${threadId}…`;
+    default:
+      return `Resuming ${threadId}…`;
+  }
+}
+
+function formatDispatcherControlResult(action, threadId, response) {
+  if (action === "continue") {
+    return formatContinueResult(response);
+  }
+
+  return `Dispatcher ${threadId} is now ${response.status}.`;
+}
+
 function formatResumeActionLabel(action) {
   switch (action) {
     case "skip":
@@ -1256,7 +1479,7 @@ function formatResumeActionLabel(action) {
     case "force-complete":
       return "Force completing";
     default:
-      return "Retrying";
+      return "Redoing";
   }
 }
 
@@ -1267,8 +1490,81 @@ function formatResumeActionSuccess(action) {
     case "force-complete":
       return "marked complete";
     default:
+      return "reset to pending for another pass";
+  }
+}
+
+function formatContinueResult(result) {
+  const message = typeof result?.message === "string" && result.message.trim().length > 0
+    ? result.message.trim()
+    : "";
+
+  switch (result?.status) {
+    case "continued":
+      return message || "continued";
+    case "still_blocked":
+      return message || "still blocked";
+    case "local_tool_bootstrap_failed":
+      return message || "local tool bootstrap failed";
+    default:
+      return message || "continue result unavailable";
+  }
+}
+
+function normalizeDispatchPlanStatus(status) {
+  switch (status) {
+    case "🔄":
+      return "running";
+    case "✅":
+      return "completed";
+    case "❌":
+      return "failed";
+    case "⚠️ ABANDONED":
+      return "abandoned";
+    case "⛔ SKIPPED":
+      return "skipped";
+    case "⬜":
+    default:
+      return "pending";
+  }
+}
+
+function formatDispatchStatusLabel(status) {
+  switch (status) {
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "abandoned":
+      return "Abandoned";
+    case "skipped":
+      return "Skipped";
+    default:
+      return "Pending";
+  }
+}
+
+function formatDispatchStatusSuccess(status) {
+  switch (status) {
+    case "completed":
+      return "marked complete";
+    case "failed":
+      return "marked failed";
+    case "abandoned":
+      return "marked abandoned";
+    case "skipped":
+      return "marked skipped";
+    default:
       return "reset to pending";
   }
+}
+
+function setDispatchPlanControlsDisabled(dispatchPlanBody, disabled) {
+  Array.from(dispatchPlanBody.querySelectorAll("button, select")).forEach((control) => {
+    if (control instanceof HTMLButtonElement || control instanceof HTMLSelectElement) {
+      control.disabled = disabled;
+    }
+  });
 }
 
 async function fetchJson(url, options) {
@@ -1296,7 +1592,9 @@ function bindLocationNavigation(link) {
     if (event && typeof event.preventDefault === "function") {
       event.preventDefault();
     }
-    link.setAttribute("aria-busy", "true");
+    if (typeof link.setAttribute === "function") {
+      link.setAttribute("aria-busy", "true");
+    }
     if (document.documentElement && document.documentElement.style) {
       document.documentElement.style.cursor = "wait";
     }
