@@ -1567,7 +1567,8 @@
         var finalText = stripMeridianNoise(stripAnsi(payload.text || "")).trim();
         var workingText = stripMeridianNoise(stripAnsi(state.workingText || "")).trim();
         var dataDetails = payload.dataText.trim();
-        var finalContent = finalText || dataDetails || workingText;
+        var lowValueDataDetails = dataDetails && isUsageStatsPayload(dataDetails);
+        var finalContent = finalText || workingText || dataDetails;
         if (!finalContent) {
           finalContent = taskState === "failed" ? "Error: Agent run failed." : "Completed.";
         }
@@ -1576,10 +1577,10 @@
         }
 
         var detailsBlocks = [];
-        if (taskState === "failed" && workingText) {
+        if (taskState === "failed" && workingText && workingText !== finalContent) {
           detailsBlocks.push("Working output:\n" + workingText);
         }
-        if (dataDetails && dataDetails !== finalContent) {
+        if (dataDetails && dataDetails !== finalContent && !lowValueDataDetails) {
           detailsBlocks.push("Structured payload:\n" + dataDetails);
         }
         var details = detailsBlocks.join("\n\n").trim();

@@ -286,6 +286,11 @@ function createTerminalBehaviorHarness(html: string): {
     token: "secret-token",
     chatMessagesEl,
     chatAutoScroll: true,
+    a2aTaskStates: new Map(),
+    a2aTaskOutputElements: new Map(),
+    pendingA2ARenderTaskIds: new Set(),
+    completedA2AResults: new Map(),
+    a2aRenderFrame: 0,
     bubbleElementsByKey: Object.create(null),
     seenBubbleFingerprintAtMs: Object.create(null),
     chatHistoryHydrating: false,
@@ -363,6 +368,11 @@ function createTerminalBehaviorHarness(html: string): {
     stripAnsi: (value: string) => value,
     showChatTyping: () => undefined,
     refreshSessionList: () => undefined,
+    requestAnimationFrame(callback: (timestamp: number) => void) {
+      callback(0);
+      return 1;
+    },
+    cancelAnimationFrame: () => undefined,
     setTimeout,
     clearTimeout,
     Date,
@@ -762,6 +772,56 @@ test("terminal keeps an existing keyed bubble when a low-value structured result
       detailsText: "Agent reply:\n# PR Review"
     }),
     false
+  );
+});
+
+test("terminal A2A completion preserves streamed reply when the final payload is usage-only data", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+
+  bindTerminalFunctions(terminalHtml, context, [
+    "buildA2AWorkingMessageKey",
+    "normalizeTaskId",
+    "getOrCreateA2ATaskState",
+    "hasActiveA2AStream",
+    "serializeA2AData",
+    "collectA2APayload",
+    "rememberA2AOutputElement",
+    "isLowValueLine",
+    "stripSummaryProtocolTags",
+    "stripMeridianNoise",
+    "isUsageStatsPayload",
+    "finalizeA2ATask"
+  ]);
+
+  const getOrCreateA2ATaskState = context.getOrCreateA2ATaskState as (taskId: string) => {
+    workingText: string;
+    taskState: string;
+  };
+  const finalizeA2ATask = context.finalizeA2ATask as (
+    taskId: string,
+    taskState: string,
+    parts: Array<Record<string, unknown>>
+  ) => void;
+
+  const state = getOrCreateA2ATaskState("2f461d95-0157-4f90-bb4d-a63f2bfb1ed8");
+  state.workingText = "Full agent reply that should stay visible.";
+
+  finalizeA2ATask("2f461d95-0157-4f90-bb4d-a63f2bfb1ed8", "completed", [
+    {
+      type: "data",
+      data: {
+        input_tokens: 6803166,
+        cached_input_tokens: 6610688,
+        output_tokens: 34191
+      }
+    }
+  ]);
+
+  assert.equal(chatMessagesEl.children.length, 1);
+  assert.equal(
+    collectRenderedText(chatMessagesEl.children[0] as FakeElement),
+    "Full agent reply that should stay visible."
   );
 });
 
