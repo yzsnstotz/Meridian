@@ -701,6 +701,70 @@ test("terminal structured run bubble resolver prefers summary/details over raw u
   });
 });
 
+test("terminal structured run bubble resolver ignores usage-only payloads without summary/details", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const context: Record<string, unknown> = {
+    fallbackSummaryText: "Update received. Expand details for full output."
+  };
+
+  bindTerminalFunctions(terminalHtml, context, [
+    "isUsageStatsPayload",
+    "resolveStructuredRunBubble"
+  ]);
+
+  const resolveStructuredRunBubble =
+    context.resolveStructuredRunBubble as (value: Record<string, unknown>) => Record<string, unknown> | null;
+
+  assert.equal(resolveStructuredRunBubble({
+    content: JSON.stringify({
+      input_tokens: 1353270,
+      cached_input_tokens: 1151488,
+      output_tokens: 9696
+    }, null, 2)
+  }), null);
+});
+
+test("terminal keeps an existing keyed bubble when a low-value structured result has no details", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { context } = createTerminalBehaviorHarness(terminalHtml);
+  const addChatBubble = context.addChatBubble as (
+    content: string,
+    type: string,
+    detailsText: string,
+    options?: Record<string, unknown>
+  ) => void;
+
+  bindTerminalFunctions(terminalHtml, context, ["shouldPreserveExistingStructuredBubble"]);
+
+  const shouldPreserveExistingStructuredBubble =
+    context.shouldPreserveExistingStructuredBubble as (
+      messageKey: string,
+      structuredBubble: Record<string, unknown> | null
+    ) => boolean;
+
+  addChatBubble(
+    "Worker completed. Returning inline completion report.",
+    "agent",
+    "Your message:\nrun pr-review\n\nAgent reply:\n# PR Review",
+    { messageKey: "agent:trace-123" }
+  );
+
+  assert.equal(
+    shouldPreserveExistingStructuredBubble("agent:trace-123", {
+      lowValue: true,
+      detailsText: ""
+    }),
+    true
+  );
+  assert.equal(
+    shouldPreserveExistingStructuredBubble("agent:trace-123", {
+      lowValue: true,
+      detailsText: "Agent reply:\n# PR Review"
+    }),
+    false
+  );
+});
+
 test("terminal reconnect requests zero replay lines after authoritative history restore", async () => {
   const terminalHtml = await readTerminalHtml();
   const { context, urls } = createReconnectHarness(terminalHtml);
