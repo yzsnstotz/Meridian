@@ -225,6 +225,52 @@ describe("run tool", () => {
     );
   });
 
+  it("prefers the DELTA-CHECK-specific report path over the generic completion template", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write your completion report to:",
+          "```",
+          "/tmp/dispatch/dev_history/v1_round/[WORKER_ID]_report.md",
+          "```",
+          "",
+          "Write to: `/tmp/dispatch/dev_history/v1_round/delta_check_report.md`"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | Ω | DELTA-CHECK | Delta Check | CODEX | N-04 | No non-report outputs required. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-delta",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "DELTA-CHECK"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "DELTA-CHECK",
+      "thread-delta",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/dev_history/v1_round/delta_check_report.md"],
+      expect.any(String)
+    );
+  });
+
   it("surfaces structured still_running results without flattening them to done", async () => {
     sendAndWaitMock.mockResolvedValue(buildHubResult("Worker still running", "partial", "still_running"));
     readFileMock.mockResolvedValue("# command\n");

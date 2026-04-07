@@ -372,11 +372,15 @@ describe("reconcile", () => {
     expect(nextState.workers["R-02"]?.status).toBe("abandoned");
     expect(nextState.workers["R-03"]?.status).toBe("failed");
     expect(nextState.workers["R-04"]?.status).toBe("completed");
-    expect(sendRequest).toHaveBeenCalledTimes(3);
-    expect(sendRequest.mock.calls.map(([message]) => (message as HubMessage).thread_id)).toEqual([
-      "worker-thread-111",
-      "worker-thread-222",
-      "worker-thread-333"
+    expect(sendRequest.mock.calls.map(([message]) => ({
+      thread_id: (message as HubMessage).thread_id,
+      intent: (message as HubMessage).intent
+    }))).toEqual([
+      { thread_id: "worker-thread-111", intent: "status" },
+      { thread_id: "worker-thread-222", intent: "status" },
+      { thread_id: "worker-thread-222", intent: "history" },
+      { thread_id: "worker-thread-333", intent: "status" },
+      { thread_id: "worker-thread-333", intent: "history" }
     ]);
     expect(report).toEqual({
       changed: [
@@ -475,6 +479,73 @@ describe("reconcile", () => {
 
     expect(harness.store.load().workers["R-02"]?.status).toBe("completed");
     expect(report.changed[0]?.trigger).toBe("hub_result:inline_report");
+  });
+
+  it("recovers a lost terminal worker result from Hub conversation history when callback delivery was lost", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "DELTA-CHECK": buildRunningWorker(
+          "worker-thread-delta",
+          path.join(harness.directory, "missing-delta-check-report.md")
+        )
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "Worker completed. Returning inline completion report.",
+            details_text: [
+              "Your message:",
+              "Run DELTA-CHECK",
+              "",
+              "Agent reply:",
+              "# Delta Check Report",
+              "",
+              "| Worker | Status | Findings | Action Required |",
+              "|--------|--------|----------|-----------------|",
+              "| N-01 | ✅ Aligned | — | — |"
+            ].join("\n"),
+            raw_content: [
+              "Worker completed. Returning inline completion report.",
+              "",
+              "# Delta Check Report",
+              "",
+              "| Worker | Status | Findings | Action Required |",
+              "|--------|--------|----------|-----------------|",
+              "| N-01 | ✅ Aligned | — | — |"
+            ].join("\n"),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            timestamp: FIXED_NOW
+          }
+        ]);
+      }
+
+      return buildMissingThreadResult(message.thread_id);
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextWorker = harness.store.load().workers["DELTA-CHECK"];
+
+    expect(nextWorker?.status).toBe("completed");
+    expect(nextWorker?.hub_result?.summary_text).toBe("Worker completed. Returning inline completion report.");
+    expect(nextWorker?.hub_result?.details_text).toContain("Agent reply:");
+    expect(sendRequest.mock.calls.map(([message]) => (message as HubMessage).intent)).toEqual(["status", "history"]);
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "DELTA-CHECK",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      })
+    );
   });
 
   it("marks a running worker failed when hub_result is success but content contains a provider error", async () => {
@@ -685,6 +756,18 @@ function buildInlineReportResult(threadId: string): HubResult {
       "# fail 0",
       "```"
     ].join("\n"),
+    attachments: [],
+    timestamp: FIXED_NOW
+  };
+}
+
+function buildHistoryResult(threadId: string, entries: unknown[]): HubResult {
+  return {
+    trace_id: "55555555-5555-4555-8555-555555555555",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    content: JSON.stringify(entries),
     attachments: [],
     timestamp: FIXED_NOW
   };

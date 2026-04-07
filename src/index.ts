@@ -174,13 +174,26 @@ async function buildStartupActivations(
     roles: currentState.roles.map((roleState) => ({ ...roleState })),
     promptStore: currentState.promptStore
   };
+  let stateChanged = false;
+  const invalidStartupRoleIndexes = new Set<number>();
+  const validStartupRoles = startupRoles.filter(({ roleState, index }) => {
+    if (roleState.roleType !== "agent-dispatcher" || parseAgentDispatcherConfig(roleState)) {
+      return true;
+    }
+
+    invalidStartupRoleIndexes.add(index);
+    stateChanged = true;
+    log.warn("Startup rehydration removed invalid persisted agent-dispatcher role", {
+      roleId: roleState.threadId
+    });
+    return false;
+  });
   const probes = await Promise.allSettled(
-    startupRoles.map(({ roleState }) => probePersistedRole(roleState, client))
+    validStartupRoles.map(({ roleState }) => probePersistedRole(roleState, client))
   );
   const activations: StartupActivation[] = [];
-  let stateChanged = false;
 
-  startupRoles.forEach(({ roleState, index }, probeIndex) => {
+  validStartupRoles.forEach(({ roleState, index }, probeIndex) => {
     const probe = probes[probeIndex];
     const result = probe.status === "fulfilled"
       ? probe.value
@@ -224,6 +237,10 @@ async function buildStartupActivations(
       dispatcherConfig: result.dispatcherConfig
     });
   });
+
+  if (invalidStartupRoleIndexes.size > 0) {
+    nextState.roles = nextState.roles.filter((_, index) => !invalidStartupRoleIndexes.has(index));
+  }
 
   if (stateChanged) {
     await stateStore.save(nextState);
@@ -541,7 +558,7 @@ async function resolveThreadIdForDispatchPlanPath(
 
 async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
   const state = await loadAppState(stateStore);
-  const eligibleStatuses = new Set(["active", "paused", "needs-reactivation"]);
+  const eligibleStatuses = new Set(["active", "paused", "needs_reactivation"]);
   const paths: string[] = [];
 
   for (const role of state.roles) {

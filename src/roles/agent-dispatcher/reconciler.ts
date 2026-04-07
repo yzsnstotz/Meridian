@@ -40,6 +40,16 @@ interface HubThreadObservation {
   rawStatus: string | null;
 }
 
+interface ConversationHistoryEntry {
+  event_kind?: string;
+  source?: string;
+  content?: string;
+  details_text?: string;
+  raw_content?: string;
+  trace_id?: string | null;
+  timestamp?: string;
+}
+
 const RUNNING_STATUSES = new Set(["running", "waiting", "queued", "starting", "in_progress"]);
 const IDLE_STATUSES = new Set(["idle", "stable"]);
 const COMPLETED_STATUSES = new Set(["completed", "success"]);
@@ -94,7 +104,39 @@ export async function reconcile(
     }
 
     const observation = await queryHubThreadObservation(hubClient, worker.thread_id);
-    const transition = determineWorkerTransition(observation, outputsPresent, worker.hub_result, worker.started_at, nowMs, staleTimeoutMs);
+    const recoveredHubResult =
+      !worker.hub_result && !outputsPresent && observation.kind !== "running"
+        ? await recoverHubResultFromHistory(hubClient, worker.thread_id, worker.trace_id)
+        : null;
+    const effectiveHubResult = recoveredHubResult ?? worker.hub_result;
+    const recoveredTransition = determineRecordedResultTransition(effectiveHubResult, outputsPresent);
+    if (recoveredTransition) {
+      const terminalTimestamp = effectiveHubResult?.timestamp ?? nowIso;
+      state.workers[workerId] = {
+        ...worker,
+        trace_id: effectiveHubResult?.trace_id || worker.trace_id,
+        last_seen_at: terminalTimestamp,
+        status: recoveredTransition.to,
+        hub_result: effectiveHubResult
+      };
+      lifecycleStore.logTransition(workerId, worker.status, recoveredTransition.to, recoveredTransition.trigger);
+      report.changed.push({
+        workerId,
+        from: worker.status,
+        to: recoveredTransition.to,
+        trigger: recoveredTransition.trigger
+      });
+      continue;
+    }
+
+    const transition = determineWorkerTransition(
+      observation,
+      outputsPresent,
+      effectiveHubResult,
+      worker.started_at,
+      nowMs,
+      staleTimeoutMs
+    );
 
     if (!transition) {
       report.unchanged.push(workerId);
@@ -103,8 +145,10 @@ export async function reconcile(
 
     state.workers[workerId] = {
       ...worker,
+      trace_id: effectiveHubResult?.trace_id || worker.trace_id,
       status: transition.to,
-      last_seen_at: nowIso
+      last_seen_at: effectiveHubResult?.timestamp ?? nowIso,
+      hub_result: effectiveHubResult
     };
     lifecycleStore.logTransition(workerId, worker.status, transition.to, transition.trigger);
     report.changed.push({
@@ -282,12 +326,64 @@ async function queryHubThreadObservation(hubClient: A2AClient, threadId: string 
   return classifyStatusResult(result);
 }
 
+async function recoverHubResultFromHistory(
+  hubClient: A2AClient,
+  threadId: string | null,
+  traceId: string | null
+): Promise<HubResult | null> {
+  if (!threadId) {
+    return null;
+  }
+
+  const statusClient = hubClient as unknown as ReconciliationHubClient;
+  if (typeof statusClient.sendRequest !== "function") {
+    throw new Error("A2AClient does not expose sendRequest for reconciliation");
+  }
+
+  const actorId =
+    typeof statusClient.serviceId === "string" && statusClient.serviceId.trim().length > 0
+      ? statusClient.serviceId
+      : "service:meridian-roles";
+  const historyResult = await statusClient.sendRequest(buildHistoryMessage(threadId, actorId));
+  if (historyResult.status !== "success") {
+    return null;
+  }
+
+  const historyEntries = parseConversationHistoryEntries(historyResult.content);
+  const finalReplyEntry = findLatestFinalReplyEntry(historyEntries, traceId);
+  if (!finalReplyEntry) {
+    return null;
+  }
+
+  return buildRecoveredHubResult(threadId, finalReplyEntry, traceId);
+}
+
 function buildStatusMessage(threadId: string, actorId: string): HubMessage {
   return {
     trace_id: randomUUID(),
     thread_id: threadId,
     actor_id: actorId,
     intent: "status",
+    target: threadId,
+    priority: 5,
+    mode: "bridge",
+    reply_channel: {
+      channel: "web",
+      chat_id: actorId
+    },
+    payload: {
+      content: "",
+      attachments: []
+    }
+  };
+}
+
+function buildHistoryMessage(threadId: string, actorId: string): HubMessage {
+  return {
+    trace_id: randomUUID(),
+    thread_id: threadId,
+    actor_id: actorId,
+    intent: "history",
     target: threadId,
     priority: 5,
     mode: "bridge",
@@ -351,6 +447,83 @@ function classifyStatusResult(result: HubResult): HubThreadObservation {
     kind: "running",
     rawStatus: statusCandidates[0] ?? null
   };
+}
+
+function parseConversationHistoryEntries(rawContent: string): ConversationHistoryEntry[] {
+  try {
+    const parsed = JSON.parse(rawContent) as unknown;
+    return Array.isArray(parsed) ? parsed as ConversationHistoryEntry[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function findLatestFinalReplyEntry(
+  historyEntries: ConversationHistoryEntry[],
+  traceId: string | null
+): ConversationHistoryEntry | null {
+  for (let index = historyEntries.length - 1; index >= 0; index -= 1) {
+    const entry = historyEntries[index];
+    if (!entry || entry.event_kind !== "final_reply") {
+      continue;
+    }
+
+    if (traceId && entry.trace_id !== traceId) {
+      continue;
+    }
+
+    const rawContent = normalizeHistoryText(entry.raw_content);
+    const detailsText = normalizeHistoryText(entry.details_text);
+    const content = normalizeHistoryText(entry.content);
+    if (!rawContent && !detailsText && !content) {
+      continue;
+    }
+
+    return entry;
+  }
+
+  return null;
+}
+
+function buildRecoveredHubResult(
+  threadId: string,
+  entry: ConversationHistoryEntry,
+  expectedTraceId: string | null
+): HubResult {
+  const rawContent = normalizeHistoryText(entry.raw_content);
+  const detailsText = normalizeHistoryText(entry.details_text);
+  const summaryText = normalizeHistoryText(entry.content);
+
+  return {
+    trace_id: entry.trace_id ?? expectedTraceId ?? randomUUID(),
+    thread_id: threadId,
+    source: normalizeHistorySource(entry.source),
+    status: "success",
+    run_state: "completed",
+    content: rawContent || detailsText || summaryText || "Update received. Expand details for full output.",
+    summary_text: summaryText || undefined,
+    details_text: detailsText || undefined,
+    attachments: [],
+    timestamp: normalizeHistoryTimestamp(entry.timestamp)
+  };
+}
+
+function normalizeHistorySource(value: string | undefined): HubResult["source"] {
+  return value === "claude" || value === "codex" || value === "gemini" || value === "cursor"
+    ? value
+    : "codex";
+}
+
+function normalizeHistoryTimestamp(value: string | undefined): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : new Date().toISOString();
+}
+
+function normalizeHistoryText(value: string | undefined): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim();
 }
 
 function extractStatusCandidates(rawContent: string): string[] {
@@ -514,6 +687,15 @@ const INLINE_REPORT_PATTERNS = [
   /\bStatus\b.*✅\s*Complete/i
 ];
 
+const SPECIAL_INLINE_REPORT_PATTERNS = [
+  /#\s*Delta\s+Check\s+Report\b/i,
+  /#\s*PR[\s-]*Review\s+Report\b/i
+];
+
 function containsInlineReport(content: string): boolean {
+  if (SPECIAL_INLINE_REPORT_PATTERNS.some((pattern) => pattern.test(content))) {
+    return true;
+  }
+
   return INLINE_REPORT_PATTERNS.filter((pattern) => pattern.test(content)).length >= 2;
 }

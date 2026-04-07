@@ -33,7 +33,7 @@ describe("launchDispatcher", () => {
       "--agent-type",
       "codex",
       "--spawn-dir",
-      process.cwd(),
+      harness.planDirectory,
       "--mode",
       "bridge"
     ]);

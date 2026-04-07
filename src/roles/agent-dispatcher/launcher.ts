@@ -3,6 +3,7 @@ import { unlink as unlinkFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ReplyChannel } from "../../types";
+import { resolveDispatchRepoRoot } from "./dispatch-paths";
 
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 const MERIDIAN_TOOL_ENTRYPOINT = "src/bin/meridian-tool.ts";
@@ -152,7 +153,7 @@ function buildSpawnArgs(config: LaunchConfig): string[] {
     "--agent-type",
     config.agentType,
     "--spawn-dir",
-    process.cwd(),
+    resolveDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
     "--mode",
     config.mode
   ];

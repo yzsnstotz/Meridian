@@ -1,8 +1,10 @@
 import type { AgentDispatcherConfig } from "../../types";
+import { resolveDispatchRepoRoot } from "./dispatch-paths";
 
 export interface PromptVars {
   dispatch_plan_path: string;
   command_file_path: string;
+  dispatch_repo_root: string;
   user_reply_channels: string;
   default_agent_type: string;
   default_mode: string;
@@ -27,6 +29,7 @@ export function buildSystemPromptFromConfig(
   return buildSystemPrompt({
     dispatch_plan_path: config.dispatch_plan_path,
     command_file_path: config.command_file_path,
+    dispatch_repo_root: resolveDispatchRepoRoot([config.dispatch_plan_path, config.command_file_path]),
     user_reply_channels: JSON.stringify(config.user_reply_channels),
     default_agent_type: config.agent_type,
     default_mode: config.mode,
@@ -38,6 +41,7 @@ export function buildSystemPromptFromConfig(
 export function buildSystemPrompt(vars: PromptVars): string {
   const dispatchPlanPath = requireNonEmpty(vars.dispatch_plan_path, "dispatch_plan_path");
   const commandFilePath = requireNonEmpty(vars.command_file_path, "command_file_path");
+  const dispatchRepoRoot = requireNonEmpty(vars.dispatch_repo_root, "dispatch_repo_root");
   const userReplyChannels = requireNonEmpty(vars.user_reply_channels, "user_reply_channels");
   const defaultAgentType = requireNonEmpty(vars.default_agent_type, "default_agent_type");
   const defaultMode = requireNonEmpty(vars.default_mode, "default_mode");
@@ -54,6 +58,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "# Runtime Context",
     `dispatch_plan_path: ${dispatchPlanPath}`,
     `command_file_path: ${commandFilePath}`,
+    `dispatch_repo_root: ${dispatchRepoRoot}`,
     `user_reply_channels: ${userReplyChannels}`,
     `default_agent_type: ${defaultAgentType}`,
     `default_mode: ${defaultMode}`,
@@ -199,7 +204,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "  b. Then, look for rows where Status is `❌` — these are workers that failed on a previous attempt. Use `" + TOOL_ENTRYPOINT + " resume-worker --plan <dispatch_plan_path> --worker <worker_id> --action retry` to reset the worker to `⬜`, then proceed to spawn and run it normally. The resume-worker tool tracks a retry count internally. After **2 consecutive failures** (i.e. the worker shows `❌` a third time), do NOT retry again — instead notify a human using the max-retries template below and skip to the next eligible row.",
     "  c. Then, look for rows where Status is `⬜`, Model is not `HUMAN` or `PM`, and every dependency is either `✅` or `⛔ SKIPPED`.",
     "Step 2. Before `spawn`, resolve the row's `Model` code. Prefer `resolved_model_map_json`; when it has an entry, use that exact `provider` and `model_id`. Otherwise derive `agent_type` from the fallback routing rules above. Use the runtime default mode unless the row notes or attached task docs explicitly require `pane_bridge`.",
-    "Step 3. Spawn a coding agent with `spawn`. Parse `data.thread_id` from the JSON response.",
+    `Step 3. Spawn a coding agent with \`spawn\`. Unless the row or attached task docs explicitly require a different in-repo worktree, always pass \`--spawn-dir ${dispatchRepoRoot}\` so workers run against the dispatch repo instead of the Meridian-roles service directory. Parse \`data.thread_id\` from the JSON response.`,
     "Step 4. Call `run --thread-id <thread_id> --command <command_file_path> --worker <worker_id>`. The `run` tool automatically: (a) pre-marks the worker 🔄 in `dispatch_plan.md` via the lifecycle store before sending the command, (b) injects the worker's identity (model tier code from the dispatch plan Model column, e.g. `CODEX-HIGH`) and assigned task into the message preamble, and (c) sends the command file path for the agent to read from disk. Workers are free to follow the full taskspec workflow including their own status updates, git commits, completion reports, and push — the lifecycle store reconciles the final status from the Hub result, so worker writes to the plan are safe. As the dispatcher, you do not need to write plan status yourself since the run tool and lifecycle store handle it.",
     "Step 5. Interpret `run` results strictly by JSON shape.",
     "- `ok:true` and `data.run_state` is absent or `completed`: re-read `dispatch_plan_path` and continue from the derived status now shown there.",

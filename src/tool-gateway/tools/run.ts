@@ -288,19 +288,44 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
 }
 
 function extractCompletionReportTemplate(command: string, workerId: string): string | null {
+  const specialTemplatePath = extractSpecialCompletionReportTemplate(command, workerId);
+  if (specialTemplatePath) {
+    return specialTemplatePath;
+  }
+
   const blockMatch = /Write your completion report to:\s*```[\r\n]+([^\r\n`]+)[\r\n]+```/i.exec(command);
   if (blockMatch?.[1]) {
     return substituteWorkerId(blockMatch[1], workerId);
   }
 
+  return null;
+}
+
+function extractSpecialCompletionReportTemplate(command: string, workerId: string): string | null {
   const specialReportBasename = resolveSpecialReportBasename(workerId);
   if (!specialReportBasename) {
     return null;
   }
 
-  const inlinePattern = new RegExp(`Write to:\\s*\`([^\\\`]*${escapeRegExp(specialReportBasename)})\``, "i");
-  const inlineMatch = inlinePattern.exec(command);
-  return inlineMatch?.[1]?.trim() ?? null;
+  const patterns = [
+    new RegExp(`\`\`\`[\\r\\n]+([^\\r\\n\`]*${escapeRegExp(specialReportBasename)})[\\r\\n]+\`\`\``, "ig"),
+    new RegExp(`\`([^\`\\r\\n]*${escapeRegExp(specialReportBasename)})\``, "ig")
+  ];
+
+  for (const pattern of patterns) {
+    let matchedPath: string | null = null;
+    let match = pattern.exec(command);
+    while (match) {
+      matchedPath = match[1]?.trim() ?? null;
+      match = pattern.exec(command);
+    }
+
+    if (matchedPath) {
+      return substituteWorkerId(matchedPath, workerId);
+    }
+  }
+
+  return null;
 }
 
 function extractExpectedOutputsFromNotes(notes: string, commandPath: string): string[] {

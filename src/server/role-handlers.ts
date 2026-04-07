@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
+import { resolveDispatchRepoRoot } from "../roles/agent-dispatcher/dispatch-paths";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
@@ -1175,6 +1176,10 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
     system_prompt: buildSystemPrompt({
       dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
       command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
+      dispatch_repo_root: resolveDispatchRepoRoot([
+        parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
+        parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md"
+      ]),
       user_reply_channels: JSON.stringify(userReplyChannels),
       default_agent_type: parsed.data.agent_type ?? "claude",
       default_mode: parsed.data.mode ?? "bridge",

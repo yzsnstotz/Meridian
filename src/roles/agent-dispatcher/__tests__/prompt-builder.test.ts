@@ -7,6 +7,7 @@ describe("buildSystemPrompt", () => {
     return {
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
+      dispatch_repo_root: "/tmp",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]",
       default_agent_type: "codex",
       default_mode: "bridge",
@@ -23,6 +24,7 @@ describe("buildSystemPrompt", () => {
 
     expect(prompt).toContain("dispatch_plan_path: /tmp/dispatch_plan.md");
     expect(prompt).toContain("command_file_path: /tmp/agent_dispatch_command.md");
+    expect(prompt).toContain("dispatch_repo_root: /tmp");
     expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"web","chat_id":"web:ops"}]');
     expect(prompt).toContain("default_agent_type: codex");
     expect(prompt).toContain("default_mode: bridge");
@@ -66,6 +68,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("timeout");
     expect(prompt).toContain("do not auto-kill the worker");
     expect(prompt).toContain("every dependency is either `✅` or `⛔ SKIPPED`");
+    expect(prompt).toContain("always pass `--spawn-dir /tmp`");
   });
 
   it("includes abandoned worker recovery instructions", () => {

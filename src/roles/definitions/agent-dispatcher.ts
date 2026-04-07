@@ -19,6 +19,7 @@ import {
   buildSystemPrompt,
   type PromptVars
 } from "../agent-dispatcher/prompt-builder";
+import { resolveDispatchRepoRoot } from "../agent-dispatcher/dispatch-paths";
 import { resolveDispatchModelMapFromMarkdown } from "../agent-dispatcher/model-routing";
 import {
   readWorkersByStatus,
@@ -156,6 +157,10 @@ export class AgentDispatcherRole implements BaseRole {
     const defaultSystemPrompt = this.buildPrompt({
       dispatch_plan_path: this.config.dispatch_plan_path,
       command_file_path: this.config.command_file_path,
+      dispatch_repo_root: resolveDispatchRepoRoot([
+        this.config.dispatch_plan_path,
+        this.config.command_file_path
+      ]),
       user_reply_channels: JSON.stringify(this.config.user_reply_channels),
       default_agent_type: this.config.agent_type,
       default_mode: this.config.mode,
