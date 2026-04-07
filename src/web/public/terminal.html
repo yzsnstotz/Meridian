@@ -3350,6 +3350,70 @@
         return sendTerminalText(action);
       }
 
+      function isUsageStatsPayload(content) {
+        var trimmed = typeof content === "string" ? content.trim() : "";
+        if (!trimmed || trimmed.charAt(0) !== "{") return false;
+
+        try {
+          var parsed = JSON.parse(trimmed);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return false;
+          }
+
+          var keys = Object.keys(parsed);
+          if (keys.length === 0) {
+            return false;
+          }
+
+          var allowedKeys = {
+            input_tokens: true,
+            cached_input_tokens: true,
+            output_tokens: true,
+            total_tokens: true
+          };
+          var hasUsageField = false;
+
+          for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (!allowedKeys[key] || typeof parsed[key] !== "number") {
+              return false;
+            }
+            hasUsageField = true;
+          }
+
+          return hasUsageField;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function resolveStructuredRunBubble(result) {
+        if (!result || typeof result !== "object") return null;
+
+        var rawContent = typeof result.content === "string" ? result.content.trim() : "";
+        var summaryText = typeof result.summary_text === "string" ? result.summary_text.trim() : "";
+        var detailsText = typeof result.details_text === "string" ? result.details_text.trim() : "";
+        var content = summaryText || rawContent;
+
+        if (!content && detailsText) {
+          content = fallbackSummaryText;
+        }
+        if (!detailsText && summaryText && rawContent && rawContent !== summaryText) {
+          detailsText = rawContent;
+        }
+        if (!content && !detailsText) {
+          return null;
+        }
+
+        return {
+          content: content || fallbackSummaryText,
+          detailsText: detailsText,
+          rawContent: rawContent,
+          hasStructuredDetails: Boolean(summaryText || detailsText),
+          lowValue: isUsageStatsPayload(rawContent)
+        };
+      }
+
       function handleSend() {
         var cmd = cmdInput.value.trim();
         if (!cmd) return;
@@ -3382,22 +3446,42 @@
             stopProgressPolling();
             showChatTyping(false);
             var resultContent = data && typeof data.content === "string" ? data.content.trim() : "";
+            var structuredBubble = resolveStructuredRunBubble(data);
             if (data && typeof data.trace_id === "string") {
               lastSubmittedTraceId = data.trace_id.toLowerCase();
               recordLatestTraceId(data.trace_id);
             }
             var a2aResult = lastSubmittedTraceId ? completedA2AResults.get(lastSubmittedTraceId) : null;
-            clearActiveProgressBubble();
-            if (!resultContent) return;
-            // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
-            lastFlushedContent = stripAnsi(resultContent);
-            lastRunResultAtMs = Date.now();
-            if (!a2aResult) {
-              renderAgentContent(resultContent);
-            } else {
+            if (a2aResult) {
+              clearActiveProgressBubble();
               completedA2AResults.delete(lastSubmittedTraceId);
               lastSubmittedInput = "";
               lastSubmittedTraceId = "";
+            } else {
+              var shouldRenderStructuredBubble = structuredBubble && (
+                structuredBubble.hasStructuredDetails ||
+                !structuredBubble.lowValue ||
+                !activeProgressMessageKey
+              );
+              if (shouldRenderStructuredBubble) {
+                clearActiveProgressBubble();
+                var bubbleTraceId = lastSubmittedTraceId || resolveTraceIdFromText(structuredBubble.rawContent || structuredBubble.content);
+                lastFlushedContent = stripAnsi(structuredBubble.rawContent || structuredBubble.content);
+                lastRunResultAtMs = Date.now();
+                addChatBubble(structuredBubble.content, "agent", structuredBubble.detailsText || "", {
+                  messageKey: buildTraceMessageKey("agent", bubbleTraceId)
+                });
+                lastSubmittedInput = "";
+                if (bubbleTraceId) {
+                  lastSubmittedTraceId = "";
+                }
+              } else if (resultContent) {
+                clearActiveProgressBubble();
+                // Anchor delta computation to the structured run result so pane stream won't replay older turns in chat bubbles.
+                lastFlushedContent = stripAnsi(resultContent);
+                lastRunResultAtMs = Date.now();
+                renderAgentContent(resultContent);
+              }
             }
             refreshSessionList();
             // The structured run result is authoritative for completed turns.

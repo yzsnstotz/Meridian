@@ -669,6 +669,38 @@ test("terminal quiet-period liveness updates a single keyed progress bubble in p
   );
 });
 
+test("terminal structured run bubble resolver prefers summary/details over raw usage payloads", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const context: Record<string, unknown> = {
+    fallbackSummaryText: "Update received. Expand details for full output."
+  };
+
+  bindTerminalFunctions(terminalHtml, context, [
+    "isUsageStatsPayload",
+    "resolveStructuredRunBubble"
+  ]);
+
+  const resolveStructuredRunBubble =
+    context.resolveStructuredRunBubble as (value: Record<string, unknown>) => Record<string, unknown> | null;
+  const payload = resolveStructuredRunBubble({
+    content: JSON.stringify({
+      input_tokens: 2937398,
+      cached_input_tokens: 2833408,
+      output_tokens: 28673
+    }, null, 2),
+    summary_text: "Worker completed. Returning inline completion report.",
+    details_text: "Your message:\nrun delta-check\n\nAgent reply:\n# Delta Check Report"
+  });
+
+  assert.deepEqual(payload, {
+    content: "Worker completed. Returning inline completion report.",
+    detailsText: "Your message:\nrun delta-check\n\nAgent reply:\n# Delta Check Report",
+    rawContent: '{\n  "input_tokens": 2937398,\n  "cached_input_tokens": 2833408,\n  "output_tokens": 28673\n}',
+    hasStructuredDetails: true,
+    lowValue: true
+  });
+});
+
 test("terminal reconnect requests zero replay lines after authoritative history restore", async () => {
   const terminalHtml = await readTerminalHtml();
   const { context, urls } = createReconnectHarness(terminalHtml);
