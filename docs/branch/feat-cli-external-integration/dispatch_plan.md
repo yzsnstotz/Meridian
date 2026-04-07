@@ -39,13 +39,18 @@
 | ✅ | 2 | N-05 | Meridian-roles Dispatch-Status, List-Roles, Health | CODEX-HIGH | R-03 | CLI Integration PRD | 3 new tools, read-only operations |
 | ✅ | 3 | R-02 | Meridian Provider/Model Spawn Enhancement | CODEX-HIGH | N-02 | CLI Integration PRD | Spawn API extension + modelId verification |
 | ✅ | 3 | N-06 | Meridian-roles Dispatch-Start Tool | CODEX-XHIGH | R-03, N-05 | CLI Integration PRD | model-map parsing + dispatch session start |
-| ⬜ | 3 | R-04 | Meridian-roles GUI Resume Buttons & Stale Viz | CODEX-XHIGH | N-04 | CLI Integration PRD | GUI changes + stale badge rendering |
-| ⬜ | 4 | R-05 | Meridian-roles Dispatch Provider/Model Pass-Through | CODEX-XHIGH | R-02, N-06 | CLI Integration PRD | Model Legend parsing + spawn integration |
-| ⬜ | 4 | N-03 | Meridian CLI Docs & Install Skill | CODEX | N-02, R-01, R-02 | CLI Integration PRD | 2 doc files; depends on CLI being finalized |
-| ⬜ | 4 | N-07 | Meridian-roles CLI Docs & Install Skill | CODEX | N-04, N-05, N-06, R-04 | CLI Integration PRD | 2 doc files; depends on all roles tools |
-| ⬜ | 5 | R-06 | taskspec Skill Update | CODEX | R-02, R-05 | CLI Integration PRD | Model Legend + Dispatch Command template update |
-| ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01, R-01, R-03, N-02, N-04, N-05, R-02, N-06, R-04, R-05, N-03, N-07, R-06 | TaskSpec, CLI Integration PRD | One pass only |
-| ⬜ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec, CLI Integration PRD | Terminal gate; human merges |
+| ✅ | 3 | R-04 | Meridian-roles GUI Resume Buttons & Stale Viz | CODEX-XHIGH | N-04 | CLI Integration PRD | GUI changes + stale badge rendering |
+| ✅ | 4 | R-05 | Meridian-roles Dispatch Provider/Model Pass-Through | CODEX-XHIGH | R-02, N-06 | CLI Integration PRD | Model Legend parsing + spawn integration |
+| ✅ | 4 | N-03 | Meridian CLI Docs & Install Skill | CODEX | N-02, R-01, R-02 | CLI Integration PRD | 2 doc files; depends on CLI being finalized |
+| ✅ | 4 | N-07 | Meridian-roles CLI Docs & Install Skill | CODEX | N-04, N-05, N-06, R-04 | CLI Integration PRD | 2 doc files; depends on all roles tools |
+| ✅ | 5 | R-06 | taskspec Skill Update | CODEX | R-02, R-05 | CLI Integration PRD | Model Legend + Dispatch Command template update |
+| ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01, R-01, R-03, N-02, N-04, N-05, R-02, N-06, R-04, R-05, N-03, N-07, R-06 | TaskSpec, CLI Integration PRD | One pass only |
+| ✅ | Ω+1 | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec, CLI Integration PRD | MERGE BLOCKED — `R-01` still drifts (`src/types.ts`, `src/web/public/index.html`), `delta_check_report.md` is missing, `R-06` was not applied, and unrelated branch drift is present; see Batch Ω+2 |
+| ⬜ | Ω+2 | R-07 | Meridian Auto-Approve Default Reconciliation | CODEX | PR-REVIEW | TaskSpec, CLI Integration PRD | Fix `src/types.ts` and `src/web/public/index.html` to restore default-on auto-approve semantics and add regression coverage |
+| ⬜ | Ω+2 | R-08 | Delta Artifact Repair | CODEX | PR-REVIEW | TaskSpec | Write the missing `dev_history/v1_round/delta_check_report.md` and reconcile DELTA-CHECK evidence with the recorded plan state |
+| ⬜ | Ω+2 | R-09 | External taskspec Skill Apply | CODEX | PR-REVIEW | CLI Integration PRD | Apply the prepared `/tmp/R-06_SKILL.diff` to `/Users/yzliu/work/skills/taskspec/SKILL.md` in the external repo and attach committed evidence |
+| ⬜ | Ω+2 | R-10 | Feature Branch Scope Isolation | CODEX-HIGH | PR-REVIEW | TaskSpec, CLI Integration PRD | Remove unrelated dispatcher/terminal/manual changes from this PR by splitting or rebasing to a clean feature-only diff |
+| ⬜ | Ω+2 | R-11 | Cross-Repo Review Closure | CODEX-HIGH | PR-REVIEW | TaskSpec, CLI Integration PRD | Attach the Meridian-roles companion diff/reports so the two-repo contract is reviewable as one feature set |
 
 ---
 
@@ -133,6 +138,19 @@
 - **Agent Notes**: Full PR diff review against PRD and TaskSpec. Human merges.
 - **Completion Gate**: PR-REVIEW `✅` with `MERGE APPROVED` or `MERGE BLOCKED`
 
+### Batch Ω+2 — PR Review Correctives
+
+- **Workers**: R-07, R-08, R-09, R-10, R-11
+- **Priority**: P0
+- **Models**: R-07=CODEX, R-08=CODEX, R-09=CODEX, R-10=CODEX-HIGH, R-11=CODEX-HIGH
+- **Agent Notes**:
+  - R-07 closes the remaining Meridian acceptance drift in the auto-approve defaults and the missing regression coverage.
+  - R-08 repairs the missing DELTA-CHECK artifact without inventing a second delta pass.
+  - R-09 applies the blocked external `taskspec` skill patch so Goal G6 is actually complete.
+  - R-10 strips unrelated dispatcher/terminal/manual work out of this PR so the review surface matches the PRD.
+  - R-11 records the Meridian-roles companion review surface so the two-repo feature can be approved together.
+- **Completion Gate**: All Ω+2 workers `✅`; merge remains blocked until a fresh human or terminal review confirms closure.
+
 ---
 
 ## PM Flags Summary
@@ -158,6 +176,307 @@
 | 5 | — | — | `dev_history/v1_round/R-06_report.md` |
 | Ω | — | — | `dev_history/v1_round/delta_check_report.md` |
 | Ω+1 | — | — | `dev_history/v1_round/pr_review_report.md` |
+| Ω+2 | — | — | `dev_history/v1_round_delta/R-07_report.md`, `R-08_report.md`, `R-09_report.md`, `R-10_report.md`, `R-11_report.md` |
 
 All reports written to: `/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round/`
 Corrective worker reports (if needed): `/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round_delta/`
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
