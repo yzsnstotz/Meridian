@@ -69,6 +69,8 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("still_running");
     expect(prompt).toContain("timeout");
     expect(prompt).toContain("do not auto-kill the worker");
+    expect(prompt).toContain("if any non-human row is already `🔄`, do not select or spawn another worker");
+    expect(prompt).toContain("do not dispatch another row");
     expect(prompt).toContain("every dependency is either `✅` or `⛔ SKIPPED`");
     expect(prompt).toContain("always pass `--spawn-dir /tmp`");
     expect(prompt).toContain("Do not inspect Meridian tool internals");

@@ -437,6 +437,46 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("marks a running worker completed when a terminal HubResult reports a real dev_history artifact", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const actualReportPath = await harness.writeOutput("dev_history/v1_round_delta/R-07_report.md");
+    harness.store.save(buildState({
+      workers: {
+        "R-07": {
+          ...buildRunningWorker(
+            "worker-thread-777",
+            path.join(harness.directory, "dev_history/v1_round/R-07_report.md")
+          ),
+          hub_result: {
+            ...buildTerminalSuccessResult("worker-thread-777"),
+            content: [
+              "R-07 completed successfully.",
+              `The completion report is at [R-07_report.md](${actualReportPath}).`
+            ].join("\n")
+          }
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["R-07"]?.status).toBe("completed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report.changed).toEqual([
+      {
+        workerId: "R-07",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:reported_outputs_present"
+      }
+    ]);
+  });
+
   it("marks a running worker completed when hub says completed and hub_result has inline report but no output files", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

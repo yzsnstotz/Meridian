@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
@@ -291,6 +292,13 @@ function determineRecordedResultTransition(
       return {
         to: "completed",
         trigger: "hub_result:outputs_present"
+      };
+    }
+
+    if (reportedOutputsExist(hubResult)) {
+      return {
+        to: "completed",
+        trigger: "hub_result:reported_outputs_present"
       };
     }
 
@@ -656,6 +664,61 @@ function outputsExist(paths: string[]): boolean {
       return false;
     }
   });
+}
+
+function reportedOutputsExist(hubResult: HubResult): boolean {
+  return extractReportedOutputPaths(hubResult).some((filePath) => {
+    if (!isCompletionArtifactPath(filePath) || !reconciliationFs.existsSync(filePath)) {
+      return false;
+    }
+
+    try {
+      return reconciliationFs.statSync(filePath).size > 0;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function extractReportedOutputPaths(hubResult: HubResult): string[] {
+  const candidateTexts = [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const paths = new Set<string>();
+
+  for (const text of candidateTexts) {
+    for (const match of text.matchAll(/\/[^\s)`\]'"]+/g)) {
+      const candidatePath = normalizeReportedOutputPath(match[0]);
+      if (candidatePath) {
+        paths.add(candidatePath);
+      }
+    }
+  }
+
+  return [...paths];
+}
+
+function normalizeReportedOutputPath(candidatePath: string): string | null {
+  const normalized = candidatePath.trim().replace(/[),.;:]+$/g, "");
+  if (!path.isAbsolute(normalized)) {
+    return null;
+  }
+
+  return path.normalize(normalized);
+}
+
+function isCompletionArtifactPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  const basename = path.basename(normalized);
+
+  return normalized.includes("/dev_history/")
+    && (
+      /_report\.md$/.test(basename)
+      || basename === "delta_check_report.md"
+      || basename === "pr_review_report.md"
+    );
 }
 
 function isStale(startedAt: string, nowMs: number, staleTimeoutMs: number): boolean {
