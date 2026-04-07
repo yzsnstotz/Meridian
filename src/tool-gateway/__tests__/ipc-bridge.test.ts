@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,9 +18,13 @@ interface TestHubServer {
 const tempDirectories = new Set<string>();
 const servers = new Set<TestHubServer>();
 const originalHubSocketPath = process.env.HUB_SOCKET_PATH;
+const originalCwd = process.cwd();
+const TOOL_GATEWAY_REPO_ROOT = path.resolve(__dirname, "../../..");
+const REPO_LOCAL_SOCKET_DIR = path.join(TOOL_GATEWAY_REPO_ROOT, ".tmp");
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  process.chdir(originalCwd);
 
   if (originalHubSocketPath === undefined) {
     delete process.env.HUB_SOCKET_PATH;
@@ -60,7 +65,8 @@ describe("sendAndWait", () => {
     });
 
     const callbackSocketPath = hub.callbackSocketPaths[0];
-    expect(callbackSocketPath).toMatch(/^\/tmp\/meridian-tool-[0-9a-f-]+\.sock$/);
+    expect(path.isAbsolute(callbackSocketPath)).toBe(true);
+    expect(path.basename(callbackSocketPath)).toMatch(/^meridian-tool-[0-9a-f-]+\.sock$/);
     await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -160,10 +166,53 @@ describe("sendAndWait", () => {
       })
     );
   });
+
+  it("falls back to a repo-local socket directory when the system temp bind is denied", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const hub = await startHubServer(hubSocketPath, { callbackMode: "success" });
+    servers.add(hub);
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    process.chdir(directory);
+
+    const originalCreateServer = net.createServer;
+    let blockedTmpBind = false;
+    vi.spyOn(net, "createServer").mockImplementation(((...args: Parameters<typeof net.createServer>) => {
+      const server = originalCreateServer(...args);
+      const originalListen = server.listen.bind(server);
+
+      const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
+        const candidatePath = readSocketPath(listenArgs[0]);
+        if (!blockedTmpBind && candidatePath?.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`)) {
+          blockedTmpBind = true;
+          const error = Object.assign(
+            new Error(`listen EPERM: operation not permitted ${candidatePath}`),
+            { code: "EPERM" }
+          );
+          queueMicrotask(() => {
+            server.emit("error", error);
+          });
+          return server;
+        }
+
+        return originalListen(...listenArgs);
+      };
+      server.listen = listenMock as typeof server.listen;
+
+      return server;
+    }) as typeof net.createServer);
+
+    const result = await sendAndWait(buildHubMessage(), 200);
+
+    expect(result.status).toBe("success");
+    expect(blockedTmpBind).toBe(true);
+    expect(hub.callbackSocketPaths[0]?.startsWith(`${REPO_LOCAL_SOCKET_DIR}${path.sep}`)).toBe(true);
+    await expect(fs.access(hub.callbackSocketPaths[0])).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
-  const directory = await fs.mkdtemp("/tmp/meridian-roles-ipc-bridge-");
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-ipc-bridge-"));
   tempDirectories.add(directory);
   return directory;
 }
@@ -300,4 +349,15 @@ function buildHubMessage(overrides: Partial<HubMessage> = {}): Partial<HubMessag
     },
     ...overrides
   };
+}
+
+function readSocketPath(value: Parameters<net.Server["listen"]>[0]): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "object" && value !== null && "path" in value && typeof value.path === "string") {
+    return value.path;
+  }
+
+  return null;
 }
