@@ -1,7 +1,9 @@
+import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import { RECONCILE_INTERVAL_MS } from "../../config";
+import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status";
 import type { DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { LifecycleStore } from "./lifecycle-store";
@@ -150,7 +152,7 @@ export class ReconciliationWatchdog {
       return;
     }
 
-    const pendingWorkerCount = countWorkersInStatus(state, "pending");
+    const pendingWorkerCount = await resolvePendingWorkerCount(dispatchPlanPath, state);
     if (pendingWorkerCount === 0) {
       return;
     }
@@ -183,6 +185,25 @@ export class ReconciliationWatchdog {
 
 function countWorkersInStatus(state: DispatchThreadStateV2, status: string): number {
   return Object.values(state.workers).filter((worker) => worker.status === status).length;
+}
+
+async function resolvePendingWorkerCount(
+  dispatchPlanPath: string,
+  state: DispatchThreadStateV2
+): Promise<number> {
+  try {
+    const markdown = await fs.readFile(dispatchPlanPath, "utf8");
+    return parseDispatchPlanRows(markdown).filter((row) => {
+      return row.status === "⬜" && !isHumanOwnedModel(row.model);
+    }).length;
+  } catch {
+    return countWorkersInStatus(state, "pending");
+  }
+}
+
+function isHumanOwnedModel(model: string | null): boolean {
+  const normalized = typeof model === "string" ? model.trim().toUpperCase() : "";
+  return normalized === "HUMAN" || normalized === "PM";
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {
