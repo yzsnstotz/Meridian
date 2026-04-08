@@ -1,6 +1,6 @@
 # Meridian System Index
 
-**Status**: Assembled by `N-10` on `2026-04-08T15:27:00+09:00`
+**Status**: Updated by `N-10` on `2026-04-08T18:41:26+09:00` after re-validating all module docs.
 **Purpose**: This is the level-0 routing document for Meridian. Read this file first, then drill into `docs/system/modules/<module>.md` for function-level detail.
 **Format Contract**: Follow [FORMAT_SPEC.md](./FORMAT_SPEC.md). This index summarizes the completed module docs and routes agents to the smallest relevant subset of the codebase.
 **Coverage**: `8` modules indexed from `docs/system/modules/*.md`, representing `277` documented exports.
@@ -11,10 +11,12 @@
 Meridian is a multi-surface agent orchestration system centered on the `hub` module.
 The primary ingress surfaces are `interface` for Telegram/webhook traffic, `web` for the authenticated browser UI, and `bin` for the JSON-first CLI.
 Those surfaces converge on `hub`, which owns thread lifecycle, IPC routing, persisted history, pane streaming, and reply delivery across channels.
+`interface` is the chat-first bridge: it turns slash commands, picker interactions, and Telegram callbacks into the normalized hub messages that drive execution.
 `agents` contains provider-specific process builders for Claude, Codex, Gemini, and Cursor, which `hub` uses to launch and manage worker sessions.
 `monitor` tracks live thread progress over SSE and heartbeat fallbacks so long-running sessions can be observed without polling every provider directly.
 `shared` is the reusable utility layer for IPC, stream parsing, approvals, model catalog lookup, and UI/Telegram helpers that multiple subsystems import.
 `root` is the shared contract and infrastructure layer: schemas, runtime config, logging, and log-retention primitives used across the repo.
+This split keeps ingress surfaces thin while concentrating orchestration, persistence, and provider control inside `hub`.
 The current documentation set covers `277` exports in total, with the deepest reusable surfaces in `root` (`84`), `shared` (`64`), and `hub` (`47`).
 Read this file as the level-0 routing view, then open only the module detail files that match the task surface area.
 
