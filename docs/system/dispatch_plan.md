@@ -40,7 +40,7 @@
 | ✅ | 2 | N-09 | Map root `src/` files (4 files) | CODEX | N-01 | TaskSpec, FORMAT_SPEC | Zod schemas + config keys |
 | ✅ | 3 | N-10 | Assemble SYSTEM_INDEX.md | CODEX-XHIGH | N-02,N-03,N-04,N-05,N-06,N-07,N-08,N-09 | TaskSpec, FORMAT_SPEC | Reads all module files; builds index + overview |
 | ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01,N-02,N-03,N-04,N-05,N-06,N-07,N-08,N-09,N-10 | TaskSpec | One pass only; validated 2026-04-09 with no corrective workers appended |
-| ⬜ | Ω | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec | Terminal gate; human merges |
+| ✅ | Ω | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec | MERGE BLOCKED — runtime dispatch artifacts are committed under `docs/system/`; see PR Review Findings |
 
 ---
 
@@ -111,3 +111,20 @@
 | N-08 | ✅ Aligned | `bin.md` covers both CLI source files, all 8 live exports, and the required command registry. |
 | N-09 | ✅ Aligned | `root.md` covers all 84 live exports and includes both required inventories for Zod schemas and config keys. |
 | N-10 | ✅ Aligned | `SYSTEM_INDEX.md` contains all 8 module rows, matches module summaries and last-scanned metadata, and its dependency graph matches the module dependency bullets. |
+
+## PR Review Findings
+
+**Checked By**: `PR-REVIEW`
+**Checked At**: `2026-04-09T11:49:22+09:00`
+**Outcome**: `MERGE BLOCKED`
+
+| File | Verdict | Notes |
+|------|---------|-------|
+| `docs/system/dispatch_threads.json` | ❌ Scope Drift | The committed `HEAD` copy is mutable runtime state, not a terminal documentation artifact: it still records `dispatcher.status: "running"` and `workers.DISPATCHER.status: "running"`, so the PR contains stale, non-reproducible lifecycle state. |
+| `docs/system/.meridian-roles-dispatcher-prompt-agent-dispatcher-79f7cfb3.md` | ⚠️ Scope Drift | Generated dispatcher prompt artifact is hash-suffixed and embeds runtime-specific reply channels, absolute local tool paths, and environment-specific control-flow instructions rather than stable system-map documentation. |
+| All other reviewed `docs/system/` deliverables | ✅ Aligned | `FORMAT_SPEC.md`, `SYSTEM_INDEX.md`, `modules/*.md`, and the worker reports remain aligned with the live codebase and the TaskSpec/FORMAT_SPEC contracts. |
+
+**Corrective Tasks**:
+- Remove `docs/system/dispatch_threads.json` from the versioned deliverable set or replace it with a stable, terminal report artifact.
+- Remove `docs/system/.meridian-roles-dispatcher-prompt-agent-dispatcher-79f7cfb3.md` from the versioned deliverable set or regenerate it outside the repo.
+- Re-run terminal PR review after the runtime-only artifacts are cleaned up.
