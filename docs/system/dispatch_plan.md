@@ -38,8 +38,8 @@
 | ✅ | 2 | N-07 | Map `src/web/` (9 files, ~2.5K LOC) | CODEX | N-01 | TaskSpec, FORMAT_SPEC | REST + WebSocket endpoints table |
 | ✅ | 2 | N-08 | Map `src/bin/` (2 files, ~1.5K LOC) | CODEX | N-01 | TaskSpec, FORMAT_SPEC | CLI command registry |
 | ✅ | 2 | N-09 | Map root `src/` files (4 files) | CODEX | N-01 | TaskSpec, FORMAT_SPEC | Zod schemas + config keys |
-| 🔄 | 3 | N-10 | Assemble SYSTEM_INDEX.md | CODEX-XHIGH | N-02,N-03,N-04,N-05,N-06,N-07,N-08,N-09 | TaskSpec, FORMAT_SPEC | Reads all module files; builds index + overview |
-| ⬜ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01,N-02,N-03,N-04,N-05,N-06,N-07,N-08,N-09,N-10 | TaskSpec | One pass only |
+| ✅ | 3 | N-10 | Assemble SYSTEM_INDEX.md | CODEX-XHIGH | N-02,N-03,N-04,N-05,N-06,N-07,N-08,N-09 | TaskSpec, FORMAT_SPEC | Reads all module files; builds index + overview |
+| ✅ | Ω | DELTA-CHECK | Delta Check & Corrective Dispatch | CODEX-XHIGH | N-01,N-02,N-03,N-04,N-05,N-06,N-07,N-08,N-09,N-10 | TaskSpec | One pass only; validated 2026-04-09 with no corrective workers appended |
 | ⬜ | Ω | PR-REVIEW | PR Alignment Review | CODEX-XHIGH | DELTA-CHECK | TaskSpec | Terminal gate; human merges |
 
 ---
@@ -90,151 +90,24 @@
 | 3 | — | — | `dev_history/v1_round/N-10_report.md` |
 | Ω | — | — | `dev_history/v1_round/delta_check_report.md`, `dev_history/v1_round/pr_review_report.md` |
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+---
+
+## Delta Check Findings
+
+**Checked By**: `DELTA-CHECK`
+**Checked At**: `2026-04-09T11:40:49+09:00`
+**Outcome**: `✅ Aligned`
+**Corrective Dispatch**: None. This one-pass review did not add any corrective worker rows.
+
+| Worker | Verdict | Notes |
+|--------|---------|-------|
+| N-01 | ✅ Aligned | `FORMAT_SPEC.md`, `SYSTEM_INDEX.md`, and the module scaffold exist and still satisfy the Batch 1 contract. |
+| N-02 | ✅ Aligned | `hub.md` documents all 47 live exported symbols from `src/hub/`, includes file coverage notes for `index.ts`, and retains required test inventory. |
+| N-03 | ✅ Aligned | `interface.md` covers all 28 live exports and includes the required slash-command registry plus test-file section. |
+| N-04 | ✅ Aligned | `shared.md` covers all 64 live exports, includes the required stream parser registry, and remains aligned despite a hidden local probe file that exports nothing. |
+| N-05 | ✅ Aligned | `agents.md` covers all 19 live exports, documents all four providers, and preserves per-provider env-var notes. |
+| N-06 | ✅ Aligned | `monitor.md` covers all 13 live exports and the required monitor-focused test inventory. |
+| N-07 | ✅ Aligned | `web.md` still matches the live `src/web/` surface, including endpoint inventory, frontend pages, and shared browser helpers; current local `terminal.html` edits are CSS-only. |
+| N-08 | ✅ Aligned | `bin.md` covers both CLI source files, all 8 live exports, and the required command registry. |
+| N-09 | ✅ Aligned | `root.md` covers all 84 live exports and includes both required inventories for Zod schemas and config keys. |
+| N-10 | ✅ Aligned | `SYSTEM_INDEX.md` contains all 8 module rows, matches module summaries and last-scanned metadata, and its dependency graph matches the module dependency bullets. |
