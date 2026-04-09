@@ -500,6 +500,28 @@ test("HubRouter detail reuses conversation history details produced for pane/cha
   assert.match(detailResult.content, /Agent reply:\nfinal answer/);
 });
 
+test("HubRouter accepts notify-style reply intent", async () => {
+  const router = new HubRouter(new InstanceRegistry());
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "e4db12dd-e694-4b52-b664-204838f8f321",
+      thread_id: "notify",
+      intent: "reply",
+      target: "global",
+      payload: {
+        content: "[Dispatcher] merge blocked",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.thread_id, "notify");
+  assert.equal(result.source, "codex");
+  assert.equal(result.content, "[Dispatcher] merge blocked");
+});
+
 test("HubRouter summarizeConversationContent falls back to normalized content without summary tags", () => {
   const router = new HubRouter(new InstanceRegistry());
   const summary = (

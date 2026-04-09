@@ -478,6 +478,8 @@ export class HubRouter {
           return this.handleRegisterService(message);
         case "unregister_service":
           return this.handleUnregisterService(message);
+        case "reply":
+          return this.handleReply(message);
         default:
           return this.buildResult(message, "error", this.resolveResultSource(message), "Unsupported intent");
       }
@@ -1043,6 +1045,15 @@ export class HubRouter {
       detail.source,
       `${title}\n\n${detail.fullText}`,
       detail.threadId
+    );
+  }
+
+  private handleReply(message: HubMessage): HubResult {
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      message.payload.content
     );
   }
 
