@@ -24,7 +24,9 @@ const DEFAULT_FALLBACK_REPLY_CHANNEL = {
 } as const;
 
 const ReplyChannelsPayloadSchema = z.object({
-  channels: z.array(ReplyChannelSchema)
+  channels: z.array(ReplyChannelSchema),
+  telegram_bot_numeric_ids: z.array(z.string()).optional(),
+  telegram_allowed_user_ids: z.array(z.string()).optional()
 });
 
 const DispatchStartResponseSchema = z.object({

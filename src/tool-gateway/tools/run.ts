@@ -5,7 +5,7 @@ import path from "node:path";
 import type { A2AClient } from "../../a2a/client";
 import { ROLES_SERVICE_ID } from "../../config";
 import { reconcile } from "../../roles/agent-dispatcher/reconciler";
-import type { HubMessage, HubResult, HubRunState } from "../../types";
+import type { DispatchWorkerState, HubMessage, HubResult, HubRunState } from "../../types";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
@@ -17,6 +17,9 @@ const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
 const INTERRUPTED_ERROR = "interrupted";
 const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERRUPTED_ERROR]);
+const MAX_PREVIOUS_REPLY_CHARS = 6_000;
+const MAX_PREVIOUS_REPORT_CHARS = 6_000;
+const MAX_PREVIOUS_REPORT_FILES = 2;
 
 const runTool: ToolDefinition = {
   name: "run",
@@ -66,7 +69,14 @@ const runTool: ToolDefinition = {
       const lifecycleStore = createLifecycleStore(commandPath);
       const workerRow = await resolveWorkerRow(commandPath, worker);
       const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
-      const preamble = buildWorkerPreamble(worker, workerRow, commandPath);
+      const previousWorkerState = lifecycleStore.load().workers[worker] as DispatchWorkerState | undefined;
+      const preamble = await buildWorkerPreamble(
+        worker,
+        workerRow,
+        commandPath,
+        previousWorkerState ?? null,
+        expectedOutputs
+      );
       lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
 
       const result = await sendAndWait(buildRunMessage(threadId, preamble, traceId), 0);
@@ -140,7 +150,13 @@ export interface DispatchPlanRow {
   notes?: string;
 }
 
-function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, commandPath: string): string {
+async function buildWorkerPreamble(
+  workerId: string,
+  row: DispatchPlanRow | null,
+  commandPath: string,
+  previousWorkerState: DispatchWorkerState | null,
+  expectedOutputs: string[]
+): Promise<string> {
   const lines: string[] = [];
 
   if (row?.model) {
@@ -166,6 +182,15 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
     lines.push("");
   }
 
+  const previousAttemptContext = await buildPreviousAttemptContext(previousWorkerState, expectedOutputs);
+  if (previousAttemptContext) {
+    lines.push(`# Previous Attempt Context`);
+    lines.push(`This worker has prior execution history. Use it to avoid repeating the same mistake. Re-check the current state and iterate on any new findings instead of copying the earlier conclusion.`);
+    lines.push("");
+    lines.push(previousAttemptContext);
+    lines.push("");
+  }
+
   lines.push(`# Status`);
   if (isDispatcherWorker(workerId)) {
     lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes, write completion reports, or make git commit/push decisions from this wrapper prompt.`);
@@ -184,7 +209,7 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   lines.push(`Open this file and follow the instructions with these overrides:`);
   lines.push(`- **Skip Step 4a** (mark in-progress) — already done for you.`);
   if (isDispatcherWorker(workerId)) {
-    lines.push(`- Treat any local Meridian tool bootstrap failure (for example \`tsx\`, Node loader startup, IPC socket bind, or sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
+    lines.push(`- Treat any local Meridian tool bootstrap failure (for example Node CLI startup, IPC socket bind, or sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
     lines.push(`- Do NOT write Step 5b completion reports, create extra repo artifacts, or reason about git commit/push from this run. Send the required notify once, leave the plan untouched, and stop when the dispatcher prompt says to pause.`);
   } else if (isPlanModifyingWorker(workerId)) {
     lines.push(`- **Step 5a** (dispatch plan updates): you **must** write your findings and any corrective tasks directly into the dispatch plan. Add new worker rows, update statuses, or restructure as needed — this is your primary output.`);
@@ -199,6 +224,121 @@ function buildWorkerPreamble(workerId: string, row: DispatchPlanRow | null, comm
   return lines.join("\n");
 }
 
+async function buildPreviousAttemptContext(
+  previousWorkerState: DispatchWorkerState | null,
+  expectedOutputs: string[]
+): Promise<string | null> {
+  if (!previousWorkerState) {
+    return null;
+  }
+
+  const sections: string[] = [];
+  const previousReply = extractPreviousReply(previousWorkerState.hub_result);
+  const reportSnippets = await loadPreviousReportSnippets(expectedOutputs);
+
+  sections.push(`- Previous worker thread: \`${previousWorkerState.thread_id}\``);
+  sections.push(`- Previous retry count: ${previousWorkerState.retry_count ?? 0}`);
+  if (previousWorkerState.hub_result?.timestamp) {
+    sections.push(`- Previous terminal timestamp: ${previousWorkerState.hub_result.timestamp}`);
+  }
+
+  if (previousReply) {
+    sections.push("");
+    sections.push("Previous agent reply:");
+    sections.push("```text");
+    sections.push(previousReply);
+    sections.push("```");
+  }
+
+  if (reportSnippets.length > 0) {
+    for (const reportSnippet of reportSnippets) {
+      sections.push("");
+      sections.push(`Previous output artifact: \`${reportSnippet.path}\``);
+      sections.push("```text");
+      sections.push(reportSnippet.content);
+      sections.push("```");
+    }
+  }
+
+  return sections.length > 0 ? sections.join("\n") : null;
+}
+
+function extractPreviousReply(hubResult: HubResult | null): string | null {
+  if (!hubResult) {
+    return null;
+  }
+
+  const conversationReply = parseAgentReplyFromDetails(hubResult.details_text);
+  return truncateForPrompt(conversationReply ?? hubResult.summary_text ?? hubResult.content ?? null, MAX_PREVIOUS_REPLY_CHARS);
+}
+
+function parseAgentReplyFromDetails(detailsText: string | undefined): string | null {
+  if (typeof detailsText !== "string" || detailsText.trim().length === 0) {
+    return null;
+  }
+
+  const match = detailsText.replace(/\r\n/g, "\n").match(/(?:^|\n)Agent reply:\n([\s\S]*)$/);
+  const parsed = match?.[1]?.trim();
+  return parsed && parsed.length > 0 ? parsed : null;
+}
+
+async function loadPreviousReportSnippets(
+  expectedOutputs: string[]
+): Promise<Array<{ path: string; content: string }>> {
+  const candidatePaths = prioritizeRetryContextPaths(expectedOutputs);
+  const snippets: Array<{ path: string; content: string }> = [];
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      const raw = await readFile(candidatePath, "utf8");
+      const normalized = truncateForPrompt(raw, MAX_PREVIOUS_REPORT_CHARS);
+      if (!normalized) {
+        continue;
+      }
+
+      snippets.push({
+        path: candidatePath,
+        content: normalized
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return snippets;
+}
+
+function prioritizeRetryContextPaths(expectedOutputs: string[]): string[] {
+  const uniquePaths = [...new Set(expectedOutputs)];
+  const preferredPaths = uniquePaths.filter((candidatePath) => isRetryContextArtifactPath(candidatePath));
+  const fallbackPaths = uniquePaths.filter((candidatePath) => !preferredPaths.includes(candidatePath));
+
+  return [...preferredPaths, ...fallbackPaths].slice(0, MAX_PREVIOUS_REPORT_FILES);
+}
+
+function isRetryContextArtifactPath(candidatePath: string): boolean {
+  const normalized = candidatePath.toLowerCase();
+  return normalized.includes("/dev_history/")
+    || normalized.includes("_report.")
+    || normalized.endsWith(".md")
+    || normalized.endsWith(".txt")
+    || normalized.endsWith(".log")
+    || normalized.endsWith(".json");
+}
+
+function truncateForPrompt(value: string | null, maxChars: number): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars)}\n...[truncated]`;
+}
+
 async function resolveWorkerRow(commandPath: string, workerId: string): Promise<DispatchPlanRow | null> {
   const dispatchPlanPath = path.join(path.dirname(commandPath), DISPATCH_PLAN_FILENAME);
 
@@ -211,6 +351,10 @@ async function resolveWorkerRow(commandPath: string, workerId: string): Promise<
 }
 
 async function deriveExpectedOutputs(commandPath: string, workerId: string): Promise<string[]> {
+  if (isDispatcherWorker(workerId)) {
+    return [];
+  }
+
   const planOutputs = await deriveExpectedOutputsFromPlan(commandPath, workerId);
   if (planOutputs.length > 0) {
     return planOutputs;
@@ -410,12 +554,16 @@ function resolveExpectedOutputPath(candidatePath: string, commandPath: string): 
     return path.normalize(candidatePath);
   }
 
+  const normalizedCandidate = normalizePathForComparison(candidatePath);
+  if (normalizedCandidate === DEV_HISTORY_DIRECTORY || normalizedCandidate.startsWith(`${DEV_HISTORY_DIRECTORY}/`)) {
+    return path.resolve(path.dirname(commandPath), candidatePath);
+  }
+
   if (candidatePath.startsWith("./") || candidatePath.startsWith("../") || !candidatePath.includes("/")) {
     return path.resolve(path.dirname(commandPath), candidatePath);
   }
 
   const commandDirectoryRelative = normalizePathForComparison(path.relative(process.cwd(), path.dirname(commandPath)));
-  const normalizedCandidate = normalizePathForComparison(candidatePath);
 
   if (commandDirectoryRelative && normalizedCandidate.startsWith(`${commandDirectoryRelative}/`)) {
     return path.resolve(process.cwd(), candidatePath);
@@ -463,8 +611,7 @@ function isLifecycleArtifactPath(candidatePath: string, commandPath: string): bo
   const normalizedCandidate = path.normalize(candidatePath);
 
   return normalizedCandidate === path.join(commandDirectory, DISPATCH_PLAN_FILENAME)
-    || normalizedCandidate === path.join(commandDirectory, DISPATCH_THREADS_FILENAME)
-    || normalizedCandidate.startsWith(path.join(commandDirectory, DEV_HISTORY_DIRECTORY) + path.sep);
+    || normalizedCandidate === path.join(commandDirectory, DISPATCH_THREADS_FILENAME);
 }
 
 function parseTableRow(line: string): string[] | null {

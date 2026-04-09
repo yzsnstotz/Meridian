@@ -106,7 +106,7 @@ describe("AgentDispatcherRole", () => {
 
     await harness.role.onStatusChange("agent-dispatcher-role", "paused");
 
-    expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(true);
+    expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(true, { skipPersist: true });
     expect(harness.signalDispatcher).toHaveBeenCalledWith("dispatcher-thread-123", "paused");
     expect((await harness.stateStore.load())?.roles[0]?.status).toBe("paused");
   });
@@ -117,7 +117,7 @@ describe("AgentDispatcherRole", () => {
 
     await harness.role.onStatusChange("agent-dispatcher-role", "active");
 
-    expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(false);
+    expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(false, { skipPersist: true });
     expect(harness.signalDispatcher).toHaveBeenCalledWith("dispatcher-thread-123", "active");
     expect((await harness.stateStore.load())?.roles[0]?.status).toBe("active");
   });

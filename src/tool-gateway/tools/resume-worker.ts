@@ -6,6 +6,7 @@ import { z } from "zod";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { LifecycleStatus } from "../../types";
 import killTool from "./kill";
+import { executeUpdateWorkerStatusAction } from "./update-status";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const ResumeWorkerActionSchema = z.enum(["retry", "skip", "force-complete"]);
@@ -126,12 +127,27 @@ export async function executeResumeWorkerAction(
   const lifecycleStore = deps.lifecycleStoreFactory(args.planPath);
   const lifecycleState = lifecycleStore.load();
   const worker = lifecycleState.workers[args.workerId];
-  if (!worker) {
-    throw new Error(`Worker not found in lifecycle state: ${args.workerId}`);
-  }
 
   if (args.action === "force-complete" && !args.force) {
     throw new Error("force-complete requires force=true");
+  }
+
+  if (!worker) {
+    const nextStatus = mapActionToStatus(args.action);
+    await executeUpdateWorkerStatusAction({
+      planPath: args.planPath,
+      workerId: args.workerId,
+      status: nextStatus
+    });
+
+    return {
+      worker: args.workerId,
+      action: args.action,
+      status: nextStatus,
+      thread_id: null,
+      thread_killed: false,
+      retry_count: 0
+    };
   }
 
   const priorFailureReason = extractPriorFailureReason(worker);
@@ -142,7 +158,8 @@ export async function executeResumeWorkerAction(
     nextStatus,
     `resume_worker:${args.action}`,
     {
-      clearHubResult: args.action === "retry"
+      clearHubResult: false,
+      incrementRetryCount: args.action === "retry"
     }
   );
 

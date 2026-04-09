@@ -146,6 +146,43 @@ describe("notify tool", () => {
       })
     ]);
   });
+
+  it("returns ok:false when Hub rejects the reply intent", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const receivedMessages = waitForHubMessages(hubSocketPath, 1, {
+      status: "error",
+      content: "Unsupported intent"
+    });
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    process.env.MERIDIAN_REPLY_CHANNEL = JSON.stringify({
+      channel: "web",
+      chat_id: "web:ops"
+    });
+
+    const result = await notifyTool.execute({
+      message: "[Dispatcher] queued"
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Unsupported intent",
+      data: {
+        status: "error",
+        thread_id: "notify",
+        trace_id: expect.any(String)
+      }
+    });
+    await expect(receivedMessages).resolves.toEqual([
+      expect.objectContaining({
+        intent: "reply",
+        reply_channel: {
+          channel: "web",
+          chat_id: "web:ops"
+        }
+      })
+    ]);
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
@@ -154,7 +191,11 @@ async function createTempDirectory(): Promise<string> {
   return directory;
 }
 
-function waitForHubMessages(socketPath: string, count: number): Promise<Record<string, unknown>[]> {
+function waitForHubMessages(
+  socketPath: string,
+  count: number,
+  response: { status?: "success" | "error"; content?: string } = {}
+): Promise<Record<string, unknown>[]> {
   return new Promise((resolve, reject) => {
     const messages: Record<string, unknown>[] = [];
     const server = net.createServer((socket) => {
@@ -167,7 +208,9 @@ function waitForHubMessages(socketPath: string, count: number): Promise<Record<s
 
       socket.once("end", () => {
         try {
-          messages.push(JSON.parse(raw) as Record<string, unknown>);
+          const message = JSON.parse(raw) as Record<string, unknown>;
+          messages.push(message);
+          socket.end(JSON.stringify(buildHubResult(message, response)));
           if (messages.length === count) {
             resolve(messages);
           }
@@ -181,4 +224,20 @@ function waitForHubMessages(socketPath: string, count: number): Promise<Record<s
     server.once("error", reject);
     server.listen(socketPath);
   });
+}
+
+function buildHubResult(
+  message: Record<string, unknown>,
+  response: { status?: "success" | "error"; content?: string }
+): Record<string, unknown> {
+  const payload = message.payload as { content?: unknown } | undefined;
+  return {
+    trace_id: message.trace_id,
+    thread_id: message.thread_id,
+    source: "codex",
+    status: response.status ?? "success",
+    content: response.content ?? (typeof payload?.content === "string" ? payload.content : ""),
+    attachments: [],
+    timestamp: "2026-04-07T00:00:00.000Z"
+  };
 }

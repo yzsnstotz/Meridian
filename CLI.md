@@ -34,6 +34,8 @@ meridian-roles <tool-name> [--param value ...]
 
 Flags use kebab-case on the CLI and are translated to the tool's internal snake_case params. Example: `--thread-id` maps to `thread_id`.
 
+Dispatcher runtime prompts prefer the compiled command path `node dist/bin/meridian-tool.js` after `npm run build`. The source `tsx src/bin/meridian-tool.ts` entrypoint is a development fallback only, so long-running dispatcher control should not depend on a `tsx` temp pipe under `/tmp`.
+
 ## Output Contract
 
 - stdout: JSON only

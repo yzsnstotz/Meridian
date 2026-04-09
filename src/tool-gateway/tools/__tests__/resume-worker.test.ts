@@ -113,6 +113,76 @@ describe("resume-worker tool", () => {
     await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⛔ SKIPPED | 2 | N-04 | Resume Worker Tool |");
   });
 
+  it("reopens a completed worker without discarding the prior hub result", async () => {
+    const harness = await createHarness();
+    harness.lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:10:00.000Z",
+          status: "completed",
+          expected_outputs: ["/tmp/report.md"],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-456",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Previous attempt finished cleanly.",
+            summary_text: "Previous attempt finished cleanly.",
+            details_text: "Agent reply:\nPrevious attempt finished cleanly.",
+            attachments: [],
+            timestamp: "2026-04-05T00:10:00.000Z"
+          },
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+
+    expect(harness.lifecycleStore.load().workers["N-04"]).toMatchObject({
+      status: "pending",
+      hub_result: expect.objectContaining({
+        status: "success",
+        summary_text: "Previous attempt finished cleanly."
+      }),
+      retry_count: 1
+    });
+  });
+
+  it("falls back to markdown-only retry when a plan row has no lifecycle entry yet", async () => {
+    const harness = await createHarness();
+
+    const result = await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "R-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+
+    expect(result).toEqual({
+      worker: "R-04",
+      action: "retry",
+      status: "pending",
+      thread_id: null,
+      thread_killed: false,
+      retry_count: 0
+    });
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 3 | R-04 | GUI Resume Buttons |");
+  });
+
   it("rejects force-complete without confirmation", async () => {
     const harness = await createHarness();
 
@@ -193,7 +263,8 @@ async function createHarness(): Promise<{
         status: "running",
         expected_outputs: [],
         hub_result: null,
-        command_preamble: null
+        command_preamble: null,
+        retry_count: 0
       }
     },
     last_reconciled_at: null

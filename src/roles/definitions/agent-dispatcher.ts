@@ -41,7 +41,9 @@ type SessionManagerLike = Pick<
   | "onRestart"
   | "prepareFreshDispatcherLaunch"
   | "setPaused"
->;
+> & {
+  setPaused(paused: boolean, options?: { skipPersist?: boolean }): void;
+};
 type LifecycleStoreLike = Pick<LifecycleStore, "load" | "save">;
 
 const EMPTY_APP_STATE: AppState = {
@@ -245,7 +247,7 @@ export class AgentDispatcherRole implements BaseRole {
     }
 
     const sessionManager = this.requireSessionManager();
-    sessionManager.setPaused(status === "paused");
+    sessionManager.setPaused(status === "paused", { skipPersist: true });
     await this.persistState(status);
 
     const dispatcherThreadId = sessionManager.getDispatcherThreadId();

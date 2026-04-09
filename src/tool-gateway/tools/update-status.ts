@@ -2,15 +2,30 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import type { LifecycleStatus } from "../../types";
 import type { ToolDefinition, ToolResult } from "../registry";
 
-const STATUS_MAP = {
-  in_progress: "🔄",
-  done: "✅",
-  failed: "⛔"
+const LIFECYCLE_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
+  pending: "⬜",
+  running: "🔄",
+  completed: "✅",
+  failed: "❌",
+  abandoned: "⚠️ ABANDONED",
+  skipped: "⛔ SKIPPED"
 } as const;
 
-type RequestedStatus = keyof typeof STATUS_MAP;
+const STATUS_ALIASES = {
+  in_progress: "running",
+  done: "completed",
+  pending: "pending",
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  abandoned: "abandoned",
+  skipped: "skipped"
+} as const;
+
+type RequestedStatus = keyof typeof STATUS_ALIASES;
 
 const updateStatusTool: ToolDefinition = {
   name: "update-status",
@@ -89,11 +104,51 @@ const updateStatusTool: ToolDefinition = {
 
 export default updateStatusTool;
 
+export interface ExecuteUpdateWorkerStatusActionArgs {
+  planPath: string;
+  workerId: string;
+  status: string;
+  threadId?: string | null;
+}
+
+export async function executeUpdateWorkerStatusAction(
+  args: ExecuteUpdateWorkerStatusActionArgs
+): Promise<{
+  worker: string;
+  status: LifecycleStatus;
+  thread_id: string | null;
+  lifecycle_updated: boolean;
+}> {
+  const normalizedStatus = parseRequestedStatus(args.status);
+  const threadId = requireParam(args.threadId ?? undefined);
+  const lifecycleUpdated = await syncWorkerLifecycleState(args.planPath, args.workerId, normalizedStatus, threadId);
+  let resolvedThreadId = threadId;
+
+  if (!lifecycleUpdated) {
+    const markdown = await fs.readFile(args.planPath, "utf8");
+    const updated = updateWorkerStatusInMarkdown(markdown, args.workerId, normalizedStatus);
+    await fs.writeFile(args.planPath, updated, "utf8");
+  } else {
+    const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(args.planPath), {
+      dispatchPlanPath: args.planPath
+    });
+    resolvedThreadId = lifecycleStore.load().workers[args.workerId]?.thread_id ?? threadId;
+  }
+
+  return {
+    worker: args.workerId,
+    status: normalizedStatus,
+    thread_id: resolvedThreadId,
+    lifecycle_updated: lifecycleUpdated
+  };
+}
+
 export function updateWorkerStatusInMarkdown(
   markdown: string,
   worker: string,
-  status: RequestedStatus
+  status: RequestedStatus | LifecycleStatus
 ): string {
+  const normalizedStatus = parseRequestedStatus(status);
   const lines = markdown.split(/\r?\n/);
 
   for (let index = 0; index < lines.length - 1; index += 1) {
@@ -123,7 +178,7 @@ export function updateWorkerStatusInMarkdown(
         continue;
       }
 
-      rowCells[statusColumn] = STATUS_MAP[status];
+      rowCells[statusColumn] = LIFECYCLE_STATUS_SYMBOLS[normalizedStatus];
       return preserveTrailingNewline(markdown, replaceLine(lines, rowIndex, formatTableRow(rowCells)).join("\n"));
     }
   }
@@ -131,9 +186,9 @@ export function updateWorkerStatusInMarkdown(
   throw new Error(`Worker not found in markdown table: ${worker}`);
 }
 
-function parseRequestedStatus(status: string): RequestedStatus {
-  if (status in STATUS_MAP) {
-    return status as RequestedStatus;
+export function parseRequestedStatus(status: string): LifecycleStatus {
+  if (status in STATUS_ALIASES) {
+    return STATUS_ALIASES[status as RequestedStatus];
   }
 
   throw new Error(`Unsupported status: ${status}`);
@@ -174,7 +229,7 @@ function preserveTrailingNewline(original: string, updated: string): string {
 async function syncWorkerLifecycleState(
   planPath: string,
   worker: string,
-  status: RequestedStatus,
+  status: LifecycleStatus,
   threadId: string | null
 ): Promise<boolean> {
   const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(planPath), {
@@ -184,20 +239,22 @@ async function syncWorkerLifecycleState(
   const workerState = state.workers[worker];
   const nowIso = new Date().toISOString();
 
-  if (status === "in_progress") {
-    if (!threadId) {
+  if (status === "running") {
+    const effectiveThreadId = threadId ?? workerState?.thread_id ?? null;
+    if (!effectiveThreadId) {
       return false;
     }
 
     state.workers[worker] = {
-      thread_id: threadId,
+      thread_id: effectiveThreadId,
       trace_id: workerState?.trace_id ?? null,
       started_at: workerState?.started_at ?? nowIso,
       last_seen_at: nowIso,
       status: "running",
       expected_outputs: [...(workerState?.expected_outputs ?? [])],
       hub_result: null,
-      command_preamble: workerState?.command_preamble ?? null
+      command_preamble: workerState?.command_preamble ?? null,
+      retry_count: workerState?.retry_count ?? 0
     };
     lifecycleStore.save(state);
     return true;
@@ -210,7 +267,7 @@ async function syncWorkerLifecycleState(
   state.workers[worker] = {
     ...workerState,
     last_seen_at: nowIso,
-    status: status === "done" ? "completed" : "failed"
+    status
   };
   lifecycleStore.save(state);
   return true;

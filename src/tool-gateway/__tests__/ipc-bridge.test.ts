@@ -209,6 +209,127 @@ describe("sendAndWait", () => {
     expect(hub.callbackSocketPaths[0]?.startsWith(`${REPO_LOCAL_SOCKET_DIR}${path.sep}`)).toBe(true);
     await expect(fs.access(hub.callbackSocketPaths[0])).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("falls back to inline Hub responses when callback socket binds are denied", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const hub = await startHubServer(hubSocketPath, {
+      callbackMode: "success",
+      responseMode: "inline"
+    });
+    servers.add(hub);
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const originalCreateServer = net.createServer;
+    let blockedBindCount = 0;
+    vi.spyOn(net, "createServer").mockImplementation(((...args: Parameters<typeof net.createServer>) => {
+      const server = originalCreateServer(...args);
+      const originalListen = server.listen.bind(server);
+
+      const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
+        const candidatePath = readSocketPath(listenArgs[0]);
+        if (candidatePath?.includes("meridian-tool-")) {
+          blockedBindCount += 1;
+          const error = Object.assign(
+            new Error(`listen EPERM: operation not permitted ${candidatePath}`),
+            { code: "EPERM" }
+          );
+          queueMicrotask(() => {
+            server.emit("error", error);
+          });
+          return server;
+        }
+
+        return originalListen(...listenArgs);
+      };
+      server.listen = listenMock as typeof server.listen;
+
+      return server;
+    }) as typeof net.createServer);
+
+    const message = buildHubMessage({ reply_channel: undefined });
+    const result = await sendAndWait(message, 200);
+
+    expect(result).toMatchObject({
+      trace_id: message.trace_id,
+      status: "success",
+      content: "ok"
+    });
+    expect(blockedBindCount).toBeGreaterThan(0);
+    expect(hub.messages[0]).toMatchObject({
+      trace_id: message.trace_id,
+      reply_channel: {
+        channel: "web",
+        chat_id: "service:meridian-tool"
+      }
+    });
+    expect(hub.callbackSocketPaths).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Tool Gateway callback socket unavailable; falling back to inline Hub response",
+      expect.objectContaining({
+        expected_trace_id: message.trace_id,
+        error: expect.stringContaining("listen EPERM")
+      })
+    );
+  });
+
+  it("falls back to inline Hub responses when bind denial only appears in the error message", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const hub = await startHubServer(hubSocketPath, {
+      callbackMode: "success",
+      responseMode: "inline"
+    });
+    servers.add(hub);
+    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const originalCreateServer = net.createServer;
+    vi.spyOn(net, "createServer").mockImplementation(((...args: Parameters<typeof net.createServer>) => {
+      const server = originalCreateServer(...args);
+      const originalListen = server.listen.bind(server);
+
+      const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
+        const candidatePath = readSocketPath(listenArgs[0]);
+        if (candidatePath?.includes("meridian-tool-")) {
+          const error = new Error(`listen EPERM: operation not permitted ${candidatePath}`);
+          queueMicrotask(() => {
+            server.emit("error", error);
+          });
+          return server;
+        }
+
+        return originalListen(...listenArgs);
+      };
+      server.listen = listenMock as typeof server.listen;
+
+      return server;
+    }) as typeof net.createServer);
+
+    const message = buildHubMessage({ reply_channel: undefined });
+    const result = await sendAndWait(message, 200);
+
+    expect(result).toMatchObject({
+      trace_id: message.trace_id,
+      status: "success",
+      content: "ok"
+    });
+    expect(hub.messages[0]).toMatchObject({
+      trace_id: message.trace_id,
+      reply_channel: {
+        channel: "web",
+        chat_id: "service:meridian-tool"
+      }
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Tool Gateway callback socket unavailable; falling back to inline Hub response",
+      expect.objectContaining({
+        expected_trace_id: message.trace_id,
+        error: expect.stringContaining("listen EPERM")
+      })
+    );
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
@@ -221,12 +342,13 @@ async function startHubServer(
   socketPath: string,
   options: {
     callbackMode: "success" | "none" | "mismatch_then_success" | "empty" | "invalid_json";
+    responseMode?: "callback" | "inline";
   }
 ): Promise<TestHubServer> {
   const messages: Record<string, unknown>[] = [];
   const callbackSocketPaths: string[] = [];
   let closed = false;
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     socket.setEncoding("utf8");
     let raw = "";
 
@@ -243,17 +365,22 @@ async function startHubServer(
         callbackSocketPaths.push(replyChannel.socket_path);
       }
 
-      if (options.callbackMode === "success" && replyChannel?.socket_path) {
-        const response: HubResult = {
-          trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
-          thread_id: typeof message.thread_id === "string" ? message.thread_id : "dispatcher-1",
-          source: "codex",
-          status: "success",
-          content: "ok",
-          attachments: [],
-          timestamp: new Date().toISOString()
-        };
+      const response: HubResult = {
+        trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
+        thread_id: typeof message.thread_id === "string" ? message.thread_id : "dispatcher-1",
+        source: "codex",
+        status: "success",
+        content: "ok",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
 
+      if (options.responseMode === "inline") {
+        socket.end(JSON.stringify(response));
+        return;
+      }
+
+      if (options.callbackMode === "success" && replyChannel?.socket_path) {
         void sendCallback(replyChannel.socket_path, response);
       }
 
@@ -290,6 +417,8 @@ async function startHubServer(
       if (options.callbackMode === "invalid_json" && replyChannel?.socket_path) {
         void sendRawCallback(replyChannel.socket_path, "{invalid");
       }
+
+      socket.end();
     });
   });
 

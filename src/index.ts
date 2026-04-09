@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
+import { resolveDispatchModelMapFromMarkdown } from "./roles/agent-dispatcher/model-routing";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
+import { launchDispatchWorker } from "./roles/agent-dispatcher/worker-launcher";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
+import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
 import { DispatcherRole } from "./roles/definitions";
 import { PromptStore } from "./roles/prompt-store";
@@ -25,12 +29,14 @@ import {
 import {
   AgentDispatcherConfigSchema,
   shouldUseAgentDispatcherConfig,
+  type DispatchThreadStateV2,
   type AgentDispatcherConfig,
   type AppState,
   type HubMessage,
   type HubResult,
   type RoleState
 } from "./types";
+import { parseDispatchPlanRows } from "./tool-gateway/tools/dispatch-status";
 
 export * from "./types";
 export * from "./config";
@@ -93,11 +99,35 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     hubClient: client,
     log,
     intervalMs: RECONCILE_INTERVAL_MS,
+    isDispatcherPaused: async (dispatchPlanPath) => {
+      const state = await loadAppState(stateStore);
+      const roleState = state.roles.find((role) => {
+        if (role.roleType !== "agent-dispatcher") {
+          return false;
+        }
+        const config = parseAgentDispatcherConfig(role);
+        return config?.dispatch_plan_path === dispatchPlanPath;
+      });
+      return roleState?.status === PAUSED_ROLE_STATUS;
+    },
     onDispatcherStalled: async (info) => {
       const threadId = await resolveThreadIdForDispatchPlanPath(stateStore, info.dispatchPlanPath);
       if (!threadId) {
         log.warn("Watchdog stall: no persisted agent-dispatcher found for plan", {
           dispatchPlanPath: info.dispatchPlanPath
+        });
+        return;
+      }
+
+      const continuedWorkerId = await tryContinueSoleEligibleDispatchWorker(
+        stateStore,
+        info.dispatchPlanPath,
+        log
+      );
+      if (continuedWorkerId) {
+        log.info("Watchdog stall: continued sole eligible worker directly", {
+          threadId,
+          workerId: continuedWorkerId
         });
         return;
       }
@@ -121,6 +151,8 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     }
   });
 
+  const fileRelay = new FileRelayWatcher();
+
   await httpServer.listen();
   void client.start().catch((error) => {
     if (error instanceof Error && error.message === "A2A client stopped before register_service completed") {
@@ -129,9 +161,11 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log.warn("A2A client background start failed", error);
   });
   watchdog.start();
+  await fileRelay.start();
 
   return {
     async close(): Promise<void> {
+      fileRelay.stop();
       watchdog.stop();
       await Promise.allSettled([httpServer.close(), resultServer.close(), client.stop()]);
     }
@@ -554,6 +588,155 @@ async function resolveThreadIdForDispatchPlanPath(
   }
 
   return null;
+}
+
+async function tryContinueSoleEligibleDispatchWorker(
+  stateStore: StateStore,
+  dispatchPlanPath: string,
+  log: typeof console
+): Promise<string | null> {
+  const state = await loadAppState(stateStore);
+  const roleState = state.roles.find((role) => {
+    if (role.roleType !== "agent-dispatcher" || !isStartupRehydratableRoleStatus(role.status)) {
+      return false;
+    }
+
+    const config = parseAgentDispatcherConfig(role);
+    return config?.dispatch_plan_path === dispatchPlanPath;
+  }) ?? null;
+  if (roleState?.status === PAUSED_ROLE_STATUS) {
+    return null;
+  }
+  const config = roleState ? parseAgentDispatcherConfig(roleState) : null;
+  if (!config) {
+    return null;
+  }
+
+  let markdown: string;
+  try {
+    markdown = await fs.readFile(dispatchPlanPath, "utf8");
+  } catch (error) {
+    log.warn("Watchdog failed to read dispatch plan for direct continue", {
+      dispatchPlanPath,
+      error: asError(error).message
+    });
+    return null;
+  }
+
+  const rows = parseDispatchPlanRows(markdown);
+  const lifecycleState = new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath)).load();
+  const workerId = resolveWatchdogContinueWorker(rows, lifecycleState);
+  if (!workerId) {
+    return null;
+  }
+
+  const row = rows.find((candidate) => candidate.worker_id === workerId) ?? null;
+  if (!row || normalizePlanStatus(row.status) !== "pending") {
+    return null;
+  }
+
+  const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
+  const modelCode = row.model?.trim() ?? "";
+  const resolvedModel = modelCode ? resolvedModelMap[modelCode] : undefined;
+  const launched = await launchDispatchWorker({
+    agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
+    mode: config.mode,
+    commandFilePath: config.command_file_path,
+    dispatchPlanPath,
+    workerId,
+    modelId: resolvedModel?.model_id?.trim() || undefined
+  });
+  if (!launched.ok) {
+    log.warn("Watchdog direct continue failed", {
+      dispatchPlanPath,
+      workerId,
+      error: launched.error ?? "unknown"
+    });
+    return null;
+  }
+
+  return workerId;
+}
+
+function resolveWatchdogContinueWorker(
+  rows: Array<{
+    status: string;
+    worker_id: string;
+    model: string | null;
+    depends_on: string[];
+  }>,
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  const runningRows = rows.filter((row) => normalizePlanStatus(row.status) === "running" && !isHumanModel(row.model));
+  if (runningRows.length === 1) {
+    const [row] = runningRows;
+    const worker = lifecycleState.workers[row.worker_id];
+    if (!worker || worker.status !== "running" || worker.thread_id.trim().length === 0) {
+      return row.worker_id;
+    }
+  }
+
+  const rowsByWorker = new Map(rows.map((row) => [row.worker_id, row]));
+  const pendingEligible = rows
+    .filter((row) => normalizePlanStatus(row.status) === "pending")
+    .filter((row) => !isHumanModel(row.model))
+    .filter((row) => row.depends_on.every((dependencyWorkerId) => {
+      const dependencyRow = rowsByWorker.get(dependencyWorkerId);
+      const dependencyStatus = dependencyRow ? normalizePlanStatus(dependencyRow.status) : "";
+      return dependencyStatus === "completed" || dependencyStatus === "skipped";
+    }))
+    .map((row) => row.worker_id);
+
+  return pendingEligible.length === 1 ? pendingEligible[0] ?? null : null;
+}
+
+function normalizePlanStatus(status: string | null | undefined): string {
+  const normalized = typeof status === "string" ? status.trim() : "";
+  switch (normalized) {
+    case "🔄":
+    case "running":
+      return "running";
+    case "⬜":
+    case "pending":
+      return "pending";
+    case "✅":
+    case "completed":
+      return "completed";
+    case "❌":
+    case "failed":
+      return "failed";
+    case "⚠️ ABANDONED":
+    case "abandoned":
+      return "abandoned";
+    case "⛔ SKIPPED":
+    case "skipped":
+      return "skipped";
+    default:
+      return normalized.toLowerCase();
+  }
+}
+
+function isHumanModel(model: string | null | undefined): boolean {
+  const normalized = typeof model === "string" ? model.trim().toUpperCase() : "";
+  return normalized === "HUMAN" || normalized === "PM";
+}
+
+function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
+  const normalized = modelCode.trim().toUpperCase();
+  if (normalized.startsWith("CODEX")) {
+    return "codex";
+  }
+  if (normalized.startsWith("CLAUDE")) {
+    return "claude";
+  }
+  if (normalized.startsWith("GEMINI")) {
+    return "gemini";
+  }
+  if (normalized.startsWith("CURSOR")) {
+    return "cursor";
+  }
+
+  return defaultAgentType;
 }
 
 async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {

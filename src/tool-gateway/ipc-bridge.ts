@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { HUB_SOCKET_PATH } from "../config";
+import { GUI_PORT, HUB_SOCKET_PATH } from "../config";
 import { HubResultSchema, type HubMessage, type HubResult } from "../types";
+import { sendViaFileRelay } from "./file-relay";
 
 const DEFAULT_HUB_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_SEND_AND_WAIT_TIMEOUT_MS = 60_000;
+const DEFAULT_HTTP_RELAY_TIMEOUT_MS = 120_000;
 const MERIDIAN_TOOL_CHAT_ID = "service:meridian-tool";
 const CALLBACK_SOCKET_DIR_ENV = "MERIDIAN_TOOL_SOCKET_DIR";
+const HUB_RELAY_URL_ENV = "MERIDIAN_HUB_RELAY_URL";
 const MERIDIAN_ROLES_REPO_ROOT = path.resolve(__dirname, "../..");
 const REPO_LOCAL_CALLBACK_SOCKET_DIR = path.join(MERIDIAN_ROLES_REPO_ROOT, ".tmp");
 
@@ -19,6 +23,58 @@ export async function sendAndWait(
   timeoutMs = DEFAULT_SEND_AND_WAIT_TIMEOUT_MS
 ): Promise<HubResult> {
   const traceId = hubMessage.trace_id ?? randomUUID();
+
+  try {
+    return await sendViaCallbackSocket(hubMessage, traceId, timeoutMs);
+  } catch (error) {
+    const resolvedError = asError(error);
+    if (!isRetryableSocketPathError(resolvedError)) {
+      throw resolvedError;
+    }
+
+    console.warn("Tool Gateway callback socket unavailable; falling back to inline Hub response", {
+      expected_trace_id: traceId,
+      error: resolvedError.message
+    });
+
+    try {
+      return await sendInlineAndWait(buildInlineOutboundMessage(hubMessage, traceId), timeoutMs);
+    } catch (inlineError) {
+      const resolvedInlineError = asError(inlineError);
+      if (!isRetryableSocketPathError(resolvedInlineError)) {
+        throw resolvedInlineError;
+      }
+
+      console.warn("Tool Gateway inline Hub connect also unavailable; falling back to HTTP relay", {
+        expected_trace_id: traceId,
+        error: resolvedInlineError.message
+      });
+
+      try {
+        return await sendViaHttpRelay(
+          { ...hubMessage, trace_id: traceId },
+          timeoutMs > 0 ? timeoutMs : DEFAULT_HTTP_RELAY_TIMEOUT_MS
+        );
+      } catch (httpError) {
+        console.warn("Tool Gateway HTTP relay also unavailable; falling back to file relay", {
+          expected_trace_id: traceId,
+          error: asError(httpError).message
+        });
+
+        return sendViaFileRelay(
+          { ...hubMessage, trace_id: traceId },
+          timeoutMs > 0 ? timeoutMs : DEFAULT_HTTP_RELAY_TIMEOUT_MS
+        );
+      }
+    }
+  }
+}
+
+async function sendViaCallbackSocket(
+  hubMessage: Partial<HubMessage>,
+  traceId: string,
+  timeoutMs: number
+): Promise<HubResult> {
   let tempSocketPath: string | null = null;
   let server: net.Server | null = null;
   let handleServerError: ((error: Error) => void) | null = null;
@@ -116,6 +172,17 @@ function buildOutboundMessage(
       channel: "socket",
       chat_id: hubMessage.reply_channel?.chat_id ?? MERIDIAN_TOOL_CHAT_ID,
       socket_path: socketPath
+    }
+  };
+}
+
+function buildInlineOutboundMessage(hubMessage: Partial<HubMessage>, traceId: string): Partial<HubMessage> {
+  return {
+    ...hubMessage,
+    trace_id: traceId,
+    reply_channel: hubMessage.reply_channel ?? {
+      channel: "web",
+      chat_id: MERIDIAN_TOOL_CHAT_ID
     }
   };
 }
@@ -294,6 +361,173 @@ function sendFireAndForget(message: Partial<HubMessage>, hubSocketPath: string):
   });
 }
 
+function sendInlineAndWait(
+  message: Partial<HubMessage>,
+  timeoutMs: number
+): Promise<HubResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let rawResponse = "";
+    let responseTimeout: NodeJS.Timeout | null = null;
+    const socket = net.createConnection(getHubSocketPath());
+    const connectTimeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.destroy(new Error(`Tool Gateway connect timed out after ${DEFAULT_HUB_CONNECT_TIMEOUT_MS}ms`));
+    }, DEFAULT_HUB_CONNECT_TIMEOUT_MS);
+
+    const cleanup = (): void => {
+      clearTimeout(connectTimeout);
+      if (responseTimeout) {
+        clearTimeout(responseTimeout);
+      }
+    };
+
+    const fail = (error: unknown): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      socket.destroy();
+      reject(asError(error));
+    };
+
+    const resolveResponse = (): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      if (!rawResponse.trim()) {
+        reject(new Error("Hub request completed without a response body"));
+        return;
+      }
+
+      try {
+        const result = HubResultSchema.parse(JSON.parse(rawResponse));
+        if (result.trace_id !== message.trace_id) {
+          reject(new Error(`Hub response trace_id mismatch: expected ${message.trace_id}, received ${result.trace_id}`));
+          return;
+        }
+
+        resolve(result);
+      } catch (error) {
+        reject(new Error(`Invalid Hub response: ${asError(error).message}`));
+      }
+    };
+
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      rawResponse += chunk;
+    });
+    socket.once("connect", () => {
+      if (settled) {
+        return;
+      }
+
+      clearTimeout(connectTimeout);
+      if (timeoutMs > 0) {
+        responseTimeout = setTimeout(() => {
+          fail(new Error(`Hub timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+
+      try {
+        socket.write(JSON.stringify(message));
+        socket.end();
+      } catch (error) {
+        fail(error);
+      }
+    });
+    socket.once("end", resolveResponse);
+    socket.once("close", resolveResponse);
+    socket.once("error", fail);
+  });
+}
+
+function getHubRelayUrl(): string {
+  const configured = process.env[HUB_RELAY_URL_ENV]?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  return `http://127.0.0.1:${GUI_PORT}/api/hub-relay`;
+}
+
+export function sendViaHttpRelay(
+  hubMessage: Partial<HubMessage>,
+  timeoutMs: number
+): Promise<HubResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const body = JSON.stringify(hubMessage);
+    const relayUrl = new URL(getHubRelayUrl());
+    const requestOptions: http.RequestOptions = {
+      hostname: relayUrl.hostname,
+      port: relayUrl.port,
+      path: relayUrl.pathname,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body)
+      },
+      timeout: timeoutMs
+    };
+
+    const request = http.request(requestOptions, (response) => {
+      let rawResponse = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => {
+        rawResponse += chunk;
+      });
+      response.on("end", () => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        if (!rawResponse.trim()) {
+          reject(new Error("HTTP relay completed without a response body"));
+          return;
+        }
+
+        try {
+          const result = HubResultSchema.parse(JSON.parse(rawResponse));
+          resolve(result);
+        } catch (error) {
+          reject(new Error(`Invalid HTTP relay response: ${asError(error).message}`));
+        }
+      });
+    });
+
+    request.on("timeout", () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      request.destroy(new Error(`HTTP relay timed out after ${timeoutMs}ms`));
+    });
+
+    request.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(asError(error));
+    });
+
+    request.end(body);
+  });
+}
+
 async function closeServer(server: net.Server): Promise<void> {
   if (!server.listening) {
     return;
@@ -321,12 +555,20 @@ async function removeSocketPath(socketPath: string): Promise<void> {
 
 function isRetryableSocketPathError(error: Error): boolean {
   const code = "code" in error ? error.code : undefined;
+  const message = error.message.toUpperCase();
   return code === "EACCES"
     || code === "EADDRINUSE"
     || code === "ENOENT"
     || code === "ENOTDIR"
     || code === "ENAMETOOLONG"
-    || code === "EPERM";
+    || code === "EPERM"
+    || message.includes("LISTEN EPERM")
+    || message.includes("LISTEN EACCES")
+    || message.includes("LISTEN ENOENT")
+    || message.includes("LISTEN ENOTDIR")
+    || message.includes("LISTEN ENAMETOOLONG")
+    || message.includes("OPERATION NOT PERMITTED")
+    || message.includes("PERMISSION DENIED");
 }
 
 function asError(error: unknown): Error {

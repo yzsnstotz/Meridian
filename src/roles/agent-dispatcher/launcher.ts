@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { ReplyChannel } from "../../types";
 import { resolveDispatchRepoRoot } from "./dispatch-paths";
+import { extractSpawnCliError, parseSpawnCliOutput } from "./meridian-tool-output";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
 const DISPATCHER_WORKER_ID = "DISPATCHER";
@@ -75,11 +76,11 @@ export async function launchDispatcher(
     return {
       ok: false,
       threadId: EMPTY_THREAD_ID,
-      error: `spawn failed: ${asError(error).message}`
+      error: `spawn failed: ${extractSpawnCliError(error) ?? asError(error).message}`
     };
   }
 
-  const parsedSpawn = parseSpawnResponse(spawnStdout);
+  const parsedSpawn = parseSpawnCliOutput(spawnStdout);
   if (parsedSpawn.error) {
     return {
       ok: false,
@@ -167,42 +168,6 @@ function buildRunArgs(threadId: string, commandPath: string): string[] {
     "--worker",
     DISPATCHER_WORKER_ID
   ]);
-}
-
-function parseSpawnResponse(stdout: string): { threadId: string | null; error: string | null } {
-  try {
-    const parsed = JSON.parse(stdout) as {
-      ok?: unknown;
-      error?: unknown;
-      data?: {
-        thread_id?: unknown;
-      };
-      thread_id?: unknown;
-    };
-
-    if (parsed.ok === false && typeof parsed.error === "string" && parsed.error.trim().length > 0) {
-      return {
-        threadId: null,
-        error: parsed.error.trim()
-      };
-    }
-
-    const candidate = typeof parsed.data?.thread_id === "string"
-      ? parsed.data.thread_id
-      : typeof parsed.thread_id === "string"
-        ? parsed.thread_id
-        : null;
-
-    return {
-      threadId: candidate?.trim() ? candidate.trim() : null,
-      error: null
-    };
-  } catch {
-    return {
-      threadId: null,
-      error: null
-    };
-  }
 }
 
 function asError(error: unknown): Error {

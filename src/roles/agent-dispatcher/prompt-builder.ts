@@ -228,7 +228,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "- `spawn` returns `ok:false`: notify, leave the plan untouched, and pause for human intervention.",
     "- `spawn` times out at 60s: notify, leave the plan untouched, and pause for human intervention.",
     "- `spawn` succeeds but `thread_id` cannot be parsed: notify, leave the plan untouched, and pause for human intervention.",
-    "- If the Meridian tool itself fails locally before returning JSON (for example `tsx` bootstrap, Node loader startup, callback socket bind, or sandbox `EPERM` / `ENOENT`), treat it as the same spawn failure. Do not inspect Meridian tool internals, try alternate wrappers/transports, or write extra repo artifacts.",
+    "- If the Meridian tool itself fails locally before returning JSON (for example Node CLI startup, callback socket bind, or sandbox `EPERM` / `ENOENT`), treat it as the same spawn failure. Do not inspect Meridian tool internals, try alternate wrappers/transports, or write extra repo artifacts.",
     "- The same worker hitting two consecutive spawn failures means the environment is unstable: notify with `urgency high` and pause the dispatcher for human input.",
     "- `run` returning `ok:false` is not a spawn failure. Re-read the derived plan state before deciding whether to pause or continue.",
     "- `run` returning `ok:true` with `data.run_state` of `still_running` or `timeout` is a structured non-final result. Keep the derived status as-is and do not flatten it to success text.",

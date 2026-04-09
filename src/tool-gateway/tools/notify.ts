@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 
 import { HUB_SOCKET_PATH } from "../../config";
-import { ReplyChannelSchema, type HubMessage, type ReplyChannel } from "../../types";
+import { HubResultSchema, ReplyChannelSchema, type HubMessage, type HubResult, type ReplyChannel } from "../../types";
+import { sendViaFileRelay } from "../file-relay";
+import { sendViaHttpRelay } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
@@ -47,11 +49,24 @@ const notifyTool: ToolDefinition = {
 
     try {
       const replyChannels = resolveReplyChannels(params);
-      await Promise.all(
+      const results = await Promise.all(
         replyChannels.map((replyChannel) =>
-          sendFireAndForget(buildNotifyMessage(message, params.urgency, replyChannel))
+          sendNotifyWithFallback(buildNotifyMessage(message, params.urgency, replyChannel))
         )
       );
+      const failedResult = results.find((result) => result.status !== "success");
+      if (failedResult) {
+        return {
+          ok: false,
+          error: failedResult.content,
+          data: {
+            status: failedResult.status,
+            thread_id: failedResult.thread_id,
+            trace_id: failedResult.trace_id
+          }
+        };
+      }
+
       return { ok: true };
     } catch (error) {
       return {
@@ -134,9 +149,37 @@ function getHubSocketPath(): string {
   return process.env.HUB_SOCKET_PATH ?? HUB_SOCKET_PATH;
 }
 
-function sendFireAndForget(message: HubMessage): Promise<void> {
+async function sendNotifyWithFallback(message: HubMessage): Promise<HubResult> {
+  try {
+    return await sendNotifyAndWait(message);
+  } catch (error) {
+    const code = "code" in (error as NodeJS.ErrnoException) ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code !== "EPERM" && code !== "EACCES" && code !== "ENOENT") {
+      throw error;
+    }
+
+    console.warn("Notify socket connect failed; falling back to HTTP relay", {
+      trace_id: message.trace_id,
+      error: asError(error).message
+    });
+
+    try {
+      return await sendViaHttpRelay(message, NOTIFY_CONNECT_TIMEOUT_MS);
+    } catch (httpError) {
+      console.warn("Notify HTTP relay also failed; falling back to file relay", {
+        trace_id: message.trace_id,
+        error: asError(httpError).message
+      });
+
+      return sendViaFileRelay(message, NOTIFY_CONNECT_TIMEOUT_MS);
+    }
+  }
+}
+
+function sendNotifyAndWait(message: HubMessage): Promise<HubResult> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let rawResponse = "";
     const socket = net.createConnection(getHubSocketPath());
     const timeout = setTimeout(() => {
       if (settled) {
@@ -144,7 +187,8 @@ function sendFireAndForget(message: HubMessage): Promise<void> {
       }
 
       settled = true;
-      socket.destroy(new Error(`Notify connect timed out after ${NOTIFY_CONNECT_TIMEOUT_MS}ms`));
+      socket.destroy();
+      reject(new Error(`Notify request timed out after ${NOTIFY_CONNECT_TIMEOUT_MS}ms`));
     }, NOTIFY_CONNECT_TIMEOUT_MS);
 
     const fail = (error: unknown): void => {
@@ -158,6 +202,33 @@ function sendFireAndForget(message: HubMessage): Promise<void> {
       reject(asError(error));
     };
 
+    const resolveResponse = (): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      if (!rawResponse.trim()) {
+        reject(new Error("Notify request completed without Hub response body"));
+        return;
+      }
+
+      try {
+        const result = HubResultSchema.parse(JSON.parse(rawResponse));
+        if (result.trace_id !== message.trace_id) {
+          reject(new Error(`Notify Hub response trace_id mismatch: expected ${message.trace_id}, received ${result.trace_id}`));
+          return;
+        }
+
+        resolve(result);
+      } catch (error) {
+        reject(new Error(`Invalid notify Hub response: ${asError(error).message}`));
+      }
+    };
+
+    socket.setEncoding("utf8");
+
     socket.once("connect", () => {
       if (settled) {
         return;
@@ -167,13 +238,17 @@ function sendFireAndForget(message: HubMessage): Promise<void> {
 
       try {
         socket.end(JSON.stringify(message));
-        settled = true;
-        resolve();
       } catch (error) {
         fail(error);
       }
     });
 
+    socket.on("data", (chunk: string) => {
+      rawResponse += chunk;
+    });
+
+    socket.once("end", resolveResponse);
+    socket.once("close", resolveResponse);
     socket.once("error", fail);
   });
 }

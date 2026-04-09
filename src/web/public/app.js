@@ -32,8 +32,12 @@ async function setupDashboard() {
   const agentDispatcherEmpty = document.getElementById("agent-dispatchers-empty");
   const agentDispatcherForm = document.getElementById("start-agent-dispatcher-form");
   const agentDispatcherFeedback = document.getElementById("agent-dispatcher-feedback");
-  const channelSelect = document.getElementById("agent-dispatcher-channel-select");
   const manualChannelSelect = document.getElementById("agent-dispatcher-manual-channel");
+  const manualTelegramUserField = document.getElementById("agent-dispatcher-manual-telegram-user-field");
+  const manualTelegramUserSelect = document.getElementById("agent-dispatcher-manual-telegram-user");
+  const manualBotField = document.getElementById("agent-dispatcher-manual-bot-field");
+  const manualBotSelect = document.getElementById("agent-dispatcher-manual-bot-id");
+  const manualChatIdField = document.getElementById("agent-dispatcher-manual-chat-id-field");
   const manualChatIdInput = document.getElementById("agent-dispatcher-manual-chat-id");
   const dispatchPlanPathInput = document.getElementById("agent-dispatcher-dispatch-plan-path");
   const commandFilePathInput = document.getElementById("agent-dispatcher-command-file-path");
@@ -53,8 +57,12 @@ async function setupDashboard() {
     || !agentDispatcherEmpty
     || !agentDispatcherForm
     || !agentDispatcherFeedback
-    || !channelSelect
     || !manualChannelSelect
+    || !manualTelegramUserField
+    || !manualTelegramUserSelect
+    || !manualBotField
+    || !manualBotSelect
+    || !manualChatIdField
     || !manualChatIdInput
     || !dispatchPlanPathInput
     || !commandFilePathInput
@@ -179,6 +187,7 @@ async function setupDashboard() {
       thread_id: detail.thread_id,
       status: detail.status,
       dispatcher_thread_id: detail.dispatcher_thread_id,
+      continue_worker: detail.continue_worker,
       current_worker: detail.current_worker,
       agent_type: detail.agent_type,
       last_log_line: detail.last_log_line
@@ -259,52 +268,64 @@ async function setupDashboard() {
     }
   }
 
-  async function loadReplyChannels() {
+  async function loadAgentDispatcherReplyOptions() {
     const response = await fetchJson("/api/channels");
-    channelSelect.replaceChildren();
+    const prevBot = normalizeText(manualBotSelect.value);
+    const prevUser = normalizeText(manualTelegramUserSelect.value);
 
-    const callout = document.getElementById("agent-dispatcher-reply-channel-callout");
-    const manualWrap = document.getElementById("agent-dispatcher-manual-fallback-wrap");
-
-    if (!Array.isArray(response.channels) || response.channels.length === 0) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "No reply channels available; use manual fallback";
-      option.disabled = true;
-      channelSelect.appendChild(option);
-      if (callout) {
-        callout.hidden = false;
-      }
-      if (manualWrap) {
-        manualWrap.classList.add("manual-fallback-highlight");
-      }
-      if (manualChatIdInput && callout) {
-        manualChatIdInput.setAttribute("aria-describedby", "agent-dispatcher-reply-channel-callout");
-      }
-      return;
-    }
-
-    if (callout) {
-      callout.hidden = true;
-    }
-    if (manualWrap) {
-      manualWrap.classList.remove("manual-fallback-highlight");
-    }
-    if (manualChatIdInput) {
-      manualChatIdInput.removeAttribute("aria-describedby");
-    }
-
-    response.channels.forEach((replyChannel, index) => {
-      const option = document.createElement("option");
-      option.value = JSON.stringify(replyChannel);
-      option.textContent = formatReplyChannelLabel(replyChannel);
-      option.selected = index === 0;
-      channelSelect.appendChild(option);
+    const botIds = Array.isArray(response.telegram_bot_numeric_ids) ? response.telegram_bot_numeric_ids : [];
+    manualBotSelect.replaceChildren();
+    const defaultBotOption = document.createElement("option");
+    defaultBotOption.value = "";
+    defaultBotOption.textContent = "Hub default (omit bot_id)";
+    manualBotSelect.appendChild(defaultBotOption);
+    botIds.forEach((id) => {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = `Bot ${id}`;
+      manualBotSelect.appendChild(opt);
     });
+    if (prevBot && botIds.includes(prevBot)) {
+      manualBotSelect.value = prevBot;
+    } else if (botIds.length === 1) {
+      manualBotSelect.value = botIds[0];
+    }
+
+    const allowedIds = Array.isArray(response.telegram_allowed_user_ids) ? response.telegram_allowed_user_ids : [];
+    manualTelegramUserSelect.replaceChildren();
+    const customUserOption = document.createElement("option");
+    customUserOption.value = "";
+    customUserOption.textContent = "Custom — type chat id below";
+    manualTelegramUserSelect.appendChild(customUserOption);
+    allowedIds.forEach((id) => {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = `Operator ${id} (ALLOWED_USER_IDS)`;
+      manualTelegramUserSelect.appendChild(opt);
+    });
+    if (prevUser && allowedIds.includes(prevUser)) {
+      manualTelegramUserSelect.value = prevUser;
+    } else if (allowedIds.length === 1) {
+      manualTelegramUserSelect.value = allowedIds[0];
+    }
+
+    refreshManualReplyUi(
+      manualChannelSelect,
+      manualBotField,
+      manualTelegramUserField,
+      manualTelegramUserSelect,
+      manualChatIdField,
+      manualChatIdInput
+    );
   }
 
   async function refreshAgentDispatcherPromptPreview(options = {}) {
-    const replyChannels = collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect, manualChatIdInput);
+    const replyChannels = collectAgentDispatcherReplyChannels(
+      manualChannelSelect,
+      manualChatIdInput,
+      manualBotSelect,
+      manualTelegramUserSelect
+    );
     const payload = {
       dispatch_plan_path: normalizeText(dispatchPlanPathInput.value) || undefined,
       command_file_path: normalizeText(commandFilePathInput.value) || undefined,
@@ -381,9 +402,15 @@ async function setupDashboard() {
     event.preventDefault();
     agentDispatcherFeedback.textContent = "Starting agent dispatcher…";
 
-    const replyChannels = collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect, manualChatIdInput);
+    const replyChannels = collectAgentDispatcherReplyChannels(
+      manualChannelSelect,
+      manualChatIdInput,
+      manualBotSelect,
+      manualTelegramUserSelect
+    );
     if (replyChannels.length === 0) {
-      agentDispatcherFeedback.textContent = "Select a reply channel or provide a manual fallback chat_id.";
+      agentDispatcherFeedback.textContent =
+        "For web, enter manual_reply_chat_id. For Telegram, pick an operator or Custom chat id.";
       return;
     }
 
@@ -413,9 +440,7 @@ async function setupDashboard() {
 
       agentDispatcherFeedback.textContent = `Dispatcher ${created.dispatcher_id} started.`;
       agentDispatcherForm.reset();
-      Array.from(channelSelect.options).forEach((option, index) => {
-        option.selected = index === 0 && !option.disabled;
-      });
+      await loadAgentDispatcherReplyOptions();
       agentDispatcherPromptDirty = false;
       await refreshAgentDispatcherPromptPreview({ force: true });
       await refreshRoles();
@@ -426,7 +451,7 @@ async function setupDashboard() {
   });
 
   refreshButton?.addEventListener("click", () => {
-    void Promise.all([loadReplyChannels(), refreshAgentDispatcherPromptPreview({ force: true }), refreshRoles()]).catch((error) => {
+    void Promise.all([loadAgentDispatcherReplyOptions(), refreshAgentDispatcherPromptPreview({ force: true }), refreshRoles()]).catch((error) => {
       const message = getErrorMessage(error);
       feedback.textContent = message;
       agentDispatcherFeedback.textContent = message;
@@ -444,13 +469,26 @@ async function setupDashboard() {
       });
     });
 
-  [channelSelect, manualChannelSelect, manualChatIdInput].forEach((element) => {
+  [manualChannelSelect, manualChatIdInput, manualBotSelect, manualTelegramUserSelect].forEach((element) => {
     ["input", "change"].forEach((eventName) => {
       element.addEventListener(eventName, () => {
         void refreshAgentDispatcherPromptPreview().catch((error) => {
           agentDispatcherFeedback.textContent = getErrorMessage(error);
         });
       });
+    });
+  });
+
+  [manualChannelSelect, manualTelegramUserSelect].forEach((element) => {
+    element.addEventListener("change", () => {
+      refreshManualReplyUi(
+        manualChannelSelect,
+        manualBotField,
+        manualTelegramUserField,
+        manualTelegramUserSelect,
+        manualChatIdField,
+        manualChatIdInput
+      );
     });
   });
 
@@ -464,7 +502,7 @@ async function setupDashboard() {
   });
 
   try {
-    await loadReplyChannels();
+    await loadAgentDispatcherReplyOptions();
     await refreshAgentDispatcherPromptPreview({ force: true });
     await refreshRoles();
   } catch (error) {
@@ -1221,15 +1259,21 @@ function renderDispatchPlanStatus(row) {
 function renderDispatchPlanActions(row) {
   const workerId = escapeHtml(row.worker || "");
   const currentStatus = normalizeDispatchPlanStatus(row?.status);
+  const canContinue = canContinueDispatchRow(row);
   const statusEditor = currentStatus === "running"
     ? ""
     : renderDispatchPlanStatusEditor(workerId, currentStatus);
 
-  if (currentStatus === "abandoned") {
+  if (currentStatus === "abandoned" || canContinue) {
     return `
       <div class="table-action-stack">
         <div class="table-action-group">
           <button type="button" class="primary-button table-action-button" data-worker-id="${workerId}" data-continue-worker>Continue</button>
+          ${currentStatus === "running" ? `
+          <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
+          <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
+          <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
+          ` : ""}
         </div>
         ${statusEditor}
       </div>
@@ -1355,19 +1399,82 @@ function formatTimestamp(value) {
   }).format(parsed);
 }
 
-function collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect, manualChatIdInput) {
-  const selectedChannels = Array.from(channelSelect.selectedOptions)
-    .map((option) => {
-      try {
-        return JSON.parse(option.value);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+function syncManualReplyChatPlaceholder(manualChannelSelect, manualChatIdInput) {
+  if (!manualChatIdInput) {
+    return;
+  }
 
-  if (selectedChannels.length > 0) {
-    return selectedChannels;
+  if (manualChannelSelect.value === "telegram") {
+    manualChatIdInput.placeholder = "6137086342 or telegram:6137086342";
+  } else {
+    manualChatIdInput.placeholder = "web:gui-demo";
+  }
+}
+
+function refreshManualReplyUi(
+  manualChannelSelect,
+  manualBotField,
+  manualTelegramUserField,
+  manualTelegramUserSelect,
+  manualChatIdField,
+  manualChatIdInput
+) {
+  const manualTelegram = manualChannelSelect.value === "telegram";
+
+  if (manualBotField) {
+    manualBotField.hidden = !manualTelegram;
+  }
+  if (manualTelegramUserField) {
+    manualTelegramUserField.hidden = !manualTelegram;
+  }
+
+  if (manualChatIdField && manualChatIdInput) {
+    const presetUid = manualTelegramUserSelect ? normalizeText(manualTelegramUserSelect.value) : "";
+    if (manualTelegram && presetUid) {
+      manualChatIdField.hidden = true;
+      manualChatIdInput.value = "";
+    } else {
+      manualChatIdField.hidden = false;
+    }
+  }
+
+  syncManualReplyChatPlaceholder(manualChannelSelect, manualChatIdInput);
+}
+
+function collectAgentDispatcherReplyChannels(
+  manualChannelSelect,
+  manualChatIdInput,
+  manualBotSelect,
+  manualTelegramUserSelect
+) {
+  const manualChannel = normalizeText(manualChannelSelect.value) || "web";
+
+  if (manualChannel === "telegram") {
+    const presetUid = manualTelegramUserSelect ? normalizeText(manualTelegramUserSelect.value) : "";
+    let manualChatId = "";
+    if (presetUid) {
+      manualChatId = `telegram:${presetUid}`;
+    } else {
+      manualChatId = normalizeText(manualChatIdInput.value);
+      if (!manualChatId) {
+        return [];
+      }
+      if (/^\d+$/.test(manualChatId)) {
+        manualChatId = `telegram:${manualChatId}`;
+      }
+    }
+
+    const row = {
+      channel: "telegram",
+      chat_id: manualChatId
+    };
+
+    const botPick = manualBotSelect ? normalizeText(manualBotSelect.value) : "";
+    if (botPick) {
+      row.bot_id = botPick;
+    }
+
+    return [row];
   }
 
   const manualChatId = normalizeText(manualChatIdInput.value);
@@ -1376,7 +1483,7 @@ function collectAgentDispatcherReplyChannels(channelSelect, manualChannelSelect,
   }
 
   return [{
-    channel: normalizeText(manualChannelSelect.value) || "web",
+    channel: manualChannel,
     chat_id: manualChatId
   }];
 }
@@ -1399,14 +1506,14 @@ function isAgentDispatcherLaunchConfig(config) {
   );
 }
 
-function formatReplyChannelLabel(replyChannel) {
-  const name = replyChannel.chat_name || replyChannel.bot_name || replyChannel.chat_id;
-  return `${replyChannel.channel} · ${name}`;
-}
-
 function resolveDispatcherCardControl(detail) {
   const status = normalizeText(detail?.status);
   const hasLiveThread = hasLiveDispatcherThread(detail);
+  const recoverableWorker = normalizeText(detail?.continue_worker);
+
+  if (recoverableWorker) {
+    return { action: "continue", label: "Continue" };
+  }
 
   if (status === "paused" && hasLiveThread) {
     return { action: "resume", label: "Resume" };
@@ -1422,6 +1529,16 @@ function resolveDispatcherCardControl(detail) {
 function resolveDispatcherDetailControls(detail) {
   const status = normalizeText(detail?.status);
   const hasLiveThread = hasLiveDispatcherThread(detail);
+  const recoverableWorker = normalizeText(detail?.continue_worker);
+
+  if (recoverableWorker) {
+    return {
+      showContinue: true,
+      showLifecycle: false,
+      lifecycleAction: null,
+      lifecycleLabel: ""
+    };
+  }
 
   if (!hasLiveThread || status === "needs_reactivation") {
     return {
@@ -1451,6 +1568,17 @@ function resolveDispatcherDetailControls(detail) {
 
 function hasLiveDispatcherThread(detail) {
   return normalizeText(detail?.dispatcher_thread_id).length > 0;
+}
+
+function canContinueDispatchRow(row) {
+  return normalizeDispatchPlanStatus(row?.status) === "running"
+    && normalizeText(row?.thread_id).length === 0
+    && !isHumanDispatchModel(row?.model);
+}
+
+function isHumanDispatchModel(model) {
+  const normalized = normalizeText(model).toUpperCase();
+  return normalized === "HUMAN" || normalized === "PM";
 }
 
 function formatDispatcherControlProgress(action, threadId) {

@@ -23,6 +23,7 @@ export interface WatchdogDeps {
   log: Logger;
   intervalMs?: number;
   onDispatcherStalled?: (info: DispatcherStallInfo) => Promise<void>;
+  isDispatcherPaused?: (dispatchPlanPath: string) => Promise<boolean>;
 }
 
 export class ReconciliationWatchdog {
@@ -31,6 +32,7 @@ export class ReconciliationWatchdog {
   private readonly log: Logger;
   private readonly intervalMs: number;
   private readonly onDispatcherStalled: ((info: DispatcherStallInfo) => Promise<void>) | null;
+  private readonly isDispatcherPaused: ((dispatchPlanPath: string) => Promise<boolean>) | null;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -42,6 +44,7 @@ export class ReconciliationWatchdog {
     this.log = deps.log;
     this.intervalMs = deps.intervalMs ?? RECONCILE_INTERVAL_MS;
     this.onDispatcherStalled = deps.onDispatcherStalled ?? null;
+    this.isDispatcherPaused = deps.isDispatcherPaused ?? null;
   }
 
   start(): void {
@@ -145,6 +148,19 @@ export class ReconciliationWatchdog {
   ): Promise<void> {
     if (!this.onDispatcherStalled) {
       return;
+    }
+
+    if (this.isDispatcherPaused) {
+      try {
+        if (await this.isDispatcherPaused(dispatchPlanPath)) {
+          return;
+        }
+      } catch (error) {
+        this.log.warn("Watchdog failed to check dispatcher pause state", {
+          dispatchPlanPath,
+          error: asError(error).message
+        });
+      }
     }
 
     const state = lifecycleStore.load();

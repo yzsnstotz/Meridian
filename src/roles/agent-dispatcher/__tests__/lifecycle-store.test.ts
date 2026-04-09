@@ -210,6 +210,29 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("completes immediately when a deferred-success result reports a real completion artifact", async () => {
+    const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "dev_history", "v1_round", "R-02_report.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# R-02 Completion Report\n", "utf8");
+
+    harness.store.recordWorkerStart("R-02", "worker-thread-222", "22222222-2222-4222-8222-222222222222", [
+      "dev_history/v1_round/R-02_report.md"
+    ]);
+
+    harness.store.recordWorkerResult("R-02", buildHubResult({
+      thread_id: "worker-thread-222",
+      status: "success",
+      content: `Completed successfully. Report written to ${reportPath}`,
+      timestamp: "2026-04-03T12:05:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["R-02"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:05:00.000Z"
+    });
+  });
+
   it("marks workers as abandoned", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

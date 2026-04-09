@@ -177,6 +177,7 @@ export class LifecycleStore {
     trigger: string,
     options: {
       clearHubResult?: boolean;
+      incrementRetryCount?: boolean;
     } = {}
   ): void {
     const state = this.load();
@@ -185,13 +186,13 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
-    const isRetry = options.clearHubResult && status === "pending";
+    const shouldIncrementRetryCount = options.incrementRetryCount === true && status === "pending";
     state.workers[workerId] = {
       ...worker,
       last_seen_at: this.now(),
       status,
       hub_result: options.clearHubResult ? null : worker.hub_result,
-      retry_count: isRetry ? (worker.retry_count ?? 0) + 1 : (worker.retry_count ?? 0)
+      retry_count: shouldIncrementRetryCount ? (worker.retry_count ?? 0) + 1 : (worker.retry_count ?? 0)
     };
 
     this.logTransition(workerId, worker.status, status, trigger);
@@ -380,7 +381,15 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
   }
 
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
-    return deferSuccessUntilReconciled ? "running" : "completed";
+    if (!deferSuccessUntilReconciled) {
+      return "completed";
+    }
+
+    if (reportedOutputsExist(hubResult) || containsInlineReport(hubResult.content)) {
+      return "completed";
+    }
+
+    return "running";
   }
 
   return "running";
@@ -399,6 +408,82 @@ function isNonCompletionContent(content: string): boolean {
 
 function requiresOutputVerification(expectedOutputs: string[]): boolean {
   return expectedOutputs.length > 0;
+}
+
+function reportedOutputsExist(hubResult: HubResult): boolean {
+  return extractReportedOutputPaths(hubResult).some((filePath) => {
+    if (!isCompletionArtifactPath(filePath) || !fs.existsSync(filePath)) {
+      return false;
+    }
+
+    try {
+      return fs.statSync(filePath).size > 0;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function extractReportedOutputPaths(hubResult: HubResult): string[] {
+  const candidateTexts = [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const paths = new Set<string>();
+
+  for (const text of candidateTexts) {
+    for (const match of text.matchAll(/\/[^\s)`\]'"]+/g)) {
+      const candidatePath = normalizeReportedOutputPath(match[0]);
+      if (candidatePath) {
+        paths.add(candidatePath);
+      }
+    }
+  }
+
+  return [...paths];
+}
+
+function normalizeReportedOutputPath(candidatePath: string): string | null {
+  const normalized = candidatePath.trim().replace(/[),.;:]+$/g, "");
+  if (!path.isAbsolute(normalized)) {
+    return null;
+  }
+
+  return path.normalize(normalized);
+}
+
+function isCompletionArtifactPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  const basename = path.basename(normalized);
+
+  return normalized.includes("/dev_history/")
+    && (
+      /_report\.md$/.test(basename)
+      || basename === "delta_check_report.md"
+      || basename === "pr_review_report.md"
+    );
+}
+
+const INLINE_REPORT_PATTERNS = [
+  /completion\s+report/i,
+  /##\s*Files\s+Changed/i,
+  /##\s*Sub-task\s+Results/i,
+  /##\s*AI\s+Auto-Test\s+Results/i,
+  /\bStatus\b.*✅\s*Complete/i
+];
+
+const SPECIAL_INLINE_REPORT_PATTERNS = [
+  /#\s*Delta\s+Check\s+Report\b/i,
+  /#\s*PR[\s-]*Review\s+Report\b/i
+];
+
+function containsInlineReport(content: string): boolean {
+  if (SPECIAL_INLINE_REPORT_PATTERNS.some((pattern) => pattern.test(content))) {
+    return true;
+  }
+
+  return INLINE_REPORT_PATTERNS.filter((pattern) => pattern.test(content)).length >= 2;
 }
 
 function cloneWorker(worker: DispatchThreadStateV2["workers"][string]): DispatchThreadStateV2["workers"][string] {

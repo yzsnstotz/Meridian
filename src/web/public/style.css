@@ -190,6 +190,15 @@ code,
   gap: 8px;
 }
 
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .field span,
 dt {
   color: var(--muted);
@@ -569,6 +578,25 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.table-action-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.table-status-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.table-status-select {
+  min-width: 150px;
+  padding: 7px 12px;
+  border-radius: 12px;
+  font-size: 0.82rem;
 }
 
 .table-action-button {

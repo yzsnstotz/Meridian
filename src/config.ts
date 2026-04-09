@@ -4,7 +4,7 @@ import path from "node:path";
 // meridian-roles runtime configuration
 // All values overridable via environment variables — no hard-coded production paths
 
-const ENV_FILENAMES = [".env", ".env.local"];
+const ENV_FILENAMES = [".env", ".env.local", ".meridian_n02/.env"];
 
 loadEnvFiles();
 

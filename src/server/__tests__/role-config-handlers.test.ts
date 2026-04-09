@@ -4,11 +4,12 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import type { LaunchConfig, LaunchResult } from "../../roles/agent-dispatcher/launcher";
+import type { LaunchDispatchWorkerConfig, LaunchDispatchWorkerResult } from "../../roles/agent-dispatcher/worker-launcher";
 import { DispatcherRole } from "../../roles/definitions";
 import { PromptStore } from "../../roles/prompt-store";
 import { RoleRegistry } from "../../roles/role-registry";
@@ -758,16 +759,11 @@ describe("role config handlers", () => {
       dispatchPlanPath
     });
     const bootstrapError = "spawn failed: Command failed: listen EPERM: operation not permitted /tmp/tsx-501/84525.pipe";
-    const launchDispatcher = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        threadId: "dispatcher-thread-123"
-      })
-      .mockResolvedValueOnce({
-        ok: false,
-        threadId: "",
-        error: bootstrapError
-      });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: false,
+      threadId: "",
+      error: bootstrapError
+    }));
 
     await fs.writeFile(dispatchPlanPath, [
       "# Dispatch Plan",
@@ -802,7 +798,7 @@ describe("role config handlers", () => {
     });
 
     try {
-      const harness = createHarness(undefined, undefined, [], null, null, null, launchDispatcher);
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
       await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-bootstrap", dispatchPlanPath);
 
       await expect(invokeJson(
@@ -817,7 +813,7 @@ describe("role config handlers", () => {
         error: bootstrapError
       });
 
-      expect(launchDispatcher).toHaveBeenCalledTimes(2);
+      expect(launchDispatchWorker).toHaveBeenCalledTimes(1);
       await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toBe(originalPlan);
       await expect(fs.readFile(sidecarPath, "utf8")).resolves.toBe(originalSidecar);
     } finally {
@@ -860,6 +856,126 @@ describe("role config handlers", () => {
         dispatcher_thread_id: "dispatcher-thread-123"
       });
       expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-continue-paused")?.status).toBe("active");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("continues the sole pre-marked running worker when no worker thread was ever recorded", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pre-marked-worker-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | Ω+2 | R-10 | Feature Branch Scope Isolation | CODEX-HIGH | PR-REVIEW | TaskSpec | pre-marked before spawn failed |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "DISPATCHER": buildLifecycleWorker({
+          thread_id: "dispatcher-thread-123",
+          status: "completed"
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-pre-marked-worker", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-pre-marked-worker/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "continued",
+        message: "continued: R-10",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        worker: "R-10",
+        resume_result: {
+          worker: "R-10",
+          action: "retry",
+          status: "pending",
+          thread_id: null,
+          thread_killed: false,
+          retry_count: 0
+        }
+      });
+
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+        "| ⬜ | Ω+2 | R-10 | Feature Branch Scope Isolation | CODEX-HIGH | PR-REVIEW | TaskSpec | pre-marked before spawn failed |"
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("directly launches the sole eligible pending worker without relaunching dispatcher hub", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-sole-eligible-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const launchDispatcher = vi.fn(async () => ({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    }));
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-r11"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | Ω+2 | R-11 | GUI | CODEX-HIGH | — | TaskSpec | ready |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, launchDispatcher, launchDispatchWorker);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-sole-eligible", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-sole-eligible/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "continued",
+        message: "continued: R-11",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        worker: "R-11"
+      });
+
+      expect(launchDispatcher).toHaveBeenCalledTimes(1);
+      expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "R-11",
+        agentType: "codex",
+        modelId: undefined,
+        commandFilePath: "/tmp/agent_dispatch_command.md",
+        dispatchPlanPath
+      }));
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -1366,21 +1482,19 @@ describe("role config handlers", () => {
     }
   });
 
-  it("lists reply channels from the injected channel registry", async () => {
-    const harness = createHarness(undefined, undefined, [
-      {
-        channel: "telegram",
-        chat_id: "telegram:dispatch-room",
-        chat_name: "Dispatch Room"
-      },
-      {
-        channel: "web",
-        chat_id: "web:ops"
-      }
-    ]);
+  describe("GET /api/channels", () => {
+    beforeEach(() => {
+      vi.stubEnv("ALLOWED_USER_IDS", "");
+      vi.stubEnv("TELEGRAM_BOT_TOKEN", "");
+      vi.stubEnv("TELEGRAM_BOT_TOKENS", "");
+    });
 
-    await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
-      channels: [
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("lists reply channels from the injected channel registry", async () => {
+      const harness = createHarness(undefined, undefined, [
         {
           channel: "telegram",
           chat_id: "telegram:dispatch-room",
@@ -1390,15 +1504,80 @@ describe("role config handlers", () => {
           channel: "web",
           chat_id: "web:ops"
         }
-      ]
+      ]);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
+        channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:dispatch-room",
+            chat_name: "Dispatch Room"
+          },
+          {
+            channel: "web",
+            chat_id: "web:ops"
+          }
+        ],
+        telegram_bot_numeric_ids: [],
+        telegram_allowed_user_ids: []
+      });
     });
-  });
 
-  it("falls back to an empty channel list when the registry lookup fails", async () => {
-    const harness = createHarness(undefined, undefined, new Error("hub unavailable"));
+    it("falls back to an empty channel list when the registry lookup fails and env has no presets", async () => {
+      const harness = createHarness(undefined, undefined, new Error("hub unavailable"));
 
-    await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
-      channels: []
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
+        channels: [],
+        telegram_bot_numeric_ids: [],
+        telegram_allowed_user_ids: []
+      });
+    });
+
+    it("merges Telegram presets from ALLOWED_USER_IDS and bot tokens when hub lookup fails", async () => {
+      vi.stubEnv("ALLOWED_USER_IDS", "6137086342");
+      vi.stubEnv("TELEGRAM_BOT_TOKEN", "7628441374:AAFx");
+
+      const harness = createHarness(undefined, undefined, new Error("hub unavailable"));
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
+        channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:6137086342",
+            bot_id: "7628441374",
+            chat_name: "Allowed operator 6137086342 (ALLOWED_USER_IDS · bot 7628441374)"
+          }
+        ],
+        telegram_bot_numeric_ids: ["7628441374"],
+        telegram_allowed_user_ids: ["6137086342"]
+      });
+    });
+
+    it("dedupes hub channels against env presets with the same channel, chat_id, and bot_id", async () => {
+      vi.stubEnv("ALLOWED_USER_IDS", "6137086342");
+      vi.stubEnv("TELEGRAM_BOT_TOKEN", "7628441374:AAFx");
+
+      const harness = createHarness(undefined, undefined, [
+        {
+          channel: "telegram",
+          chat_id: "telegram:6137086342",
+          bot_id: "7628441374",
+          chat_name: "Hub label"
+        }
+      ]);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/channels")).resolves.toEqual({
+        channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:6137086342",
+            bot_id: "7628441374",
+            chat_name: "Hub label"
+          }
+        ],
+        telegram_bot_numeric_ids: ["7628441374"],
+        telegram_allowed_user_ids: ["6137086342"]
+      });
     });
   });
 
@@ -1420,6 +1599,7 @@ describe("role config handlers", () => {
       "",
       "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
       "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 4 | N-09 | Pre-flight | CODEX | — | PRD v2.2 | plan-only history |",
       "| ✅ | 5 | N-10 | API Layer | CODEX-XHIGH | N-09 | PRD v2.2 | ready |",
       "| 🔄 | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | running |"
     ].join("\n"), "utf8");
@@ -1528,6 +1708,17 @@ describe("role config handlers", () => {
         ]),
         dispatch_details: expect.arrayContaining([
           expect.objectContaining({
+            worker_id: "N-09",
+            status: "completed",
+            task: "Pre-flight",
+            model: "CODEX",
+            applied_model: "gpt-5.4 medium",
+            worker_thread_id: "",
+            trace_id: null,
+            command: null,
+            reply: null
+          }),
+          expect.objectContaining({
             worker_id: "N-10",
             status: "completed",
             task: "API Layer",
@@ -1563,7 +1754,12 @@ describe("role config handlers", () => {
           })
         ]),
         dispatch_plan: {
-          rows: [
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              status: "✅",
+              worker: "N-09",
+              stale: false
+            }),
             expect.objectContaining({
               status: "✅",
               worker: "N-10",
@@ -1578,7 +1774,7 @@ describe("role config handlers", () => {
               last_seen_at: "2026-03-28T00:00:00.000Z",
               thread_id: "worker-thread-456"
             })
-          ]
+          ])
         }
       });
       expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
@@ -1650,6 +1846,88 @@ describe("role config handlers", () => {
           "Worker started: 2026-03-28T00:00:00.000Z",
           "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
         ]
+      });
+      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to persisted dispatcher history when the live detail cache is empty", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-persisted-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 6 | R-11 | GUI | CODEX-HIGH | N-10 | PRD v2.2 | ready |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "DISPATCHER": buildLifecycleWorker({
+          thread_id: "dispatcher-thread-123",
+          status: "completed",
+          hub_result: {
+            trace_id: "33333333-3333-4333-8333-333333333333",
+            thread_id: "dispatcher-thread-123",
+            source: "codex",
+            status: "success",
+            content: "Dispatcher paused.",
+            details_text: [
+              "Your message:",
+              "Review the live plan and select the next worker.",
+              "",
+              "Agent reply:",
+              "The next eligible worker is R-11."
+            ].join("\n"),
+            attachments: [],
+            timestamp: "2026-04-08T00:21:00.000Z"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        "No cached detail found. Send a new request first, then run /detail again.",
+        attachToThread
+      );
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-persisted-detail",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-persisted-detail")).resolves.toMatchObject({
+        dispatcher_thread_id: "dispatcher-thread-123",
+        last_log_line: "The next eligible worker is R-11.",
+        session_log: expect.arrayContaining([
+          "Persisted dispatcher history:",
+          "Your message:",
+          "Review the live plan and select the next worker.",
+          "Agent reply:",
+          "The next eligible worker is R-11."
+        ])
       });
       expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
     } finally {
@@ -2050,7 +2328,8 @@ function createHarness(
   threadDetail: string | Error | null = null,
   attachToThread: ((threadId: string) => Promise<void>) | Error | null = null,
   sendHubRequest: ((message: HubMessage) => Promise<HubResult>) | Error | null = null,
-  launchDispatcher: ((config: LaunchConfig) => Promise<LaunchResult>) | null = null
+  launchDispatcher: ((config: LaunchConfig) => Promise<LaunchResult>) | null = null,
+  launchDispatchWorker: ((config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>) | null = null
 ) {
   const log = createLogger();
   const registry = new RoleRegistry();
@@ -2145,6 +2424,10 @@ function createHarness(
     stateStore,
     roleHandlers: createRoleHandlers({
       ...roleHandlersOptions,
+      launchDispatchWorker: launchDispatchWorker ?? (async () => ({
+        ok: true,
+        threadId: "worker-thread-continued"
+      })),
       log
     })
   };

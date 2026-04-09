@@ -1,4 +1,4 @@
-import type { BridgeMode, HubMessage } from "../../types";
+import type { BridgeMode, HubMessage, HubResult } from "../../types";
 import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
@@ -63,6 +63,14 @@ const spawnTool: ToolDefinition = {
         spawnDir,
         autoApprove
       }), SPAWN_TIMEOUT_MS);
+      const transportError = readSpawnTransportError(result);
+      if (transportError) {
+        return {
+          ok: false,
+          error: transportError
+        };
+      }
+
       const threadId = parseThreadId(result.content);
       if (!threadId) {
         return {
@@ -156,6 +164,26 @@ function parseThreadId(content: string): string | null {
   } catch {
     return null;
   }
+}
+
+function readSpawnTransportError(result: HubResult): string | null {
+  if (result.status === "success") {
+    return null;
+  }
+
+  const details = [
+    result.summary_text,
+    result.details_text,
+    result.content
+  ]
+    .map((value) => value?.trim())
+    .find((value) => Boolean(value));
+
+  if (details) {
+    return details;
+  }
+
+  return `Hub spawn failed with status: ${result.status}`;
 }
 
 function parseBridgeMode(mode: string | undefined): BridgeMode {

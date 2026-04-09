@@ -39,11 +39,12 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("{{");
   });
 
-  it("documents the tsx tool entrypoint and the current CLI surface", () => {
+  it("documents the meridian-tool entrypoint and the current CLI surface", () => {
     const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).toContain(MERIDIAN_TOOL_DISPLAY_COMMAND);
     expect(prompt).not.toContain("npx meridian-tool");
+    expect(prompt).not.toContain("/tmp/tsx-");
     expect(prompt).toContain("spawn --agent-type <agent_type> [--model-id <model_id>] [--spawn-dir <path>] [--mode bridge|pane_bridge]");
     expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
     expect(prompt).toContain("kill --thread-id <id>");

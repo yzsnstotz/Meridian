@@ -60,7 +60,7 @@
         <div class="panel-heading">
           <div>
             <h2>Start Agent Dispatcher</h2>
-            <p class="muted">Launch the dispatcher controller against a dispatch plan and reply-channel set.</p>
+            <p class="muted">Launch the dispatcher controller with a dispatch plan and manual reply routing (web or Telegram).</p>
           </div>
         </div>
         <form id="start-agent-dispatcher-form" class="stack">
@@ -86,23 +86,6 @@
             />
           </label>
 
-          <label class="field">
-            <span>user_reply_channels</span>
-            <select id="agent-dispatcher-channel-select" name="user_reply_channels" multiple size="5"></select>
-          </label>
-
-          <div
-            id="agent-dispatcher-reply-channel-callout"
-            class="reply-channel-callout"
-            role="note"
-            hidden
-          >
-            <strong>Meridian Hub returned no reply channels.</strong>
-            Fill <strong>manual_reply_chat_id</strong> below (for example <code>web:gui-demo</code>) so the
-            dispatcher has a destination for completion messages. This is expected when Hub has not registered
-            web/Telegram channels for this roles service yet.
-          </div>
-
           <div id="agent-dispatcher-manual-fallback-wrap" class="summary-grid manual-fallback-wrap">
             <label class="field">
               <span>manual_reply_channel</span>
@@ -112,7 +95,25 @@
               </select>
             </label>
 
-            <label class="field">
+            <label class="field" id="agent-dispatcher-manual-telegram-user-field" hidden>
+              <span>telegram_user_id</span>
+              <select
+                id="agent-dispatcher-manual-telegram-user"
+                name="manual_telegram_user_id"
+                aria-label="Telegram user id from ALLOWED_USER_IDS"
+              >
+                <option value="">Custom — type chat id below</option>
+              </select>
+            </label>
+
+            <label class="field" id="agent-dispatcher-manual-bot-field" hidden>
+              <span>manual_reply_bot_id</span>
+              <select id="agent-dispatcher-manual-bot-id" name="manual_reply_bot_id" aria-label="Telegram bot numeric id">
+                <option value="">Hub default (omit bot_id)</option>
+              </select>
+            </label>
+
+            <label class="field" id="agent-dispatcher-manual-chat-id-field">
               <span>manual_reply_chat_id</span>
               <input
                 id="agent-dispatcher-manual-chat-id"
@@ -120,7 +121,14 @@
                 type="text"
                 placeholder="web:gui-demo"
                 autocomplete="off"
+                aria-describedby="agent-dispatcher-manual-chat-id-hint"
               />
+              <small id="agent-dispatcher-manual-chat-id-hint" class="field-hint muted">
+                Web: required — use a composite id such as <code>web:gui-demo</code>. Telegram: if you selected an
+                operator in <strong>telegram_user_id</strong>, you do <strong>not</strong> need this field (it stays
+                hidden). Use this only for <strong>Custom</strong> operator — numeric id or
+                <code>telegram:&lt;id&gt;</code>.
+              </small>
             </label>
           </div>
 

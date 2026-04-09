@@ -8,10 +8,15 @@ export interface MeridianToolCommandSpec {
   entrypointPath: string;
 }
 
+export interface ResolveMeridianToolCommandOptions {
+  repoRoot?: string;
+  runtimeTree?: "src" | "dist";
+  existsSync?: (filePath: string) => boolean;
+  nodeExecutable?: string;
+  forceDevelopment?: boolean;
+}
+
 const MERIDIAN_ROLES_REPO_ROOT = path.resolve(__dirname, "../../..");
-const SOURCE_TOOL_ENTRYPOINT = path.join(MERIDIAN_ROLES_REPO_ROOT, "src/bin/meridian-tool.ts");
-const DIST_TOOL_ENTRYPOINT = path.join(MERIDIAN_ROLES_REPO_ROOT, "dist/bin/meridian-tool.js");
-const LOCAL_TSX_EXECUTABLE = path.join(MERIDIAN_ROLES_REPO_ROOT, "node_modules/.bin/tsx");
 
 export const MERIDIAN_TOOL_COMMAND = resolveMeridianToolCommand();
 export const MERIDIAN_TOOL_EXECUTABLE = MERIDIAN_TOOL_COMMAND.command;
@@ -22,39 +27,49 @@ export function buildMeridianToolArgs(args: string[]): string[] {
   return [...MERIDIAN_TOOL_COMMAND.args, ...args];
 }
 
-export function resolveMeridianToolCommand(): MeridianToolCommandSpec {
-  const preferredRuntimeTree = __dirname.includes(`${path.sep}dist${path.sep}`) ? "dist" : "src";
+export function resolveMeridianToolCommand(options: ResolveMeridianToolCommandOptions = {}): MeridianToolCommandSpec {
+  const repoRoot = path.resolve(options.repoRoot ?? MERIDIAN_ROLES_REPO_ROOT);
+  const sourceToolEntrypoint = path.join(repoRoot, "src/bin/meridian-tool.ts");
+  const distToolEntrypoint = path.join(repoRoot, "dist/bin/meridian-tool.js");
+  const localTsxExecutable = path.join(repoRoot, "node_modules/.bin/tsx");
+  const existsSync = options.existsSync ?? fs.existsSync;
+  const runtimeTree = options.runtimeTree ?? (__dirname.includes(`${path.sep}dist${path.sep}`) ? "dist" : "src");
+  const nodeExecutable = options.nodeExecutable ?? process.execPath;
 
-  if (preferredRuntimeTree === "dist" && fs.existsSync(DIST_TOOL_ENTRYPOINT)) {
-    return buildNodeCommand(DIST_TOOL_ENTRYPOINT);
+  if (!options.forceDevelopment && runtimeTree === "dist" && existsSync(distToolEntrypoint)) {
+    return buildNodeCommand(distToolEntrypoint, nodeExecutable);
   }
 
-  if (preferredRuntimeTree === "src" && fs.existsSync(SOURCE_TOOL_ENTRYPOINT)) {
-    return buildTsxCommand(SOURCE_TOOL_ENTRYPOINT);
+  if (existsSync(sourceToolEntrypoint)) {
+    return buildTsxCommand(sourceToolEntrypoint, localTsxExecutable, existsSync);
   }
 
-  if (fs.existsSync(DIST_TOOL_ENTRYPOINT)) {
-    return buildNodeCommand(DIST_TOOL_ENTRYPOINT);
+  if (existsSync(distToolEntrypoint)) {
+    return buildNodeCommand(distToolEntrypoint, nodeExecutable);
   }
 
-  return buildTsxCommand(SOURCE_TOOL_ENTRYPOINT);
+  return buildTsxCommand(sourceToolEntrypoint, localTsxExecutable, existsSync);
 }
 
-function buildNodeCommand(entrypointPath: string): MeridianToolCommandSpec {
+function buildNodeCommand(entrypointPath: string, nodeExecutable: string): MeridianToolCommandSpec {
   return {
-    command: process.execPath,
+    command: nodeExecutable,
     args: [entrypointPath],
-    displayCommand: `${shellQuote(process.execPath)} ${shellQuote(entrypointPath)}`,
+    displayCommand: `${shellQuote(nodeExecutable)} ${shellQuote(entrypointPath)}`,
     entrypointPath
   };
 }
 
-function buildTsxCommand(entrypointPath: string): MeridianToolCommandSpec {
-  if (fs.existsSync(LOCAL_TSX_EXECUTABLE)) {
+function buildTsxCommand(
+  entrypointPath: string,
+  localTsxExecutable: string,
+  existsSync: (filePath: string) => boolean
+): MeridianToolCommandSpec {
+  if (existsSync(localTsxExecutable)) {
     return {
-      command: LOCAL_TSX_EXECUTABLE,
+      command: localTsxExecutable,
       args: [entrypointPath],
-      displayCommand: `${shellQuote(LOCAL_TSX_EXECUTABLE)} ${shellQuote(entrypointPath)}`,
+      displayCommand: `${shellQuote(localTsxExecutable)} ${shellQuote(entrypointPath)}`,
       entrypointPath
     };
   }

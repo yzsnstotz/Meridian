@@ -11,8 +11,10 @@ import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import { resolveDispatchRepoRoot } from "../roles/agent-dispatcher/dispatch-paths";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
+import { resolveDispatchModelMapFromMarkdown } from "../roles/agent-dispatcher/model-routing";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
+import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
 import { executeUpdateWorkerStatusAction } from "../tool-gateway/tools/update-status";
@@ -43,9 +45,11 @@ import {
   BridgeModeSchema,
   type DispatchThreadStateV2,
   type DispatchWorkerState,
+  type LifecycleStatus,
   DispatchTaskSchema,
   DispatcherConfigSchema,
   DispatcherEditorConfigPatchSchema,
+  HubMessageSchema,
   HubResultSchema,
   KillPolicySchema,
   ReplyChannelSchema,
@@ -62,10 +66,17 @@ import {
   type RoleType,
   type RoleState
 } from "../types";
+import {
+  buildEnvReplyChannelPresets,
+  listAllowedUserIdsFromEnv,
+  listTelegramBotNumericIdsFromEnv,
+  mergeReplyChannelLists
+} from "./env-reply-channel-presets";
 import type { Logger } from "../roles/base-role";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 type DispatcherThreadAwareRole = {
   getDispatcherThreadId(): string | null;
 };
@@ -122,7 +133,8 @@ type RoleRouteMatch =
   | { kind: "update-worker-status"; threadId: string; workerId: string }
   | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
-  | { kind: "delete-role"; threadId: string };
+  | { kind: "delete-role"; threadId: string }
+  | { kind: "hub-relay" };
 
 const PACKAGE_VERSION = readPackageVersion();
 
@@ -134,6 +146,7 @@ export interface RoleHandlersOptions {
   getThreadDetail?: (threadId: string) => Promise<string>;
   attachToThread?: (threadId: string) => Promise<void>;
   sendHubRequest?: (message: HubMessage) => Promise<HubResult>;
+  launchDispatchWorker?: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>;
   log?: Logger;
 }
 
@@ -209,6 +222,7 @@ export interface RoleDetailResponse {
   dispatch_plan_path?: string;
   command_file_path?: string;
   dispatcher_thread_id?: string | null;
+  continue_worker?: string | null;
   current_worker?: string | null;
   last_log_line?: string | null;
   user_reply_channels?: ReplyChannel[];
@@ -250,6 +264,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const getThreadDetail = options.getThreadDetail;
   const attachToThread = options.attachToThread ?? defaultAttachToThread;
   const sendHubRequestImpl = options.sendHubRequest ?? sendHubRequest;
+  const launchDispatchWorkerImpl = options.launchDispatchWorker ?? launchDispatchWorker;
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   function syncActiveRolesFromRunner(): void {
@@ -416,6 +431,12 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           case "delete-role":
             writeJson(response, 200, await deleteRole(route.threadId));
             return true;
+          case "hub-relay": {
+            const hubMessage = HubMessageSchema.parse(await readJsonBody(request));
+            const result = await sendHubRequestImpl(hubMessage);
+            writeJson(response, 200, result);
+            return true;
+          }
         }
       } catch (error) {
         log.warn("Role handler request failed", {
@@ -555,28 +576,70 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
     const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
+    const lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    const effectiveWorkerId = workerId
+      ?? resolveImplicitContinueWorker(dispatchPlanData.rows, lifecycleState)
+      ?? resolveSoleEligibleContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
-    const runningWorkers = findRunningNonHumanWorkers(dispatchPlanData.rows);
+    const runningWorkers = findRunningNonHumanWorkers(dispatchPlanData.rows)
+      .filter((candidate) => candidate !== effectiveWorkerId);
     if (runningWorkers.length > 0) {
       return {
         ok: true,
         status: "still_blocked",
         message: `still blocked: running worker(s): ${runningWorkers.join(", ")}`,
-        ...(workerId ? { worker: workerId } : {}),
+        ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {}),
         running_workers: runningWorkers
       };
     }
 
     const snapshot = await snapshotDispatchFiles(dispatchPlanPath);
     let resumeResult: Awaited<ReturnType<typeof executeResumeWorkerAction>> | undefined;
+    const effectiveDispatcherThreadId = (() => {
+      const activeRole = options.runner.getRole(threadId);
+      if (activeRole?.roleType === "agent-dispatcher") {
+        return extractDispatcherThreadId(activeRole) ?? lifecycleState.dispatcher.thread_id ?? undefined;
+      }
+
+      return lifecycleState.dispatcher.thread_id ?? undefined;
+    })();
 
     try {
-      if (workerId) {
+      const effectiveWorkerRow = effectiveWorkerId
+        ? dispatchPlanData.rows.find((row) => row.worker === effectiveWorkerId) ?? null
+        : null;
+
+      if (effectiveWorkerId && shouldResetWorkerBeforeContinue(effectiveWorkerRow)) {
         resumeResult = await executeResumeWorkerAction({
           planPath: dispatchPlanPath,
-          workerId,
+          workerId: effectiveWorkerId,
           action: "retry"
         });
+      }
+
+      if (effectiveWorkerId) {
+        const launched = await launchWorkerFromDispatchPlan(
+          context.effectiveConfig,
+          dispatchPlanData,
+          effectiveWorkerId,
+          launchDispatchWorkerImpl
+        );
+        if (!launched.ok) {
+          throw new Error(launched.error ?? "Failed to launch dispatch worker");
+        }
+
+        if (shouldResumeAfterContinue) {
+          await setAgentDispatcherStatus(threadId, ACTIVE_ROLE_STATUS);
+        }
+
+        return {
+          ok: true,
+          status: "continued",
+          message: `continued: ${effectiveWorkerId}`,
+          ...(effectiveDispatcherThreadId ? { dispatcher_thread_id: effectiveDispatcherThreadId } : {}),
+          worker: effectiveWorkerId,
+          ...(resumeResult ? { resume_result: resumeResult } : {})
+        };
       }
 
       const started = await startAgentDispatcherHubSession(threadId);
@@ -587,9 +650,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       return {
         ok: true,
         status: "continued",
-        message: workerId ? `continued: ${workerId}` : "continued: dispatcher",
+        message: effectiveWorkerId ? `continued: ${effectiveWorkerId}` : "continued: dispatcher",
         dispatcher_thread_id: started.dispatcher_thread_id,
-        ...(workerId ? { worker: workerId } : {}),
+        ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {}),
         ...(resumeResult ? { resume_result: resumeResult } : {})
       };
     } catch (error) {
@@ -600,7 +663,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           ok: true,
           status: "local_tool_bootstrap_failed",
           message: `local tool bootstrap failed: ${message}`,
-          ...(workerId ? { worker: workerId } : {}),
+          ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {}),
           error: message
         };
       }
@@ -647,18 +710,29 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     }
   }
 
-  async function getChannels(): Promise<{ channels: ReplyChannel[] }> {
+  async function getChannels(): Promise<{
+    channels: ReplyChannel[];
+    telegram_bot_numeric_ids: string[];
+    telegram_allowed_user_ids: string[];
+  }> {
+    let hubChannels: ReplyChannel[] = [];
+
     try {
-      return {
-        channels: ReplyChannelSchema.array().parse(await listReplyChannels())
-      };
+      hubChannels = ReplyChannelSchema.array().parse(await listReplyChannels());
     } catch (error) {
-      log.warn("Reply channel lookup failed; returning empty list", {
+      log.warn("Reply channel lookup failed; merging env presets only", {
         error: getErrorMessage(error)
       });
-
-      return { channels: [] };
     }
+
+    const envPresets = buildEnvReplyChannelPresets();
+    const merged = mergeReplyChannelLists(hubChannels, envPresets);
+
+    return {
+      channels: ReplyChannelSchema.array().parse(merged),
+      telegram_bot_numeric_ids: listTelegramBotNumericIdsFromEnv(),
+      telegram_allowed_user_ids: listAllowedUserIdsFromEnv()
+    };
   }
 
   async function getHealth(): Promise<{
@@ -833,6 +907,9 @@ async function getRole(
     options.log
   );
   const dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
+  const dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
+  const continueWorker = resolveImplicitContinueWorker(dispatchPlanRows, lifecycleState)
+    ?? resolveSoleEligibleContinueWorker(dispatchPlanRows, lifecycleState);
   const currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
   const currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
   const sessionLog = await loadDispatcherSessionLog(
@@ -842,6 +919,7 @@ async function getRole(
     {
       currentWorker,
       currentWorkerEntry,
+      dispatcherEntry,
       dispatchPlanPath: agentDispatcherConfig.dispatch_plan_path,
       roleId: role.threadId,
       roleStatus: role.status
@@ -854,6 +932,7 @@ async function getRole(
     dispatch_plan_path: agentDispatcherConfig.dispatch_plan_path,
     command_file_path: agentDispatcherConfig.command_file_path,
     dispatcher_thread_id: dispatcherThreadId,
+    continue_worker: continueWorker,
     current_worker: currentWorker,
     last_log_line: extractLastLogLine(sessionLog),
     user_reply_channels: agentDispatcherConfig.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
@@ -1290,6 +1369,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     return { kind: "delete-role", threadId: parts[2] };
   }
 
+  if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "hub-relay") {
+    return { kind: "hub-relay" };
+  }
+
   return null;
 }
 
@@ -1447,9 +1530,156 @@ function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {
     .filter((worker) => worker.trim().length > 0);
 }
 
+function resolveImplicitContinueWorker(
+  rows: DispatchPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  const runningRows = rows.filter((row) => row.status === "🔄" && !isHumanDispatchRow(row));
+  if (runningRows.length !== 1) {
+    return null;
+  }
+
+  const [row] = runningRows;
+  if (!row) {
+    return null;
+  }
+
+  const worker = lifecycleState.workers[row.worker];
+  if (worker?.status === "running" && worker.thread_id.trim().length > 0) {
+    return null;
+  }
+
+  const normalizedWorkerId = row.worker.trim();
+  return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
+}
+
+function resolveSoleEligibleContinueWorker(
+  rows: DispatchPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  const rowsByWorker = new Map(rows.map((row) => [row.worker, row]));
+  const eligibleWorkers = rows
+    .filter((row) => isEligibleDirectContinueRow(row, rowsByWorker, lifecycleState))
+    .map((row) => row.worker.trim())
+    .filter((workerId) => workerId.length > 0);
+
+  return eligibleWorkers.length === 1 ? eligibleWorkers[0] ?? null : null;
+}
+
+function isEligibleDirectContinueRow(
+  row: DispatchPlanRow,
+  rowsByWorker: Map<string, DispatchPlanRow>,
+  lifecycleState: DispatchThreadStateV2
+): boolean {
+  if (isHumanDispatchRow(row)) {
+    return false;
+  }
+
+  switch (row.status.trim()) {
+    case "⚠️ ABANDONED":
+      return true;
+    case "❌":
+      return (lifecycleState.workers[row.worker]?.retry_count ?? 0) < 2;
+    case "⬜":
+      return areDispatchDependenciesSatisfied(row, rowsByWorker);
+    default:
+      return false;
+  }
+}
+
+function areDispatchDependenciesSatisfied(
+  row: DispatchPlanRow,
+  rowsByWorker: Map<string, DispatchPlanRow>
+): boolean {
+  return parseDependsOnWorkers(row.depends_on).every((dependencyWorkerId) => {
+    const dependencyRow = rowsByWorker.get(dependencyWorkerId);
+    return dependencyRow ? isDispatchDependencyTerminal(dependencyRow.status) : false;
+  });
+}
+
+function parseDependsOnWorkers(dependsOn: string | undefined): string[] {
+  if (!dependsOn) {
+    return [];
+  }
+
+  const trimmed = dependsOn.trim();
+  if (trimmed.length === 0 || trimmed === "—") {
+    return [];
+  }
+
+  return trimmed
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0 && value !== "—");
+}
+
+function isDispatchDependencyTerminal(status: string | undefined): boolean {
+  const normalized = status?.trim();
+  return normalized === "✅" || normalized === "⛔ SKIPPED";
+}
+
+function shouldResetWorkerBeforeContinue(row: DispatchPlanRow | null): boolean {
+  switch (row?.status.trim()) {
+    case "⚠️ ABANDONED":
+    case "❌":
+    case "🔄":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function isHumanDispatchRow(row: DispatchPlanRow): boolean {
   const model = row.model.trim().toUpperCase();
   return model === "HUMAN" || model === "PM";
+}
+
+async function launchWorkerFromDispatchPlan(
+  config: AgentDispatcherConfig,
+  dispatchPlanData: DispatchPlanData,
+  workerId: string,
+  launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>
+): Promise<LaunchDispatchWorkerResult> {
+  const dispatchPlanRow = dispatchPlanData.rows.find((row) => row.worker === workerId) ?? null;
+  if (!dispatchPlanRow) {
+    throw new Error(`Worker not found in dispatch plan: ${workerId}`);
+  }
+
+  if (isHumanDispatchRow(dispatchPlanRow)) {
+    throw new Error(`Worker is not launchable: ${workerId}`);
+  }
+
+  const markdown = await fs.readFile(config.dispatch_plan_path, "utf8");
+  const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
+  const modelCode = dispatchPlanRow.model.trim();
+  const resolvedModel = modelCode ? resolvedModelMap[modelCode] : undefined;
+
+  return launchWorker({
+    agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
+    mode: config.mode,
+    commandFilePath: config.command_file_path,
+    dispatchPlanPath: config.dispatch_plan_path,
+    workerId,
+    modelId: resolvedModel?.model_id?.trim() || undefined
+  });
+}
+
+function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
+  const normalized = modelCode.trim().toUpperCase();
+  if (normalized.startsWith("CODEX")) {
+    return "codex";
+  }
+  if (normalized.startsWith("CLAUDE")) {
+    return "claude";
+  }
+  if (normalized.startsWith("GEMINI")) {
+    return "gemini";
+  }
+  if (normalized.startsWith("CURSOR")) {
+    return "cursor";
+  }
+
+  return defaultAgentType;
 }
 
 function isLocalToolBootstrapFailure(message: string): boolean {
@@ -1553,6 +1783,7 @@ async function loadDispatcherSessionLog(
   fallbackContext: {
     currentWorker: string | null;
     currentWorkerEntry: DispatchWorkerState | null;
+    dispatcherEntry: DispatchWorkerState | null;
     dispatchPlanPath: string;
     roleId: string;
     roleStatus: string;
@@ -1588,7 +1819,7 @@ async function loadDispatcherSessionLog(
       dispatcherThreadId,
       error: getErrorMessage(error)
     });
-    return fallbackLog;
+    return buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? fallbackLog;
   }
 }
 
@@ -1609,48 +1840,107 @@ function buildDispatchWorkerDetails(
   }
 ): DispatchWorkerDetail[] {
   const dispatchPlanByWorker = new Map(dispatchPlanRows.map((row) => [row.worker, row]));
+  const details = dispatchPlanRows
+    .filter((row) => shouldIncludeDispatchWorkerDetail(row, lifecycleState.workers[row.worker]))
+    .map((row) => buildDispatchWorkerDetail(
+      row.worker,
+      row,
+      lifecycleState.workers[row.worker] ?? null,
+      modelLegend,
+      context
+    ));
 
-  return Object.entries(lifecycleState.workers)
+  const orphanDetails = Object.entries(lifecycleState.workers)
+    .filter(([workerId]) => !dispatchPlanByWorker.has(workerId))
     .sort((left, right) => Date.parse(left[1].started_at) - Date.parse(right[1].started_at))
-    .map(([workerId, worker]) => {
-      const dispatchPlanRow = dispatchPlanByWorker.get(workerId);
-      const conversation = parseDispatchConversation(worker.hub_result?.details_text);
-      const commandFallback = conversation.command ?? worker.command_preamble ?? null;
-      const replyContent = resolveDispatchReply(worker.hub_result, conversation.reply);
-      const appliedModel = resolveAppliedModel(dispatchPlanRow?.model ?? null, modelLegend);
+    .map(([workerId, worker]) => buildDispatchWorkerDetail(
+      workerId,
+      null,
+      worker,
+      modelLegend,
+      context
+    ));
 
-      return {
-        worker_id: workerId,
-        status: worker.status,
-        task: dispatchPlanRow?.task ?? null,
-        model: dispatchPlanRow?.model ?? null,
-        applied_model: appliedModel,
-        worker_thread_id: worker.thread_id,
-        trace_id: worker.hub_result?.trace_id ?? worker.trace_id,
-        command: commandFallback
-          ? {
-              trace_id: worker.trace_id,
-              sender_name: context.dispatcherThreadId ?? context.roleId,
-              sender_agent_type: context.dispatcherAgentType,
-              sender_model: null,
-              sender_thread_id: context.dispatcherThreadId,
-              timestamp: worker.started_at,
-              content: commandFallback
-            }
-          : null,
-        reply: replyContent
-          ? {
-              trace_id: worker.hub_result?.trace_id ?? worker.trace_id,
-              sender_name: worker.hub_result?.thread_id ?? worker.thread_id,
-              sender_agent_type: worker.hub_result?.source ?? null,
-              sender_model: appliedModel,
-              sender_thread_id: worker.hub_result?.thread_id ?? worker.thread_id,
-              timestamp: worker.hub_result?.timestamp ?? worker.last_seen_at,
-              content: replyContent
-            }
-          : null
-      };
-    });
+  return [...details, ...orphanDetails];
+}
+
+function shouldIncludeDispatchWorkerDetail(
+  dispatchPlanRow: DispatchPlanRow,
+  worker: DispatchWorkerState | undefined
+): boolean {
+  if (worker) {
+    return true;
+  }
+
+  return mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow.status) !== "pending";
+}
+
+function buildDispatchWorkerDetail(
+  workerId: string,
+  dispatchPlanRow: DispatchPlanRow | null,
+  worker: DispatchWorkerState | null,
+  modelLegend: DispatchPlanModelLegend,
+  context: {
+    roleId: string;
+    dispatcherThreadId: string | null;
+    dispatcherAgentType: string;
+  }
+): DispatchWorkerDetail {
+  const conversation = parseDispatchConversation(worker?.hub_result?.details_text);
+  const commandFallback = conversation.command ?? worker?.command_preamble ?? null;
+  const replyContent = resolveDispatchReply(worker?.hub_result, conversation.reply);
+  const appliedModel = resolveAppliedModel(dispatchPlanRow?.model ?? null, modelLegend);
+
+  return {
+    worker_id: workerId,
+    status: worker?.status ?? mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow?.status) ?? "pending",
+    task: dispatchPlanRow?.task ?? null,
+    model: dispatchPlanRow?.model ?? null,
+    applied_model: appliedModel,
+    worker_thread_id: worker?.thread_id ?? dispatchPlanRow?.thread_id ?? "",
+    trace_id: worker?.hub_result?.trace_id ?? worker?.trace_id ?? null,
+    command: commandFallback
+      ? {
+          trace_id: worker?.trace_id ?? null,
+          sender_name: context.dispatcherThreadId ?? context.roleId,
+          sender_agent_type: context.dispatcherAgentType,
+          sender_model: null,
+          sender_thread_id: context.dispatcherThreadId,
+          timestamp: worker?.started_at ?? null,
+          content: commandFallback
+        }
+      : null,
+    reply: replyContent
+      ? {
+          trace_id: worker?.hub_result?.trace_id ?? worker?.trace_id ?? null,
+          sender_name: worker?.hub_result?.thread_id ?? worker?.thread_id ?? workerId,
+          sender_agent_type: worker?.hub_result?.source ?? null,
+          sender_model: appliedModel,
+          sender_thread_id: worker?.hub_result?.thread_id ?? worker?.thread_id ?? null,
+          timestamp: worker?.hub_result?.timestamp ?? worker?.last_seen_at ?? null,
+          content: replyContent
+        }
+      : null
+  };
+}
+
+function mapDispatchPlanStatusToLifecycleStatus(status: string | null | undefined): LifecycleStatus | null {
+  switch (status?.trim()) {
+    case "🔄":
+      return "running";
+    case "✅":
+      return "completed";
+    case "❌":
+      return "failed";
+    case "⚠️ ABANDONED":
+      return "abandoned";
+    case "⛔ SKIPPED":
+      return "skipped";
+    case "⬜":
+      return "pending";
+    default:
+      return null;
+  }
 }
 
 function parseDispatchConversation(detailsText: string | undefined): { command: string | null; reply: string | null } {
@@ -1737,6 +2027,7 @@ function buildFallbackSessionLog(
   context: {
     currentWorker: string | null;
     currentWorkerEntry: DispatchWorkerState | null;
+    dispatcherEntry: DispatchWorkerState | null;
     dispatchPlanPath: string;
     roleStatus: string;
   },
@@ -1761,15 +2052,67 @@ function buildEmptyCachedDetailLog(
   context: {
     currentWorker: string | null;
     currentWorkerEntry: DispatchWorkerState | null;
+    dispatcherEntry: DispatchWorkerState | null;
     dispatchPlanPath: string;
     roleStatus: string;
   },
   dispatcherThreadId: string | null
 ): string[] {
-  return [
+  return buildPersistedDispatcherSessionLog(context, dispatcherThreadId)
+    ?? [
+      ...buildFallbackSessionLog(context, dispatcherThreadId),
+      "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
+    ];
+}
+
+function buildPersistedDispatcherSessionLog(
+  context: {
+    currentWorker: string | null;
+    currentWorkerEntry: DispatchWorkerState | null;
+    dispatcherEntry: DispatchWorkerState | null;
+    dispatchPlanPath: string;
+    roleStatus: string;
+  },
+  dispatcherThreadId: string | null
+): string[] | null {
+  const dispatcherEntry = context.dispatcherEntry;
+  if (!dispatcherEntry) {
+    return null;
+  }
+
+  const detailsText = normalizeConversationSection(dispatcherEntry.hub_result?.details_text);
+  if (detailsText) {
+    return [
+      ...buildFallbackSessionLog(context, dispatcherThreadId),
+      "Persisted dispatcher history:",
+      ...splitLogLines(detailsText)
+    ];
+  }
+
+  const conversation = parseDispatchConversation(dispatcherEntry.hub_result?.details_text);
+  const command = conversation.command ?? dispatcherEntry.command_preamble ?? null;
+  const reply = resolveDispatchReply(dispatcherEntry.hub_result, conversation.reply);
+  if (!command && !reply) {
+    return null;
+  }
+
+  const lines = [
     ...buildFallbackSessionLog(context, dispatcherThreadId),
-    "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
+    "Persisted dispatcher history:"
   ];
+  if (command) {
+    lines.push("Your message:");
+    lines.push(...splitLogLines(command));
+  }
+  if (reply) {
+    if (command) {
+      lines.push("");
+    }
+    lines.push("Agent reply:");
+    lines.push(...splitLogLines(reply));
+  }
+
+  return lines;
 }
 
 function isEmptyCachedDetailResponse(lines: string[]): boolean {

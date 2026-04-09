@@ -135,7 +135,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 function writeUsage(stderr: CliIo["stderr"], tools: ToolDefinition[]): void {
   const sortedTools = [...tools].sort((left, right) => left.name.localeCompare(right.name));
-  const lines = ["Usage: npx tsx src/bin/meridian-tool.ts <tool-name> [--param value ...]", "", "Registered tools:"];
+  const lines = ["Usage: meridian-roles <tool-name> [--param value ...]", "", "Registered tools:"];
 
   if (sortedTools.length === 0) {
     lines.push("  (none)");

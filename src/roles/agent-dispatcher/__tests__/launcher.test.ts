@@ -9,7 +9,12 @@ import {
   type LaunchConfig,
   type LaunchDispatcherDeps
 } from "../launcher";
-import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE, MERIDIAN_TOOL_DISPLAY_COMMAND } from "../tool-entrypoint";
+import {
+  buildMeridianToolArgs,
+  MERIDIAN_TOOL_EXECUTABLE,
+  MERIDIAN_TOOL_DISPLAY_COMMAND,
+  resolveMeridianToolCommand
+} from "../tool-entrypoint";
 
 describe("launchDispatcher", () => {
   afterEach(async () => {
@@ -67,6 +72,26 @@ describe("launchDispatcher", () => {
       ok: false,
       threadId: "",
       error: "spawn failed: Command failed: npx"
+    });
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("prefers the structured CLI error payload when meridian-tool spawn exits non-zero", async () => {
+    const cliError = new Error("Command failed: meridian-tool");
+    Object.assign(cliError, {
+      stdout: "{\"ok\":false,\"error\":\"Hub rejected spawn\"}\n",
+      stderr: "Usage: meridian-roles\n"
+    });
+    const harness = await createHarness({
+      execFileError: cliError
+    });
+
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      threadId: "",
+      error: "spawn failed: Hub rejected spawn"
     });
     expect(harness.spawn).not.toHaveBeenCalled();
   });
@@ -132,7 +157,60 @@ describe("dispatcherHubSystemPromptPath", () => {
 
   it("resolves the meridian-tool command independently of process.cwd()", () => {
     expect(MERIDIAN_TOOL_DISPLAY_COMMAND).toContain("meridian-tool");
-    expect(MERIDIAN_TOOL_DISPLAY_COMMAND).not.toContain(" src/bin/meridian-tool.ts ");
+    expect(MERIDIAN_TOOL_DISPLAY_COMMAND.length).toBeGreaterThan(0);
+  });
+
+  it("uses the source meridian-tool entrypoint while meridian-roles is running from src", () => {
+    const repoRoot = "/tmp/meridian-roles";
+    const command = resolveMeridianToolCommand({
+      repoRoot,
+      runtimeTree: "src",
+      existsSync: (filePath) =>
+        filePath === path.join(repoRoot, "dist/bin/meridian-tool.js")
+        || filePath === path.join(repoRoot, "src/bin/meridian-tool.ts")
+        || filePath === path.join(repoRoot, "node_modules/.bin/tsx")
+    });
+
+    expect(command).toEqual({
+      command: path.join(repoRoot, "node_modules/.bin/tsx"),
+      args: [path.join(repoRoot, "src/bin/meridian-tool.ts")],
+      displayCommand: `${path.join(repoRoot, "node_modules/.bin/tsx")} ${path.join(repoRoot, "src/bin/meridian-tool.ts")}`,
+      entrypointPath: path.join(repoRoot, "src/bin/meridian-tool.ts")
+    });
+  });
+
+  it("keeps tsx as the development fallback when dist is absent", () => {
+    const repoRoot = "/tmp/meridian-roles";
+    const command = resolveMeridianToolCommand({
+      repoRoot,
+      runtimeTree: "src",
+      existsSync: (filePath) =>
+        filePath === path.join(repoRoot, "src/bin/meridian-tool.ts")
+        || filePath === path.join(repoRoot, "node_modules/.bin/tsx")
+    });
+
+    expect(command.command).toBe(path.join(repoRoot, "node_modules/.bin/tsx"));
+    expect(command.args).toEqual([path.join(repoRoot, "src/bin/meridian-tool.ts")]);
+  });
+
+  it("still prefers the compiled meridian-tool entrypoint when meridian-roles is running from dist", () => {
+    const repoRoot = "/tmp/meridian-roles";
+    const command = resolveMeridianToolCommand({
+      repoRoot,
+      runtimeTree: "dist",
+      nodeExecutable: "/usr/local/bin/node",
+      existsSync: (filePath) =>
+        filePath === path.join(repoRoot, "dist/bin/meridian-tool.js")
+        || filePath === path.join(repoRoot, "src/bin/meridian-tool.ts")
+        || filePath === path.join(repoRoot, "node_modules/.bin/tsx")
+    });
+
+    expect(command).toEqual({
+      command: "/usr/local/bin/node",
+      args: [path.join(repoRoot, "dist/bin/meridian-tool.js")],
+      displayCommand: `/usr/local/bin/node ${path.join(repoRoot, "dist/bin/meridian-tool.js")}`,
+      entrypointPath: path.join(repoRoot, "dist/bin/meridian-tool.js")
+    });
   });
 });
 

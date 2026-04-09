@@ -105,6 +105,24 @@ describe("spawn tool", () => {
     });
   });
 
+  it("surfaces hub-side spawn failures instead of reporting a parse error", async () => {
+    sendAndWaitMock.mockResolvedValue({
+      ...buildHubResult("Hub rejected spawn"),
+      status: "error",
+      details_text: "Agent instance failed readiness check"
+    });
+
+    const result = await spawnTool.execute({
+      agent_type: "claude",
+      mode: "pane_bridge"
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Agent instance failed readiness check"
+    });
+  });
+
   it("splits effort suffix from model_id and passes it separately in the payload", async () => {
     sendAndWaitMock.mockResolvedValue(buildHubResult('{"thread_id":"thread-xh"}'));
 

@@ -36,7 +36,7 @@ describe("runCli", () => {
         { name: "spawn", description: "Spawn a worker", params: [] }
       ]
     });
-    expect(io.stderr()).toContain("Usage: npx tsx src/bin/meridian-tool.ts <tool-name> [--param value ...]");
+    expect(io.stderr()).toContain("Usage: meridian-roles <tool-name> [--param value ...]");
     expect(io.stderr()).toContain("kill");
     expect(io.stderr()).toContain("spawn");
   });

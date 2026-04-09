@@ -186,8 +186,12 @@ export class SessionManager {
     return this.paused;
   }
 
-  setPaused(paused: boolean): void {
+  setPaused(paused: boolean, options?: { skipPersist?: boolean }): void {
     this.paused = paused;
+
+    if (options?.skipPersist) {
+      return;
+    }
 
     const status = paused ? PAUSED_STATUS : ACTIVE_STATUS;
     const persist = async () => {
