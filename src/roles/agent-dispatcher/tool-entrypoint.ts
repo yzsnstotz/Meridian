@@ -33,10 +33,14 @@ export function resolveMeridianToolCommand(options: ResolveMeridianToolCommandOp
   const distToolEntrypoint = path.join(repoRoot, "dist/bin/meridian-tool.js");
   const localTsxExecutable = path.join(repoRoot, "node_modules/.bin/tsx");
   const existsSync = options.existsSync ?? fs.existsSync;
-  const runtimeTree = options.runtimeTree ?? (__dirname.includes(`${path.sep}dist${path.sep}`) ? "dist" : "src");
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
+  const distExists = existsSync(distToolEntrypoint);
+  const runtimeTree = options.runtimeTree ?? (__dirname.includes(`${path.sep}dist${path.sep}`) ? "dist" : "src");
 
-  if (!options.forceDevelopment && runtimeTree === "dist" && existsSync(distToolEntrypoint)) {
+  // Prefer the compiled CLI whenever it is available. Dispatcher workers often run inside
+  // tighter sandboxes than the service itself, and the tsx entrypoint can fail before our
+  // own fallback logic runs. `forceDevelopment` remains as an explicit escape hatch.
+  if (!options.forceDevelopment && distExists) {
     return buildNodeCommand(distToolEntrypoint, nodeExecutable);
   }
 
@@ -44,7 +48,11 @@ export function resolveMeridianToolCommand(options: ResolveMeridianToolCommandOp
     return buildTsxCommand(sourceToolEntrypoint, localTsxExecutable, existsSync);
   }
 
-  if (existsSync(distToolEntrypoint)) {
+  if (runtimeTree === "dist" && distExists) {
+    return buildNodeCommand(distToolEntrypoint, nodeExecutable);
+  }
+
+  if (distExists) {
     return buildNodeCommand(distToolEntrypoint, nodeExecutable);
   }
 

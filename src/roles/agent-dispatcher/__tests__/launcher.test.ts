@@ -160,11 +160,12 @@ describe("dispatcherHubSystemPromptPath", () => {
     expect(MERIDIAN_TOOL_DISPLAY_COMMAND.length).toBeGreaterThan(0);
   });
 
-  it("uses the source meridian-tool entrypoint while meridian-roles is running from src", () => {
+  it("prefers the compiled meridian-tool entrypoint even while meridian-roles is running from src", () => {
     const repoRoot = "/tmp/meridian-roles";
     const command = resolveMeridianToolCommand({
       repoRoot,
       runtimeTree: "src",
+      nodeExecutable: "/usr/local/bin/node",
       existsSync: (filePath) =>
         filePath === path.join(repoRoot, "dist/bin/meridian-tool.js")
         || filePath === path.join(repoRoot, "src/bin/meridian-tool.ts")
@@ -172,10 +173,10 @@ describe("dispatcherHubSystemPromptPath", () => {
     });
 
     expect(command).toEqual({
-      command: path.join(repoRoot, "node_modules/.bin/tsx"),
-      args: [path.join(repoRoot, "src/bin/meridian-tool.ts")],
-      displayCommand: `${path.join(repoRoot, "node_modules/.bin/tsx")} ${path.join(repoRoot, "src/bin/meridian-tool.ts")}`,
-      entrypointPath: path.join(repoRoot, "src/bin/meridian-tool.ts")
+      command: "/usr/local/bin/node",
+      args: [path.join(repoRoot, "dist/bin/meridian-tool.js")],
+      displayCommand: `/usr/local/bin/node ${path.join(repoRoot, "dist/bin/meridian-tool.js")}`,
+      entrypointPath: path.join(repoRoot, "dist/bin/meridian-tool.js")
     });
   });
 
