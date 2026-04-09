@@ -8,6 +8,7 @@ test("buildCodexSpawnArgs omits auto-approve flag by default", () => {
 
   assert.deepEqual(args, ["server", "--type=codex", "--socket=/tmp/codex.sock", "--", "codex"]);
   assert.equal(args.includes("--approval-policy=auto-approve"), false);
+  assert.equal(args.includes("--ask-for-approval"), false);
 });
 
 test("buildCodexSpawnArgs appends auto-approve flag when requested", () => {
@@ -23,8 +24,10 @@ test("buildCodexSpawnArgs appends auto-approve flag when requested", () => {
     'model_reasoning_effort="xhigh"',
     "--model",
     "gpt-5.4",
-    "--approval-policy=auto-approve"
+    "--ask-for-approval",
+    "never"
   ]);
+  assert.equal(args.includes("--approval-policy=auto-approve"), false);
 });
 
 test("buildCodexExecArgs enables direct JSON streaming mode", () => {

@@ -139,7 +139,8 @@ test("spawn forwards selected model and reasoning effort to provider CLI", async
     'model_reasoning_effort="xhigh"',
     "--model",
     "gpt-5.4",
-    "--approval-policy=auto-approve"
+    "--ask-for-approval",
+    "never"
   ]);
 
   await manager.kill(threadId);
@@ -251,7 +252,8 @@ test("spawn codex bridge includes auto-approve flag when requested", async () =>
     `--socket=${socketPath}`,
     "--",
     "codex",
-    "--approval-policy=auto-approve"
+    "--ask-for-approval",
+    "never"
   ]);
 
   await manager.kill(threadId);

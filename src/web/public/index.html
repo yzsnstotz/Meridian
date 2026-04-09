@@ -1397,8 +1397,16 @@
         })
           .then(function (res) {
             return res.json().then(function (body) {
-              if (res.ok) fetchList();
-              else alert(body.error || "Spawn failed");
+              if (!res.ok) {
+                alert(body.error || "Spawn failed");
+                return;
+              }
+              // Hub returns HTTP 200 even when routing fails; check HubResult.status.
+              if (body.status === "success") {
+                fetchList();
+              } else {
+                alert(typeof body.content === "string" && body.content ? body.content : "Spawn failed");
+              }
             });
           })
           .catch(function (e) { alert("Network error during spawn"); })

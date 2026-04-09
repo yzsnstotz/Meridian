@@ -333,6 +333,8 @@
       display: flex;
       flex-direction: column;
       min-width: 0;
+      min-height: 0;
+      overflow: hidden;
       background:
         linear-gradient(180deg, rgba(18, 24, 38, 0.92) 0%, rgba(7, 10, 16, 0.98) 100%);
       position: relative;
@@ -372,6 +374,7 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
+      overflow: hidden;
     }
 
     /* Editor View */
@@ -678,16 +681,18 @@
       flex-direction: column;
       background: var(--bg-color);
       min-height: 0;
+      overflow: hidden;
     }
     .chat-messages {
       flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 0.75rem;
       display: flex;
       flex-direction: column;
       gap: 0.375rem;
       -webkit-overflow-scrolling: touch;
-      min-height: 80px;
+      min-height: 0;
     }
     .chat-messages-empty::after {
       content: "Agent output will appear here. Send a message below or wait for pane output.";
@@ -894,9 +899,10 @@
     @media (max-width: 768px) {
       .header-right { gap: 0.25rem; }
     }
-    /* Center chat bubbles on wide screens */
+    /* Center chat bubbles and input on wide screens */
     @media (min-width: 900px) {
-      .chat-messages { max-width: 720px; margin: 0 auto; width: 100%; }
+      .chat-messages { max-width: 800px; margin: 0 auto; width: 100%; }
+      #input-zone { max-width: 800px; margin: 0 auto; width: 100%; }
     }
   </style>
 </head>
