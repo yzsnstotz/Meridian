@@ -13,13 +13,13 @@
         <a id="detail-link" class="back-link" href="/">← Task Detail</a>
         <p class="eyebrow">Prompt Editor</p>
         <h1 id="prompt-title">Loading prompts…</h1>
-        <p class="lede">Hot-reload prompt overrides for the next task dispatch.</p>
+        <p id="prompt-lede" class="lede">Hot-reload prompt overrides for the next task dispatch.</p>
       </section>
 
       <section class="panel">
         <div class="panel-heading">
           <h2>System Prompt</h2>
-          <p class="muted">Saved changes apply to future task dispatches.</p>
+          <p id="system-prompt-help" class="muted">Saved changes apply to future task dispatches.</p>
         </div>
         <form id="system-prompt-form" class="stack">
           <label class="field">
@@ -36,7 +36,7 @@
       <section class="panel">
         <div class="panel-heading">
           <h2>Per-Task Templates</h2>
-          <p class="muted">Delete a template to fall back to the base instruction.</p>
+          <p id="prompt-task-caption" class="muted">Delete a template to fall back to the base instruction.</p>
         </div>
         <div id="prompt-task-empty" class="empty-state">This dispatcher has no tasks yet.</div>
         <div id="prompt-task-list" class="task-list"></div>

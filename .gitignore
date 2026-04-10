@@ -2,7 +2,15 @@ node_modules/
 dist/
 *.js.map
 .env.local
+.meridian_n02/.env
 .DS_Store
+AGENT.md
+agent.md
+_meridian_hub
+logs/
+
+# Ephemeral Hub dispatcher system prompt (written next to dispatch_plan.md)
+.meridian-roles-dispatcher-prompt-*.md
 
 # Ignore documentation directories
 **/docs/

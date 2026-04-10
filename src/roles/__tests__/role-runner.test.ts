@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentInstance, HubResult } from "../../types";
+import { RoleTypeSchema, type AgentInstance, type HubResult, type RoleType } from "../../types";
 import type { BaseRole, Logger, RoleContext } from "../base-role";
 import { RoleRegistry } from "../role-registry";
 import { RoleRunner } from "../role-runner";
@@ -41,11 +41,15 @@ function createLogger(): Logger {
   };
 }
 
-function createMockRole(threadId = "dispatcher-1", config: unknown = { enabled: true }) {
+function createMockRole(
+  threadId = "dispatcher-1",
+  config: unknown = { enabled: true },
+  roleType: RoleType = "dispatcher"
+) {
   let capturedContext: RoleContext | undefined;
 
   const role = {
-    roleType: "dispatcher" as const,
+    roleType,
     threadId,
     config,
     onActivate: vi.fn(async (ctx: RoleContext) => {
@@ -63,6 +67,11 @@ function createMockRole(threadId = "dispatcher-1", config: unknown = { enabled: 
 }
 
 describe("RoleRunner", () => {
+  it("accepts the agent-dispatcher role type", () => {
+    expect(RoleTypeSchema.parse("dispatcher")).toBe("dispatcher");
+    expect(RoleTypeSchema.parse("agent-dispatcher")).toBe("agent-dispatcher");
+  });
+
   it("activates a role with the shared context", async () => {
     const logger = createLogger();
     const sendToHub = vi.fn(async () => {});
@@ -96,6 +105,32 @@ describe("RoleRunner", () => {
 
     expect(role.onInboundResult).toHaveBeenCalledTimes(1);
     expect(role.onInboundResult).toHaveBeenCalledWith(sampleResult);
+  });
+
+  it("forwards pause and resume lifecycle signals to the active role", async () => {
+    const { role } = createMockRole("agent-dispatcher-1", {}, "agent-dispatcher");
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(role);
+
+    await expect(runner.pauseRole(role.threadId)).resolves.toBe(true);
+    await expect(runner.resumeRole(role.threadId)).resolves.toBe(true);
+
+    expect(role.onStatusChange).toHaveBeenNthCalledWith(1, "agent-dispatcher-1", "paused");
+    expect(role.onStatusChange).toHaveBeenNthCalledWith(2, "agent-dispatcher-1", "active");
+    expect(runner.getRole(role.threadId)).toBe(role);
+  });
+
+  it("returns false when pausing or resuming an inactive role", async () => {
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await expect(runner.pauseRole("missing-role")).resolves.toBe(false);
+    await expect(runner.resumeRole("missing-role")).resolves.toBe(false);
+    expect(runner.getRole("missing-role")).toBeNull();
   });
 
   it("silently ignores inbound results for unknown thread_id", async () => {
@@ -145,6 +180,39 @@ describe("RoleRunner", () => {
     });
   });
 
+  it("falls back to trace_id correlation for agent-dispatcher results routed to an agent thread", async () => {
+    const traceId = "123e4567-e89b-12d3-a456-426614174001";
+    const { role } = createMockRole(
+      "agent-dispatcher-trace",
+      {
+        tasks: [
+          {
+            task_id: "task-a",
+            result_trace_id: traceId
+          }
+        ]
+      },
+      "agent-dispatcher"
+    );
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(role);
+    await runner.dispatch({
+      ...sampleResult,
+      thread_id: "codex_02",
+      trace_id: traceId
+    });
+
+    expect(role.onInboundResult).toHaveBeenCalledTimes(1);
+    expect(role.onInboundResult).toHaveBeenCalledWith({
+      ...sampleResult,
+      thread_id: "codex_02",
+      trace_id: traceId
+    });
+  });
+
   it("deactivates a role and unregisters it", async () => {
     const logger = createLogger();
     const { role } = createMockRole();
@@ -160,6 +228,21 @@ describe("RoleRunner", () => {
     expect(role.onDeactivate).toHaveBeenCalledTimes(1);
     expect(role.onInboundResult).not.toHaveBeenCalled();
     expect(logger.debug).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists the currently active roles", async () => {
+    const first = createMockRole("dispatcher-1").role;
+    const second = createMockRole("agent-dispatcher-1", {}, "agent-dispatcher").role;
+    const runner = new RoleRunner({
+      sendToHub: vi.fn(async () => {})
+    });
+
+    await runner.activate(first);
+    await runner.activate(second);
+    expect(runner.listRoles()).toEqual([first, second]);
+
+    await runner.deactivate(first.threadId);
+    expect(runner.listRoles()).toEqual([second]);
   });
 });
 

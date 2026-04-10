@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppState } from "./types";
-import { StateStore } from "./state-store";
+import { StateStore, isStartupRehydratableRoleStatus } from "./state-store";
 
 const sampleState: AppState = {
   roles: [
@@ -43,6 +43,13 @@ afterEach(async () => {
 });
 
 describe("StateStore", () => {
+  it("treats paused roles as startup rehydratable", () => {
+    expect(isStartupRehydratableRoleStatus("active")).toBe(true);
+    expect(isStartupRehydratableRoleStatus("paused")).toBe(true);
+    expect(isStartupRehydratableRoleStatus("needs_reactivation")).toBe(true);
+    expect(isStartupRehydratableRoleStatus("completed")).toBe(false);
+  });
+
   it("returns null when the state file does not exist", async () => {
     const directory = await createTempDirectory();
     const store = new StateStore(path.join(directory, "missing", "state.json"));

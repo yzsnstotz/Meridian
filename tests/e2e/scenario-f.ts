@@ -57,6 +57,7 @@ describe("Scenario F: Config editor and role error states", () => {
     const page = await loadBrowserApp({
       pathname: "/role/does-not-exist-xyz",
       elements: {
+        "dashboard-link": createElement(),
         "role-title": createElement("Loading role…"),
         "role-subtitle": createElement("Fetching dispatcher detail."),
         "role-summary": createElement("", "<div>stale summary</div>"),
@@ -80,6 +81,110 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["role-tasks-empty"].hidden).toBe(false);
     expect(page.elements["prompts-link"].href).toBe("/role/does-not-exist-xyz/prompts");
     expect(page.elements["config-link"].href).toBe("/role/does-not-exist-xyz/config");
+  });
+
+  it("binds anchor clicks to explicit location navigation", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/",
+      elements: {},
+      fetchImpl: async () => createJsonResponse(200, {})
+    });
+
+    const link = createElement();
+    link.href = "/role/dispatcher-f";
+    page.hooks.bindLocationNavigation(link);
+
+    expect(page.location.href).toBe("/");
+    expect(page.location.pathname).toBe("/");
+    expect(link.listeners.click).toHaveLength(1);
+
+    await link.listeners.click[0]({
+      preventDefault() {
+        return undefined;
+      }
+    });
+
+    expect(page.location.href).toBe("/role/dispatcher-f");
+    expect(page.location.pathname).toBe("/role/dispatcher-f");
+  });
+
+  it("renders agent-dispatcher role detail with session log and dispatch plan status", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/role/agent-dispatcher-f",
+      elements: {
+        "dashboard-link": createElement(),
+        "role-title": createElement("Loading role…"),
+        "role-subtitle": createElement("Fetching dispatcher detail."),
+        "role-summary": createElement(),
+        "role-panel-links": createElement(),
+        "role-tasks-panel": createElement(),
+        "role-tasks": createContainer([{ stale: true }]),
+        "role-tasks-empty": createElement("No tasks have been recorded for this role."),
+        "prompts-link": createElement(),
+        "config-link": createElement(),
+        "dispatcher-session-panel": createElement(),
+        "dispatcher-session-log": createElement(),
+        "dispatch-plan-panel": createElement(),
+        "dispatch-plan-empty": createElement("No dispatch plan rows available."),
+        "dispatch-plan-table-shell": createElement(),
+        "dispatch-plan-body": createElement()
+      },
+      fetchImpl: async () => createJsonResponse(200, {
+        thread_id: "agent-dispatcher-f",
+        role_type: "agent-dispatcher",
+        status: "paused",
+        tasks: [],
+        dispatcher_thread_id: "dispatcher-thread-123",
+        current_worker: "N-11",
+        agent_type: "codex",
+        mode: "bridge",
+        session_log: [
+          "Detail for trace=trace-123 thread=dispatcher-thread-123",
+          "",
+          "Your message:",
+          "Run worker N-11",
+          "",
+          "Agent reply:",
+          "Updated the GUI dashboard."
+        ],
+        dispatch_plan: {
+          rows: [
+            {
+              status: "✅",
+              batch: "5",
+              worker: "N-10",
+              task: "API Layer",
+              model: "CODEX-XHIGH",
+              depends_on: "N-09"
+            },
+            {
+              status: "🔄",
+              batch: "6",
+              worker: "N-11",
+              task: "GUI",
+              model: "CODEX",
+              depends_on: "N-10"
+            }
+          ]
+        }
+      })
+    });
+
+    await page.hooks.setupRoleDetail();
+
+    expect(page.elements["role-title"].textContent).toBe("agent-dispatcher-f");
+    expect(page.elements["role-subtitle"].textContent).toBe("Dispatcher control session.");
+    expect(page.elements["role-panel-links"].hidden).toBe(false);
+    expect(page.elements["role-tasks-panel"].hidden).toBe(true);
+    expect(page.elements["dispatcher-session-panel"].hidden).toBe(false);
+    expect(page.elements["dispatch-plan-panel"].hidden).toBe(false);
+    expect(page.elements["dispatcher-session-log"].textContent).toContain("Updated the GUI dashboard.");
+    expect(page.elements["dispatch-plan-empty"].hidden).toBe(true);
+    expect(page.elements["dispatch-plan-table-shell"].hidden).toBe(false);
+    expect(page.elements["dispatch-plan-body"].innerHTML).toContain("N-11");
+    expect(page.elements["role-summary"].innerHTML).toContain("dispatcher-thread-123");
+    expect(page.elements["prompts-link"].href).toBe("/role/agent-dispatcher-f/prompts");
+    expect(page.elements["config-link"].href).toBe("/role/agent-dispatcher-f/config");
   });
 
   it("loads and saves dispatcher config JSON in the browser client", async () => {
@@ -204,6 +309,53 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["config-status"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
     expect(page.elements["config-feedback"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
   });
+
+  it("shows agent-dispatcher launch config as read-only JSON in the browser client", async () => {
+    const page = await loadBrowserApp({
+      pathname: "/role/agent-dispatcher-f/config",
+      elements: {
+        "config-title": createElement("Loading config…"),
+        "config-detail-link": createElement(),
+        "config-lede": createElement(),
+        "config-section-title": createElement(),
+        "config-status": createElement(),
+        "config-feedback": createElement(),
+        "config-form": createFormElement(),
+        "config-input": createInputElement(),
+        "config-save-button": createButtonElement()
+      },
+      fetchImpl: async () => createJsonResponse(200, {
+        thread_id: "agent-dispatcher-f",
+        status: "active",
+        can_edit: false,
+        blocked_reason: "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.",
+        config: {
+          dispatch_plan_path: "/tmp/dispatch_plan.md",
+          command_file_path: "/tmp/agent_dispatch_command.md",
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:ops"
+            }
+          ],
+          agent_type: "codex",
+          mode: "bridge",
+          kill_policy: "always"
+        }
+      })
+    });
+
+    await page.hooks.setupConfigEditor();
+
+    expect(page.elements["config-title"].textContent).toBe("agent-dispatcher-f");
+    expect(page.elements["config-detail-link"].href).toBe("/role/agent-dispatcher-f");
+    expect(page.elements["config-section-title"].textContent).toBe("Launch Config JSON");
+    expect(page.elements["config-input"].readOnly).toBe(true);
+    expect(page.elements["config-save-button"].disabled).toBe(true);
+    expect(page.elements["config-feedback"].textContent)
+      .toBe("Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.");
+    expect(page.elements["config-input"].value).toContain('"dispatch_plan_path": "/tmp/dispatch_plan.md"');
+  });
 });
 
 interface HttpHarness {
@@ -307,8 +459,13 @@ async function getFreePort(): Promise<number> {
 interface BrowserPage {
   elements: Record<string, FakeElement>;
   hooks: {
+    bindLocationNavigation(link: FakeElement): void;
     setupConfigEditor(): Promise<void>;
     setupRoleDetail(): Promise<void>;
+  };
+  location: {
+    href: string;
+    pathname: string;
   };
   submit(id: string): Promise<void>;
 }
@@ -321,6 +478,14 @@ async function loadBrowserApp(options: {
   const appPath = path.resolve("/Users/yzliu/work/Meridian/Meridian-roles/src/web/public/app.js");
   const source = await fs.readFile(appPath, "utf8");
   const documentListeners = new Map<string, Array<() => void>>();
+  const location = {
+    href: options.pathname,
+    pathname: options.pathname,
+    assign(next: string) {
+      this.href = next;
+      this.pathname = next;
+    }
+  };
   const context = {
     console,
     fetch: options.fetchImpl,
@@ -340,22 +505,21 @@ async function loadBrowserApp(options: {
       }
     },
     window: {
-      location: {
-        pathname: options.pathname
-      },
+      location,
       setInterval() {
         return 1;
       }
     }
   };
 
-  const script = new vm.Script(`${source}\nthis.__hooks = { setupConfigEditor, setupRoleDetail };`);
+  const script = new vm.Script(`${source}\nthis.__hooks = { bindLocationNavigation, setupConfigEditor, setupRoleDetail };`);
   vm.createContext(context);
   script.runInContext(context);
 
   return {
     elements: options.elements,
     hooks: (context as { __hooks: BrowserPage["hooks"] }).__hooks,
+    location,
     async submit(id: string) {
       const element = options.elements[id];
       if (!element?.listeners.submit?.[0]) {

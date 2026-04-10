@@ -270,7 +270,7 @@ describe("DispatcherRole", () => {
     });
     expect(summaryMessage.intent).toBe("reply");
     expect(summaryMessage.target).toBe("global");
-    expect(summaryMessage.suppress_reply).toBe(true);
+    expect(summaryMessage.suppress_reply).toBe(false);
     expect(summaryMessage.payload.content).toContain("# Dispatcher Summary: dispatcher-3");
     expect(summaryMessage.payload.content).toContain("- root: failed | root failed");
     expect(summaryMessage.payload.content).toContain("- left: failed | Blocked by failed dependency: root");
@@ -427,7 +427,7 @@ describe("DispatcherRole", () => {
     expect(sendToHub).toHaveBeenCalledTimes(4);
     const summaryMessages = sendToHub.mock.calls
       .map((call) => call[0])
-      .filter((message): message is HubMessage => Boolean(message) && message.suppress_reply === true);
+      .filter((message): message is HubMessage => Boolean(message) && message.intent === "reply");
     expect(summaryMessages).toHaveLength(1);
     expect(summaryMessages[0]?.intent).toBe("reply");
     expect(summaryMessages[0]?.payload.content).toContain("1. root");

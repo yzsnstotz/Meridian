@@ -119,7 +119,7 @@ describe("Scenario D: Restart recovery", () => {
         expect(runMessages).toHaveLength(0);
       }, { timeout: 2_000 });
 
-      await sendSocketPayload("/tmp/meridian-roles.sock", {
+      await sendSocketPayload(secondHarness.rolesSocketPath, {
         trace_id: runningTraceId,
         thread_id: "dispatcher-d",
         source: "codex",
@@ -139,7 +139,7 @@ describe("Scenario D: Restart recovery", () => {
         secondHarness.hub,
         (message) =>
           message.intent === "reply" &&
-          message.suppress_reply === true &&
+          message.suppress_reply === false &&
           message.payload.content.includes("# Dispatcher Summary: dispatcher-d")
       );
       expect(completion.reply_channel).toMatchObject({
@@ -160,6 +160,7 @@ interface HarnessOptions {
 
 interface ScenarioHarness {
   hub: FakeHub;
+  rolesSocketPath: string;
   requestJson<T>(method: string, url: string, body?: unknown): Promise<T>;
   readState(): Promise<AppState>;
   close(): Promise<void>;
@@ -175,7 +176,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarne
   const baseDir = options.baseDir ?? await fs.mkdtemp("/tmp/meridian-roles-scenario-d-");
   const cleanupDirOnClose = options.cleanupDirOnClose ?? !options.baseDir;
   const hubSocketPath = path.join(baseDir, "hub.sock");
-  const rolesSocketPath = "/tmp/meridian-roles.sock";
+  const rolesSocketPath = path.join(baseDir, "roles.sock");
   const stateFilePath = path.join(baseDir, "state.json");
   const log = createLogger();
   const hub = await startFakeHub(hubSocketPath);
@@ -191,7 +192,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarne
   const stateStore = new StateStore(stateFilePath);
   const registry = new RoleRegistry();
 
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore, rolesSocketPath }));
 
   const runner = new RoleRunner({
     sendToHub: (message) => client.send(message),
@@ -219,6 +220,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarne
 
   return {
     hub,
+    rolesSocketPath,
     requestJson: (method, url, body) => invokeJson(roleHandlers, promptHandlers, method, url, body),
     async readState(): Promise<AppState> {
       return readStateFile(stateFilePath);

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentInstance, HubMessage, HubResult } from "../../types";
+import type { AgentInstance, HubMessage, HubResult, ReplyChannel } from "../../types";
 import { A2AClient } from "../client";
 import { A2AServer } from "../server";
 
@@ -32,6 +32,17 @@ const listedInstances: AgentInstance[] = [
     created_at: "2026-03-19T00:00:00.000Z",
     restart_safe: true,
     auto_approve: false
+  }
+];
+const listedReplyChannels: ReplyChannel[] = [
+  {
+    channel: "telegram",
+    chat_id: "telegram:dispatch-room",
+    chat_name: "Dispatch Room"
+  },
+  {
+    channel: "web",
+    chat_id: "web:ops"
   }
 ];
 
@@ -243,6 +254,39 @@ describe("A2AClient", () => {
       }
     });
   });
+
+  it("lists registered reply channels through the hub registry contract", async () => {
+    const directory = await createTempDirectory();
+    const hubSocketPath = path.join(directory, "hub.sock");
+    const rolesSocketPath = path.join(directory, "roles.sock");
+    const hub = await startHubServer(hubSocketPath, { listReplyChannels: listedReplyChannels });
+    servers.add(hub);
+
+    const client = new A2AClient({
+      hubSocketPath,
+      rolesSocketPath,
+      retryBaseDelayMs: 10,
+      maxRetryDelayMs: 20
+    });
+    clients.add(client);
+
+    await client.start();
+
+    await expect(client.listReplyChannels()).resolves.toEqual(listedReplyChannels);
+    expect(hub.messages[1]).toMatchObject({
+      thread_id: "list_reply_channels",
+      actor_id: "service:meridian-roles",
+      intent: "list",
+      target: "global",
+      reply_channel: {
+        channel: "web",
+        chat_id: "service:meridian-roles"
+      }
+    });
+    expect(parsePayloadContent(hub.messages[1])).toEqual({
+      kind: "reply_channels"
+    });
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
@@ -255,6 +299,7 @@ async function startHubServer(
   socketPath: string,
   options: {
     listInstances?: AgentInstance[];
+    listReplyChannels?: ReplyChannel[];
   } = {}
 ): Promise<TestHubServer> {
   const messages: Record<string, unknown>[] = [];
@@ -270,7 +315,9 @@ async function startHubServer(
     socket.on("end", () => {
       const message = JSON.parse(raw) as Record<string, unknown>;
       messages.push(message);
-      const content = message.intent === "list" ? JSON.stringify(options.listInstances ?? []) : "ok";
+      const content = message.intent === "list"
+        ? JSON.stringify(isReplyChannelListRequest(message) ? (options.listReplyChannels ?? []) : (options.listInstances ?? []))
+        : "ok";
 
       socket.end(JSON.stringify({
         trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
@@ -303,6 +350,24 @@ async function startHubServer(
       await fs.unlink(socketPath).catch(() => undefined);
     }
   };
+}
+
+function isReplyChannelListRequest(message: Record<string, unknown>): boolean {
+  if (message.thread_id === "list_reply_channels") {
+    return true;
+  }
+
+  const payload = message.payload;
+  if (!payload || typeof payload !== "object" || !("content" in payload) || typeof payload.content !== "string") {
+    return false;
+  }
+
+  try {
+    const content = JSON.parse(payload.content) as { kind?: unknown };
+    return content.kind === "reply_channels";
+  } catch {
+    return false;
+  }
 }
 
 function buildHubMessage(overrides: Partial<HubMessage> = {}): HubMessage {

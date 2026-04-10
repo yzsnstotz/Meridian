@@ -1,5 +1,8 @@
 import {
+  AgentDispatcherConfigSchema,
   DispatcherConfigSchema,
+  type AgentDispatcherConfig,
+  type AgentDispatcherEditorConfig,
   type DispatcherConfig,
   type DispatchTask,
   type DispatcherEditorConfig,
@@ -10,6 +13,11 @@ import {
 export function parseMutableDispatcherConfig(config: unknown): DispatcherConfig | null {
   const parsed = DispatcherConfigSchema.safeParse(config);
   return parsed.success ? (config as DispatcherConfig) : null;
+}
+
+export function parseMutableAgentDispatcherConfig(config: unknown): AgentDispatcherConfig | null {
+  const parsed = AgentDispatcherConfigSchema.safeParse(config);
+  return parsed.success ? (config as AgentDispatcherConfig) : null;
 }
 
 export function toEditableDispatcherConfig(config: DispatcherConfig): DispatcherEditorConfig {
@@ -24,6 +32,17 @@ export function toEditableDispatcherConfig(config: DispatcherConfig): Dispatcher
       target_agent_type: task.target_agent_type
     })),
     taskspec: config.taskspec
+  };
+}
+
+export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): AgentDispatcherEditorConfig {
+  return {
+    dispatch_plan_path: config.dispatch_plan_path,
+    command_file_path: config.command_file_path,
+    user_reply_channels: config.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
+    agent_type: config.agent_type,
+    mode: config.mode,
+    kill_policy: config.kill_policy
   };
 }
 

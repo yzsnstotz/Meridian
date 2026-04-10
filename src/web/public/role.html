@@ -10,7 +10,7 @@
   <body data-page="role-detail">
     <main class="shell">
       <section class="hero hero-compact">
-        <a class="back-link" href="/">← Dashboard</a>
+        <a id="dashboard-link" class="back-link" href="/">← Dashboard</a>
         <p class="eyebrow">Task Detail</p>
         <h1 id="role-title">Loading role…</h1>
         <p id="role-subtitle" class="lede">Fetching dispatcher detail.</p>
@@ -19,15 +19,82 @@
       <section class="panel">
         <div class="panel-heading">
           <h2>Role Summary</h2>
-          <div class="panel-links">
+          <div id="role-panel-links" class="panel-links">
             <a id="prompts-link" class="ghost-link" href="/">Prompt Editor</a>
             <a id="config-link" class="ghost-link" href="/">Config Editor</a>
           </div>
         </div>
         <dl id="role-summary" class="summary-grid"></dl>
+        <div id="agent-dispatcher-hub-controls" class="dispatcher-hub-controls" hidden>
+          <p id="agent-dispatcher-start-hub-feedback" class="feedback" role="status" aria-live="polite"></p>
+          <div class="card-actions">
+            <button type="button" id="agent-dispatcher-continue-btn" class="primary-button" hidden>
+              Continue
+            </button>
+            <button type="button" id="agent-dispatcher-lifecycle-btn" class="ghost-button" hidden>
+              Pause
+            </button>
+            <button type="button" id="agent-dispatcher-start-hub-btn" class="primary-button">
+              Start hub session
+            </button>
+          </div>
+          <p class="muted hub-controls-hint">
+            Spawns or replaces the Hub dispatcher thread. Use when <code>dispatcher_thread_id</code> is
+            <code>pending</code>, or after editing <code>dispatch_threads.json</code>. Pause/Resume only toggles
+            the control session and does not launch Hub.
+          </p>
+        </div>
       </section>
 
-      <section class="panel">
+      <section id="dispatcher-session-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatcher Session</h2>
+            <p class="muted">Raw attached dispatcher detail. Auto-refreshes every 3 seconds.</p>
+          </div>
+        </div>
+        <pre id="dispatcher-session-log" class="log-tail">No dispatcher session detail available yet.</pre>
+      </section>
+
+      <section id="dispatch-details-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Details</h2>
+            <p class="muted">Each worker shows the sent command and the agent reply separately.</p>
+          </div>
+        </div>
+        <div id="dispatch-details-empty" class="empty-state">No dispatch command or reply history is available yet.</div>
+        <div id="dispatch-details-list" class="dispatch-detail-list" hidden></div>
+      </section>
+
+      <section id="dispatch-plan-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Plan Status</h2>
+            <p class="muted">Parsed from the active dispatch plan file. Redo completed work or override task status here.</p>
+          </div>
+        </div>
+        <p id="dispatch-plan-feedback" class="feedback dispatch-plan-feedback" role="status" aria-live="polite"></p>
+        <div id="dispatch-plan-empty" class="empty-state">No dispatch plan rows available.</div>
+        <div id="dispatch-plan-table-shell" class="table-shell" hidden>
+          <table class="status-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Batch</th>
+                <th>Worker</th>
+                <th>Task</th>
+                <th>Model</th>
+                <th>Depends On</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="dispatch-plan-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="role-tasks-panel" class="panel">
         <div class="panel-heading">
           <h2>DAG Tasks</h2>
           <p class="muted">Auto-refreshes every 3 seconds.</p>

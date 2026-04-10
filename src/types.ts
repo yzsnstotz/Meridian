@@ -12,6 +12,9 @@ export type AgentType = z.infer<typeof AgentTypeSchema>;
 export const HubResultStatusSchema = z.enum(["success", "error", "partial", "timeout"]);
 export type HubResultStatus = z.infer<typeof HubResultStatusSchema>;
 
+export const HubRunStateSchema = z.enum(["completed", "still_running", "timeout"]);
+export type HubRunState = z.infer<typeof HubRunStateSchema>;
+
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
@@ -70,6 +73,9 @@ export const HubPayloadSchema = z.object({
   raw_message_id: z.string().min(1).optional(),
   reply_to: z.string().nullable().optional(),
   spawn_dir: z.string().min(1).optional(),
+  model_id: z.string().min(1).optional(),
+  effort: z.string().min(1).optional(),
+  auto_approve: z.boolean().optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   gui_host_port_override: z.string().min(1).optional(),
@@ -99,6 +105,7 @@ export const HubResultSchema = z.object({
   thread_id: z.string().min(1),
   source: AgentTypeSchema,
   status: HubResultStatusSchema,
+  run_state: HubRunStateSchema.optional(),
   content: z.string(),
   summary_text: z.string().optional(),
   details_text: z.string().optional(),
@@ -106,6 +113,45 @@ export const HubResultSchema = z.object({
   timestamp: z.string().datetime()
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
+
+export const LifecycleStatusSchema = z.enum(["pending", "running", "completed", "failed", "abandoned", "skipped"]);
+export type LifecycleStatus = z.infer<typeof LifecycleStatusSchema>;
+
+export const DispatchLifecycleDispatcherSchema = z.object({
+  thread_id: z.string().min(1).nullable().default(null),
+  started_at: z.string().datetime().nullable().default(null),
+  status: LifecycleStatusSchema.default("pending")
+});
+export type DispatchLifecycleDispatcher = z.infer<typeof DispatchLifecycleDispatcherSchema>;
+
+export const DispatchWorkerStateSchema = z.object({
+  thread_id: z.string().min(1),
+  trace_id: z.string().nullable().default(null),
+  started_at: z.string().datetime(),
+  last_seen_at: z.string().datetime(),
+  status: LifecycleStatusSchema,
+  expected_outputs: z.array(z.string().min(1)).default([]),
+  hub_result: HubResultSchema.nullable().default(null),
+  command_preamble: z.string().nullable().default(null),
+  retry_count: z.number().int().min(0).default(0)
+});
+export type DispatchWorkerState = z.infer<typeof DispatchWorkerStateSchema>;
+
+export const DispatchThreadStateV2Schema = z.object({
+  version: z.literal(2),
+  dispatcher: DispatchLifecycleDispatcherSchema.default({
+    thread_id: null,
+    started_at: null,
+    status: "pending"
+  }),
+  workers: z.record(z.string(), DispatchWorkerStateSchema).default({}),
+  last_reconciled_at: z.string().datetime().nullable().default(null)
+});
+export type DispatchThreadStateV2 = z.infer<typeof DispatchThreadStateV2Schema>;
+
+export type LifecycleWorkerEntry = DispatchWorkerState & {
+  worker_id: string;
+};
 
 // ─── Agent Instance (aligned with Meridian) ─────────────────────────────────────
 
@@ -127,7 +173,7 @@ export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
 // ─── meridian-roles specific types ──────────────────────────────────────────────
 
-export const RoleTypeSchema = z.enum(["dispatcher"]);
+export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher"]);
 export type RoleType = z.infer<typeof RoleTypeSchema>;
 
 export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed"]);
@@ -178,6 +224,69 @@ export const DispatcherConfigSchema = z.object({
 });
 export type DispatcherConfig = z.infer<typeof DispatcherConfigSchema>;
 
+export const KillPolicySchema = z.enum(["always", "on_success", "never"]);
+export type KillPolicy = z.infer<typeof KillPolicySchema>;
+
+export const DispatchModelOverrideSchema = z.object({
+  provider: z.string().min(1),
+  model_id: z.string().min(1)
+});
+export type DispatchModelOverride = z.infer<typeof DispatchModelOverrideSchema>;
+
+export const DispatchModelMapSchema = z.record(z.string().min(1), DispatchModelOverrideSchema);
+export type DispatchModelMap = z.infer<typeof DispatchModelMapSchema>;
+
+export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
+  dispatch_plan_path: z.string().min(1),
+  command_file_path: z.string().min(1),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
+  agent_type: AgentTypeSchema.default("claude"),
+  mode: BridgeModeSchema.default("bridge"),
+  kill_policy: KillPolicySchema.default("always"),
+  model_map: DispatchModelMapSchema.optional(),
+  use_agent_dispatcher: z.boolean().optional()
+})
+  .superRefine((value, ctx) => {
+    const hasReplyChannels = Array.isArray(value.user_reply_channels) && value.user_reply_channels.length > 0;
+    if (!hasReplyChannels && !value.user_reply_channel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["user_reply_channels"],
+        message: "user_reply_channels is required"
+      });
+    }
+  })
+  .transform((value) => {
+    const userReplyChannels = value.user_reply_channels?.map(cloneReplyChannel)
+      ?? (value.user_reply_channel ? [cloneReplyChannel(value.user_reply_channel)] : []);
+    const primaryReplyChannel = userReplyChannels[0];
+
+    return {
+      ...value,
+      user_reply_channel: primaryReplyChannel ? cloneReplyChannel(primaryReplyChannel) : undefined,
+      user_reply_channels: userReplyChannels,
+      use_agent_dispatcher: value.use_agent_dispatcher ?? true
+    };
+});
+export type AgentDispatcherConfig = z.infer<typeof AgentDispatcherConfigSchema>;
+
+export const AgentDispatcherEditorConfigSchema = z.object({
+  dispatch_plan_path: z.string().min(1),
+  command_file_path: z.string().min(1),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1),
+  agent_type: AgentTypeSchema,
+  mode: BridgeModeSchema,
+  kill_policy: KillPolicySchema
+}).strict();
+export type AgentDispatcherEditorConfig = z.infer<typeof AgentDispatcherEditorConfigSchema>;
+
+export function shouldUseAgentDispatcherConfig(config: unknown): boolean {
+  return typeof config === "object"
+    && config !== null
+    && "use_agent_dispatcher" in config
+    && (config as { use_agent_dispatcher?: unknown }).use_agent_dispatcher === true;
+}
+
 // ─── State persistence schema ───────────────────────────────────────────────────
 
 export const RoleStateSchema = z.object({
@@ -199,3 +308,7 @@ export const AppStateSchema = z.object({
   promptStore: PromptStoreSchema
 });
 export type AppState = z.infer<typeof AppStateSchema>;
+
+function cloneReplyChannel(replyChannel: ReplyChannel): ReplyChannel {
+  return { ...replyChannel };
+}

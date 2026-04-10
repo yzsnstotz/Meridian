@@ -2,17 +2,21 @@
   "name": "meridian-roles",
   "version": "1.2.0",
   "private": true,
+  "bin": {
+    "meridian-roles": "./dist/bin/meridian-tool.js"
+  },
   "description": "Meridian role-layer service — BaseRole framework, Dispatcher, prompt hot-reload, and independent GUI",
   "engines": {
     "node": "^20.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "test:e2e": "vitest run tests/e2e",
+    "test:e2e": "vitest run tests/e2e/scenario-*.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint . --ext .ts"
+    "lint": "eslint src tests/e2e/scenario-*.ts vitest.config.ts --ext .ts"
   },
   "dependencies": {
     "zod": "^4.1.11"
