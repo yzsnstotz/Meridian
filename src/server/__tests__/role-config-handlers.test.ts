@@ -981,6 +981,65 @@ describe("role config handlers", () => {
     }
   });
 
+  it("selects the first eligible pending worker through service-owned continue when multiple workers are available", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-first-eligible-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const launchDispatcher = vi.fn(async () => ({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    }));
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-r12"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | R-10 | Foundation | CODEX | — | TaskSpec | done |",
+      "| ⬜ | 2 | R-12 | First eligible | CODEX-HIGH | R-10 | TaskSpec | ready |",
+      "| ⬜ | 2 | R-13 | Also eligible | CODEX-HIGH | R-10 | TaskSpec | ready |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, launchDispatcher, launchDispatchWorker);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-first-eligible", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-first-eligible/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "continued",
+        message: "continued: R-12",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        worker: "R-12"
+      });
+
+      expect(launchDispatcher).toHaveBeenCalledTimes(1);
+      expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "R-12",
+        dispatchPlanPath
+      }));
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("clears a stale dispatcher thread during continue when attach reports the thread missing", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-missing-dispatcher-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

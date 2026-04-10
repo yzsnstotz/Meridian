@@ -58,6 +58,7 @@ describe("AgentDispatcherRole", () => {
     expect(harness.buildSystemPrompt).toHaveBeenCalledWith({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
+      dispatcher_role_id: "agent-dispatcher-role",
       dispatch_repo_root: "/tmp",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
       default_agent_type: "codex",

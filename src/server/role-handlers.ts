@@ -15,6 +15,7 @@ import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-threa
 import { resolveDispatchModelMapFromMarkdown } from "../roles/agent-dispatcher/model-routing";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
+import { isHumanDispatchRow, resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
@@ -579,8 +580,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
     const lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
     const effectiveWorkerId = workerId
-      ?? resolveImplicitContinueWorker(dispatchPlanData.rows, lifecycleState)
-      ?? resolveSoleEligibleContinueWorker(dispatchPlanData.rows, lifecycleState);
+      ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
     const runningWorkers = findRunningNonHumanWorkers(dispatchPlanData.rows)
       .filter((candidate) => candidate !== effectiveWorkerId);
@@ -916,8 +916,7 @@ async function getRole(
   );
   let dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
   let dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
-  let continueWorker = resolveImplicitContinueWorker(dispatchPlanRows, lifecycleState)
-    ?? resolveSoleEligibleContinueWorker(dispatchPlanRows, lifecycleState);
+  let continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
   let currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
   let currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
   const sessionLogResult = await loadDispatcherSessionLog(
@@ -938,8 +937,7 @@ async function getRole(
     lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
     dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
     dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
-    continueWorker = resolveImplicitContinueWorker(dispatchPlanRows, lifecycleState)
-      ?? resolveSoleEligibleContinueWorker(dispatchPlanRows, lifecycleState);
+    continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
     currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
     currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
   }
@@ -1438,6 +1436,7 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
     system_prompt: buildSystemPrompt({
       dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
       command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
+      dispatcher_role_id: "agent-dispatcher-preview",
       dispatch_repo_root: resolveDispatchRepoRoot([
         parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
         parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md"
@@ -1548,94 +1547,6 @@ function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {
     .filter((worker) => worker.trim().length > 0);
 }
 
-function resolveImplicitContinueWorker(
-  rows: DispatchPlanRow[],
-  lifecycleState: DispatchThreadStateV2
-): string | null {
-  const runningRows = rows.filter((row) => row.status === "🔄" && !isHumanDispatchRow(row));
-  if (runningRows.length !== 1) {
-    return null;
-  }
-
-  const [row] = runningRows;
-  if (!row) {
-    return null;
-  }
-
-  const worker = lifecycleState.workers[row.worker];
-  if (worker?.status === "running" && worker.thread_id.trim().length > 0) {
-    return null;
-  }
-
-  const normalizedWorkerId = row.worker.trim();
-  return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
-}
-
-function resolveSoleEligibleContinueWorker(
-  rows: DispatchPlanRow[],
-  lifecycleState: DispatchThreadStateV2
-): string | null {
-  const rowsByWorker = new Map(rows.map((row) => [row.worker, row]));
-  const eligibleWorkers = rows
-    .filter((row) => isEligibleDirectContinueRow(row, rowsByWorker, lifecycleState))
-    .map((row) => row.worker.trim())
-    .filter((workerId) => workerId.length > 0);
-
-  return eligibleWorkers.length === 1 ? eligibleWorkers[0] ?? null : null;
-}
-
-function isEligibleDirectContinueRow(
-  row: DispatchPlanRow,
-  rowsByWorker: Map<string, DispatchPlanRow>,
-  lifecycleState: DispatchThreadStateV2
-): boolean {
-  if (isHumanDispatchRow(row)) {
-    return false;
-  }
-
-  switch (row.status.trim()) {
-    case "⚠️ ABANDONED":
-      return true;
-    case "❌":
-      return (lifecycleState.workers[row.worker]?.retry_count ?? 0) < 2;
-    case "⬜":
-      return areDispatchDependenciesSatisfied(row, rowsByWorker);
-    default:
-      return false;
-  }
-}
-
-function areDispatchDependenciesSatisfied(
-  row: DispatchPlanRow,
-  rowsByWorker: Map<string, DispatchPlanRow>
-): boolean {
-  return parseDependsOnWorkers(row.depends_on).every((dependencyWorkerId) => {
-    const dependencyRow = rowsByWorker.get(dependencyWorkerId);
-    return dependencyRow ? isDispatchDependencyTerminal(dependencyRow.status) : false;
-  });
-}
-
-function parseDependsOnWorkers(dependsOn: string | undefined): string[] {
-  if (!dependsOn) {
-    return [];
-  }
-
-  const trimmed = dependsOn.trim();
-  if (trimmed.length === 0 || trimmed === "—") {
-    return [];
-  }
-
-  return trimmed
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0 && value !== "—");
-}
-
-function isDispatchDependencyTerminal(status: string | undefined): boolean {
-  const normalized = status?.trim();
-  return normalized === "✅" || normalized === "⛔ SKIPPED";
-}
-
 function shouldResetWorkerBeforeContinue(row: DispatchPlanRow | null): boolean {
   switch (row?.status.trim()) {
     case "⚠️ ABANDONED":
@@ -1645,11 +1556,6 @@ function shouldResetWorkerBeforeContinue(row: DispatchPlanRow | null): boolean {
     default:
       return false;
   }
-}
-
-function isHumanDispatchRow(row: DispatchPlanRow): boolean {
-  const model = row.model.trim().toUpperCase();
-  return model === "HUMAN" || model === "PM";
 }
 
 async function launchWorkerFromDispatchPlan(

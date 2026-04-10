@@ -159,6 +159,7 @@ export class AgentDispatcherRole implements BaseRole {
     const defaultSystemPrompt = this.buildPrompt({
       dispatch_plan_path: this.config.dispatch_plan_path,
       command_file_path: this.config.command_file_path,
+      dispatcher_role_id: this.threadId,
       dispatch_repo_root: resolveDispatchRepoRoot([
         this.config.dispatch_plan_path,
         this.config.command_file_path

@@ -8,6 +8,7 @@ describe("buildSystemPrompt", () => {
     return {
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
+      dispatcher_role_id: "agent-dispatcher-r03",
       dispatch_repo_root: "/tmp",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]",
       default_agent_type: "codex",
@@ -25,6 +26,7 @@ describe("buildSystemPrompt", () => {
 
     expect(prompt).toContain("dispatch_plan_path: /tmp/dispatch_plan.md");
     expect(prompt).toContain("command_file_path: /tmp/agent_dispatch_command.md");
+    expect(prompt).toContain("dispatcher_role_id: agent-dispatcher-r03");
     expect(prompt).toContain("dispatch_repo_root: /tmp");
     expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"web","chat_id":"web:ops"}]');
     expect(prompt).toContain("default_agent_type: codex");
@@ -39,43 +41,38 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("{{");
   });
 
-  it("documents the meridian-tool entrypoint and the current CLI surface", () => {
+  it("documents the service-owned dispatcher control surface", () => {
     const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).toContain(MERIDIAN_TOOL_DISPLAY_COMMAND);
     expect(prompt).not.toContain("npx meridian-tool");
     expect(prompt).not.toContain("/tmp/tsx-");
-    expect(prompt).toContain("spawn --agent-type <agent_type> [--model-id <model_id>] [--spawn-dir <path>] [--mode bridge|pane_bridge]");
-    expect(prompt).toContain("run --thread-id <id> --command <path> --worker <id>");
+    expect(prompt).toContain("continue-dispatcher --dispatcher agent-dispatcher-r03 [--worker <worker_id>]");
     expect(prompt).toContain("kill --thread-id <id>");
     expect(prompt).toContain("resume-worker --plan <dispatch_plan_path> --worker <worker_id>");
     expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
     expect(prompt).toContain("executable lives in the Meridian-roles repo");
     expect(prompt).toContain("run inside the worker sandbox rooted at `dispatch_repo_root`");
+    expect(prompt).toContain("owns next-worker selection");
+    expect(prompt).toContain("Do not resolve model routing or call worker `spawn` / `run` yourself");
     expect(prompt).not.toContain("update-status --plan");
     expect(prompt).not.toContain("update-status --status");
   });
 
-  it("documents deterministic routing, derived plan writes, explicit terminal exit, and non-final run handling", () => {
+  it("documents service-owned continuation, explicit terminal exit, and bounded recovery", () => {
     const prompt = buildSystemPrompt(createVars());
 
-    expect(prompt).toContain("values starting with `CODEX` -> `codex`");
-    expect(prompt).toContain("values starting with `GEMINI` -> `gemini`");
     expect(prompt).toContain("resolved_model_map_json");
-    expect(prompt).toContain("override precedence is already applied");
-    expect(prompt).toContain("use that exact `provider` and `model_id`");
-    expect(prompt).toContain("you do not need to write plan status yourself");
-    expect(prompt).toContain("marks the worker 🔄 in `dispatch_plan.md`");
+    expect(prompt).toContain("service applies the selection priority");
+    expect(prompt).toContain("`⚠️ ABANDONED` first, then retryable `❌`, then `⬜` rows");
     expect(prompt).toContain("send the final completion notify and stop");
-    expect(prompt).toContain("data.run_state");
-    expect(prompt).toContain("still_running");
-    expect(prompt).toContain("timeout");
-    expect(prompt).toContain("do not auto-kill the worker");
-    expect(prompt).toContain("if any non-human row is already `🔄`, do not select or spawn another worker");
-    expect(prompt).toContain("do not dispatch another row");
-    expect(prompt).toContain("every dependency is either `✅` or `⛔ SKIPPED`");
-    expect(prompt).toContain("always pass `--spawn-dir /tmp`");
-    expect(prompt).toContain("Do not inspect Meridian tool internals");
+    expect(prompt).toContain("status: \"continued\"");
+    expect(prompt).toContain("status: \"still_blocked\"");
+    expect(prompt).toContain("status: \"local_tool_bootstrap_failed\"");
+    expect(prompt).toContain("If any non-human row is already `🔄`");
+    expect(prompt).toContain("do not try to route around it locally");
+    expect(prompt).toContain("Do not resolve agent provider/model routing locally");
+    expect(prompt).toContain("do not inspect tool internals");
     expect(prompt).toContain("alternate wrappers/transports");
   });
 
@@ -83,7 +80,8 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt(createVars());
 
     expect(prompt).toContain("⚠️ ABANDONED");
+    expect(prompt).toContain("continue-dispatcher");
     expect(prompt).toContain("resume-worker");
-    expect(prompt).toContain("go back to Step 1a to retry it");
+    expect(prompt).toContain("go back to Step 2");
   });
 });
