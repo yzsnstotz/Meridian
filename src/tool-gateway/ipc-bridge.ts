@@ -18,6 +18,7 @@ const CALLBACK_SOCKET_DIR_ENV = "MERIDIAN_TOOL_SOCKET_DIR";
 const HUB_RELAY_URL_ENV = "MERIDIAN_HUB_RELAY_URL";
 const MERIDIAN_ROLES_REPO_ROOT = path.resolve(__dirname, "../..");
 const REPO_LOCAL_CALLBACK_SOCKET_DIR = path.join(MERIDIAN_ROLES_REPO_ROOT, ".tmp");
+type TransportName = "callback-socket" | "inline" | "http-relay" | "file-relay";
 
 export async function sendAndWait(
   hubMessage: Partial<HubMessage>,
@@ -33,9 +34,12 @@ export async function sendAndWait(
       throw resolvedError;
     }
 
-    console.warn("Tool Gateway callback socket unavailable; falling back to inline Hub response", {
-      expected_trace_id: traceId,
-      error: resolvedError.message
+    logTransportFallback("Tool Gateway callback socket unavailable; falling back to inline Hub response", {
+      traceId,
+      transport: "callback-socket",
+      nextTransport: "inline",
+      error: resolvedError,
+      requestAccepted: false
     });
 
     try {
@@ -46,9 +50,12 @@ export async function sendAndWait(
         throw resolvedInlineError;
       }
 
-      console.warn("Tool Gateway inline Hub connect also unavailable; falling back to HTTP relay", {
-        expected_trace_id: traceId,
-        error: resolvedInlineError.message
+      logTransportFallback("Tool Gateway inline Hub connect also unavailable; falling back to HTTP relay", {
+        traceId,
+        transport: "inline",
+        nextTransport: "http-relay",
+        error: resolvedInlineError,
+        requestAccepted: false
       });
 
       try {
@@ -57,9 +64,12 @@ export async function sendAndWait(
           timeoutMs > 0 ? timeoutMs : DEFAULT_HTTP_RELAY_TIMEOUT_MS
         );
       } catch (httpError) {
-        console.warn("Tool Gateway HTTP relay also unavailable; falling back to file relay", {
-          expected_trace_id: traceId,
-          error: asError(httpError).message
+        logTransportFallback("Tool Gateway HTTP relay also unavailable; falling back to file relay", {
+          traceId,
+          transport: "http-relay",
+          nextTransport: "file-relay",
+          error: asError(httpError),
+          requestAccepted: false
         });
 
         return sendViaFileRelay(
@@ -79,6 +89,7 @@ async function sendViaCallbackSocket(
   let tempSocketPath: string | null = null;
   let server: net.Server | null = null;
   let handleServerError: ((error: Error) => void) | null = null;
+  let requestAccepted = false;
 
   let settleResult: ((value: HubResult) => void) | null = null;
   let settleError: ((reason?: unknown) => void) | null = null;
@@ -133,11 +144,18 @@ async function sendViaCallbackSocket(
 
     if (timeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
-        rejectWithCleanup(new Error(`Hub timeout after ${timeoutMs}ms`));
+        rejectWithCleanup(buildReplyPathError({
+          baseMessage: `Hub timeout after ${timeoutMs}ms`,
+          traceId,
+          transport: "callback-socket",
+          requestAccepted,
+          responsePathFailure: "timeout"
+        }));
       }, timeoutMs);
     }
 
     await sendFireAndForget(buildOutboundMessage(hubMessage, traceId, tempSocketPath), getHubSocketPath());
+    requestAccepted = true;
     return await resultPromise;
   } finally {
     if (server && handleServerError) {
@@ -230,6 +248,19 @@ function createCallbackServer(
   rejectWithCleanup: (error: unknown) => void
 ): net.Server {
   const server = net.createServer();
+  const logReplyPathIssue = (
+    message: string,
+    responsePathFailure: string,
+    error?: Error
+  ): void => {
+    console.warn(message, {
+      trace_id: traceId,
+      transport: "callback-socket",
+      request_delivery: describeRequestDelivery(true),
+      response_path_failure: responsePathFailure,
+      error: error?.message
+    });
+  };
 
   server.on("connection", (socket) => {
     socket.setEncoding("utf8");
@@ -241,10 +272,14 @@ function createCallbackServer(
 
     socket.once("end", () => {
       if (!rawResponse.trim()) {
-        console.warn("Hub callback completed without a response body", {
-          expected_trace_id: traceId
-        });
-        rejectWithCleanup(new Error("Hub callback completed without a response body"));
+        logReplyPathIssue("Hub callback completed without a response body", "empty-body");
+        rejectWithCleanup(buildReplyPathError({
+          baseMessage: "Hub callback completed without a response body",
+          traceId,
+          transport: "callback-socket",
+          requestAccepted: true,
+          responsePathFailure: "empty-body"
+        }));
         return;
       }
 
@@ -252,7 +287,8 @@ function createCallbackServer(
         const result = HubResultSchema.parse(JSON.parse(rawResponse));
         if (result.trace_id !== traceId) {
           console.error("Hub callback trace_id mismatch", {
-            expected_trace_id: traceId,
+            trace_id: traceId,
+            transport: "callback-socket",
             received_trace_id: result.trace_id
           });
           return;
@@ -260,11 +296,15 @@ function createCallbackServer(
 
         resolveWithCleanup(result);
       } catch (error) {
-        console.warn("Hub callback body could not be parsed", {
-          expected_trace_id: traceId,
-          error: asError(error).message
-        });
-        rejectWithCleanup(error);
+        const resolvedError = asError(error);
+        logReplyPathIssue("Hub callback body could not be parsed", "invalid-body", resolvedError);
+        rejectWithCleanup(buildReplyPathError({
+          baseMessage: `Hub callback body could not be parsed: ${resolvedError.message}`,
+          traceId,
+          transport: "callback-socket",
+          requestAccepted: true,
+          responsePathFailure: "invalid-body"
+        }));
       }
     });
 
@@ -400,6 +440,7 @@ function sendInlineAndWait(
     let settled = false;
     let rawResponse = "";
     let responseTimeout: NodeJS.Timeout | null = null;
+    let requestAccepted = false;
     const socket = net.createConnection(getHubSocketPath());
     const connectTimeout = setTimeout(() => {
       if (settled) {
@@ -436,20 +477,38 @@ function sendInlineAndWait(
       settled = true;
       cleanup();
       if (!rawResponse.trim()) {
-        reject(new Error("Hub request completed without a response body"));
+        reject(buildReplyPathError({
+          baseMessage: "Hub request completed without a response body",
+          traceId: String(message.trace_id ?? "unknown"),
+          transport: "inline",
+          requestAccepted,
+          responsePathFailure: "empty-body"
+        }));
         return;
       }
 
       try {
         const result = HubResultSchema.parse(JSON.parse(rawResponse));
         if (result.trace_id !== message.trace_id) {
-          reject(new Error(`Hub response trace_id mismatch: expected ${message.trace_id}, received ${result.trace_id}`));
+          reject(buildReplyPathError({
+            baseMessage: `Hub response trace_id mismatch: expected ${message.trace_id}, received ${result.trace_id}`,
+            traceId: String(message.trace_id ?? "unknown"),
+            transport: "inline",
+            requestAccepted,
+            responsePathFailure: "trace-mismatch"
+          }));
           return;
         }
 
         resolve(result);
       } catch (error) {
-        reject(new Error(`Invalid Hub response: ${asError(error).message}`));
+        reject(buildReplyPathError({
+          baseMessage: `Invalid Hub response: ${asError(error).message}`,
+          traceId: String(message.trace_id ?? "unknown"),
+          transport: "inline",
+          requestAccepted,
+          responsePathFailure: "invalid-body"
+        }));
       }
     };
 
@@ -465,13 +524,20 @@ function sendInlineAndWait(
       clearTimeout(connectTimeout);
       if (timeoutMs > 0) {
         responseTimeout = setTimeout(() => {
-          fail(new Error(`Hub timeout after ${timeoutMs}ms`));
+          fail(buildReplyPathError({
+            baseMessage: `Hub timeout after ${timeoutMs}ms`,
+            traceId: String(message.trace_id ?? "unknown"),
+            transport: "inline",
+            requestAccepted,
+            responsePathFailure: "timeout"
+          }));
         }, timeoutMs);
       }
 
       try {
         socket.write(JSON.stringify(message));
         socket.end();
+        requestAccepted = true;
       } catch (error) {
         fail(error);
       }
@@ -524,7 +590,13 @@ export function sendViaHttpRelay(
 
         settled = true;
         if (!rawResponse.trim()) {
-          reject(new Error("HTTP relay completed without a response body"));
+          reject(buildReplyPathError({
+            baseMessage: "HTTP relay completed without a response body",
+            traceId: String(hubMessage.trace_id ?? "unknown"),
+            transport: "http-relay",
+            requestAccepted: true,
+            responsePathFailure: "empty-body"
+          }));
           return;
         }
 
@@ -532,7 +604,13 @@ export function sendViaHttpRelay(
           const result = HubResultSchema.parse(JSON.parse(rawResponse));
           resolve(result);
         } catch (error) {
-          reject(new Error(`Invalid HTTP relay response: ${asError(error).message}`));
+          reject(buildReplyPathError({
+            baseMessage: `Invalid HTTP relay response: ${asError(error).message}`,
+            traceId: String(hubMessage.trace_id ?? "unknown"),
+            transport: "http-relay",
+            requestAccepted: true,
+            responsePathFailure: "invalid-body"
+          }));
         }
       });
     });
@@ -600,6 +678,62 @@ function isRetryableSocketPathError(error: Error): boolean {
     || message.includes("LISTEN ENAMETOOLONG")
     || message.includes("OPERATION NOT PERMITTED")
     || message.includes("PERMISSION DENIED");
+}
+
+function logTransportFallback(
+  message: string,
+  context: {
+    traceId: string;
+    transport: TransportName;
+    nextTransport: TransportName;
+    error: Error;
+    requestAccepted: boolean;
+  }
+): void {
+  console.warn(message, {
+    trace_id: context.traceId,
+    transport: context.transport,
+    next_transport: context.nextTransport,
+    request_delivery: describeRequestDelivery(context.requestAccepted),
+    response_path_failure: classifyResponsePathFailure(context.error),
+    error: context.error.message
+  });
+}
+
+function buildReplyPathError(args: {
+  baseMessage: string;
+  traceId: string;
+  transport: TransportName;
+  requestAccepted: boolean;
+  responsePathFailure: string;
+}): Error {
+  return new Error(
+    `${args.baseMessage}; trace_id=${args.traceId}; transport=${args.transport}; `
+    + `request_delivery=${describeRequestDelivery(args.requestAccepted)}; `
+    + `response_path_failure=${args.responsePathFailure}`
+  );
+}
+
+function describeRequestDelivery(requestAccepted: boolean): string {
+  return requestAccepted ? "request-may-have-reached-hub" : "request-not-sent";
+}
+
+function classifyResponsePathFailure(error: Error): string {
+  const message = error.message.toLowerCase();
+  if (message.includes("timeout")) {
+    return "timeout";
+  }
+  if (message.includes("without a response body")) {
+    return "empty-body";
+  }
+  if (message.includes("trace_id mismatch")) {
+    return "trace-mismatch";
+  }
+  if (message.includes("invalid")) {
+    return "invalid-body";
+  }
+
+  return "transport-unavailable";
 }
 
 function asError(error: unknown): Error {

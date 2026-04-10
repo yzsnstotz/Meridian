@@ -89,7 +89,7 @@ function requireParam(value: string | undefined): string | null {
 }
 
 function isKillTimeout(error: unknown): boolean {
-  return asError(error).message === `Hub timeout after ${KILL_TIMEOUT_MS}ms`;
+  return asError(error).message.startsWith(`Hub timeout after ${KILL_TIMEOUT_MS}ms`);
 }
 
 function asError(error: unknown): Error {

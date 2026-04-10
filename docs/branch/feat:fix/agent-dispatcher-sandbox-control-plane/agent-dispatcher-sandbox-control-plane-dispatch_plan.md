@@ -51,7 +51,7 @@
 | Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |
 |--------|-------|--------|------|-------|------------|----------------|-------|
 | ✅ | 0 | PRE-FLIGHT | Workspace, branch, and baseline validation | CODEX | — | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Validate both repo roots, branch, Node/tooling, `dev_history/`, and Meridian-roles baseline. |
-| ⬜ | 1 | R-01 | Transport diagnostics and launch-ack visibility | CODEX | PRE-FLIGHT | Issue Doc, TaskSpec | Touches `ipc-bridge` and `file-relay`; keep fallback order unchanged. |
+| ✅ | 1 | R-01 | Transport diagnostics and launch-ack visibility | CODEX | PRE-FLIGHT | Issue Doc, TaskSpec | Touches `ipc-bridge` and `file-relay`; keep fallback order unchanged. |
 | ⬜ | 1 | R-02 | Stale dispatcher demotion + service-owned `spawn_dir` hardening | CODEX | PRE-FLIGHT | Issue Doc, TaskSpec, Previous TaskSpec v1.1 | Touches role detail/continue paths and launch helpers. |
 | ⬜ | 1 | R-05 | Meridian companion `trace_id` observability patch | HUMAN | PRE-FLIGHT | Issue Doc, TaskSpec | External repo worker against `/Users/yzliu/work/Meridian`; coding agents must skip. |
 | ⬜ | 2 | R-03 | Service-owned autonomous launch migration | CODEX | R-01, R-02 | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Main architectural change: remove prompt-local worker launch from primary path. |
@@ -200,7 +200,7 @@
 | Worker | Report Path | Status |
 |--------|-------------|--------|
 | PRE-FLIGHT | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/PRE-FLIGHT_report.md` | ✅ |
-| R-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-01_report.md` | ⬜ |
+| R-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-01_report.md` | ✅ |
 | R-02 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-02_report.md` | ⬜ |
 | R-03 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-03_report.md` | ⬜ |
 | R-04 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-04_report.md` | ⬜ |

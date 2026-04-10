@@ -213,7 +213,7 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
 
 function toToolError(error: unknown): string {
   const message = asError(error).message;
-  if (message === `Hub timeout after ${SPAWN_TIMEOUT_MS}ms`) {
+  if (message.startsWith(`Hub timeout after ${SPAWN_TIMEOUT_MS}ms`)) {
     return SPAWN_TIMEOUT_ERROR;
   }
 

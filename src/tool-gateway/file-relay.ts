@@ -16,6 +16,7 @@ const POLL_INTERVAL_MS = 100;
 const STALE_REQUEST_AGE_MS = 5 * 60 * 1000;
 const HUB_CONNECT_TIMEOUT_MS = 5_000;
 const HUB_RESPONSE_TIMEOUT_MS = 120_000;
+const FILE_RELAY_TRANSPORT = "file-relay";
 
 export function resolveRelayDir(): string {
   const configured = process.env[RELAY_DIR_ENV]?.trim();
@@ -63,9 +64,19 @@ async function pollForResponse(responsePath: string, traceId: string, deadline: 
       const raw = await fs.readFile(responsePath, "utf8");
       if (raw.trim()) {
         const result = HubResultSchema.parse(JSON.parse(raw));
+        if (result.trace_id !== traceId) {
+          throw buildRelayError(
+            `File relay response trace_id mismatch: expected ${traceId}, received ${result.trace_id}`,
+            traceId,
+            "trace-mismatch"
+          );
+        }
         return result;
       }
     } catch (error) {
+      if (isRelayDiagnosticError(error)) {
+        throw error;
+      }
       const code = "code" in (error as NodeJS.ErrnoException) ? (error as NodeJS.ErrnoException).code : undefined;
       if (code !== "ENOENT") {
         throw error;
@@ -75,7 +86,7 @@ async function pollForResponse(responsePath: string, traceId: string, deadline: 
     await sleep(POLL_INTERVAL_MS);
   }
 
-  throw new Error(`File relay response timed out for trace_id=${traceId}`);
+  throw buildRelayError(`File relay response timed out for trace_id=${traceId}`, traceId, "timeout");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -198,6 +209,7 @@ export class FileRelayWatcher {
     return new Promise((resolve, reject) => {
       let settled = false;
       let rawResponse = "";
+      let requestAccepted = false;
       const socket = net.createConnection(this.hubSocketPath);
       const connectTimeout = setTimeout(() => {
         if (settled) {
@@ -234,12 +246,18 @@ export class FileRelayWatcher {
         try {
           socket.write(JSON.stringify(hubMessage));
           socket.end();
+          requestAccepted = true;
         } catch (error) {
           fail(error);
         }
       });
       socket.once("timeout", () => {
-        fail(new Error(`File relay hub response timed out after ${HUB_RESPONSE_TIMEOUT_MS}ms`));
+        fail(buildRelayError(
+          `File relay hub response timed out after ${HUB_RESPONSE_TIMEOUT_MS}ms`,
+          String(hubMessage.trace_id ?? "unknown"),
+          "timeout",
+          requestAccepted
+        ));
       });
       socket.once("error", fail);
       socket.once("close", () => {
@@ -251,14 +269,35 @@ export class FileRelayWatcher {
         clearTimeout(connectTimeout);
 
         if (!rawResponse.trim()) {
-          reject(new Error("File relay hub request completed without a response body"));
+          reject(buildRelayError(
+            "File relay hub request completed without a response body",
+            String(hubMessage.trace_id ?? "unknown"),
+            "empty-body",
+            requestAccepted
+          ));
           return;
         }
 
         try {
-          resolve(HubResultSchema.parse(JSON.parse(rawResponse)));
+          const result = HubResultSchema.parse(JSON.parse(rawResponse));
+          if (hubMessage.trace_id && result.trace_id !== hubMessage.trace_id) {
+            reject(buildRelayError(
+              `File relay hub response trace_id mismatch: expected ${hubMessage.trace_id}, received ${result.trace_id}`,
+              String(hubMessage.trace_id),
+              "trace-mismatch",
+              requestAccepted
+            ));
+            return;
+          }
+
+          resolve(result);
         } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
+          reject(buildRelayError(
+            `Invalid file relay hub response: ${error instanceof Error ? error.message : String(error)}`,
+            String(hubMessage.trace_id ?? "unknown"),
+            "invalid-body",
+            requestAccepted
+          ));
         }
       });
     });
@@ -300,4 +339,21 @@ function buildSharedRelayDirName(hubSocketPath: string): string {
     .slice(0, 12);
 
   return `${DEFAULT_RELAY_DIR_NAME}-${fingerprint}`;
+}
+
+function buildRelayError(
+  baseMessage: string,
+  traceId: string,
+  responsePathFailure: string,
+  requestAccepted = true
+): Error {
+  return new Error(
+    `${baseMessage}; trace_id=${traceId}; transport=${FILE_RELAY_TRANSPORT}; `
+    + `request_delivery=${requestAccepted ? "request-may-have-reached-hub" : "request-not-sent"}; `
+    + `response_path_failure=${responsePathFailure}`
+  );
+}
+
+function isRelayDiagnosticError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(`transport=${FILE_RELAY_TRANSPORT}`);
 }

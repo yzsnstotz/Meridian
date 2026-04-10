@@ -75,8 +75,17 @@ describe("sendAndWait", () => {
     process.env.HUB_SOCKET_PATH = hubSocketPath;
 
     const message = buildHubMessage();
+    const error = await sendAndWait(message, 50).then(
+      () => null,
+      (caughtError) => caughtError as Error
+    );
 
-    await expect(sendAndWait(message, 50)).rejects.toThrow("Hub timeout after 50ms");
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain("Hub timeout after 50ms");
+    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
+    expect(error?.message).toContain("transport=callback-socket");
+    expect(error?.message).toContain("request_delivery=request-may-have-reached-hub");
+    expect(error?.message).toContain("response_path_failure=timeout");
     const callbackSocketPath = hub.callbackSocketPaths[0];
     expect(callbackSocketPath).toBeDefined();
     await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -119,7 +128,8 @@ describe("sendAndWait", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       "Hub callback trace_id mismatch",
       expect.objectContaining({
-        expected_trace_id: message.trace_id,
+        trace_id: message.trace_id,
+        transport: "callback-socket",
         received_trace_id: expect.any(String)
       })
     );
@@ -134,12 +144,22 @@ describe("sendAndWait", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const message = buildHubMessage();
+    const error = await sendAndWait(message, 50).then(
+      () => null,
+      (caughtError) => caughtError as Error
+    );
 
-    await expect(sendAndWait(message, 50)).rejects.toThrow("Hub callback completed without a response body");
+    expect(error?.message).toContain("Hub callback completed without a response body");
+    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
+    expect(error?.message).toContain("transport=callback-socket");
+    expect(error?.message).toContain("response_path_failure=empty-body");
     expect(warnSpy).toHaveBeenCalledWith(
       "Hub callback completed without a response body",
       expect.objectContaining({
-        expected_trace_id: message.trace_id
+        trace_id: message.trace_id,
+        transport: "callback-socket",
+        request_delivery: "request-may-have-reached-hub",
+        response_path_failure: "empty-body"
       })
     );
   });
@@ -153,12 +173,22 @@ describe("sendAndWait", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const message = buildHubMessage();
+    const error = await sendAndWait(message, 50).then(
+      () => null,
+      (caughtError) => caughtError as Error
+    );
 
-    await expect(sendAndWait(message, 50)).rejects.toThrow();
+    expect(error?.message).toContain("Hub callback body could not be parsed");
+    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
+    expect(error?.message).toContain("transport=callback-socket");
+    expect(error?.message).toContain("response_path_failure=invalid-body");
     expect(warnSpy).toHaveBeenCalledWith(
       "Hub callback body could not be parsed",
       expect.objectContaining({
-        expected_trace_id: message.trace_id,
+        trace_id: message.trace_id,
+        transport: "callback-socket",
+        request_delivery: "request-may-have-reached-hub",
+        response_path_failure: "invalid-body",
         error: expect.any(String)
       })
     );
@@ -269,7 +299,11 @@ describe("sendAndWait", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       "Tool Gateway callback socket unavailable; falling back to inline Hub response",
       expect.objectContaining({
-        expected_trace_id: message.trace_id,
+        trace_id: message.trace_id,
+        transport: "callback-socket",
+        next_transport: "inline",
+        request_delivery: "request-not-sent",
+        response_path_failure: "transport-unavailable",
         error: expect.stringContaining("listen EPERM")
       })
     );
@@ -326,7 +360,11 @@ describe("sendAndWait", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       "Tool Gateway callback socket unavailable; falling back to inline Hub response",
       expect.objectContaining({
-        expected_trace_id: message.trace_id,
+        trace_id: message.trace_id,
+        transport: "callback-socket",
+        next_transport: "inline",
+        request_delivery: "request-not-sent",
+        response_path_failure: "transport-unavailable",
         error: expect.stringContaining("listen EPERM")
       })
     );
