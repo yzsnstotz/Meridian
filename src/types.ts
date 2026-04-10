@@ -221,7 +221,9 @@ export const AgentInstanceSchema = z.object({
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),
-  auto_approve: z.boolean().default(true)
+  auto_approve: z.boolean().default(true),
+  /** Hub request trace that created or last correlated this instance (observability only). */
+  spawn_trace_id: z.string().nullable().optional()
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 

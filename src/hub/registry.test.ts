@@ -5,6 +5,7 @@ import { InstanceRegistry } from "./registry";
 
 test("InstanceRegistry tracks register, status updates, and removal", () => {
   const registry = new InstanceRegistry();
+  const traceId = "22222222-2222-4222-8222-222222222222";
   registry.register({
     thread_id: "codex_01",
     agent_type: "codex",
@@ -13,17 +14,20 @@ test("InstanceRegistry tracks register, status updates, and removal", () => {
     pid: 4321,
     tmux_pane: null,
     status: "idle",
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    spawn_trace_id: traceId
   });
 
   assert.equal(registry.has("codex_01"), true);
   assert.equal(registry.list().length, 1);
+  assert.equal(registry.get("codex_01")?.spawn_trace_id, traceId);
 
   registry.setStatus("codex_01", "running");
   assert.equal(registry.get("codex_01")?.status, "running");
 
   const removed = registry.unregister("codex_01");
   assert.equal(removed?.thread_id, "codex_01");
+  assert.equal(removed?.spawn_trace_id, traceId);
   assert.equal(registry.has("codex_01"), false);
 });
 

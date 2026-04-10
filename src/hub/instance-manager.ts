@@ -173,12 +173,28 @@ export class InstanceManager {
     workingDirectory?: string,
     modelId?: string,
     autoApprove?: boolean,
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    spawnTraceId?: string | null
   ): Promise<string> {
-    return await this.spawnWithRetry(type, mode, undefined, workingDirectory, modelId, autoApprove, reasoningEffort);
+    return await this.spawnWithRetry(
+      type,
+      mode,
+      undefined,
+      workingDirectory,
+      modelId,
+      autoApprove,
+      reasoningEffort,
+      spawnTraceId
+    );
   }
 
-  spawnStreamAgent(threadId: string, agentType: AgentType, args: string[], prompt: string): StreamSpawnResult {
+  spawnStreamAgent(
+    threadId: string,
+    agentType: AgentType,
+    args: string[],
+    prompt: string,
+    traceId?: string | null
+  ): StreamSpawnResult {
     if (args.length === 0 || !args[0]) {
       throw new Error(`Cannot spawn stream agent for thread_id=${threadId}: missing command`);
     }
@@ -191,6 +207,7 @@ export class InstanceManager {
     this.log.info(
       {
         operation: "stream_spawn_launch",
+        trace_id: traceId ?? null,
         thread_id: threadId,
         agent_type: agentType,
         working_directory: spawnWorkdir,
@@ -586,13 +603,23 @@ export class InstanceManager {
     workingDirectory?: string,
     modelId?: string,
     autoApprove?: boolean,
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    spawnTraceId?: string | null
   ): Promise<string> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
       try {
-        return await this.spawnInternal(type, mode, threadIdOverride, workingDirectory, modelId, autoApprove, reasoningEffort);
+        return await this.spawnInternal(
+          type,
+          mode,
+          threadIdOverride,
+          workingDirectory,
+          modelId,
+          autoApprove,
+          reasoningEffort,
+          spawnTraceId
+        );
       } catch (error) {
         lastError = error;
         if (!this.shouldRetrySpawn(error) || attempt >= this.spawnAttempts) {
@@ -602,6 +629,7 @@ export class InstanceManager {
         this.log.warn(
           {
             operation: "spawn_retry",
+            trace_id: spawnTraceId ?? null,
             thread_id: threadIdOverride ?? null,
             agent_type: type,
             mode,
@@ -641,9 +669,11 @@ export class InstanceManager {
     workingDirectory?: string,
     modelId?: string,
     autoApprove?: boolean,
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    spawnTraceId?: string | null
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
+    const traceId = spawnTraceId ?? null;
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
     const endpointBinding = await this.resolveAgentEndpointBinding(threadId);
     const socketPath = endpointBinding.endpoint;
@@ -661,6 +691,7 @@ export class InstanceManager {
       this.log.info(
         {
           operation: "spawn_launch",
+          trace_id: traceId,
           mode,
           thread_id: threadId,
           socket_path: socketPath,
@@ -687,6 +718,7 @@ export class InstanceManager {
       this.log.info(
         {
           operation: "spawn_pid",
+          trace_id: traceId,
           mode,
           thread_id: threadId,
           socket_path: socketPath,
@@ -708,7 +740,8 @@ export class InstanceManager {
         tmux_pane: tmuxSession,
         status: "idle",
         created_at: this.now().toISOString(),
-        restart_safe: true
+        restart_safe: true,
+        spawn_trace_id: traceId
       };
 
       this.registry.register(instance);
@@ -719,11 +752,11 @@ export class InstanceManager {
       this.maybeUnrefChild(child, stdio);
       this.watchChildProcess(threadId, child);
       try {
-        await this.assertAgentReady(threadId, socketPath);
+        await this.assertAgentReady(threadId, socketPath, traceId);
         const attachArgs = this.buildAgentAttachCliArgs(endpointBinding);
         if (attachArgs) {
           this.spawnInTmuxSession(threadId, tmuxSession, attachArgs);
-          await this.assertPaneBridgePromptReady(threadId, tmuxSession, type, socketPath);
+          await this.assertPaneBridgePromptReady(threadId, tmuxSession, type, socketPath, traceId);
         }
       } catch (error) {
         await this.killInternal(threadId, false).catch(() => undefined);
@@ -732,6 +765,7 @@ export class InstanceManager {
       this.log.info(
         {
           operation: "spawn",
+          trace_id: traceId,
           mode,
           thread_id: threadId,
           pid: child.pid,
@@ -750,6 +784,7 @@ export class InstanceManager {
     this.log.info(
       {
         operation: "spawn_launch",
+        trace_id: traceId,
         mode,
         thread_id: threadId,
         socket_path: socketPath,
@@ -776,6 +811,7 @@ export class InstanceManager {
     this.log.info(
       {
         operation: "spawn_pid",
+        trace_id: traceId,
         mode,
         thread_id: threadId,
         socket_path: socketPath,
@@ -797,7 +833,8 @@ export class InstanceManager {
       tmux_pane: tmuxSession,
       status: "idle",
       created_at: this.now().toISOString(),
-      restart_safe: true
+      restart_safe: true,
+      spawn_trace_id: traceId
     };
 
     this.registry.register(instance);
@@ -807,11 +844,12 @@ export class InstanceManager {
     this.children.set(threadId, child);
     this.maybeUnrefChild(child, stdio);
     this.watchChildProcess(threadId, child);
-    await this.assertAgentReady(threadId, socketPath);
+    await this.assertAgentReady(threadId, socketPath, traceId);
 
     this.log.info(
       {
         operation: "spawn",
+        trace_id: traceId,
         mode,
         thread_id: threadId,
         pid: child.pid,
@@ -826,7 +864,7 @@ export class InstanceManager {
     return threadId;
   }
 
-  private async assertAgentReady(threadId: string, endpoint: string): Promise<void> {
+  private async assertAgentReady(threadId: string, endpoint: string, traceId?: string | null): Promise<void> {
     let lastError: string | null = null;
 
     for (let attempt = 0; attempt < this.startupAttempts; attempt += 1) {
@@ -837,6 +875,7 @@ export class InstanceManager {
         this.log.warn(
           {
             operation: "readiness_child_not_running",
+            trace_id: traceId ?? null,
             thread_id: threadId,
             endpoint,
             attempt,
@@ -860,6 +899,7 @@ export class InstanceManager {
           this.log.warn(
             {
               operation: "readiness_probe_failed",
+              trace_id: traceId ?? null,
               thread_id: threadId,
               endpoint,
               attempt,
@@ -887,7 +927,8 @@ export class InstanceManager {
     threadId: string,
     tmuxSession: string,
     agentType: AgentType,
-    endpoint: string
+    endpoint: string,
+    traceId?: string | null
   ): Promise<void> {
     if (agentType !== "gemini") {
       return;
@@ -897,17 +938,21 @@ export class InstanceManager {
     if (typeof client.getMessages === "function") {
       await client.connect(endpoint);
       try {
-        await this.assertGeminiScreenReady(threadId, client);
+        await this.assertGeminiScreenReady(threadId, client, traceId);
         return;
       } finally {
         client.disconnect();
       }
     }
 
-    await this.assertGeminiPromptReadyFromTmux(threadId, tmuxSession);
+    await this.assertGeminiPromptReadyFromTmux(threadId, tmuxSession, traceId);
   }
 
-  private async assertGeminiScreenReady(threadId: string, client: StatusClient): Promise<void> {
+  private async assertGeminiScreenReady(
+    threadId: string,
+    client: StatusClient,
+    traceId?: string | null
+  ): Promise<void> {
     let footerVisibleAtMs: number | null = null;
     let promptVisibleAtMs: number | null = null;
     let lastVisibleText = "";
@@ -956,6 +1001,7 @@ export class InstanceManager {
           this.log.warn(
             {
               operation: "pane_prompt_probe_failed",
+              trace_id: traceId ?? null,
               thread_id: threadId,
               attempt,
               err: error instanceof Error ? error.message : String(error)
@@ -977,7 +1023,11 @@ export class InstanceManager {
     );
   }
 
-  private async assertGeminiPromptReadyFromTmux(threadId: string, tmuxSession: string): Promise<void> {
+  private async assertGeminiPromptReadyFromTmux(
+    threadId: string,
+    tmuxSession: string,
+    traceId?: string | null
+  ): Promise<void> {
     let stablePromptPolls = 0;
     let lastVisibleText = "";
     let startupNoticeDismissed = false;
@@ -1025,6 +1075,7 @@ export class InstanceManager {
           this.log.warn(
             {
               operation: "pane_prompt_probe_failed",
+              trace_id: traceId ?? null,
               thread_id: threadId,
               tmux_session: tmuxSession,
               attempt,
@@ -1168,6 +1219,7 @@ export class InstanceManager {
     this.log.info(
       {
         operation: "kill",
+        trace_id: instance.spawn_trace_id ?? null,
         thread_id: threadId,
         pid: instance.pid,
         socket_path: instance.socket_path,
@@ -1240,6 +1292,7 @@ export class InstanceManager {
       this.log.warn(
         {
           operation: "process_exit",
+          trace_id: instance.spawn_trace_id ?? null,
           thread_id: threadId,
           pid: instance.pid,
           socket_path: instance.socket_path,
@@ -1263,6 +1316,7 @@ export class InstanceManager {
       this.log.error(
         {
           operation: "process_error",
+          trace_id: instance.spawn_trace_id ?? null,
           thread_id: threadId,
           pid: instance.pid,
           socket_path: instance.socket_path,

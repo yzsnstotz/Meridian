@@ -78,6 +78,29 @@ test("spawn registers instance and uses bridge args", async () => {
   await manager.kill(threadId);
 });
 
+test("spawn stores spawn_trace_id on instance and registry when provided", async () => {
+  const registry = new InstanceRegistry();
+  const traceId = "11111111-1111-4111-8111-111111111111";
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_command: string, _args: string[], _options?: { detached?: boolean }) => {
+      return new FakeChildProcess(1102) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge", undefined, undefined, undefined, undefined, traceId);
+  assert.equal(registry.get(threadId)?.spawn_trace_id, traceId);
+
+  await manager.kill(threadId);
+});
+
 test("spawn falls back to --port when server does not support --socket", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];

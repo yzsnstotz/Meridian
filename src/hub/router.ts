@@ -627,7 +627,13 @@ export class HubRouter {
     const args = this.buildStreamArgs(instance);
     const prompt = this.buildStreamPrompt(message.payload.content, message.payload.attachments);
     const parser = this.createStreamParser(instance);
-    const { stdout, process } = this.instanceManager.spawnStreamAgent(threadId, instance.agent_type, args, prompt);
+    const { stdout, process } = this.instanceManager.spawnStreamAgent(
+      threadId,
+      instance.agent_type,
+      args,
+      prompt,
+      message.trace_id
+    );
     const stderrSummary = this.captureProcessStderr(process);
     let finalDelta: OutputDelta | null = null;
     let streamedText = "";
@@ -859,7 +865,8 @@ export class HubRouter {
       spawnDir,
       modelId,
       message.payload.auto_approve,
-      reasoningEffort
+      reasoningEffort,
+      message.trace_id
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);

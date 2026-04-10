@@ -10,7 +10,7 @@ export class InstanceRegistry {
     this.instances.set(instance.thread_id, { ...instance });
     hubLog.info(
       {
-        trace_id: null,
+        trace_id: instance.spawn_trace_id ?? null,
         thread_id: instance.thread_id,
         agent_type: instance.agent_type,
         status: instance.status
@@ -28,7 +28,7 @@ export class InstanceRegistry {
     this.instances.delete(threadId);
     hubLog.info(
       {
-        trace_id: null,
+        trace_id: existing.spawn_trace_id ?? null,
         thread_id: threadId,
         agent_type: existing.agent_type,
         status: existing.status
