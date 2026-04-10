@@ -4,6 +4,24 @@ import path from "node:path";
 const DISPATCH_DOCS_ANCHOR = "/docs/branch/";
 
 export function resolveDispatchRepoRoot(paths: Array<string | null | undefined>): string {
+  const resolved = resolveDispatchRepoRootOrNull(paths);
+  if (!resolved) {
+    return process.cwd();
+  }
+
+  return resolved;
+}
+
+export function resolveRequiredDispatchRepoRoot(paths: Array<string | null | undefined>): string {
+  const resolved = resolveDispatchRepoRootOrNull(paths);
+  if (resolved) {
+    return resolved;
+  }
+
+  throw new Error("Failed to resolve dispatch repo root from dispatch artifacts");
+}
+
+function resolveDispatchRepoRootOrNull(paths: Array<string | null | undefined>): string | null {
   for (const candidate of paths) {
     const resolvedRoot = resolveCandidateRepoRoot(candidate);
     if (resolvedRoot) {
@@ -11,7 +29,7 @@ export function resolveDispatchRepoRoot(paths: Array<string | null | undefined>)
     }
   }
 
-  return process.cwd();
+  return null;
 }
 
 function resolveCandidateRepoRoot(candidate: string | null | undefined): string | null {

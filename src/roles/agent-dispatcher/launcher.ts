@@ -3,7 +3,7 @@ import { unlink as unlinkFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ReplyChannel } from "../../types";
-import { resolveDispatchRepoRoot } from "./dispatch-paths";
+import { resolveRequiredDispatchRepoRoot } from "./dispatch-paths";
 import { extractSpawnCliError, parseSpawnCliOutput } from "./meridian-tool-output";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
@@ -67,7 +67,16 @@ export async function launchDispatcher(
   config: LaunchConfig,
   deps: LaunchDispatcherDeps = defaultDeps
 ): Promise<LaunchResult> {
-  const spawnArgs = buildSpawnArgs(config);
+  let spawnArgs: string[];
+  try {
+    spawnArgs = buildSpawnArgs(config);
+  } catch (error) {
+    return {
+      ok: false,
+      threadId: EMPTY_THREAD_ID,
+      error: `spawn failed: ${asError(error).message}`
+    };
+  }
 
   let spawnStdout: string;
   try {
@@ -152,7 +161,7 @@ function buildSpawnArgs(config: LaunchConfig): string[] {
     "--agent-type",
     config.agentType,
     "--spawn-dir",
-    resolveDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
+    resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
     "--mode",
     config.mode
   ]);

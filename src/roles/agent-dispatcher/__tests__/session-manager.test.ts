@@ -95,6 +95,34 @@ describe("DispatchThreadView", () => {
       }
     });
   });
+
+  it("hides dispatcher thread ids after lifecycle demotes the dispatcher from running", async () => {
+    const harness = await createHarness();
+    const lifecycleStore = new LifecycleStore(harness.sidecarPath, {
+      now: () => FIXED_NOW
+    });
+
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: FIXED_NOW,
+        status: "abandoned"
+      },
+      workers: {},
+      last_reconciled_at: null
+    });
+
+    const tracker = new DispatchThreadView(harness.dispatchPlanPath, {
+      lifecycleStore,
+      now: () => FIXED_NOW
+    });
+
+    await expect(tracker.load()).resolves.toEqual({
+      dispatcher_thread_id: null,
+      workers: {}
+    });
+  });
 });
 
 describe("SessionManager", () => {

@@ -11,6 +11,7 @@ import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import { resolveDispatchRepoRoot } from "../roles/agent-dispatcher/dispatch-paths";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
+import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import { resolveDispatchModelMapFromMarkdown } from "../roles/agent-dispatcher/model-routing";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
@@ -595,7 +596,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     const snapshot = await snapshotDispatchFiles(dispatchPlanPath);
     let resumeResult: Awaited<ReturnType<typeof executeResumeWorkerAction>> | undefined;
-    const effectiveDispatcherThreadId = (() => {
+    let effectiveDispatcherThreadId = (() => {
       const activeRole = options.runner.getRole(threadId);
       if (activeRole?.roleType === "agent-dispatcher") {
         return extractDispatcherThreadId(activeRole) ?? lifecycleState.dispatcher.thread_id ?? undefined;
@@ -603,6 +604,13 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
       return lifecycleState.dispatcher.thread_id ?? undefined;
     })();
+    effectiveDispatcherThreadId = await validateDispatcherThreadForContinue(
+      dispatchPlanPath,
+      threadId,
+      effectiveDispatcherThreadId,
+      attachToThread,
+      log
+    );
 
     try {
       const effectiveWorkerRow = effectiveWorkerId
@@ -899,20 +907,20 @@ async function getRole(
     return response;
   }
 
-  const lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
+  let lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
   const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
   const dispatchPlanRows = await enrichDispatchPlanRows(
     agentDispatcherConfig.dispatch_plan_path,
     dispatchPlan.rows,
     options.log
   );
-  const dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
-  const dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
-  const continueWorker = resolveImplicitContinueWorker(dispatchPlanRows, lifecycleState)
+  let dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
+  let dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
+  let continueWorker = resolveImplicitContinueWorker(dispatchPlanRows, lifecycleState)
     ?? resolveSoleEligibleContinueWorker(dispatchPlanRows, lifecycleState);
-  const currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
-  const currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
-  const sessionLog = await loadDispatcherSessionLog(
+  let currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
+  let currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
+  const sessionLogResult = await loadDispatcherSessionLog(
     dispatcherThreadId,
     options.getThreadDetail,
     options.attachToThread,
@@ -926,6 +934,16 @@ async function getRole(
     },
     options.log
   );
+  if (sessionLogResult.dispatcherMissing) {
+    lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
+    dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
+    dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
+    continueWorker = resolveImplicitContinueWorker(dispatchPlanRows, lifecycleState)
+      ?? resolveSoleEligibleContinueWorker(dispatchPlanRows, lifecycleState);
+    currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
+    currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
+  }
+  const sessionLog = sessionLogResult.lines;
 
   return {
     ...response,
@@ -1789,37 +1807,90 @@ async function loadDispatcherSessionLog(
     roleStatus: string;
   },
   log: Logger
-): Promise<string[]> {
+): Promise<{ lines: string[]; dispatcherMissing: boolean }> {
   const fallbackLog = buildFallbackSessionLog(fallbackContext, dispatcherThreadId);
   if (!dispatcherThreadId || !getThreadDetail) {
-    return fallbackLog;
+    return {
+      lines: fallbackLog,
+      dispatcherMissing: false
+    };
   }
 
   if (attachToThread) {
     try {
       await attachToThread(dispatcherThreadId);
     } catch (error) {
+      const message = getErrorMessage(error);
       log.warn("Failed to attach dispatcher session before detail fetch", {
         thread_id: dispatcherThreadId,
         role_id: fallbackContext.roleId,
-        error: getErrorMessage(error)
+        error: message
       });
+      if (handleMissingDispatcherThreadEvidence(
+        fallbackContext.dispatchPlanPath,
+        dispatcherThreadId,
+        message,
+        fallbackContext.roleId,
+        "detail-attach",
+        log
+      )) {
+        return {
+          lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
+          dispatcherMissing: true
+        };
+      }
     }
   }
 
   try {
     const detail = await getThreadDetail(dispatcherThreadId);
     const lines = splitLogLines(detail);
-    if (isEmptyCachedDetailResponse(lines)) {
-      return buildEmptyCachedDetailLog(fallbackContext, dispatcherThreadId);
+    if (handleMissingDispatcherThreadEvidence(
+      fallbackContext.dispatchPlanPath,
+      dispatcherThreadId,
+      detail,
+      fallbackContext.roleId,
+      "detail-response",
+      log
+    )) {
+      return {
+        lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
+        dispatcherMissing: true
+      };
     }
-    return lines.length > 0 ? lines : fallbackLog;
+    if (isEmptyCachedDetailResponse(lines)) {
+      return {
+        lines: buildEmptyCachedDetailLog(fallbackContext, dispatcherThreadId),
+        dispatcherMissing: false
+      };
+    }
+    return {
+      lines: lines.length > 0 ? lines : fallbackLog,
+      dispatcherMissing: false
+    };
   } catch (error) {
+    const message = getErrorMessage(error);
     log.warn("Failed to fetch dispatcher session detail", {
       dispatcherThreadId,
-      error: getErrorMessage(error)
+      error: message
     });
-    return buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? fallbackLog;
+    if (handleMissingDispatcherThreadEvidence(
+      fallbackContext.dispatchPlanPath,
+      dispatcherThreadId,
+      message,
+      fallbackContext.roleId,
+      "detail-fetch",
+      log
+    )) {
+      return {
+        lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
+        dispatcherMissing: true
+      };
+    }
+    return {
+      lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? fallbackLog,
+      dispatcherMissing: false
+    };
   }
 }
 
@@ -1827,6 +1898,76 @@ function resolveDispatcherThreadId(lifecycleState: DispatchThreadStateV2): strin
   return lifecycleState.dispatcher.status === "running"
     ? lifecycleState.dispatcher.thread_id ?? null
     : null;
+}
+
+async function validateDispatcherThreadForContinue(
+  dispatchPlanPath: string,
+  roleId: string,
+  dispatcherThreadId: string | undefined,
+  attachToThread: ((threadId: string) => Promise<void>) | undefined,
+  log: Logger
+): Promise<string | undefined> {
+  const candidate = dispatcherThreadId?.trim();
+  if (!candidate || !attachToThread) {
+    return candidate || undefined;
+  }
+
+  try {
+    await attachToThread(candidate);
+    return candidate;
+  } catch (error) {
+    const message = getErrorMessage(error);
+    log.warn("Failed to attach dispatcher session before continue", {
+      thread_id: candidate,
+      role_id: roleId,
+      error: message
+    });
+    if (handleMissingDispatcherThreadEvidence(
+      dispatchPlanPath,
+      candidate,
+      message,
+      roleId,
+      "continue-attach",
+      log
+    )) {
+      return undefined;
+    }
+
+    return candidate;
+  }
+}
+
+function handleMissingDispatcherThreadEvidence(
+  dispatchPlanPath: string,
+  dispatcherThreadId: string,
+  evidence: string | null | undefined,
+  roleId: string,
+  source: "continue-attach" | "detail-attach" | "detail-fetch" | "detail-response",
+  log: Logger
+): boolean {
+  if (!isMissingThreadEvidence(evidence)) {
+    return false;
+  }
+
+  const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath));
+  const lifecycleState = lifecycleStore.load();
+  if (lifecycleState.dispatcher.status !== "running" || lifecycleState.dispatcher.thread_id !== dispatcherThreadId) {
+    return true;
+  }
+
+  lifecycleState.dispatcher = {
+    ...lifecycleState.dispatcher,
+    status: "abandoned"
+  };
+  lifecycleStore.logTransition("dispatcher", "running", "abandoned", "dispatcher_thread_missing");
+  lifecycleStore.save(lifecycleState);
+  log.warn("Demoted dispatcher lifecycle state after missing-thread evidence", {
+    role_id: roleId,
+    dispatch_plan_path: dispatchPlanPath,
+    thread_id: dispatcherThreadId,
+    source
+  });
+  return true;
 }
 
 function buildDispatchWorkerDetails(
@@ -2063,6 +2204,21 @@ function buildEmptyCachedDetailLog(
       ...buildFallbackSessionLog(context, dispatcherThreadId),
       "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
     ];
+}
+
+function buildMissingDispatcherSessionLog(
+  context: {
+    currentWorker: string | null;
+    currentWorkerEntry: DispatchWorkerState | null;
+    dispatcherEntry: DispatchWorkerState | null;
+    dispatchPlanPath: string;
+    roleStatus: string;
+  }
+): string[] {
+  return [
+    ...buildFallbackSessionLog(context, null),
+    "Dispatcher lifecycle was demoted after Hub reported the thread missing."
+  ];
 }
 
 function buildPersistedDispatcherSessionLog(

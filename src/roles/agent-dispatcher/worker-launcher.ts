@@ -1,6 +1,6 @@
 import { execFile as nodeExecFile, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
 
-import { resolveDispatchRepoRoot } from "./dispatch-paths";
+import { resolveRequiredDispatchRepoRoot } from "./dispatch-paths";
 import { extractSpawnCliError, parseSpawnCliOutput } from "./meridian-tool-output";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
@@ -48,9 +48,20 @@ export async function launchDispatchWorker(
   config: LaunchDispatchWorkerConfig,
   deps: LaunchDispatchWorkerDeps = defaultDeps
 ): Promise<LaunchDispatchWorkerResult> {
+  let spawnArgs: string[];
+  try {
+    spawnArgs = buildSpawnArgs(config);
+  } catch (error) {
+    return {
+      ok: false,
+      threadId: "",
+      error: `spawn failed: ${asError(error).message}`
+    };
+  }
+
   let spawnStdout: string;
   try {
-    ({ stdout: spawnStdout } = await deps.execFile(MERIDIAN_TOOL_EXECUTABLE, buildSpawnArgs(config)));
+    ({ stdout: spawnStdout } = await deps.execFile(MERIDIAN_TOOL_EXECUTABLE, spawnArgs));
   } catch (error) {
     return {
       ok: false,
@@ -102,7 +113,7 @@ function buildSpawnArgs(config: LaunchDispatchWorkerConfig): string[] {
     "--agent-type",
     config.agentType,
     "--spawn-dir",
-    resolveDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
+    resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
     "--mode",
     config.mode
   ];

@@ -103,6 +103,31 @@ describe("launchDispatchWorker", () => {
     expect(harness.spawn).not.toHaveBeenCalled();
   });
 
+  it("fails before spawn when the dispatch repo root cannot be resolved from artifacts", async () => {
+    const execFile = vi.fn();
+    const spawn = vi.fn();
+
+    const result = await launchDispatchWorker({
+      agentType: "codex",
+      mode: "pane_bridge",
+      commandFilePath: "   ",
+      dispatchPlanPath: "",
+      workerId: "N-01",
+      modelId: "gpt-5.4"
+    }, {
+      execFile,
+      spawn
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      threadId: "",
+      error: "spawn failed: Failed to resolve dispatch repo root from dispatch artifacts"
+    });
+    expect(execFile).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("returns the spawned thread id when detached run launch fails", async () => {
     const harness = await createHarness({
       spawnError: new Error("ENOENT")

@@ -981,6 +981,77 @@ describe("role config handlers", () => {
     }
   });
 
+  it("clears a stale dispatcher thread during continue when attach reports the thread missing", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-missing-dispatcher-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+    const launchDispatcher = vi.fn(async () => ({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    }));
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-r11"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | Ω+2 | R-11 | GUI | CODEX-HIGH | — | TaskSpec | ready |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        new Error("attach failed: No registered agent instance found for thread_id=dispatcher-thread-123"),
+        null,
+        launchDispatcher,
+        launchDispatchWorker
+      );
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-missing", dispatchPlanPath);
+
+      const response = await invokeJson<Record<string, unknown>>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-missing/continue"
+      );
+
+      expect(response).toMatchObject({
+        ok: true,
+        status: "continued",
+        message: "continued: R-11",
+        worker: "R-11"
+      });
+      expect(response).not.toHaveProperty("dispatcher_thread_id");
+      expect(lifecycleStore.load().dispatcher.status).toBe("abandoned");
+      expect(launchDispatcher).toHaveBeenCalledTimes(1);
+      expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "R-11",
+        dispatchPlanPath
+      }));
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns a reconciliation report from POST /api/reconcile for the active agent-dispatcher", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-reconcile-route-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -1780,6 +1851,57 @@ describe("role config handlers", () => {
       expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
     } finally {
       vi.useRealTimers();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("demotes dispatcher lifecycle state during detail fetch when attach reports the thread missing", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-missing-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | ready |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        "unused",
+        new Error("attach failed: No registered agent instance found for thread_id=dispatcher-thread-123")
+      );
+
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-missing-detail", dispatchPlanPath);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-missing-detail")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-missing-detail",
+        dispatcher_thread_id: null,
+        session_log: expect.arrayContaining([
+          "Dispatcher thread: pending",
+          "Dispatcher lifecycle was demoted after Hub reported the thread missing."
+        ])
+      });
+      expect(lifecycleStore.load().dispatcher.status).toBe("abandoned");
+    } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { A2AClient } from "../../a2a/client";
 import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
 import { LifecycleStore } from "./lifecycle-store";
+import { isMissingThreadEvidence } from "./missing-thread";
 
 export interface ReconciliationChange {
   workerId: string;
@@ -55,13 +56,6 @@ const RUNNING_STATUSES = new Set(["running", "waiting", "queued", "starting", "i
 const IDLE_STATUSES = new Set(["idle", "stable"]);
 const COMPLETED_STATUSES = new Set(["completed", "success"]);
 const FAILED_STATUSES = new Set(["error", "failed", "timeout"]);
-const MISSING_THREAD_PATTERNS = [
-  /\bnot registered\b/i,
-  /\bunknown thread\b/i,
-  /\bnot found\b/i,
-  /\bno thread is attached\b/i
-];
-
 export async function reconcile(
   lifecycleStore: LifecycleStore,
   hubClient: A2AClient,
@@ -645,7 +639,7 @@ function parseLeadingJsonObject(rawContent: string): Record<string, unknown> | n
 }
 
 function isMissingThreadResult(content: string): boolean {
-  return MISSING_THREAD_PATTERNS.some((pattern) => pattern.test(content));
+  return isMissingThreadEvidence(content);
 }
 
 function outputsExist(paths: string[]): boolean {
