@@ -60,7 +60,7 @@
 | ✅ | 4 | V-01 | Live Meridian integration verification | HUMAN | R-01, R-02, R-03, R-04, R-05, R-06 | Issue Doc, TaskSpec | Real Hub / sandbox verification; coding agents must skip. |
 | ✅ | Ω | DELTA-CHECK | Delta check and corrective dispatch | CODEX | PRE-FLIGHT, R-01, R-02, R-03, R-04, R-05, R-06, V-01 | Issue Doc, TaskSpec | Must not auto-pass `R-05` or `V-01`. |
 | ✅ | Ω+1 | Ω+1-R-04A | Align watchdog recovery with shared continue/reset semantics | CODEX | DELTA-CHECK | Issue Doc, TaskSpec | `src/index.ts` launches the selected worker directly and skips the resume/reset step used by `POST /continue`; use the shared continuation contract and add regression coverage for `⚠️ ABANDONED` / `❌` rows. |
-| ⬜ | Ω | PR-REVIEW | PR alignment review | CODEX | DELTA-CHECK, all Ω+1 corrective workers, all PM-DECIDE-N rows, R-05, V-01 | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Final verdict blocks while external repo or live verification remains incomplete. |
+| ✅ | Ω | PR-REVIEW | PR alignment review | CODEX | DELTA-CHECK, all Ω+1 corrective workers, all PM-DECIDE-N rows, R-05, V-01 | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Final verdict blocks while external repo or live verification remains incomplete. |
 
 **Status Legend**: `⬜` not started · `🔄` in progress · `✅` complete · `⛔` blocked · `⏳` PM decision pending
 
@@ -226,7 +226,7 @@
 | V-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/V-01_report.md` | ✅ |
 | DELTA-CHECK | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/delta_check_report.md` | ✅ |
 | Ω+1-R-04A | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/delta/Ω+1-R-04A_report.md` | ✅ |
-| PR-REVIEW | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/pr_review_report.md` | ⬜ |
+| PR-REVIEW | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/pr_review_report.md` | ✅ |
 
 ---
 
