@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 import { HUB_SOCKET_PATH } from "../config";
@@ -16,15 +17,13 @@ const STALE_REQUEST_AGE_MS = 5 * 60 * 1000;
 const HUB_CONNECT_TIMEOUT_MS = 5_000;
 const HUB_RESPONSE_TIMEOUT_MS = 120_000;
 
-const REPO_ROOT = path.resolve(__dirname, "../..");
-
 export function resolveRelayDir(): string {
   const configured = process.env[RELAY_DIR_ENV]?.trim();
   if (configured) {
     return path.resolve(configured);
   }
 
-  return path.join(REPO_ROOT, ".tmp", DEFAULT_RELAY_DIR_NAME);
+  return path.join(path.resolve(os.tmpdir()), buildSharedRelayDirName(resolveHubSocketPath()));
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +96,7 @@ export class FileRelayWatcher {
 
   constructor(options?: { relayDir?: string; hubSocketPath?: string }) {
     this.relayDir = options?.relayDir ?? resolveRelayDir();
-    this.hubSocketPath = options?.hubSocketPath ?? (process.env.HUB_SOCKET_PATH ?? HUB_SOCKET_PATH);
+    this.hubSocketPath = options?.hubSocketPath ?? resolveHubSocketPath();
   }
 
   async start(): Promise<void> {
@@ -288,4 +287,17 @@ export class FileRelayWatcher {
       // Directory may not exist yet
     }
   }
+}
+
+function resolveHubSocketPath(): string {
+  return process.env.HUB_SOCKET_PATH ?? HUB_SOCKET_PATH;
+}
+
+function buildSharedRelayDirName(hubSocketPath: string): string {
+  const fingerprint = createHash("sha1")
+    .update(path.resolve(hubSocketPath))
+    .digest("hex")
+    .slice(0, 12);
+
+  return `${DEFAULT_RELAY_DIR_NAME}-${fingerprint}`;
 }

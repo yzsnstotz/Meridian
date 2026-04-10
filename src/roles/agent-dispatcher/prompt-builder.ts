@@ -66,7 +66,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `kill_policy: ${killPolicy}`,
     `resolved_model_map_json: ${resolvedModelMapJson}`,
     "Use the runtime `user_reply_channels` JSON array exactly when you need to send a notify override.",
-    "The tool command stays anchored to the Meridian-roles repo even when workers spawn in `dispatch_repo_root`.",
+    "The `meridian-tool` executable lives in the Meridian-roles repo, but dispatcher commands still run inside the worker sandbox rooted at `dispatch_repo_root`.",
     "",
     "# Routing Rules",
     "Resolve each dispatch-plan `Model` value deterministically before you spawn a worker.",

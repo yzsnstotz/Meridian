@@ -50,7 +50,8 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("kill --thread-id <id>");
     expect(prompt).toContain("resume-worker --plan <dispatch_plan_path> --worker <worker_id>");
     expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
-    expect(prompt).toContain("stays anchored to the Meridian-roles repo");
+    expect(prompt).toContain("executable lives in the Meridian-roles repo");
+    expect(prompt).toContain("run inside the worker sandbox rooted at `dispatch_repo_root`");
     expect(prompt).not.toContain("update-status --plan");
     expect(prompt).not.toContain("update-status --status");
   });

@@ -260,6 +260,47 @@ describe("SessionManager", () => {
     expect(killCalls).not.toHaveBeenCalled();
     expect(lifecycle.store.save).not.toHaveBeenCalled();
   });
+
+  it("prepareFreshDispatcherLaunch kills both disk and in-memory dispatcher ids before clearing state", async () => {
+    const harness = await createHarness();
+    const lifecycle = createLifecycleStoreMock();
+    const killCalls = vi.fn().mockResolvedValue({ stdout: "{\"ok\":true}\n", stderr: "" });
+    const manager = new SessionManager("agent-dispatcher-role-5", {
+      stateStore: harness.stateStore,
+      lifecycleStore: lifecycle.store,
+      execFile: killCalls
+    });
+
+    await manager.initSession("dispatcher-thread-memory", harness.dispatchPlanPath);
+    lifecycle.store.save({
+      ...lifecycle.getState(),
+      dispatcher: {
+        thread_id: "dispatcher-thread-disk",
+        started_at: FIXED_NOW,
+        status: "running"
+      }
+    });
+
+    await manager.prepareFreshDispatcherLaunch();
+
+    expect(killCalls).toHaveBeenCalledTimes(2);
+    expect(killCalls).toHaveBeenNthCalledWith(1, MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
+      "kill",
+      "--thread-id",
+      "dispatcher-thread-disk"
+    ]));
+    expect(killCalls).toHaveBeenNthCalledWith(2, MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
+      "kill",
+      "--thread-id",
+      "dispatcher-thread-memory"
+    ]));
+    expect(lifecycle.getState().dispatcher).toEqual({
+      thread_id: null,
+      started_at: null,
+      status: "pending"
+    });
+    expect(manager.getDispatcherThreadId()).toBeNull();
+  });
 });
 
 async function createHarness(): Promise<{

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -276,20 +277,50 @@ function createCallbackServer(
 }
 
 function buildCallbackSocketPathCandidates(): string[] {
-  const basename = `meridian-tool-${randomUUID()}.sock`;
+  const basename = `mt-${randomUUID().replaceAll("-", "").slice(0, 16)}.sock`;
   return resolveCallbackSocketDirectories().map((directory) => path.join(directory, basename));
 }
 
 function resolveCallbackSocketDirectories(): string[] {
   const configuredDirectory = process.env[CALLBACK_SOCKET_DIR_ENV]?.trim();
+  const workspaceSocketDir = path.join(resolveProcessWorkspaceRoot(), ".tmp");
 
-  // Some sandboxes block Unix socket binds under the system temp dir. Use a stable repo-local fallback
-  // instead of process.cwd(), which may point at the spawned worker repo rather than meridian-roles.
+  // Worker sandboxes often allow writes in their current workspace even when the Meridian repo itself
+  // is read-only. Prefer the active workspace first, then fall back to broader temp locations.
   return Array.from(new Set([
     configuredDirectory ? path.resolve(configuredDirectory) : null,
+    workspaceSocketDir,
     path.resolve(os.tmpdir()),
     REPO_LOCAL_CALLBACK_SOCKET_DIR
   ].filter((directory): directory is string => Boolean(directory))));
+}
+
+function resolveProcessWorkspaceRoot(): string {
+  const currentDirectory = path.resolve(process.cwd());
+  return findNearestGitRoot(currentDirectory) ?? currentDirectory;
+}
+
+function findNearestGitRoot(startDirectory: string): string | null {
+  let current = path.resolve(startDirectory);
+
+  while (true) {
+    const gitPath = path.join(current, ".git");
+    try {
+      const stat = fsSync.statSync(gitPath);
+      if (stat.isDirectory() || stat.isFile()) {
+        return current;
+      }
+    } catch {
+      // Continue walking upward until the filesystem root.
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+
+    current = parent;
+  }
 }
 
 async function ensureSocketDirectory(socketPath: string): Promise<void> {

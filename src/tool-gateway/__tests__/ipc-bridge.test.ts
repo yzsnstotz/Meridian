@@ -19,9 +19,6 @@ const tempDirectories = new Set<string>();
 const servers = new Set<TestHubServer>();
 const originalHubSocketPath = process.env.HUB_SOCKET_PATH;
 const originalCwd = process.cwd();
-const TOOL_GATEWAY_REPO_ROOT = path.resolve(__dirname, "../../..");
-const REPO_LOCAL_SOCKET_DIR = path.join(TOOL_GATEWAY_REPO_ROOT, ".tmp");
-
 afterEach(async () => {
   vi.restoreAllMocks();
   process.chdir(originalCwd);
@@ -66,7 +63,7 @@ describe("sendAndWait", () => {
 
     const callbackSocketPath = hub.callbackSocketPaths[0];
     expect(path.isAbsolute(callbackSocketPath)).toBe(true);
-    expect(path.basename(callbackSocketPath)).toMatch(/^meridian-tool-[0-9a-f-]+\.sock$/);
+    expect(path.basename(callbackSocketPath)).toMatch(/^mt-[0-9a-f]{16}\.sock$/);
     await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -167,7 +164,7 @@ describe("sendAndWait", () => {
     );
   });
 
-  it("falls back to a repo-local socket directory when the system temp bind is denied", async () => {
+  it("prefers a workspace-local socket directory before the system temp dir", async () => {
     const directory = await createTempDirectory();
     const hubSocketPath = path.join(directory, "hub.sock");
     const hub = await startHubServer(hubSocketPath, { callbackMode: "success" });
@@ -205,8 +202,12 @@ describe("sendAndWait", () => {
     const result = await sendAndWait(buildHubMessage(), 200);
 
     expect(result.status).toBe("success");
-    expect(blockedTmpBind).toBe(true);
-    expect(hub.callbackSocketPaths[0]?.startsWith(`${REPO_LOCAL_SOCKET_DIR}${path.sep}`)).toBe(true);
+    expect(blockedTmpBind).toBe(false);
+    const callbackSocketPath = hub.callbackSocketPaths[0];
+    expect(callbackSocketPath).toBeDefined();
+    expect(path.basename(path.dirname(callbackSocketPath!))).toBe(".tmp");
+    const workspaceRoot = await fs.realpath(directory);
+    await expect(fs.realpath(path.dirname(path.dirname(callbackSocketPath!)))).resolves.toBe(workspaceRoot);
     await expect(fs.access(hub.callbackSocketPaths[0])).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -229,7 +230,7 @@ describe("sendAndWait", () => {
 
       const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
         const candidatePath = readSocketPath(listenArgs[0]);
-        if (candidatePath?.includes("meridian-tool-")) {
+        if (path.basename(candidatePath ?? "").startsWith("mt-")) {
           blockedBindCount += 1;
           const error = Object.assign(
             new Error(`listen EPERM: operation not permitted ${candidatePath}`),
@@ -292,7 +293,7 @@ describe("sendAndWait", () => {
 
       const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
         const candidatePath = readSocketPath(listenArgs[0]);
-        if (candidatePath?.includes("meridian-tool-")) {
+        if (path.basename(candidatePath ?? "").startsWith("mt-")) {
           const error = new Error(`listen EPERM: operation not permitted ${candidatePath}`);
           queueMicrotask(() => {
             server.emit("error", error);
