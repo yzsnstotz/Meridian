@@ -74,7 +74,7 @@ The CLI talks to two services:
 | `STATE_FILE_PATH` | `/var/lib/meridian-roles/state.json` | Persistent role state file for the service |
 | `RECONCILE_INTERVAL_MS` | `120000` | Reconciliation interval for stale worker detection |
 
-For local development, prefer a writable state path such as:
+For local development, the checked-in `.env.example` already uses a writable `/tmp/meridian-roles/state.json` path. If `STATE_FILE_PATH` is left unset entirely, the service code falls back to `/var/lib/meridian-roles/state.json` for managed deployments. An explicit override still works:
 
 ```bash
 export STATE_FILE_PATH=/tmp/meridian-roles/state.json

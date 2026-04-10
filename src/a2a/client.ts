@@ -17,8 +17,6 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
-const CANONICAL_HUB_SOCKET_PATH = "/tmp/hub-socks/hub-core.sock";
-const LEGACY_HUB_SOCKET_PATH = "/tmp/hub-core.sock";
 
 interface AgentCard {
   name: string;
@@ -521,15 +519,7 @@ function buildHubSocketPathCandidates(primaryPath: string, explicitPaths?: strin
     return dedupeSocketPaths(explicitPaths);
   }
 
-  if (primaryPath === CANONICAL_HUB_SOCKET_PATH) {
-    return [CANONICAL_HUB_SOCKET_PATH, LEGACY_HUB_SOCKET_PATH];
-  }
-
-  if (primaryPath === LEGACY_HUB_SOCKET_PATH) {
-    return [LEGACY_HUB_SOCKET_PATH, CANONICAL_HUB_SOCKET_PATH];
-  }
-
-  return [primaryPath];
+  return dedupeSocketPaths([primaryPath]);
 }
 
 function asError(error: unknown): Error {

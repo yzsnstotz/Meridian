@@ -210,6 +210,16 @@ describe("A2AClient", () => {
     });
   });
 
+  it("uses only the configured hub socket path unless extra candidates are provided", () => {
+    const client = new A2AClient({
+      hubSocketPath: "/tmp/hub-socks/hub-core.sock"
+    });
+
+    expect((client as unknown as { hubSocketPaths: string[] }).hubSocketPaths).toEqual([
+      "/tmp/hub-socks/hub-core.sock"
+    ]);
+  });
+
   it("re-registers and flushes queued messages after the hub restarts", async () => {
     const directory = await createTempDirectory();
     const hubSocketPath = path.join(directory, "hub.sock");

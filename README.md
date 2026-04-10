@@ -20,17 +20,17 @@ npm run build
 npm start
 ```
 
-Default runtime values:
+Starter local `.env.local` values:
 
 ```bash
 HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
 GUI_PORT=7701
 GUI_LISTEN_HOST=127.0.0.1
-STATE_FILE_PATH=/var/lib/meridian-roles/state.json
+STATE_FILE_PATH=/tmp/meridian-roles/state.json
 ```
 
-For local development and CI, override `STATE_FILE_PATH` to a writable path such as `/tmp/meridian-roles/state.json`. The default `/var/lib/...` path is intended for managed deployments, not unprivileged shells.
+The checked-in `.env.example` already uses a writable `/tmp/meridian-roles/state.json` path for local development and CI. If `STATE_FILE_PATH` is left unset entirely, the service code falls back to `/var/lib/meridian-roles/state.json` for managed deployments.
 
 The service boot path is `src/index.ts`. Startup does three things:
 
@@ -55,7 +55,7 @@ HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
 GUI_PORT=7701
 GUI_LISTEN_HOST=127.0.0.1
-STATE_FILE_PATH=/var/lib/meridian-roles/state.json
+STATE_FILE_PATH=/tmp/meridian-roles/state.json
 ```
 
 Once the service is up, Meridian sees it as:
