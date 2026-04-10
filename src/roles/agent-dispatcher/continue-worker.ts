@@ -5,11 +5,13 @@ import { resolveDispatchModelMapFromMarkdown } from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
 import { executeResumeWorkerAction } from "../../tool-gateway/tools/resume-worker";
+import killTool from "../../tool-gateway/tools/kill";
 import type { AgentDispatcherConfig } from "../../types";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
 type ResumeWorkerResult = Awaited<ReturnType<typeof executeResumeWorkerAction>>;
+type KillThreadResult = Awaited<ReturnType<typeof killTool.execute>>;
 
 export interface ContinueDispatchPlanRow {
   status: string;
@@ -30,11 +32,13 @@ export async function continueDispatchWorker(
   config: Pick<AgentDispatcherConfig, "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "model_map">,
   dispatchPlanRows: ContinueDispatchPlanRow[],
   workerId: string,
-  launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult> = launchDispatchWorker
+  launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult> = launchDispatchWorker,
+  killThread: (threadId: string) => Promise<KillThreadResult> = defaultKillThread
 ): Promise<ContinueDispatchWorkerResult> {
   const snapshot = await snapshotDispatchFiles(config.dispatch_plan_path);
   const dispatchPlanRow = dispatchPlanRows.find((row) => row.worker === workerId) ?? null;
   let resumeResult: ResumeWorkerResult | undefined;
+  let orphanedLaunchThreadId: string | undefined;
 
   try {
     if (!dispatchPlanRow) {
@@ -55,7 +59,18 @@ export async function continueDispatchWorker(
 
     const launched = await launchWorkerFromDispatchPlan(config, dispatchPlanRow, launchWorker);
     if (!launched.ok) {
-      throw new Error(launched.error ?? "Failed to launch dispatch worker");
+      const launchError = launched.error ?? "Failed to launch dispatch worker";
+      orphanedLaunchThreadId = normalizeThreadId(launched.threadId);
+      if (orphanedLaunchThreadId) {
+        try {
+          await killOrphanedLaunchThread(orphanedLaunchThreadId, killThread);
+          orphanedLaunchThreadId = undefined;
+        } catch (cleanupError) {
+          throw new Error(`${launchError}; ${getErrorMessage(cleanupError)}`);
+        }
+      }
+
+      throw new Error(launchError);
     }
 
     return {
@@ -70,6 +85,7 @@ export async function continueDispatchWorker(
     return {
       ok: false,
       workerId,
+      ...(orphanedLaunchThreadId ? { threadId: orphanedLaunchThreadId } : {}),
       error: message,
       localToolBootstrapFailure: isLocalToolBootstrapFailure(message)
     };
@@ -185,6 +201,25 @@ function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: strin
   }
 
   return defaultAgentType;
+}
+
+async function killOrphanedLaunchThread(
+  threadId: string,
+  killThread: (threadId: string) => Promise<KillThreadResult>
+): Promise<void> {
+  const result = await killThread(threadId);
+  if (!result.ok) {
+    throw new Error(`orphan cleanup failed for thread ${threadId}: ${result.error ?? "Kill failed"}`);
+  }
+}
+
+async function defaultKillThread(threadId: string): Promise<KillThreadResult> {
+  return killTool.execute({ thread_id: threadId });
+}
+
+function normalizeThreadId(threadId: string | undefined): string | undefined {
+  const normalized = threadId?.trim();
+  return normalized ? normalized : undefined;
 }
 
 function isLocalToolBootstrapFailure(message: string): boolean {

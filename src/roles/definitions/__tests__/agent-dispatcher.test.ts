@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AppState, DispatchThreadStateV2 } from "../../../types";
 import type { Logger, RoleContext } from "../../base-role";
+import type { LaunchResult } from "../../agent-dispatcher/launcher";
 import { AgentDispatcherRole } from "../agent-dispatcher";
 
 class MemoryStateStore {
@@ -99,6 +100,21 @@ describe("AgentDispatcherRole", () => {
         })
       })
     ]);
+  });
+
+  it("onActivate kills a spawned dispatcher thread when detached run handoff fails", async () => {
+    const harness = createHarness();
+    harness.launchDispatcher.mockResolvedValueOnce({
+      ok: false,
+      threadId: "dispatcher-thread-orphaned",
+      error: "run launch failed: ENOENT"
+    });
+
+    await expect(harness.role.onActivate(harness.context)).rejects.toThrow("run launch failed: ENOENT");
+
+    expect(harness.killThread).toHaveBeenCalledWith("dispatcher-thread-orphaned");
+    expect(harness.sessionManager.initSession).not.toHaveBeenCalled();
+    await expect(harness.stateStore.load()).resolves.toBeNull();
   });
 
   it("onStatusChange(\"paused\") persists paused state and signals the dispatcher thread", async () => {
@@ -242,7 +258,7 @@ function createHarness(options: {
     setPaused: vi.fn(() => undefined)
   };
   const buildSystemPrompt = vi.fn(() => "dispatcher prompt");
-  const launchDispatcher = vi.fn(async () => ({
+  const launchDispatcher = vi.fn(async (): Promise<LaunchResult> => ({
     ok: true,
     threadId: "dispatcher-thread-123"
   }));

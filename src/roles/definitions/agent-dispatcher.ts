@@ -144,7 +144,17 @@ export class AgentDispatcherRole implements BaseRole {
       userReplyChannel: this.getPrimaryReplyChannel()
     });
     if (!launched.ok || !launched.threadId.trim()) {
-      throw new Error(launched.error ?? "Failed to launch dispatcher agent");
+      const launchError = launched.error ?? "Failed to launch dispatcher agent";
+      const orphanedThreadId = launched.threadId.trim();
+      if (orphanedThreadId) {
+        try {
+          await this.killTrackedThread(orphanedThreadId);
+        } catch (error) {
+          throw new Error(`${launchError}; orphan cleanup failed for thread ${orphanedThreadId}: ${asError(error).message}`);
+        }
+      }
+
+      throw new Error(launchError);
     }
 
     const dispatcherThreadId = launched.threadId;

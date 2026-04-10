@@ -60,6 +60,7 @@
 | ✅ | 4 | V-01 | Live Meridian integration verification | HUMAN | R-01, R-02, R-03, R-04, R-05, R-06 | Issue Doc, TaskSpec | Real Hub / sandbox verification; coding agents must skip. |
 | ✅ | Ω | DELTA-CHECK | Delta check and corrective dispatch | CODEX | PRE-FLIGHT, R-01, R-02, R-03, R-04, R-05, R-06, V-01 | Issue Doc, TaskSpec | Must not auto-pass `R-05` or `V-01`. |
 | ✅ | Ω+1 | Ω+1-R-04A | Align watchdog recovery with shared continue/reset semantics | CODEX | DELTA-CHECK | Issue Doc, TaskSpec | `src/index.ts` launches the selected worker directly and skips the resume/reset step used by `POST /continue`; use the shared continuation contract and add regression coverage for `⚠️ ABANDONED` / `❌` rows. |
+| ✅ | Ω+2 | Ω+2-R-03A | Clean up orphaned Hub threads on detached `run` handoff failure | CODEX | PR-REVIEW | Issue Doc, TaskSpec | Cover both worker continuation and dispatcher startup: if `spawn` succeeds but detached `run` bootstrap fails, kill the spawned Hub thread before plan/lifecycle rollback or propagate the thread id to deterministic cleanup. Add regression coverage. |
 | ✅ | Ω | PR-REVIEW | PR alignment review | CODEX | DELTA-CHECK, all Ω+1 corrective workers, all PM-DECIDE-N rows, R-05, V-01 | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Final verdict blocks while external repo or live verification remains incomplete. |
 
 **Status Legend**: `⬜` not started · `🔄` in progress · `✅` complete · `⛔` blocked · `⏳` PM decision pending
@@ -200,6 +201,24 @@
 
 ---
 
+### Batch Ω+2 — Post-review corrective follow-up
+
+**Workers**: Ω+2-R-03A
+**Priority**: P0
+**Parallelism**: serial
+
+**Agent Notes**:
+- Fix the `spawn succeeded` / detached `run` failed handoff gap in both worker continuation and dispatcher startup paths.
+- Do not leave rollback-only behavior that restores `dispatch_plan.md` or `dispatch_threads.json` while a newly spawned Hub thread remains alive and untracked.
+- Add focused regression tests that prove orphaned worker and dispatcher threads are cleaned up, or that the spawned thread id is surfaced to deterministic cleanup logic before returning failure.
+
+**Completion Gate**:
+- Worker continuation no longer leaks a Hub thread when `meridian-tool run` fails after successful `spawn`.
+- Dispatcher startup no longer leaks a Hub thread when detached `run` bootstrap fails after successful `spawn`.
+- Regression tests cover both worker-launcher and dispatcher-launcher cleanup paths.
+
+---
+
 ## PM Flags Summary
 
 | # | Flag | Stage | Impact | Resolution |
@@ -226,6 +245,7 @@
 | V-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/V-01_report.md` | ✅ |
 | DELTA-CHECK | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/delta_check_report.md` | ✅ |
 | Ω+1-R-04A | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/delta/Ω+1-R-04A_report.md` | ✅ |
+| Ω+2-R-03A | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/delta/Ω+2-R-03A_report.md` | ✅ |
 | PR-REVIEW | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/pr_review_report.md` | ✅ |
 
 ---
@@ -234,6 +254,7 @@
 
 - `PM-DECIDE-N` rows may be appended only by DELTA-CHECK.
 - `Ω+1` corrective rows depend on DELTA-CHECK and any required PM decisions.
+- `Ω+2` corrective rows may be appended after PR-REVIEW when a concrete merge blocker still requires code work.
 - Coding agents must skip rows with `Model: HUMAN` or `Model: PM`.
 - `R-05` and `V-01` are hard gates and must never be auto-passed.
 - DELTA-CHECK marks itself `✅` only after it writes the report and appends any required rows.

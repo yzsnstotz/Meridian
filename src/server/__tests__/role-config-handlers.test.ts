@@ -751,17 +751,17 @@ describe("role config handlers", () => {
     }
   });
 
-  it("restores dispatch files when continue hits a local tool bootstrap failure", async () => {
+  it("kills orphaned worker threads and restores dispatch files when continue hits a detached run bootstrap failure", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-bootstrap-failure-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
     const lifecycleStore = new LifecycleStore(sidecarPath, {
       dispatchPlanPath
     });
-    const bootstrapError = "spawn failed: Command failed: listen EPERM: operation not permitted /tmp/tsx-501/84525.pipe";
+    const bootstrapError = "run launch failed: ENOENT";
     const launchDispatchWorker = vi.fn(async () => ({
       ok: false,
-      threadId: "",
+      threadId: "worker-thread-orphaned",
       error: bootstrapError
     }));
 
@@ -814,6 +814,12 @@ describe("role config handlers", () => {
       });
 
       expect(launchDispatchWorker).toHaveBeenCalledTimes(1);
+      expect(killSpy).toHaveBeenNthCalledWith(1, {
+        thread_id: "worker-thread-stale"
+      });
+      expect(killSpy).toHaveBeenNthCalledWith(2, {
+        thread_id: "worker-thread-orphaned"
+      });
       await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toBe(originalPlan);
       await expect(fs.readFile(sidecarPath, "utf8")).resolves.toBe(originalSidecar);
     } finally {
