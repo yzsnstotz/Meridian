@@ -3,8 +3,15 @@ import type { DispatchThreadStateV2 } from "../../types";
 export interface DispatchContinuationPlanRow {
   status: string;
   worker: string;
-  model: string;
-  depends_on: string;
+  model: string | null;
+  depends_on: string | string[];
+}
+
+export interface DispatchContinuationWorkerRow {
+  status: string;
+  worker_id: string;
+  model: string | null;
+  depends_on: string[];
 }
 
 export function resolveServiceContinueWorker(
@@ -16,8 +23,23 @@ export function resolveServiceContinueWorker(
 }
 
 export function isHumanDispatchRow(row: Pick<DispatchContinuationPlanRow, "model">): boolean {
-  const model = row.model.trim().toUpperCase();
+  const model = row.model?.trim().toUpperCase() ?? "";
   return model === "HUMAN" || model === "PM";
+}
+
+export function resolveServiceContinueWorkerFromWorkerRows(
+  rows: DispatchContinuationWorkerRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  return resolveServiceContinueWorker(
+    rows.map((row) => ({
+      status: row.status,
+      worker: row.worker_id,
+      model: row.model,
+      depends_on: row.depends_on
+    })),
+    lifecycleState
+  );
 }
 
 function resolveImplicitContinueWorker(
@@ -81,13 +103,19 @@ function areDispatchDependenciesSatisfied(
   row: DispatchContinuationPlanRow,
   rowsByWorker: Map<string, DispatchContinuationPlanRow>
 ): boolean {
-  return parseDependsOnWorkers(row.depends_on).every((dependencyWorkerId) => {
+  return normalizeDependsOnWorkers(row.depends_on).every((dependencyWorkerId) => {
     const dependencyRow = rowsByWorker.get(dependencyWorkerId);
     return dependencyRow ? isDispatchDependencyTerminal(dependencyRow.status) : false;
   });
 }
 
-function parseDependsOnWorkers(dependsOn: string | undefined): string[] {
+function normalizeDependsOnWorkers(dependsOn: string | string[] | undefined): string[] {
+  if (Array.isArray(dependsOn)) {
+    return dependsOn
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0 && value !== "—");
+  }
+
   if (!dependsOn) {
     return [];
   }

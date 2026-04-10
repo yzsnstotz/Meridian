@@ -8,6 +8,7 @@ import type { DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { LifecycleStore } from "./lifecycle-store";
 import { reconcile, type ReconciliationReport } from "./reconciler";
+import { resolveServiceContinueWorkerFromWorkerRows } from "./service-continuation";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
@@ -15,6 +16,7 @@ export interface DispatcherStallInfo {
   dispatchPlanPath: string;
   dispatcherStatus: string;
   pendingWorkerCount: number;
+  continueWorkerId: string | null;
 }
 
 export interface WatchdogDeps {
@@ -168,27 +170,29 @@ export class ReconciliationWatchdog {
       return;
     }
 
-    const pendingWorkerCount = await resolvePendingWorkerCount(dispatchPlanPath, state);
-    if (pendingWorkerCount === 0) {
+    const { pendingWorkerCount, continueWorkerId } = await resolveRecoverableWorkerState(dispatchPlanPath, state);
+    if (pendingWorkerCount === 0 && !continueWorkerId) {
       return;
     }
 
-    const hasRunningWorkers = countWorkersInStatus(state, "running") > 0;
-    if (hasRunningWorkers) {
+    const blockingRunningWorkers = resolveBlockingRunningWorkers(state, continueWorkerId);
+    if (blockingRunningWorkers.length > 0) {
       return;
     }
 
-    this.log.info("Watchdog detected stalled dispatcher with pending workers", {
+    this.log.info("Watchdog detected stalled dispatcher with recoverable workers", {
       dispatchPlanPath,
       dispatcherStatus: state.dispatcher.status,
-      pendingWorkerCount
+      pendingWorkerCount,
+      continueWorkerId
     });
 
     try {
       await this.onDispatcherStalled({
         dispatchPlanPath,
         dispatcherStatus: state.dispatcher.status,
-        pendingWorkerCount
+        pendingWorkerCount,
+        continueWorkerId
       });
     } catch (error) {
       this.log.warn("Watchdog dispatcher stall callback failed", {
@@ -203,17 +207,32 @@ function countWorkersInStatus(state: DispatchThreadStateV2, status: string): num
   return Object.values(state.workers).filter((worker) => worker.status === status).length;
 }
 
-async function resolvePendingWorkerCount(
+function resolveBlockingRunningWorkers(
+  state: DispatchThreadStateV2,
+  continueWorkerId: string | null
+): string[] {
+  return Object.entries(state.workers)
+    .filter(([, worker]) => worker.status === "running")
+    .filter(([workerId, worker]) => workerId !== continueWorkerId || worker.thread_id.trim().length > 0)
+    .map(([workerId]) => workerId);
+}
+
+async function resolveRecoverableWorkerState(
   dispatchPlanPath: string,
   state: DispatchThreadStateV2
-): Promise<number> {
+): Promise<{ pendingWorkerCount: number; continueWorkerId: string | null }> {
   try {
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
-    return parseDispatchPlanRows(markdown).filter((row) => {
-      return row.status === "⬜" && !isHumanOwnedModel(row.model);
-    }).length;
+    const rows = parseDispatchPlanRows(markdown);
+    return {
+      pendingWorkerCount: rows.filter((row) => row.status === "⬜" && !isHumanOwnedModel(row.model)).length,
+      continueWorkerId: resolveServiceContinueWorkerFromWorkerRows(rows, state)
+    };
   } catch {
-    return countWorkersInStatus(state, "pending");
+    return {
+      pendingWorkerCount: countWorkersInStatus(state, "pending"),
+      continueWorkerId: null
+    };
   }
 }
 

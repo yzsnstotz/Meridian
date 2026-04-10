@@ -229,6 +229,15 @@ describe("ReconciliationWatchdog", () => {
     vi.setSystemTime(new Date(FIXED_NOW));
 
     const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ⬜ | 1 | W-01 | Pending worker | CODEX | — | Ready to continue. |"
+      ].join("\n"),
+      "utf8"
+    );
     const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
     store.save({
       ...buildEmptyDispatchThreadStateV2(),
@@ -268,7 +277,56 @@ describe("ReconciliationWatchdog", () => {
       expect.objectContaining({
         dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
         dispatcherStatus: "pending",
-        pendingWorkerCount: 1
+        pendingWorkerCount: 1,
+        continueWorkerId: "W-01"
+      })
+    );
+  });
+
+  it("invokes onDispatcherStalled when a stale running worker should be continued through the shared service path", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 🔄 | 1 | W-01 | Stale running worker | CODEX | — | Lost dispatcher thread id. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: null, started_at: null, status: "abandoned" },
+      workers: {}
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("t", "running"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "abandoned",
+        pendingWorkerCount: 0,
+        continueWorkerId: "W-01"
       })
     );
   });
@@ -329,7 +387,70 @@ describe("ReconciliationWatchdog", () => {
       expect.objectContaining({
         dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
         dispatcherStatus: "completed",
-        pendingWorkerCount: 1
+        pendingWorkerCount: 1,
+        continueWorkerId: "W-02"
+      })
+    );
+  });
+
+  it("selects the first eligible pending worker when multiple workers can advance", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ✅ | 1 | W-00 | Foundation | CODEX | — | Complete. |",
+        "| ⬜ | 2 | W-01 | First eligible | CODEX | W-00 | Ready. |",
+        "| ⬜ | 2 | W-02 | Also eligible | CODEX | W-00 | Ready. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: null, started_at: null, status: "abandoned" },
+      workers: {
+        "W-00": {
+          thread_id: "w-thread-00",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("t", "running"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "abandoned",
+        pendingWorkerCount: 2,
+        continueWorkerId: "W-01"
       })
     );
   });

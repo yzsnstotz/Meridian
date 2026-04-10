@@ -29,7 +29,6 @@ import {
 import {
   AgentDispatcherConfigSchema,
   shouldUseAgentDispatcherConfig,
-  type DispatchThreadStateV2,
   type AgentDispatcherConfig,
   type AppState,
   type HubMessage,
@@ -119,13 +118,14 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
         return;
       }
 
-      const continuedWorkerId = await tryContinueSoleEligibleDispatchWorker(
+      const continuedWorkerId = await tryContinueDispatchWorker(
         stateStore,
         info.dispatchPlanPath,
+        info.continueWorkerId,
         log
       );
       if (continuedWorkerId) {
-        log.info("Watchdog stall: continued sole eligible worker directly", {
+        log.info("Watchdog stall: continued worker through service-owned recovery", {
           threadId,
           workerId: continuedWorkerId
         });
@@ -590,11 +590,16 @@ async function resolveThreadIdForDispatchPlanPath(
   return null;
 }
 
-async function tryContinueSoleEligibleDispatchWorker(
+async function tryContinueDispatchWorker(
   stateStore: StateStore,
   dispatchPlanPath: string,
+  workerId: string | null,
   log: typeof console
 ): Promise<string | null> {
+  if (!workerId) {
+    return null;
+  }
+
   const state = await loadAppState(stateStore);
   const roleState = state.roles.find((role) => {
     if (role.roleType !== "agent-dispatcher" || !isStartupRehydratableRoleStatus(role.status)) {
@@ -624,14 +629,8 @@ async function tryContinueSoleEligibleDispatchWorker(
   }
 
   const rows = parseDispatchPlanRows(markdown);
-  const lifecycleState = new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath)).load();
-  const workerId = resolveWatchdogContinueWorker(rows, lifecycleState);
-  if (!workerId) {
-    return null;
-  }
-
   const row = rows.find((candidate) => candidate.worker_id === workerId) ?? null;
-  if (!row || normalizePlanStatus(row.status) !== "pending") {
+  if (!row || isHumanModel(row.model)) {
     return null;
   }
 
@@ -656,64 +655,6 @@ async function tryContinueSoleEligibleDispatchWorker(
   }
 
   return workerId;
-}
-
-function resolveWatchdogContinueWorker(
-  rows: Array<{
-    status: string;
-    worker_id: string;
-    model: string | null;
-    depends_on: string[];
-  }>,
-  lifecycleState: DispatchThreadStateV2
-): string | null {
-  const runningRows = rows.filter((row) => normalizePlanStatus(row.status) === "running" && !isHumanModel(row.model));
-  if (runningRows.length === 1) {
-    const [row] = runningRows;
-    const worker = lifecycleState.workers[row.worker_id];
-    if (!worker || worker.status !== "running" || worker.thread_id.trim().length === 0) {
-      return row.worker_id;
-    }
-  }
-
-  const rowsByWorker = new Map(rows.map((row) => [row.worker_id, row]));
-  const pendingEligible = rows
-    .filter((row) => normalizePlanStatus(row.status) === "pending")
-    .filter((row) => !isHumanModel(row.model))
-    .filter((row) => row.depends_on.every((dependencyWorkerId) => {
-      const dependencyRow = rowsByWorker.get(dependencyWorkerId);
-      const dependencyStatus = dependencyRow ? normalizePlanStatus(dependencyRow.status) : "";
-      return dependencyStatus === "completed" || dependencyStatus === "skipped";
-    }))
-    .map((row) => row.worker_id);
-
-  return pendingEligible.length === 1 ? pendingEligible[0] ?? null : null;
-}
-
-function normalizePlanStatus(status: string | null | undefined): string {
-  const normalized = typeof status === "string" ? status.trim() : "";
-  switch (normalized) {
-    case "🔄":
-    case "running":
-      return "running";
-    case "⬜":
-    case "pending":
-      return "pending";
-    case "✅":
-    case "completed":
-      return "completed";
-    case "❌":
-    case "failed":
-      return "failed";
-    case "⚠️ ABANDONED":
-    case "abandoned":
-      return "abandoned";
-    case "⛔ SKIPPED":
-    case "skipped":
-      return "skipped";
-    default:
-      return normalized.toLowerCase();
-  }
 }
 
 function isHumanModel(model: string | null | undefined): boolean {
