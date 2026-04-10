@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AppState, DispatchThreadStateV2, HubMessage } from "../../../types";
+import type { AppState, DispatchThreadStateV2 } from "../../../types";
 import type { Logger, RoleContext } from "../../base-role";
 import { AgentDispatcherRole } from "../agent-dispatcher";
 
@@ -308,7 +308,7 @@ function createHarness(options: {
 
 function createRoleContext(): RoleContext {
   return {
-    sendToHub: vi.fn(async (_message: Partial<HubMessage>) => undefined),
+    sendToHub: vi.fn(async () => undefined),
     listInstances: vi.fn(async () => []),
     log: createLogger()
   };

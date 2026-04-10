@@ -702,7 +702,8 @@ function missingParam(name: string): ToolResult {
   };
 }
 
-function requireParam(value: string | undefined, _name: string): string | null {
+function requireParam(value: string | undefined, name: string): string | null {
+  void name;
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 

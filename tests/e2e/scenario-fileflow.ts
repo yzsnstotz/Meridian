@@ -150,10 +150,7 @@ async function startFileflowHarness(): Promise<FileflowHarness> {
 
   const baseDir = await fs.mkdtemp("/tmp/meridian-roles-fileflow-");
   const hubSocketPath = path.join(baseDir, "hub.sock");
-  // Important: allow this scenario to run alongside any already-running Meridian-roles service.
-  // `src/a2a/client.ts` and other code paths rely on `ROLES_SOCKET_PATH` computed at module import time,
-  // so the test runner must set ROLES_SOCKET_PATH before `vitest` starts.
-  const rolesSocketPath = process.env.ROLES_SOCKET_PATH ?? "/tmp/meridian-roles.sock";
+  const rolesSocketPath = path.join(baseDir, "roles.sock");
   const stateFilePath = path.join(baseDir, "state.json");
 
   const workDir = path.join(repoRoot, "test", "fileflow", runId);
@@ -228,7 +225,7 @@ async function startFileflowHarness(): Promise<FileflowHarness> {
 
   const stateStore = new StateStore(stateFilePath);
   const registry = new RoleRegistry();
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore, rolesSocketPath }));
 
   const runner = new RoleRunner({
     sendToHub: (message) => client.send(message),
@@ -520,4 +517,3 @@ function cryptoLikeId(): string {
   // Deterministic enough for local test isolation.
   return Math.random().toString(16).slice(2, 10);
 }
-

@@ -11,8 +11,7 @@ import {
   AgentDispatcherConfigSchema,
   AppStateSchema,
   type AgentDispatcherConfig,
-  type AppState,
-  type HubResult
+  type AppState
 } from "../../types";
 import { launchDispatcher, type LaunchConfig, type LaunchResult } from "../agent-dispatcher/launcher";
 import {
@@ -25,7 +24,6 @@ import {
   readWorkersByStatus,
   SessionManager,
   type DispatchThreadState,
-  type RestartResult,
   type SessionManagerOptions
 } from "../agent-dispatcher/session-manager";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "../agent-dispatcher/tool-entrypoint";
@@ -235,7 +233,7 @@ export class AgentDispatcherRole implements BaseRole {
     this.ctx = null;
   }
 
-  async onInboundResult(_result: HubResult): Promise<void> {
+  async onInboundResult(): Promise<void> {
     return undefined;
   }
 

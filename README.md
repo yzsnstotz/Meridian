@@ -83,6 +83,19 @@ Task execution still uses `intent: "run"` with the socket reply channel. Termina
 
 More detail: [`docs/socket-channel-flow.md`](docs/socket-channel-flow.md)
 
+## Agent-dispatcher control plane
+
+The `agent-dispatcher` flow is service-owned end to end:
+
+- Meridian-roles service selects the next eligible worker and launches it through service helpers. The dispatcher prompt stays in control-flow mode and does not bootstrap worker `spawn` / `run` itself.
+- Watchdog recovery and explicit continue use the same service-owned continuation path. Dispatcher rehydration remains available as a bounded fallback, not as a parallel primary loop.
+- Dispatcher-managed launches derive `spawn_dir` from the dispatch artifacts in code. Operators should treat prompt wording as advisory, not as the enforcement point for repo-root selection.
+
+Operator-facing debugging signals:
+
+- A missing dispatcher thread during detail/continue fetch now demotes lifecycle state immediately instead of leaving the dispatcher visible as `running` until a later reconcile pass.
+- Launch transport errors distinguish "request accepted but no structured reply returned" from "request was never sent". Use the reported `trace_id` plus transport/reply-path details when correlating Hub logs.
+
 ## Dispatcher usage
 
 Create an explicit dispatcher:
@@ -172,6 +185,8 @@ npm run lint
 npm test
 npm run test:e2e
 ```
+
+`npm run test:e2e` runs the automated `tests/e2e/scenario-*.ts` suite. Demo utilities in `tests/e2e/` are manual helpers and are not part of the CI gate.
 
 Recommended CI gate:
 

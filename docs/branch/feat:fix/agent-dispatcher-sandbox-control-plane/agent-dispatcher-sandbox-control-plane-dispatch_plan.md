@@ -56,7 +56,7 @@
 | ✅ | 1 | R-05 | Meridian companion `trace_id` observability patch | HUMAN | PRE-FLIGHT | Issue Doc, TaskSpec | External repo worker against `/Users/yzliu/work/Meridian`; coding agents must skip. |
 | ✅ | 2 | R-03 | Service-owned autonomous launch migration | CODEX | R-01, R-02 | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Main architectural change: remove prompt-local worker launch from primary path. |
 | ✅ | 3 | R-04 | Watchdog / recovery control-plane unification | CODEX | R-02, R-03 | Issue Doc, TaskSpec | Replace sole-worker shortcut as primary recovery path; rehydration becomes bounded fallback. |
-| ⬜ | 4 | R-06 | Regression sweep + operator docs | CODEX | R-01, R-02, R-03, R-04 | Issue Doc, TaskSpec | Full Meridian-roles validation and docs update. |
+| ✅ | 4 | R-06 | Regression sweep + operator docs | CODEX | R-01, R-02, R-03, R-04 | Issue Doc, TaskSpec | Full Meridian-roles validation and docs update. |
 | ⬜ | 4 | V-01 | Live Meridian integration verification | HUMAN | R-01, R-02, R-03, R-04, R-05, R-06 | Issue Doc, TaskSpec | Real Hub / sandbox verification; coding agents must skip. |
 | ⬜ | Ω | DELTA-CHECK | Delta check and corrective dispatch | CODEX | PRE-FLIGHT, R-01, R-02, R-03, R-04, R-05, R-06, V-01 | Issue Doc, TaskSpec | Must not auto-pass `R-05` or `V-01`. |
 | ⬜ | Ω | PR-REVIEW | PR alignment review | CODEX | DELTA-CHECK, all Ω+1 corrective workers, all PM-DECIDE-N rows, R-05, V-01 | Issue Doc, Dispatcher PRD v2.2, TaskSpec | Final verdict blocks while external repo or live verification remains incomplete. |
@@ -205,7 +205,7 @@
 | R-03 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-03_report.md` | ✅ |
 | R-04 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-04_report.md` | ✅ |
 | R-05 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-05_report.md` | ✅ |
-| R-06 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-06_report.md` | ⬜ |
+| R-06 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/R-06_report.md` | ✅ |
 | V-01 | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/V-01_report.md` | ⬜ |
 | DELTA-CHECK | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/delta_check_report.md` | ⬜ |
 | PR-REVIEW | `/Users/yzliu/work/Meridian/Meridian-roles/docs/branch/feat:fix/agent-dispatcher-sandbox-control-plane/dev_history/pr_review_report.md` | ⬜ |

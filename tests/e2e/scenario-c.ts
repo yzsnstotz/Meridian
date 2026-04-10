@@ -145,7 +145,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarne
   const baseDir = options.baseDir ?? await fs.mkdtemp("/tmp/meridian-roles-scenario-c-");
   const cleanupDirOnClose = options.cleanupDirOnClose ?? !options.baseDir;
   const hubSocketPath = path.join(baseDir, "hub.sock");
-  const rolesSocketPath = "/tmp/meridian-roles.sock";
+  const rolesSocketPath = path.join(baseDir, "roles.sock");
   const stateFilePath = path.join(baseDir, "state.json");
   const log = createLogger();
   const hub = await startFakeHub(hubSocketPath);
@@ -161,7 +161,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarne
   const stateStore = new StateStore(stateFilePath);
   const registry = new RoleRegistry();
 
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore, rolesSocketPath }));
 
   const runner = new RoleRunner({
     sendToHub: (message) => client.send(message),

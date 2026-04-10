@@ -1,9 +1,11 @@
+import { createRequire } from "node:module";
 import { readdirSync, type Dirent } from "node:fs";
 import path from "node:path";
 
 import { ToolRegistry, isToolDefinition } from "./registry";
 
 const SUPPORTED_EXTENSIONS = new Set([".ts", ".js"]);
+const requireModule = createRequire(__filename);
 
 export async function loadToolsFromDirectory(toolsDir: string, registry: ToolRegistry): Promise<void> {
   let entries: Dirent<string>[];
@@ -40,9 +42,9 @@ export async function loadToolsFromDirectory(toolsDir: string, registry: ToolReg
 }
 
 function loadModuleFresh(modulePath: string): unknown {
-  const resolvedPath = require.resolve(modulePath);
-  delete require.cache[resolvedPath];
-  return require(resolvedPath) as unknown;
+  const resolvedPath = requireModule.resolve(modulePath);
+  delete requireModule.cache[resolvedPath];
+  return requireModule(resolvedPath) as unknown;
 }
 
 function extractToolDefinition(loaded: unknown): unknown {

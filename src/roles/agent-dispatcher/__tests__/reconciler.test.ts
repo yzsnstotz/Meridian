@@ -229,7 +229,7 @@ describe("reconcile", () => {
       }
     }));
 
-    const { hubClient, sendRequest } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
 
     const report = await reconcile(harness.store, hubClient);
 

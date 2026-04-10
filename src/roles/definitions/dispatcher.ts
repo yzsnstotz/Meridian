@@ -22,6 +22,7 @@ const INFER_RESPONSE_FENCE_PATTERN = /```json\s*([\s\S]*?)```/;
 export interface DispatcherRoleOptions {
   stateStore?: PersistableStateStore;
   traceIdFactory?: () => string;
+  rolesSocketPath?: string;
 }
 
 export class DispatcherRole implements BaseRole {
@@ -32,6 +33,7 @@ export class DispatcherRole implements BaseRole {
   private readonly tasks: DispatchTask[];
   private readonly stateStore: PersistableStateStore;
   private readonly traceIdFactory: () => string;
+  private readonly rolesSocketPath: string;
   private readonly tasksById = new Map<string, DispatchTask>();
   private readonly downstreamByTaskId = new Map<string, string[]>();
   private readonly executionOrder: string[] = [];
@@ -51,6 +53,7 @@ export class DispatcherRole implements BaseRole {
     this.tasks = normalizedConfig.tasks;
     this.stateStore = options.stateStore ?? new StateStore();
     this.traceIdFactory = options.traceIdFactory ?? randomUUID;
+    this.rolesSocketPath = options.rolesSocketPath ?? ROLES_SOCKET_PATH;
   }
 
   async onActivate(ctx: RoleContext): Promise<void> {
@@ -504,7 +507,7 @@ export class DispatcherRole implements BaseRole {
     return {
       channel: "socket",
       chat_id: ROLES_SERVICE_ID,
-      socket_path: ROLES_SOCKET_PATH
+      socket_path: this.rolesSocketPath
     };
   }
 

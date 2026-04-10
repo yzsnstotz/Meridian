@@ -2,7 +2,6 @@ import type { BridgeMode, HubMessage, HubResult } from "../../types";
 import { sendAndWait } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
-const DEFAULT_MODE = "bridge";
 const SPAWN_THREAD_ID = "spawn";
 const SPAWN_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_ERROR = "Hub timeout after 60s";

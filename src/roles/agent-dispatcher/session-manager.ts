@@ -403,13 +403,6 @@ function normalizeDispatchThreadState(value: unknown): DispatchThreadState {
   };
 }
 
-function createEmptyDispatchThreadState(): DispatchThreadState {
-  return {
-    dispatcher_thread_id: null,
-    workers: {}
-  };
-}
-
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {
   return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
 }
