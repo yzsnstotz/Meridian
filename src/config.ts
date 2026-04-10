@@ -11,6 +11,7 @@ loadEnvFiles();
 export const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH ?? "/tmp/hub-socks/hub-core.sock";
 export const ROLES_SOCKET_PATH = process.env.ROLES_SOCKET_PATH ?? "/tmp/meridian-roles.sock";
 export const GUI_PORT = Number(process.env.GUI_PORT ?? 7701);
+export const GUI_LISTEN_HOST = normalizeOptionalEnvValue(process.env.GUI_LISTEN_HOST);
 export const STATE_FILE_PATH = process.env.STATE_FILE_PATH ?? "/var/lib/meridian-roles/state.json";
 export const ROLES_SERVICE_ID = "service:meridian-roles";
 export const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 2 * 60 * 1000);
@@ -72,4 +73,9 @@ function normalizeEnvValue(rawValue: string): string {
 
   const commentIndex = rawValue.indexOf(" #");
   return commentIndex === -1 ? rawValue : rawValue.slice(0, commentIndex).trimEnd();
+}
+
+function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }

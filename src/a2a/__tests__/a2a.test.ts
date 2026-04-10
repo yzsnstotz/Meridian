@@ -184,6 +184,32 @@ describe("A2AClient", () => {
     });
   });
 
+  it("falls back to the next configured hub socket path when the first socket is unavailable", async () => {
+    const directory = await createTempDirectory();
+    const missingHubSocketPath = path.join(directory, "missing.sock");
+    const workingHubSocketPath = path.join(directory, "hub.sock");
+    const rolesSocketPath = path.join(directory, "roles.sock");
+    const hub = await startHubServer(workingHubSocketPath);
+    servers.add(hub);
+
+    const client = new A2AClient({
+      hubSocketPath: missingHubSocketPath,
+      hubSocketPaths: [missingHubSocketPath, workingHubSocketPath],
+      rolesSocketPath,
+      retryBaseDelayMs: 10,
+      maxRetryDelayMs: 20
+    });
+    clients.add(client);
+
+    await client.start();
+
+    expect(hub.messages).toHaveLength(1);
+    expect(hub.messages[0]).toMatchObject({
+      intent: "register_service",
+      thread_id: "register"
+    });
+  });
+
   it("re-registers and flushes queued messages after the hub restarts", async () => {
     const directory = await createTempDirectory();
     const hubSocketPath = path.join(directory, "hub.sock");

@@ -27,17 +27,23 @@ afterEach(async () => {
 describe("config", () => {
   it("loads defaults from local env files in the current working directory", async () => {
     const directory = await createTempDirectory();
-    await fs.writeFile(path.join(directory, ".env"), "HUB_SOCKET_PATH=/tmp/from-dot-env.sock\nGUI_PORT=7709\n", "utf8");
+    await fs.writeFile(
+      path.join(directory, ".env"),
+      "HUB_SOCKET_PATH=/tmp/from-dot-env.sock\nGUI_PORT=7709\nGUI_LISTEN_HOST=127.0.0.1\n",
+      "utf8"
+    );
     await fs.writeFile(path.join(directory, ".env.local"), "HUB_SOCKET_PATH=/tmp/from-dot-env-local.sock\n", "utf8");
 
     delete process.env.HUB_SOCKET_PATH;
     delete process.env.GUI_PORT;
+    delete process.env.GUI_LISTEN_HOST;
     process.chdir(directory);
 
     const config = await import("./config");
 
     expect(config.HUB_SOCKET_PATH).toBe("/tmp/from-dot-env-local.sock");
     expect(config.GUI_PORT).toBe(7709);
+    expect(config.GUI_LISTEN_HOST).toBe("127.0.0.1");
   });
 
   it("does not override explicit process env values", async () => {

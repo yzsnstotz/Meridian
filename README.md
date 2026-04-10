@@ -26,6 +26,7 @@ Default runtime values:
 HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
 GUI_PORT=7701
+GUI_LISTEN_HOST=127.0.0.1
 STATE_FILE_PATH=/var/lib/meridian-roles/state.json
 ```
 
@@ -53,6 +54,7 @@ Recommended `.env.local`:
 HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
 GUI_PORT=7701
+GUI_LISTEN_HOST=127.0.0.1
 STATE_FILE_PATH=/var/lib/meridian-roles/state.json
 ```
 

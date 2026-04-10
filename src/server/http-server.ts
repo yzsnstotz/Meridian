@@ -3,13 +3,14 @@ import * as fs from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
 
-import { GUI_PORT } from "../config";
+import { GUI_LISTEN_HOST, GUI_PORT } from "../config";
 import type { Logger } from "../roles/base-role";
 import type { PromptHandlers } from "./prompt-handlers";
 import type { RoleHandlers } from "./role-handlers";
 
 export interface HttpServerOptions {
   port?: number;
+  host?: string;
   roleHandlers: RoleHandlers;
   promptHandlers: PromptHandlers;
   publicDir?: string;
@@ -18,6 +19,7 @@ export interface HttpServerOptions {
 
 export class HttpServer {
   private readonly port: number;
+  private readonly host: string | undefined;
   private readonly publicDir: string;
   private readonly log: Logger;
   private readonly roleHandlers: RoleHandlers;
@@ -26,6 +28,7 @@ export class HttpServer {
 
   constructor(options: HttpServerOptions) {
     this.port = options.port ?? GUI_PORT;
+    this.host = normalizeOptionalHost(options.host ?? GUI_LISTEN_HOST);
     this.publicDir = options.publicDir ?? resolvePublicDir();
     this.log = options.log ?? console;
     this.roleHandlers = options.roleHandlers;
@@ -43,15 +46,23 @@ export class HttpServer {
 
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(this.port, () => {
+      const onListen = () => {
         server.removeListener("error", reject);
         resolve();
-      });
+      };
+
+      if (this.host) {
+        server.listen(this.port, this.host, onListen);
+        return;
+      }
+
+      server.listen(this.port, onListen);
     });
 
     this.server = server;
     this.log.info("HTTP server listening", {
       port: this.port,
+      host: this.host ?? "(default)",
       publicDir: this.publicDir
     });
   }
@@ -119,6 +130,11 @@ function resolvePublicDir(): string {
   const fallback = path.resolve(__dirname, "../../src/web/public");
 
   return fsSync.existsSync(direct) ? direct : fallback;
+}
+
+function normalizeOptionalHost(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function mapPublicAsset(pathname: string): { fileName: string; contentType: string } | null {

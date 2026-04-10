@@ -66,6 +66,7 @@ The CLI talks to two services:
 |----------|---------|---------|
 | `MERIDIAN_ROLES_HTTP` | `http://127.0.0.1:${GUI_PORT}` | Base URL for the Meridian-roles HTTP API |
 | `GUI_PORT` | `7701` | Default port used when `MERIDIAN_ROLES_HTTP` is unset |
+| `GUI_LISTEN_HOST` | unset | Optional HTTP bind host used by the service, for example `127.0.0.1` or `0.0.0.0` |
 | `HUB_SOCKET_PATH` | `/tmp/hub-socks/hub-core.sock` | Meridian hub socket path used by hub-backed tools |
 | `MERIDIAN_REPLY_CHANNEL` | unset | JSON reply channel for `notify` |
 | `MERIDIAN_REPLY_CHANNELS` | unset | JSON array of reply channels for `notify` |

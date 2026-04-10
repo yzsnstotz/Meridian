@@ -17,6 +17,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+const CANONICAL_HUB_SOCKET_PATH = "/tmp/hub-socks/hub-core.sock";
+const LEGACY_HUB_SOCKET_PATH = "/tmp/hub-core.sock";
 
 interface AgentCard {
   name: string;
@@ -35,6 +37,7 @@ interface RegisterPayload {
 
 export interface A2AClientOptions {
   hubSocketPath?: string;
+  hubSocketPaths?: string[];
   rolesSocketPath?: string;
   serviceId?: string;
   log?: Logger;
@@ -46,6 +49,7 @@ export interface A2AClientOptions {
 
 export class A2AClient {
   private readonly hubSocketPath: string;
+  private readonly hubSocketPaths: string[];
   private readonly rolesSocketPath: string;
   private readonly serviceId: string;
   private readonly serviceName: string;
@@ -65,6 +69,7 @@ export class A2AClient {
 
   constructor(options: A2AClientOptions = {}) {
     this.hubSocketPath = options.hubSocketPath ?? HUB_SOCKET_PATH;
+    this.hubSocketPaths = buildHubSocketPathCandidates(this.hubSocketPath, options.hubSocketPaths);
     this.rolesSocketPath = options.rolesSocketPath ?? ROLES_SOCKET_PATH;
     this.serviceId = options.serviceId ?? ROLES_SERVICE_ID;
     this.serviceName = stripServicePrefix(this.serviceId);
@@ -346,9 +351,9 @@ export class A2AClient {
   }
 
   private sendFireAndForget(message: Partial<HubMessage>): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return this.withHubSocketFallback((socketPath) => new Promise((resolve, reject) => {
       let settled = false;
-      const socket = net.createConnection(this.hubSocketPath);
+      const socket = net.createConnection(socketPath);
       const timeout = setTimeout(() => {
         if (settled) {
           return;
@@ -385,14 +390,14 @@ export class A2AClient {
       });
 
       socket.once("error", fail);
-    });
+    }));
   }
 
   private sendRequest(message: HubMessage): Promise<HubResult> {
-    return new Promise((resolve, reject) => {
+    return this.withHubSocketFallback((socketPath) => new Promise((resolve, reject) => {
       let settled = false;
       let rawResponse = "";
-      const socket = net.createConnection(this.hubSocketPath);
+      const socket = net.createConnection(socketPath);
       const connectTimeout = setTimeout(() => {
         if (settled) {
           return;
@@ -455,7 +460,27 @@ export class A2AClient {
           reject(asError(error));
         }
       });
-    });
+    }));
+  }
+
+  private async withHubSocketFallback<T>(attempt: (socketPath: string) => Promise<T>): Promise<T> {
+    let lastError: Error | null = null;
+
+    for (let index = 0; index < this.hubSocketPaths.length; index += 1) {
+      const socketPath = this.hubSocketPaths[index];
+      try {
+        return await attempt(socketPath);
+      } catch (error) {
+        const normalizedError = asError(error);
+        lastError = normalizedError;
+
+        if (index === this.hubSocketPaths.length - 1 || !isHubSocketRetryableError(normalizedError)) {
+          throw normalizedError;
+        }
+      }
+    }
+
+    throw lastError ?? new Error("No hub socket candidates configured");
   }
 
   private waitForRetry(delayMs: number): Promise<void> {
@@ -491,8 +516,32 @@ function stripServicePrefix(serviceId: string): string {
   return serviceId.replace(/^service:/, "");
 }
 
+function buildHubSocketPathCandidates(primaryPath: string, explicitPaths?: string[]): string[] {
+  if (explicitPaths && explicitPaths.length > 0) {
+    return dedupeSocketPaths(explicitPaths);
+  }
+
+  if (primaryPath === CANONICAL_HUB_SOCKET_PATH) {
+    return [CANONICAL_HUB_SOCKET_PATH, LEGACY_HUB_SOCKET_PATH];
+  }
+
+  if (primaryPath === LEGACY_HUB_SOCKET_PATH) {
+    return [LEGACY_HUB_SOCKET_PATH, CANONICAL_HUB_SOCKET_PATH];
+  }
+
+  return [primaryPath];
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function dedupeSocketPaths(paths: string[]): string[] {
+  const normalized = paths
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  return [...new Set(normalized)];
 }
 
 function parseReplyChannels(rawContent: string): ReplyChannel[] {
@@ -506,4 +555,13 @@ function parseReplyChannels(rawContent: string): ReplyChannel[] {
 
 function isStoppedRegistrationError(error: unknown): boolean {
   return asError(error).message === "A2A client stopped before register_service completed";
+}
+
+function isHubSocketRetryableError(error: Error): boolean {
+  const errorWithCode = error as NodeJS.ErrnoException;
+  if (errorWithCode.code === "ENOENT" || errorWithCode.code === "ECONNREFUSED" || errorWithCode.code === "ENOTSOCK") {
+    return true;
+  }
+
+  return /A2A (?:send|request) connect timed out after/i.test(error.message);
 }
