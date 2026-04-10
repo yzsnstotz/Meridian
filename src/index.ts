@@ -5,10 +5,9 @@ import path from "node:path";
 import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
+import { continueDispatchWorker } from "./roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
-import { resolveDispatchModelMapFromMarkdown } from "./roles/agent-dispatcher/model-routing";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
-import { launchDispatchWorker } from "./roles/agent-dispatcher/worker-launcher";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
@@ -634,22 +633,16 @@ async function tryContinueDispatchWorker(
     return null;
   }
 
-  const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
-  const modelCode = row.model?.trim() ?? "";
-  const resolvedModel = modelCode ? resolvedModelMap[modelCode] : undefined;
-  const launched = await launchDispatchWorker({
-    agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
-    mode: config.mode,
-    commandFilePath: config.command_file_path,
-    dispatchPlanPath,
-    workerId,
-    modelId: resolvedModel?.model_id?.trim() || undefined
-  });
-  if (!launched.ok) {
+  const continued = await continueDispatchWorker(config, rows.map((candidate) => ({
+    status: candidate.status,
+    worker: candidate.worker_id,
+    model: candidate.model ?? ""
+  })), workerId);
+  if (!continued.ok) {
     log.warn("Watchdog direct continue failed", {
       dispatchPlanPath,
       workerId,
-      error: launched.error ?? "unknown"
+      error: continued.error ?? "unknown"
     });
     return null;
   }
@@ -660,24 +653,6 @@ async function tryContinueDispatchWorker(
 function isHumanModel(model: string | null | undefined): boolean {
   const normalized = typeof model === "string" ? model.trim().toUpperCase() : "";
   return normalized === "HUMAN" || normalized === "PM";
-}
-
-function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
-  const normalized = modelCode.trim().toUpperCase();
-  if (normalized.startsWith("CODEX")) {
-    return "codex";
-  }
-  if (normalized.startsWith("CLAUDE")) {
-    return "claude";
-  }
-  if (normalized.startsWith("GEMINI")) {
-    return "gemini";
-  }
-  if (normalized.startsWith("CURSOR")) {
-    return "cursor";
-  }
-
-  return defaultAgentType;
 }
 
 async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {

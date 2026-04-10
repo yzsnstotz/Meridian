@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { A2AClient } from "../../../a2a/client";
 import type { HubMessage, HubResult } from "../../../types";
+import killTool from "../../../tool-gateway/tools/kill";
+import { continueDispatchWorker } from "../continue-worker";
 import { buildEmptyDispatchThreadStateV2, LifecycleStore } from "../lifecycle-store";
 import { reconciliationFs } from "../reconciler";
 import { ReconciliationWatchdog } from "../watchdog";
@@ -680,6 +682,177 @@ describe("ReconciliationWatchdog", () => {
         ])
       })
     );
+  });
+});
+
+describe("continueDispatchWorker", () => {
+  it("retries an abandoned worker through the shared continuation contract before relaunching", async () => {
+    const harness = await createHarness("continue-worker-abandoned-");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const commandFilePath = path.join(harness.directory, "agent_dispatch_command.md");
+    const lifecycleStore = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"), {
+      dispatchPlanPath
+    });
+
+    await fsp.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ⚠️ ABANDONED | Ω+1 | R-04A | Recovery | CODEX | DELTA-CHECK | stale watchdog recovery |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "dispatcher-thread-1", started_at: FIXED_NOW, status: "abandoned" },
+      workers: {
+        "R-04A": {
+          thread_id: "worker-thread-stale",
+          trace_id: null,
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "abandoned",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "worker-thread-stale"
+      }
+    });
+    const launchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-relaunched"
+    }));
+
+    try {
+      const result = await continueDispatchWorker({
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: commandFilePath,
+        mode: "bridge",
+        agent_type: "codex"
+      }, [
+        {
+          status: "⚠️ ABANDONED",
+          worker: "R-04A",
+          model: "CODEX"
+        }
+      ], "R-04A", launchWorker);
+
+      expect(result).toEqual({
+        ok: true,
+        workerId: "R-04A",
+        threadId: "worker-thread-relaunched",
+        resumeResult: {
+          worker: "R-04A",
+          action: "retry",
+          status: "pending",
+          thread_id: "worker-thread-stale",
+          thread_killed: true,
+          retry_count: 1
+        }
+      });
+      expect(killSpy).toHaveBeenCalledWith({
+        thread_id: "worker-thread-stale"
+      });
+      expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "R-04A",
+        dispatchPlanPath,
+        commandFilePath
+      }));
+      await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+        "| ⬜ | Ω+1 | R-04A | Recovery | CODEX | DELTA-CHECK | stale watchdog recovery |"
+      );
+      expect(lifecycleStore.load().workers["R-04A"]).toMatchObject({
+        status: "pending",
+        retry_count: 1
+      });
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it("restores plan and lifecycle snapshots when retrying a failed worker but launch bootstrap fails", async () => {
+    const harness = await createHarness("continue-worker-failed-");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const commandFilePath = path.join(harness.directory, "agent_dispatch_command.md");
+    const sidecarPath = path.join(harness.directory, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fsp.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ❌ | Ω+1 | R-04B | Recovery | CODEX | DELTA-CHECK | bootstrap failed |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "dispatcher-thread-1", started_at: FIXED_NOW, status: "abandoned" },
+      workers: {
+        "R-04B": {
+          thread_id: "worker-thread-failed",
+          trace_id: null,
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "failed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 1
+        }
+      }
+    });
+
+    const originalPlan = await fsp.readFile(dispatchPlanPath, "utf8");
+    const originalSidecar = await fsp.readFile(sidecarPath, "utf8");
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "worker-thread-failed"
+      }
+    });
+    const launchWorker = vi.fn(async () => ({
+      ok: false,
+      threadId: "",
+      error: "spawn failed: Command failed: listen EPERM: operation not permitted /tmp/tsx-501/84525.pipe"
+    }));
+
+    try {
+      const result = await continueDispatchWorker({
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: commandFilePath,
+        mode: "bridge",
+        agent_type: "codex"
+      }, [
+        {
+          status: "❌",
+          worker: "R-04B",
+          model: "CODEX"
+        }
+      ], "R-04B", launchWorker);
+
+      expect(result).toEqual({
+        ok: false,
+        workerId: "R-04B",
+        error: "spawn failed: Command failed: listen EPERM: operation not permitted /tmp/tsx-501/84525.pipe",
+        localToolBootstrapFailure: true
+      });
+      expect(killSpy).toHaveBeenCalledWith({
+        thread_id: "worker-thread-failed"
+      });
+      await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toBe(originalPlan);
+      await expect(fsp.readFile(sidecarPath, "utf8")).resolves.toBe(originalSidecar);
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 });
 

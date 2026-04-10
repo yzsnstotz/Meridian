@@ -10,9 +10,9 @@ import { z } from "zod";
 import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import { resolveDispatchRepoRoot } from "../roles/agent-dispatcher/dispatch-paths";
+import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
-import { resolveDispatchModelMapFromMarkdown } from "../roles/agent-dispatcher/model-routing";
 import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import { isHumanDispatchRow, resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-continuation";
@@ -594,8 +594,6 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       };
     }
 
-    const snapshot = await snapshotDispatchFiles(dispatchPlanPath);
-    let resumeResult: Awaited<ReturnType<typeof executeResumeWorkerAction>> | undefined;
     let effectiveDispatcherThreadId = (() => {
       const activeRole = options.runner.getRole(threadId);
       if (activeRole?.roleType === "agent-dispatcher") {
@@ -613,27 +611,25 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     );
 
     try {
-      const effectiveWorkerRow = effectiveWorkerId
-        ? dispatchPlanData.rows.find((row) => row.worker === effectiveWorkerId) ?? null
-        : null;
-
-      if (effectiveWorkerId && shouldResetWorkerBeforeContinue(effectiveWorkerRow)) {
-        resumeResult = await executeResumeWorkerAction({
-          planPath: dispatchPlanPath,
-          workerId: effectiveWorkerId,
-          action: "retry"
-        });
-      }
-
       if (effectiveWorkerId) {
-        const launched = await launchWorkerFromDispatchPlan(
+        const continued = await continueDispatchWorker(
           context.effectiveConfig,
-          dispatchPlanData,
+          dispatchPlanData.rows,
           effectiveWorkerId,
           launchDispatchWorkerImpl
         );
-        if (!launched.ok) {
-          throw new Error(launched.error ?? "Failed to launch dispatch worker");
+        if (!continued.ok) {
+          if (continued.localToolBootstrapFailure) {
+            return {
+              ok: true,
+              status: "local_tool_bootstrap_failed",
+              message: `local tool bootstrap failed: ${continued.error}`,
+              worker: effectiveWorkerId,
+              error: continued.error
+            };
+          }
+
+          throw new Error(continued.error ?? "Failed to launch dispatch worker");
         }
 
         if (shouldResumeAfterContinue) {
@@ -646,7 +642,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           message: `continued: ${effectiveWorkerId}`,
           ...(effectiveDispatcherThreadId ? { dispatcher_thread_id: effectiveDispatcherThreadId } : {}),
           worker: effectiveWorkerId,
-          ...(resumeResult ? { resume_result: resumeResult } : {})
+          ...(continued.resumeResult ? { resume_result: continued.resumeResult } : {})
         };
       }
 
@@ -660,12 +656,10 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         status: "continued",
         message: effectiveWorkerId ? `continued: ${effectiveWorkerId}` : "continued: dispatcher",
         dispatcher_thread_id: started.dispatcher_thread_id,
-        ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {}),
-        ...(resumeResult ? { resume_result: resumeResult } : {})
+        ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {})
       };
     } catch (error) {
       const message = getErrorMessage(error);
-      await restoreDispatchFiles(snapshot, log);
       if (isLocalToolBootstrapFailure(message)) {
         return {
           ok: true,
@@ -1472,138 +1466,11 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
-interface DispatchFileSnapshot {
-  planPath: string;
-  sidecarPath: string;
-  plan: OptionalFileSnapshot;
-  sidecar: OptionalFileSnapshot;
-}
-
-interface OptionalFileSnapshot {
-  exists: boolean;
-  content: string;
-}
-
-async function snapshotDispatchFiles(dispatchPlanPath: string): Promise<DispatchFileSnapshot> {
-  const sidecarPath = resolveDispatchThreadPath(dispatchPlanPath);
-  const [plan, sidecar] = await Promise.all([
-    readOptionalFile(dispatchPlanPath),
-    readOptionalFile(sidecarPath)
-  ]);
-
-  return {
-    planPath: dispatchPlanPath,
-    sidecarPath,
-    plan,
-    sidecar
-  };
-}
-
-async function readOptionalFile(filePath: string): Promise<OptionalFileSnapshot> {
-  try {
-    return {
-      exists: true,
-      content: await fs.readFile(filePath, "utf8")
-    };
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return {
-        exists: false,
-        content: ""
-      };
-    }
-
-    throw error;
-  }
-}
-
-async function restoreDispatchFiles(snapshot: DispatchFileSnapshot, log: Logger): Promise<void> {
-  try {
-    await Promise.all([
-      restoreOptionalFile(snapshot.planPath, snapshot.plan),
-      restoreOptionalFile(snapshot.sidecarPath, snapshot.sidecar)
-    ]);
-  } catch (error) {
-    log.warn("Failed to restore dispatch files after continue failure", {
-      dispatchPlanPath: snapshot.planPath,
-      error: getErrorMessage(error)
-    });
-  }
-}
-
-async function restoreOptionalFile(filePath: string, snapshot: OptionalFileSnapshot): Promise<void> {
-  if (snapshot.exists) {
-    await fs.writeFile(filePath, snapshot.content, "utf8");
-    return;
-  }
-
-  await fs.rm(filePath, { force: true });
-}
-
 function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {
   return rows
     .filter((row) => row.status === "🔄" && !isHumanDispatchRow(row))
     .map((row) => row.worker)
     .filter((worker) => worker.trim().length > 0);
-}
-
-function shouldResetWorkerBeforeContinue(row: DispatchPlanRow | null): boolean {
-  switch (row?.status.trim()) {
-    case "⚠️ ABANDONED":
-    case "❌":
-    case "🔄":
-      return true;
-    default:
-      return false;
-  }
-}
-
-async function launchWorkerFromDispatchPlan(
-  config: AgentDispatcherConfig,
-  dispatchPlanData: DispatchPlanData,
-  workerId: string,
-  launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>
-): Promise<LaunchDispatchWorkerResult> {
-  const dispatchPlanRow = dispatchPlanData.rows.find((row) => row.worker === workerId) ?? null;
-  if (!dispatchPlanRow) {
-    throw new Error(`Worker not found in dispatch plan: ${workerId}`);
-  }
-
-  if (isHumanDispatchRow(dispatchPlanRow)) {
-    throw new Error(`Worker is not launchable: ${workerId}`);
-  }
-
-  const markdown = await fs.readFile(config.dispatch_plan_path, "utf8");
-  const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
-  const modelCode = dispatchPlanRow.model.trim();
-  const resolvedModel = modelCode ? resolvedModelMap[modelCode] : undefined;
-
-  return launchWorker({
-    agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
-    mode: config.mode,
-    commandFilePath: config.command_file_path,
-    dispatchPlanPath: config.dispatch_plan_path,
-    workerId,
-    modelId: resolvedModel?.model_id?.trim() || undefined
-  });
-}
-
-function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
-  const normalized = modelCode.trim().toUpperCase();
-  if (normalized.startsWith("CODEX")) {
-    return "codex";
-  }
-  if (normalized.startsWith("CLAUDE")) {
-    return "claude";
-  }
-  if (normalized.startsWith("GEMINI")) {
-    return "gemini";
-  }
-  if (normalized.startsWith("CURSOR")) {
-    return "cursor";
-  }
-
-  return defaultAgentType;
 }
 
 function isLocalToolBootstrapFailure(message: string): boolean {
@@ -1614,10 +1481,6 @@ function isLocalToolBootstrapFailure(message: string): boolean {
     || /\bspawn failed: Command failed\b/i.test(message)
     || /\bspawn failed: spawn\b/i.test(message)
     || /\bNode (?:CLI )?(?:startup|loader)\b/i.test(message);
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {
