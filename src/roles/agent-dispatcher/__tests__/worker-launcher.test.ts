@@ -57,7 +57,9 @@ describe("launchDispatchWorker", () => {
         "--command",
         harness.commandFilePath,
         "--worker",
-        "N-01"
+        "N-01",
+        "--kill-policy",
+        "always"
       ]),
       {
         detached: true,
@@ -209,6 +211,7 @@ function buildConfig(dispatchPlanPath: string, commandFilePath: string): LaunchD
   return {
     agentType: "codex",
     mode: "pane_bridge",
+    killPolicy: "always",
     commandFilePath,
     dispatchPlanPath,
     workerId: "N-01",

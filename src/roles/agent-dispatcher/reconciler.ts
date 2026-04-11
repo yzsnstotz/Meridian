@@ -695,7 +695,7 @@ function extractReportedOutputPaths(hubResult: HubResult): string[] {
 }
 
 function normalizeReportedOutputPath(candidatePath: string): string | null {
-  const normalized = candidatePath.trim().replace(/[),.;:]+$/g, "");
+  const normalized = candidatePath.trim().replace(/[),.;:]+$/g, "").replace(/#[^/]*$/, "");
   if (!path.isAbsolute(normalized)) {
     return null;
   }

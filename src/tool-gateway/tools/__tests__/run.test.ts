@@ -540,6 +540,90 @@ describe("run tool", () => {
     );
   });
 
+  it("kills terminal worker threads when kill_policy is always", async () => {
+    sendAndWaitMock
+      .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))
+      .mockResolvedValueOnce(buildHubResult("", "success"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-222",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-06",
+      kill_policy: "always"
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "R-06",
+        thread_id: "thread-222",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
+    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
+      intent: "kill",
+      target: "thread-222",
+      thread_id: "thread-222"
+    });
+  });
+
+  it("kills failed worker threads when kill_policy is always", async () => {
+    sendAndWaitMock
+      .mockResolvedValueOnce(buildHubResult("Worker failed", "error"))
+      .mockResolvedValueOnce(buildHubResult("", "success"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-333",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-07",
+      kill_policy: "always"
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Worker failed",
+      data: {
+        worker: "R-07",
+        thread_id: "thread-333",
+        status: "failed"
+      }
+    });
+    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
+    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
+      intent: "kill",
+      target: "thread-333",
+      thread_id: "thread-333"
+    });
+  });
+
+  it("does not kill failed worker threads when kill_policy is on_success", async () => {
+    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker failed", "error"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-444",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-08",
+      kill_policy: "on_success"
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Worker failed",
+      data: {
+        worker: "R-08",
+        thread_id: "thread-444",
+        status: "failed"
+      }
+    });
+    expect(sendAndWaitMock).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces structured timeout results without flattening them to failure", async () => {
     sendAndWaitMock.mockResolvedValue(buildHubResult("Wait window elapsed", "timeout", "timeout"));
     readFileMock.mockResolvedValue("# command\n");

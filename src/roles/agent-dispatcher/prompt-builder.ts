@@ -169,7 +169,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "- `ok:true` with `status: \"still_blocked\"`: do not force a sibling launch. Re-read the plan, keep control work bounded, and notify a human if the block persists or conflicts with the visible state.",
     "- `ok:true` with `status: \"local_tool_bootstrap_failed\"`: the service-side worker launch still hit a local Meridian bootstrap failure. Notify a human using the spawn-failure template and pause.",
     "- `ok:false`: re-read the plan before taking follow-up action. Do not mutate plan status directly unless a documented control tool requires it.",
-    "Step 4. Respect `kill_policy` only for explicit cleanup or human-directed recovery. Do not use `kill` as a hidden alternate launch path.",
+    "Step 4. Meridian-roles service enforces `kill_policy` for service-launched workers after terminal results. Use `kill` only for explicit cleanup or human-directed recovery, not as a hidden alternate launch path.",
     "Step 5. If no row is eligible, inspect the remaining plan state.",
     "- If a `⚠️ ABANDONED` row exists, it is eligible — go back to Step 2.",
     "- If a `❌` row exists that has not exceeded the retry limit, it is eligible — go back to Step 2.",

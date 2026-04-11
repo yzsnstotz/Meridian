@@ -29,7 +29,10 @@ export interface ContinueDispatchWorkerResult {
 }
 
 export async function continueDispatchWorker(
-  config: Pick<AgentDispatcherConfig, "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "model_map">,
+  config: Pick<
+    AgentDispatcherConfig,
+    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map"
+  >,
   dispatchPlanRows: ContinueDispatchPlanRow[],
   workerId: string,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult> = launchDispatchWorker,
@@ -104,7 +107,10 @@ export function shouldResetWorkerBeforeContinue(row: Pick<ContinueDispatchPlanRo
 }
 
 async function launchWorkerFromDispatchPlan(
-  config: Pick<AgentDispatcherConfig, "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "model_map">,
+  config: Pick<
+    AgentDispatcherConfig,
+    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map"
+  >,
   dispatchPlanRow: ContinueDispatchPlanRow,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>
 ): Promise<LaunchDispatchWorkerResult> {
@@ -116,6 +122,7 @@ async function launchWorkerFromDispatchPlan(
   return launchWorker({
     agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
     mode: config.mode,
+    killPolicy: config.kill_policy,
     commandFilePath: config.command_file_path,
     dispatchPlanPath: config.dispatch_plan_path,
     workerId: dispatchPlanRow.worker,

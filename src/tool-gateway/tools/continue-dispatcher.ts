@@ -27,7 +27,10 @@ export interface ContinueDispatcherDeps {
   saveState(state: AppState): Promise<void>;
   loadLifecycle(planPath: string): DispatchThreadStateV2;
   continueWorker(
-    config: Pick<AgentDispatcherConfig, "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "model_map">,
+    config: Pick<
+      AgentDispatcherConfig,
+      "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map"
+    >,
     dispatchPlanRows: ContinueDispatchPlanRow[],
     workerId: string
   ): ReturnType<typeof continueDispatchWorker>;

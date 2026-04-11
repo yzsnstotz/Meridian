@@ -477,6 +477,47 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("marks a running worker completed when reported output paths contain URI fragments", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const actualReportPath = await harness.writeOutput("dev_history/v1_round/delta_check_report.md");
+    harness.store.save(buildState({
+      workers: {
+        "DELTA-CHECK": {
+          ...buildRunningWorker(
+            "worker-thread-dc",
+            path.join(harness.directory, "dev_history/DELTA-CHECK_report.md")
+          ),
+          hub_result: {
+            ...buildTerminalSuccessResult("worker-thread-dc"),
+            content: [
+              "Delta check is complete.",
+              `I wrote [delta_check_report.md](${actualReportPath}#L1) and updated`,
+              `[dispatch_plan.md](${path.join(harness.directory, "dispatch_plan.md")}#L45).`
+            ].join("\n")
+          }
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["DELTA-CHECK"]?.status).toBe("completed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report.changed).toEqual([
+      {
+        workerId: "DELTA-CHECK",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:reported_outputs_present"
+      }
+    ]);
+  });
+
   it("marks a running worker completed when hub says completed and hub_result has inline report but no output files", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

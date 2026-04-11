@@ -1,5 +1,6 @@
 import { execFile as nodeExecFile, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
 
+import type { KillPolicy } from "../../types";
 import { resolveRequiredDispatchRepoRoot } from "./dispatch-paths";
 import { extractSpawnCliError, parseSpawnCliOutput } from "./meridian-tool-output";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
@@ -7,6 +8,7 @@ import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoi
 export interface LaunchDispatchWorkerConfig {
   agentType: string;
   mode: string;
+  killPolicy?: KillPolicy;
   commandFilePath: string;
   dispatchPlanPath: string;
   workerId: string;
@@ -126,7 +128,7 @@ function buildSpawnArgs(config: LaunchDispatchWorkerConfig): string[] {
 }
 
 function buildRunArgs(threadId: string, config: LaunchDispatchWorkerConfig): string[] {
-  return buildMeridianToolArgs([
+  const args = [
     "run",
     "--thread-id",
     threadId,
@@ -134,7 +136,13 @@ function buildRunArgs(threadId: string, config: LaunchDispatchWorkerConfig): str
     config.commandFilePath,
     "--worker",
     config.workerId
-  ]);
+  ];
+
+  if (config.killPolicy) {
+    args.push("--kill-policy", config.killPolicy);
+  }
+
+  return buildMeridianToolArgs(args);
 }
 
 function asError(error: unknown): Error {

@@ -5,9 +5,10 @@ import path from "node:path";
 import type { A2AClient } from "../../a2a/client";
 import { ROLES_SERVICE_ID } from "../../config";
 import { reconcile } from "../../roles/agent-dispatcher/reconciler";
-import type { DispatchWorkerState, HubMessage, HubResult, HubRunState } from "../../types";
+import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubResult, type HubRunState, type KillPolicy } from "../../types";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { sendAndWait } from "../ipc-bridge";
+import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const DEV_HISTORY_DIRECTORY = "dev_history";
@@ -39,6 +40,11 @@ const runTool: ToolDefinition = {
       type: "string",
       required: true,
       description: "Worker identifier for CLI status reporting"
+    },
+    kill_policy: {
+      type: "string",
+      required: false,
+      description: "Optional cleanup policy for terminal worker threads: always, on_success, or never"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -55,6 +61,14 @@ const runTool: ToolDefinition = {
     const worker = requireParam(params.worker, "worker");
     if (!worker) {
       return missingParam("worker");
+    }
+
+    const killPolicy = parseKillPolicy(params.kill_policy);
+    if (!killPolicy) {
+      return {
+        ok: false,
+        error: `Unsupported kill_policy: ${params.kill_policy}`
+      };
     }
 
     let interrupted = false;
@@ -82,6 +96,7 @@ const runTool: ToolDefinition = {
       const result = await sendAndWait(buildRunMessage(threadId, preamble, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
+      await cleanupWorkerThread(threadId, result, killPolicy);
       return mapRunResult(result, worker, threadId);
     } catch (error) {
       const resolvedError = asError(error);
@@ -137,6 +152,29 @@ async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, resu
   } catch (error) {
     console.warn("run tool reconciliation failed", {
       filePath: lifecycleStore.filePath,
+      error: asError(error).message
+    });
+  }
+}
+
+async function cleanupWorkerThread(threadId: string, result: HubResult, killPolicy: KillPolicy): Promise<void> {
+  if (!shouldKillAfterResult(result, killPolicy)) {
+    return;
+  }
+
+  try {
+    const killResult = await killTool.execute({ thread_id: threadId });
+    if (!killResult.ok) {
+      console.warn("run tool terminal kill failed", {
+        threadId,
+        killPolicy,
+        error: killResult.error ?? "Kill failed"
+      });
+    }
+  } catch (error) {
+    console.warn("run tool terminal kill failed", {
+      threadId,
+      killPolicy,
       error: asError(error).message
     });
   }
@@ -677,6 +715,32 @@ function inferRunState(result: HubResult): HubRunState {
   }
 
   return "completed";
+}
+
+function parseKillPolicy(value: string | undefined): KillPolicy | null {
+  const normalized = requireParam(value, "kill_policy");
+  if (!normalized) {
+    return "never";
+  }
+
+  const parsed = KillPolicySchema.safeParse(normalized);
+  return parsed.success ? parsed.data : null;
+}
+
+function shouldKillAfterResult(result: HubResult, killPolicy: KillPolicy): boolean {
+  if (killPolicy === "never") {
+    return false;
+  }
+
+  if (result.status === "error") {
+    return killPolicy === "always";
+  }
+
+  if (inferRunState(result) !== "completed") {
+    return false;
+  }
+
+  return killPolicy === "always" || (killPolicy === "on_success" && result.status === "success");
 }
 
 function interruptedResult(worker: string, threadId: string): ToolResult {

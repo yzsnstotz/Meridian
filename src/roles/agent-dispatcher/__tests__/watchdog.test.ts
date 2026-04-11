@@ -735,7 +735,8 @@ describe("continueDispatchWorker", () => {
         dispatch_plan_path: dispatchPlanPath,
         command_file_path: commandFilePath,
         mode: "bridge",
-        agent_type: "codex"
+        agent_type: "codex",
+        kill_policy: "always"
       }, [
         {
           status: "⚠️ ABANDONED",
@@ -830,7 +831,8 @@ describe("continueDispatchWorker", () => {
         dispatch_plan_path: dispatchPlanPath,
         command_file_path: commandFilePath,
         mode: "bridge",
-        agent_type: "codex"
+        agent_type: "codex",
+        kill_policy: "always"
       }, [
         {
           status: "❌",

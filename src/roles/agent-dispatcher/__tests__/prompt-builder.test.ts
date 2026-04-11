@@ -71,6 +71,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("status: \"local_tool_bootstrap_failed\"");
     expect(prompt).toContain("If any non-human row is already `🔄`");
     expect(prompt).toContain("do not try to route around it locally");
+    expect(prompt).toContain("service enforces `kill_policy`");
     expect(prompt).toContain("Do not resolve agent provider/model routing locally");
     expect(prompt).toContain("do not inspect tool internals");
     expect(prompt).toContain("alternate wrappers/transports");
