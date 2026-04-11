@@ -128,6 +128,7 @@ test("parseSlashCommand marks /kill without thread as picker flow", () => {
 test("parseSlashCommand marks /spawn without args as picker flow", () => {
   const parsed = parseSlashCommand("/spawn");
   assert.equal(parsed.intent, "spawn");
+  assert.equal(parsed.mode, "pane_bridge");
   assert.equal(parsed.picker, "spawn");
 });
 

@@ -47,6 +47,27 @@ test("normalizeInboundEvent parses /spawn command", () => {
   assert.equal(message.mode, "pane_bridge");
 });
 
+test("normalizeInboundEvent defaults /spawn to pane_bridge", () => {
+  const message = normalizeInboundEvent(
+    {
+      channel: "telegram",
+      raw_message_id: "102b",
+      sender_id: 7,
+      content: "/spawn type=codex",
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      reply_to: null
+    },
+    {
+      chatId: "67890"
+    }
+  );
+
+  assert.equal(message.intent, "spawn");
+  assert.equal(message.target, "codex");
+  assert.equal(message.mode, "pane_bridge");
+});
+
 test("normalizeInboundEvent parses /model command", () => {
   const message = normalizeInboundEvent(
     {

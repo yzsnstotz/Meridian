@@ -37,7 +37,7 @@ export function buildCodexSpawnArgs(
     args.push("--model", modelId);
   }
   if (autoApprove === true) {
-    args.push("--ask-for-approval", "never");
+    args.push("--dangerously-bypass-approvals-and-sandbox");
   }
   return args;
 }

@@ -96,7 +96,7 @@ function parseKeyValueArgs(rawArgs: string): Record<string, string> {
 
 function parseMode(rawMode: string | undefined): BridgeMode {
   if (!rawMode) {
-    return "bridge";
+    return "pane_bridge";
   }
   if (rawMode === "bridge" || rawMode === "pane_bridge") {
     return rawMode;

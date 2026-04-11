@@ -73,7 +73,7 @@ function toDefaultActorId(event: InboundUIEvent): string {
 
 function resolveMode(mode: string | undefined): BridgeMode {
   if (mode === undefined || mode === "bridge" || mode === "pane_bridge") {
-    return mode ?? "bridge";
+    return mode ?? "pane_bridge";
   }
   throw new Error("mode must be bridge or pane_bridge");
 }
