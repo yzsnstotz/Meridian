@@ -1437,7 +1437,7 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       ]),
       user_reply_channels: JSON.stringify(userReplyChannels),
       default_agent_type: parsed.data.agent_type ?? "claude",
-      default_mode: parsed.data.mode ?? "bridge",
+      default_mode: parsed.data.mode ?? "pane_bridge",
       kill_policy: parsed.data.kill_policy ?? "always"
     })
   };

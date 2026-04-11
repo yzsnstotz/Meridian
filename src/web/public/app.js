@@ -330,7 +330,7 @@ async function setupDashboard() {
       dispatch_plan_path: normalizeText(dispatchPlanPathInput.value) || undefined,
       command_file_path: normalizeText(commandFilePathInput.value) || undefined,
       agent_type: normalizeText(agentTypeSelect.value) || "claude",
-      mode: normalizeText(modeSelect.value) || "bridge",
+      mode: normalizeText(modeSelect.value) || "pane_bridge",
       kill_policy: normalizeText(killPolicySelect.value) || "always"
     };
 
@@ -420,7 +420,7 @@ async function setupDashboard() {
       command_file_path: normalizeText(formData.get("command_file_path")),
       user_reply_channels: replyChannels,
       agent_type: normalizeText(formData.get("agent_type")) || "claude",
-      mode: normalizeText(formData.get("mode")) || "bridge",
+      mode: normalizeText(formData.get("mode")) || "pane_bridge",
       kill_policy: normalizeText(formData.get("kill_policy")) || "always",
       system_prompt: normalizeText(agentDispatcherPromptInput.value)
     };

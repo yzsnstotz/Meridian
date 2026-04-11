@@ -33,7 +33,7 @@ describe("AgentDispatcherRole", () => {
       chat_id: "telegram:pm"
     });
     expect(role.config.agent_type).toBe("codex");
-    expect(role.config.mode).toBe("bridge");
+    expect(role.config.mode).toBe("pane_bridge");
     expect(role.config.kill_policy).toBe("always");
   });
 
@@ -63,14 +63,14 @@ describe("AgentDispatcherRole", () => {
       dispatch_repo_root: "/tmp",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
       default_agent_type: "codex",
-      default_mode: "bridge",
+      default_mode: "pane_bridge",
       kill_policy: "always",
       resolved_model_map_json: "{}"
     });
     expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
     expect(harness.launchDispatcher).toHaveBeenCalledWith({
       agentType: "codex",
-      mode: "bridge",
+      mode: "pane_bridge",
       systemPrompt: "dispatcher prompt",
       dispatchPlanPath: "/tmp/dispatch_plan.md",
       commandFilePath: "/tmp/agent_dispatch_command.md",
@@ -287,7 +287,6 @@ function createHarness(options: {
       }
     ],
     agent_type: "codex",
-    mode: "bridge",
     kill_policy: "always",
     ...(options.config ?? {})
   }, {

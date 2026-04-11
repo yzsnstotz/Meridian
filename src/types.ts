@@ -241,7 +241,7 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   command_file_path: z.string().min(1),
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.default("claude"),
-  mode: BridgeModeSchema.default("bridge"),
+  mode: BridgeModeSchema.default("pane_bridge"),
   kill_policy: KillPolicySchema.default("always"),
   model_map: DispatchModelMapSchema.optional(),
   use_agent_dispatcher: z.boolean().optional()

@@ -186,7 +186,7 @@ function readSpawnTransportError(result: HubResult): string | null {
 }
 
 function parseBridgeMode(mode: string | undefined): BridgeMode {
-  return mode?.trim() === "pane_bridge" ? "pane_bridge" : "bridge";
+  return mode?.trim() === "bridge" ? "bridge" : "pane_bridge";
 }
 
 function readOptionalString(value: string | undefined): string | undefined {

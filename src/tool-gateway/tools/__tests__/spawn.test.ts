@@ -27,7 +27,7 @@ describe("spawn tool", () => {
         priority: 5,
         intent: "spawn",
         target: "claude",
-        mode: "bridge",
+        mode: "pane_bridge",
         payload: {
           spawn_dir: process.cwd(),
           model_id: undefined,
@@ -44,7 +44,7 @@ describe("spawn tool", () => {
       data: {
         thread_id: "thread-123",
         agent_type: "claude",
-        mode: "bridge",
+        mode: "pane_bridge",
         model_id: undefined
       }
     });
@@ -145,7 +145,7 @@ describe("spawn tool", () => {
       data: {
         thread_id: "thread-xh",
         agent_type: "codex",
-        mode: "bridge",
+        mode: "pane_bridge",
         model_id: "gpt-5.4"
       }
     });
