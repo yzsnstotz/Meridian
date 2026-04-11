@@ -69,6 +69,13 @@ const fileReadQuerySchema = z.object({
   path: z.string().min(1)
 });
 
+const historyQuerySchema = z.object({
+  thread_id: z.string().min(1),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  max_detail_chars: z.coerce.number().int().min(0).max(200000).optional(),
+  max_raw_chars: z.coerce.number().int().min(0).max(200000).optional()
+});
+
 const logFileReadQuerySchema = z.object({
   path: z.string().min(1)
 });
@@ -236,6 +243,59 @@ function contentTypeForPath(filePath: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+function truncateHistoryText(value: unknown, maxChars: number | undefined): unknown {
+  if (maxChars === undefined) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return "";
+  }
+  if (maxChars <= 0) {
+    return "";
+  }
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const label = "[History truncated]";
+  const suffix = "\n\n[History truncated]";
+  const budget = Math.max(0, maxChars - suffix.length);
+  if (budget === 0) {
+    return label.slice(0, maxChars);
+  }
+  const prefix = value.slice(0, budget).trimEnd();
+  return prefix ? `${prefix}${suffix}` : label.slice(0, maxChars);
+}
+
+function shapeHistoryPayload(
+  payload: unknown,
+  options: {
+    limit?: number;
+    maxDetailChars?: number;
+    maxRawChars?: number;
+  }
+): unknown {
+  if (!Array.isArray(payload)) {
+    return payload;
+  }
+
+  const limitedEntries =
+    typeof options.limit === "number" && payload.length > options.limit
+      ? payload.slice(-options.limit)
+      : payload;
+
+  return limitedEntries.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return entry;
+    }
+
+    const next = { ...(entry as Record<string, unknown>) };
+    next.details_text = truncateHistoryText(next.details_text, options.maxDetailChars);
+    next.raw_content = truncateHistoryText(next.raw_content, options.maxRawChars);
+    return next;
+  });
 }
 
 function encodeWebSocketTextFrame(payload: string): Buffer {
@@ -1036,8 +1096,11 @@ export class WebInterfaceServer {
   private async handleHistoryRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const requestUrl = this.getRequestUrl(request);
     const sessionId = this.resolveSessionId(request, requestUrl, response);
-    const query = threadQuerySchema.parse({
-      thread_id: requestUrl.searchParams.get("thread_id")
+    const query = historyQuerySchema.parse({
+      thread_id: requestUrl.searchParams.get("thread_id"),
+      limit: requestUrl.searchParams.get("limit") ?? undefined,
+      max_detail_chars: requestUrl.searchParams.get("max_detail_chars") ?? undefined,
+      max_raw_chars: requestUrl.searchParams.get("max_raw_chars") ?? undefined
     });
     const result = HubResultSchema.parse(
       await this.requestHub(
@@ -1050,7 +1113,15 @@ export class WebInterfaceServer {
         })
       )
     );
-    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+    this.respondJson(
+      response,
+      200,
+      shapeHistoryPayload(JSON.parse(result.content) as unknown, {
+        limit: query.limit,
+        maxDetailChars: query.max_detail_chars,
+        maxRawChars: query.max_raw_chars
+      })
+    );
   }
 
   private async handleHistoryThreadsRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

@@ -1136,6 +1136,11 @@
       var SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
       var CHAT_HISTORY_STORAGE_KEY = "meridian_chat_history:" + (threadId || "active");
       var CHAT_HISTORY_MAX_ITEMS = 200;
+      var CHAT_HISTORY_RESTORE_LIMIT = 60;
+      var CHAT_HISTORY_BOOTSTRAP_LIMIT = 60;
+      var CHAT_HISTORY_MAX_DETAIL_CHARS = 12000;
+      var CHAT_HISTORY_MAX_RAW_CHARS = 12000;
+      var CHAT_HISTORY_TRUNCATION_LABEL = "[History truncated]";
       var fallbackSummaryText = "Update received. Expand details for full output.";
       var suppressibleMessageState = Object.create(null);
       var seenBubbleFingerprintAtMs = Object.create(null);
@@ -2023,19 +2028,41 @@
         return false;
       }
 
+      function truncateHistoryText(value, maxChars) {
+        if (typeof value !== "string") return "";
+        if (maxChars === 0) return "";
+        if (maxChars === undefined || maxChars === null || maxChars < 0) return value;
+        if (value.length <= maxChars) return value;
+        var label = CHAT_HISTORY_TRUNCATION_LABEL;
+        var suffix = "\n\n" + CHAT_HISTORY_TRUNCATION_LABEL;
+        var budget = Math.max(0, maxChars - suffix.length);
+        if (budget === 0) return label.slice(0, maxChars);
+        var prefix = value.slice(0, budget).replace(/\s+$/, "");
+        return prefix ? prefix + suffix : label.slice(0, maxChars);
+      }
+
+      function normalizeStoredChatEntry(item) {
+        if (!item || typeof item.content !== "string" || typeof item.type !== "string") {
+          return null;
+        }
+        return {
+          content: item.content,
+          type: item.type,
+          detailsText: truncateHistoryText(typeof item.detailsText === "string" ? item.detailsText : "", CHAT_HISTORY_MAX_DETAIL_CHARS),
+          messageKey: typeof item.messageKey === "string" ? item.messageKey : "",
+          ts: typeof item.ts === "number" ? item.ts : Date.now()
+        };
+      }
+
       function readChatHistory() {
         try {
           var raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
           if (!raw) return [];
           var parsed = JSON.parse(raw);
           if (!Array.isArray(parsed)) return [];
-          return parsed.filter(function(item) {
-            return item &&
-              typeof item.content === "string" &&
-              typeof item.type === "string" &&
-              (item.detailsText === undefined || typeof item.detailsText === "string") &&
-              (item.messageKey === undefined || typeof item.messageKey === "string");
-          });
+          return parsed
+            .map(normalizeStoredChatEntry)
+            .filter(function(item) { return Boolean(item); });
         } catch (e) {
           return [];
         }
@@ -2043,7 +2070,15 @@
 
       function writeChatHistory(items) {
         try {
-          localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(items.slice(-CHAT_HISTORY_MAX_ITEMS)));
+          localStorage.setItem(
+            CHAT_HISTORY_STORAGE_KEY,
+            JSON.stringify(
+              items
+                .map(normalizeStoredChatEntry)
+                .filter(function(item) { return Boolean(item); })
+                .slice(-CHAT_HISTORY_MAX_ITEMS)
+            )
+          );
         } catch (e) {}
       }
 
@@ -2070,7 +2105,7 @@
       }
 
       function restoreChatHistory() {
-        var history = readChatHistory();
+        var history = readChatHistory().slice(-CHAT_HISTORY_RESTORE_LIMIT);
         if (history.length === 0) return false;
         chatHistoryHydrating = true;
         try {
@@ -2682,7 +2717,13 @@
 
       function fetchThreadHistory() {
         if (!threadId) return Promise.resolve([]);
-        return window.MeridianWeb.fetchWithAuth("/api/history?thread_id=" + encodeURIComponent(threadId))
+        var query = [
+          "thread_id=" + encodeURIComponent(threadId),
+          "limit=" + encodeURIComponent(String(CHAT_HISTORY_BOOTSTRAP_LIMIT)),
+          "max_detail_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_DETAIL_CHARS)),
+          "max_raw_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_RAW_CHARS))
+        ].join("&");
+        return window.MeridianWeb.fetchWithAuth("/api/history?" + query)
           .then(function(res) {
             return res.json().then(function(data) {
               if (!res.ok) {
@@ -3194,6 +3235,10 @@
         .then(function(entries) {
           serverHistoryRestored = restoreServerChatHistory(entries);
           if (serverHistoryRestored) {
+            if (!findLatestPendingHistoryEntry(entries)) {
+              initialReplayLines = serverHistoryAuthoritative ? 0 : 200;
+              return true;
+            }
             return reconcileBootstrapProgress(entries).then(function() {
               initialReplayLines = serverHistoryAuthoritative ? 0 : 200;
               if (activeProgressMessageKey) {

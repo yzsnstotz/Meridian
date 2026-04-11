@@ -567,6 +567,10 @@ test("terminal chat history restores from local storage and disables replay when
   const terminalHtml = await readTerminalHtml();
 
   assert.match(terminalHtml, /CHAT_HISTORY_STORAGE_KEY/);
+  assert.match(terminalHtml, /CHAT_HISTORY_RESTORE_LIMIT/);
+  assert.match(terminalHtml, /limit=/);
+  assert.match(terminalHtml, /max_detail_chars=/);
+  assert.match(terminalHtml, /max_raw_chars=/);
   assert.match(terminalHtml, /restoreChatHistory\(\)/);
   assert.match(terminalHtml, /restoreServerChatHistory\(entries\)/);
   assert.match(terminalHtml, /serverHistoryRestored = restoreServerChatHistory\(entries\)/);
@@ -654,6 +658,28 @@ test("terminal restore keeps canonical pending state and resolves it to one fina
   assert.equal(chatMessagesEl.children.length, 2);
   assert.equal(chatMessagesEl.children[1]?.getAttribute("data-message-key"), "history:history-final-1");
   assert.equal(collectRenderedText(chatMessagesEl.children[1] as FakeElement), "done");
+});
+
+test("terminal local history restore only rehydrates the most recent entries", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const historyEntries = Array.from({ length: 75 }, (_value, index) => ({
+    content: `entry-${index + 1}`,
+    type: "agent",
+    detailsText: "",
+    messageKey: `agent:trace:${String(index + 1).padStart(2, "0")}`
+  }));
+
+  context.CHAT_HISTORY_RESTORE_LIMIT = 60;
+  context.readChatHistory = () => historyEntries;
+  bindTerminalFunctions(terminalHtml, context, ["restoreChatHistory"]);
+
+  const restored = (context.restoreChatHistory as () => boolean)();
+
+  assert.equal(restored, true);
+  assert.equal(chatMessagesEl.children.length, 60);
+  assert.equal(collectRenderedText(chatMessagesEl.children[0] as FakeElement), "entry-16");
+  assert.equal(collectRenderedText(chatMessagesEl.children[59] as FakeElement), "entry-75");
 });
 
 test("terminal quiet-period liveness updates a single keyed progress bubble in place", async () => {

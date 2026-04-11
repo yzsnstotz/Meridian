@@ -384,6 +384,83 @@ test("Web Interface Server returns persisted thread history", async () => {
   });
 });
 
+test("Web Interface Server compacts thread history when bootstrap limits are requested", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(
+      `${baseUrl}/api/history?thread_id=codex_01&limit=2&max_detail_chars=24&max_raw_chars=18&token=secret-token`
+    );
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as Array<{
+      id: string;
+      details_text: string;
+      raw_content: string;
+    }>;
+
+    assert.equal(payload.length, 2);
+    assert.deepEqual(
+      payload.map((entry) => entry.id),
+      ["entry-2", "entry-3"]
+    );
+    assert.match(payload[1]?.details_text ?? "", /\[History truncated\]/);
+    assert.match(payload[1]?.raw_content ?? "", /^\[History truncated/);
+    assert.ok((payload[1]?.details_text ?? "").length <= 24);
+    assert.ok((payload[1]?.raw_content ?? "").length <= 18);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      assert.equal(message.intent, "history");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify([
+          {
+            id: "entry-1",
+            sequence: 1,
+            event_kind: "user_send",
+            source: "user",
+            type: "user",
+            content: "older",
+            details_text: "",
+            raw_content: "",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            timestamp: "2026-03-09T00:00:00.000Z",
+            replace_key: null
+          },
+          {
+            id: "entry-2",
+            sequence: 2,
+            event_kind: "user_send",
+            source: "user",
+            type: "user",
+            content: "recent",
+            details_text: "",
+            raw_content: "",
+            trace_id: "22222222-2222-4222-8222-222222222222",
+            timestamp: "2026-03-09T00:01:00.000Z",
+            replace_key: null
+          },
+          {
+            id: "entry-3",
+            sequence: 3,
+            event_kind: "final_reply",
+            source: "codex",
+            type: "agent",
+            content: "done",
+            details_text: "012345678901234567890123456789",
+            raw_content: "abcdefghijklmnopqrstuvwxyz",
+            trace_id: "33333333-3333-4333-8333-333333333333",
+            timestamp: "2026-03-09T00:02:00.000Z",
+            replace_key: null
+          }
+        ]),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
 test("Web Interface Server returns authenticated thread progress snapshots", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/progress/codex_01?token=secret-token`);
