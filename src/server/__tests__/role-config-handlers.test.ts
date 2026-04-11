@@ -209,8 +209,67 @@ describe("role config handlers", () => {
         kill_policy: "always"
       }
     )).resolves.toEqual({
-      system_prompt: expect.stringContaining("dispatch_plan_path: /tmp/dispatch_plan.md")
+      system_prompt: expect.stringContaining("__MERIDIAN_AGENT_DISPATCHER_ROLE_ID__")
     });
+  });
+
+  it("materializes the real dispatcher id when starting from the preview prompt", async () => {
+    const harness = createHarness();
+    const preview = await invokeJson<{ system_prompt: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/prompt-preview",
+      {
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      }
+    );
+
+    const started = await invokeJson<{
+      ok: true;
+      dispatcher_id: string;
+      dispatcher_thread_id: string;
+    }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/start",
+      {
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        system_prompt: preview.system_prompt
+      }
+    );
+
+    const state = await harness.stateStore.load();
+    const persistedRole = state?.roles.find((role) => role.threadId === started.dispatcher_id);
+    expect(persistedRole).toBeDefined();
+    expect(persistedRole?.config).toMatchObject({
+      system_prompt: expect.stringContaining(`dispatcher_role_id: ${started.dispatcher_id}`)
+    });
+    expect((persistedRole?.config as { system_prompt?: string }).system_prompt).not.toContain(
+      "__MERIDIAN_AGENT_DISPATCHER_ROLE_ID__"
+    );
+    expect((persistedRole?.config as { system_prompt?: string }).system_prompt).not.toContain(
+      "agent-dispatcher-preview"
+    );
   });
 
   it("returns view-only agent-dispatcher launch config", async () => {

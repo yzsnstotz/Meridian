@@ -13,7 +13,11 @@ import { resolveDispatchRepoRoot } from "../roles/agent-dispatcher/dispatch-path
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
-import { buildSystemPrompt } from "../roles/agent-dispatcher/prompt-builder";
+import {
+  AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
+  buildSystemPrompt,
+  materializeDispatcherSystemPrompt
+} from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import { isHumanDispatchRow, resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
@@ -1033,10 +1037,14 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     throw createHttpError(400, "Invalid dispatcher config");
   }
 
+  const normalizedConfig = roleType === "agent-dispatcher"
+    ? materializeAgentDispatcherConfigSystemPrompt(config.data as AgentDispatcherConfig, threadId)
+    : config.data;
+
   return {
     threadId,
     roleType,
-    config: config.data
+    config: normalizedConfig
   };
 }
 
@@ -1430,7 +1438,7 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
     system_prompt: buildSystemPrompt({
       dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
       command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
-      dispatcher_role_id: "agent-dispatcher-preview",
+      dispatcher_role_id: AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
       dispatch_repo_root: resolveDispatchRepoRoot([
         parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
         parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md"
@@ -1449,6 +1457,21 @@ function getDispatcherConfigEditBlockedReason(): string {
 
 function getAgentDispatcherConfigEditBlockedReason(): string {
   return "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.";
+}
+
+function materializeAgentDispatcherConfigSystemPrompt(
+  config: AgentDispatcherConfig,
+  threadId: string
+): AgentDispatcherConfig {
+  const systemPrompt = config.system_prompt?.trim();
+  if (!systemPrompt) {
+    return config;
+  }
+
+  return {
+    ...config,
+    system_prompt: materializeDispatcherSystemPrompt(systemPrompt, threadId)
+  };
 }
 
 function getStatusCode(error: unknown): number {

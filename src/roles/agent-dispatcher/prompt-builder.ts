@@ -2,6 +2,9 @@ import type { AgentDispatcherConfig } from "../../types";
 import { resolveDispatchRepoRoot } from "./dispatch-paths";
 import { MERIDIAN_TOOL_DISPLAY_COMMAND } from "./tool-entrypoint";
 
+export const AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER = "__MERIDIAN_AGENT_DISPATCHER_ROLE_ID__";
+const LEGACY_PREVIEW_DISPATCHER_ROLE_ID = "agent-dispatcher-preview";
+
 export interface PromptVars {
   dispatch_plan_path: string;
   command_file_path: string;
@@ -31,7 +34,7 @@ export function buildSystemPromptFromConfig(
   return buildSystemPrompt({
     dispatch_plan_path: config.dispatch_plan_path,
     command_file_path: config.command_file_path,
-    dispatcher_role_id: "agent-dispatcher",
+    dispatcher_role_id: AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
     dispatch_repo_root: resolveDispatchRepoRoot([config.dispatch_plan_path, config.command_file_path]),
     user_reply_channels: JSON.stringify(config.user_reply_channels),
     default_agent_type: config.agent_type,
@@ -39,6 +42,12 @@ export function buildSystemPromptFromConfig(
     kill_policy: config.kill_policy,
     resolved_model_map_json: JSON.stringify(config.model_map ?? {})
   });
+}
+
+export function materializeDispatcherSystemPrompt(prompt: string, dispatcherRoleId: string): string {
+  return prompt
+    .replaceAll(AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER, dispatcherRoleId)
+    .replaceAll(LEGACY_PREVIEW_DISPATCHER_ROLE_ID, dispatcherRoleId);
 }
 
 export function buildSystemPrompt(vars: PromptVars): string {

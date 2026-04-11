@@ -176,6 +176,26 @@ describe("AgentDispatcherRole", () => {
     }));
   });
 
+  it("materializes legacy preview dispatcher ids in saved prompt overrides before launch", async () => {
+    const harness = createHarness({
+      config: {
+        system_prompt: [
+          "dispatcher_role_id: agent-dispatcher-preview",
+          "Use `meridian-tool continue-dispatcher --dispatcher agent-dispatcher-preview`."
+        ].join("\n")
+      }
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.launchDispatcher).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: [
+        "dispatcher_role_id: agent-dispatcher-role",
+        "Use `meridian-tool continue-dispatcher --dispatcher agent-dispatcher-role`."
+      ].join("\n")
+    }));
+  });
+
   it("onDeactivate kills the dispatcher and tracked worker threads", async () => {
     const harness = createHarness({
       lifecycleState: {

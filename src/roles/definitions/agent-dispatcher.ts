@@ -16,6 +16,7 @@ import {
 import { launchDispatcher, type LaunchConfig, type LaunchResult } from "../agent-dispatcher/launcher";
 import {
   buildSystemPrompt,
+  materializeDispatcherSystemPrompt,
   type PromptVars
 } from "../agent-dispatcher/prompt-builder";
 import { resolveDispatchRepoRoot } from "../agent-dispatcher/dispatch-paths";
@@ -179,7 +180,7 @@ export class AgentDispatcherRole implements BaseRole {
       resolved_model_map_json: JSON.stringify(this.resolveDispatchModelMap())
     });
     return configuredSystemPrompt && configuredSystemPrompt.length > 0
-      ? configuredSystemPrompt
+      ? materializeDispatcherSystemPrompt(configuredSystemPrompt, this.threadId)
       : defaultSystemPrompt;
   }
 
