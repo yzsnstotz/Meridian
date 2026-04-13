@@ -14,6 +14,7 @@ import {
 
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
+const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
 const LegacyWorkerThreadEntrySchema = z.object({
   thread_id: z.string().min(1),
@@ -54,7 +55,7 @@ export class LifecycleStore {
   constructor(filePath: string, options: LifecycleStoreOptions = {}) {
     this.filePath = filePath;
     this.beforeCommit = options.beforeCommit;
-    this.dispatchPlanPath = options.dispatchPlanPath ?? path.join(path.dirname(filePath), DISPATCH_PLAN_FILENAME);
+    this.dispatchPlanPath = options.dispatchPlanPath ?? inferDispatchPlanPath(filePath);
     this.log = options.log ?? console;
     this.now = options.now ?? (() => new Date().toISOString());
   }
@@ -519,6 +520,31 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function formatTableRow(cells: string[]): string {
   return `| ${cells.join(" | ")} |`;
+}
+
+function inferDispatchPlanPath(filePath: string): string {
+  const directory = path.dirname(filePath);
+  const defaultPlanPath = path.join(directory, DISPATCH_PLAN_FILENAME);
+  if (fs.existsSync(defaultPlanPath)) {
+    return defaultPlanPath;
+  }
+
+  if (path.basename(filePath) !== DISPATCH_THREADS_FILENAME) {
+    return defaultPlanPath;
+  }
+
+  try {
+    const candidates = fs.readdirSync(directory)
+      .filter((entry) => entry === DISPATCH_PLAN_FILENAME || entry.endsWith("_dispatch_plan.md"))
+      .sort();
+    if (candidates.length === 1) {
+      return path.join(directory, candidates[0]!);
+    }
+  } catch {
+    return defaultPlanPath;
+  }
+
+  return defaultPlanPath;
 }
 
 function preserveTrailingNewline(original: string, updated: string): string {

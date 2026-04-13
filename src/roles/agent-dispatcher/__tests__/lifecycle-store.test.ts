@@ -517,6 +517,34 @@ describe("LifecycleStore", () => {
     expect(markdown).toContain("| ⚠️ ABANDONED | 1 | N-05 | Abandoned row |");
   });
 
+  it("syncs a sibling *_dispatch_plan.md file when dispatch_plan.md is not present", async () => {
+    const directory = await fsp.mkdtemp(path.join(tmpdir(), "meridian-roles-lifecycle-store-custom-plan-"));
+    tempDirectories.add(directory);
+
+    const filePath = path.join(directory, "dispatch_threads.json");
+    const dispatchPlanPath = path.join(directory, "cli_shared_core_dispatch_plan.md");
+    await fsp.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task |",
+      "|--------|-------|--------|------|",
+      "| ⬜ | 0 | PRE-FLIGHT | Environment Health Check |",
+      ""
+    ].join("\n"), "utf8");
+
+    const store = new LifecycleStore(filePath);
+    store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+    store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+      "| ✅ | 0 | PRE-FLIGHT | Environment Health Check |"
+    );
+  });
+
   it("logs structured worker lifecycle transitions", async () => {
     const info = vi.fn();
     const harness = await createHarness({
