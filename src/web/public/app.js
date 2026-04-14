@@ -1210,24 +1210,28 @@ function renderDispatchDetailCard(detail) {
   const subtitleParts = [detail.model, detail.applied_model, detail.worker_thread_id].filter(Boolean);
 
   return `
-    <article class="dispatch-detail-card">
-      <div class="dispatch-detail-header">
-        <div class="dispatch-detail-title">
-          <h3>${escapeHtml(taskLabel)}</h3>
-          <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" · ") || "Worker detail")}</p>
+    <details class="dispatch-detail-card">
+      <summary class="dispatch-detail-summary">
+        <div class="dispatch-detail-header">
+          <div class="dispatch-detail-title">
+            <h3>${escapeHtml(taskLabel)}</h3>
+            <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" · ") || "Worker detail")}</p>
+          </div>
+          <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
         </div>
-        <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
+      </summary>
+      <div class="dispatch-detail-body">
+        <dl class="summary-grid">
+          <div><dt>worker</dt><dd><code>${escapeHtml(detail.worker_id || "—")}</code></dd></div>
+          <div><dt>worker_thread</dt><dd><code>${escapeHtml(detail.worker_thread_id || "—")}</code></dd></div>
+          <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "—")}</code></dd></div>
+        </dl>
+        <div class="dispatch-detail-messages">
+          ${renderDispatchMessage("Dispatch Command", detail.command, "No dispatch command captured yet.")}
+          ${renderDispatchMessage("Agent Reply", detail.reply, "No agent reply captured yet.")}
+        </div>
       </div>
-      <dl class="summary-grid">
-        <div><dt>worker</dt><dd><code>${escapeHtml(detail.worker_id || "—")}</code></dd></div>
-        <div><dt>worker_thread</dt><dd><code>${escapeHtml(detail.worker_thread_id || "—")}</code></dd></div>
-        <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "—")}</code></dd></div>
-      </dl>
-      <div class="dispatch-detail-messages">
-        ${renderDispatchMessage("Dispatch Command", detail.command, "No dispatch command captured yet.")}
-        ${renderDispatchMessage("Agent Reply", detail.reply, "No agent reply captured yet.")}
-      </div>
-    </article>
+    </details>
   `;
 }
 
