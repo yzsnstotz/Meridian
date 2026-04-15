@@ -1,5 +1,4 @@
 import {
-  AgentDispatcherConfigSchema,
   DispatcherConfigSchema,
   type AgentDispatcherConfig,
   type AgentDispatcherEditorConfig,
@@ -9,6 +8,7 @@ import {
   type DispatcherEditorConfigPatch,
   type DispatcherEditorTask
 } from "../types";
+import { parseNormalizedAgentDispatcherConfig } from "./agent-dispatcher/config-normalization";
 import {
   resolveConfiguredDispatchRepoRoot,
   resolveConfiguredDocsRoot
@@ -20,8 +20,7 @@ export function parseMutableDispatcherConfig(config: unknown): DispatcherConfig 
 }
 
 export function parseMutableAgentDispatcherConfig(config: unknown): AgentDispatcherConfig | null {
-  const parsed = AgentDispatcherConfigSchema.safeParse(config);
-  return parsed.success ? (config as AgentDispatcherConfig) : null;
+  return parseNormalizedAgentDispatcherConfig(config);
 }
 
 export function toEditableDispatcherConfig(config: DispatcherConfig): DispatcherEditorConfig {

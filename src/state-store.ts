@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import { STATE_FILE_PATH } from "./config";
+import { normalizePersistedAppState } from "./roles/agent-dispatcher/config-normalization";
 import { AppStateSchema, type AppState } from "./types";
 
 type FileSystem = Pick<typeof fs, "mkdir" | "writeFile" | "rename" | "unlink" | "readFile">;
@@ -50,7 +51,7 @@ export class StateStore {
   async load(): Promise<AppState | null> {
     try {
       const raw = await this.fileSystem.readFile(this.filePath, "utf8");
-      return AppStateSchema.parse(JSON.parse(raw));
+      return normalizePersistedAppState(AppStateSchema.parse(JSON.parse(raw)));
     } catch (error) {
       if (isMissingFileError(error)) {
         return null;

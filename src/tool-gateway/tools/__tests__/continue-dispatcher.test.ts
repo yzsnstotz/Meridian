@@ -179,6 +179,50 @@ describe("continue-dispatcher tool", () => {
       error: "run launch failed: ENOENT"
     });
   });
+
+  it("repairs legacy detached docs roots before local continuation launches a worker", async () => {
+    const harness = await createDetachedDocsHarness({
+      planMarkdown: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On |",
+        "|--------|-------|--------|------|-------|------------|",
+        "| ✅ | 1 | PRE-FLIGHT | Prior step | OPUS | — |",
+        "| ❌ | 2 | R-01 | Current step | CODEX | PRE-FLIGHT |",
+        ""
+      ].join("\n"),
+      lifecycleState: {
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-10T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {},
+        last_reconciled_at: null
+      }
+    });
+    const continueWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      workerId: "R-01",
+      threadId: "worker-thread-456"
+    });
+
+    await executeContinueDispatcher(
+      { dispatcherId: harness.dispatcherId },
+      harness.createDeps({ continueWorker })
+    );
+
+    expect(continueWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatch_plan_path: harness.planPath,
+        command_file_path: harness.commandFilePath,
+        dispatch_repo_root: harness.repoRoot
+      }),
+      expect.any(Array),
+      "R-01"
+    );
+  });
 });
 
 async function createHarness(options: {
@@ -235,6 +279,94 @@ async function createHarness(options: {
     planPath,
     commandFilePath,
     state,
+    createDeps(overrides = {}) {
+      return {
+        loadState: async () => state,
+        readFile: (filePath: string) => fs.readFile(filePath, "utf8"),
+        saveState: async (nextState: AppState) => {
+          state.roles = nextState.roles;
+          state.promptStore = nextState.promptStore;
+        },
+        loadLifecycle: () => new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath }).load(),
+        continueWorker: overrides.continueWorker ?? vi.fn().mockResolvedValue({
+          ok: true,
+          workerId: "unused"
+        }),
+        postContinue: async () => ({
+          ok: false,
+          error: "Meridian-roles service unreachable at http://127.0.0.1:7701/: fetch failed",
+          base_url: "http://127.0.0.1:7701/",
+          service_unreachable: true
+        })
+      };
+    }
+  };
+}
+
+async function createDetachedDocsHarness(options: {
+  planMarkdown: string;
+  lifecycleState: DispatchThreadStateV2;
+}): Promise<{
+  dispatcherId: string;
+  planPath: string;
+  commandFilePath: string;
+  repoRoot: string;
+  createDeps(overrides?: {
+    continueWorker?: ContinueDispatcherDeps["continueWorker"];
+  }): ContinueDispatcherDeps;
+}> {
+  const workspaceRoot = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-continue-detached-"));
+  tempDirectories.add(workspaceRoot);
+  const repoRootPath = path.join(workspaceRoot, "projects/clawso");
+  await fs.mkdir(path.join(repoRootPath, ".git"), { recursive: true });
+
+  const dispatcherId = "agent-dispatcher-r03";
+  const planPath = path.join(
+    workspaceRoot,
+    "Docs/Projects/clawso/branch/feat-cli/taskspec/dispatch_plan.md"
+  );
+  const commandFilePath = path.join(
+    workspaceRoot,
+    "Docs/Projects/clawso/branch/feat-cli/taskspec/agent_dispatch_command.md"
+  );
+  const sidecarPath = path.join(path.dirname(planPath), "dispatch_threads.json");
+
+  await fs.mkdir(path.dirname(planPath), { recursive: true });
+  await fs.writeFile(planPath, options.planMarkdown, "utf8");
+  await fs.writeFile(commandFilePath, "# command\n", "utf8");
+  new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath }).save(options.lifecycleState);
+
+  const state: AppState = {
+    roles: [
+      {
+        threadId: dispatcherId,
+        roleType: "agent-dispatcher",
+        status: "active",
+        config: {
+          dispatch_plan_path: planPath,
+          command_file_path: commandFilePath,
+          dispatch_repo_root: workspaceRoot,
+          docs_root: path.join(workspaceRoot, "Docs"),
+          user_reply_channels: [
+            {
+              channel: "web",
+              chat_id: "web:ops"
+            }
+          ],
+          agent_type: "codex",
+          mode: "bridge",
+          kill_policy: "always"
+        }
+      }
+    ],
+    promptStore: {}
+  };
+
+  return {
+    dispatcherId,
+    planPath,
+    commandFilePath,
+    repoRoot: await fs.realpath(repoRootPath),
     createDeps(overrides = {}) {
       return {
         loadState: async () => state,

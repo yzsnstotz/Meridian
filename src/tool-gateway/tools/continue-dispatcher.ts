@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
+import { parseNormalizedAgentDispatcherConfig } from "../../roles/agent-dispatcher/config-normalization";
 import { continueDispatchWorker, type ContinueDispatchPlanRow } from "../../roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { isHumanDispatchRow, resolveServiceContinueWorker } from "../../roles/agent-dispatcher/service-continuation";
@@ -10,7 +11,6 @@ import {
   StateStore
 } from "../../state-store";
 import type { DispatchThreadStateV2, AppState, AgentDispatcherConfig } from "../../types";
-import { AgentDispatcherConfigSchema } from "../../types";
 import { parseDispatchPlanRows } from "./dispatch-status";
 import {
   buildServiceErrorData,
@@ -29,7 +29,7 @@ export interface ContinueDispatcherDeps {
   continueWorker(
     config: Pick<
       AgentDispatcherConfig,
-      "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map"
+      "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map" | "dispatch_repo_root"
     >,
     dispatchPlanRows: ContinueDispatchPlanRow[],
     workerId: string
@@ -150,15 +150,15 @@ async function continueDispatcherLocally(
     };
   }
 
-  const parsedConfig = AgentDispatcherConfigSchema.safeParse(roleState.config);
-  if (!parsedConfig.success) {
+  const config = parseNormalizedAgentDispatcherConfig(roleState.config, {
+    threadId: roleState.threadId
+  });
+  if (!config) {
     return {
       ok: false,
       error: `Invalid persisted agent dispatcher config for thread_id=${dispatcherId}`
     };
   }
-
-  const config = parsedConfig.data;
   let markdown: string;
   try {
     markdown = await deps.readFile(config.dispatch_plan_path);

@@ -14,6 +14,7 @@ import {
   type AppState
 } from "../../types";
 import { launchDispatcher, type LaunchConfig, type LaunchResult } from "../agent-dispatcher/launcher";
+import { parseNormalizedAgentDispatcherConfig } from "../agent-dispatcher/config-normalization";
 import {
   buildSystemPrompt,
   materializeDispatcherSystemPrompt,
@@ -88,7 +89,8 @@ export class AgentDispatcherRole implements BaseRole {
 
   constructor(threadId: string, config: unknown, options: AgentDispatcherRoleOptions = {}) {
     this.threadId = threadId;
-    this.config = AgentDispatcherConfigSchema.parse(config);
+    this.config = parseNormalizedAgentDispatcherConfig(config, { threadId })
+      ?? AgentDispatcherConfigSchema.parse(config);
     this.stateStore = options.stateStore ?? new StateStore();
     this.buildPrompt = options.buildSystemPrompt ?? buildSystemPrompt;
     this.launch = options.launchDispatcher ?? launchDispatcher;
