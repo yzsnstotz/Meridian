@@ -105,6 +105,13 @@
     .spawn-row-bottom {
       width: 100%;
     }
+    .spawn-row-bottom-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem 0.875rem;
+      align-items: stretch;
+      width: 100%;
+    }
     .spawn-row-bottom .toggle {
       width: 100%;
       box-sizing: border-box;
@@ -636,6 +643,22 @@
       color: var(--accent-color);
       text-decoration: none;
     }
+    .card-kill-btn {
+      grid-column: 1 / -1;
+      justify-content: center;
+      border: 1px solid rgba(239, 68, 68, 0.28);
+      background: rgba(239, 68, 68, 0.12);
+      color: #fecaca;
+    }
+    .card-kill-btn:hover {
+      background: rgba(239, 68, 68, 0.2);
+      transform: none;
+    }
+    .card-kill-btn:disabled {
+      opacity: 0.6;
+      cursor: wait;
+      transform: none;
+    }
 
     .card-footer {
       border-top: 1px solid var(--border-color);
@@ -757,6 +780,9 @@
       .spawn-row-top {
         grid-template-columns: 1fr;
       }
+      .spawn-row-bottom-grid {
+        grid-template-columns: 1fr;
+      }
       #app { padding: 1rem; padding-bottom: 5rem; }
       .card-grid { grid-template-columns: 1fr; gap: 0.75rem; }
       header { padding: calc(1rem + var(--safe-area-inset-top)) 1rem 1rem; }
@@ -811,10 +837,19 @@
               </button>
             </div>
             <div class="spawn-row-bottom">
-              <label class="toggle" for="spawn-auto-approve">
-                <input id="spawn-auto-approve" type="checkbox" />
-                <span>Auto-approve agent prompts</span>
-              </label>
+              <div class="spawn-row-bottom-grid">
+                <select
+                  id="spawn-model"
+                  class="select"
+                  aria-label="Spawn model"
+                >
+                  <option value="">Model: provider default</option>
+                </select>
+                <label class="toggle" for="spawn-auto-approve">
+                  <input id="spawn-auto-approve" type="checkbox" />
+                  <span>Auto-approve agent prompts</span>
+                </label>
+              </div>
             </div>
           </div>
         </div>
@@ -912,10 +947,14 @@
       var logViewBannerEl = document.getElementById("log-view-banner");
       var logViewCloseEl = document.getElementById("log-view-close");
       var providerEl = document.getElementById("spawn-provider");
+      var spawnModelEl = document.getElementById("spawn-model");
       var autoApproveEl = document.getElementById("spawn-auto-approve");
       var SPAWN_PROVIDER_STORAGE_KEY = "meridian_spawn_provider";
+      var SPAWN_MODEL_STORAGE_KEY = "meridian_spawn_model_by_provider";
       var SPAWN_AUTO_APPROVE_STORAGE_KEY = "meridian_spawn_auto_approve";
       var SPAWN_REPO_STORAGE_KEY = "meridian_spawn_repo";
+      var spawnModelByProvider = {};
+      var spawnModelRequestToken = 0;
       /** Relative path under AGENT_WORKDIR (segments with /), or "" for default root. */
       var spawnRepoRelative = "";
       var browseRelative = "";
@@ -969,6 +1008,104 @@
         }
       }
 
+      function normalizeSpawnProvider(value) {
+        var provider = value == null ? "" : String(value).trim().toLowerCase();
+        return provider || "codex";
+      }
+
+      function readSavedSpawnModel(provider) {
+        var normalizedProvider = normalizeSpawnProvider(provider);
+        var saved = spawnModelByProvider[normalizedProvider];
+        return typeof saved === "string" ? saved : "";
+      }
+
+      function writeSavedSpawnModel(provider, modelId) {
+        var normalizedProvider = normalizeSpawnProvider(provider);
+        var normalizedModelId = modelId == null ? "" : String(modelId).trim();
+        if (!normalizedModelId) {
+          delete spawnModelByProvider[normalizedProvider];
+          return;
+        }
+        spawnModelByProvider[normalizedProvider] = normalizedModelId;
+      }
+
+      function hasSpawnModelOption(modelId) {
+        if (!spawnModelEl || !modelId) return false;
+        for (var i = 0; i < spawnModelEl.options.length; i++) {
+          if (spawnModelEl.options[i].value === modelId) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function renderSpawnModelOptions(provider, models, defaultLabel) {
+        if (!spawnModelEl) return;
+        var normalizedProvider = normalizeSpawnProvider(provider);
+        var savedModelId = readSavedSpawnModel(normalizedProvider);
+        spawnModelEl.innerHTML = "";
+
+        var defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = defaultLabel || "Model: provider default";
+        spawnModelEl.appendChild(defaultOption);
+
+        for (var i = 0; i < models.length; i++) {
+          var model = models[i];
+          if (!model || typeof model.id !== "string" || !model.id.trim()) continue;
+          var option = document.createElement("option");
+          option.value = model.id.trim();
+          option.textContent = typeof model.label === "string" && model.label.trim()
+            ? model.label.trim()
+            : model.id.trim();
+          spawnModelEl.appendChild(option);
+        }
+
+        if (savedModelId && !hasSpawnModelOption(savedModelId)) {
+          var savedOption = document.createElement("option");
+          savedOption.value = savedModelId;
+          savedOption.textContent = savedModelId + " (saved)";
+          spawnModelEl.appendChild(savedOption);
+        }
+
+        spawnModelEl.disabled = false;
+        spawnModelEl.value = savedModelId && hasSpawnModelOption(savedModelId) ? savedModelId : "";
+      }
+
+      function setSpawnModelLoading() {
+        if (!spawnModelEl) return;
+        spawnModelEl.disabled = true;
+        spawnModelEl.innerHTML = '<option value="">Model: loading…</option>';
+      }
+
+      function loadSpawnModelOptions(forceReload) {
+        if (!spawnModelEl) return Promise.resolve();
+        if (!window.MeridianWeb.ensureToken()) {
+          renderSpawnModelOptions(normalizeSpawnProvider(providerEl && providerEl.value), [], "Model: provider default");
+          return Promise.resolve();
+        }
+
+        var provider = normalizeSpawnProvider(providerEl && providerEl.value);
+        setSpawnModelLoading();
+        var requestToken = ++spawnModelRequestToken;
+
+        return window.MeridianWeb.fetchWithAuth("/api/models?provider=" + encodeURIComponent(provider))
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) {
+                throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+              }
+              if (requestToken !== spawnModelRequestToken) return;
+              var models = body && Array.isArray(body.models) ? body.models : [];
+              renderSpawnModelOptions(provider, models, "Model: provider default");
+            });
+          })
+          .catch(function () {
+            if (requestToken !== spawnModelRequestToken) return;
+            renderSpawnModelOptions(provider, [], "Model: provider default (catalog unavailable)");
+          });
+      }
+
       function loadSpawnPreferences() {
         try {
           if (providerEl) {
@@ -977,12 +1114,22 @@
               providerEl.value = savedProvider;
             }
           }
+          if (spawnModelEl) {
+            var savedModelRaw = localStorage.getItem(SPAWN_MODEL_STORAGE_KEY);
+            if (savedModelRaw) {
+              var parsedModels = JSON.parse(savedModelRaw);
+              if (parsedModels && typeof parsedModels === "object") {
+                spawnModelByProvider = parsedModels;
+              }
+            }
+          }
           if (autoApproveEl) {
             autoApproveEl.checked = localStorage.getItem(SPAWN_AUTO_APPROVE_STORAGE_KEY) !== "false";
           }
           var savedRepo = localStorage.getItem(SPAWN_REPO_STORAGE_KEY);
           spawnRepoRelative = savedRepo && typeof savedRepo === "string" ? savedRepo : "";
         } catch (e) {
+          spawnModelByProvider = {};
           spawnRepoRelative = "";
         }
         updateWorkspaceButton();
@@ -991,8 +1138,16 @@
       function saveSpawnPreferences() {
         try {
           if (providerEl) localStorage.setItem(SPAWN_PROVIDER_STORAGE_KEY, providerEl.value || "codex");
+          if (spawnModelEl) writeSavedSpawnModel(providerEl && providerEl.value, spawnModelEl.value || "");
+          localStorage.setItem(SPAWN_MODEL_STORAGE_KEY, JSON.stringify(spawnModelByProvider));
           if (autoApproveEl) localStorage.setItem(SPAWN_AUTO_APPROVE_STORAGE_KEY, autoApproveEl.checked ? "true" : "false");
           localStorage.setItem(SPAWN_REPO_STORAGE_KEY, spawnRepoRelative || "");
+        } catch (e) {}
+      }
+
+      function saveSpawnProviderPreference() {
+        try {
+          if (providerEl) localStorage.setItem(SPAWN_PROVIDER_STORAGE_KEY, providerEl.value || "codex");
         } catch (e) {}
       }
 
@@ -1096,6 +1251,26 @@
         return "—";
       }
 
+      function readDisplayString(inst, keys) {
+        if (!inst || typeof inst !== "object") return "";
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var value = inst[key];
+          if (typeof value === "string" && value.trim()) {
+            return value.trim();
+          }
+        }
+        return "";
+      }
+
+      function resolveActualAgent(inst) {
+        return readDisplayString(inst, ["actual_agent", "agent_type", "type"]);
+      }
+
+      function resolveCurrentModel(inst) {
+        return readDisplayString(inst, ["current_model_id", "model_id", "model"]);
+      }
+
       function formatBytes(bytes) {
         if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0) return "0 B";
         var units = ["B", "KB", "MB", "GB", "TB"];
@@ -1112,6 +1287,46 @@
         var token = window.MeridianWeb.getToken();
         var q = "?thread_id=" + encodeURIComponent(inst.thread_id) + "&token=" + encodeURIComponent(token);
         window.location.href = "terminal.html" + q;
+      }
+
+      function killInstance(inst, triggerEl) {
+        if (!inst || !inst.thread_id) return;
+        if (!window.MeridianWeb.ensureToken()) return;
+        var threadId = String(inst.thread_id).trim();
+        if (!threadId) return;
+        if (!confirm("Kill active agent " + threadId + "? This stops the Meridian thread.")) return;
+        if (triggerEl) {
+          triggerEl.disabled = true;
+          triggerEl.textContent = "Killing...";
+        }
+        window.MeridianWeb.fetchWithAuth("/api/kill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId })
+        })
+          .then(function (res) {
+            return res.json().catch(function () {
+              return {};
+            }).then(function (body) {
+              if (!res.ok) {
+                throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+              }
+              if (!body || body.status !== "success") {
+                throw new Error(body && body.content ? body.content : "Kill failed");
+              }
+              return body;
+            });
+          })
+          .then(function () {
+            fetchList();
+          })
+          .catch(function (err) {
+            if (triggerEl) {
+              triggerEl.disabled = false;
+              triggerEl.textContent = "Kill agent";
+            }
+            alert("Kill failed: " + (err && err.message ? err.message : "unknown error"));
+          });
       }
 
       function renderGrid(instances) {
@@ -1146,6 +1361,8 @@
           var lastTrace = inst.last_trace_id && String(inst.last_trace_id).trim()
             ? String(inst.last_trace_id).trim()
             : "—";
+          var actualAgent = resolveActualAgent(inst) || "—";
+          var currentModel = resolveCurrentModel(inst) || "Not reported";
           
           card.innerHTML = `
             <div class="card-head">
@@ -1161,8 +1378,12 @@
               <summary>More info</summary>
               <div class="card-secondary-body">
                 <div class="detail-item">
-                  <span class="detail-label">Agent</span>
-                  <span class="detail-value">${escapeHtml(inst.agent_type || inst.type || "—")}</span>
+                  <span class="detail-label">Actual agent</span>
+                  <span class="detail-value">${escapeHtml(actualAgent)}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Current model</span>
+                  <span class="detail-value">${escapeHtml(currentModel)}</span>
                 </div>
                 <div class="detail-item">
                   <span class="detail-label">Mode</span>
@@ -1180,6 +1401,7 @@
                   <span class="detail-label">Last interaction</span>
                   <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
                 </div>
+                <button type="button" class="btn card-kill-btn">Kill agent</button>
                 <a class="role-link" href="${rolesBase}/" target="_blank" rel="noopener noreferrer">meridian-roles →</a>
               </div>
             </details>
@@ -1187,12 +1409,19 @@
           
           var detailsEl = card.querySelector("details.card-secondary");
           var roleLinkEl = card.querySelector(".role-link");
+          var killButtonEl = card.querySelector(".card-kill-btn");
           if (detailsEl) {
             detailsEl.addEventListener("click", function (e) { e.stopPropagation(); });
           }
           if (roleLinkEl) {
             roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
             roleLinkEl.title = "Open meridian-roles. Hub thread IDs are not the same as meridian-roles role IDs.";
+          }
+          if (killButtonEl) {
+            killButtonEl.addEventListener("click", function (e) {
+              e.stopPropagation();
+              killInstance(inst, killButtonEl);
+            });
           }
           card.addEventListener("click", function () { openInstance(inst); });
           gridEl.appendChild(card);
@@ -1386,6 +1615,10 @@
         if (spawnRepoRelative && String(spawnRepoRelative).trim()) {
           repoPayload.repo = String(spawnRepoRelative).trim();
         }
+        var modelPayload = {};
+        if (spawnModelEl && String(spawnModelEl.value || "").trim()) {
+          modelPayload.model_id = String(spawnModelEl.value).trim();
+        }
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1393,7 +1626,7 @@
             type: providerEl && providerEl.value ? providerEl.value : "codex",
             mode: "pane_bridge",
             auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
-          }, repoPayload))
+          }, repoPayload, modelPayload))
         })
           .then(function (res) {
             return res.json().then(function (body) {
@@ -1414,7 +1647,13 @@
       }
 
       btnSpawn.addEventListener("click", spawn);
-      if (providerEl) providerEl.addEventListener("change", saveSpawnPreferences);
+      if (providerEl) {
+        providerEl.addEventListener("change", function () {
+          saveSpawnProviderPreference();
+          void loadSpawnModelOptions(true);
+        });
+      }
+      if (spawnModelEl) spawnModelEl.addEventListener("change", saveSpawnPreferences);
       if (autoApproveEl) autoApproveEl.addEventListener("change", saveSpawnPreferences);
 
       if (btnSpawnWorkspace) btnSpawnWorkspace.addEventListener("click", openSpawnWorkspaceDialog);
@@ -1508,6 +1747,7 @@
       }, { passive: true });
 
       loadSpawnPreferences();
+      void loadSpawnModelOptions(true);
       fetchList();
       setInterval(fetchList, REFRESH_MS);
     })();

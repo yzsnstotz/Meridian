@@ -8,6 +8,7 @@ import { buildCodexExecArgs, buildCodexResumeArgs } from "../agents/codex";
 import { buildGeminiStreamArgs } from "../agents/gemini";
 import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
 import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
+import { shapeHistoryPayload } from "../shared/history-payload";
 import { createClaudeStreamParser } from "../shared/stream-parsers/claude";
 import { createCodexStreamParser, extractThreadId } from "../shared/stream-parsers/codex";
 import { createGeminiStreamParser } from "../shared/stream-parsers/gemini";
@@ -441,7 +442,7 @@ export class HubRouter {
         case "status":
           return await this.handleStatus(message);
         case "list":
-          return this.handleList(message);
+          return await this.handleList(message);
         case "list_models":
           return await this.handleListModels(message);
         case "spawn":
@@ -813,16 +814,34 @@ export class HubRouter {
     );
   }
 
-  private handleList(message: HubMessage): HubResult {
+  private async handleList(message: HubMessage): Promise<HubResult> {
     const requestSessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     const instances = this.instanceManager
       .list()
       .filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
-    const listedInstances = instances.map((instance) => {
-      const attachment = this.instanceManager.getThreadAttachment(instance.thread_id);
-      const attachable = this.instanceManager.isThreadAttachableBySession(instance.thread_id, requestSessionId);
+    const listedInstances = await Promise.all(instances.map(async (instance) => {
+      let currentInstance = instance;
+      if (!currentInstance.model_id && typeof this.instanceManager.status === "function") {
+        try {
+          currentInstance = (await this.instanceManager.status(currentInstance.thread_id)).instance;
+        } catch (error) {
+          this.log.debug(
+            {
+              operation: "list_status_probe_failed",
+              thread_id: currentInstance.thread_id,
+              socket_path: currentInstance.socket_path,
+              pid: currentInstance.pid,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Continuing list response without a live current-model backfill"
+          );
+        }
+      }
+
+      const attachment = this.instanceManager.getThreadAttachment(currentInstance.thread_id);
+      const attachable = this.instanceManager.isThreadAttachableBySession(currentInstance.thread_id, requestSessionId);
       const attachedLabels = attachment.sessions.map((session) => this.describeAttachedSession(session));
-      const history = this.readConversationHistory(instance.thread_id);
+      const history = this.readConversationHistory(currentInstance.thread_id);
       const lastEntry = history[history.length - 1] ?? null;
       let lastTraceId: string | null = null;
       for (let index = history.length - 1; index >= 0; index -= 1) {
@@ -833,7 +852,8 @@ export class HubRouter {
         }
       }
       return {
-        ...instance,
+        ...currentInstance,
+        current_model_id: currentInstance.model_id ?? null,
         attached: attachment.sessions.length > 0,
         attached_sessions: attachment.sessions,
         attached_labels: attachedLabels,
@@ -842,7 +862,7 @@ export class HubRouter {
         last_trace_id: lastTraceId,
         last_interaction_at: lastEntry?.timestamp ?? null
       };
-    });
+    }));
     const content = listedInstances.length === 0 ? "No active agent instances." : JSON.stringify(listedInstances, null, 2);
     return this.buildResult(message, "success", this.resolveResultSource(message), content);
   }
@@ -1804,11 +1824,17 @@ export class HubRouter {
   private handleHistory(message: HubMessage): HubResult {
     const requestedThreadId = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id);
     if (requestedThreadId) {
+      const shapedHistory = shapeHistoryPayload(this.getConversationHistoryForThread(requestedThreadId), {
+        limit: message.payload.history_limit,
+        maxContentChars: message.payload.history_max_content_chars,
+        maxDetailChars: message.payload.history_max_detail_chars,
+        maxRawChars: message.payload.history_max_raw_chars
+      });
       return this.buildResult(
         message,
         "success",
         this.resolveResultSource(message),
-        JSON.stringify(this.getConversationHistoryForThread(requestedThreadId), null, 2),
+        JSON.stringify(shapedHistory, null, 2),
         requestedThreadId
       );
     }

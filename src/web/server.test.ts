@@ -72,12 +72,20 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/instances?token=secret-token`);
     assert.equal(response.status, 200);
-    const payload = (await response.json()) as Array<{ thread_id: string }>;
+    const payload = (await response.json()) as Array<{
+      thread_id: string;
+      mode: string;
+      status: string;
+      agent_type: string;
+      model_id: string;
+    }>;
     assert.deepEqual(payload, [
       {
         thread_id: "codex_01",
         mode: "pane_bridge",
-        status: "running"
+        status: "running",
+        agent_type: "codex",
+        model_id: "gpt-5.4"
       }
     ]);
   }, {
@@ -92,7 +100,9 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
           {
             thread_id: "codex_01",
             mode: "pane_bridge",
-            status: "running"
+            status: "running",
+            agent_type: "codex",
+            model_id: "gpt-5.4"
           }
         ]),
         attachments: [],
@@ -387,11 +397,12 @@ test("Web Interface Server returns persisted thread history", async () => {
 test("Web Interface Server compacts thread history when bootstrap limits are requested", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(
-      `${baseUrl}/api/history?thread_id=codex_01&limit=2&max_detail_chars=24&max_raw_chars=18&token=secret-token`
+      `${baseUrl}/api/history?thread_id=codex_01&limit=2&max_content_chars=24&max_detail_chars=24&max_raw_chars=18&token=secret-token`
     );
     assert.equal(response.status, 200);
     const payload = (await response.json()) as Array<{
       id: string;
+      content: string;
       details_text: string;
       raw_content: string;
     }>;
@@ -401,13 +412,19 @@ test("Web Interface Server compacts thread history when bootstrap limits are req
       payload.map((entry) => entry.id),
       ["entry-2", "entry-3"]
     );
+    assert.match(payload[1]?.content ?? "", /\[History truncated\]/);
     assert.match(payload[1]?.details_text ?? "", /\[History truncated\]/);
     assert.match(payload[1]?.raw_content ?? "", /^\[History truncated/);
+    assert.ok((payload[1]?.content ?? "").length <= 24);
     assert.ok((payload[1]?.details_text ?? "").length <= 24);
     assert.ok((payload[1]?.raw_content ?? "").length <= 18);
   }, {
     requestHub: async (message: HubMessage) => {
       assert.equal(message.intent, "history");
+      assert.equal(message.payload.history_limit, 2);
+      assert.equal(message.payload.history_max_content_chars, 24);
+      assert.equal(message.payload.history_max_detail_chars, 24);
+      assert.equal(message.payload.history_max_raw_chars, 18);
       return {
         trace_id: message.trace_id,
         thread_id: "codex_01",
@@ -446,7 +463,7 @@ test("Web Interface Server compacts thread history when bootstrap limits are req
             event_kind: "final_reply",
             source: "codex",
             type: "agent",
-            content: "done",
+            content: "done\n" + "x".repeat(40),
             details_text: "012345678901234567890123456789",
             raw_content: "abcdefghijklmnopqrstuvwxyz",
             trace_id: "33333333-3333-4333-8333-333333333333",
@@ -612,6 +629,42 @@ test("Web Interface Server returns history thread index and model catalog", asyn
   });
 
   assert.deepEqual(seenIntents.sort(), ["history", "list_models"]);
+});
+
+test("Web Interface Server lists selectable models for a provider before spawn", async () => {
+  const seenIntents: string[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/models?provider=claude&token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      provider: string;
+      current_model_id: null;
+      models: Array<{ id: string; label: string }>;
+    };
+    assert.equal(payload.provider, "claude");
+    assert.equal(payload.current_model_id, null);
+    assert.deepEqual(payload.models, [
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+      { id: "claude-opus-4-6", label: "Claude Opus 4.6" }
+    ]);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenIntents.push(message.intent);
+      throw new Error(`Unexpected intent: ${message.intent}`);
+    },
+    providerModelCatalog: {
+      listModels: async () => ({
+        provider: "claude" as const,
+        models: [
+          { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+          { id: "claude-opus-4-6", label: "Claude Opus 4.6" }
+        ]
+      })
+    }
+  });
+
+  assert.deepEqual(seenIntents, []);
 });
 
 test("Web Interface Server falls back to the thread's current model when live catalog lookup fails", async () => {
@@ -1183,6 +1236,13 @@ function createCliDeps(overrides: Partial<CliDependencies> = {}) {
       socketCalls.push(message);
       return buildCliHubResult();
     },
+    listProviderModels: async (provider) => ({
+      provider,
+      models: [
+        { id: `${provider}-model-1`, label: `${provider} model 1` },
+        { id: `${provider}-model-2`, label: `${provider} model 2` }
+      ]
+    }),
     inferSocketUptimeSeconds: async () => 42,
     packageVersion: "1.0.0",
     socketPath: "/tmp/hub-core.sock",
@@ -1249,6 +1309,29 @@ test("runCli spawn forwards provider, model, effort, workdir, mode, and auto-app
   assert.equal(harness.stderr(), "");
 });
 
+test("runCli models lists selectable models for a provider", async () => {
+  const harness = createCliDeps();
+
+  const exitCode = await runCli(["models", "gemini"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(harness.socketCalls.length, 0);
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    provider: "gemini",
+    models: [
+      {
+        id: "gemini-model-1",
+        label: "gemini model 1"
+      },
+      {
+        id: "gemini-model-2",
+        label: "gemini model 2"
+      }
+    ]
+  });
+});
+
 test("runCli kill sends a kill intent and returns ok", async () => {
   const harness = createCliDeps();
 
@@ -1288,7 +1371,10 @@ test("runCli status formats active agents with uptime", async () => {
       {
         thread_id: "codex_01",
         type: "codex",
+        agent_type: "codex",
         model: "o3",
+        model_id: "o3",
+        current_model_id: "o3",
         status: "running",
         uptime: 3600
       }

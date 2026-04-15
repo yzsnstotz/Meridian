@@ -1138,6 +1138,7 @@
       var CHAT_HISTORY_MAX_ITEMS = 200;
       var CHAT_HISTORY_RESTORE_LIMIT = 60;
       var CHAT_HISTORY_BOOTSTRAP_LIMIT = 60;
+      var CHAT_HISTORY_MAX_CONTENT_CHARS = 4000;
       var CHAT_HISTORY_MAX_DETAIL_CHARS = 12000;
       var CHAT_HISTORY_MAX_RAW_CHARS = 12000;
       var CHAT_HISTORY_TRUNCATION_LABEL = "[History truncated]";
@@ -1728,7 +1729,7 @@
           cacheServerHistory(entries);
           return false;
         }
-        var latestFinalEntry = findLatestFinalHistoryEntry(entries);
+        var latestFinalEntry = normalizeHistoryEntry(findLatestFinalHistoryEntry(entries));
         if (!latestFinalEntry) return false;
         serverHistoryAuthoritative = true;
         cacheServerHistory(entries);
@@ -2045,13 +2046,37 @@
         if (!item || typeof item.content !== "string" || typeof item.type !== "string") {
           return null;
         }
+        var truncatedContent = truncateHistoryText(item.content, CHAT_HISTORY_MAX_CONTENT_CHARS);
+        var originalDetails = typeof item.detailsText === "string" ? item.detailsText : "";
+        var resolvedDetails = originalDetails || (truncatedContent !== item.content ? item.content : "");
         return {
-          content: item.content,
+          content: truncatedContent,
           type: item.type,
-          detailsText: truncateHistoryText(typeof item.detailsText === "string" ? item.detailsText : "", CHAT_HISTORY_MAX_DETAIL_CHARS),
+          detailsText: truncateHistoryText(resolvedDetails, CHAT_HISTORY_MAX_DETAIL_CHARS),
           messageKey: typeof item.messageKey === "string" ? item.messageKey : "",
           ts: typeof item.ts === "number" ? item.ts : Date.now()
         };
+      }
+
+      function normalizeHistoryEntry(entry) {
+        if (!entry || typeof entry !== "object") return null;
+        var originalContent = typeof entry.content === "string" ? entry.content : "";
+        var truncatedContent = truncateHistoryText(originalContent, CHAT_HISTORY_MAX_CONTENT_CHARS);
+        var originalDetails = typeof entry.details_text === "string" ? entry.details_text : "";
+        var resolvedDetails = originalDetails || (truncatedContent !== originalContent ? originalContent : "");
+        var normalized = {};
+        for (var key in entry) {
+          if (Object.prototype.hasOwnProperty.call(entry, key)) {
+            normalized[key] = entry[key];
+          }
+        }
+        normalized.content = truncatedContent;
+        normalized.details_text = truncateHistoryText(resolvedDetails, CHAT_HISTORY_MAX_DETAIL_CHARS);
+        normalized.raw_content = truncateHistoryText(
+          typeof entry.raw_content === "string" ? entry.raw_content : "",
+          CHAT_HISTORY_MAX_RAW_CHARS
+        );
+        return normalized;
       }
 
       function readChatHistory() {
@@ -2131,14 +2156,16 @@
       function cacheServerHistory(entries) {
         if (!Array.isArray(entries) || entries.length === 0) return;
         writeChatHistory(entries.map(function(entry) {
+          var normalized = normalizeHistoryEntry(entry);
+          if (!normalized) return null;
           return {
-            content: entry.content || "",
-            type: entry.type || "agent",
-            detailsText: entry.details_text || "",
-            messageKey: buildHistoryMessageKey(entry),
-            ts: Date.parse(entry.timestamp || "") || Date.now()
+            content: normalized.content || "",
+            type: normalized.type || "agent",
+            detailsText: normalized.details_text || "",
+            messageKey: buildHistoryMessageKey(normalized),
+            ts: Date.parse(normalized.timestamp || "") || Date.now()
           };
-        }));
+        }).filter(function(entry) { return Boolean(entry); }));
       }
 
       function restoreServerChatHistory(entries) {
@@ -2168,7 +2195,8 @@
         chatHistoryHydrating = true;
         try {
           for (var i = 0; i < renderEntries.length; i++) {
-            var entry = renderEntries[i];
+            var entry = normalizeHistoryEntry(renderEntries[i]);
+            if (!entry) continue;
             addChatBubble(entry.content || "", entry.type || "agent", entry.details_text || "", {
               persist: false,
               dedupe: false,
@@ -2720,6 +2748,7 @@
         var query = [
           "thread_id=" + encodeURIComponent(threadId),
           "limit=" + encodeURIComponent(String(CHAT_HISTORY_BOOTSTRAP_LIMIT)),
+          "max_content_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_CONTENT_CHARS)),
           "max_detail_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_DETAIL_CHARS)),
           "max_raw_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_RAW_CHARS))
         ].join("&");
@@ -2777,10 +2806,14 @@
         if (activeProgressMessageKey && activeProgressMessageKey !== nextMessageKey) {
           clearBubbleByKey(activeProgressMessageKey);
         }
+        var truncatedContent = truncateHistoryText(content, CHAT_HISTORY_MAX_CONTENT_CHARS);
+        var progressDetails = truncatedContent !== content
+          ? truncateHistoryText(content, CHAT_HISTORY_MAX_DETAIL_CHARS)
+          : "";
         activeProgressMessageKey = nextMessageKey;
         activeProgressTraceId = traceId;
         recordLatestTraceId(traceId);
-        addChatBubble(content, "agent", "", { messageKey: nextMessageKey });
+        addChatBubble(truncatedContent, "agent", progressDetails, { messageKey: nextMessageKey });
         showChatTyping(false);
       }
 

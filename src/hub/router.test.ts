@@ -999,6 +999,60 @@ test("HubRouter list omits stopped instances", async () => {
   assert.doesNotMatch(result.content, /codex_01/);
 });
 
+test("HubRouter list backfills the live current model when the registry has none", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 12,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  let statusCalls = 0;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    status: async (threadId: string) => {
+      statusCalls += 1;
+      return {
+        instance: {
+          ...registry.get(threadId)!,
+          model_id: "gpt-5.4"
+        },
+        agent_status: {
+          status: "running",
+          current_model_id: "gpt-5.4"
+        }
+      };
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(baseMessage({ intent: "list", target: "all", thread_id: "global" }));
+  const listed = JSON.parse(result.content) as Array<Record<string, unknown>>;
+
+  assert.equal(statusCalls, 1);
+  assert.equal(listed[0]?.model_id, "gpt-5.4");
+  assert.equal(listed[0]?.current_model_id, "gpt-5.4");
+});
+
 test("HubRouter returns error result when target thread is missing", async () => {
   const router = new HubRouter(new InstanceRegistry(), {
     clientFactory: () => ({
@@ -2634,6 +2688,69 @@ test("HubRouter exposes conversation history after a run", async () => {
   assert.equal(parsed[1]?.type, "agent");
   assert.equal(parsed[1]?.content, "done");
   assert.equal(parsed[1]?.replace_key, null);
+});
+
+test("HubRouter shapes oversized thread history when bootstrap hints are provided", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "history_shape_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-history_shape_01.sock",
+    pid: 902,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const oversizedReply = "done\n" + "x".repeat(50);
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: oversizedReply }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  await router.route(
+    baseMessage({
+      thread_id: "history_shape_01",
+      target: "history_shape_01",
+      intent: "run",
+      payload: { content: "ship it", attachments: [] }
+    })
+  );
+
+  const historyResult = await router.route(
+    baseMessage({
+      intent: "history",
+      thread_id: "history_shape_01",
+      target: "history_shape_01",
+      payload: {
+        content: "",
+        attachments: [],
+        history_limit: 2,
+        history_max_content_chars: 24,
+        history_max_detail_chars: 24,
+        history_max_raw_chars: 18
+      }
+    })
+  );
+  const parsed = JSON.parse(historyResult.content) as Array<{
+    content: string;
+    details_text: string;
+    raw_content: string;
+  }>;
+
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0]?.content, "ship it");
+  assert.match(parsed[1]?.content ?? "", /\[History truncated\]/);
+  assert.match(parsed[1]?.details_text ?? "", /\[History truncated\]/);
+  assert.match(parsed[1]?.raw_content ?? "", /^\[History truncat/);
+  assert.ok((parsed[1]?.content ?? "").length <= 24);
+  assert.ok((parsed[1]?.details_text ?? "").length <= 24);
+  assert.ok((parsed[1]?.raw_content ?? "").length <= 18);
 });
 
 test("HubRouter appends same-trace progress snapshots and replaces them with the final reply", () => {

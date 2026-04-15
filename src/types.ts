@@ -133,6 +133,10 @@ export const HubPayloadSchema = z.object({
   auto_approve: z.boolean().optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
+  history_limit: z.number().int().positive().optional(),
+  history_max_content_chars: z.number().int().min(0).optional(),
+  history_max_detail_chars: z.number().int().min(0).optional(),
+  history_max_raw_chars: z.number().int().min(0).optional(),
   gui_host_port_override: z.string().min(1).optional(),
   push_enabled: z.boolean().optional()
 });

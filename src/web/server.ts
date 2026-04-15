@@ -12,6 +12,11 @@ import { requestHubMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import {
+  ProviderModelCatalog as SharedProviderModelCatalog,
+  type ProviderModelCatalogResult
+} from "../shared/model-catalog";
+import { shapeHistoryPayload } from "../shared/history-payload";
+import {
   AgentTypeSchema,
   FileAttachmentSchema,
   HubMessageSchema,
@@ -20,6 +25,7 @@ import {
   PaneOutputNotAvailableSchema,
   ReasoningEffortSchema,
   ThreadProgressSnapshotSchema,
+  type AgentType,
   type FileAttachment,
   type HubMessage,
   type HubResult,
@@ -72,6 +78,7 @@ const fileReadQuerySchema = z.object({
 const historyQuerySchema = z.object({
   thread_id: z.string().min(1),
   limit: z.coerce.number().int().min(1).max(200).optional(),
+  max_content_chars: z.coerce.number().int().min(0).max(200000).optional(),
   max_detail_chars: z.coerce.number().int().min(0).max(200000).optional(),
   max_raw_chars: z.coerce.number().int().min(0).max(200000).optional()
 });
@@ -179,8 +186,13 @@ export interface WebInterfaceServerOptions {
   tlsKeyPath?: string;
   staticDir?: string;
   requestHub?: (message: HubMessage) => Promise<HubResult>;
+  providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
   logger?: WebInterfaceLogger;
+}
+
+interface ProviderModelCatalogLookup {
+  listModels(provider: AgentType): Promise<ProviderModelCatalogResult>;
 }
 
 interface WebSocketBridge {
@@ -243,59 +255,6 @@ function contentTypeForPath(filePath: string): string {
     default:
       return "application/octet-stream";
   }
-}
-
-function truncateHistoryText(value: unknown, maxChars: number | undefined): unknown {
-  if (maxChars === undefined) {
-    return value;
-  }
-  if (typeof value !== "string") {
-    return "";
-  }
-  if (maxChars <= 0) {
-    return "";
-  }
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  const label = "[History truncated]";
-  const suffix = "\n\n[History truncated]";
-  const budget = Math.max(0, maxChars - suffix.length);
-  if (budget === 0) {
-    return label.slice(0, maxChars);
-  }
-  const prefix = value.slice(0, budget).trimEnd();
-  return prefix ? `${prefix}${suffix}` : label.slice(0, maxChars);
-}
-
-function shapeHistoryPayload(
-  payload: unknown,
-  options: {
-    limit?: number;
-    maxDetailChars?: number;
-    maxRawChars?: number;
-  }
-): unknown {
-  if (!Array.isArray(payload)) {
-    return payload;
-  }
-
-  const limitedEntries =
-    typeof options.limit === "number" && payload.length > options.limit
-      ? payload.slice(-options.limit)
-      : payload;
-
-  return limitedEntries.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      return entry;
-    }
-
-    const next = { ...(entry as Record<string, unknown>) };
-    next.details_text = truncateHistoryText(next.details_text, options.maxDetailChars);
-    next.raw_content = truncateHistoryText(next.raw_content, options.maxRawChars);
-    return next;
-  });
 }
 
 function encodeWebSocketTextFrame(payload: string): Buffer {
@@ -497,6 +456,7 @@ export class WebInterfaceServer {
   private readonly tlsKeyPath: string;
   private readonly staticDir: string;
   private readonly requestHub: (message: HubMessage) => Promise<HubResult>;
+  private readonly providerModelCatalog: ProviderModelCatalogLookup;
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
   private readonly logger: WebInterfaceLogger;
   private readonly bridges = new Set<WebSocketBridge>();
@@ -514,6 +474,7 @@ export class WebInterfaceServer {
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
     this.staticDir = options.staticDir ?? defaultStaticDir;
     this.requestHub = options.requestHub ?? requestHubMessage;
+    this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
 
@@ -1099,6 +1060,7 @@ export class WebInterfaceServer {
     const query = historyQuerySchema.parse({
       thread_id: requestUrl.searchParams.get("thread_id"),
       limit: requestUrl.searchParams.get("limit") ?? undefined,
+      max_content_chars: requestUrl.searchParams.get("max_content_chars") ?? undefined,
       max_detail_chars: requestUrl.searchParams.get("max_detail_chars") ?? undefined,
       max_raw_chars: requestUrl.searchParams.get("max_raw_chars") ?? undefined
     });
@@ -1109,7 +1071,11 @@ export class WebInterfaceServer {
           intent: "history",
           thread_id: query.thread_id,
           target: query.thread_id,
-          content: ""
+          content: "",
+          historyLimit: query.limit,
+          historyMaxContentChars: query.max_content_chars,
+          historyMaxDetailChars: query.max_detail_chars,
+          historyMaxRawChars: query.max_raw_chars
         })
       )
     );
@@ -1118,6 +1084,7 @@ export class WebInterfaceServer {
       200,
       shapeHistoryPayload(JSON.parse(result.content) as unknown, {
         limit: query.limit,
+        maxContentChars: query.max_content_chars,
         maxDetailChars: query.max_detail_chars,
         maxRawChars: query.max_raw_chars
       })
@@ -1199,8 +1166,27 @@ export class WebInterfaceServer {
   private async handleModelsRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const requestUrl = this.getRequestUrl(request);
     const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const rawProvider = requestUrl.searchParams.get("provider");
+    const rawThreadId = requestUrl.searchParams.get("thread_id");
+
+    if (rawProvider && rawThreadId) {
+      this.respondJson(response, 400, { error: "Specify either thread_id or provider, not both" });
+      return;
+    }
+
+    if (rawProvider) {
+      const provider = AgentTypeSchema.parse(rawProvider);
+      const catalog = await this.providerModelCatalog.listModels(provider);
+      this.respondJson(response, 200, {
+        provider: catalog.provider,
+        current_model_id: null,
+        models: catalog.models
+      });
+      return;
+    }
+
     const query = threadQuerySchema.parse({
-      thread_id: requestUrl.searchParams.get("thread_id")
+      thread_id: rawThreadId
     });
     try {
       const result = HubResultSchema.parse(
@@ -1595,6 +1581,10 @@ export class WebInterfaceServer {
     spawnDir?: string;
     modelId?: string;
     effort?: ReasoningEffort;
+    historyLimit?: number;
+    historyMaxContentChars?: number;
+    historyMaxDetailChars?: number;
+    historyMaxRawChars?: number;
   }): HubMessage {
     return HubMessageSchema.parse({
       trace_id: randomUUID(),
@@ -1610,7 +1600,11 @@ export class WebInterfaceServer {
         ...(params.guiHostPortOverride && { gui_host_port_override: params.guiHostPortOverride }),
         ...(params.spawnDir && { spawn_dir: params.spawnDir }),
         ...(params.modelId && { model_id: params.modelId }),
-        ...(params.effort && { effort: params.effort })
+        ...(params.effort && { effort: params.effort }),
+        ...(params.historyLimit !== undefined && { history_limit: params.historyLimit }),
+        ...(params.historyMaxContentChars !== undefined && { history_max_content_chars: params.historyMaxContentChars }),
+        ...(params.historyMaxDetailChars !== undefined && { history_max_detail_chars: params.historyMaxDetailChars }),
+        ...(params.historyMaxRawChars !== undefined && { history_max_raw_chars: params.historyMaxRawChars })
       },
       mode: params.mode ?? "bridge",
       suppress_reply: true,

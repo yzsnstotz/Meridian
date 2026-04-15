@@ -299,6 +299,10 @@ function createTerminalBehaviorHarness(html: string): {
     lastFlushedContent: "",
     lastRunResultAtMs: 0,
     serverHistoryAuthoritative: false,
+    CHAT_HISTORY_MAX_CONTENT_CHARS: 4000,
+    CHAT_HISTORY_MAX_DETAIL_CHARS: 12000,
+    CHAT_HISTORY_MAX_RAW_CHARS: 12000,
+    CHAT_HISTORY_TRUNCATION_LABEL: "[History truncated]",
     document: {
       body: new FakeElement("body"),
       createElement(tagName: string) {
@@ -389,6 +393,8 @@ function createTerminalBehaviorHarness(html: string): {
   context.syncOverflowTraceRow = () => undefined;
 
   bindTerminalFunctions(html, context, [
+    "truncateHistoryText",
+    "normalizeHistoryEntry",
     "buildTraceMessageKey",
     "buildHistoryMessageKey",
     "buildProgressMessageKey",
@@ -473,12 +479,16 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
 
   assert.match(indexHtml, /id="spawn-provider"/);
+  assert.match(indexHtml, /id="spawn-model"/);
   assert.match(indexHtml, /id="btn-spawn-workspace"/);
+  assert.match(indexHtml, /\/api\/models\?provider=/);
   assert.match(indexHtml, /\/api\/spawn_repos\/browse/);
   assert.match(indexHtml, /SPAWN_PROVIDER_STORAGE_KEY/);
+  assert.match(indexHtml, /SPAWN_MODEL_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_AUTO_APPROVE_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_REPO_STORAGE_KEY/);
   assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
+  assert.match(indexHtml, /modelPayload\.model_id/);
   assert.match(indexHtml, /localStorage\.getItem\(SPAWN_AUTO_APPROVE_STORAGE_KEY\)\s*!==\s*"false"/);
 });
 
@@ -506,6 +516,18 @@ test("hub layout restores the meridian-roles entrance without probing role detai
   assert.match(indexHtml, /meridian_roles_gui_origin/);
   assert.doesNotMatch(indexHtml, /rolesBase \+ "\/api\/role\/"/);
   assert.match(indexHtml, /Hub thread IDs are not the same as meridian-roles role IDs/);
+});
+
+test("hub layout exposes actual agent, current model, and in-card kill controls", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /Actual agent/);
+  assert.match(indexHtml, /Current model/);
+  assert.match(indexHtml, /Kill agent/);
+  assert.match(indexHtml, /function resolveActualAgent\(inst\)/);
+  assert.match(indexHtml, /function resolveCurrentModel\(inst\)/);
+  assert.match(indexHtml, /function killInstance\(inst,\s*triggerEl\)/);
+  assert.match(indexHtml, /\/api\/kill/);
 });
 
 test("bridge layout does not hard-cap content width on large screens", async () => {
@@ -569,6 +591,7 @@ test("terminal chat history restores from local storage and disables replay when
   assert.match(terminalHtml, /CHAT_HISTORY_STORAGE_KEY/);
   assert.match(terminalHtml, /CHAT_HISTORY_RESTORE_LIMIT/);
   assert.match(terminalHtml, /limit=/);
+  assert.match(terminalHtml, /max_content_chars=/);
   assert.match(terminalHtml, /max_detail_chars=/);
   assert.match(terminalHtml, /max_raw_chars=/);
   assert.match(terminalHtml, /restoreChatHistory\(\)/);
@@ -682,6 +705,33 @@ test("terminal local history restore only rehydrates the most recent entries", a
   assert.equal(collectRenderedText(chatMessagesEl.children[59] as FakeElement), "entry-75");
 });
 
+test("terminal server history restore truncates oversized bubble content before rendering", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const restoreServerChatHistory = context.restoreServerChatHistory as (entries: unknown[]) => boolean;
+  const oversized = "x".repeat(6000);
+
+  const restored = restoreServerChatHistory([
+    {
+      id: "history-progress-oversized",
+      event_kind: "progress",
+      type: "agent",
+      content: oversized,
+      details_text: "",
+      raw_content: oversized,
+      trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8"
+    }
+  ]);
+
+  assert.equal(restored, true);
+  assert.equal(chatMessagesEl.children.length, 1);
+  const bubble = chatMessagesEl.children[0] as FakeElement;
+  assert.match(collectRenderedText(bubble.children[0] as FakeElement), /\[History truncated\]/);
+  assert.ok(collectRenderedText(bubble.children[0] as FakeElement).length <= 4000);
+  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length > 4000);
+  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length <= 12032);
+});
+
 test("terminal quiet-period liveness updates a single keyed progress bubble in place", async () => {
   const terminalHtml = await readTerminalHtml();
   const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
@@ -704,6 +754,26 @@ test("terminal quiet-period liveness updates a single keyed progress bubble in p
     collectRenderedText(chatMessagesEl.children[0] as FakeElement),
     "Still running..."
   );
+});
+
+test("terminal progress snapshot rendering truncates oversized content and keeps detail access", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const renderProgressSnapshot = context.renderProgressSnapshot as (snapshot: Record<string, unknown>) => void;
+  const oversized = "y".repeat(6000);
+
+  renderProgressSnapshot({
+    trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+    content: oversized,
+    display_text: oversized
+  });
+
+  assert.equal(chatMessagesEl.children.length, 1);
+  const bubble = chatMessagesEl.children[0] as FakeElement;
+  assert.match(collectRenderedText(bubble.children[0] as FakeElement), /\[History truncated\]/);
+  assert.ok(collectRenderedText(bubble.children[0] as FakeElement).length <= 4000);
+  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length > 4000);
+  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length <= 12032);
 });
 
 test("terminal structured run bubble resolver prefers summary/details over raw usage payloads", async () => {

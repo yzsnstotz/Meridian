@@ -63,6 +63,10 @@ export class InstanceRegistry {
     return this.update(threadId, { supportsStream: value });
   }
 
+  setModelId(threadId: string, value: string | undefined): AgentInstance | undefined {
+    return this.update(threadId, { model_id: value });
+  }
+
   setCodexSessionId(threadId: string, value: string | undefined): AgentInstance | undefined {
     return this.update(threadId, { codexSessionId: value });
   }

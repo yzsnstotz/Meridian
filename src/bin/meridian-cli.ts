@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { ProviderModelCatalog as SharedProviderModelCatalog, type ProviderModelCatalogResult } from "../shared/model-catalog";
 import {
   AgentTypeSchema,
   ReasoningEffortSchema,
@@ -25,6 +26,7 @@ const PACKAGE_VERSION = readPackageVersion();
 
 const COMMANDS: Record<string, string> = {
   spawn: "Launch an agent instance",
+  models: "List selectable models for a provider",
   kill: "Terminate an agent thread",
   status: "List running agent instances",
   send: "Send a message to an agent thread",
@@ -46,6 +48,7 @@ export interface CliDependencies {
   connectToHub: () => Promise<HubConnection>;
   hubHttpRequest: (method: string, route: string, body?: unknown) => Promise<HubHttpResponse>;
   hubSocketRequest: (message: HubMessage) => Promise<HubResult>;
+  listProviderModels: (provider: AgentType) => Promise<ProviderModelCatalogResult>;
   inferSocketUptimeSeconds: (socketPath: string) => Promise<number>;
   packageVersion: string;
   socketPath: string;
@@ -63,10 +66,13 @@ class CliError extends Error {
   }
 }
 
+const defaultProviderModelCatalog = new SharedProviderModelCatalog();
+
 export const defaultCliDependencies: CliDependencies = {
   connectToHub,
   hubHttpRequest,
   hubSocketRequest,
+  listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog.listModels(provider),
   inferSocketUptimeSeconds,
   packageVersion: PACKAGE_VERSION,
   socketPath: DEFAULT_SOCKET_PATH,
@@ -133,11 +139,16 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       hint(deps, "Options:");
       hint(deps, "  --provider <claude|codex|gemini|cursor>  Provider alias for agent type");
       hint(deps, "  --model <model-id>                        Explicit provider model id");
+      hint(deps, "  meridian models <provider>                List selectable models before spawn");
       hint(deps, "  --effort <low|medium|high|xhigh>         Codex reasoning effort override");
       hint(deps, "  --workdir <path>                          Agent working directory");
       hint(deps, "  --auto-approve                            Enable auto-approve (default)");
       hint(deps, "  --no-auto-approve                         Disable auto-approve");
       hint(deps, "  --mode <bridge|pane_bridge|a2a|agentapi>  Spawn transport mode");
+      return;
+    case "models":
+      hint(deps, "Usage: meridian models <provider>");
+      hint(deps, "   or: meridian models --provider <claude|codex|gemini|cursor>");
       return;
     case "kill":
       hint(deps, "Usage: meridian kill <thread-id>");
@@ -387,6 +398,16 @@ function parseJsonArray(content: string, fallbackLabel: string): Array<Record<st
   return parsed.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
 }
 
+function readListedInstanceString(instance: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = instance[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 async function listInstances(deps: CliDependencies): Promise<Array<Record<string, unknown>>> {
   const result = assertHubSuccess(
     await requestSocket(
@@ -455,6 +476,22 @@ async function handleSpawn(args: string[], deps: CliDependencies): Promise<void>
   });
 }
 
+async function handleModels(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  if (parsed.positionals.length > 1) {
+    throw new CliError(EXIT_INVALID_ARGS, "models accepts at most one positional provider");
+  }
+
+  const provider = parseProvider(expectStringOption(parsed, "provider") ?? parsed.positionals[0]);
+  const catalog = await deps.listProviderModels(provider);
+
+  jsonOut(deps, {
+    ok: true,
+    provider: catalog.provider,
+    models: catalog.models
+  });
+}
+
 async function handleKill(args: string[], deps: CliDependencies): Promise<void> {
   const threadId = args[0]?.trim();
   if (!threadId || args.length !== 1) {
@@ -480,8 +517,11 @@ async function handleStatus(deps: CliDependencies): Promise<void> {
   const now = deps.now();
   const agents = instances.map((instance) => ({
     thread_id: typeof instance.thread_id === "string" ? instance.thread_id : "",
-    type: typeof instance.agent_type === "string" ? instance.agent_type : "",
-    model: typeof instance.model_id === "string" ? instance.model_id : null,
+    type: readListedInstanceString(instance, ["agent_type", "actual_agent", "type"]) ?? "",
+    agent_type: readListedInstanceString(instance, ["agent_type", "actual_agent", "type"]) ?? "",
+    model: readListedInstanceString(instance, ["current_model_id", "model_id", "model"]),
+    model_id: readListedInstanceString(instance, ["current_model_id", "model_id", "model"]),
+    current_model_id: readListedInstanceString(instance, ["current_model_id", "model_id", "model"]),
     status: typeof instance.status === "string" ? instance.status : "unknown",
     uptime: secondsSince(typeof instance.created_at === "string" ? instance.created_at : null, now)
   }));
@@ -655,6 +695,9 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
   switch (command) {
     case "spawn":
       await handleSpawn(commandArgs, deps);
+      return EXIT_SUCCESS;
+    case "models":
+      await handleModels(commandArgs, deps);
       return EXIT_SUCCESS;
     case "kill":
       await handleKill(commandArgs, deps);
