@@ -1,4 +1,6 @@
 const POLL_INTERVAL_MS = 3000;
+const DEFAULT_AGENT_DISPATCHER_REPO_ROOT = "/Users/yzliu/work";
+const DEFAULT_AGENT_DISPATCHER_DOCS_ROOT = `${DEFAULT_AGENT_DISPATCHER_REPO_ROOT}/Docs`;
 
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
@@ -41,7 +43,10 @@ async function setupDashboard() {
   const manualChatIdInput = document.getElementById("agent-dispatcher-manual-chat-id");
   const dispatchPlanPathInput = document.getElementById("agent-dispatcher-dispatch-plan-path");
   const commandFilePathInput = document.getElementById("agent-dispatcher-command-file-path");
+  const dispatchRepoRootInput = document.getElementById("agent-dispatcher-dispatch-repo-root");
+  const docsRootInput = document.getElementById("agent-dispatcher-docs-root");
   const agentTypeSelect = document.getElementById("agent-dispatcher-agent-type");
+  const agentModelInput = document.getElementById("agent-dispatcher-model-id");
   const modeSelect = document.getElementById("agent-dispatcher-mode");
   const killPolicySelect = document.getElementById("agent-dispatcher-kill-policy");
   const agentDispatcherPromptInput = document.getElementById("agent-dispatcher-system-prompt");
@@ -66,7 +71,10 @@ async function setupDashboard() {
     || !manualChatIdInput
     || !dispatchPlanPathInput
     || !commandFilePathInput
+    || !dispatchRepoRootInput
+    || !docsRootInput
     || !agentTypeSelect
+    || !agentModelInput
     || !modeSelect
     || !killPolicySelect
     || !agentDispatcherPromptInput
@@ -183,21 +191,26 @@ async function setupDashboard() {
     }));
 
     agentDispatcherEmpty.hidden = true;
-    const dispatcherSignature = JSON.stringify(details.map((detail) => ({
-      thread_id: detail.thread_id,
-      status: detail.status,
-      dispatcher_thread_id: detail.dispatcher_thread_id,
-      continue_worker: detail.continue_worker,
-      current_worker: detail.current_worker,
-      agent_type: detail.agent_type,
-      last_log_line: detail.last_log_line
-    })));
+        const dispatcherSignature = JSON.stringify(details.map((detail) => ({
+          thread_id: detail.thread_id,
+          status: detail.status,
+          dispatcher_thread_id: detail.dispatcher_thread_id,
+          continue_worker: detail.continue_worker,
+          current_worker: detail.current_worker,
+          live_worker: resolveLiveRunningWorker(detail),
+          task_context_label: resolveDispatcherTaskContext(detail).label,
+          task_context_summary: resolveDispatcherTaskContext(detail).summary,
+          agent_type: detail.agent_type,
+          model_id: detail.model_id,
+          last_log_line: detail.last_log_line
+        })));
 
     if (agentDispatcherList.dataset.renderSignature !== dispatcherSignature) {
       agentDispatcherList.replaceChildren();
 
       details.forEach((detail) => {
         const control = resolveDispatcherCardControl(detail);
+        const taskContext = resolveDispatcherTaskContext(detail);
         const card = document.createElement("article");
         card.className = "role-card";
         card.innerHTML = `
@@ -210,7 +223,9 @@ async function setupDashboard() {
           </div>
           <dl class="meta-grid">
             <div><dt>current worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
+            <div><dt>${escapeHtml(taskContext.label)}</dt><dd>${escapeHtml(taskContext.summary)}</dd></div>
             <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+            <div><dt>model</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
           </dl>
           <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
           <div class="card-actions dispatcher-card-actions">
@@ -226,6 +241,7 @@ async function setupDashboard() {
               class="ghost-button"
               data-dispatcher-id="${escapeHtml(detail.thread_id)}"
               data-dispatcher-action="${control.action}"
+              ${control.disabled ? "disabled" : ""}
             >${control.label}</button>
           </div>
         `;
@@ -329,7 +345,10 @@ async function setupDashboard() {
     const payload = {
       dispatch_plan_path: normalizeText(dispatchPlanPathInput.value) || undefined,
       command_file_path: normalizeText(commandFilePathInput.value) || undefined,
+      dispatch_repo_root: normalizeText(dispatchRepoRootInput.value) || undefined,
+      docs_root: normalizeText(docsRootInput.value) || undefined,
       agent_type: normalizeText(agentTypeSelect.value) || "claude",
+      model_id: normalizeText(agentModelInput.value) || undefined,
       mode: normalizeText(modeSelect.value) || "pane_bridge",
       kill_policy: normalizeText(killPolicySelect.value) || "always"
     };
@@ -418,8 +437,11 @@ async function setupDashboard() {
     const payload = {
       dispatch_plan_path: normalizeText(formData.get("dispatch_plan_path")),
       command_file_path: normalizeText(formData.get("command_file_path")),
+      dispatch_repo_root: normalizeText(formData.get("dispatch_repo_root")) || DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
+      docs_root: normalizeText(formData.get("docs_root")) || DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
       user_reply_channels: replyChannels,
       agent_type: normalizeText(formData.get("agent_type")) || "claude",
+      model_id: normalizeText(formData.get("model_id")),
       mode: normalizeText(formData.get("mode")) || "pane_bridge",
       kill_policy: normalizeText(formData.get("kill_policy")) || "always",
       system_prompt: normalizeText(agentDispatcherPromptInput.value)
@@ -440,6 +462,8 @@ async function setupDashboard() {
 
       agentDispatcherFeedback.textContent = `Dispatcher ${created.dispatcher_id} started.`;
       agentDispatcherForm.reset();
+      dispatchRepoRootInput.value = DEFAULT_AGENT_DISPATCHER_REPO_ROOT;
+      docsRootInput.value = DEFAULT_AGENT_DISPATCHER_DOCS_ROOT;
       await loadAgentDispatcherReplyOptions();
       agentDispatcherPromptDirty = false;
       await refreshAgentDispatcherPromptPreview({ force: true });
@@ -458,7 +482,14 @@ async function setupDashboard() {
     });
   });
 
-  [dispatchPlanPathInput, commandFilePathInput, agentTypeSelect, modeSelect, killPolicySelect]
+  if (!normalizeText(dispatchRepoRootInput.value)) {
+    dispatchRepoRootInput.value = DEFAULT_AGENT_DISPATCHER_REPO_ROOT;
+  }
+  if (!normalizeText(docsRootInput.value)) {
+    docsRootInput.value = DEFAULT_AGENT_DISPATCHER_DOCS_ROOT;
+  }
+
+  [dispatchPlanPathInput, commandFilePathInput, dispatchRepoRootInput, docsRootInput, agentTypeSelect, agentModelInput, modeSelect, killPolicySelect]
     .forEach((element) => {
       ["input", "change"].forEach((eventName) => {
         element.addEventListener(eventName, () => {
@@ -538,9 +569,6 @@ async function setupRoleDetail() {
   const roleTasksPanel = document.getElementById("role-tasks-panel");
   const dispatcherSessionPanel = document.getElementById("dispatcher-session-panel");
   const dispatcherSessionLog = document.getElementById("dispatcher-session-log");
-  const dispatchDetailsPanel = document.getElementById("dispatch-details-panel");
-  const dispatchDetailsEmpty = document.getElementById("dispatch-details-empty");
-  const dispatchDetailsList = document.getElementById("dispatch-details-list");
   const dispatchPlanPanel = document.getElementById("dispatch-plan-panel");
   const dispatchPlanEmpty = document.getElementById("dispatch-plan-empty");
   const dispatchPlanTableShell = document.getElementById("dispatch-plan-table-shell");
@@ -592,6 +620,7 @@ async function setupRoleDetail() {
         <div><dt>dispatcher_thread_id</dt><dd><code>${escapeHtml(detail.dispatcher_thread_id || "pending")}</code></dd></div>
         <div><dt>current_worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
         <div><dt>agent_type</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+        <div><dt>model_id</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
         <div><dt>mode</dt><dd>${escapeHtml(detail.mode || "—")}</dd></div>
       `
       : `
@@ -610,9 +639,6 @@ async function setupRoleDetail() {
     if (dispatcherSessionPanel) {
       dispatcherSessionPanel.hidden = !isAgentDispatcher;
     }
-    if (dispatchDetailsPanel) {
-      dispatchDetailsPanel.hidden = !isAgentDispatcher;
-    }
     if (dispatchPlanPanel) {
       dispatchPlanPanel.hidden = !isAgentDispatcher;
     }
@@ -627,6 +653,8 @@ async function setupRoleDetail() {
       }
       if (continueHubBtn) {
         continueHubBtn.hidden = !dispatcherControls.showContinue;
+        continueHubBtn.textContent = dispatcherControls.continueLabel;
+        continueHubBtn.disabled = dispatcherControls.continueDisabled;
       }
       if (lifecycleHubBtn) {
         lifecycleHubBtn.hidden = !dispatcherControls.showLifecycle;
@@ -654,6 +682,10 @@ async function setupRoleDetail() {
       if (!continueHubBound && continueHubBtn && startHubFeedback) {
         continueHubBound = true;
         continueHubBtn.addEventListener("click", async () => {
+          if (continueHubBtn.disabled) {
+            return;
+          }
+
           try {
             continueHubBtn.disabled = true;
             startHubFeedback.textContent = "Continuing dispatcher…";
@@ -701,13 +733,6 @@ async function setupRoleDetail() {
           ? detail.session_log
           : ["No dispatcher session detail available yet."];
         dispatcherSessionLog.textContent = sessionLines.join("\n");
-      }
-
-      if (dispatchDetailsList && dispatchDetailsEmpty) {
-        const dispatchDetails = Array.isArray(detail.dispatch_details) ? detail.dispatch_details : [];
-        dispatchDetailsList.innerHTML = dispatchDetails.map(renderDispatchDetailCard).join("");
-        dispatchDetailsEmpty.hidden = dispatchDetails.length > 0;
-        dispatchDetailsList.hidden = dispatchDetails.length === 0;
       }
 
       if (!dispatchPlanActionsBound && dispatchPlanBody) {
@@ -821,9 +846,11 @@ async function setupRoleDetail() {
 
       if (dispatchPlanBody && dispatchPlanEmpty && dispatchPlanTableShell) {
         const rows = Array.isArray(detail.dispatch_plan?.rows) ? detail.dispatch_plan.rows : [];
-        dispatchPlanBody.innerHTML = rows.map((row) => renderDispatchPlanRow(row)).join("");
-        dispatchPlanEmpty.hidden = rows.length > 0;
-        dispatchPlanTableShell.hidden = rows.length === 0;
+        const dispatchDetails = Array.isArray(detail.dispatch_details) ? detail.dispatch_details : [];
+        const renderedPlanRows = renderDispatchPlanRows(rows, dispatchDetails);
+        dispatchPlanBody.innerHTML = renderedPlanRows;
+        dispatchPlanEmpty.hidden = renderedPlanRows.length > 0;
+        dispatchPlanTableShell.hidden = renderedPlanRows.length === 0;
       }
 
       lastRenderSignature = nextRenderSignature;
@@ -880,9 +907,6 @@ async function setupRoleDetail() {
       empty,
       dispatcherSessionPanel,
       dispatcherSessionLog,
-      dispatchDetailsPanel,
-      dispatchDetailsList,
-      dispatchDetailsEmpty,
       dispatchPlanPanel,
       dispatchPlanBody,
       dispatchPlanEmpty,
@@ -909,9 +933,6 @@ async function setupRoleDetail() {
         empty,
         dispatcherSessionPanel,
         dispatcherSessionLog,
-        dispatchDetailsPanel,
-        dispatchDetailsList,
-        dispatchDetailsEmpty,
         dispatchPlanPanel,
         dispatchPlanBody,
         dispatchPlanEmpty,
@@ -1167,22 +1188,11 @@ function renderRoleDetailError(elements, message) {
   if (elements.dispatcherSessionPanel) {
     elements.dispatcherSessionPanel.hidden = true;
   }
-  if (elements.dispatchDetailsPanel) {
-    elements.dispatchDetailsPanel.hidden = true;
-  }
   if (elements.dispatchPlanPanel) {
     elements.dispatchPlanPanel.hidden = true;
   }
   if (elements.dispatcherSessionLog) {
     elements.dispatcherSessionLog.textContent = "Role data unavailable.";
-  }
-  if (elements.dispatchDetailsList) {
-    elements.dispatchDetailsList.innerHTML = "";
-    elements.dispatchDetailsList.hidden = true;
-  }
-  if (elements.dispatchDetailsEmpty) {
-    elements.dispatchDetailsEmpty.textContent = "Role data unavailable.";
-    elements.dispatchDetailsEmpty.hidden = false;
   }
   if (elements.dispatchPlanBody) {
     elements.dispatchPlanBody.innerHTML = "";
@@ -1235,9 +1245,31 @@ function renderDispatchDetailCard(detail) {
   `;
 }
 
-function renderDispatchPlanRow(row) {
+function renderDispatchPlanRows(rows, dispatchDetails) {
+  const detailByWorker = indexDispatchDetailsByWorker(dispatchDetails);
+  const renderedRows = [];
+
+  rows.forEach((row) => {
+    const workerKey = normalizeDispatchWorkerKey(row?.worker);
+    const inlineDetail = workerKey ? detailByWorker.get(workerKey) ?? null : null;
+    if (workerKey) {
+      detailByWorker.delete(workerKey);
+    }
+    renderedRows.push(renderDispatchPlanRow(row, inlineDetail));
+  });
+
+  detailByWorker.forEach((detail) => {
+    renderedRows.push(renderDispatchPlanOrphanDetailRow(detail));
+  });
+
+  return renderedRows.join("");
+}
+
+function renderDispatchPlanRow(row, detail = null) {
+  const rowClassName = detail ? "dispatch-plan-row dispatch-plan-row-with-detail" : "dispatch-plan-row";
+
   return `
-    <tr>
+    <tr class="${rowClassName}">
       <td>${renderDispatchPlanStatus(row)}</td>
       <td>${escapeHtml(row.batch)}</td>
       <td><code>${escapeHtml(row.worker)}</code></td>
@@ -1246,7 +1278,67 @@ function renderDispatchPlanRow(row) {
       <td>${escapeHtml(row.depends_on || "—")}</td>
       <td>${renderDispatchPlanActions(row)}</td>
     </tr>
+    ${detail ? renderDispatchPlanDetailRow(detail) : ""}
   `;
+}
+
+function renderDispatchPlanOrphanDetailRow(detail) {
+  const syntheticRow = buildDispatchPlanSyntheticRow(detail);
+
+  return `
+    <tr class="dispatch-plan-row dispatch-plan-row-with-detail dispatch-plan-row-orphan">
+      <td>${renderDispatchPlanStatus(syntheticRow)}</td>
+      <td>—</td>
+      <td><code>${escapeHtml(syntheticRow.worker || "—")}</code></td>
+      <td>${escapeHtml(syntheticRow.task || "—")}</td>
+      <td>${escapeHtml(syntheticRow.model || "—")}</td>
+      <td>—</td>
+      <td>${renderDispatchPlanActions(syntheticRow)}</td>
+    </tr>
+    ${renderDispatchPlanDetailRow(detail)}
+  `;
+}
+
+function renderDispatchPlanDetailRow(detail) {
+  return `
+    <tr class="dispatch-plan-detail-row">
+      <td colspan="7">
+        <div class="dispatch-plan-inline-detail">
+          ${renderDispatchDetailCard(detail)}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function indexDispatchDetailsByWorker(dispatchDetails) {
+  const detailByWorker = new Map();
+
+  dispatchDetails.forEach((detail) => {
+    const workerKey = normalizeDispatchWorkerKey(detail?.worker_id);
+    if (!workerKey || detailByWorker.has(workerKey)) {
+      return;
+    }
+
+    detailByWorker.set(workerKey, detail);
+  });
+
+  return detailByWorker;
+}
+
+function normalizeDispatchWorkerKey(workerId) {
+  return normalizeText(workerId).toUpperCase();
+}
+
+function buildDispatchPlanSyntheticRow(detail) {
+  return {
+    status: toDispatchPlanStatus(detail?.status),
+    worker: detail?.worker_id || "",
+    task: detail?.task || "",
+    model: detail?.model || detail?.applied_model || "",
+    depends_on: "—",
+    thread_id: detail?.worker_thread_id || ""
+  };
 }
 
 function renderDispatchPlanStatus(row) {
@@ -1514,30 +1606,49 @@ function resolveDispatcherCardControl(detail) {
   const status = normalizeText(detail?.status);
   const hasLiveThread = hasLiveDispatcherThread(detail);
   const recoverableWorker = normalizeText(detail?.continue_worker);
+  const liveWorker = resolveLiveRunningWorker(detail);
+
+  if (liveWorker) {
+    return { action: "continue", label: "Working", disabled: true };
+  }
 
   if (recoverableWorker) {
-    return { action: "continue", label: "Continue" };
+    return { action: "continue", label: "Continue", disabled: false };
   }
 
   if (status === "paused" && hasLiveThread) {
-    return { action: "resume", label: "Resume" };
+    return { action: "resume", label: "Resume", disabled: false };
   }
 
   if (!hasLiveThread || status === "needs_reactivation") {
-    return { action: "continue", label: "Continue" };
+    return { action: "continue", label: "Continue", disabled: false };
   }
 
-  return { action: "pause", label: "Pause" };
+  return { action: "pause", label: "Pause", disabled: false };
 }
 
 function resolveDispatcherDetailControls(detail) {
   const status = normalizeText(detail?.status);
   const hasLiveThread = hasLiveDispatcherThread(detail);
   const recoverableWorker = normalizeText(detail?.continue_worker);
+  const liveWorker = resolveLiveRunningWorker(detail);
+
+  if (liveWorker) {
+    return {
+      showContinue: true,
+      continueLabel: "Working",
+      continueDisabled: true,
+      showLifecycle: hasLiveThread,
+      lifecycleAction: hasLiveThread ? (status === "paused" ? "resume" : "pause") : null,
+      lifecycleLabel: hasLiveThread ? (status === "paused" ? "Resume" : "Pause") : ""
+    };
+  }
 
   if (recoverableWorker) {
     return {
       showContinue: true,
+      continueLabel: "Continue",
+      continueDisabled: false,
       showLifecycle: false,
       lifecycleAction: null,
       lifecycleLabel: ""
@@ -1547,6 +1658,8 @@ function resolveDispatcherDetailControls(detail) {
   if (!hasLiveThread || status === "needs_reactivation") {
     return {
       showContinue: true,
+      continueLabel: "Continue",
+      continueDisabled: false,
       showLifecycle: false,
       lifecycleAction: null,
       lifecycleLabel: ""
@@ -1556,6 +1669,8 @@ function resolveDispatcherDetailControls(detail) {
   if (status === "paused") {
     return {
       showContinue: false,
+      continueLabel: "Continue",
+      continueDisabled: false,
       showLifecycle: true,
       lifecycleAction: "resume",
       lifecycleLabel: "Resume"
@@ -1564,6 +1679,8 @@ function resolveDispatcherDetailControls(detail) {
 
   return {
     showContinue: false,
+    continueLabel: "Continue",
+    continueDisabled: false,
     showLifecycle: true,
     lifecycleAction: "pause",
     lifecycleLabel: "Pause"
@@ -1572,6 +1689,83 @@ function resolveDispatcherDetailControls(detail) {
 
 function hasLiveDispatcherThread(detail) {
   return normalizeText(detail?.dispatcher_thread_id).length > 0;
+}
+
+function resolveDispatcherTaskContext(detail) {
+  const dispatchPlanRows = Array.isArray(detail?.dispatch_plan?.rows) ? detail.dispatch_plan.rows : [];
+  const dispatchDetails = Array.isArray(detail?.dispatch_details) ? detail.dispatch_details : [];
+  const detailByWorker = indexDispatchDetailsByWorker(dispatchDetails);
+
+  const resolveContextForWorker = (label, workerId) => {
+    const workerKey = normalizeDispatchWorkerKey(workerId);
+    const dispatchPlanRow = dispatchPlanRows.find((row) => normalizeDispatchWorkerKey(row?.worker) === workerKey) ?? null;
+    const dispatchDetail = detailByWorker.get(workerKey) ?? null;
+    const taskLabel = normalizeText(dispatchPlanRow?.task || dispatchDetail?.task);
+    const workerLabel = normalizeText(workerId) || normalizeText(dispatchDetail?.worker_id) || "idle";
+    const summary = [workerLabel, taskLabel].filter(Boolean).join(" · ") || "No running or pending task.";
+
+    return {
+      label,
+      summary
+    };
+  };
+
+  const liveWorker = resolveLiveRunningWorker(detail);
+  if (liveWorker) {
+    return resolveContextForWorker("running task", liveWorker);
+  }
+
+  const continueWorker = normalizeText(detail?.continue_worker);
+  if (continueWorker) {
+    return resolveContextForWorker("ready task", continueWorker);
+  }
+
+  const currentWorker = normalizeText(detail?.current_worker);
+  if (currentWorker) {
+    return resolveContextForWorker("current task", currentWorker);
+  }
+
+  const preferredRow = dispatchPlanRows.find((row) => {
+    const normalizedStatus = normalizeDispatchPlanStatus(row?.status);
+    return (normalizedStatus === "pending" || normalizedStatus === "abandoned" || normalizedStatus === "failed")
+      && !isHumanDispatchModel(row?.model);
+  });
+  if (preferredRow?.worker) {
+    return resolveContextForWorker("next task", preferredRow.worker);
+  }
+
+  const latestDetail = [...dispatchDetails].reverse().find((worker) => normalizeText(worker?.worker_id).length > 0);
+  if (latestDetail?.worker_id) {
+    return resolveContextForWorker("recent task", latestDetail.worker_id);
+  }
+
+  return {
+    label: "task context",
+    summary: "No running or pending task."
+  };
+}
+
+function resolveLiveRunningWorker(detail) {
+  const liveDispatchDetail = Array.isArray(detail?.dispatch_details)
+    ? detail.dispatch_details.find((worker) => {
+      return normalizeText(worker?.status) === "running"
+        && normalizeText(worker?.worker_thread_id).length > 0
+        && !isHumanDispatchModel(worker?.model);
+    })
+    : null;
+  if (liveDispatchDetail) {
+    return normalizeText(liveDispatchDetail.worker_id);
+  }
+
+  const liveDispatchPlanRow = Array.isArray(detail?.dispatch_plan?.rows)
+    ? detail.dispatch_plan.rows.find((row) => {
+      return normalizeDispatchPlanStatus(row?.status) === "running"
+        && normalizeText(row?.thread_id).length > 0
+        && !isHumanDispatchModel(row?.model);
+    })
+    : null;
+
+  return normalizeText(liveDispatchPlanRow?.worker);
 }
 
 function canContinueDispatchRow(row) {
@@ -1646,18 +1840,41 @@ function formatContinueResult(result) {
 function normalizeDispatchPlanStatus(status) {
   switch (status) {
     case "🔄":
+    case "running":
       return "running";
     case "✅":
+    case "completed":
       return "completed";
     case "❌":
+    case "failed":
       return "failed";
     case "⚠️ ABANDONED":
+    case "abandoned":
       return "abandoned";
     case "⛔ SKIPPED":
+    case "skipped":
       return "skipped";
+    case "pending":
     case "⬜":
     default:
       return "pending";
+  }
+}
+
+function toDispatchPlanStatus(status) {
+  switch (normalizeDispatchPlanStatus(status)) {
+    case "running":
+      return "🔄";
+    case "completed":
+      return "✅";
+    case "failed":
+      return "❌";
+    case "abandoned":
+      return "⚠️ ABANDONED";
+    case "skipped":
+      return "⛔ SKIPPED";
+    default:
+      return "⬜";
   }
 }
 

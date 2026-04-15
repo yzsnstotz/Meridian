@@ -61,6 +61,31 @@ describe("launchDispatcher", () => {
     await expect(fs.readFile(harness.expectedCommandPath, "utf8")).resolves.toBe("System prompt text");
   });
 
+  it("forwards an explicit dispatcher model_id to meridian-tool spawn", async () => {
+    const harness = await createHarness();
+
+    const result = await launchDispatcher(
+      buildConfig(harness.planDirectory, "System prompt text", { agentType: "claude", modelId: "claude-opus-4-6" }),
+      harness.deps
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    });
+    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
+      "spawn",
+      "--agent-type",
+      "claude",
+      "--spawn-dir",
+      harness.planDirectory,
+      "--mode",
+      "bridge",
+      "--model-id",
+      "claude-opus-4-6"
+    ]));
+  });
+
   it("returns a structured error when meridian-tool spawn fails", async () => {
     const harness = await createHarness({
       execFileError: new Error("Command failed: npx")
@@ -271,11 +296,17 @@ async function createHarness(overrides: {
   };
 }
 
-function buildConfig(planDirectory: string, systemPrompt: string): LaunchConfig {
+function buildConfig(
+  planDirectory: string,
+  systemPrompt: string,
+  overrides: Partial<Pick<LaunchConfig, "agentType" | "modelId" | "mode">> = {}
+): LaunchConfig {
   return {
-    agentType: "codex",
-    mode: "bridge",
+    agentType: overrides.agentType ?? "codex",
+    ...(overrides.modelId ? { modelId: overrides.modelId } : {}),
+    mode: overrides.mode ?? "bridge",
     systemPrompt,
+    dispatchRepoRoot: planDirectory,
     dispatchPlanPath: path.join(planDirectory, "dispatch_plan.md"),
     commandFilePath: path.join(planDirectory, "agent_dispatch_command.md"),
     dispatcherRoleId: "test-role",

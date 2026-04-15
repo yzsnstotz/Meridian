@@ -1,5 +1,8 @@
 import type { AgentDispatcherConfig } from "../../types";
-import { resolveDispatchRepoRoot } from "./dispatch-paths";
+import {
+  resolveConfiguredDispatchRepoRoot,
+  resolveConfiguredDocsRoot
+} from "./dispatch-paths";
 import { MERIDIAN_TOOL_DISPLAY_COMMAND } from "./tool-entrypoint";
 
 export const AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER = "__MERIDIAN_AGENT_DISPATCHER_ROLE_ID__";
@@ -10,6 +13,7 @@ export interface PromptVars {
   command_file_path: string;
   dispatcher_role_id: string;
   dispatch_repo_root: string;
+  docs_root: string;
   user_reply_channels: string;
   default_agent_type: string;
   default_mode: string;
@@ -35,7 +39,8 @@ export function buildSystemPromptFromConfig(
     dispatch_plan_path: config.dispatch_plan_path,
     command_file_path: config.command_file_path,
     dispatcher_role_id: AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
-    dispatch_repo_root: resolveDispatchRepoRoot([config.dispatch_plan_path, config.command_file_path]),
+    dispatch_repo_root: resolveConfiguredDispatchRepoRoot(config),
+    docs_root: resolveConfiguredDocsRoot(config),
     user_reply_channels: JSON.stringify(config.user_reply_channels),
     default_agent_type: config.agent_type,
     default_mode: config.mode,
@@ -55,6 +60,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
   const commandFilePath = requireNonEmpty(vars.command_file_path, "command_file_path");
   const dispatcherRoleId = requireNonEmpty(vars.dispatcher_role_id, "dispatcher_role_id");
   const dispatchRepoRoot = requireNonEmpty(vars.dispatch_repo_root, "dispatch_repo_root");
+  const docsRoot = requireNonEmpty(vars.docs_root, "docs_root");
   const userReplyChannels = requireNonEmpty(vars.user_reply_channels, "user_reply_channels");
   const defaultAgentType = requireNonEmpty(vars.default_agent_type, "default_agent_type");
   const defaultMode = requireNonEmpty(vars.default_mode, "default_mode");
@@ -73,6 +79,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `command_file_path: ${commandFilePath}`,
     `dispatcher_role_id: ${dispatcherRoleId}`,
     `dispatch_repo_root: ${dispatchRepoRoot}`,
+    `docs_root: ${docsRoot}`,
     `user_reply_channels: ${userReplyChannels}`,
     `default_agent_type: ${defaultAgentType}`,
     `default_mode: ${defaultMode}`,
@@ -80,6 +87,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `resolved_model_map_json: ${resolvedModelMapJson}`,
     "Use the runtime `user_reply_channels` JSON array exactly when you need to send a notify override.",
     "The `meridian-tool` executable lives in the Meridian-roles repo, but dispatcher commands still run inside the worker sandbox rooted at `dispatch_repo_root`.",
+    "Detached project docs are expected to live under `docs_root` unless the dispatch command explicitly says otherwise.",
     "Meridian-roles service code, not this prompt, owns next-worker selection, model routing, spawn_dir enforcement, and worker launch transport.",
     "",
     "# Available Tools",

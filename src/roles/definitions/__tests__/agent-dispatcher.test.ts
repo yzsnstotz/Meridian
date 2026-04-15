@@ -61,6 +61,7 @@ describe("AgentDispatcherRole", () => {
       command_file_path: "/tmp/agent_dispatch_command.md",
       dispatcher_role_id: "agent-dispatcher-role",
       dispatch_repo_root: "/tmp",
+      docs_root: "/tmp/Docs",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
       default_agent_type: "codex",
       default_mode: "pane_bridge",
@@ -70,8 +71,10 @@ describe("AgentDispatcherRole", () => {
     expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
     expect(harness.launchDispatcher).toHaveBeenCalledWith({
       agentType: "codex",
+      modelId: undefined,
       mode: "pane_bridge",
       systemPrompt: "dispatcher prompt",
+      dispatchRepoRoot: "/tmp",
       dispatchPlanPath: "/tmp/dispatch_plan.md",
       commandFilePath: "/tmp/agent_dispatch_command.md",
       dispatcherRoleId: "agent-dispatcher-role",
@@ -100,6 +103,21 @@ describe("AgentDispatcherRole", () => {
         })
       })
     ]);
+  });
+
+  it("onActivate forwards configured dispatcher model_id to launchDispatcher", async () => {
+    const harness = createHarness({
+      config: {
+        model_id: "claude-opus-4-6"
+      }
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.launchDispatcher).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "codex",
+      modelId: "claude-opus-4-6"
+    }));
   });
 
   it("onActivate kills a spawned dispatcher thread when detached run handoff fails", async () => {

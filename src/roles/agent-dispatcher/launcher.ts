@@ -12,8 +12,10 @@ const EMPTY_THREAD_ID = "";
 
 export interface LaunchConfig {
   agentType: string;
+  modelId?: string;
   mode: string;
   systemPrompt: string;
+  dispatchRepoRoot: string;
   /** Absolute path to dispatch_plan.md (directory is used for the Hub prompt file and meridian-tool run sidecar resolution). */
   dispatchPlanPath: string;
   commandFilePath: string;
@@ -156,15 +158,23 @@ function sanitizeDispatcherRoleIdSegment(roleId: string): string {
 }
 
 function buildSpawnArgs(config: LaunchConfig): string[] {
-  return buildMeridianToolArgs([
+  const dispatchRepoRoot = config.dispatchRepoRoot?.trim()
+    || resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]);
+  const args = [
     "spawn",
     "--agent-type",
     config.agentType,
     "--spawn-dir",
-    resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
+    dispatchRepoRoot,
     "--mode",
     config.mode
-  ]);
+  ];
+
+  if (config.modelId?.trim()) {
+    args.push("--model-id", config.modelId.trim());
+  }
+
+  return buildMeridianToolArgs(args);
 }
 
 function buildRunArgs(threadId: string, commandPath: string): string[] {

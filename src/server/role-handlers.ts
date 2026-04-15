@@ -9,7 +9,12 @@ import { z } from "zod";
 
 import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
-import { resolveDispatchRepoRoot } from "../roles/agent-dispatcher/dispatch-paths";
+import {
+  DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
+  DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
+  resolveConfiguredDispatchRepoRoot,
+  resolveConfiguredDocsRoot
+} from "../roles/agent-dispatcher/dispatch-paths";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
@@ -83,6 +88,7 @@ import type { Logger } from "../roles/base-role";
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const DISPATCHER_WORKER_ID = "DISPATCHER";
+const REACTIVATION_REQUIRED_DISPATCHER_STATUSES = new Set<LifecycleStatus>(["abandoned", "failed"]);
 type DispatcherThreadAwareRole = {
   getDispatcherThreadId(): string | null;
 };
@@ -99,7 +105,10 @@ const CreateRoleBodySchema = z.object({
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   dispatch_plan_path: z.string().min(1).optional(),
   command_file_path: z.string().min(1).optional(),
+  dispatch_repo_root: z.string().min(1).optional(),
+  docs_root: z.string().min(1).optional(),
   agent_type: z.string().min(1).optional(),
+  model_id: z.string().min(1).optional(),
   mode: z.string().min(1).optional(),
   kill_policy: z.string().min(1).optional(),
   use_agent_dispatcher: z.boolean().optional(),
@@ -109,6 +118,8 @@ const CreateRoleBodySchema = z.object({
 const AgentDispatcherPromptPreviewBodySchema = z.object({
   dispatch_plan_path: z.string().min(1).optional(),
   command_file_path: z.string().min(1).optional(),
+  dispatch_repo_root: z.string().min(1).optional(),
+  docs_root: z.string().min(1).optional(),
   user_reply_channel: ReplyChannelSchema.optional(),
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.optional(),
@@ -227,12 +238,15 @@ export interface RoleDetailResponse {
   }>;
   dispatch_plan_path?: string;
   command_file_path?: string;
+  dispatch_repo_root?: string;
+  docs_root?: string;
   dispatcher_thread_id?: string | null;
   continue_worker?: string | null;
   current_worker?: string | null;
   last_log_line?: string | null;
   user_reply_channels?: ReplyChannel[];
   agent_type?: string;
+  model_id?: string;
   mode?: string;
   kill_policy?: string;
   session_log?: string[];
@@ -384,7 +398,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             writeJson(response, 200, await getChannels());
             return true;
           case "list-roles":
-            writeJson(response, 200, await listRoles(stateStore));
+            writeJson(response, 200, await listRoles(stateStore, log));
             return true;
           case "preview-agent-dispatcher-prompt":
             writeJson(response, 200, buildAgentDispatcherPromptPreview(await readJsonBody(request)));
@@ -611,7 +625,10 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       threadId,
       effectiveDispatcherThreadId,
       attachToThread,
-      log
+      log,
+      async () => {
+        await persistAgentDispatcherRoleStatus(stateStore, threadId, NEEDS_REACTIVATION_ROLE_STATUS);
+      }
     );
 
     try {
@@ -847,20 +864,21 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   }
 }
 
-async function listRoles(stateStore: PersistableStateStore): Promise<
+async function listRoles(stateStore: PersistableStateStore, log: Logger): Promise<
   Array<{ thread_id: string; role_type: string; status: string; task_count: number }>
 > {
   const state = await loadState(stateStore);
 
-  return state.roles.map((role) => {
+  return Promise.all(state.roles.map(async (role) => {
     const config = parseDispatcherConfig(role.config);
+    const status = await resolvePresentedRoleStatus(role, log);
     return {
       thread_id: role.threadId,
       role_type: role.roleType,
-      status: role.status,
+      status,
       task_count: config?.tasks.length ?? 0
     };
-  });
+  }));
 }
 
 async function getRole(
@@ -906,6 +924,10 @@ async function getRole(
   }
 
   let lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
+  let effectiveRoleStatus = deriveAgentDispatcherRoleStatus(role.status, lifecycleState);
+  if (effectiveRoleStatus !== role.status) {
+    await persistAgentDispatcherRoleStatus(stateStore, role.threadId, effectiveRoleStatus);
+  }
   const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
   const dispatchPlanRows = await enrichDispatchPlanRows(
     agentDispatcherConfig.dispatch_plan_path,
@@ -927,30 +949,55 @@ async function getRole(
       dispatcherEntry,
       dispatchPlanPath: agentDispatcherConfig.dispatch_plan_path,
       roleId: role.threadId,
-      roleStatus: role.status
+      roleStatus: effectiveRoleStatus
     },
-    options.log
+    options.log,
+    async () => {
+      effectiveRoleStatus = NEEDS_REACTIVATION_ROLE_STATUS;
+      await persistAgentDispatcherRoleStatus(stateStore, role.threadId, NEEDS_REACTIVATION_ROLE_STATUS);
+    }
   );
+  let sessionLog = sessionLogResult.lines;
   if (sessionLogResult.dispatcherMissing) {
     lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
+    effectiveRoleStatus = deriveAgentDispatcherRoleStatus(effectiveRoleStatus, lifecycleState);
     dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
     dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
     continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
     currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
     currentWorkerEntry = currentWorker ? lifecycleState.workers[currentWorker] ?? null : null;
+    sessionLog = buildPersistedDispatcherSessionLog(
+      {
+        currentWorker,
+        currentWorkerEntry,
+        dispatcherEntry,
+        dispatchPlanPath: agentDispatcherConfig.dispatch_plan_path,
+        roleStatus: effectiveRoleStatus
+      },
+      dispatcherThreadId
+    ) ?? buildMissingDispatcherSessionLog({
+      currentWorker,
+      currentWorkerEntry,
+      dispatcherEntry,
+      dispatchPlanPath: agentDispatcherConfig.dispatch_plan_path,
+      roleStatus: effectiveRoleStatus
+    });
   }
-  const sessionLog = sessionLogResult.lines;
 
   return {
     ...response,
+    status: effectiveRoleStatus,
     dispatch_plan_path: agentDispatcherConfig.dispatch_plan_path,
     command_file_path: agentDispatcherConfig.command_file_path,
+    dispatch_repo_root: resolveConfiguredDispatchRepoRoot(agentDispatcherConfig),
+    docs_root: resolveConfiguredDocsRoot(agentDispatcherConfig),
     dispatcher_thread_id: dispatcherThreadId,
     continue_worker: continueWorker,
     current_worker: currentWorker,
     last_log_line: extractLastLogLine(sessionLog),
     user_reply_channels: agentDispatcherConfig.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
     agent_type: agentDispatcherConfig.agent_type,
+    ...(agentDispatcherConfig.model_id ? { model_id: agentDispatcherConfig.model_id } : {}),
     mode: agentDispatcherConfig.mode,
     kill_policy: agentDispatcherConfig.kill_policy,
     session_log: sessionLog,
@@ -1018,11 +1065,16 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
       parsed.data.dispatch_plan_path ?? (nestedConfig as { dispatch_plan_path?: unknown }).dispatch_plan_path,
     command_file_path:
       parsed.data.command_file_path ?? (nestedConfig as { command_file_path?: unknown }).command_file_path,
+    dispatch_repo_root:
+      parsed.data.dispatch_repo_root ?? (nestedConfig as { dispatch_repo_root?: unknown }).dispatch_repo_root,
+    docs_root:
+      parsed.data.docs_root ?? (nestedConfig as { docs_root?: unknown }).docs_root,
     user_reply_channel:
       parsed.data.user_reply_channel ?? (nestedConfig as { user_reply_channel?: unknown }).user_reply_channel,
     user_reply_channels:
       parsed.data.user_reply_channels ?? (nestedConfig as { user_reply_channels?: unknown }).user_reply_channels,
     agent_type: parsed.data.agent_type ?? (nestedConfig as { agent_type?: unknown }).agent_type,
+    model_id: parsed.data.model_id ?? (nestedConfig as { model_id?: unknown }).model_id,
     mode: parsed.data.mode ?? (nestedConfig as { mode?: unknown }).mode,
     kill_policy: parsed.data.kill_policy ?? (nestedConfig as { kill_policy?: unknown }).kill_policy,
     use_agent_dispatcher:
@@ -1120,6 +1172,45 @@ function resolvePersistedAgentDispatcherRoleState(
   }
 
   return null;
+}
+
+async function resolvePresentedRoleStatus(role: RoleState, log: Logger): Promise<string> {
+  if (role.roleType !== "agent-dispatcher") {
+    return role.status;
+  }
+
+  const config = parseAgentDispatcherConfig(role.config);
+  if (!config) {
+    return role.status;
+  }
+
+  const lifecycleState = await loadDispatchLifecycleState(config.dispatch_plan_path, log);
+  return deriveAgentDispatcherRoleStatus(role.status, lifecycleState);
+}
+
+function deriveAgentDispatcherRoleStatus(roleStatus: string, lifecycleState: DispatchThreadStateV2): string {
+  if (roleStatus === NEEDS_REACTIVATION_ROLE_STATUS) {
+    return roleStatus;
+  }
+
+  return REACTIVATION_REQUIRED_DISPATCHER_STATUSES.has(lifecycleState.dispatcher.status)
+    ? NEEDS_REACTIVATION_ROLE_STATUS
+    : roleStatus;
+}
+
+async function persistAgentDispatcherRoleStatus(
+  stateStore: PersistableStateStore,
+  threadId: string,
+  status: string
+): Promise<void> {
+  const state = await loadState(stateStore);
+  const role = state.roles.find((entry) => entry.threadId === threadId);
+  if (!role || role.roleType !== "agent-dispatcher" || role.status === status) {
+    return;
+  }
+
+  role.status = status;
+  await stateStore.save(state);
 }
 
 function extractDispatcherThreadId(role: ReturnType<RoleRegistry["create"]>): string | null {
@@ -1439,10 +1530,17 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
       command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
       dispatcher_role_id: AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
-      dispatch_repo_root: resolveDispatchRepoRoot([
-        parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
-        parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md"
-      ]),
+      dispatch_repo_root: resolveConfiguredDispatchRepoRoot({
+        dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
+        command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
+        dispatch_repo_root: parsed.data.dispatch_repo_root ?? DEFAULT_AGENT_DISPATCHER_REPO_ROOT
+      }),
+      docs_root: resolveConfiguredDocsRoot({
+        dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
+        command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
+        dispatch_repo_root: parsed.data.dispatch_repo_root ?? DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
+        docs_root: parsed.data.docs_root ?? DEFAULT_AGENT_DISPATCHER_DOCS_ROOT
+      }),
       user_reply_channels: JSON.stringify(userReplyChannels),
       default_agent_type: parsed.data.agent_type ?? "claude",
       default_mode: parsed.data.mode ?? "pane_bridge",
@@ -1598,7 +1696,8 @@ async function loadDispatcherSessionLog(
     roleId: string;
     roleStatus: string;
   },
-  log: Logger
+  log: Logger,
+  onDispatcherMissing?: () => Promise<void>
 ): Promise<{ lines: string[]; dispatcherMissing: boolean }> {
   const fallbackLog = buildFallbackSessionLog(fallbackContext, dispatcherThreadId);
   if (!dispatcherThreadId || !getThreadDetail) {
@@ -1626,6 +1725,7 @@ async function loadDispatcherSessionLog(
         "detail-attach",
         log
       )) {
+        await onDispatcherMissing?.();
         return {
           lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
           dispatcherMissing: true
@@ -1645,6 +1745,7 @@ async function loadDispatcherSessionLog(
       "detail-response",
       log
     )) {
+      await onDispatcherMissing?.();
       return {
         lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
         dispatcherMissing: true
@@ -1674,6 +1775,7 @@ async function loadDispatcherSessionLog(
       "detail-fetch",
       log
     )) {
+      await onDispatcherMissing?.();
       return {
         lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
         dispatcherMissing: true
@@ -1697,7 +1799,8 @@ async function validateDispatcherThreadForContinue(
   roleId: string,
   dispatcherThreadId: string | undefined,
   attachToThread: ((threadId: string) => Promise<void>) | undefined,
-  log: Logger
+  log: Logger,
+  onDispatcherMissing?: () => Promise<void>
 ): Promise<string | undefined> {
   const candidate = dispatcherThreadId?.trim();
   if (!candidate || !attachToThread) {
@@ -1722,6 +1825,7 @@ async function validateDispatcherThreadForContinue(
       "continue-attach",
       log
     )) {
+      await onDispatcherMissing?.();
       return undefined;
     }
 
@@ -1784,7 +1888,7 @@ function buildDispatchWorkerDetails(
     ));
 
   const orphanDetails = Object.entries(lifecycleState.workers)
-    .filter(([workerId]) => !dispatchPlanByWorker.has(workerId))
+    .filter(([workerId]) => workerId !== DISPATCHER_WORKER_ID && !dispatchPlanByWorker.has(workerId))
     .sort((left, right) => Date.parse(left[1].started_at) - Date.parse(right[1].started_at))
     .map(([workerId, worker]) => buildDispatchWorkerDetail(
       workerId,
@@ -1937,7 +2041,7 @@ function resolveCurrentWorker(rows: DispatchPlanRow[], trackerState: DispatchThr
   }
 
   const trackedWorkers = Object.entries(trackerState.workers)
-    .filter(([, worker]) => worker.status === "running")
+    .filter(([workerId, worker]) => workerId !== DISPATCHER_WORKER_ID && worker.status === "running")
     .sort((left, right) => {
       return Date.parse(right[1].started_at) - Date.parse(left[1].started_at);
     });
@@ -2175,9 +2279,9 @@ function indexDispatchPlanColumns(headerCells: string[]): {
   const status = normalizedHeaders.indexOf("status");
   const batch = normalizedHeaders.indexOf("batch");
   const worker = normalizedHeaders.indexOf("worker");
-  const task = normalizedHeaders.indexOf("task");
-  const model = normalizedHeaders.indexOf("model");
-  const dependsOn = normalizedHeaders.indexOf("depends_on");
+  const task = findNormalizedTableHeaderIndex(normalizedHeaders, ["task", "function_group", "headline", "action"]);
+  const model = findNormalizedTableHeaderIndex(normalizedHeaders, ["model", "agent", "model_tier"]);
+  const dependsOn = findNormalizedTableHeaderIndex(normalizedHeaders, ["depends_on", "depends", "dependencies"]);
 
   if ([status, batch, worker, task, model, dependsOn].some((index) => index === -1)) {
     return null;
@@ -2190,8 +2294,8 @@ function indexDispatchPlanColumns(headerCells: string[]): {
     task,
     model,
     depends_on: dependsOn,
-    prds_to_attach: normalizedHeaders.indexOf("prds_to_attach"),
-    notes: normalizedHeaders.indexOf("notes")
+    prds_to_attach: findNormalizedTableHeaderIndex(normalizedHeaders, ["prds_to_attach", "prds", "prd"]),
+    notes: findNormalizedTableHeaderIndex(normalizedHeaders, ["notes", "note"])
   };
 }
 
@@ -2240,6 +2344,17 @@ function readOptionalTableCell(value: string | undefined): string | null {
 
 function normalizeTableHeader(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function findNormalizedTableHeaderIndex(normalizedHeaders: string[], candidates: string[]): number {
+  for (const candidate of candidates) {
+    const index = normalizedHeaders.indexOf(candidate);
+    if (index !== -1) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 function parseTableRow(line: string): string[] | null {

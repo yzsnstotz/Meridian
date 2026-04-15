@@ -498,6 +498,84 @@ describe("ReconciliationWatchdog", () => {
     expect(stallCallback).not.toHaveBeenCalled();
   });
 
+  it("invokes onDispatcherStalled when the dispatcher thread is idle with no live worker blocking the next task", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ✅ | 1 | W-01 | Finished worker | CODEX | — | Done. |",
+        "| ⬜ | 2 | W-02 | Next eligible worker | CODEX | W-01 | Ready to continue. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-02": {
+          thread_id: "placeholder",
+          trace_id: null,
+          started_at: "2026-04-03T12:10:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "pending",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient((message) => {
+      if (message.thread_id === "d-01") {
+        return buildStatusResult(message.thread_id, "idle");
+      }
+
+      return buildStatusResult(message.thread_id, "running");
+    });
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "idle",
+        pendingWorkerCount: 1,
+        continueWorkerId: "W-02"
+      })
+    );
+  });
+
   it("does not invoke onDispatcherStalled when no pending workers remain", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -921,6 +999,7 @@ describe("continueDispatchWorker", () => {
       const result = await continueDispatchWorker({
         dispatch_plan_path: dispatchPlanPath,
         command_file_path: commandFilePath,
+        dispatch_repo_root: harness.directory,
         mode: "bridge",
         agent_type: "codex",
         kill_policy: "always"
@@ -946,12 +1025,68 @@ describe("continueDispatchWorker", () => {
         status: "pending",
         retry_count: 3
       });
+      expect(lifecycleStore.load().workers["PRE-FLIGHT"]?.hub_result).toMatchObject({
+        trace_id: "9639d2dd-431f-430a-81de-84c3c4b6d980",
+        thread_id: "codex_03",
+        status: "partial"
+      });
       expect(killSpy).toHaveBeenCalledWith({
         thread_id: "codex_03"
       });
     } finally {
       killSpy.mockRestore();
     }
+  });
+
+  it("launches legacy OPUS workers with an implicit Claude Opus mapping", async () => {
+    const harness = await createHarness("continue-worker-legacy-opus-");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const commandFilePath = path.join(harness.directory, "agent_dispatch_command.md");
+
+    await fsp.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Model | Code | Assign When |",
+      "| --- | --- | --- |",
+      "| Claude Opus | OPUS | Complex coordination |",
+      "| Codex | CODEX | Surgical edits |",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ⬜ | 0 | PRE-FLIGHT | Environment health check | OPUS | — | Launch the first worker |"
+    ].join("\n"), "utf8");
+
+    const launchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "claude_02"
+    }));
+
+    const result = await continueDispatchWorker({
+      dispatch_plan_path: dispatchPlanPath,
+      command_file_path: commandFilePath,
+      dispatch_repo_root: harness.directory,
+      mode: "bridge",
+      agent_type: "codex",
+      kill_policy: "always"
+    }, [
+      {
+        status: "⬜",
+        worker: "PRE-FLIGHT",
+        model: "OPUS"
+      }
+    ], "PRE-FLIGHT", launchWorker);
+
+    expect(result).toEqual({
+      ok: true,
+      workerId: "PRE-FLIGHT",
+      threadId: "claude_02"
+    });
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "claude",
+      modelId: "claude-opus-4-6",
+      dispatchRepoRoot: harness.directory,
+      workerId: "PRE-FLIGHT"
+    }));
   });
 });
 

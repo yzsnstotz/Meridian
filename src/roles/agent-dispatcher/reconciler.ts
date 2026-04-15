@@ -35,9 +35,9 @@ type ReconciliationHubClient = {
   sendRequest?: (message: HubMessage) => Promise<HubResult>;
 };
 
-type HubThreadObservationKind = "running" | "idle" | "completed" | "failed" | "missing";
+export type HubThreadObservationKind = "running" | "idle" | "completed" | "failed" | "missing";
 
-interface HubThreadObservation {
+export interface HubThreadObservation {
   kind: HubThreadObservationKind;
   rawStatus: string | null;
 }
@@ -307,7 +307,10 @@ function determineRecordedResultTransition(
   return null;
 }
 
-async function queryHubThreadObservation(hubClient: A2AClient, threadId: string | null): Promise<HubThreadObservation> {
+export async function queryHubThreadObservation(
+  hubClient: A2AClient,
+  threadId: string | null
+): Promise<HubThreadObservation> {
   if (!threadId) {
     return {
       kind: "missing",
@@ -707,12 +710,14 @@ function isCompletionArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").toLowerCase();
   const basename = path.basename(normalized);
 
-  return normalized.includes("/dev_history/")
+  return (
+    normalized.includes("/dev_history/")
     && (
       /_report\.md$/.test(basename)
       || basename === "delta_check_report.md"
       || basename === "pr_review_report.md"
-    );
+    )
+  ) || (normalized.includes("/reports/") && basename.endsWith(".md"));
 }
 
 function isStale(startedAt: string, nowMs: number, staleTimeoutMs: number): boolean {
@@ -738,10 +743,15 @@ function containsProviderError(content: string): boolean {
 
 const INLINE_REPORT_PATTERNS = [
   /completion\s+report/i,
+  /#\s*.+\bvalidation\s+report\b/i,
   /##\s*Files\s+Changed/i,
   /##\s*Sub-task\s+Results/i,
   /##\s*AI\s+Auto-Test\s+Results/i,
-  /\bStatus\b.*✅\s*Complete/i
+  /##\s*Summary\b/i,
+  /##\s*Case\s+Results\b/i,
+  /##\s*Executive\s+Summary\b/i,
+  /##\s*Function\s+Coverage\s+Table\b/i,
+  /\bStatus\b.*✅\s*(?:Pass|Complete|Validated)\b/i
 ];
 
 const SPECIAL_INLINE_REPORT_PATTERNS = [

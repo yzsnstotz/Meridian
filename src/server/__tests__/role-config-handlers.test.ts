@@ -299,6 +299,8 @@ describe("role config handlers", () => {
       config: {
         dispatch_plan_path: "/tmp/dispatch_plan.md",
         command_file_path: "/tmp/agent_dispatch_command.md",
+        dispatch_repo_root: "/tmp",
+        docs_root: "/tmp/Docs",
         user_reply_channels: [
           {
             channel: "telegram",
@@ -602,6 +604,38 @@ describe("role config handlers", () => {
     });
   });
 
+  it("persists agent-dispatcher model_id and exposes it in role detail", async () => {
+    const harness = createHarness();
+
+    const startResponse = await invokeJson<{ dispatcher_id: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/start",
+      {
+        thread_id: "agent-dispatcher-model-route",
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "claude",
+        model_id: "claude-opus-4-6"
+      }
+    );
+
+    const detail = await invokeJson<{ model_id?: string; agent_type?: string }>(
+      harness.roleHandlers,
+      "GET",
+      `/api/role/${encodeURIComponent(startResponse.dispatcher_id)}`
+    );
+
+    expect(detail.agent_type).toBe("claude");
+    expect(detail.model_id).toBe("claude-opus-4-6");
+    expect((await harness.stateStore.load())?.roles.find((entry) => entry.threadId === startResponse.dispatcher_id)?.config)
+      .toMatchObject({
+        agent_type: "claude",
+        model_id: "claude-opus-4-6"
+      });
+  });
+
   it("starts a new Hub session for a startup-rehydrated agent-dispatcher role", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-start-hub-rehydrated-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -847,8 +881,6 @@ describe("role config handlers", () => {
       },
       last_reconciled_at: null
     });
-    const originalPlan = await fs.readFile(dispatchPlanPath, "utf8");
-    const originalSidecar = await fs.readFile(sidecarPath, "utf8");
     const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
       ok: true,
       data: {
@@ -879,8 +911,14 @@ describe("role config handlers", () => {
       expect(killSpy).toHaveBeenNthCalledWith(2, {
         thread_id: "worker-thread-orphaned"
       });
-      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toBe(originalPlan);
-      await expect(fs.readFile(sidecarPath, "utf8")).resolves.toBe(originalSidecar);
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+        "| ⬜ | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |"
+      );
+      expect(lifecycleStore.load().workers["R-08"]).toMatchObject({
+        thread_id: "worker-thread-stale",
+        status: "pending",
+        retry_count: 3
+      });
     } finally {
       killSpy.mockRestore();
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -1037,9 +1075,12 @@ describe("role config handlers", () => {
       expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
         workerId: "R-11",
         agentType: "codex",
-        modelId: undefined,
+        modelId: "gpt-5.4 high",
+        mode: "bridge",
+        killPolicy: "always",
         commandFilePath: "/tmp/agent_dispatch_command.md",
-        dispatchPlanPath
+        dispatchPlanPath,
+        dispatchRepoRoot: tempDir
       }));
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -1979,6 +2020,65 @@ describe("role config handlers", () => {
     }
   });
 
+  it("reads Function Group dispatch tables in agent-dispatcher detail responses", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-function-group-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Function Group | Cases | Model | Depends On | Report File |",
+      "|--------|-------|--------|----------------|-------|-------|------------|-------------|",
+      "| ✅ | 0 | PRE-FLIGHT | Environment health check | — | CODEX | — | `reports/PRE-FLIGHT.md` |",
+      "| ✅ | 1 | E-01 | Auth session | 8 | CODEX | PRE-FLIGHT | `reports/E-01.md` |",
+      "| ✅ | 1 | E-02 | File adapter | 14 | CODEX | PRE-FLIGHT | `reports/E-02.md` |",
+      "| ⬜ | Ω | SUMMARY-GATE | Sector validation report | — | OPUS | all E-XX | `reports/sector_validation_report.md` |"
+    ].join("\n"), "utf8");
+
+    try {
+      const harness = createHarness();
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-function-group",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-function-group"
+      )).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-function-group",
+        continue_worker: "SUMMARY-GATE",
+        dispatch_plan: {
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              status: "✅",
+              worker: "PRE-FLIGHT",
+              task: "Environment health check",
+              model: "CODEX"
+            }),
+            expect.objectContaining({
+              status: "⬜",
+              worker: "SUMMARY-GATE",
+              task: "Sector validation report",
+              model: "OPUS",
+              depends_on: "all E-XX"
+            })
+          ])
+        }
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("demotes dispatcher lifecycle state during detail fetch when attach reports the thread missing", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-missing-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -2018,13 +2118,78 @@ describe("role config handlers", () => {
 
       await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-missing-detail")).resolves.toMatchObject({
         thread_id: "agent-dispatcher-missing-detail",
+        status: "needs_reactivation",
         dispatcher_thread_id: null,
         session_log: expect.arrayContaining([
-          "Dispatcher thread: pending",
+          "Role status: needs_reactivation",
           "Dispatcher lifecycle was demoted after Hub reported the thread missing."
         ])
       });
       expect(lifecycleStore.load().dispatcher.status).toBe("abandoned");
+      expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-missing-detail")?.status)
+        .toBe("needs_reactivation");
+      await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            thread_id: "agent-dispatcher-missing-detail",
+            status: "needs_reactivation"
+          })
+        ])
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not surface the synthetic DISPATCHER entry as the current running worker", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-synthetic-worker-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 6 | N-11 | GUI | CODEX | N-10 | PRD v2.2 | ready |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "DISPATCHER": buildLifecycleWorker({
+          thread_id: "dispatcher-thread-123",
+          status: "running"
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        "unused",
+        new Error("attach failed: No registered agent instance found for thread_id=dispatcher-thread-123")
+      );
+
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-synthetic-worker", dispatchPlanPath);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-synthetic-worker")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-synthetic-worker",
+        status: "needs_reactivation",
+        dispatcher_thread_id: null,
+        current_worker: null,
+        dispatch_details: []
+      });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -2246,6 +2411,70 @@ describe("role config handlers", () => {
         ]
       });
       expect(attachToThread).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("projects needs_reactivation from /api/roles when lifecycle already marked the dispatcher abandoned", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-stale-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-list-stale",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 7 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | awaiting restart |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-04-07T14:00:00.000Z",
+        status: "abandoned"
+      },
+      workers: {},
+      last_reconciled_at: "2026-04-07T14:15:00.000Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(persistedState);
+
+      await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            thread_id: "agent-dispatcher-list-stale",
+            status: "needs_reactivation"
+          })
+        ])
+      );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }

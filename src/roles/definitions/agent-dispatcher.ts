@@ -19,7 +19,10 @@ import {
   materializeDispatcherSystemPrompt,
   type PromptVars
 } from "../agent-dispatcher/prompt-builder";
-import { resolveDispatchRepoRoot } from "../agent-dispatcher/dispatch-paths";
+import {
+  resolveConfiguredDispatchRepoRoot,
+  resolveConfiguredDocsRoot
+} from "../agent-dispatcher/dispatch-paths";
 import { resolveDispatchModelMapFromMarkdown } from "../agent-dispatcher/model-routing";
 import {
   readWorkersByStatus,
@@ -137,8 +140,10 @@ export class AgentDispatcherRole implements BaseRole {
     const systemPrompt = this.resolveDispatcherSystemPrompt();
     const launched = await this.launch({
       agentType: this.config.agent_type,
+      modelId: this.config.model_id,
       mode: this.config.mode,
       systemPrompt,
+      dispatchRepoRoot: resolveConfiguredDispatchRepoRoot(this.config),
       dispatchPlanPath: this.config.dispatch_plan_path,
       commandFilePath: this.config.command_file_path,
       dispatcherRoleId: this.threadId,
@@ -169,10 +174,8 @@ export class AgentDispatcherRole implements BaseRole {
       dispatch_plan_path: this.config.dispatch_plan_path,
       command_file_path: this.config.command_file_path,
       dispatcher_role_id: this.threadId,
-      dispatch_repo_root: resolveDispatchRepoRoot([
-        this.config.dispatch_plan_path,
-        this.config.command_file_path
-      ]),
+      dispatch_repo_root: resolveConfiguredDispatchRepoRoot(this.config),
+      docs_root: resolveConfiguredDocsRoot(this.config),
       user_reply_channels: JSON.stringify(this.config.user_reply_channels),
       default_agent_type: this.config.agent_type,
       default_mode: this.config.mode,

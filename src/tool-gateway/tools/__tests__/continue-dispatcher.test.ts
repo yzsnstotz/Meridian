@@ -66,12 +66,14 @@ describe("continue-dispatcher tool", () => {
       [
         {
           status: "✅",
+          batch: "1",
           worker: "N-01",
           model: "CODEX",
           depends_on: []
         },
         {
           status: "⬜",
+          batch: "2",
           worker: "N-02",
           model: "CODEX",
           depends_on: ["N-01"]

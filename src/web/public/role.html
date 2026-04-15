@@ -50,7 +50,7 @@
         <div class="panel-heading">
           <div>
             <h2>Dispatch Plan Status</h2>
-            <p class="muted">Parsed from the active dispatch plan file. Redo completed work or override task status here.</p>
+            <p class="muted">Parsed from the active dispatch plan file. Each task now shows its matching dispatch detail inline below the row.</p>
           </div>
         </div>
         <p id="dispatch-plan-feedback" class="feedback dispatch-plan-feedback" role="status" aria-live="polite"></p>
@@ -81,17 +81,6 @@
           </div>
         </div>
         <pre id="dispatcher-session-log" class="log-tail">No dispatcher session detail available yet.</pre>
-      </section>
-
-      <section id="dispatch-details-panel" class="panel" hidden>
-        <div class="panel-heading">
-          <div>
-            <h2>Dispatch Details</h2>
-            <p class="muted">Each worker shows the sent command and the agent reply separately. Click a headline to unfold the task detail.</p>
-          </div>
-        </div>
-        <div id="dispatch-details-empty" class="empty-state">No dispatch command or reply history is available yet.</div>
-        <div id="dispatch-details-list" class="dispatch-detail-list" hidden></div>
       </section>
 
       <section id="role-tasks-panel" class="panel">

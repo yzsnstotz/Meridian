@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 
-import { resolveDispatchModelMapFromMarkdown } from "./model-routing";
+import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
+import { resolveDispatchModelMapFromMarkdown, resolveImplicitDispatchModelOverride } from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
 import { executeResumeWorkerAction } from "../../tool-gateway/tools/resume-worker";
@@ -28,7 +29,7 @@ export interface ContinueDispatchWorkerResult {
 export async function continueDispatchWorker(
   config: Pick<
     AgentDispatcherConfig,
-    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map"
+    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map" | "dispatch_repo_root"
   >,
   dispatchPlanRows: ContinueDispatchPlanRow[],
   workerId: string,
@@ -104,7 +105,7 @@ export function shouldResetWorkerBeforeContinue(row: Pick<ContinueDispatchPlanRo
 async function launchWorkerFromDispatchPlan(
   config: Pick<
     AgentDispatcherConfig,
-    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map"
+    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map" | "dispatch_repo_root"
   >,
   dispatchPlanRow: ContinueDispatchPlanRow,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>
@@ -112,7 +113,9 @@ async function launchWorkerFromDispatchPlan(
   const markdown = await fs.readFile(config.dispatch_plan_path, "utf8");
   const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
   const modelCode = dispatchPlanRow.model.trim();
-  const resolvedModel = modelCode ? resolvedModelMap[modelCode] : undefined;
+  const resolvedModel = modelCode
+    ? resolvedModelMap[modelCode] ?? resolveImplicitDispatchModelOverride(modelCode)
+    : undefined;
 
   return launchWorker({
     agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
@@ -120,6 +123,7 @@ async function launchWorkerFromDispatchPlan(
     killPolicy: config.kill_policy,
     commandFilePath: config.command_file_path,
     dispatchPlanPath: config.dispatch_plan_path,
+    dispatchRepoRoot: resolveConfiguredDispatchRepoRoot(config),
     workerId: dispatchPlanRow.worker,
     modelId: resolvedModel?.model_id?.trim() || undefined
   });
@@ -130,7 +134,7 @@ function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: strin
   if (normalized.startsWith("CODEX")) {
     return "codex";
   }
-  if (normalized.startsWith("CLAUDE")) {
+  if (normalized === "OPUS" || normalized === "SONNET" || normalized.startsWith("CLAUDE")) {
     return "claude";
   }
   if (normalized.startsWith("GEMINI")) {

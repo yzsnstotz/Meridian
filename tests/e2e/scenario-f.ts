@@ -147,6 +147,35 @@ describe("Scenario F: Config editor and role error states", () => {
           "Agent reply:",
           "Updated the GUI dashboard."
         ],
+        dispatch_details: [
+          {
+            worker_id: "N-11",
+            status: "running",
+            task: "GUI",
+            model: "CODEX",
+            applied_model: "gpt-5.4",
+            worker_thread_id: "worker-thread-11",
+            trace_id: "trace-123",
+            command: {
+              trace_id: "trace-123",
+              sender_name: "dispatcher-thread-123",
+              sender_agent_type: "codex",
+              sender_model: null,
+              sender_thread_id: "dispatcher-thread-123",
+              timestamp: "2026-04-14T10:00:00.000Z",
+              content: "Implement the GUI dispatcher detail page update."
+            },
+            reply: {
+              trace_id: "trace-123",
+              sender_name: "worker-thread-11",
+              sender_agent_type: "codex",
+              sender_model: "gpt-5.4",
+              sender_thread_id: "worker-thread-11",
+              timestamp: "2026-04-14T10:03:00.000Z",
+              content: "Updated the GUI dashboard."
+            }
+          }
+        ],
         dispatch_plan: {
           rows: [
             {
@@ -182,6 +211,10 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["dispatch-plan-empty"].hidden).toBe(true);
     expect(page.elements["dispatch-plan-table-shell"].hidden).toBe(false);
     expect(page.elements["dispatch-plan-body"].innerHTML).toContain("N-11");
+    expect(page.elements["dispatch-plan-body"].innerHTML).toContain('class="dispatch-detail-card"');
+    expect(page.elements["dispatch-plan-body"].innerHTML).not.toContain('class="dispatch-detail-card" open');
+    expect(page.elements["dispatch-plan-body"].innerHTML).toContain("Implement the GUI dispatcher detail page update.");
+    expect(page.elements["dispatch-plan-body"].innerHTML).toContain("Updated the GUI dashboard.");
     expect(page.elements["role-summary"].innerHTML).toContain("dispatcher-thread-123");
     expect(page.elements["prompts-link"].href).toBe("/role/agent-dispatcher-f/prompts");
     expect(page.elements["config-link"].href).toBe("/role/agent-dispatcher-f/config");

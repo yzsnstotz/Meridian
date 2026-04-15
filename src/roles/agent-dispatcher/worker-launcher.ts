@@ -11,6 +11,7 @@ export interface LaunchDispatchWorkerConfig {
   killPolicy?: KillPolicy;
   commandFilePath: string;
   dispatchPlanPath: string;
+  dispatchRepoRoot: string;
   workerId: string;
   modelId?: string;
 }
@@ -110,12 +111,15 @@ export async function launchDispatchWorker(
 }
 
 function buildSpawnArgs(config: LaunchDispatchWorkerConfig): string[] {
+  const dispatchRepoRoot = config.dispatchRepoRoot?.trim()
+    || resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]);
+
   const args = [
     "spawn",
     "--agent-type",
     config.agentType,
     "--spawn-dir",
-    resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]),
+    dispatchRepoRoot,
     "--mode",
     config.mode
   ];

@@ -128,9 +128,10 @@ export function parseDispatchPlanRows(markdown: string): DispatchPlanWorkerRow[]
       continue;
     }
 
-    const statusColumn = headerCells.indexOf("Status");
-    const batchColumn = headerCells.indexOf("Batch");
-    const workerColumn = headerCells.indexOf("Worker");
+    const normalizedHeaders = headerCells.map(normalizeHeaderCell);
+    const statusColumn = normalizedHeaders.indexOf("status");
+    const batchColumn = normalizedHeaders.indexOf("batch");
+    const workerColumn = normalizedHeaders.indexOf("worker");
     if (statusColumn === -1 || batchColumn === -1 || workerColumn === -1) {
       continue;
     }
@@ -140,11 +141,11 @@ export function parseDispatchPlanRows(markdown: string): DispatchPlanWorkerRow[]
       continue;
     }
 
-    const taskColumn = headerCells.indexOf("Task");
-    const modelColumn = headerCells.indexOf("Model");
-    const dependsOnColumn = headerCells.indexOf("Depends On");
-    const prdsColumn = headerCells.indexOf("PRDs to Attach");
-    const notesColumn = headerCells.indexOf("Notes");
+    const taskColumn = findNormalizedHeaderIndex(normalizedHeaders, ["task", "function_group", "headline", "action"]);
+    const modelColumn = findNormalizedHeaderIndex(normalizedHeaders, ["model", "agent", "model_tier"]);
+    const dependsOnColumn = findNormalizedHeaderIndex(normalizedHeaders, ["depends_on", "depends", "dependencies"]);
+    const prdsColumn = findNormalizedHeaderIndex(normalizedHeaders, ["prds_to_attach", "prds", "prd"]);
+    const notesColumn = findNormalizedHeaderIndex(normalizedHeaders, ["notes", "note"]);
     const rows: DispatchPlanWorkerRow[] = [];
 
     for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
@@ -346,6 +347,25 @@ function readOptionalCell(cells: string[], index: number): string | null {
   }
 
   return value;
+}
+
+function findNormalizedHeaderIndex(normalizedHeaders: string[], candidates: string[]): number {
+  for (const candidate of candidates) {
+    const index = normalizedHeaders.indexOf(candidate);
+    if (index !== -1) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function normalizeHeaderCell(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function parseDependsOn(value: string | null): string[] {

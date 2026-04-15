@@ -86,6 +86,28 @@
             />
           </label>
 
+          <div class="summary-grid">
+            <label class="field">
+              <span>dispatch_repo_root</span>
+              <input
+                id="agent-dispatcher-dispatch-repo-root"
+                name="dispatch_repo_root"
+                type="text"
+                placeholder="/Users/yzliu/work"
+              />
+            </label>
+
+            <label class="field">
+              <span>docs_root</span>
+              <input
+                id="agent-dispatcher-docs-root"
+                name="docs_root"
+                type="text"
+                placeholder="/Users/yzliu/work/Docs"
+              />
+            </label>
+          </div>
+
           <div id="agent-dispatcher-manual-fallback-wrap" class="summary-grid manual-fallback-wrap">
             <label class="field">
               <span>manual_reply_channel</span>
@@ -139,6 +161,16 @@
                 <option value="claude">claude</option>
                 <option value="codex">codex</option>
               </select>
+            </label>
+
+            <label class="field">
+              <span>model_id</span>
+              <input
+                id="agent-dispatcher-model-id"
+                name="model_id"
+                type="text"
+                placeholder="Optional provider model id"
+              />
             </label>
 
             <label class="field">

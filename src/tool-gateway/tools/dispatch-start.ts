@@ -9,6 +9,10 @@ import {
   type DispatchModelMap,
   type DispatchModelOverride
 } from "../../types";
+import {
+  DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
+  DEFAULT_AGENT_DISPATCHER_REPO_ROOT
+} from "../../roles/agent-dispatcher/dispatch-paths";
 import { buildDispatchStatusReport } from "./dispatch-status";
 import {
   buildServiceErrorData,
@@ -83,6 +87,16 @@ const dispatchStartTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Path to a JSON file containing { CODE: { provider, model_id } } overrides"
+    },
+    repo_root: {
+      type: "string",
+      required: false,
+      description: `Dispatcher sandbox root. Defaults to ${DEFAULT_AGENT_DISPATCHER_REPO_ROOT}`
+    },
+    docs_root: {
+      type: "string",
+      required: false,
+      description: `Detached docs root. Defaults to ${DEFAULT_AGENT_DISPATCHER_DOCS_ROOT}`
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -98,7 +112,9 @@ const dispatchStartTool: ToolDefinition = {
       return await executeDispatchStart({
         planPath,
         modelMap: params.model_map,
-        modelMapFile: params.model_map_file
+        modelMapFile: params.model_map_file,
+        dispatchRepoRoot: params.repo_root,
+        docsRoot: params.docs_root
       });
     } catch (error) {
       return {
@@ -115,6 +131,8 @@ export async function executeDispatchStart(args: {
   planPath: string;
   modelMap?: string;
   modelMapFile?: string;
+  dispatchRepoRoot?: string;
+  docsRoot?: string;
 }): Promise<ToolResult> {
   const planMarkdown = await fs.readFile(args.planPath, "utf8");
   const modelLegend = parseDispatchPlanModelLegend(planMarkdown);
@@ -125,6 +143,8 @@ export async function executeDispatchStart(args: {
     warnings
   });
   const commandFilePath = await resolveCommandFilePath(args.planPath);
+  const dispatchRepoRoot = normalizeOptionalPath(args.dispatchRepoRoot) ?? DEFAULT_AGENT_DISPATCHER_REPO_ROOT;
+  const docsRoot = normalizeOptionalPath(args.docsRoot) ?? path.join(dispatchRepoRoot, "Docs");
   const replyChannels = await resolveReplyChannels();
   if (!replyChannels.ok) {
     return replyChannels;
@@ -133,6 +153,8 @@ export async function executeDispatchStart(args: {
   const response = await postRolesServiceJson<unknown>("/api/agent-dispatcher/start", {
     dispatch_plan_path: args.planPath,
     command_file_path: commandFilePath,
+    dispatch_repo_root: dispatchRepoRoot,
+    docs_root: docsRoot,
     user_reply_channels: replyChannels.channels,
     config: {
       model_map: parsedModelMap
@@ -157,6 +179,8 @@ export async function executeDispatchStart(args: {
     data: {
       dispatch_plan_path: args.planPath,
       command_file_path: commandFilePath,
+      dispatch_repo_root: dispatchRepoRoot,
+      docs_root: docsRoot,
       dispatcher_id: parsedResponse.data.dispatcher_id,
       dispatcher_thread_id: parsedResponse.data.dispatcher_thread_id,
       reply_channels: replyChannels.channels,
@@ -166,6 +190,11 @@ export async function executeDispatchStart(args: {
       dispatch_status: await buildDispatchStatusReport(args.planPath)
     }
   };
+}
+
+function normalizeOptionalPath(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? path.resolve(trimmed) : undefined;
 }
 
 async function resolveModelMap(args: {

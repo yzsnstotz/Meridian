@@ -563,7 +563,11 @@ export function sendViaHttpRelay(
 ): Promise<HubResult> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const body = JSON.stringify(hubMessage);
+    const traceId = typeof hubMessage.trace_id === "string" && hubMessage.trace_id.trim()
+      ? hubMessage.trace_id
+      : randomUUID();
+    const outboundMessage = buildInlineOutboundMessage(hubMessage, traceId);
+    const body = JSON.stringify(outboundMessage);
     const relayUrl = new URL(getHubRelayUrl());
     const requestOptions: http.RequestOptions = {
       hostname: relayUrl.hostname,
@@ -592,7 +596,7 @@ export function sendViaHttpRelay(
         if (!rawResponse.trim()) {
           reject(buildReplyPathError({
             baseMessage: "HTTP relay completed without a response body",
-            traceId: String(hubMessage.trace_id ?? "unknown"),
+            traceId,
             transport: "http-relay",
             requestAccepted: true,
             responsePathFailure: "empty-body"
@@ -606,7 +610,7 @@ export function sendViaHttpRelay(
         } catch (error) {
           reject(buildReplyPathError({
             baseMessage: `Invalid HTTP relay response: ${asError(error).message}`,
-            traceId: String(hubMessage.trace_id ?? "unknown"),
+            traceId,
             transport: "http-relay",
             requestAccepted: true,
             responsePathFailure: "invalid-body"

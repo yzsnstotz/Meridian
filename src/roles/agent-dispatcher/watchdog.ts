@@ -7,7 +7,7 @@ import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status"
 import type { DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { LifecycleStore } from "./lifecycle-store";
-import { reconcile, type ReconciliationReport } from "./reconciler";
+import { queryHubThreadObservation, reconcile, type ReconciliationReport } from "./reconciler";
 import { resolveServiceContinueWorkerFromWorkerRows } from "./service-continuation";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
@@ -166,10 +166,6 @@ export class ReconciliationWatchdog {
     }
 
     const state = lifecycleStore.load();
-    if (state.dispatcher.status === "running") {
-      return;
-    }
-
     const { pendingWorkerCount, continueWorkerId } = await resolveRecoverableWorkerState(dispatchPlanPath, state);
     if (pendingWorkerCount === 0 && !continueWorkerId) {
       return;
@@ -180,9 +176,28 @@ export class ReconciliationWatchdog {
       return;
     }
 
+    let dispatcherStatus: string = state.dispatcher.status;
+    if (state.dispatcher.status === "running") {
+      try {
+        const observation = await queryHubThreadObservation(this.hubClient, state.dispatcher.thread_id);
+        if (observation.kind === "running") {
+          return;
+        }
+
+        dispatcherStatus = observation.rawStatus ?? observation.kind;
+      } catch (error) {
+        this.log.warn("Watchdog failed to probe running dispatcher before stall recovery", {
+          dispatchPlanPath,
+          dispatcherThreadId: state.dispatcher.thread_id,
+          error: asError(error).message
+        });
+        return;
+      }
+    }
+
     this.log.info("Watchdog detected stalled dispatcher with recoverable workers", {
       dispatchPlanPath,
-      dispatcherStatus: state.dispatcher.status,
+      dispatcherStatus,
       pendingWorkerCount,
       continueWorkerId
     });
@@ -190,7 +205,7 @@ export class ReconciliationWatchdog {
     try {
       await this.onDispatcherStalled({
         dispatchPlanPath,
-        dispatcherStatus: state.dispatcher.status,
+        dispatcherStatus,
         pendingWorkerCount,
         continueWorkerId
       });

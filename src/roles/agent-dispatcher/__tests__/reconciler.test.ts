@@ -437,6 +437,36 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("marks a running worker completed from a stored successful inline validation report when report files are absent", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": {
+          ...buildRunningWorker("worker-thread-preflight", path.join(harness.directory, "missing-PRE-FLIGHT-report.md")),
+          hub_result: buildValidationInlineReportResult("worker-thread-preflight")
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("completed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report.changed).toEqual([
+      {
+        workerId: "PRE-FLIGHT",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      }
+    ]);
+  });
+
   it("marks a running worker completed when a terminal HubResult reports a real dev_history artifact", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -835,6 +865,38 @@ function buildInlineReportResult(threadId: string): HubResult {
       "# tests 126",
       "# pass 126",
       "# fail 0",
+      "```"
+    ].join("\n"),
+    attachments: [],
+    timestamp: FIXED_NOW
+  };
+}
+
+function buildValidationInlineReportResult(threadId: string): HubResult {
+  return {
+    trace_id: "66666666-6666-4666-8666-666666666666",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content: [
+      "Pre-flight passed on a fresh rerun. Returning the validation report inline because the docs path was not writable.",
+      "",
+      "```markdown",
+      "# PRE-FLIGHT Validation Report",
+      "",
+      "- **Date**: 2026-04-03T12:30:00.000Z",
+      "- **Worker**: CODEX",
+      "- **Status**: ✅ PASS",
+      "",
+      "## Summary",
+      "7 cases run. 7 passed. 0 failed. 0 skipped.",
+      "",
+      "## Case Results",
+      "",
+      "| # | Function | Case Type | Status | Notes |",
+      "|---|----------|-----------|--------|-------|",
+      "| 1 | `PRE-FLIGHT.1` | Test runner baseline | ✅ | `npx tsx --version` succeeded. |",
       "```"
     ].join("\n"),
     attachments: [],

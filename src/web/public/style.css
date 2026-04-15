@@ -519,7 +519,7 @@ dd {
 .dispatch-detail-messages {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: 1fr;
   margin-top: 14px;
 }
 
@@ -597,6 +597,19 @@ dd {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.dispatch-plan-row-with-detail td {
+  border-bottom: none;
+  padding-bottom: 8px;
+}
+
+.dispatch-plan-detail-row td {
+  padding-top: 0;
+}
+
+.dispatch-plan-inline-detail {
+  padding: 0 0 10px;
 }
 
 .stale-pill {

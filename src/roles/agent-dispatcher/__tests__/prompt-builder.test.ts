@@ -10,6 +10,7 @@ describe("buildSystemPrompt", () => {
       command_file_path: "/tmp/agent_dispatch_command.md",
       dispatcher_role_id: "agent-dispatcher-r03",
       dispatch_repo_root: "/tmp",
+      docs_root: "/tmp/Docs",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]",
       default_agent_type: "codex",
       default_mode: "pane_bridge",
@@ -28,6 +29,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("command_file_path: /tmp/agent_dispatch_command.md");
     expect(prompt).toContain("dispatcher_role_id: agent-dispatcher-r03");
     expect(prompt).toContain("dispatch_repo_root: /tmp");
+    expect(prompt).toContain("docs_root: /tmp/Docs");
     expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"web","chat_id":"web:ops"}]');
     expect(prompt).toContain("default_agent_type: codex");
     expect(prompt).toContain("default_mode: pane_bridge");

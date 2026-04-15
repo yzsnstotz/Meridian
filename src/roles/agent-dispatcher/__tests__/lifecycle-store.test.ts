@@ -141,6 +141,45 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("completes immediately when a deferred-success result returns an inline validation report", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "reports/PRE-FLIGHT.md"
+    ]);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "Pre-flight passed. Returning the report inline because the docs path was not writable.",
+        "",
+        "```markdown",
+        "# PRE-FLIGHT Validation Report",
+        "",
+        "- **Date**: 2026-04-03T12:00:00.000Z",
+        "- **Worker**: CODEX",
+        "- **Status**: ✅ PASS",
+        "",
+        "## Summary",
+        "7 cases run. 7 passed. 0 failed. 0 skipped.",
+        "",
+        "## Case Results",
+        "",
+        "| # | Function | Case Type | Status | Notes |",
+        "|---|----------|-----------|--------|-------|",
+        "| 1 | `PRE-FLIGHT.1` | Test runner baseline | ✅ | `npx tsx --version` succeeded. |",
+        "```"
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("maps an error HubResult to failed", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

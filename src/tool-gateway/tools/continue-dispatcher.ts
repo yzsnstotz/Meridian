@@ -171,6 +171,7 @@ async function continueDispatcherLocally(
 
   const dispatchPlanRows = parseDispatchPlanRows(markdown).map((row) => ({
     status: row.status,
+    batch: row.batch,
     worker: row.worker_id,
     model: row.model ?? "",
     depends_on: row.depends_on

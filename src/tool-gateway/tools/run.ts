@@ -186,6 +186,7 @@ export interface DispatchPlanRow {
   model?: string;
   dependsOn?: string;
   notes?: string;
+  reportFile?: string;
 }
 
 async function buildWorkerPreamble(
@@ -256,7 +257,11 @@ async function buildWorkerPreamble(
   }
   if (!isDispatcherWorker(workerId)) {
     lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
-    lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
+    if (isReportOnlyWorker(expectedOutputs)) {
+      lines.push(`- **Steps 5c–5d**: this is a report-only worker. Do NOT create git commits, branches, pushes, or PRs for the report artifact; return the report result and stop.`);
+    } else {
+      lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
+    }
   }
 
   return lines.join("\n");
@@ -412,11 +417,17 @@ async function deriveExpectedOutputsFromPlan(commandPath: string, workerId: stri
   try {
     const markdown = await readFile(dispatchPlanPath, "utf8");
     const row = parseDispatchPlanRows(markdown).find((candidate) => candidate.worker === workerId);
-    if (!row?.notes) {
-      return [];
+    const outputs: string[] = [];
+
+    if (row?.reportFile) {
+      outputs.push(resolveExpectedOutputPath(row.reportFile, commandPath, { preferCommandDirectory: true }));
     }
 
-    return extractExpectedOutputsFromNotes(row.notes, commandPath);
+    if (row?.notes) {
+      outputs.push(...extractExpectedOutputsFromNotes(row.notes, commandPath));
+    }
+
+    return [...new Set(outputs)];
   } catch {
     return [];
   }
@@ -441,11 +452,13 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
       continue;
     }
 
-    const workerColumn = headerCells.indexOf("Worker");
-    const notesColumn = headerCells.indexOf("Notes");
-    const taskColumn = headerCells.indexOf("Task");
-    const modelColumn = headerCells.indexOf("Model");
-    const dependsOnColumn = headerCells.indexOf("Depends On");
+    const normalizedHeaders = headerCells.map(normalizeDispatchPlanHeader);
+    const workerColumn = normalizedHeaders.indexOf("worker");
+    const notesColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["notes", "note"]);
+    const taskColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["task", "function_group", "headline", "action"]);
+    const modelColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["model", "agent", "model_tier"]);
+    const dependsOnColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["depends_on", "depends", "dependencies"]);
+    const reportFileColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["report_file", "report_files", "file"]);
     if (workerColumn === -1) {
       continue;
     }
@@ -467,7 +480,8 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
         task: taskColumn === -1 ? undefined : rowCells[taskColumn],
         model: modelColumn === -1 ? undefined : rowCells[modelColumn],
         dependsOn: dependsOnColumn === -1 ? undefined : rowCells[dependsOnColumn],
-        notes: notesColumn === -1 ? undefined : rowCells[notesColumn]
+        notes: notesColumn === -1 ? undefined : rowCells[notesColumn],
+        reportFile: reportFileColumn === -1 ? undefined : readOptionalCell(rowCells[reportFileColumn])
       });
     }
 
@@ -516,6 +530,25 @@ function extractSpecialCompletionReportTemplate(command: string, workerId: strin
   }
 
   return null;
+}
+
+function findDispatchPlanHeaderIndex(normalizedHeaders: string[], candidates: string[]): number {
+  for (const candidate of candidates) {
+    const index = normalizedHeaders.indexOf(candidate);
+    if (index !== -1) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function normalizeDispatchPlanHeader(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function extractExpectedOutputsFromNotes(notes: string, commandPath: string): string[] {
@@ -587,13 +620,21 @@ function findLastPatternIndex(source: string, patterns: RegExp[]): number {
   return lastIndex;
 }
 
-function resolveExpectedOutputPath(candidatePath: string, commandPath: string): string {
+function resolveExpectedOutputPath(
+  candidatePath: string,
+  commandPath: string,
+  options: { preferCommandDirectory?: boolean } = {}
+): string {
   if (path.isAbsolute(candidatePath)) {
     return path.normalize(candidatePath);
   }
 
   const normalizedCandidate = normalizePathForComparison(candidatePath);
   if (normalizedCandidate === DEV_HISTORY_DIRECTORY || normalizedCandidate.startsWith(`${DEV_HISTORY_DIRECTORY}/`)) {
+    return path.resolve(path.dirname(commandPath), candidatePath);
+  }
+
+  if (options.preferCommandDirectory) {
     return path.resolve(path.dirname(commandPath), candidatePath);
   }
 
@@ -616,6 +657,24 @@ function normalizePathForComparison(filePath: string): string {
 
 function substituteWorkerId(templatePath: string, workerId: string): string {
   return templatePath.replace(/\[WORKER_ID\]/g, workerId).trim();
+}
+
+function isReportOnlyWorker(expectedOutputs: string[]): boolean {
+  return expectedOutputs.length > 0 && expectedOutputs.every((candidatePath) => isReportArtifactPath(candidatePath));
+}
+
+function isReportArtifactPath(candidatePath: string): boolean {
+  const normalized = candidatePath.replace(/\\/g, "/").toLowerCase();
+  const basename = path.basename(normalized);
+
+  return (
+    normalized.includes("/dev_history/")
+    && (
+      /_report\.md$/.test(basename)
+      || basename === "delta_check_report.md"
+      || basename === "pr_review_report.md"
+    )
+  ) || (normalized.includes("/reports/") && basename.endsWith(".md"));
 }
 
 const PLAN_MODIFYING_WORKERS = new Set(["DELTA-CHECK", "PR-REVIEW"]);
@@ -664,6 +723,19 @@ function parseTableRow(line: string): string[] | null {
     : withoutLeadingPipe;
 
   return normalized.split("|").map((cell) => cell.trim());
+}
+
+function readOptionalCell(cell: string | undefined): string | undefined {
+  const trimmed = cell?.trim();
+  if (!trimmed || trimmed === "—") {
+    return undefined;
+  }
+
+  if (trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length >= 2) {
+    return trimmed.slice(1, -1);
+  }
+
+  return trimmed;
 }
 
 function isSeparatorRow(cells: string[]): boolean {

@@ -31,7 +31,10 @@ describe("launchDispatchWorker", () => {
       nestedDocsBranch: true
     });
 
-    const result = await launchDispatchWorker(buildConfig(harness.dispatchPlanPath, harness.commandFilePath), harness.deps);
+    const result = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
 
     expect(result).toEqual({
       ok: true,
@@ -75,7 +78,34 @@ describe("launchDispatchWorker", () => {
       nestedDocsBranch: true
     });
 
-    await launchDispatchWorker(buildConfig(harness.dispatchPlanPath, harness.commandFilePath), harness.deps);
+    await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+
+    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
+      "spawn",
+      "--agent-type",
+      "codex",
+      "--spawn-dir",
+      harness.expectedSpawnDir,
+      "--mode",
+      "pane_bridge",
+      "--model-id",
+      "gpt-5.4"
+    ]));
+  });
+
+  it("spawns detached Docs/Projects artifacts from the real project repo root", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      detachedDocsWorkspace: true
+    });
+
+    await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
 
     expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
       "spawn",
@@ -95,7 +125,10 @@ describe("launchDispatchWorker", () => {
       execFileError: new Error("Command failed: spawn")
     });
 
-    const result = await launchDispatchWorker(buildConfig(harness.dispatchPlanPath, harness.commandFilePath), harness.deps);
+    const result = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -114,6 +147,7 @@ describe("launchDispatchWorker", () => {
       mode: "pane_bridge",
       commandFilePath: "   ",
       dispatchPlanPath: "",
+      dispatchRepoRoot: "   ",
       workerId: "N-01",
       modelId: "gpt-5.4"
     }, {
@@ -135,7 +169,10 @@ describe("launchDispatchWorker", () => {
       spawnError: new Error("ENOENT")
     });
 
-    const result = await launchDispatchWorker(buildConfig(harness.dispatchPlanPath, harness.commandFilePath), harness.deps);
+    const result = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -148,6 +185,7 @@ describe("launchDispatchWorker", () => {
 async function createHarness(overrides: {
   gitRoot?: boolean;
   nestedDocsBranch?: boolean;
+  detachedDocsWorkspace?: boolean;
   stdout?: string;
   execFileError?: Error;
   spawnError?: Error;
@@ -160,16 +198,30 @@ async function createHarness(overrides: {
   commandFilePath: string;
   expectedSpawnDir: string;
 }> {
-  const repoRoot = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-worker-launcher-"));
-  tempDirectories.add(repoRoot);
-
-  if (overrides.gitRoot) {
-    await fs.mkdir(path.join(repoRoot, ".git"));
+  const workspaceRoot = overrides.detachedDocsWorkspace
+    ? await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-worker-workspace-"))
+    : null;
+  if (workspaceRoot) {
+    tempDirectories.add(workspaceRoot);
   }
 
-  const dispatchDirectory = overrides.nestedDocsBranch
-    ? path.join(repoRoot, "docs/branch/feat-test")
-    : repoRoot;
+  const repoRoot = workspaceRoot
+    ? path.join(workspaceRoot, "projects/clawso")
+    : await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-worker-launcher-"));
+  if (!workspaceRoot) {
+    tempDirectories.add(repoRoot);
+  }
+
+  const dispatchDirectory = overrides.detachedDocsWorkspace
+    ? path.join(workspaceRoot!, "Docs/Projects/clawso/branch/feat-test/taskspec")
+    : overrides.nestedDocsBranch
+      ? path.join(repoRoot, "docs/branch/feat-test")
+      : repoRoot;
+
+  if (overrides.gitRoot) {
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+  }
+
   await fs.mkdir(dispatchDirectory, { recursive: true });
 
   const dispatchPlanPath = path.join(dispatchDirectory, "dispatch_plan.md");
@@ -177,7 +229,7 @@ async function createHarness(overrides: {
   await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
   await fs.writeFile(commandFilePath, "# command\n", "utf8");
 
-  const expectedSpawnDir = repoRoot;
+  const expectedSpawnDir = overrides.detachedDocsWorkspace ? await fs.realpath(repoRoot) : repoRoot;
   const runProcess = {
     unref: vi.fn()
   };
@@ -207,13 +259,18 @@ async function createHarness(overrides: {
   };
 }
 
-function buildConfig(dispatchPlanPath: string, commandFilePath: string): LaunchDispatchWorkerConfig {
+function buildConfig(
+  dispatchPlanPath: string,
+  commandFilePath: string,
+  dispatchRepoRoot: string
+): LaunchDispatchWorkerConfig {
   return {
     agentType: "codex",
     mode: "pane_bridge",
     killPolicy: "always",
     commandFilePath,
     dispatchPlanPath,
+    dispatchRepoRoot,
     workerId: "N-01",
     modelId: "gpt-5.4"
   };

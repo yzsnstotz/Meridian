@@ -239,8 +239,11 @@ export type DispatchModelMap = z.infer<typeof DispatchModelMapSchema>;
 export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   dispatch_plan_path: z.string().min(1),
   command_file_path: z.string().min(1),
+  dispatch_repo_root: z.string().min(1).optional(),
+  docs_root: z.string().min(1).optional(),
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.default("claude"),
+  model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema.default("pane_bridge"),
   kill_policy: KillPolicySchema.default("always"),
   model_map: DispatchModelMapSchema.optional(),
@@ -273,8 +276,11 @@ export type AgentDispatcherConfig = z.infer<typeof AgentDispatcherConfigSchema>;
 export const AgentDispatcherEditorConfigSchema = z.object({
   dispatch_plan_path: z.string().min(1),
   command_file_path: z.string().min(1),
+  dispatch_repo_root: z.string().min(1),
+  docs_root: z.string().min(1),
   user_reply_channels: z.array(ReplyChannelSchema).min(1),
   agent_type: AgentTypeSchema,
+  model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema,
   kill_policy: KillPolicySchema
 }).strict();

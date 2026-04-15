@@ -30,6 +30,42 @@ describe("resolveDispatchRepoRoot", () => {
     expect(resolveDispatchRepoRoot([dispatchPlanPath])).toBe(repoRoot);
   });
 
+  it("maps detached Docs/Projects dispatch artifacts back to the real repo root", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(tmpdir(), "dispatch-paths-workspace-"));
+    tempDirectories.add(workspaceRoot);
+
+    const repoRoot = path.join(workspaceRoot, "projects/clawso");
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    const canonicalRepoRoot = await fs.realpath(repoRoot);
+
+    const dispatchPlanPath = path.join(
+      workspaceRoot,
+      "Docs/Projects/clawso/branch/feat-cli/taskspec/dispatch_plan.md"
+    );
+    await fs.mkdir(path.dirname(dispatchPlanPath), { recursive: true });
+    await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
+
+    expect(resolveDispatchRepoRoot([dispatchPlanPath])).toBe(canonicalRepoRoot);
+  });
+
+  it("maps detached Docs/Project dispatch artifacts back to the real repo root", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(tmpdir(), "dispatch-paths-workspace-"));
+    tempDirectories.add(workspaceRoot);
+
+    const repoRoot = path.join(workspaceRoot, "Projects/meridian");
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    const canonicalRepoRoot = await fs.realpath(repoRoot);
+
+    const dispatchPlanPath = path.join(
+      workspaceRoot,
+      "Docs/Project/meridian/branch/feat-routing/taskspec/dispatch_plan.md"
+    );
+    await fs.mkdir(path.dirname(dispatchPlanPath), { recursive: true });
+    await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
+
+    expect(resolveDispatchRepoRoot([dispatchPlanPath])).toBe(canonicalRepoRoot);
+  });
+
   it("falls back to the dispatch artifact directory when no git root exists", async () => {
     const dispatchDirectory = await fs.mkdtemp(path.join(tmpdir(), "dispatch-paths-dir-"));
     tempDirectories.add(dispatchDirectory);

@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import dispatchStatusTool from "../dispatch-status";
+import dispatchStatusTool, { parseDispatchPlanRows } from "../dispatch-status";
 
 const tempDirectories = new Set<string>();
 
@@ -13,6 +13,61 @@ afterEach(async () => {
 });
 
 describe("dispatch-status tool", () => {
+  it("parses dispatch tables that use Function Group instead of Task", () => {
+    expect(parseDispatchPlanRows([
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Function Group | Cases | Model | Depends On | Report File |",
+      "|--------|-------|--------|----------------|-------|-------|------------|-------------|",
+      "| ✅ | 0 | PRE-FLIGHT | Environment health check | — | CODEX | — | `reports/PRE-FLIGHT.md` |",
+      "| ⬜ | Ω | SUMMARY-GATE | Sector validation report | — | OPUS | all E-XX | `reports/sector_validation_report.md` |",
+      ""
+    ].join("\n"))).toEqual([
+      {
+        status: "✅",
+        batch: "0",
+        worker_id: "PRE-FLIGHT",
+        task: "Environment health check",
+        model: "CODEX",
+        depends_on: [],
+        prds_to_attach: null,
+        notes: null
+      },
+      {
+        status: "⬜",
+        batch: "Ω",
+        worker_id: "SUMMARY-GATE",
+        task: "Sector validation report",
+        model: "OPUS",
+        depends_on: ["all E-XX"],
+        prds_to_attach: null,
+        notes: null
+      }
+    ]);
+  });
+
+  it("parses dispatch tables that use PRDs and extra workflow columns", () => {
+    expect(parseDispatchPlanRows([
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | TaskSpec File | PRDs | PR | Notes |",
+      "|--------|-------|--------|------|-------|------------|---------------|------|----|-------|",
+      "| ⬜ | 1 | R-01 | Fix CLI contract | CODEX | PRE-FLIGHT | `cli-fix-v1/R-01.md` | Investigation Report | — | dispatch after PRE-FLIGHT ✅ |",
+      ""
+    ].join("\n"))).toEqual([
+      {
+        status: "⬜",
+        batch: "1",
+        worker_id: "R-01",
+        task: "Fix CLI contract",
+        model: "CODEX",
+        depends_on: ["PRE-FLIGHT"],
+        prds_to_attach: "Investigation Report",
+        notes: "dispatch after PRE-FLIGHT ✅"
+      }
+    ]);
+  });
+
   it("marks running workers as stale from dispatch_threads.json last_seen_at", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-05T01:00:00.000Z"));

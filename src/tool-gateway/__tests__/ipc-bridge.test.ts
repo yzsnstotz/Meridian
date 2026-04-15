@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -15,9 +16,17 @@ interface TestHubServer {
   close(): Promise<void>;
 }
 
+interface TestHttpRelayServer {
+  messages: Record<string, unknown>[];
+  url: string;
+  close(): Promise<void>;
+}
+
 const tempDirectories = new Set<string>();
 const servers = new Set<TestHubServer>();
+const relayServers = new Set<TestHttpRelayServer>();
 const originalHubSocketPath = process.env.HUB_SOCKET_PATH;
+const originalHubRelayUrl = process.env.MERIDIAN_HUB_RELAY_URL;
 const originalCwd = process.cwd();
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -29,10 +38,18 @@ afterEach(async () => {
     process.env.HUB_SOCKET_PATH = originalHubSocketPath;
   }
 
+  if (originalHubRelayUrl === undefined) {
+    delete process.env.MERIDIAN_HUB_RELAY_URL;
+  } else {
+    process.env.MERIDIAN_HUB_RELAY_URL = originalHubRelayUrl;
+  }
+
   await Promise.all(Array.from(servers, (server) => server.close().catch(() => undefined)));
+  await Promise.all(Array.from(relayServers, (server) => server.close().catch(() => undefined)));
   await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
 
   servers.clear();
+  relayServers.clear();
   tempDirectories.clear();
 });
 
@@ -369,6 +386,43 @@ describe("sendAndWait", () => {
       })
     );
   });
+
+  it("falls back to HTTP relay and injects a web reply channel when socket transports cannot connect", async () => {
+    const directory = await createTempDirectory();
+    const relay = await startHttpRelayServer();
+    relayServers.add(relay);
+    process.env.HUB_SOCKET_PATH = path.join(directory, "missing-hub.sock");
+    process.env.MERIDIAN_HUB_RELAY_URL = relay.url;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const message = buildHubMessage({ reply_channel: undefined });
+    const result = await sendAndWait(message, 200);
+
+    expect(result).toMatchObject({
+      trace_id: message.trace_id,
+      status: "success",
+      content: "ok"
+    });
+    expect(relay.messages).toHaveLength(1);
+    expect(relay.messages[0]).toMatchObject({
+      trace_id: message.trace_id,
+      reply_channel: {
+        channel: "web",
+        chat_id: "service:meridian-tool"
+      }
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Tool Gateway inline Hub connect also unavailable; falling back to HTTP relay",
+      expect.objectContaining({
+        trace_id: message.trace_id,
+        transport: "inline",
+        next_transport: "http-relay",
+        request_delivery: "request-not-sent",
+        response_path_failure: "transport-unavailable",
+        error: expect.stringContaining("ENOENT")
+      })
+    );
+  });
 });
 
 async function createTempDirectory(): Promise<string> {
@@ -479,6 +533,61 @@ async function startHubServer(
         server.close((error) => (error ? reject(error) : resolve()));
       });
       await fs.unlink(socketPath).catch(() => undefined);
+    }
+  };
+}
+
+async function startHttpRelayServer(): Promise<TestHttpRelayServer> {
+  const messages: Record<string, unknown>[] = [];
+  let closed = false;
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk: string) => {
+      raw += chunk;
+    });
+    request.on("end", () => {
+      const message = JSON.parse(raw) as Record<string, unknown>;
+      messages.push(message);
+
+      const result: HubResult = {
+        trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
+        thread_id: typeof message.thread_id === "string" ? message.thread_id : "dispatcher-1",
+        source: "codex",
+        status: "success",
+        content: "ok",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json; charset=utf-8");
+      response.end(JSON.stringify(result));
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to bind HTTP relay test server");
+  }
+
+  return {
+    messages,
+    url: `http://127.0.0.1:${address.port}/api/hub-relay`,
+    async close(): Promise<void> {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   };
 }

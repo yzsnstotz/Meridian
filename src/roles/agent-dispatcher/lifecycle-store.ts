@@ -458,20 +458,27 @@ function isCompletionArtifactPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/").toLowerCase();
   const basename = path.basename(normalized);
 
-  return normalized.includes("/dev_history/")
+  return (
+    normalized.includes("/dev_history/")
     && (
       /_report\.md$/.test(basename)
       || basename === "delta_check_report.md"
       || basename === "pr_review_report.md"
-    );
+    )
+  ) || (normalized.includes("/reports/") && basename.endsWith(".md"));
 }
 
 const INLINE_REPORT_PATTERNS = [
   /completion\s+report/i,
+  /#\s*.+\bvalidation\s+report\b/i,
   /##\s*Files\s+Changed/i,
   /##\s*Sub-task\s+Results/i,
   /##\s*AI\s+Auto-Test\s+Results/i,
-  /\bStatus\b.*✅\s*Complete/i
+  /##\s*Summary\b/i,
+  /##\s*Case\s+Results\b/i,
+  /##\s*Executive\s+Summary\b/i,
+  /##\s*Function\s+Coverage\s+Table\b/i,
+  /\bStatus\b.*✅\s*(?:Pass|Complete|Validated)\b/i
 ];
 
 const SPECIAL_INLINE_REPORT_PATTERNS = [

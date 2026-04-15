@@ -65,6 +65,8 @@ describe("dispatch-start tool", () => {
       data: expect.objectContaining({
         dispatch_plan_path: harness.planPath,
         command_file_path: harness.commandFilePath,
+        dispatch_repo_root: "/Users/yzliu/work",
+        docs_root: "/Users/yzliu/work/Docs",
         dispatcher_id: "agent-dispatcher-1234",
         dispatcher_thread_id: "hub-thread-5678",
         reply_channel_source: "service",
@@ -94,6 +96,8 @@ describe("dispatch-start tool", () => {
       body: JSON.stringify({
         dispatch_plan_path: harness.planPath,
         command_file_path: harness.commandFilePath,
+        dispatch_repo_root: "/Users/yzliu/work",
+        docs_root: "/Users/yzliu/work/Docs",
         user_reply_channels: [
           {
             channel: "telegram",

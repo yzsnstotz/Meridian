@@ -1,9 +1,36 @@
-import type { DispatchModelMap } from "../../types";
+import type { DispatchModelMap, DispatchModelOverride } from "../../types";
 
 interface DispatchPlanModelLegendEntry {
   provider: string | null;
   model_id: string | null;
 }
+
+const IMPLICIT_MODEL_CODE_DEFAULTS: Record<string, DispatchModelOverride> = {
+  CODEX: {
+    provider: "codex",
+    model_id: "gpt-5.4 medium"
+  },
+  "CODEX-HIGH": {
+    provider: "codex",
+    model_id: "gpt-5.4 high"
+  },
+  "CODEX-XHIGH": {
+    provider: "codex",
+    model_id: "gpt-5.4 xhigh"
+  },
+  OPUS: {
+    provider: "claude",
+    model_id: "claude-opus-4-6"
+  },
+  SONNET: {
+    provider: "claude",
+    model_id: "claude-sonnet-4-6"
+  },
+  GEMINI: {
+    provider: "gemini",
+    model_id: "gemini-2.5-pro"
+  }
+};
 
 export function resolveDispatchModelMapFromMarkdown(
   markdown: string,
@@ -13,20 +40,30 @@ export function resolveDispatchModelMapFromMarkdown(
   const resolved: DispatchModelMap = {};
 
   for (const [code, entry] of Object.entries(legend)) {
-    if (!entry.provider || !entry.model_id) {
+    const resolvedEntry = toDispatchModelOverride(entry) ?? resolveImplicitDispatchModelOverride(code);
+    if (!resolvedEntry) {
       continue;
     }
 
-    resolved[code] = {
-      provider: entry.provider,
-      model_id: entry.model_id
-    };
+    resolved[code] = resolvedEntry;
   }
 
   return {
     ...resolved,
     ...(overrides ?? {})
   };
+}
+
+export function resolveImplicitDispatchModelOverride(
+  modelCode: string | null | undefined
+): DispatchModelOverride | undefined {
+  const normalized = normalizeModelCode(modelCode);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const implicit = IMPLICIT_MODEL_CODE_DEFAULTS[normalized];
+  return implicit ? { ...implicit } : undefined;
 }
 
 export function parseDispatchPlanModelLegend(markdown: string): Record<string, DispatchPlanModelLegendEntry> {
@@ -111,6 +148,21 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function normalizeTableHeader(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function normalizeModelCode(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+function toDispatchModelOverride(entry: DispatchPlanModelLegendEntry): DispatchModelOverride | undefined {
+  if (!entry.provider || !entry.model_id) {
+    return undefined;
+  }
+
+  return {
+    provider: entry.provider,
+    model_id: entry.model_id
+  };
 }
 
 function readOptionalCell(value: string | undefined): string | null {

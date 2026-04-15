@@ -9,6 +9,10 @@ import {
   type DispatcherEditorConfigPatch,
   type DispatcherEditorTask
 } from "../types";
+import {
+  resolveConfiguredDispatchRepoRoot,
+  resolveConfiguredDocsRoot
+} from "./agent-dispatcher/dispatch-paths";
 
 export function parseMutableDispatcherConfig(config: unknown): DispatcherConfig | null {
   const parsed = DispatcherConfigSchema.safeParse(config);
@@ -39,8 +43,11 @@ export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): 
   return {
     dispatch_plan_path: config.dispatch_plan_path,
     command_file_path: config.command_file_path,
+    dispatch_repo_root: resolveConfiguredDispatchRepoRoot(config),
+    docs_root: resolveConfiguredDocsRoot(config),
     user_reply_channels: config.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
     agent_type: config.agent_type,
+    ...(config.model_id ? { model_id: config.model_id } : {}),
     mode: config.mode,
     kill_policy: config.kill_policy
   };
