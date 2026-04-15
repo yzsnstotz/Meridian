@@ -39,9 +39,57 @@ describe("service continuation", () => {
       }
     ], createLifecycleState())).toBe("PR-REVIEW");
   });
+
+  it("does not auto-continue rows whose notes explicitly mark them blocked", () => {
+    expect(resolveServiceContinueWorker([
+      {
+        status: "⬜",
+        batch: "1",
+        worker: "R-02",
+        model: "CODEX",
+        depends_on: "PRE-FLIGHT",
+        notes: "**⏳ BLOCKED: PM Blocker Resolution #1 must be confirmed first**"
+      }
+    ], createLifecycleState())).toBeNull();
+  });
+
+  it("ignores blocked running rows when selecting the next automatic continuation target", () => {
+    expect(resolveServiceContinueWorker([
+      {
+        status: "✅",
+        batch: "1",
+        worker: "R-01",
+        model: "CODEX",
+        depends_on: "PRE-FLIGHT",
+        notes: "Completed."
+      },
+      {
+        status: "🔄",
+        batch: "1",
+        worker: "R-03",
+        model: "CODEX",
+        depends_on: "PRE-FLIGHT",
+        notes: "**⏳ BLOCKED: PM Blocker Resolution #2 must be confirmed first**"
+      },
+      {
+        status: "⬜",
+        batch: "2",
+        worker: "E-01R",
+        model: "CODEX",
+        depends_on: "R-01",
+        notes: "Ready to rerun."
+      }
+    ], createLifecycleState({
+      "R-01": {
+        status: "completed"
+      }
+    }))).toBe("E-01R");
+  });
 });
 
-function createLifecycleState(): DispatchThreadStateV2 {
+function createLifecycleState(
+  workerOverrides: Record<string, Partial<DispatchThreadStateV2["workers"][string]>> = {}
+): DispatchThreadStateV2 {
   return {
     version: 2,
     dispatcher: {
@@ -49,7 +97,23 @@ function createLifecycleState(): DispatchThreadStateV2 {
       started_at: null,
       status: "pending"
     },
-    workers: {},
+    workers: Object.fromEntries(
+      Object.entries(workerOverrides).map(([workerId, overrides]) => ([
+        workerId,
+        {
+          thread_id: `${workerId.toLowerCase()}-thread`,
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "pending",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          ...overrides
+        }
+      ]))
+    ),
     last_reconciled_at: null
   };
 }

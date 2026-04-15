@@ -617,6 +617,58 @@ describe("ReconciliationWatchdog", () => {
     expect(stallCallback).not.toHaveBeenCalled();
   });
 
+  it("does not invoke onDispatcherStalled when only PM-blocked pending workers remain", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ✅ | 0 | PRE-FLIGHT | Environment health check | OPUS | — | Complete. |",
+        "| ⬜ | 1 | R-02 | Pending PM decision | CODEX | PRE-FLIGHT | **⏳ BLOCKED: PM Blocker Resolution #1 must be confirmed first** |"
+      ].join("\n"),
+      "utf8"
+    );
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: null, started_at: null, status: "abandoned" },
+      workers: {
+        "PRE-FLIGHT": {
+          thread_id: "preflight-thread",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("t", "running"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).not.toHaveBeenCalled();
+  });
+
   it("does not invoke onDispatcherStalled when workers are still running", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

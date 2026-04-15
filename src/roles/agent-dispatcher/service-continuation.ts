@@ -6,6 +6,7 @@ export interface DispatchContinuationPlanRow {
   worker: string;
   model: string | null;
   depends_on: string | string[];
+  notes?: string | null;
 }
 
 export interface DispatchContinuationWorkerRow {
@@ -14,6 +15,7 @@ export interface DispatchContinuationWorkerRow {
   worker_id: string;
   model: string | null;
   depends_on: string[];
+  notes?: string | null;
 }
 
 export function resolveServiceContinueWorker(
@@ -39,10 +41,30 @@ export function resolveServiceContinueWorkerFromWorkerRows(
       batch: row.batch ?? null,
       worker: row.worker_id,
       model: row.model,
-      depends_on: row.depends_on
+      depends_on: row.depends_on,
+      notes: row.notes ?? null
     })),
     lifecycleState
   );
+}
+
+export function countEligiblePendingServiceContinueWorkersFromWorkerRows(
+  rows: DispatchContinuationWorkerRow[],
+  lifecycleState: DispatchThreadStateV2
+): number {
+  const normalizedRows = rows.map((row) => ({
+    status: row.status,
+    batch: row.batch ?? null,
+    worker: row.worker_id,
+    model: row.model,
+    depends_on: row.depends_on,
+    notes: row.notes ?? null
+  }));
+  const rowsByWorker = indexRowsByWorker(normalizedRows);
+
+  return normalizedRows.filter((row) => {
+    return row.status.trim() === "⬜" && isEligibleServiceContinueRow(row, normalizedRows, rowsByWorker, lifecycleState);
+  }).length;
 }
 
 function resolveImplicitContinueWorker(
@@ -56,6 +78,10 @@ function resolveImplicitContinueWorker(
 
   const [row] = runningRows;
   if (!row) {
+    return null;
+  }
+
+  if (hasAutomaticDispatchBlocker(row)) {
     return null;
   }
 
@@ -91,6 +117,10 @@ function isEligibleServiceContinueRow(
     return false;
   }
 
+  if (hasAutomaticDispatchBlocker(row)) {
+    return false;
+  }
+
   switch (row.status.trim()) {
     case "⚠️ ABANDONED":
       return true;
@@ -121,6 +151,24 @@ function normalizeDependsOnWorkers(dependsOn: string | string[] | undefined): st
     .flatMap((value) => splitDependencyClauses(value))
     .filter((value, index, clauses) => clauses.indexOf(value) === index);
 }
+
+export function hasAutomaticDispatchBlocker(
+  row: Pick<DispatchContinuationPlanRow, "notes">
+): boolean {
+  const normalizedNotes = normalizeDependencyText(row.notes ?? "").replace(/\*/g, "");
+  if (normalizedNotes.length === 0) {
+    return false;
+  }
+
+  return AUTOMATIC_BLOCKER_NOTE_PATTERNS.some((pattern) => pattern.test(normalizedNotes));
+}
+
+const AUTOMATIC_BLOCKER_NOTE_PATTERNS = [
+  /⏳\s*BLOCKED\b/i,
+  /\bBLOCKED:\b/i,
+  /\bDO\s+NOT\s+DISPATCH\s+UNTIL\b/i,
+  /\bMUST\s+BE\s+CONFIRMED\s+FIRST\b/i
+];
 
 function splitDependencyClauses(value: string | undefined): string[] {
   if (!value) {

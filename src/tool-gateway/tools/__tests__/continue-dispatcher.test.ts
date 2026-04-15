@@ -69,14 +69,16 @@ describe("continue-dispatcher tool", () => {
           batch: "1",
           worker: "N-01",
           model: "CODEX",
-          depends_on: []
+          depends_on: [],
+          notes: null
         },
         {
           status: "⬜",
           batch: "2",
           worker: "N-02",
           model: "CODEX",
-          depends_on: ["N-01"]
+          depends_on: ["N-01"],
+          notes: null
         }
       ],
       "N-02"
@@ -136,6 +138,86 @@ describe("continue-dispatcher tool", () => {
       running_workers: ["R-07"]
     });
     expect(continueWorker).not.toHaveBeenCalled();
+  });
+
+  it("ignores blocked running rows when selecting the next local continuation target", async () => {
+    const harness = await createHarness({
+      planMarkdown: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "|--------|-------|--------|------|-------|------------|-------|",
+        "| 🔄 | 1 | R-03 | Blocked fix | CODEX | PRE-FLIGHT | **⏳ BLOCKED: PM Blocker Resolution #2 must be confirmed first** |",
+        "| ✅ | 1 | R-01 | Prior fix | CODEX | PRE-FLIGHT | Completed |",
+        "| ⬜ | 2 | E-01R | Follow-on rerun | CODEX | R-01 | Ready to continue |",
+        ""
+      ].join("\n"),
+      lifecycleState: {
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-10T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": {
+            thread_id: "worker-thread-r01",
+            trace_id: null,
+            started_at: "2026-04-10T00:00:00.000Z",
+            last_seen_at: "2026-04-10T00:05:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          "R-03": {
+            thread_id: "worker-thread-r03",
+            trace_id: null,
+            started_at: "2026-04-10T00:00:00.000Z",
+            last_seen_at: "2026-04-10T00:05:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }
+    });
+    const continueWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      workerId: "E-01R",
+      threadId: "worker-thread-789"
+    });
+
+    const result = await executeContinueDispatcher(
+      { dispatcherId: harness.dispatcherId },
+      harness.createDeps({ continueWorker })
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      status: "continued",
+      message: "continued: E-01R",
+      dispatcher_thread_id: "dispatcher-thread-123",
+      worker: "E-01R"
+    });
+    expect(continueWorker).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.arrayContaining([
+        expect.objectContaining({
+          worker: "R-03",
+          notes: "**⏳ BLOCKED: PM Blocker Resolution #2 must be confirmed first**"
+        }),
+        expect.objectContaining({
+          worker: "E-01R",
+          notes: "Ready to continue"
+        })
+      ]),
+      "E-01R"
+    );
   });
 
   it("preserves local_tool_bootstrap_failed semantics in the local fallback path", async () => {

@@ -15,6 +15,7 @@ export interface ContinueDispatchPlanRow {
   status: string;
   worker: string;
   model: string;
+  notes?: string | null;
 }
 
 export interface ContinueDispatchWorkerResult {

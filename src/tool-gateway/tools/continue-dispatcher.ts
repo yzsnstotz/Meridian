@@ -4,7 +4,11 @@ import path from "node:path";
 import { parseNormalizedAgentDispatcherConfig } from "../../roles/agent-dispatcher/config-normalization";
 import { continueDispatchWorker, type ContinueDispatchPlanRow } from "../../roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
-import { isHumanDispatchRow, resolveServiceContinueWorker } from "../../roles/agent-dispatcher/service-continuation";
+import {
+  hasAutomaticDispatchBlocker,
+  isHumanDispatchRow,
+  resolveServiceContinueWorker
+} from "../../roles/agent-dispatcher/service-continuation";
 import {
   ACTIVE_ROLE_STATUS,
   PAUSED_ROLE_STATUS,
@@ -174,7 +178,8 @@ async function continueDispatcherLocally(
     batch: row.batch,
     worker: row.worker_id,
     model: row.model ?? "",
-    depends_on: row.depends_on
+    depends_on: row.depends_on,
+    notes: row.notes
   }));
   const lifecycleState = deps.loadLifecycle(config.dispatch_plan_path);
   const effectiveWorkerId = requestedWorkerId ?? resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
@@ -245,9 +250,11 @@ function requireParam(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function findRunningNonHumanWorkers(rows: Array<Pick<ContinueDispatchPlanRow, "status" | "worker" | "model">>): string[] {
+function findRunningNonHumanWorkers(
+  rows: Array<Pick<ContinueDispatchPlanRow, "status" | "worker" | "model" | "notes">>
+): string[] {
   return rows
-    .filter((row) => row.status === "🔄" && !isHumanDispatchRow(row))
+    .filter((row) => row.status === "🔄" && !isHumanDispatchRow(row) && !hasAutomaticDispatchBlocker(row))
     .map((row) => row.worker.trim())
     .filter((workerId) => workerId.length > 0);
 }

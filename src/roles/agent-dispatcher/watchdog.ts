@@ -8,7 +8,10 @@ import type { DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { LifecycleStore } from "./lifecycle-store";
 import { queryHubThreadObservation, reconcile, type ReconciliationReport } from "./reconciler";
-import { resolveServiceContinueWorkerFromWorkerRows } from "./service-continuation";
+import {
+  countEligiblePendingServiceContinueWorkersFromWorkerRows,
+  resolveServiceContinueWorkerFromWorkerRows
+} from "./service-continuation";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
@@ -240,7 +243,7 @@ async function resolveRecoverableWorkerState(
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
     const rows = parseDispatchPlanRows(markdown);
     return {
-      pendingWorkerCount: rows.filter((row) => row.status === "⬜" && !isHumanOwnedModel(row.model)).length,
+      pendingWorkerCount: countEligiblePendingServiceContinueWorkersFromWorkerRows(rows, state),
       continueWorkerId: resolveServiceContinueWorkerFromWorkerRows(rows, state)
     };
   } catch {
