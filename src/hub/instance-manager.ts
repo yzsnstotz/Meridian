@@ -373,9 +373,27 @@ export class InstanceManager {
   }
 
   async listModels(threadId: string): Promise<ProviderModelCatalogPayload> {
-    const instance = this.registry.get(threadId);
-    if (!instance) {
+    const registeredInstance = this.registry.get(threadId);
+    if (!registeredInstance) {
       throw new Error(`Cannot list models; thread_id=${threadId} is not registered`);
+    }
+
+    let instance = registeredInstance;
+    if (!instance.model_id) {
+      try {
+        instance = (await this.status(threadId)).instance;
+      } catch (error) {
+        this.log.debug(
+          {
+            operation: "list_models_status_probe_failed",
+            thread_id: threadId,
+            socket_path: instance.socket_path,
+            pid: instance.pid,
+            err: error instanceof Error ? error.message : String(error)
+          },
+          "Continuing model catalog lookup without a live current-model backfill"
+        );
+      }
     }
 
     const catalog = await this.modelCatalog.listModels(instance.agent_type);
@@ -568,8 +586,8 @@ export class InstanceManager {
 
     try {
       const rawStatus = await client.getStatus();
-      const reportedStatus = this.toKnownStatus(rawStatus.status);
-      const updatedInstance = reportedStatus ? this.registry.setStatus(threadId, reportedStatus) ?? instance : instance;
+      const enrichedStatus = await this.enrichRawStatusWithLiveModel(rawStatus, client);
+      const updatedInstance = this.applyLiveStatus(threadId, instance, enrichedStatus);
 
       this.log.debug(
         {
@@ -578,14 +596,16 @@ export class InstanceManager {
           pid: updatedInstance.pid,
           socket_path: updatedInstance.socket_path,
           prev_status: instance.status,
-          next_status: reportedStatus ?? instance.status
+          next_status: updatedInstance.status,
+          prev_model_id: instance.model_id ?? null,
+          next_model_id: updatedInstance.model_id ?? null
         },
         "Agent status fetched"
       );
 
       return {
         instance: updatedInstance,
-        agent_status: rawStatus
+        agent_status: enrichedStatus
       };
     } finally {
       client.disconnect();
@@ -1142,10 +1162,13 @@ export class InstanceManager {
     try {
       await client.connect(instance.socket_path);
       const rawStatus = await client.getStatus();
-      const reportedStatus = this.toKnownStatus(rawStatus.status);
+      const enrichedStatus = await this.enrichRawStatusWithLiveModel(rawStatus, client);
+      const reportedStatus = this.toKnownStatus(enrichedStatus.status);
+      const reportedModelId = this.extractReportedModelId(enrichedStatus);
       return {
         ...instance,
-        status: reportedStatus ?? instance.status
+        status: reportedStatus ?? instance.status,
+        ...(reportedModelId ? { model_id: reportedModelId } : {})
       };
     } catch (error) {
       this.log.warn(
@@ -1863,5 +1886,141 @@ export class InstanceManager {
       return null;
     }
     return candidate as AgentInstanceStatus;
+  }
+
+  private applyLiveStatus(
+    threadId: string,
+    instance: AgentInstance,
+    rawStatus: Record<string, unknown>
+  ): AgentInstance {
+    let updatedInstance = instance;
+    const reportedStatus = this.toKnownStatus(rawStatus.status);
+    if (reportedStatus && reportedStatus !== updatedInstance.status) {
+      updatedInstance = this.registry.setStatus(threadId, reportedStatus) ?? updatedInstance;
+    }
+
+    const reportedModelId = this.extractReportedModelId(rawStatus);
+    if (reportedModelId && reportedModelId !== updatedInstance.model_id) {
+      updatedInstance =
+        this.registry.setModelId(threadId, reportedModelId) ??
+        {
+          ...updatedInstance,
+          model_id: reportedModelId
+        };
+    }
+
+    return updatedInstance;
+  }
+
+  private async enrichRawStatusWithLiveModel(
+    rawStatus: Record<string, unknown>,
+    client: Pick<StatusClient, "getMessages">
+  ): Promise<Record<string, unknown>> {
+    if (this.extractReportedModelId(rawStatus) || typeof client.getMessages !== "function") {
+      return rawStatus;
+    }
+
+    try {
+      const messages = await client.getMessages();
+      const reportedModelId = this.extractReportedModelIdFromMessages(messages);
+      if (!reportedModelId) {
+        return rawStatus;
+      }
+
+      return {
+        ...rawStatus,
+        current_model_id: reportedModelId
+      };
+    } catch {
+      return rawStatus;
+    }
+  }
+
+  private extractReportedModelId(rawStatus: Record<string, unknown>): string | null {
+    const directModelId = this.readNonEmptyString(rawStatus, [
+      "current_model_id",
+      "model_id",
+      "model",
+      "currentModelId",
+      "modelId"
+    ]);
+    if (directModelId) {
+      return directModelId;
+    }
+
+    const currentModel = rawStatus.current_model;
+    if (currentModel && typeof currentModel === "object") {
+      return this.readNonEmptyString(currentModel as Record<string, unknown>, ["id", "model_id", "model", "name"]);
+    }
+
+    return null;
+  }
+
+  private extractReportedModelIdFromMessages(messages: Record<string, unknown>[]): string | null {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (!candidate || typeof candidate !== "object") {
+        continue;
+      }
+
+      const directModelId = this.extractReportedModelId(candidate);
+      if (directModelId) {
+        return directModelId;
+      }
+
+      const nestedMessage = candidate.message;
+      if (nestedMessage && typeof nestedMessage === "object") {
+        const nestedModelId = this.extractReportedModelId(nestedMessage as Record<string, unknown>);
+        if (nestedModelId) {
+          return nestedModelId;
+        }
+      }
+
+      const contentCandidate =
+        typeof candidate.content === "string"
+          ? candidate.content
+          : typeof candidate.message === "string"
+            ? candidate.message
+            : "";
+      const contentModelId = this.extractReportedModelIdFromText(contentCandidate);
+      if (contentModelId) {
+        return contentModelId;
+      }
+    }
+
+    return null;
+  }
+
+  private extractReportedModelIdFromText(content: string): string | null {
+    const normalized = content.replace(/\u00a0/g, " ");
+    const labelledMatch = normalized.match(
+      /(?:^|\n)\s*[|│]?\s*(?:model|current model)\s*:\s*([A-Za-z0-9][A-Za-z0-9._:-]*)/i
+    );
+    if (labelledMatch?.[1]) {
+      return labelledMatch[1];
+    }
+
+    const footerMatches = normalized.matchAll(
+      /(?:^|\n)\s*([A-Za-z0-9][A-Za-z0-9._:-]*)\s+(?:low|medium|high|xhigh)\s+[·•]/g
+    );
+    let footerModelId: string | null = null;
+    for (const match of footerMatches) {
+      footerModelId = match[1] ?? footerModelId;
+    }
+    return footerModelId;
+  }
+
+  private readNonEmptyString(record: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value !== "string") {
+        continue;
+      }
+      const normalized = value.trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return null;
   }
 }

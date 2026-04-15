@@ -901,6 +901,75 @@ test("attach + status + list + kill + restart lifecycle", async () => {
   assert.equal(manager.getAttachedThread("chat-1"), null);
 });
 
+test("status persists the live current model reported by agentapi", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_command: string, _args: string[]) => {
+      return new FakeChildProcess(3401) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({
+        status: "running",
+        current_model_id: "gpt-5.4"
+      })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  const status = await manager.status(threadId);
+
+  assert.equal(status.instance.model_id, "gpt-5.4");
+  assert.equal(registry.get(threadId)?.model_id, "gpt-5.4");
+
+  await manager.kill(threadId);
+});
+
+test("status infers the live current model from agent messages when status omits it", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_command: string, _args: string[]) => {
+      return new FakeChildProcess(3402) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({
+        status: "running",
+        agent_type: "codex"
+      }),
+      getMessages: async () => ([
+        {
+          id: 0,
+          role: "agent",
+          content: [
+            "╭─────────────────────────────────────────────╮",
+            "│ >_ OpenAI Codex (v0.120.0)                  │",
+            "│                                             │",
+            "│ model:     gpt-5.4 xhigh   /model to change │",
+            "│ directory: ~/work/projects/clawso           │",
+            "╰─────────────────────────────────────────────╯"
+          ].join("\n")
+        }
+      ])
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  const status = await manager.status(threadId);
+
+  assert.equal(status.instance.model_id, "gpt-5.4");
+  assert.equal(status.agent_status.current_model_id, "gpt-5.4");
+  assert.equal(registry.get(threadId)?.model_id, "gpt-5.4");
+
+  await manager.kill(threadId);
+});
+
 test("rehydrateFromState restores live instances and session bindings", async () => {
   const registry = new InstanceRegistry();
   const failingSocketPath = socketPathForThread("codex_02");
@@ -1030,6 +1099,93 @@ test("listModels returns provider catalog and current selection", async () => {
     { id: "gpt-5.4", label: "GPT-5.4" },
     { id: "codex-5.3-max", label: "Codex-5.3-Max" }
   ]);
+});
+
+test("listModels backfills the current model from live status when the registry has none", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: socketPathForThread("codex_01"),
+    pid: 100,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({
+        status: "idle",
+        model: "gpt-5.4"
+      })
+    }),
+    modelCatalog: {
+      listModels: async () => ({
+        provider: "codex",
+        models: [
+          { id: "gpt-5.4", label: "GPT-5.4" },
+          { id: "codex-5.3-max", label: "Codex-5.3-Max" }
+        ]
+      })
+    } as never
+  });
+
+  const catalog = await manager.listModels("codex_01");
+
+  assert.equal(catalog.current_model_id, "gpt-5.4");
+  assert.equal(registry.get("codex_01")?.model_id, "gpt-5.4");
+});
+
+test("listModels backfills the current model from live messages when status omits it", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: socketPathForThread("codex_01"),
+    pid: 100,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({
+        status: "idle",
+        agent_type: "codex"
+      }),
+      getMessages: async () => ([
+        {
+          id: 0,
+          role: "agent",
+          content: "  gpt-5.4 xhigh · ~/work/projects/clawso"
+        }
+      ])
+    }),
+    modelCatalog: {
+      listModels: async () => ({
+        provider: "codex",
+        models: [
+          { id: "gpt-5.4", label: "GPT-5.4" },
+          { id: "codex-5.3-max", label: "Codex-5.3-Max" }
+        ]
+      })
+    } as never
+  });
+
+  const catalog = await manager.listModels("codex_01");
+
+  assert.equal(catalog.current_model_id, "gpt-5.4");
+  assert.equal(registry.get("codex_01")?.model_id, "gpt-5.4");
 });
 
 test("attach enforces single interface owner per thread", async () => {
