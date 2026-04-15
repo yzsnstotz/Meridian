@@ -145,6 +145,7 @@ export class RoleRunner {
 type AgentDispatcherRoleInternals = {
   ctx: RoleContext | null;
   sessionManager: SessionManager | null;
+  stateStore?: Pick<StateStore, "load" | "save">;
 };
 
 type SessionManagerInternals = {
@@ -158,10 +159,7 @@ async function restartRehydratedAgentDispatcher(role: BaseRole): Promise<void> {
     return;
   }
 
-  const sessionManager = new SessionManager(role.threadId, {
-    dispatchPlanPath: config.dispatch_plan_path,
-    stateStore: new StateStore()
-  });
+  const sessionManager = createRehydrationSessionManager(role, config.dispatch_plan_path);
   await sessionManager.onRestart();
 }
 
@@ -179,10 +177,7 @@ async function tryResumeRehydratedAgentDispatcher(role: BaseRole, context: RoleC
     return false;
   }
 
-  const sessionManager = new SessionManager(role.threadId, {
-    dispatchPlanPath: config.dispatch_plan_path,
-    stateStore: new StateStore()
-  });
+  const sessionManager = createRehydrationSessionManager(role, config.dispatch_plan_path);
   const sessionManagerInternals = sessionManager as unknown as SessionManagerInternals;
   await sessionManagerInternals.pauseStateReady;
   sessionManagerInternals.dispatcherThreadId = dispatcherThreadId;
@@ -192,6 +187,14 @@ async function tryResumeRehydratedAgentDispatcher(role: BaseRole, context: RoleC
   roleInternals.sessionManager = sessionManager;
 
   return true;
+}
+
+function createRehydrationSessionManager(role: BaseRole, dispatchPlanPath: string): SessionManager {
+  const roleInternals = role as unknown as AgentDispatcherRoleInternals;
+  return new SessionManager(role.threadId, {
+    dispatchPlanPath,
+    stateStore: roleInternals.stateStore ?? new StateStore()
+  });
 }
 
 function parseAgentDispatcherConfig(role: BaseRole) {

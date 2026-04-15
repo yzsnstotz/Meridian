@@ -868,13 +868,12 @@ async function listRoles(stateStore: PersistableStateStore, log: Logger): Promis
   const state = await loadState(stateStore);
 
   return Promise.all(state.roles.map(async (role) => {
-    const config = parseDispatcherConfig(role.config);
     const status = await resolvePresentedRoleStatus(role, log);
     return {
       thread_id: role.threadId,
       role_type: role.roleType,
       status,
-      task_count: config?.tasks.length ?? 0
+      task_count: await resolveRoleTaskCount(role, log)
     };
   }));
 }
@@ -895,6 +894,14 @@ async function getRole(
   }
 
   const config = parseDispatcherConfig(role.config);
+  const explicitTasks = (config?.tasks ?? []).map((task) => ({
+    task_id: task.task_id,
+    status: task.status,
+    depends_on: [...task.depends_on],
+    trace_id: task.result_trace_id?.slice(0, 8),
+    result_summary: task.result_summary,
+    instruction: task.instruction
+  }));
 
   const response: RoleDetailResponse = {
     thread_id: role.threadId,
@@ -902,14 +909,7 @@ async function getRole(
     status: role.status,
     taskspec: config?.taskspec,
     system_prompt: config?.system_prompt,
-    tasks: (config?.tasks ?? []).map((task) => ({
-      task_id: task.task_id,
-      status: task.status,
-      depends_on: [...task.depends_on],
-      trace_id: task.result_trace_id?.slice(0, 8),
-      result_summary: task.result_summary,
-      instruction: task.instruction
-    }))
+    tasks: explicitTasks
   };
 
   if (role.roleType !== "agent-dispatcher") {
@@ -932,6 +932,9 @@ async function getRole(
     dispatchPlan.rows,
     options.log
   );
+  if (response.tasks.length === 0 && dispatchPlanRows.length > 0) {
+    response.tasks = buildSyntheticDispatchTasks(dispatchPlanRows);
+  }
   let dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
   let dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
   let continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
@@ -1013,6 +1016,83 @@ async function getRole(
       rows: dispatchPlanRows
     }
   };
+}
+
+async function resolveRoleTaskCount(role: RoleState, log: Logger): Promise<number> {
+  const config = parseDispatcherConfig(role.config);
+  const explicitTaskCount = config?.tasks.length ?? 0;
+  if (explicitTaskCount > 0 || role.roleType !== "agent-dispatcher") {
+    return explicitTaskCount;
+  }
+
+  const agentDispatcherConfig = parseAgentDispatcherConfig(role.config);
+  if (!agentDispatcherConfig) {
+    return explicitTaskCount;
+  }
+
+  const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, log);
+  return dispatchPlan.rows.length;
+}
+
+function buildSyntheticDispatchTasks(rows: DispatchPlanRow[]): RoleDetailResponse["tasks"] {
+  return rows.map((row) => ({
+    task_id: row.worker,
+    status: toSyntheticTaskStatus(row.lifecycle_status ?? row.status),
+    depends_on: normalizeSyntheticTaskDependencies(row.depends_on),
+    result_summary: normalizeSyntheticTaskSummary(row.notes),
+    instruction: buildSyntheticTaskInstruction(row)
+  }));
+}
+
+function toSyntheticTaskStatus(status: string | null | undefined): string {
+  const normalized = status?.trim();
+  switch (normalized) {
+    case "completed":
+    case "✅":
+      return "done";
+    case "running":
+    case "🔄":
+      return "running";
+    case "failed":
+    case "❌":
+      return "failed";
+    case "abandoned":
+    case "⚠️ ABANDONED":
+      return "failed";
+    case "skipped":
+    case "⛔ SKIPPED":
+      return "done";
+    case "pending":
+    case "⬜":
+    default:
+      return "pending";
+  }
+}
+
+function normalizeSyntheticTaskDependencies(dependsOn: string | null | undefined): string[] {
+  if (!dependsOn) {
+    return [];
+  }
+
+  const normalized = dependsOn.trim();
+  if (!normalized || normalized === "—") {
+    return [];
+  }
+
+  return normalized
+    .split(/,|\s+\+\s+/)
+    .map((entry) => entry.trim())
+    .filter((entry, index, entries) => entry.length > 0 && entry !== "—" && entries.indexOf(entry) === index);
+}
+
+function normalizeSyntheticTaskSummary(notes: string | null | undefined): string | undefined {
+  const normalized = notes?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function buildSyntheticTaskInstruction(row: DispatchPlanRow): string {
+  const summary = [row.task, row.notes].map((part) => part?.trim()).filter(Boolean).join(" — ");
+  return summary || row.worker;
 }
 
 async function loadState(stateStore: PersistableStateStore): Promise<AppState> {

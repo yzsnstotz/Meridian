@@ -105,6 +105,7 @@ export class HttpServer {
       const body = await fs.readFile(filePath);
       response.statusCode = 200;
       response.setHeader("content-type", asset.contentType);
+      response.setHeader("cache-control", "no-store");
       response.end(body);
     } catch (error) {
       this.log.error("HTTP request failed", {
@@ -168,11 +169,13 @@ function mapPublicAsset(pathname: string): { fileName: string; contentType: stri
 function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json; charset=utf-8");
+  response.setHeader("cache-control", "no-store");
   response.end(`${JSON.stringify(body)}\n`);
 }
 
 function writeText(response: ServerResponse, statusCode: number, body: string): void {
   response.statusCode = statusCode;
   response.setHeader("content-type", "text/plain; charset=utf-8");
+  response.setHeader("cache-control", "no-store");
   response.end(body);
 }

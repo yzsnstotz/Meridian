@@ -2001,6 +2001,23 @@ describe("role config handlers", () => {
         thread_id: "agent-dispatcher-detail",
         role_type: "agent-dispatcher",
         status: "active",
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            task_id: "N-09",
+            status: "done",
+            depends_on: []
+          }),
+          expect.objectContaining({
+            task_id: "N-10",
+            status: "done",
+            depends_on: ["N-09"]
+          }),
+          expect.objectContaining({
+            task_id: "N-11",
+            status: "running",
+            depends_on: ["N-10"]
+          })
+        ]),
         dispatcher_thread_id: "dispatcher-thread-123",
         current_worker: "N-11",
         last_log_line: "Updated the GUI dashboard.",
@@ -2549,7 +2566,8 @@ describe("role config handlers", () => {
         expect.arrayContaining([
           expect.objectContaining({
             thread_id: "agent-dispatcher-list-stale",
-            status: "needs_reactivation"
+            status: "needs_reactivation",
+            task_count: 1
           })
         ])
       );
