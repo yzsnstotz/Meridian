@@ -1486,6 +1486,59 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
   assert.ok(callCount <= 5, `expected stale polling to bail out quickly, got ${callCount} getMessages() calls`);
 });
 
+test("HubRouter times out when an active worker never emits any reply for the current run", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_02",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61114",
+    pid: 204,
+    tmux_pane: "agent_codex_02",
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  let callCount = 0;
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "running" }),
+      getMessages: async () => {
+        callCount += 1;
+        return [{ id: 5, role: "agent", content: "stale old snapshot before run" }];
+      }
+    })
+  });
+
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    callback();
+    return 0 as unknown as NodeJS.Timeout;
+  }) as typeof setTimeout;
+
+  try {
+    const result = await router.route(
+      baseMessage({
+        trace_id: "dbdc1060-a7b9-4999-ac9a-5ad4d1d4ca00",
+        thread_id: "codex_02",
+        target: "codex_02"
+      })
+    );
+
+    assert.equal(result.status, "partial");
+    assert.equal(result.run_state, "timeout");
+    assert.equal(result.content, "Task is running...");
+    assert.doesNotMatch(result.content, /stale old snapshot/);
+    assert.equal(result.progress?.phase, "running");
+    assert.equal(callCount, 121);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test("HubRouter normalizes monitor statuses before updating registry", () => {
   const registry = new InstanceRegistry();
   registry.register({

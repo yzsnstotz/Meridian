@@ -2650,10 +2650,11 @@ export class HubRouter {
     }
 
     if (fallbackCandidate === null || (fallbackTail && this.isNonFinalTerminalFrame(fallbackTail))) {
+      const noStableReply = fallbackCandidate === null;
       this.log.warn(
         {
           ...runLogContext,
-          reason: fallbackCandidate === null
+          reason: noStableReply
             ? "no_stable_reply_within_max_attempts"
             : "only_non_final_frames_within_max_attempts",
           max_attempts: maxAttempts,
@@ -2663,7 +2664,12 @@ export class HubRouter {
       );
       return {
         kind: "non_final",
-        runState: lastKnownRunActivity === "inactive" ? "timeout" : "still_running",
+        // No reply at all during the terminal wait window is a timeout even if the
+        // agent still reports itself as running. Otherwise dispatcher workers can
+        // remain stuck indefinitely on a generic "Task is running..." placeholder.
+        runState: noStableReply
+          ? "timeout"
+          : (lastKnownRunActivity === "inactive" ? "timeout" : "still_running"),
         content: fallbackTail && this.isNonFinalTerminalFrame(fallbackTail) ? fallbackCandidate : null
       };
     }
