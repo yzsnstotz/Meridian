@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises";
-import path from "node:path";
 
 import { resolveDispatchModelMapFromMarkdown } from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
@@ -7,8 +6,6 @@ import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispa
 import { executeResumeWorkerAction } from "../../tool-gateway/tools/resume-worker";
 import killTool from "../../tool-gateway/tools/kill";
 import type { AgentDispatcherConfig } from "../../types";
-
-const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
 type ResumeWorkerResult = Awaited<ReturnType<typeof executeResumeWorkerAction>>;
 type KillThreadResult = Awaited<ReturnType<typeof killTool.execute>>;
@@ -38,7 +35,6 @@ export async function continueDispatchWorker(
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult> = launchDispatchWorker,
   killThread: (threadId: string) => Promise<KillThreadResult> = defaultKillThread
 ): Promise<ContinueDispatchWorkerResult> {
-  const snapshot = await snapshotDispatchFiles(config.dispatch_plan_path);
   const dispatchPlanRow = dispatchPlanRows.find((row) => row.worker === workerId) ?? null;
   let resumeResult: ResumeWorkerResult | undefined;
   let orphanedLaunchThreadId: string | undefined;
@@ -83,7 +79,6 @@ export async function continueDispatchWorker(
       ...(resumeResult ? { resumeResult } : {})
     };
   } catch (error) {
-    await restoreDispatchFiles(snapshot);
     const message = getErrorMessage(error);
     return {
       ok: false,
@@ -128,68 +123,6 @@ async function launchWorkerFromDispatchPlan(
     workerId: dispatchPlanRow.worker,
     modelId: resolvedModel?.model_id?.trim() || undefined
   });
-}
-
-interface DispatchFileSnapshot {
-  planPath: string;
-  plan: OptionalFileSnapshot;
-  sidecarPath: string;
-  sidecar: OptionalFileSnapshot;
-}
-
-interface OptionalFileSnapshot {
-  exists: boolean;
-  content: string;
-}
-
-async function snapshotDispatchFiles(planPath: string): Promise<DispatchFileSnapshot> {
-  const sidecarPath = resolveDispatchThreadPath(planPath);
-  const [plan, sidecar] = await Promise.all([
-    readOptionalFile(planPath),
-    readOptionalFile(sidecarPath)
-  ]);
-
-  return {
-    planPath,
-    plan,
-    sidecarPath,
-    sidecar
-  };
-}
-
-async function readOptionalFile(filePath: string): Promise<OptionalFileSnapshot> {
-  try {
-    return {
-      exists: true,
-      content: await fs.readFile(filePath, "utf8")
-    };
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return { exists: false, content: "" };
-    }
-
-    throw error;
-  }
-}
-
-async function restoreDispatchFiles(snapshot: DispatchFileSnapshot): Promise<void> {
-  await Promise.all([
-    restoreOptionalFile(snapshot.planPath, snapshot.plan),
-    restoreOptionalFile(snapshot.sidecarPath, snapshot.sidecar)
-  ]);
-}
-
-async function restoreOptionalFile(filePath: string, snapshot: OptionalFileSnapshot): Promise<void> {
-  if (snapshot.exists) {
-    await fs.writeFile(filePath, snapshot.content, "utf8");
-    return;
-  }
-
-  await fs.rm(filePath, { force: true });
-}
-
-function resolveDispatchThreadPath(dispatchPlanPath: string): string {
-  return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
 }
 
 function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
@@ -237,10 +170,6 @@ function isLocalToolBootstrapFailure(message: string): boolean {
     || /\bspawn failed: Command failed\b/i.test(message)
     || /\bspawn failed: spawn\b/i.test(message)
     || /\bNode (?:CLI )?(?:startup|loader)\b/i.test(message);
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function getErrorMessage(error: unknown): string {

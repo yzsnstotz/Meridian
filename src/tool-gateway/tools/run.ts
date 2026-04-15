@@ -483,7 +483,7 @@ function extractCompletionReportTemplate(command: string, workerId: string): str
     return specialTemplatePath;
   }
 
-  const blockMatch = /Write your completion report to:\s*```[\r\n]+([^\r\n`]+)[\r\n]+```/i.exec(command);
+  const blockMatch = /Write(?: your)?(?: completion)? report to:\s*```[\r\n]+([^\r\n`]+)[\r\n]+```/i.exec(command);
   if (blockMatch?.[1]) {
     return substituteWorkerId(blockMatch[1], workerId);
   }

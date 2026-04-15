@@ -778,7 +778,7 @@ describe("continueDispatchWorker", () => {
     }
   });
 
-  it("restores plan and lifecycle snapshots when retrying a failed worker but launch bootstrap fails", async () => {
+  it("keeps the worker pending when relaunch bootstrap fails after a retry", async () => {
     const harness = await createHarness("continue-worker-failed-");
     const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
     const commandFilePath = path.join(harness.directory, "agent_dispatch_command.md");
@@ -812,8 +812,6 @@ describe("continueDispatchWorker", () => {
       }
     });
 
-    const originalPlan = await fsp.readFile(dispatchPlanPath, "utf8");
-    const originalSidecar = await fsp.readFile(sidecarPath, "utf8");
     const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
       ok: true,
       data: {
@@ -850,8 +848,107 @@ describe("continueDispatchWorker", () => {
       expect(killSpy).toHaveBeenCalledWith({
         thread_id: "worker-thread-failed"
       });
-      await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toBe(originalPlan);
-      await expect(fsp.readFile(sidecarPath, "utf8")).resolves.toBe(originalSidecar);
+      await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+        "| ⬜ | Ω+1 | R-04B | Recovery | CODEX | DELTA-CHECK | bootstrap failed |"
+      );
+      expect(lifecycleStore.load().workers["R-04B"]).toMatchObject({
+        thread_id: "worker-thread-failed",
+        status: "pending",
+        retry_count: 2
+      });
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it("does not resurrect a stale running worker when relaunch bootstrap fails", async () => {
+    const harness = await createHarness("continue-worker-stale-running-");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const commandFilePath = path.join(harness.directory, "agent_dispatch_command.md");
+    const lifecycleStore = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"), {
+      dispatchPlanPath
+    });
+
+    await fsp.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| 🔄 | 0 | PRE-FLIGHT | Environment health check | OPUS | — | Report-only worker |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "dispatcher-thread-1", started_at: FIXED_NOW, status: "running" },
+      workers: {
+        "PRE-FLIGHT": {
+          thread_id: "codex_03",
+          trace_id: "9639d2dd-431f-430a-81de-84c3c4b6d980",
+          started_at: "2026-04-15T08:07:08.491Z",
+          last_seen_at: "2026-04-15T08:08:09.840Z",
+          status: "running",
+          expected_outputs: [path.join(harness.directory, "reports", "PRE-FLIGHT.md")],
+          hub_result: {
+            trace_id: "9639d2dd-431f-430a-81de-84c3c4b6d980",
+            thread_id: "codex_03",
+            source: "codex",
+            status: "partial",
+            run_state: "still_running",
+            content: "Task is running...",
+            summary_text: "Task is running...",
+            details_text: "",
+            attachments: [],
+            timestamp: "2026-04-15T08:08:09.840Z"
+          },
+          command_preamble: null,
+          retry_count: 2
+        }
+      }
+    });
+
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "codex_03"
+      }
+    });
+    const launchWorker = vi.fn(async () => ({
+      ok: false,
+      threadId: "",
+      error: "run launch failed: ENOENT"
+    }));
+
+    try {
+      const result = await continueDispatchWorker({
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: commandFilePath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always"
+      }, [
+        {
+          status: "🔄",
+          worker: "PRE-FLIGHT",
+          model: "OPUS"
+        }
+      ], "PRE-FLIGHT", launchWorker);
+
+      expect(result).toEqual({
+        ok: false,
+        workerId: "PRE-FLIGHT",
+        error: "run launch failed: ENOENT",
+        localToolBootstrapFailure: true
+      });
+      await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+        "| ⬜ | 0 | PRE-FLIGHT | Environment health check | OPUS | — | Report-only worker |"
+      );
+      expect(lifecycleStore.load().workers["PRE-FLIGHT"]).toMatchObject({
+        thread_id: "codex_03",
+        status: "pending",
+        retry_count: 3
+      });
+      expect(killSpy).toHaveBeenCalledWith({
+        thread_id: "codex_03"
+      });
     } finally {
       killSpy.mockRestore();
     }

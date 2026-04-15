@@ -225,6 +225,50 @@ describe("run tool", () => {
     );
   });
 
+  it("derives the completion report path when the command omits the word your", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write completion report to:",
+          "```",
+          "/tmp/dispatch/reports/[WORKER_ID].md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 0 | PRE-FLIGHT | Environment check | OPUS | — | Report-only worker. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-preflight",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "PRE-FLIGHT"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "PRE-FLIGHT",
+      "thread-preflight",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/PRE-FLIGHT.md"],
+      expect.any(String)
+    );
+  });
+
   it("keeps the dispatcher wrapper in control-flow mode instead of implementation mode", async () => {
     const hubResult = buildHubResult("Dispatcher paused", "success");
     sendAndWaitMock.mockResolvedValue(hubResult);
