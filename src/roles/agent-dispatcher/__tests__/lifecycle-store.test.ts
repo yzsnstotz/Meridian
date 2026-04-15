@@ -197,6 +197,24 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("maps a timeout HubResult to failed", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "partial",
+      run_state: "timeout",
+      content: "Task is running...",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["N-01"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("keeps a success HubResult running when content indicates PAUSE", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

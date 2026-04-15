@@ -274,6 +274,13 @@ function determineRecordedResultTransition(
     return null;
   }
 
+  if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
+    return {
+      to: "failed",
+      trigger: "hub_result:timeout"
+    };
+  }
+
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {
     if (containsProviderError(hubResult.content)) {
       return {

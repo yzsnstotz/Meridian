@@ -697,6 +697,43 @@ describe("reconcile", () => {
     );
   });
 
+  it("marks a running worker failed when a recorded hub_result timed out", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-01": {
+          ...buildRunningWorker("worker-thread-timeout", path.join(harness.directory, "missing-report.md")),
+          hub_result: {
+            trace_id: "55555555-5555-4555-8555-555555555555",
+            thread_id: "worker-thread-timeout",
+            source: "codex",
+            status: "partial",
+            run_state: "timeout",
+            content: "Task is running...",
+            attachments: [],
+            timestamp: "2026-04-03T13:00:00.000Z"
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient(() => buildStatusResult("worker-thread-timeout", "running"));
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["R-01"]?.status).toBe("failed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "R-01",
+        from: "running",
+        to: "failed",
+        trigger: "hub_result:timeout"
+      })
+    );
+  });
+
   it("uses the default stale timeout when no override is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

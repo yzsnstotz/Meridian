@@ -377,6 +377,10 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
     return "failed";
   }
 
+  if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
+    return "failed";
+  }
+
   if (isNonCompletionContent(hubResult.content)) {
     return "running";
   }
