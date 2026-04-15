@@ -145,6 +145,60 @@ describe("run tool", () => {
     });
   });
 
+  it("derives worker-specific report outputs from dispatch-plan notes with angle-bracket placeholders", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | R-01 | Write report | CODEX | PRE-FLIGHT | Write results to `/tmp/dispatch/reports/<WORKER_ID>.md`. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-r01-notes",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-01"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "R-01",
+      "thread-r01-notes",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/R-01.md"],
+      expect.any(String)
+    );
+  });
+
+  it("derives mixed-syntax report-file outputs from the dispatch plan", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | File | Notes |",
+      "|--------|-------|--------|------|-------|------------|------|-------|",
+      "| 🔄 | 1 | R-01 | Mixed syntax report | CODEX | PRE-FLIGHT | reports/[WORKER_ID]-<WORKER_ID>.md | No non-report outputs required. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-r01-file",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-01"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "R-01",
+      "thread-r01-file",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/R-01-R-01.md"],
+      expect.any(String)
+    );
+  });
+
   it("keeps successful workers running until reconciliation verifies real outputs", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     sendAndWaitMock.mockResolvedValue(hubResult);
@@ -225,6 +279,50 @@ describe("run tool", () => {
     );
   });
 
+  it("derives the completion report path from the dispatch command template with angle-bracket placeholders", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write your completion report to:",
+          "```",
+          "/tmp/dispatch/dev_history/v1_round/<WORKER_ID>_report.md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 4 | N-04 | Resume worker | CODEX | R-03 | No non-report outputs required. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-234-angle",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "N-04",
+      "thread-234-angle",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/dev_history/v1_round/N-04_report.md"],
+      expect.any(String)
+    );
+  });
+
   it("derives the completion report path when the command omits the word your", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     sendAndWaitMock.mockResolvedValue(hubResult);
@@ -263,6 +361,50 @@ describe("run tool", () => {
     expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
       "PRE-FLIGHT",
       "thread-preflight",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/PRE-FLIGHT.md"],
+      expect.any(String)
+    );
+  });
+
+  it("derives the completion report path with angle-bracket placeholders when the command omits the word your", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write completion report to:",
+          "```",
+          "/tmp/dispatch/reports/<WORKER_ID>.md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 0 | PRE-FLIGHT | Environment check | OPUS | — | Report-only worker. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-preflight-angle",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "PRE-FLIGHT"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "PRE-FLIGHT",
+      "thread-preflight-angle",
       "11111111-1111-4111-8111-111111111111",
       ["/tmp/dispatch/reports/PRE-FLIGHT.md"],
       expect.any(String)
@@ -350,6 +492,52 @@ describe("run tool", () => {
     );
   });
 
+  it("prefers the DELTA-CHECK-specific report path over an angle-bracket completion template", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write your completion report to:",
+          "```",
+          "/tmp/dispatch/dev_history/v1_round/<WORKER_ID>_report.md",
+          "```",
+          "",
+          "Write to: `/tmp/dispatch/dev_history/v1_round/delta_check_report.md`"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | Ω | DELTA-CHECK | Delta Check | CODEX | N-04 | No non-report outputs required. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-delta-angle",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "DELTA-CHECK"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "DELTA-CHECK",
+      "thread-delta-angle",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/dev_history/v1_round/delta_check_report.md"],
+      expect.any(String)
+    );
+  });
+
   it("resolves dispatch-plan-relative delta repair artifacts under the plan directory", async () => {
     const planDirectory = "/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration";
     const hubResult = buildHubResult("Worker completed", "success");
@@ -424,6 +612,52 @@ describe("run tool", () => {
     expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
       "DELTA-CHECK",
       "thread-delta",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/repo/docs/branch/feat/dev_history/v1_round/delta_check_report.md"],
+      expect.any(String)
+    );
+  });
+
+  it("keeps a special-node report path when the generic Step 5b template uses angle-bracket placeholders", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/repo/docs/branch/feat/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write your completion report to:",
+          "```",
+          "dev_history/v1_round/<WORKER_ID>_report.md",
+          "```",
+          "",
+          "Write to: `dev_history/v1_round/delta_check_report.md`"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/repo/docs/branch/feat/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | Ω | DELTA-CHECK | Delta Check | CODEX | N-04 | No non-report outputs required. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-delta-angle",
+      command: "/tmp/repo/docs/branch/feat/agent_dispatch_command.md",
+      worker: "DELTA-CHECK"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "DELTA-CHECK",
+      "thread-delta-angle",
       "11111111-1111-4111-8111-111111111111",
       ["/tmp/repo/docs/branch/feat/dev_history/v1_round/delta_check_report.md"],
       expect.any(String)
@@ -516,6 +750,103 @@ describe("run tool", () => {
 
     await runTool.execute({
       thread_id: "thread-123",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
+    expect(sentPayload.payload.content).toContain("# Previous Attempt Context");
+    expect(sentPayload.payload.content).toContain("Watch the same GUI drift again.");
+    expect(sentPayload.payload.content).toContain("# Earlier Report");
+    expect(sentPayload.payload.content).toContain("avoid repeating the same mistake");
+  });
+
+  it("injects prior reply and report context when a worker is redone with angle-bracket report templates", async () => {
+    lifecycleStoreConstructor.mockImplementationOnce((filePath: string) => {
+      const workers: Record<string, Record<string, unknown>> = {
+        "N-04": {
+          thread_id: "thread-prev",
+          trace_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          started_at: "2026-03-27T23:50:00.000Z",
+          last_seen_at: "2026-03-27T23:57:00.000Z",
+          status: "pending",
+          expected_outputs: ["/tmp/dispatch/dev_history/v1_round/N-04_report.md"],
+          hub_result: {
+            trace_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            thread_id: "thread-prev",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Earlier pass finished.",
+            summary_text: "Earlier pass finished.",
+            details_text: "Your message:\nPrevious run\n\nAgent reply:\nWatch the same GUI drift again.",
+            attachments: [],
+            timestamp: "2026-03-27T23:57:00.000Z"
+          }
+        }
+      };
+
+      return {
+        filePath,
+        recordWorkerStart: vi.fn((workerId: string, threadId: string, traceId: string, expectedOutputs: string[]) => {
+          workers[workerId] = {
+            thread_id: threadId,
+            trace_id: traceId,
+            status: "running",
+            expected_outputs: [...expectedOutputs],
+            hub_result: null
+          };
+        }),
+        recordWorkerResult: vi.fn((workerId: string, hubResult: { status: string; run_state?: string }) => {
+          const worker = workers[workerId];
+          if (!worker) {
+            throw new Error(`Worker not found: ${workerId}`);
+          }
+
+          workers[workerId] = {
+            ...worker,
+            status: hubResult.status === "error" ? "failed" : "completed",
+            hub_result: hubResult
+          };
+        }),
+        load: vi.fn(() => ({
+          workers: structuredClone(workers)
+        }))
+      };
+    });
+
+    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write your completion report to:",
+          "```",
+          "/tmp/dispatch/dev_history/v1_round/<WORKER_ID>_report.md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| ⬜ | 4 | N-04 | Re-run GUI audit | CODEX | N-03 | Use prior findings as context. |"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dev_history/v1_round/N-04_report.md") {
+        return "# Earlier Report\n- The last pass missed the default checkbox behavior.";
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-123-angle",
       command: "/tmp/dispatch/agent_dispatch_command.md",
       worker: "N-04"
     });
