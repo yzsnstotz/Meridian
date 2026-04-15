@@ -10,8 +10,8 @@ import {
   type DispatchModelOverride
 } from "../../types";
 import {
-  DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
-  DEFAULT_AGENT_DISPATCHER_REPO_ROOT
+  resolveConfiguredDispatchRepoRoot,
+  resolveConfiguredDocsRoot
 } from "../../roles/agent-dispatcher/dispatch-paths";
 import { buildDispatchStatusReport } from "./dispatch-status";
 import {
@@ -91,12 +91,12 @@ const dispatchStartTool: ToolDefinition = {
     repo_root: {
       type: "string",
       required: false,
-      description: `Dispatcher sandbox root. Defaults to ${DEFAULT_AGENT_DISPATCHER_REPO_ROOT}`
+      description: "Dispatcher sandbox root. Auto-detected from dispatch artifacts when omitted"
     },
     docs_root: {
       type: "string",
       required: false,
-      description: `Detached docs root. Defaults to ${DEFAULT_AGENT_DISPATCHER_DOCS_ROOT}`
+      description: "Detached docs root. Auto-detected from dispatch artifacts when omitted"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -143,8 +143,17 @@ export async function executeDispatchStart(args: {
     warnings
   });
   const commandFilePath = await resolveCommandFilePath(args.planPath);
-  const dispatchRepoRoot = normalizeOptionalPath(args.dispatchRepoRoot) ?? DEFAULT_AGENT_DISPATCHER_REPO_ROOT;
-  const docsRoot = normalizeOptionalPath(args.docsRoot) ?? path.join(dispatchRepoRoot, "Docs");
+  const dispatchRepoRoot = resolveConfiguredDispatchRepoRoot({
+    dispatch_plan_path: args.planPath,
+    command_file_path: commandFilePath,
+    dispatch_repo_root: args.dispatchRepoRoot
+  });
+  const docsRoot = resolveConfiguredDocsRoot({
+    dispatch_plan_path: args.planPath,
+    command_file_path: commandFilePath,
+    dispatch_repo_root: args.dispatchRepoRoot,
+    docs_root: args.docsRoot
+  });
   const replyChannels = await resolveReplyChannels();
   if (!replyChannels.ok) {
     return replyChannels;

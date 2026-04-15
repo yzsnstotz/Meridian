@@ -65,8 +65,8 @@ describe("dispatch-start tool", () => {
       data: expect.objectContaining({
         dispatch_plan_path: harness.planPath,
         command_file_path: harness.commandFilePath,
-        dispatch_repo_root: "/Users/yzliu/work",
-        docs_root: "/Users/yzliu/work/Docs",
+        dispatch_repo_root: harness.dispatchRepoRoot,
+        docs_root: harness.docsRoot,
         dispatcher_id: "agent-dispatcher-1234",
         dispatcher_thread_id: "hub-thread-5678",
         reply_channel_source: "service",
@@ -96,8 +96,8 @@ describe("dispatch-start tool", () => {
       body: JSON.stringify({
         dispatch_plan_path: harness.planPath,
         command_file_path: harness.commandFilePath,
-        dispatch_repo_root: "/Users/yzliu/work",
-        docs_root: "/Users/yzliu/work/Docs",
+        dispatch_repo_root: harness.dispatchRepoRoot,
+        docs_root: harness.docsRoot,
         user_reply_channels: [
           {
             channel: "telegram",
@@ -231,12 +231,28 @@ describe("dispatch-start parsing helpers", () => {
 async function createPlanHarness(): Promise<{
   planPath: string;
   commandFilePath: string;
+  dispatchRepoRoot: string;
+  docsRoot: string;
 }> {
-  const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-start-");
-  tempDirectories.add(directory);
+  const workspaceRoot = await fs.mkdtemp("/tmp/meridian-roles-dispatch-start-");
+  tempDirectories.add(workspaceRoot);
+  await fs.mkdir(path.join(workspaceRoot, ".git"));
 
-  const planPath = path.join(directory, "dispatch_plan.md");
-  const commandFilePath = path.join(directory, "agent_dispatch_command.md");
+  const dispatchRepoRoot = path.join(workspaceRoot, "projects", "clawso");
+  await fs.mkdir(path.join(dispatchRepoRoot, ".git"), { recursive: true });
+
+  const planPath = path.join(
+    workspaceRoot,
+    "Docs",
+    "Projects",
+    "clawso",
+    "branch",
+    "feat-cli",
+    "taskspec",
+    "dispatch_plan.md"
+  );
+  const commandFilePath = path.join(path.dirname(planPath), "agent_dispatch_command.md");
+  await fs.mkdir(path.dirname(planPath), { recursive: true });
 
   await fs.writeFile(planPath, [
     "# Dispatch Plan",
@@ -256,6 +272,8 @@ async function createPlanHarness(): Promise<{
 
   return {
     planPath,
-    commandFilePath
+    commandFilePath,
+    dispatchRepoRoot: await fs.realpath(dispatchRepoRoot),
+    docsRoot: await fs.realpath(path.join(workspaceRoot, "Docs"))
   };
 }

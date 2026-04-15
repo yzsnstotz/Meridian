@@ -272,6 +272,84 @@ describe("role config handlers", () => {
     );
   });
 
+  it("infers detached repo and docs roots for agent-dispatcher preview and start", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-detached-dispatch-"));
+    const dispatchRepoRoot = path.join(workspaceRoot, "projects", "clawso");
+    const docsRoot = path.join(workspaceRoot, "Docs");
+    const dispatchPlanPath = path.join(
+      docsRoot,
+      "Projects",
+      "clawso",
+      "branch",
+      "feat-cli",
+      "taskspec",
+      "dispatch_plan.md"
+    );
+    const commandFilePath = path.join(path.dirname(dispatchPlanPath), "agent_dispatch_command.md");
+    const harness = createHarness();
+
+    await fs.mkdir(path.join(workspaceRoot, ".git"));
+    await fs.mkdir(path.join(dispatchRepoRoot, ".git"), { recursive: true });
+    await fs.mkdir(path.dirname(dispatchPlanPath), { recursive: true });
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await fs.writeFile(commandFilePath, "# Command\n", "utf8");
+    const canonicalDispatchRepoRoot = await fs.realpath(dispatchRepoRoot);
+    const canonicalDocsRoot = await fs.realpath(docsRoot);
+
+    try {
+      const preview = await invokeJson<{ system_prompt: string }>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/prompt-preview",
+        {
+          dispatch_plan_path: dispatchPlanPath,
+          command_file_path: commandFilePath,
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:ops"
+            }
+          ]
+        }
+      );
+
+      expect(preview.system_prompt).toContain(`dispatch_repo_root: ${canonicalDispatchRepoRoot}`);
+      expect(preview.system_prompt).toContain(`docs_root: ${canonicalDocsRoot}`);
+
+      const started = await invokeJson<{
+        ok: true;
+        dispatcher_id: string;
+        dispatcher_thread_id: string;
+      }>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/start",
+        {
+          thread_id: "agent-dispatcher-detached-roots",
+          dispatch_plan_path: dispatchPlanPath,
+          command_file_path: commandFilePath,
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:ops"
+            }
+          ]
+        }
+      );
+
+      await expect(harness.roleHandlers.getConfig(started.dispatcher_id)).resolves.toMatchObject({
+        config: {
+          dispatch_plan_path: dispatchPlanPath,
+          command_file_path: commandFilePath,
+          dispatch_repo_root: canonicalDispatchRepoRoot,
+          docs_root: canonicalDocsRoot
+        }
+      });
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("returns view-only agent-dispatcher launch config", async () => {
     const harness = createHarness();
 

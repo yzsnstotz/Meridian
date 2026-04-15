@@ -10,8 +10,6 @@ import { z } from "zod";
 import type { A2AClient } from "../a2a/client";
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID } from "../config";
 import {
-  DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
-  DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
   resolveConfiguredDispatchRepoRoot,
   resolveConfiguredDocsRoot
 } from "../roles/agent-dispatcher/dispatch-paths";
@@ -1533,13 +1531,13 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       dispatch_repo_root: resolveConfiguredDispatchRepoRoot({
         dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
         command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
-        dispatch_repo_root: parsed.data.dispatch_repo_root ?? DEFAULT_AGENT_DISPATCHER_REPO_ROOT
+        dispatch_repo_root: parsed.data.dispatch_repo_root
       }),
       docs_root: resolveConfiguredDocsRoot({
         dispatch_plan_path: parsed.data.dispatch_plan_path ?? "/abs/path/to/dispatch_plan.md",
         command_file_path: parsed.data.command_file_path ?? "/abs/path/to/agent_dispatch_command.md",
-        dispatch_repo_root: parsed.data.dispatch_repo_root ?? DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
-        docs_root: parsed.data.docs_root ?? DEFAULT_AGENT_DISPATCHER_DOCS_ROOT
+        dispatch_repo_root: parsed.data.dispatch_repo_root,
+        docs_root: parsed.data.docs_root
       }),
       user_reply_channels: JSON.stringify(userReplyChannels),
       default_agent_type: parsed.data.agent_type ?? "claude",

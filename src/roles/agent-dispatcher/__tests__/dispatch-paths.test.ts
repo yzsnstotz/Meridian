@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveDispatchRepoRoot } from "../dispatch-paths";
+import { resolveConfiguredDocsRoot, resolveDispatchRepoRoot } from "../dispatch-paths";
 
 const tempDirectories = new Set<string>();
 
@@ -30,9 +30,10 @@ describe("resolveDispatchRepoRoot", () => {
     expect(resolveDispatchRepoRoot([dispatchPlanPath])).toBe(repoRoot);
   });
 
-  it("maps detached Docs/Projects dispatch artifacts back to the real repo root", async () => {
+  it("prefers detached Docs/Projects mapping over an enclosing workspace git root", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(tmpdir(), "dispatch-paths-workspace-"));
     tempDirectories.add(workspaceRoot);
+    await fs.mkdir(path.join(workspaceRoot, ".git"));
 
     const repoRoot = path.join(workspaceRoot, "projects/clawso");
     await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
@@ -44,8 +45,12 @@ describe("resolveDispatchRepoRoot", () => {
     );
     await fs.mkdir(path.dirname(dispatchPlanPath), { recursive: true });
     await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
+    const canonicalDocsRoot = await fs.realpath(path.join(workspaceRoot, "Docs"));
 
     expect(resolveDispatchRepoRoot([dispatchPlanPath])).toBe(canonicalRepoRoot);
+    expect(resolveConfiguredDocsRoot({
+      dispatch_plan_path: dispatchPlanPath
+    })).toBe(canonicalDocsRoot);
   });
 
   it("maps detached Docs/Project dispatch artifacts back to the real repo root", async () => {

@@ -1,6 +1,4 @@
 const POLL_INTERVAL_MS = 3000;
-const DEFAULT_AGENT_DISPATCHER_REPO_ROOT = "/Users/yzliu/work";
-const DEFAULT_AGENT_DISPATCHER_DOCS_ROOT = `${DEFAULT_AGENT_DISPATCHER_REPO_ROOT}/Docs`;
 
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
@@ -437,8 +435,8 @@ async function setupDashboard() {
     const payload = {
       dispatch_plan_path: normalizeText(formData.get("dispatch_plan_path")),
       command_file_path: normalizeText(formData.get("command_file_path")),
-      dispatch_repo_root: normalizeText(formData.get("dispatch_repo_root")) || DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
-      docs_root: normalizeText(formData.get("docs_root")) || DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
+      dispatch_repo_root: normalizeText(formData.get("dispatch_repo_root")) || undefined,
+      docs_root: normalizeText(formData.get("docs_root")) || undefined,
       user_reply_channels: replyChannels,
       agent_type: normalizeText(formData.get("agent_type")) || "claude",
       model_id: normalizeText(formData.get("model_id")),
@@ -462,8 +460,8 @@ async function setupDashboard() {
 
       agentDispatcherFeedback.textContent = `Dispatcher ${created.dispatcher_id} started.`;
       agentDispatcherForm.reset();
-      dispatchRepoRootInput.value = DEFAULT_AGENT_DISPATCHER_REPO_ROOT;
-      docsRootInput.value = DEFAULT_AGENT_DISPATCHER_DOCS_ROOT;
+      dispatchRepoRootInput.value = "";
+      docsRootInput.value = "";
       await loadAgentDispatcherReplyOptions();
       agentDispatcherPromptDirty = false;
       await refreshAgentDispatcherPromptPreview({ force: true });
@@ -481,13 +479,6 @@ async function setupDashboard() {
       agentDispatcherFeedback.textContent = message;
     });
   });
-
-  if (!normalizeText(dispatchRepoRootInput.value)) {
-    dispatchRepoRootInput.value = DEFAULT_AGENT_DISPATCHER_REPO_ROOT;
-  }
-  if (!normalizeText(docsRootInput.value)) {
-    docsRootInput.value = DEFAULT_AGENT_DISPATCHER_DOCS_ROOT;
-  }
 
   [dispatchPlanPathInput, commandFilePathInput, dispatchRepoRootInput, docsRootInput, agentTypeSelect, agentModelInput, modeSelect, killPolicySelect]
     .forEach((element) => {

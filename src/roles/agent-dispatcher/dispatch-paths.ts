@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 
 const DISPATCH_DOCS_ANCHOR = "/docs/branch/";
+const INTERNAL_DOCS_SEGMENT = "/docs";
 const DETACHED_DOCS_REPO_MARKERS = new Set(["project", "projects"]);
 const PROJECT_REPO_DIRECTORY_NAMES = ["projects", "Projects"];
 export const DEFAULT_AGENT_DISPATCHER_REPO_ROOT = "/Users/yzliu/work";
@@ -50,12 +51,6 @@ function resolveCandidateRepoRoot(candidate: string | null | undefined): string 
   }
 
   const resolvedPath = path.resolve(trimmed);
-  const startDirectory = resolveExistingDirectory(resolvedPath);
-  const gitRoot = findNearestGitRoot(startDirectory);
-  if (gitRoot) {
-    return gitRoot;
-  }
-
   const detachedDocsRepoRoot = resolveDetachedDocsRepoRoot(resolvedPath);
   if (detachedDocsRepoRoot) {
     return detachedDocsRepoRoot;
@@ -64,6 +59,12 @@ function resolveCandidateRepoRoot(candidate: string | null | undefined): string 
   const docsBranchRoot = resolveDocsBranchRoot(resolvedPath);
   if (docsBranchRoot) {
     return docsBranchRoot;
+  }
+
+  const startDirectory = resolveExistingDirectory(resolvedPath);
+  const gitRoot = findNearestGitRoot(startDirectory);
+  if (gitRoot) {
+    return gitRoot;
   }
 
   return startDirectory;
@@ -84,7 +85,12 @@ export function resolveConfiguredDocsRoot(config: DispatchPathConfigLike): strin
     return explicitRoot;
   }
 
-  return path.join(resolveConfiguredDispatchRepoRoot(config), "Docs");
+  const inferredDocsRoot = resolveDispatchDocsRootOrNull([config.dispatch_plan_path, config.command_file_path]);
+  if (inferredDocsRoot) {
+    return inferredDocsRoot;
+  }
+
+  return resolveFallbackDocsRoot(resolveConfiguredDispatchRepoRoot(config));
 }
 
 function resolveExistingDirectory(candidatePath: string): string {
@@ -119,7 +125,7 @@ function findNearestGitRoot(startDirectory: string): string | null {
 
 function resolveDocsBranchRoot(candidatePath: string): string | null {
   const normalized = candidatePath.replace(/\\/g, "/");
-  const anchorIndex = normalized.lastIndexOf(DISPATCH_DOCS_ANCHOR);
+  const anchorIndex = normalized.toLowerCase().lastIndexOf(DISPATCH_DOCS_ANCHOR);
   if (anchorIndex <= 0) {
     return null;
   }
@@ -127,12 +133,88 @@ function resolveDocsBranchRoot(candidatePath: string): string | null {
   return path.normalize(normalized.slice(0, anchorIndex));
 }
 
+function resolveDispatchDocsRootOrNull(paths: Array<string | null | undefined>): string | null {
+  for (const candidate of paths) {
+    const resolvedDocsRoot = resolveCandidateDocsRoot(candidate);
+    if (resolvedDocsRoot) {
+      return resolvedDocsRoot;
+    }
+  }
+
+  return null;
+}
+
+function resolveCandidateDocsRoot(candidate: string | null | undefined): string | null {
+  const trimmed = candidate?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const resolvedPath = path.resolve(trimmed);
+  const detachedDocsRoot = resolveDetachedDocsRoot(resolvedPath);
+  if (detachedDocsRoot) {
+    return detachedDocsRoot;
+  }
+
+  const repoDocsRoot = resolveRepoDocsRoot(resolvedPath);
+  if (repoDocsRoot) {
+    return repoDocsRoot;
+  }
+
+  return null;
+}
+
+function resolveRepoDocsRoot(candidatePath: string): string | null {
+  const normalized = candidatePath.replace(/\\/g, "/");
+  const anchorIndex = normalized.toLowerCase().lastIndexOf(DISPATCH_DOCS_ANCHOR);
+  if (anchorIndex <= 0) {
+    return null;
+  }
+
+  return path.normalize(normalized.slice(0, anchorIndex + INTERNAL_DOCS_SEGMENT.length));
+}
+
 function resolveDetachedDocsRepoRoot(candidatePath: string): string | null {
+  const detachedCandidate = parseDetachedDocsCandidate(candidatePath);
+  if (!detachedCandidate) {
+    return null;
+  }
+
+  const { workspaceRoot, repoName } = detachedCandidate;
+  for (const repoDirectoryName of PROJECT_REPO_DIRECTORY_NAMES) {
+    const repoRootCandidate = path.join(workspaceRoot, repoDirectoryName, repoName);
+    const canonicalRepoRoot = resolveCanonicalDirectory(repoRootCandidate);
+    if (!canonicalRepoRoot) {
+      continue;
+    }
+
+    return findNearestGitRoot(canonicalRepoRoot) ?? canonicalRepoRoot;
+  }
+
+  return null;
+}
+
+function resolveDetachedDocsRoot(candidatePath: string): string | null {
+  const detachedCandidate = parseDetachedDocsCandidate(candidatePath);
+  if (!detachedCandidate) {
+    return null;
+  }
+
+  const docsRootCandidate = path.join(detachedCandidate.workspaceRoot, detachedCandidate.docsDirectoryName);
+  return resolveCanonicalDirectory(docsRootCandidate) ?? path.resolve(docsRootCandidate);
+}
+
+function parseDetachedDocsCandidate(candidatePath: string): {
+  workspaceRoot: string;
+  docsDirectoryName: string;
+  repoName: string;
+} | null {
   const normalized = candidatePath.replace(/\\/g, "/");
   const segments = normalized.split("/");
 
   for (let index = 0; index <= segments.length - 4; index += 1) {
-    const docsSegment = segments[index]?.toLowerCase();
+    const docsDirectoryName = segments[index];
+    const docsSegment = docsDirectoryName?.toLowerCase();
     const projectSegment = segments[index + 1]?.toLowerCase();
     const repoName = segments[index + 2];
     const branchSegment = segments[index + 3]?.toLowerCase();
@@ -151,15 +233,11 @@ function resolveDetachedDocsRepoRoot(candidatePath: string): string | null {
       continue;
     }
 
-    for (const repoDirectoryName of PROJECT_REPO_DIRECTORY_NAMES) {
-      const repoRootCandidate = path.join(workspaceRoot, repoDirectoryName, repoName);
-      const canonicalRepoRoot = resolveCanonicalDirectory(repoRootCandidate);
-      if (!canonicalRepoRoot) {
-        continue;
-      }
-
-      return findNearestGitRoot(canonicalRepoRoot) ?? canonicalRepoRoot;
-    }
+    return {
+      workspaceRoot,
+      docsDirectoryName: docsDirectoryName ?? "Docs",
+      repoName
+    };
   }
 
   return null;
@@ -197,4 +275,18 @@ function resolveCanonicalDirectory(candidatePath: string): string | null {
 function normalizeExplicitPath(candidatePath: string | null | undefined): string | null {
   const trimmed = candidatePath?.trim();
   return trimmed ? path.resolve(trimmed) : null;
+}
+
+function resolveFallbackDocsRoot(repoRoot: string): string {
+  const lowercaseDocs = resolveCanonicalDirectory(path.join(repoRoot, "docs"));
+  if (lowercaseDocs) {
+    return lowercaseDocs;
+  }
+
+  const uppercaseDocs = resolveCanonicalDirectory(path.join(repoRoot, "Docs"));
+  if (uppercaseDocs) {
+    return uppercaseDocs;
+  }
+
+  return path.join(repoRoot, "Docs");
 }
