@@ -390,7 +390,7 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
       return "completed";
     }
 
-    if (reportedOutputsExist(hubResult) || containsInlineReport(hubResult.content)) {
+    if (reportedOutputsExist(hubResult) || hubResultContainsInlineReport(hubResult)) {
       return "completed";
     }
 
@@ -486,6 +486,7 @@ const INLINE_REPORT_PATTERNS = [
 ];
 
 const SPECIAL_INLINE_REPORT_PATTERNS = [
+  /#\s*.+\bCompletion\s+Report\b/i,
   /#\s*Delta\s+Check\s+Report\b/i,
   /#\s*PR[\s-]*Review\s+Report\b/i
 ];
@@ -496,6 +497,20 @@ function containsInlineReport(content: string): boolean {
   }
 
   return INLINE_REPORT_PATTERNS.filter((pattern) => pattern.test(content)).length >= 2;
+}
+
+export function hubResultContainsInlineReport(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): boolean {
+  const combinedContent = [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+
+  return combinedContent.length > 0 && containsInlineReport(combinedContent);
 }
 
 function cloneWorker(worker: DispatchThreadStateV2["workers"][string]): DispatchThreadStateV2["workers"][string] {

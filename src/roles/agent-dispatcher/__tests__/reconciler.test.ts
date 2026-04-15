@@ -467,6 +467,36 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("marks a running worker completed from a stored successful inline completion report when report files are absent", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-01": {
+          ...buildRunningWorker("worker-thread-r01", path.join(harness.directory, "missing-R-01-report.md")),
+          hub_result: buildReportOnlyInlineCompletionResult("worker-thread-r01")
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["R-01"]?.status).toBe("completed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report.changed).toEqual([
+      {
+        workerId: "R-01",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      }
+    ]);
+  });
+
   it("marks a running worker completed when a terminal HubResult reports a real dev_history artifact", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -934,6 +964,38 @@ function buildValidationInlineReportResult(threadId: string): HubResult {
       "| # | Function | Case Type | Status | Notes |",
       "|---|----------|-----------|--------|-------|",
       "| 1 | `PRE-FLIGHT.1` | Test runner baseline | ✅ | `npx tsx --version` succeeded. |",
+      "```"
+    ].join("\n"),
+    attachments: [],
+    timestamp: FIXED_NOW
+  };
+}
+
+function buildReportOnlyInlineCompletionResult(threadId: string): HubResult {
+  return {
+    trace_id: "77777777-7777-4777-8777-777777777777",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content: [
+      "Validation passed. Returning the completion report inline because the docs path was not writable.",
+      "",
+      "```md",
+      "# R-01 Completion Report",
+      "",
+      "- Worker ID: `R-01`",
+      "- Date: `2026-04-03`",
+      "",
+      "## Sub-tasks Completed",
+      "",
+      "1. Wrapped `JSON.parse` in `readStore()`.",
+      "2. Preserved the invalid storage contract error.",
+      "",
+      "## Test Results",
+      "",
+      "- `npm run typecheck`",
+      "  - Result: passed",
       "```"
     ].join("\n"),
     attachments: [],

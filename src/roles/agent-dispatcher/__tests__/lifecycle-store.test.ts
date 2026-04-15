@@ -180,6 +180,45 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("completes immediately when a deferred-success result returns an inline completion report for a report-only worker", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("R-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "reports/R-01.md"
+    ]);
+
+    harness.store.recordWorkerResult("R-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "Validation passed. Returning the completion report inline because the docs path was not writable.",
+        "",
+        "```md",
+        "# R-01 Completion Report",
+        "",
+        "- Worker ID: `R-01`",
+        "- Date: `2026-04-03`",
+        "",
+        "## Sub-tasks Completed",
+        "",
+        "1. Wrapped `JSON.parse` in `readStore()`.",
+        "2. Preserved the invalid storage contract error.",
+        "",
+        "## Test Results",
+        "",
+        "- `npm run typecheck`",
+        "  - Result: passed",
+        "```"
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["R-01"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("maps an error HubResult to failed", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

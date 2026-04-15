@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
-import { LifecycleStore } from "./lifecycle-store";
+import { LifecycleStore, hubResultContainsInlineReport } from "./lifecycle-store";
 import { isMissingThreadEvidence } from "./missing-thread";
 
 export interface ReconciliationChange {
@@ -217,7 +217,7 @@ function determineWorkerTransition(
   nowMs: number,
   staleTimeoutMs: number
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
-  const hasInlineReport = hubResult ? containsInlineReport(hubResult.content) : false;
+  const hasInlineReport = hubResult ? hubResultContainsInlineReport(hubResult) : false;
 
   if ((observation.kind === "completed" || observation.kind === "idle") && outputsPresent) {
     return {
@@ -303,7 +303,7 @@ function determineRecordedResultTransition(
       };
     }
 
-    if (containsInlineReport(hubResult.content)) {
+    if (hubResultContainsInlineReport(hubResult)) {
       return {
         to: "completed",
         trigger: "hub_result:inline_report"
@@ -746,30 +746,4 @@ const PROVIDER_ERROR_PATTERNS = [
 
 function containsProviderError(content: string): boolean {
   return PROVIDER_ERROR_PATTERNS.some((pattern) => pattern.test(content));
-}
-
-const INLINE_REPORT_PATTERNS = [
-  /completion\s+report/i,
-  /#\s*.+\bvalidation\s+report\b/i,
-  /##\s*Files\s+Changed/i,
-  /##\s*Sub-task\s+Results/i,
-  /##\s*AI\s+Auto-Test\s+Results/i,
-  /##\s*Summary\b/i,
-  /##\s*Case\s+Results\b/i,
-  /##\s*Executive\s+Summary\b/i,
-  /##\s*Function\s+Coverage\s+Table\b/i,
-  /\bStatus\b.*✅\s*(?:Pass|Complete|Validated)\b/i
-];
-
-const SPECIAL_INLINE_REPORT_PATTERNS = [
-  /#\s*Delta\s+Check\s+Report\b/i,
-  /#\s*PR[\s-]*Review\s+Report\b/i
-];
-
-function containsInlineReport(content: string): boolean {
-  if (SPECIAL_INLINE_REPORT_PATTERNS.some((pattern) => pattern.test(content))) {
-    return true;
-  }
-
-  return INLINE_REPORT_PATTERNS.filter((pattern) => pattern.test(content)).length >= 2;
 }
