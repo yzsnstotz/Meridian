@@ -15,6 +15,7 @@ describe("buildSystemPrompt", () => {
       default_agent_type: "codex",
       default_mode: "pane_bridge",
       kill_policy: "always",
+      auto_approve: true,
       resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}"
     };
   }
@@ -34,6 +35,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("default_agent_type: codex");
     expect(prompt).toContain("default_mode: pane_bridge");
     expect(prompt).toContain("kill_policy: always");
+    expect(prompt).toContain("auto_approve: true");
     expect(prompt).toContain('resolved_model_map_json: {"CODEX":{"provider":"codex","model_id":"gpt-5.4"}}');
   });
 
@@ -53,8 +55,10 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("kill --thread-id <id>");
     expect(prompt).toContain("resume-worker --plan <dispatch_plan_path> --worker <worker_id>");
     expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
+    expect(prompt).toContain("Approval policy crosses the Meridian boundary as neutral `auto_approve`");
     expect(prompt).toContain("executable lives in the Meridian-roles repo");
     expect(prompt).toContain("run inside the worker sandbox rooted at `dispatch_repo_root`");
+    expect(prompt).toContain("Meridian owns worker launch transport behind the API boundary");
     expect(prompt).toContain("owns next-worker selection");
     expect(prompt).toContain("Do not resolve model routing or call worker `spawn` / `run` yourself");
     expect(prompt).not.toContain("update-status --plan");

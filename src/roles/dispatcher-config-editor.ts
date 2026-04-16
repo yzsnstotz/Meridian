@@ -48,7 +48,8 @@ export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): 
     agent_type: config.agent_type,
     ...(config.model_id ? { model_id: config.model_id } : {}),
     mode: config.mode,
-    kill_policy: config.kill_policy
+    kill_policy: config.kill_policy,
+    auto_approve: config.auto_approve
   };
 }
 

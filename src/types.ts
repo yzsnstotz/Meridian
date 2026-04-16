@@ -246,6 +246,7 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema.default("pane_bridge"),
   kill_policy: KillPolicySchema.default("always"),
+  auto_approve: z.boolean().default(false),
   model_map: DispatchModelMapSchema.optional(),
   use_agent_dispatcher: z.boolean().optional()
 })
@@ -282,7 +283,8 @@ export const AgentDispatcherEditorConfigSchema = z.object({
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema,
-  kill_policy: KillPolicySchema
+  kill_policy: KillPolicySchema,
+  auto_approve: z.boolean().default(false)
 }).strict();
 export type AgentDispatcherEditorConfig = z.infer<typeof AgentDispatcherEditorConfigSchema>;
 

@@ -60,7 +60,7 @@
         <div class="panel-heading">
           <div>
             <h2>Start Agent Dispatcher</h2>
-            <p class="muted">Launch the dispatcher controller with a dispatch plan and manual reply routing (web or Telegram).</p>
+            <p class="muted">Launch the dispatcher controller with a dispatch plan. Meridian owns runtime transport; this form sets neutral launch policy and manual reply routing.</p>
           </div>
         </div>
         <form id="start-agent-dispatcher-form" class="stack">
@@ -188,6 +188,18 @@
                 <option value="on_success">on_success</option>
                 <option value="never">never</option>
               </select>
+            </label>
+
+            <label class="field">
+              <span>auto_approve</span>
+              <input
+                id="agent-dispatcher-auto-approve"
+                name="auto_approve"
+                type="checkbox"
+              />
+              <small class="field-hint muted">
+                Neutral approval policy only. Meridian maps provider-specific launch flags.
+              </small>
             </label>
           </div>
 

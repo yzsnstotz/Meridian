@@ -109,6 +109,7 @@ const CreateRoleBodySchema = z.object({
   model_id: z.string().min(1).optional(),
   mode: z.string().min(1).optional(),
   kill_policy: z.string().min(1).optional(),
+  auto_approve: z.boolean().optional(),
   use_agent_dispatcher: z.boolean().optional(),
   config: z.unknown().optional()
 });
@@ -122,7 +123,8 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.optional(),
   mode: BridgeModeSchema.optional(),
-  kill_policy: KillPolicySchema.optional()
+  kill_policy: KillPolicySchema.optional(),
+  auto_approve: z.boolean().optional()
 });
 
 const UpdateWorkerStatusRequestSchema = z.object({
@@ -247,6 +249,7 @@ export interface RoleDetailResponse {
   model_id?: string;
   mode?: string;
   kill_policy?: string;
+  auto_approve?: boolean;
   session_log?: string[];
   dispatch_details?: DispatchWorkerDetail[];
   dispatch_plan?: {
@@ -1001,6 +1004,7 @@ async function getRole(
     ...(agentDispatcherConfig.model_id ? { model_id: agentDispatcherConfig.model_id } : {}),
     mode: agentDispatcherConfig.mode,
     kill_policy: agentDispatcherConfig.kill_policy,
+    auto_approve: agentDispatcherConfig.auto_approve,
     session_log: sessionLog,
     dispatch_details: buildDispatchWorkerDetails(
       lifecycleState,
@@ -1155,6 +1159,7 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     model_id: parsed.data.model_id ?? (nestedConfig as { model_id?: unknown }).model_id,
     mode: parsed.data.mode ?? (nestedConfig as { mode?: unknown }).mode,
     kill_policy: parsed.data.kill_policy ?? (nestedConfig as { kill_policy?: unknown }).kill_policy,
+    auto_approve: parsed.data.auto_approve ?? (nestedConfig as { auto_approve?: unknown }).auto_approve,
     use_agent_dispatcher:
       parsed.data.use_agent_dispatcher
       ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
@@ -1622,7 +1627,8 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       user_reply_channels: JSON.stringify(userReplyChannels),
       default_agent_type: parsed.data.agent_type ?? "claude",
       default_mode: parsed.data.mode ?? "pane_bridge",
-      kill_policy: parsed.data.kill_policy ?? "always"
+      kill_policy: parsed.data.kill_policy ?? "always",
+      auto_approve: parsed.data.auto_approve ?? false
     })
   };
 }

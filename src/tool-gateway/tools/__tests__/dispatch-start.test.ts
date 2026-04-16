@@ -57,7 +57,8 @@ describe("dispatch-start tool", () => {
 
     const result = await dispatchStartTool.execute({
       plan: harness.planPath,
-      model_map: "CODEX=codex:o3-mini,UNKNOWN=claude:claude-sonnet-4-6"
+      model_map: "CODEX=codex:o3-mini,UNKNOWN=claude:claude-sonnet-4-6",
+      auto_approve: "true"
     });
 
     expect(result).toEqual({
@@ -70,6 +71,7 @@ describe("dispatch-start tool", () => {
         dispatcher_id: "agent-dispatcher-1234",
         dispatcher_thread_id: "hub-thread-5678",
         reply_channel_source: "service",
+        auto_approve: true,
         model_map: {
           CODEX: {
             provider: "codex",
@@ -104,6 +106,7 @@ describe("dispatch-start tool", () => {
             chat_id: "telegram:ops"
           }
         ],
+        auto_approve: true,
         config: {
           model_map: {
             CODEX: {
@@ -160,6 +163,7 @@ describe("dispatch-start tool", () => {
     expect(result).toEqual({
       ok: true,
       data: expect.objectContaining({
+        auto_approve: false,
         reply_channel_source: "fallback",
         reply_channels: [
           {

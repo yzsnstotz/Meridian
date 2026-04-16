@@ -182,6 +182,7 @@ export class AgentDispatcherRole implements BaseRole {
       default_agent_type: this.config.agent_type,
       default_mode: this.config.mode,
       kill_policy: this.config.kill_policy,
+      auto_approve: this.config.auto_approve,
       resolved_model_map_json: JSON.stringify(this.resolveDispatchModelMap())
     });
     return configuredSystemPrompt && configuredSystemPrompt.length > 0

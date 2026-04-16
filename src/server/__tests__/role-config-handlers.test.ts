@@ -206,10 +206,33 @@ describe("role config handlers", () => {
         ],
         agent_type: "codex",
         mode: "bridge",
-        kill_policy: "always"
+        kill_policy: "always",
+        auto_approve: true
       }
-    )).resolves.toEqual({
+    )).resolves.toMatchObject({
       system_prompt: expect.stringContaining("__MERIDIAN_AGENT_DISPATCHER_ROLE_ID__")
+    });
+
+    await expect(invokeJson<{ system_prompt: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/prompt-preview",
+      {
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        auto_approve: true
+      }
+    )).resolves.toMatchObject({
+      system_prompt: expect.stringContaining("auto_approve: true")
     });
   });
 
@@ -387,7 +410,8 @@ describe("role config handlers", () => {
         ],
         agent_type: "codex",
         mode: "bridge",
-        kill_policy: "always"
+        kill_policy: "always",
+        auto_approve: false
       }
     });
   });
@@ -682,7 +706,7 @@ describe("role config handlers", () => {
     });
   });
 
-  it("persists agent-dispatcher model_id and exposes it in role detail", async () => {
+  it("persists agent-dispatcher model_id and approval policy in role detail", async () => {
     const harness = createHarness();
 
     const startResponse = await invokeJson<{ dispatcher_id: string }>(
@@ -695,11 +719,12 @@ describe("role config handlers", () => {
         command_file_path: "/tmp/agent_dispatch_command.md",
         user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
         agent_type: "claude",
-        model_id: "claude-opus-4-6"
+        model_id: "claude-opus-4-6",
+        auto_approve: true
       }
     );
 
-    const detail = await invokeJson<{ model_id?: string; agent_type?: string }>(
+    const detail = await invokeJson<{ model_id?: string; agent_type?: string; auto_approve?: boolean }>(
       harness.roleHandlers,
       "GET",
       `/api/role/${encodeURIComponent(startResponse.dispatcher_id)}`
@@ -707,10 +732,12 @@ describe("role config handlers", () => {
 
     expect(detail.agent_type).toBe("claude");
     expect(detail.model_id).toBe("claude-opus-4-6");
+    expect(detail.auto_approve).toBe(true);
     expect((await harness.stateStore.load())?.roles.find((entry) => entry.threadId === startResponse.dispatcher_id)?.config)
       .toMatchObject({
         agent_type: "claude",
-        model_id: "claude-opus-4-6"
+        model_id: "claude-opus-4-6",
+        auto_approve: true
       });
   });
 

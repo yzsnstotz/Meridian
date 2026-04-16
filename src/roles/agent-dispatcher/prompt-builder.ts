@@ -18,6 +18,7 @@ export interface PromptVars {
   default_agent_type: string;
   default_mode: string;
   kill_policy: string;
+  auto_approve: boolean;
   resolved_model_map_json?: string;
 }
 
@@ -32,6 +33,7 @@ export function buildSystemPromptFromConfig(
     | "agent_type"
     | "mode"
     | "kill_policy"
+    | "auto_approve"
     | "model_map"
   >
 ): string {
@@ -45,6 +47,7 @@ export function buildSystemPromptFromConfig(
     default_agent_type: config.agent_type,
     default_mode: config.mode,
     kill_policy: config.kill_policy,
+    auto_approve: config.auto_approve,
     resolved_model_map_json: JSON.stringify(config.model_map ?? {})
   });
 }
@@ -65,6 +68,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
   const defaultAgentType = requireNonEmpty(vars.default_agent_type, "default_agent_type");
   const defaultMode = requireNonEmpty(vars.default_mode, "default_mode");
   const killPolicy = requireNonEmpty(vars.kill_policy, "kill_policy");
+  const autoApprove = vars.auto_approve === true;
   const resolvedModelMapJson = vars.resolved_model_map_json?.trim().length
     ? vars.resolved_model_map_json.trim()
     : "{}";
@@ -84,11 +88,13 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `default_agent_type: ${defaultAgentType}`,
     `default_mode: ${defaultMode}`,
     `kill_policy: ${killPolicy}`,
+    `auto_approve: ${autoApprove}`,
     `resolved_model_map_json: ${resolvedModelMapJson}`,
     "Use the runtime `user_reply_channels` JSON array exactly when you need to send a notify override.",
+    "Approval policy crosses the Meridian boundary as neutral `auto_approve`; Meridian owns provider-specific flag mapping.",
     "The `meridian-tool` executable lives in the Meridian-roles repo, but dispatcher commands still run inside the worker sandbox rooted at `dispatch_repo_root`.",
     "Detached project docs are expected to live under `docs_root` unless the dispatch command explicitly says otherwise.",
-    "Meridian-roles service code, not this prompt, owns next-worker selection, model routing, spawn_dir enforcement, and worker launch transport.",
+    "Meridian owns worker launch transport behind the API boundary. Meridian-roles service code, not this prompt, owns next-worker selection, model routing, and spawn_dir enforcement.",
     "",
     "# Available Tools",
     `Use only \`${TOOL_ENTRYPOINT} <command>\`. The unpublished CLI alias is invalid in this phase. All commands print JSON on stdout; inspect \`ok\` and returned status fields before acting.`,
@@ -112,7 +118,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     '     "message": "still blocked: running worker(s): R-03"',
     "   }",
     "   ```",
-    "   Use this to ask Meridian-roles service to read the plan, choose the next eligible worker, and launch it with service-owned transport. Do not resolve model routing or call worker `spawn` / `run` yourself.",
+    "   Use this to ask Meridian-roles service to read the plan, choose the next eligible worker, and submit the launch through Meridian-owned transport. Do not resolve model routing or call worker `spawn` / `run` yourself.",
     "",
     "2. kill",
     `   Command: \`${TOOL_ENTRYPOINT} kill --thread-id <id>\``,
@@ -168,7 +174,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "",
     "# Workflow Steps",
     "Step 1. Read `dispatch_plan_path` before each control action.",
-    "Step 2. Let Meridian-roles service own next-worker selection and launch. When recoverable non-human work exists, call `continue-dispatcher --dispatcher <dispatcher_role_id>` and do not call worker `spawn` or `run` directly.",
+    "Step 2. Let Meridian-roles service own next-worker selection and Meridian-owned launch submission. When recoverable non-human work exists, call `continue-dispatcher --dispatcher <dispatcher_role_id>` and do not call worker `spawn` or `run` directly.",
     "- The service applies the selection priority: `⚠️ ABANDONED` first, then retryable `❌`, then `⬜` rows whose dependencies are terminal.",
     "- If an operator explicitly tells you to continue one worker, call `continue-dispatcher --dispatcher <dispatcher_role_id> --worker <worker_id>`.",
     "- If any non-human row is already `🔄`, do not try to route around it locally. Re-read the plan, wait for lifecycle reconciliation, or notify a human when progress is stalled.",
@@ -177,7 +183,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "- `ok:true` with `status: \"still_blocked\"`: do not force a sibling launch. Re-read the plan, keep control work bounded, and notify a human if the block persists or conflicts with the visible state.",
     "- `ok:true` with `status: \"local_tool_bootstrap_failed\"`: the service-side worker launch still hit a local Meridian bootstrap failure. Notify a human using the spawn-failure template and pause.",
     "- `ok:false`: re-read the plan before taking follow-up action. Do not mutate plan status directly unless a documented control tool requires it.",
-    "Step 4. Meridian-roles service enforces `kill_policy` for service-launched workers after terminal results. Use `kill` only for explicit cleanup or human-directed recovery, not as a hidden alternate launch path.",
+    "Step 4. Meridian-roles service enforces `kill_policy` for workers launched through Meridian-owned transport after terminal results. Use `kill` only for explicit cleanup or human-directed recovery, not as a hidden alternate launch path.",
     "Step 5. If no row is eligible, inspect the remaining plan state.",
     "- If a `⚠️ ABANDONED` row exists, it is eligible — go back to Step 2.",
     "- If a `❌` row exists that has not exceeded the retry limit, it is eligible — go back to Step 2.",

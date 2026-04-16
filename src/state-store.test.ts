@@ -104,6 +104,7 @@ describe("StateStore", () => {
       agent_type: "codex" as const,
       mode: "pane_bridge" as const,
       kill_policy: "always" as const,
+      auto_approve: false,
       use_agent_dispatcher: true
     };
     const staleState: AppState = {
