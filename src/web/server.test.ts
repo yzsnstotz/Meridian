@@ -1199,6 +1199,198 @@ test("Web Interface Server returns health payload for an authorized request", as
   }
 });
 
+test("Web Interface Server POST /api/autoapprove forwards set_auto_approve intent with boolean content", async () => {
+  const hubMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/autoapprove?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ thread_id: "codex_01", enabled: false })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { thread_id: string; auto_approve: boolean };
+    assert.deepEqual(payload, { thread_id: "codex_01", auto_approve: false });
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: "auto_approve=false for thread=codex_01",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(hubMessages.length, 1);
+  assert.equal(hubMessages[0]?.intent, "set_auto_approve");
+  assert.equal(hubMessages[0]?.thread_id, "codex_01");
+  assert.equal(hubMessages[0]?.target, "codex_01");
+  assert.equal(hubMessages[0]?.payload.content, "false");
+});
+
+test("Web Interface Server POST /api/autoapprove maps enable=true to string content true", async () => {
+  const hubMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/autoapprove?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ thread_id: "codex_02", enabled: true })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { thread_id: string; auto_approve: boolean };
+    assert.deepEqual(payload, { thread_id: "codex_02", auto_approve: true });
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_02",
+        source: "codex",
+        status: "success",
+        content: "auto_approve=true for thread=codex_02",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(hubMessages[0]?.intent, "set_auto_approve");
+  assert.equal(hubMessages[0]?.payload.content, "true");
+});
+
+test("Web Interface Server POST /api/autoapprove returns 404 when instance not found", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/autoapprove?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ thread_id: "missing", enabled: true })
+    });
+    assert.equal(response.status, 404);
+  }, {
+    requestHub: async (message: HubMessage) => ({
+      trace_id: message.trace_id,
+      thread_id: "missing",
+      source: "codex",
+      status: "error",
+      content: "No registered agent instance found for thread=missing",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    })
+  });
+});
+
+test("Web Interface Server POST /api/autoapprove rejects missing thread_id", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/autoapprove?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true })
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+test("Web Interface Server GET /api/autoapprove returns per-thread approval state from list", async () => {
+  const hubMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/autoapprove?token=secret-token&thread_id=codex_01`);
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { thread_id: string; auto_approve: boolean };
+    assert.deepEqual(payload, { thread_id: "codex_01", auto_approve: true });
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify([
+          {
+            thread_id: "codex_01",
+            agent_type: "codex",
+            status: "running",
+            auto_approve: true
+          }
+        ]),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(hubMessages[0]?.intent, "list");
+});
+
+test("Web Interface Server GET /api/autoapprove returns 404 when thread missing from list", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/autoapprove?token=secret-token&thread_id=unknown`);
+    assert.equal(response.status, 404);
+  }, {
+    requestHub: async (message: HubMessage) => ({
+      trace_id: message.trace_id,
+      thread_id: "global",
+      source: "codex",
+      status: "success",
+      content: JSON.stringify([
+        {
+          thread_id: "codex_01",
+          agent_type: "codex",
+          status: "running",
+          auto_approve: false
+        }
+      ]),
+      attachments: [],
+      timestamp: new Date().toISOString()
+    })
+  });
+});
+
+test("Web Interface Server spawn forwards auto_approve=false without injecting provider flags", async () => {
+  const hubMessages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "codex",
+        mode: "pane_bridge",
+        auto_approve: false
+      })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(hubMessages.length, 1);
+    assert.equal(hubMessages[0]?.intent, "spawn");
+    assert.equal(hubMessages[0]?.target, "codex");
+    assert.equal(hubMessages[0]?.payload.auto_approve, false);
+    // Callers must not ship provider-specific CLI flags; the field stays neutral at the HTTP boundary.
+    const payloadKeys = Object.keys((hubMessages[0]?.payload ?? {}) as Record<string, unknown>);
+    for (const key of payloadKeys) {
+      assert.ok(!key.startsWith("--"), `payload must not carry raw CLI flags: ${key}`);
+    }
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_new",
+        source: "codex",
+        status: "success",
+        content: "{}",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
 function buildCliHubResult(overrides: Partial<HubResult> = {}): HubResult {
   return {
     trace_id: "11111111-1111-4111-8111-111111111111",

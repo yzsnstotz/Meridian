@@ -1,10 +1,16 @@
 # web
 **Source**: `src/web/`
 **Summary**: Authenticated HTTP and WebSocket endpoints plus static hub, terminal, and bridge pages for spawning agents, browsing logs and files, editing working trees, and streaming pane output.
-**Last Scanned**: 2026-04-08T14:50:33+09:00
+**Last Scanned**: 2026-04-16T12:00:00+09:00
 **Exports Documented**: 14
 
 `src/web/server.ts` serves the `public/` bundle directly and allows those static assets to load without auth so the pages can render their own missing-token states. Every `/api/*` route and `/ws/terminal` still requires the GUI token via `Authorization: Bearer <token>` or `?token=`, and session identity is resolved from `x-session-id`, `session_id`, or the `meridian_session` cookie before hub messages are built.
+
+## Public HTTP Boundary Contract
+
+The `/api/*` routes are the canonical public control surface for Meridian. External clients (Meridian GUI, Meridian CLI, and Meridian-roles) depend only on these JSON request/response shapes. The Hub Unix socket and raw `HubMessage` payload shapes are private to Meridian; the server helpers in `src/web/server.ts` translate between the HTTP contract and Hub messages so callers never need socket paths, raw `intent` payloads, or detached `run` transport details.
+
+Approval policy is a neutral boundary field (`auto_approve: boolean` on `/api/spawn`, `enabled: boolean` on `/api/autoapprove`). Meridian is the single place that maps the policy into provider-specific CLI flags — `--dangerously-bypass-approvals-and-sandbox` for Codex (`src/agents/codex.ts:39`, `src/agents/codex.ts:52`, `src/agents/codex.ts:68`) and `--dangerously-skip-permissions` for Claude (`src/agents/claude.ts:29`, `src/agents/claude.ts:63`). External callers must never ship provider CLI flags through the API.
 
 ## Endpoint Inventory
 
@@ -38,6 +44,8 @@ All API routes return JSON. Hub-backed routes construct `reply_channel.channel =
 | `/api/models` | `POST` | Requests a model switch for the selected thread. | Validates `{ thread_id, model_id }` and forwards `intent: "switch_model"`. | `src/web/server.ts:673`, `src/web/server.ts:1160` |
 | `/api/capture_interval` | `GET` | Returns the current monitor capture interval used by manual progress refresh. | Sends a global `intent: "capture_interval"` message and parses the numeric reply with a `7000 ms` fallback. | `src/web/server.ts:678`, `src/web/server.ts:1207` |
 | `/api/capture_interval` | `POST` | Updates the monitor capture interval. | Validates `{ interval_ms }` in the `2000..30000` range and sends a global `intent: "capture_interval"` message with the requested value. | `src/web/server.ts:683`, `src/web/server.ts:1227` |
+| `/api/autoapprove` | `GET` | Returns the current approval-policy state for one thread. | Validates `thread_id`, forwards a global `intent: "list"` query, and extracts `auto_approve` for the matching instance. Returns `404` when the instance is not found. | `src/web/server.ts` (autoApproveQuerySchema), `handleAutoApproveQueryRequest` |
+| `/api/autoapprove` | `POST` | Sets the approval-policy state for one thread at runtime. | Validates `{ thread_id, enabled }`, forwards `intent: "set_auto_approve"` with Hub-private string-boolean payload content, and returns `{ thread_id, auto_approve }`. Maps Hub "no registered agent" errors to `404`. | `src/web/server.ts` (autoApproveSetBodySchema), `handleAutoApproveSetRequest` |
 
 ### WebSocket Bridge
 

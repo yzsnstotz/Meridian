@@ -1,6 +1,6 @@
 # Meridian System Index
 
-**Status**: Updated by `N-10` on `2026-04-08T18:41:26+09:00` after re-validating all module docs.
+**Status**: Updated by `R-01` on `2026-04-16T12:00:00+09:00` after the public HTTP launch-contract refresh (adds `/api/autoapprove` and centralizes provider launch-policy mapping).
 **Purpose**: This is the level-0 routing document for Meridian. Read this file first, then drill into `docs/system/modules/<module>.md` for function-level detail.
 **Format Contract**: Follow [FORMAT_SPEC.md](./FORMAT_SPEC.md). This index summarizes the completed module docs and routes agents to the smallest relevant subset of the codebase.
 **Coverage**: `8` modules indexed from `docs/system/modules/*.md`, representing `277` documented exports.
@@ -47,9 +47,9 @@ These eight module docs cover the current routing surfaces, orchestration core, 
 | [hub](./modules/hub.md) | `src/hub/` | Core hub orchestration for IPC routing, agent lifecycle, persisted conversation state, pane streaming, and multi-channel result delivery; `index.ts` boots `HubServer` and log retention. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:10:55+09:00` |
 | [interface](./modules/interface.md) | `src/interface/` | Telegram ingress, slash-command parsing, interactive picker flows, webhook/long-poll startup, and channel adapters that bridge interface events to hub messages and outbound replies. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:23:07+09:00` |
 | [shared](./modules/shared.md) | `src/shared/` | Shared transport adapters, stream parsers, approval and output normalization, provider model discovery, and Telegram/UI helpers reused by the hub, interface, and agent lifecycle layers. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:28:58+09:00` |
-| [agents](./modules/agents.md) | `src/agents/` | Provider-specific CLI configs and argument builders for spawning or streaming Claude, Codex, Gemini, and Cursor agents through the hub bridge. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:37:36+09:00` |
+| [agents](./modules/agents.md) | `src/agents/` | Provider-specific CLI configs and argument builders for spawning or streaming Claude, Codex, Gemini, and Cursor agents through the hub bridge. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-16T12:00:00+09:00` |
 | [monitor](./modules/monitor.md) | `src/monitor/` | Monitor event schemas, logger/reporter helpers, and the background service that tracks agent threads over SSE with heartbeat fallback. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:44:32+09:00` |
-| [web](./modules/web.md) | `src/web/` | Authenticated HTTP and WebSocket endpoints plus static hub, terminal, and bridge pages for spawning agents, browsing logs and files, editing working trees, and streaming pane output. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:50:33+09:00` |
+| [web](./modules/web.md) | `src/web/` | Authenticated HTTP and WebSocket endpoints plus static hub, terminal, and bridge pages for spawning agents, browsing logs and files, editing working trees, and streaming pane output. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-16T12:00:00+09:00` |
 | [bin](./modules/bin.md) | `src/bin/` | JSON-first CLI command dispatch for spawning and controlling Meridian agent threads, plus transport helpers that probe hub HTTP first and fall back to the Unix socket. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T14:58:32+09:00` |
 | [root](./modules/root.md) | `src/` | Root-level runtime contracts, environment configuration, logging factories, and log retention helpers shared across Meridian subsystems. | `[ADDED 2026-04-08T15:27:00+09:00]` | `2026-04-08T15:06:30+09:00` |
 

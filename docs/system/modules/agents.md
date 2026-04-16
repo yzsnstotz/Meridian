@@ -1,8 +1,16 @@
 # agents
 **Source**: `src/agents/`
 **Summary**: Provider-specific CLI configs and argument builders for spawning or streaming Claude, Codex, Gemini, and Cursor agents through the hub bridge.
-**Last Scanned**: 2026-04-08T14:37:36+09:00
+**Last Scanned**: 2026-04-16T12:00:00+09:00
 **Exports Documented**: 19
+
+## Provider Launch-Policy Ownership
+
+Meridian is the single owner of provider launch-policy mapping. The public HTTP boundary (`src/web/server.ts`) carries only a neutral approval policy field: `auto_approve: boolean` at spawn time on `/api/spawn`, and `enabled: boolean` at runtime on `/api/autoapprove`. The Hub (`src/hub/router.ts`, `src/hub/instance-manager.ts`) threads that flag into the provider-specific builders below, which are the only place raw CLI flags are assembled. External callers — Meridian GUI, Meridian CLI, and Meridian-roles — must never inject provider CLI flags through the API boundary; they must pass only the neutral policy field. This contract is verified by `src/agents/claude.test.ts`, `src/agents/codex.test.ts`, and the boundary assertions in `src/web/server.test.ts`.
+
+- Codex: `autoApprove === true` maps to `--dangerously-bypass-approvals-and-sandbox` (`src/agents/codex.ts:39`, `src/agents/codex.ts:52`, `src/agents/codex.ts:68`).
+- Claude: `autoApprove === true` maps to `--dangerously-skip-permissions` (`src/agents/claude.ts:29`, `src/agents/claude.ts:63`).
+- Gemini and Cursor do not expose an auto-approve flag; the policy field is ignored at the provider layer.
 
 ## Agent Provider Matrix
 
