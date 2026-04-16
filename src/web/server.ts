@@ -119,6 +119,15 @@ const pushToggleBodySchema = z.object({
   enabled: z.boolean().optional()
 });
 
+const autoApproveSetBodySchema = z.object({
+  thread_id: z.string().min(1),
+  enabled: z.boolean()
+});
+
+const autoApproveQuerySchema = z.object({
+  thread_id: z.string().min(1)
+});
+
 const a2aPartSchema = z.union([
   z.object({
     type: z.literal("text"),
@@ -703,6 +712,16 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/capture_interval" && request.method === "POST") {
       await this.handleSetCaptureInterval(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/autoapprove" && request.method === "GET") {
+      await this.handleAutoApproveQueryRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/autoapprove" && request.method === "POST") {
+      await this.handleAutoApproveSetRequest(request, response);
       return;
     }
 
@@ -1300,6 +1319,68 @@ export class WebInterfaceServer {
     );
     const intervalMs = Number.parseInt(result.content, 10);
     this.respondJson(response, 200, { interval_ms: Number.isFinite(intervalMs) ? intervalMs : body.interval_ms });
+  }
+
+  private async handleAutoApproveQueryRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const query = autoApproveQuerySchema.parse({
+      thread_id: requestUrl.searchParams.get("thread_id")
+    });
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "list",
+          thread_id: "global",
+          target: "all",
+          content: ""
+        })
+      )
+    );
+    const instances = parseInstancesContent(result.content) as Array<Record<string, unknown>>;
+    const matched = instances.find((entry) => String(entry.thread_id ?? "") === query.thread_id);
+    if (!matched) {
+      this.respondJson(response, 404, {
+        error: `No active agent instance found for thread=${query.thread_id}`
+      });
+      return;
+    }
+    this.respondJson(response, 200, {
+      thread_id: query.thread_id,
+      auto_approve: matched.auto_approve === true
+    });
+  }
+
+  private async handleAutoApproveSetRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const body = autoApproveSetBodySchema.parse(await this.readJsonBody(request));
+    const result = HubResultSchema.parse(
+      await this.requestHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "set_auto_approve",
+          thread_id: body.thread_id,
+          target: body.thread_id,
+          content: body.enabled ? "true" : "false"
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const statusCode = /no registered agent instance found|no active instance/i.test(result.content) ? 404 : 502;
+      this.respondJson(response, statusCode, { error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+    this.respondJson(response, 200, {
+      thread_id: body.thread_id,
+      auto_approve: body.enabled
+    });
   }
 
   private async resolveWorkingDirectory(sessionId: string, threadId: string): Promise<string> {
