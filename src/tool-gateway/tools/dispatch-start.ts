@@ -71,7 +71,7 @@ type ReplyChannelsResult =
 
 const dispatchStartTool: ToolDefinition = {
   name: "dispatch-start",
-  description: "Start an agent-dispatcher session for a dispatch plan with optional model-map overrides",
+  description: "Start an agent-dispatcher session for a dispatch plan with optional model-map overrides and launch policy",
   params: {
     plan: {
       type: "string",
@@ -97,6 +97,11 @@ const dispatchStartTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Detached docs root. Auto-detected from dispatch artifacts when omitted"
+    },
+    auto_approve: {
+      type: "string",
+      required: false,
+      description: "Whether Meridian should enable neutral auto-approve for dispatcher launches"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -114,7 +119,8 @@ const dispatchStartTool: ToolDefinition = {
         modelMap: params.model_map,
         modelMapFile: params.model_map_file,
         dispatchRepoRoot: params.repo_root,
-        docsRoot: params.docs_root
+        docsRoot: params.docs_root,
+        autoApprove: parseOptionalBoolean(params.auto_approve)
       });
     } catch (error) {
       return {
@@ -133,6 +139,7 @@ export async function executeDispatchStart(args: {
   modelMapFile?: string;
   dispatchRepoRoot?: string;
   docsRoot?: string;
+  autoApprove?: boolean;
 }): Promise<ToolResult> {
   const planMarkdown = await fs.readFile(args.planPath, "utf8");
   const modelLegend = parseDispatchPlanModelLegend(planMarkdown);
@@ -165,6 +172,7 @@ export async function executeDispatchStart(args: {
     dispatch_repo_root: dispatchRepoRoot,
     docs_root: docsRoot,
     user_reply_channels: replyChannels.channels,
+    auto_approve: args.autoApprove ?? false,
     config: {
       model_map: parsedModelMap
     }
@@ -195,6 +203,7 @@ export async function executeDispatchStart(args: {
       reply_channels: replyChannels.channels,
       reply_channel_source: replyChannels.source,
       model_map: parsedModelMap,
+      auto_approve: args.autoApprove ?? false,
       warnings: warnings.warnings,
       dispatch_status: await buildDispatchStatusReport(args.planPath)
     }
@@ -449,6 +458,22 @@ function readOptionalCell(value: string | undefined): string | null {
 
 function requireParam(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+
+  throw new Error(`Invalid boolean value: ${value}`);
 }
 
 function asError(error: unknown): Error {

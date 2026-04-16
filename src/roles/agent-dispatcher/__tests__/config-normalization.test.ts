@@ -33,6 +33,7 @@ describe("parseNormalizedAgentDispatcherConfig", () => {
         default_agent_type: harness.baseConfig.agent_type,
         default_mode: harness.baseConfig.mode,
         kill_policy: harness.baseConfig.kill_policy,
+        auto_approve: harness.baseConfig.auto_approve,
         resolved_model_map_json: "{}"
       }),
       threadId
@@ -94,6 +95,7 @@ async function createDetachedDispatchHarness(): Promise<{
     agent_type: "codex";
     mode: "pane_bridge";
     kill_policy: "always";
+    auto_approve: false;
     use_agent_dispatcher: true;
   };
 }> {
@@ -136,6 +138,7 @@ async function createDetachedDispatchHarness(): Promise<{
       agent_type: "codex",
       mode: "pane_bridge",
       kill_policy: "always",
+      auto_approve: false,
       use_agent_dispatcher: true
     }
   };

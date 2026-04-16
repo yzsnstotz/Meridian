@@ -47,6 +47,7 @@ async function setupDashboard() {
   const agentModelInput = document.getElementById("agent-dispatcher-model-id");
   const modeSelect = document.getElementById("agent-dispatcher-mode");
   const killPolicySelect = document.getElementById("agent-dispatcher-kill-policy");
+  const autoApproveInput = document.getElementById("agent-dispatcher-auto-approve");
   const agentDispatcherPromptInput = document.getElementById("agent-dispatcher-system-prompt");
   const agentDispatcherPromptReset = document.getElementById("agent-dispatcher-prompt-reset");
   const refreshButton = document.querySelector('[data-action="refresh-roles"]');
@@ -75,6 +76,7 @@ async function setupDashboard() {
     || !agentModelInput
     || !modeSelect
     || !killPolicySelect
+    || !autoApproveInput
     || !agentDispatcherPromptInput
     || !agentDispatcherPromptReset
   ) {
@@ -200,6 +202,7 @@ async function setupDashboard() {
           task_context_summary: resolveDispatcherTaskContext(detail).summary,
           agent_type: detail.agent_type,
           model_id: detail.model_id,
+          auto_approve: detail.auto_approve === true,
           last_log_line: detail.last_log_line
         })));
 
@@ -224,6 +227,7 @@ async function setupDashboard() {
             <div><dt>${escapeHtml(taskContext.label)}</dt><dd>${escapeHtml(taskContext.summary)}</dd></div>
             <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
             <div><dt>model</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
+            <div><dt>auto_approve</dt><dd>${detail.auto_approve === true ? "true" : "false"}</dd></div>
           </dl>
           <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
           <div class="card-actions dispatcher-card-actions">
@@ -348,7 +352,8 @@ async function setupDashboard() {
       agent_type: normalizeText(agentTypeSelect.value) || "claude",
       model_id: normalizeText(agentModelInput.value) || undefined,
       mode: normalizeText(modeSelect.value) || "pane_bridge",
-      kill_policy: normalizeText(killPolicySelect.value) || "always"
+      kill_policy: normalizeText(killPolicySelect.value) || "always",
+      auto_approve: autoApproveInput.checked
     };
 
     if (replyChannels.length > 0) {
@@ -442,6 +447,7 @@ async function setupDashboard() {
       model_id: normalizeText(formData.get("model_id")),
       mode: normalizeText(formData.get("mode")) || "pane_bridge",
       kill_policy: normalizeText(formData.get("kill_policy")) || "always",
+      auto_approve: Boolean(formData.get("auto_approve")),
       system_prompt: normalizeText(agentDispatcherPromptInput.value)
     };
 
@@ -480,7 +486,7 @@ async function setupDashboard() {
     });
   });
 
-  [dispatchPlanPathInput, commandFilePathInput, dispatchRepoRootInput, docsRootInput, agentTypeSelect, agentModelInput, modeSelect, killPolicySelect]
+  [dispatchPlanPathInput, commandFilePathInput, dispatchRepoRootInput, docsRootInput, agentTypeSelect, agentModelInput, modeSelect, killPolicySelect, autoApproveInput]
     .forEach((element) => {
       ["input", "change"].forEach((eventName) => {
         element.addEventListener(eventName, () => {
@@ -613,6 +619,7 @@ async function setupRoleDetail() {
         <div><dt>agent_type</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
         <div><dt>model_id</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
         <div><dt>mode</dt><dd>${escapeHtml(detail.mode || "—")}</dd></div>
+        <div><dt>auto_approve</dt><dd>${detail.auto_approve === true ? "true" : "false"}</dd></div>
       `
       : `
         <div><dt>role_type</dt><dd>${escapeHtml(detail.role_type)}</dd></div>
