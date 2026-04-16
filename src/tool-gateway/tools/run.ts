@@ -420,11 +420,13 @@ async function deriveExpectedOutputsFromPlan(commandPath: string, workerId: stri
     const outputs: string[] = [];
 
     if (row?.reportFile) {
-      outputs.push(resolveExpectedOutputPath(row.reportFile, commandPath, { preferCommandDirectory: true }));
+      outputs.push(resolveExpectedOutputPath(substituteWorkerId(row.reportFile, workerId), commandPath, {
+        preferCommandDirectory: true
+      }));
     }
 
     if (row?.notes) {
-      outputs.push(...extractExpectedOutputsFromNotes(row.notes, commandPath));
+      outputs.push(...extractExpectedOutputsFromNotes(row.notes, commandPath, workerId));
     }
 
     return [...new Set(outputs)];
@@ -551,12 +553,12 @@ function normalizeDispatchPlanHeader(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-function extractExpectedOutputsFromNotes(notes: string, commandPath: string): string[] {
+function extractExpectedOutputsFromNotes(notes: string, commandPath: string, workerId: string): string[] {
   const outputs: string[] = [];
   const codeSpanPattern = /`([^`]+)`/g;
 
   for (const match of notes.matchAll(codeSpanPattern)) {
-    const candidatePath = match[1]?.trim();
+    const candidatePath = substituteWorkerId(match[1]?.trim() ?? "", workerId);
     if (!candidatePath || !looksLikeFilePath(candidatePath)) {
       continue;
     }
@@ -656,7 +658,10 @@ function normalizePathForComparison(filePath: string): string {
 }
 
 function substituteWorkerId(templatePath: string, workerId: string): string {
-  return templatePath.replace(/\[WORKER_ID\]/g, workerId).trim();
+  return templatePath
+    .replace(/\[WORKER_ID\]/g, workerId)
+    .replace(/<WORKER_ID>/g, workerId)
+    .trim();
 }
 
 function isReportOnlyWorker(expectedOutputs: string[]): boolean {
