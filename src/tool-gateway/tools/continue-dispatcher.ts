@@ -33,7 +33,14 @@ export interface ContinueDispatcherDeps {
   continueWorker(
     config: Pick<
       AgentDispatcherConfig,
-      "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map" | "dispatch_repo_root"
+      | "dispatch_plan_path"
+      | "command_file_path"
+      | "mode"
+      | "agent_type"
+      | "kill_policy"
+      | "auto_approve"
+      | "model_map"
+      | "dispatch_repo_root"
     >,
     dispatchPlanRows: ContinueDispatchPlanRow[],
     workerId: string

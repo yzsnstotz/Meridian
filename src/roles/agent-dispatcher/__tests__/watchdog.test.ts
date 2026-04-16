@@ -866,7 +866,8 @@ describe("continueDispatchWorker", () => {
         command_file_path: commandFilePath,
         mode: "bridge",
         agent_type: "codex",
-        kill_policy: "always"
+        kill_policy: "always",
+        auto_approve: false
       }, [
         {
           status: "⚠️ ABANDONED",
@@ -960,7 +961,8 @@ describe("continueDispatchWorker", () => {
         command_file_path: commandFilePath,
         mode: "bridge",
         agent_type: "codex",
-        kill_policy: "always"
+        kill_policy: "always",
+        auto_approve: false
       }, [
         {
           status: "❌",
@@ -1054,7 +1056,8 @@ describe("continueDispatchWorker", () => {
         dispatch_repo_root: harness.directory,
         mode: "bridge",
         agent_type: "codex",
-        kill_policy: "always"
+        kill_policy: "always",
+        auto_approve: false
       }, [
         {
           status: "🔄",
@@ -1119,7 +1122,8 @@ describe("continueDispatchWorker", () => {
       dispatch_repo_root: harness.directory,
       mode: "bridge",
       agent_type: "codex",
-      kill_policy: "always"
+      kill_policy: "always",
+      auto_approve: false
     }, [
       {
         status: "⬜",

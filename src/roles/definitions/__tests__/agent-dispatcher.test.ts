@@ -66,6 +66,7 @@ describe("AgentDispatcherRole", () => {
       default_agent_type: "codex",
       default_mode: "pane_bridge",
       kill_policy: "always",
+      auto_approve: false,
       resolved_model_map_json: "{}"
     });
     expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
@@ -73,6 +74,7 @@ describe("AgentDispatcherRole", () => {
       agentType: "codex",
       modelId: undefined,
       mode: "pane_bridge",
+      autoApprove: false,
       systemPrompt: "dispatcher prompt",
       dispatchRepoRoot: "/tmp",
       dispatchPlanPath: "/tmp/dispatch_plan.md",

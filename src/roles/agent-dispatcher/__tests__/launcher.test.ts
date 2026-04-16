@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dispatcherHubSystemPromptPath,
   launchDispatcher,
+  type DispatcherRunHandoffRequest,
   type LaunchConfig,
   type LaunchDispatcherDeps
 } from "../launcher";
+import { MeridianApiError, type MeridianApiClient } from "../meridian-api-client";
 import {
-  buildMeridianToolArgs,
-  MERIDIAN_TOOL_EXECUTABLE,
   MERIDIAN_TOOL_DISPLAY_COMMAND,
   resolveMeridianToolCommand
 } from "../tool-entrypoint";
@@ -23,7 +23,7 @@ describe("launchDispatcher", () => {
     tempDirectories.length = 0;
   });
 
-  it("spawns the dispatcher, detaches meridian-tool run, and keeps the Hub prompt file next to the plan", async () => {
+  it("spawns the dispatcher via Meridian /api/spawn, hands off the run, and writes the Hub prompt next to the plan", async () => {
     const harness = await createHarness();
 
     const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
@@ -32,40 +32,32 @@ describe("launchDispatcher", () => {
       ok: true,
       threadId: "dispatcher-thread-123"
     });
-    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
-      "spawn",
-      "--agent-type",
-      "codex",
-      "--spawn-dir",
-      harness.planDirectory,
-      "--mode",
-      "bridge"
-    ]));
-    expect(harness.spawn).toHaveBeenCalledWith(
-      MERIDIAN_TOOL_EXECUTABLE,
-      buildMeridianToolArgs([
-        "run",
-        "--thread-id",
-        "dispatcher-thread-123",
-        "--command",
-        harness.expectedCommandPath,
-        "--worker",
-        "DISPATCHER"
-      ]),
-      {
-        detached: true,
-        stdio: "ignore"
-      }
-    );
-    expect(harness.runProcess.unref).toHaveBeenCalledTimes(1);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    expect(harness.spawn).toHaveBeenCalledWith({
+      agentType: "codex",
+      mode: "bridge",
+      spawnDir: harness.planDirectory,
+      modelId: undefined,
+      autoApprove: undefined
+    });
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
+      threadId: "dispatcher-thread-123",
+      commandFilePath: harness.expectedCommandPath,
+      workerId: "DISPATCHER"
+    });
     await expect(fs.readFile(harness.expectedCommandPath, "utf8")).resolves.toBe("System prompt text");
   });
 
-  it("forwards an explicit dispatcher model_id to meridian-tool spawn", async () => {
+  it("forwards an explicit dispatcher model_id and autoApprove to /api/spawn", async () => {
     const harness = await createHarness();
 
     const result = await launchDispatcher(
-      buildConfig(harness.planDirectory, "System prompt text", { agentType: "claude", modelId: "claude-opus-4-6" }),
+      buildConfig(harness.planDirectory, "System prompt text", {
+        agentType: "claude",
+        modelId: "claude-opus-4-6",
+        autoApprove: true
+      }),
       harness.deps
     );
 
@@ -73,42 +65,18 @@ describe("launchDispatcher", () => {
       ok: true,
       threadId: "dispatcher-thread-123"
     });
-    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
-      "spawn",
-      "--agent-type",
-      "claude",
-      "--spawn-dir",
-      harness.planDirectory,
-      "--mode",
-      "bridge",
-      "--model-id",
-      "claude-opus-4-6"
-    ]));
+    expect(harness.spawn).toHaveBeenCalledWith({
+      agentType: "claude",
+      mode: "bridge",
+      spawnDir: harness.planDirectory,
+      modelId: "claude-opus-4-6",
+      autoApprove: true
+    });
   });
 
-  it("returns a structured error when meridian-tool spawn fails", async () => {
+  it("returns a structured error when /api/spawn fails", async () => {
     const harness = await createHarness({
-      execFileError: new Error("Command failed: npx")
-    });
-
-    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
-
-    expect(result).toEqual({
-      ok: false,
-      threadId: "",
-      error: "spawn failed: Command failed: npx"
-    });
-    expect(harness.spawn).not.toHaveBeenCalled();
-  });
-
-  it("prefers the structured CLI error payload when meridian-tool spawn exits non-zero", async () => {
-    const cliError = new Error("Command failed: meridian-tool");
-    Object.assign(cliError, {
-      stdout: "{\"ok\":false,\"error\":\"Hub rejected spawn\"}\n",
-      stderr: "Usage: meridian-roles\n"
-    });
-    const harness = await createHarness({
-      execFileError: cliError
+      spawnError: new MeridianApiError("spawn failed: Hub rejected spawn", 400)
     });
 
     const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
@@ -118,12 +86,13 @@ describe("launchDispatcher", () => {
       threadId: "",
       error: "spawn failed: Hub rejected spawn"
     });
-    expect(harness.spawn).not.toHaveBeenCalled();
+    expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
+    await expect(fs.access(harness.expectedCommandPath)).rejects.toThrow();
   });
 
-  it("returns a parse failure when spawn output does not include a dispatcher thread id", async () => {
+  it("wraps unexpected (non-MeridianApiError) spawn rejections with the spawn failed prefix", async () => {
     const harness = await createHarness({
-      stdout: "{\"ok\":true,\"data\":{}}"
+      spawnError: new Error("connect ECONNREFUSED 127.0.0.1:3000")
     });
 
     const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
@@ -131,15 +100,15 @@ describe("launchDispatcher", () => {
     expect(result).toEqual({
       ok: false,
       threadId: "",
-      error: "Failed to parse spawn response"
+      error: "spawn failed: connect ECONNREFUSED 127.0.0.1:3000"
     });
-    expect(harness.spawn).not.toHaveBeenCalled();
-    await expect(fs.access(harness.expectedCommandPath)).rejects.toThrow();
+    expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
-  it("returns the spawned thread id when detached run launch fails", async () => {
+  it("returns the spawned thread id and unlinks the prompt when handoff initiation throws synchronously", async () => {
+    const handoffSyncError = new Error("handoff init failed");
     const harness = await createHarness({
-      spawnError: new Error("ENOENT")
+      runHandoffSyncError: handoffSyncError
     });
 
     const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
@@ -147,24 +116,65 @@ describe("launchDispatcher", () => {
     expect(result).toEqual({
       ok: false,
       threadId: "dispatcher-thread-123",
-      error: "run launch failed: ENOENT"
+      error: "run launch failed: handoff init failed"
     });
     await expect(fs.access(harness.expectedCommandPath)).rejects.toThrow();
   });
 
-  it("maps a structured spawn CLI failure without throwing", async () => {
+  it("reports background run rejections through onBackgroundRunError without affecting the launch result", async () => {
+    const backgroundError = new Error("Hub run rejected");
+    const onBackgroundRunError = vi.fn();
     const harness = await createHarness({
-      stdout: "{\"ok\":false,\"error\":\"Hub rejected spawn\"}"
+      runHandoffAsyncError: backgroundError,
+      onBackgroundRunError
     });
 
     const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
 
     expect(result).toEqual({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    });
+    await flushMicrotasks();
+    expect(onBackgroundRunError).toHaveBeenCalledTimes(1);
+    expect(onBackgroundRunError).toHaveBeenCalledWith(backgroundError, expect.objectContaining({
+      threadId: "dispatcher-thread-123",
+      workerId: "DISPATCHER"
+    }) as DispatcherRunHandoffRequest);
+  });
+
+  it("fails before /api/spawn when the dispatch repo root cannot be resolved", async () => {
+    const spawn = vi.fn();
+    const dispatchRunHandoff = vi.fn();
+    const meridianApi: MeridianApiClient = {
+      spawn,
+      run: vi.fn(),
+      kill: vi.fn()
+    };
+
+    const result = await launchDispatcher({
+      agentType: "codex",
+      mode: "bridge",
+      systemPrompt: "prompt",
+      dispatchRepoRoot: "   ",
+      dispatchPlanPath: "",
+      commandFilePath: "   ",
+      dispatcherRoleId: "test-role",
+      userReplyChannel: { channel: "telegram", chat_id: "telegram:123" }
+    }, {
+      meridianApi,
+      dispatchRunHandoff,
+      writeFile: vi.fn(),
+      unlink: vi.fn()
+    });
+
+    expect(result).toEqual({
       ok: false,
       threadId: "",
-      error: "spawn failed: Hub rejected spawn"
+      error: "spawn failed: Failed to resolve dispatch repo root from dispatch artifacts"
     });
-    expect(harness.spawn).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(dispatchRunHandoff).not.toHaveBeenCalled();
   });
 });
 
@@ -180,7 +190,7 @@ describe("dispatcherHubSystemPromptPath", () => {
     );
   });
 
-  it("resolves the meridian-tool command independently of process.cwd()", () => {
+  it("resolves the meridian-tool display command independently of process.cwd()", () => {
     expect(MERIDIAN_TOOL_DISPLAY_COMMAND).toContain("meridian-tool");
     expect(MERIDIAN_TOOL_DISPLAY_COMMAND.length).toBeGreaterThan(0);
   });
@@ -243,14 +253,14 @@ describe("dispatcherHubSystemPromptPath", () => {
 const tempDirectories: string[] = [];
 
 async function createHarness(overrides: {
-  stdout?: string;
-  execFileError?: Error;
-  spawnError?: Error;
+  spawnError?: unknown;
+  runHandoffSyncError?: Error;
+  runHandoffAsyncError?: Error;
+  onBackgroundRunError?: LaunchDispatcherDeps["onBackgroundRunError"];
 } = {}): Promise<{
   deps: LaunchDispatcherDeps;
-  execFile: ReturnType<typeof vi.fn>;
   spawn: ReturnType<typeof vi.fn>;
-  runProcess: { unref: ReturnType<typeof vi.fn> };
+  dispatchRunHandoff: ReturnType<typeof vi.fn>;
   planDirectory: string;
   expectedCommandPath: string;
 }> {
@@ -260,37 +270,40 @@ async function createHarness(overrides: {
   await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
   const expectedCommandPath = dispatcherHubSystemPromptPath(dispatchPlanPath, "test-role");
 
-  const runProcess = {
-    unref: vi.fn()
+  const spawn = overrides.spawnError
+    ? vi.fn().mockRejectedValue(overrides.spawnError)
+    : vi.fn().mockResolvedValue({ threadId: "dispatcher-thread-123" });
+  const meridianApi: MeridianApiClient = {
+    spawn,
+    run: vi.fn(),
+    kill: vi.fn()
   };
 
-  const execFile = overrides.execFileError
-    ? vi.fn().mockRejectedValue(overrides.execFileError)
-    : vi.fn().mockResolvedValue({
-        stdout: overrides.stdout ?? "{\"ok\":true,\"data\":{\"thread_id\":\"dispatcher-thread-123\"}}",
-        stderr: ""
-      });
-
-  const spawn = overrides.spawnError
-    ? vi.fn().mockImplementation(() => {
-        throw overrides.spawnError;
-      })
-    : vi.fn().mockReturnValue(runProcess);
+  const dispatchRunHandoff = vi.fn().mockImplementation(async () => {
+    if (overrides.runHandoffAsyncError) {
+      throw overrides.runHandoffAsyncError;
+    }
+  });
+  if (overrides.runHandoffSyncError) {
+    dispatchRunHandoff.mockImplementation(() => {
+      throw overrides.runHandoffSyncError;
+    });
+  }
 
   return {
     deps: {
-      execFile,
-      spawn,
+      meridianApi,
+      dispatchRunHandoff,
       writeFile(filePath, contents) {
         return fs.writeFile(filePath, contents, "utf8");
       },
       unlink(filePath) {
         return fs.unlink(filePath);
-      }
+      },
+      ...(overrides.onBackgroundRunError ? { onBackgroundRunError: overrides.onBackgroundRunError } : {})
     },
-    execFile,
     spawn,
-    runProcess,
+    dispatchRunHandoff,
     planDirectory: directory,
     expectedCommandPath
   };
@@ -299,12 +312,13 @@ async function createHarness(overrides: {
 function buildConfig(
   planDirectory: string,
   systemPrompt: string,
-  overrides: Partial<Pick<LaunchConfig, "agentType" | "modelId" | "mode">> = {}
+  overrides: Partial<Pick<LaunchConfig, "agentType" | "modelId" | "mode" | "autoApprove">> = {}
 ): LaunchConfig {
   return {
     agentType: overrides.agentType ?? "codex",
     ...(overrides.modelId ? { modelId: overrides.modelId } : {}),
     mode: overrides.mode ?? "bridge",
+    ...(overrides.autoApprove !== undefined ? { autoApprove: overrides.autoApprove } : {}),
     systemPrompt,
     dispatchRepoRoot: planDirectory,
     dispatchPlanPath: path.join(planDirectory, "dispatch_plan.md"),
@@ -315,4 +329,9 @@ function buildConfig(
       chat_id: "telegram:123"
     }
   };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
 }
