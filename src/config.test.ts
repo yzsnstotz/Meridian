@@ -115,6 +115,18 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
   });
 });
 
+test("parseConfig treats a blank AGENT_WORKDIR as the default workspace root", async () => {
+  await withProcessEnv({}, async () => {
+    const { DEFAULT_AGENT_WORKDIR, parseConfig } = await import("./config");
+    const config = parseConfig({
+      ...REQUIRED_ENV,
+      AGENT_WORKDIR: ""
+    });
+
+    assert.equal(config.AGENT_WORKDIR, DEFAULT_AGENT_WORKDIR);
+  });
+});
+
 test("parseConfig requires host and token when web GUI is enabled", async () => {
   await withProcessEnv({}, async () => {
     const { parseConfig } = await import("./config");

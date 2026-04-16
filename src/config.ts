@@ -7,6 +7,11 @@ dotenv.config({ override: true, quiet: true });
 export const DEFAULT_AGENT_WORKDIR = path.resolve(process.cwd(), "..");
 
 const optionalEnvString = () => z.string().default("");
+const optionalPathWithDefault = (defaultValue: string) =>
+  z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().default(defaultValue)
+  );
 const envStringList = () =>
   z
     .string()
@@ -64,7 +69,7 @@ const envSchema = z
     LOG_SESSION_FILE_KEEP_BYTES: z.coerce.number().int().positive().default(1024 * 1024),
     LOG_SESSION_FILE_MAX_AGE_HOURS: z.coerce.number().int().positive().default(168),
     MERIDIAN_STATE_PATH: z.string().default("/tmp/meridian-state.json"),
-    AGENT_WORKDIR: z.string().default(DEFAULT_AGENT_WORKDIR),
+    AGENT_WORKDIR: optionalPathWithDefault(DEFAULT_AGENT_WORKDIR),
     COORDINATOR_SOCKET_PATH: optionalEnvString(),
     COORDINATOR_INTENTS: envStringList(),
     WEBHOOK_URL: optionalEnvString(),

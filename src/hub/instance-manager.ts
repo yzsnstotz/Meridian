@@ -2007,7 +2007,18 @@ export class InstanceManager {
     for (const match of footerMatches) {
       footerModelId = match[1] ?? footerModelId;
     }
-    return footerModelId;
+    if (footerModelId) {
+      return footerModelId;
+    }
+
+    const claudeBannerMatch = normalized.match(/(Opus|Sonnet|Haiku)\s+(\d+(?:\.\d+)*)\s+[·•]\s+Claude\b/i);
+    if (claudeBannerMatch?.[1] && claudeBannerMatch[2]) {
+      const family = claudeBannerMatch[1].toLowerCase();
+      const version = claudeBannerMatch[2].replace(/\./g, "-");
+      return `claude-${family}-${version}`;
+    }
+
+    return null;
   }
 
   private readNonEmptyString(record: Record<string, unknown>, keys: string[]): string | null {

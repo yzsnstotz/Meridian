@@ -958,6 +958,50 @@ test("status infers the live current model from agent messages when status omits
   await manager.kill(threadId);
 });
 
+test("status infers the live Claude model from the interactive banner when status omits it", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_command: string, _args: string[]) => {
+      return new FakeChildProcess(3403) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({
+        status: "stable",
+        agent_type: "claude"
+      }),
+      getMessages: async () => ([
+        {
+          id: 0,
+          role: "agent",
+          content: [
+            " ▐▛███▜▌   Claude Code v2.1.92",
+            "▝▜█████▛▘  Sonnet 4.6 · Claude Pro",
+            "  ▘▘ ▝▝    ~/work/Meridian",
+            "",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "❯ ",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "  ? for shortcuts                                                       /buddy"
+          ].join("\n")
+        }
+      ])
+    })
+  });
+
+  const threadId = await manager.spawn("claude", "bridge");
+  const status = await manager.status(threadId);
+
+  assert.equal(status.instance.model_id, "claude-sonnet-4-6");
+  assert.equal(status.agent_status.current_model_id, "claude-sonnet-4-6");
+  assert.equal(registry.get(threadId)?.model_id, "claude-sonnet-4-6");
+
+  await manager.kill(threadId);
+});
+
 test("rehydrateFromState restores live instances and session bindings", async () => {
   const registry = new InstanceRegistry();
   const failingSocketPath = socketPathForThread("codex_02");
