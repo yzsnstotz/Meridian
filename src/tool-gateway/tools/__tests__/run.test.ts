@@ -915,6 +915,118 @@ describe("run tool", () => {
     );
   });
 
+  it("does not kill successful workers when lifecycle remains running after reconciliation", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 4 | R-06 | Ship outputs | CODEX | R-05 | Read `input.txt`, write `final.txt`, and append a line to `audit.txt`. |"
+    ].join("\n"));
+
+    const result = await runTool.execute({
+      thread_id: "thread-221",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-06",
+      kill_policy: "always"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "R-06",
+        thread_id: "thread-221",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+    expect(lifecycleStore.load().workers["R-06"]).toMatchObject({
+      status: "running"
+    });
+    expect(sendAndWaitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills successful workers when lifecycle is completed and kill_policy is always", async () => {
+    sendAndWaitMock
+      .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))
+      .mockResolvedValueOnce(buildHubResult("", "success"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-222b",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-06B",
+      kill_policy: "always"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "R-06B",
+        thread_id: "thread-222b",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+    expect(lifecycleStore.load().workers["R-06B"]).toMatchObject({
+      status: "completed"
+    });
+    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
+    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
+      intent: "kill",
+      target: "thread-222b",
+      thread_id: "thread-222b"
+    });
+  });
+
+  it("falls through to the existing kill policy when lifecycle status is unavailable", async () => {
+    lifecycleStoreConstructor.mockImplementationOnce((filePath: string) => ({
+      filePath,
+      recordWorkerStart: vi.fn(),
+      recordWorkerResult: vi.fn(),
+      load: vi.fn(() => ({
+        workers: {}
+      }))
+    }));
+
+    sendAndWaitMock
+      .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))
+      .mockResolvedValueOnce(buildHubResult("", "success"));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-222c",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-06C",
+      kill_policy: "always"
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "R-06C",
+        thread_id: "thread-222c",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
+    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
+      intent: "kill",
+      target: "thread-222c",
+      thread_id: "thread-222c"
+    });
+  });
+
   it("kills terminal worker threads when kill_policy is always", async () => {
     sendAndWaitMock
       .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))

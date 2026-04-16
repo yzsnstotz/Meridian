@@ -96,7 +96,8 @@ const runTool: ToolDefinition = {
       const result = await sendAndWait(buildRunMessage(threadId, preamble, traceId), 0);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
-      await cleanupWorkerThread(threadId, result, killPolicy);
+      const lifecycleStatus = lifecycleStore.load().workers[worker]?.status;
+      await cleanupWorkerThread(threadId, result, killPolicy, lifecycleStatus);
       return mapRunResult(result, worker, threadId);
     } catch (error) {
       const resolvedError = asError(error);
@@ -157,7 +158,16 @@ async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, resu
   }
 }
 
-async function cleanupWorkerThread(threadId: string, result: HubResult, killPolicy: KillPolicy): Promise<void> {
+async function cleanupWorkerThread(
+  threadId: string,
+  result: HubResult,
+  killPolicy: KillPolicy,
+  lifecycleStatus?: string
+): Promise<void> {
+  if (lifecycleStatus === "running") {
+    return;
+  }
+
   if (!shouldKillAfterResult(result, killPolicy)) {
     return;
   }
