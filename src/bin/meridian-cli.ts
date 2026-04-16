@@ -1,28 +1,24 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 
 import { ProviderModelCatalog as SharedProviderModelCatalog, type ProviderModelCatalogResult } from "../shared/model-catalog";
 import {
   AgentTypeSchema,
+  HubResultSchema,
   ReasoningEffortSchema,
   type AgentType,
   type BridgeMode,
-  type HubMessage,
   type HubResult,
   type ReasoningEffort
 } from "../types";
-import { connectToHub, hubHttpRequest, hubSocketRequest, type HubConnection, type HubHttpResponse } from "./hub-connection";
+import { connectToHub, hubHttpRequest, type HubConnection, type HubHttpResponse } from "./hub-connection";
 
 const EXIT_SUCCESS = 0;
 const EXIT_ERROR = 1;
 const EXIT_INVALID_ARGS = 2;
 const EXIT_UNREACHABLE = 3;
 const EXIT_NOT_FOUND = 4;
-const DEFAULT_SOCKET_PATH = process.env.MERIDIAN_SOCKET ?? "/tmp/hub-core.sock";
-const PACKAGE_VERSION = readPackageVersion();
 
 const COMMANDS: Record<string, string> = {
   spawn: "Launch an agent instance",
@@ -32,7 +28,7 @@ const COMMANDS: Record<string, string> = {
   send: "Send a message to an agent thread",
   logs: "Retrieve agent output logs",
   autoapprove: "Get or set auto-approve state",
-  health: "Check Meridian hub health"
+  health: "Check Meridian API health"
 };
 
 type WriteFn = (text: string) => void;
@@ -47,11 +43,7 @@ type JsonRecord = Record<string, unknown>;
 export interface CliDependencies {
   connectToHub: () => Promise<HubConnection>;
   hubHttpRequest: (method: string, route: string, body?: unknown) => Promise<HubHttpResponse>;
-  hubSocketRequest: (message: HubMessage) => Promise<HubResult>;
   listProviderModels: (provider: AgentType) => Promise<ProviderModelCatalogResult>;
-  inferSocketUptimeSeconds: (socketPath: string) => Promise<number>;
-  packageVersion: string;
-  socketPath: string;
   now: () => Date;
   stdout: WriteFn;
   stderr: WriteFn;
@@ -71,11 +63,7 @@ const defaultProviderModelCatalog = new SharedProviderModelCatalog();
 export const defaultCliDependencies: CliDependencies = {
   connectToHub,
   hubHttpRequest,
-  hubSocketRequest,
   listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog.listModels(provider),
-  inferSocketUptimeSeconds,
-  packageVersion: PACKAGE_VERSION,
-  socketPath: DEFAULT_SOCKET_PATH,
   now: () => new Date(),
   stdout: (text: string) => {
     process.stdout.write(text);
@@ -84,27 +72,6 @@ export const defaultCliDependencies: CliDependencies = {
     process.stderr.write(text);
   }
 };
-
-function readPackageVersion(): string {
-  try {
-    const packagePath = path.resolve(__dirname, "../../package.json");
-    const raw = fs.readFileSync(packagePath, "utf8");
-    const parsed = JSON.parse(raw) as { version?: unknown };
-    return typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-async function inferSocketUptimeSeconds(socketPath: string): Promise<number> {
-  try {
-    const stats = await fs.promises.stat(socketPath);
-    const startedAtMs = stats.birthtimeMs > 0 ? stats.birthtimeMs : stats.ctimeMs;
-    return Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
-  } catch {
-    return 0;
-  }
-}
 
 function jsonOut(deps: CliDependencies, data: JsonRecord): void {
   deps.stdout(`${JSON.stringify(data, null, 2)}\n`);
@@ -127,7 +94,7 @@ function showHelp(deps: CliDependencies): void {
   hint(deps, "  0  Success");
   hint(deps, "  1  General error");
   hint(deps, "  2  Invalid arguments");
-  hint(deps, "  3  Service unreachable");
+  hint(deps, "  3  Meridian API unreachable");
   hint(deps, "  4  Target not found");
 }
 
@@ -294,45 +261,6 @@ function secondsSince(iso: string | null | undefined, now: Date): number {
   return Math.max(0, Math.floor((now.getTime() - startedAt) / 1000));
 }
 
-function buildSocketMessage(
-  deps: CliDependencies,
-  params: {
-    intent: HubMessage["intent"];
-    threadId: string;
-    target: string;
-    content?: string;
-    mode?: BridgeMode;
-    autoApprove?: boolean;
-    spawnDir?: string;
-    modelId?: string;
-    reasoningEffort?: ReasoningEffort;
-  }
-): HubMessage {
-  return {
-    trace_id: randomUUID(),
-    thread_id: params.threadId,
-    actor_id: "meridian-cli",
-    intent: params.intent,
-    target: params.target,
-    payload: {
-      content: params.content ?? "",
-      attachments: [],
-      reply_to: null,
-      ...(params.autoApprove !== undefined && { auto_approve: params.autoApprove }),
-      ...(params.spawnDir && { spawn_dir: params.spawnDir }),
-      ...(params.modelId && { model_id: params.modelId }),
-      ...(params.reasoningEffort && { effort: params.reasoningEffort })
-    },
-    mode: params.mode ?? "bridge",
-    suppress_reply: true,
-    reply_channel: {
-      channel: "socket",
-      chat_id: `meridian-cli-${process.pid}`,
-      socket_path: deps.socketPath
-    }
-  };
-}
-
 function normalizeErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -371,31 +299,118 @@ function toCliError(error: unknown): CliError {
   return new CliError(inferExitCode(message), message);
 }
 
-async function requestSocket(deps: CliDependencies, message: HubMessage): Promise<HubResult> {
-  try {
-    return await deps.hubSocketRequest(message);
-  } catch (error) {
-    throw toCliError(error);
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildApiRoute(pathname: string, params: Record<string, string | number | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) {
+      continue;
+    }
+    const normalized = String(value).trim();
+    if (!normalized) {
+      continue;
+    }
+    query.set(key, normalized);
   }
+  const search = query.toString();
+  return search ? `${pathname}?${search}` : pathname;
+}
+
+function normalizeApiErrorMessage(response: HubHttpResponse, fallback: string): string {
+  if (isJsonRecord(response.body) && typeof response.body.error === "string" && response.body.error.trim()) {
+    return response.body.error.trim();
+  }
+  if (typeof response.body === "string" && response.body.trim()) {
+    return response.body.trim();
+  }
+  return fallback;
+}
+
+function exitCodeForApiStatus(statusCode: number, message: string): number {
+  switch (statusCode) {
+    case 400:
+      return EXIT_INVALID_ARGS;
+    case 404:
+      return EXIT_NOT_FOUND;
+    case 408:
+    case 429:
+    case 502:
+    case 503:
+    case 504:
+      return EXIT_UNREACHABLE;
+    default:
+      return inferExitCode(message);
+  }
+}
+
+function toApiTransportError(error: unknown): CliError {
+  const message = normalizeErrorMessage(error);
+  return new CliError(
+    EXIT_UNREACHABLE,
+    message ? `Meridian API is not reachable: ${message}` : "Meridian API is not reachable"
+  );
+}
+
+async function requestApiResponse(
+  deps: CliDependencies,
+  method: string,
+  route: string,
+  body?: unknown
+): Promise<HubHttpResponse> {
+  try {
+    return await deps.hubHttpRequest(method, route, body);
+  } catch (error) {
+    throw toApiTransportError(error);
+  }
+}
+
+async function requestApiBody(
+  deps: CliDependencies,
+  method: string,
+  route: string,
+  body?: unknown
+): Promise<unknown> {
+  const response = await requestApiResponse(deps, method, route, body);
+  if (response.statusCode !== 200) {
+    const message = normalizeApiErrorMessage(response, `Meridian API request failed (${method} ${route})`);
+    throw new CliError(exitCodeForApiStatus(response.statusCode, message), message);
+  }
+  return response.body;
 }
 
 function assertHubSuccess(result: HubResult, okStatuses: HubResult["status"][] = ["success"]): HubResult {
   if (!okStatuses.includes(result.status)) {
-    throw new CliError(inferExitCode(result.content), result.content || "Hub request failed");
+    throw new CliError(inferExitCode(result.content), result.content || "Meridian API request failed");
   }
   return result;
 }
 
-function parseJsonArray(content: string, fallbackLabel: string): Array<Record<string, unknown>> {
-  const normalized = content.trim();
-  if (!normalized || normalized === fallbackLabel) {
-    return [];
+async function requestHubResult(
+  deps: CliDependencies,
+  method: string,
+  route: string,
+  body: unknown,
+  okStatuses: HubResult["status"][] = ["success"]
+): Promise<HubResult> {
+  const payload = await requestApiBody(deps, method, route, body);
+  return assertHubSuccess(HubResultSchema.parse(payload), okStatuses);
+}
+
+function requireJsonArray(body: unknown, fallbackMessage: string): Array<Record<string, unknown>> {
+  if (!Array.isArray(body)) {
+    throw new CliError(EXIT_ERROR, fallbackMessage);
   }
-  const parsed = JSON.parse(normalized) as unknown;
-  if (!Array.isArray(parsed)) {
-    throw new CliError(EXIT_ERROR, "Hub returned an unexpected payload");
+  return body.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
+}
+
+function requireJsonRecord(body: unknown, fallbackMessage: string): JsonRecord {
+  if (!isJsonRecord(body)) {
+    throw new CliError(EXIT_ERROR, fallbackMessage);
   }
-  return parsed.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
+  return body;
 }
 
 function readListedInstanceString(instance: Record<string, unknown>, keys: string[]): string | null {
@@ -409,17 +424,10 @@ function readListedInstanceString(instance: Record<string, unknown>, keys: strin
 }
 
 async function listInstances(deps: CliDependencies): Promise<Array<Record<string, unknown>>> {
-  const result = assertHubSuccess(
-    await requestSocket(
-      deps,
-      buildSocketMessage(deps, {
-        intent: "list",
-        threadId: "global",
-        target: "all"
-      })
-    )
+  return requireJsonArray(
+    await requestApiBody(deps, "GET", "/api/instances"),
+    "Meridian API returned an unexpected instances payload"
   );
-  return parseJsonArray(result.content, "No active agent instances.");
 }
 
 async function resolveTargetThread(deps: CliDependencies, requestedThreadId: string | undefined): Promise<string> {
@@ -435,7 +443,7 @@ async function resolveTargetThread(deps: CliDependencies, requestedThreadId: str
   }
   const threadId = instances[0]?.thread_id;
   if (typeof threadId !== "string" || !threadId.trim()) {
-    throw new CliError(EXIT_ERROR, "Hub returned an instance without thread_id");
+    throw new CliError(EXIT_ERROR, "Meridian API returned an instance without thread_id");
   }
   return threadId.trim();
 }
@@ -453,21 +461,15 @@ async function handleSpawn(args: string[], deps: CliDependencies): Promise<void>
   const autoApprove = expectBooleanOption(parsed, "auto-approve") ?? true;
   const mode = parseMode(expectStringOption(parsed, "mode"));
 
-  const result = assertHubSuccess(
-    await requestSocket(
-      deps,
-      buildSocketMessage(deps, {
-        intent: "spawn",
-        threadId: "pending",
-        target: provider,
-        mode,
-        autoApprove,
-        modelId,
-        reasoningEffort,
-        spawnDir: workdir ? path.resolve(workdir) : undefined
-      })
-    )
-  );
+  const result = await requestHubResult(deps, "POST", "/api/spawn", {
+    type: provider,
+    provider,
+    mode,
+    auto_approve: autoApprove,
+    ...(modelId && { model_id: modelId }),
+    ...(reasoningEffort && { effort: reasoningEffort }),
+    ...(workdir && { spawn_dir: path.resolve(workdir) })
+  });
 
   jsonOut(deps, {
     ok: true,
@@ -498,16 +500,7 @@ async function handleKill(args: string[], deps: CliDependencies): Promise<void> 
     throw new CliError(EXIT_INVALID_ARGS, "kill requires exactly one thread id");
   }
 
-  assertHubSuccess(
-    await requestSocket(
-      deps,
-      buildSocketMessage(deps, {
-        intent: "kill",
-        threadId,
-        target: threadId
-      })
-    )
-  );
+  await requestHubResult(deps, "POST", "/api/kill", { thread_id: threadId });
 
   jsonOut(deps, { ok: true });
 }
@@ -543,16 +536,15 @@ async function handleSend(args: string[], deps: CliDependencies): Promise<void> 
     throw new CliError(EXIT_INVALID_ARGS, "send requires a non-empty message");
   }
 
-  const result = assertHubSuccess(
-    await requestSocket(
-      deps,
-      buildSocketMessage(deps, {
-        intent: "run",
-        threadId,
-        target: threadId,
-        content: message
-      })
-    ),
+  const result = await requestHubResult(
+    deps,
+    "POST",
+    "/api/run",
+    {
+      thread_id: threadId,
+      content: message,
+      attachments: []
+    },
     ["success", "partial", "timeout"]
   );
 
@@ -569,18 +561,10 @@ async function handleLogs(args: string[], deps: CliDependencies): Promise<void> 
     throw new CliError(EXIT_INVALID_ARGS, "logs requires exactly one thread id");
   }
 
-  const result = assertHubSuccess(
-    await requestSocket(
-      deps,
-      buildSocketMessage(deps, {
-        intent: "history",
-        threadId,
-        target: threadId
-      })
-    )
-  );
-
-  const entries = parseJsonArray(result.content, "").map((entry) => ({
+  const entries = requireJsonArray(
+    await requestApiBody(deps, "GET", buildApiRoute("/api/history", { thread_id: threadId })),
+    "Meridian API returned an unexpected history payload"
+  ).map((entry) => ({
     id: typeof entry.id === "string" ? entry.id : null,
     event_kind: typeof entry.event_kind === "string" ? entry.event_kind : null,
     source: typeof entry.source === "string" ? entry.source : null,
@@ -612,65 +596,46 @@ async function handleAutoapprove(args: string[], deps: CliDependencies): Promise
   const threadId = await resolveTargetThread(deps, expectStringOption(parsed, "thread"));
 
   if (action === "status") {
-    const instances = await listInstances(deps);
-    const matched = instances.find((instance) => String(instance.thread_id ?? "") === threadId);
-    if (!matched) {
-      throw new CliError(EXIT_NOT_FOUND, `No active agent instance found for thread=${threadId}`);
-    }
+    const response = requireJsonRecord(
+      await requestApiBody(deps, "GET", buildApiRoute("/api/autoapprove", { thread_id: threadId })),
+      "Meridian API returned an unexpected auto-approve payload"
+    );
 
     jsonOut(deps, {
       ok: true,
-      thread_id: threadId,
-      auto_approve: matched.auto_approve === true
+      thread_id: typeof response.thread_id === "string" && response.thread_id.trim() ? response.thread_id : threadId,
+      auto_approve: response.auto_approve === true
     });
     return;
   }
 
-  assertHubSuccess(
-    await requestSocket(
-      deps,
-      buildSocketMessage(deps, {
-        intent: "set_auto_approve",
-        threadId,
-        target: threadId,
-        content: action === "on" ? "true" : "false"
-      })
-    )
+  const response = requireJsonRecord(
+    await requestApiBody(deps, "POST", "/api/autoapprove", {
+      thread_id: threadId,
+      enabled: action === "on"
+    }),
+    "Meridian API returned an unexpected auto-approve payload"
   );
 
   jsonOut(deps, {
     ok: true,
-    thread_id: threadId,
-    auto_approve: action === "on"
+    thread_id: typeof response.thread_id === "string" && response.thread_id.trim() ? response.thread_id : threadId,
+    auto_approve: response.auto_approve === true
   });
 }
 
 async function handleHealth(deps: CliDependencies): Promise<void> {
-  try {
-    const response = await deps.hubHttpRequest("GET", "/api/health");
-    if (response.statusCode === 200 && typeof response.body === "object" && response.body !== null) {
-      jsonOut(deps, response.body as JsonRecord);
-      return;
-    }
-  } catch {
-    // Fall back to socket-derived health below.
-  }
-
-  const instances = await listInstances(deps);
-  const uptime = await deps.inferSocketUptimeSeconds(deps.socketPath);
-  jsonOut(deps, {
-    ok: true,
-    version: deps.packageVersion,
-    uptime,
-    agents_count: instances.length
-  });
+  jsonOut(
+    deps,
+    requireJsonRecord(await requestApiBody(deps, "GET", "/api/health"), "Meridian API returned an unexpected health payload")
+  );
 }
 
 async function ensureHubReachable(deps: CliDependencies): Promise<void> {
   try {
     await deps.connectToHub();
-  } catch {
-    throw new CliError(EXIT_UNREACHABLE, "Meridian hub is not reachable");
+  } catch (error) {
+    throw toApiTransportError(error);
   }
 }
 
