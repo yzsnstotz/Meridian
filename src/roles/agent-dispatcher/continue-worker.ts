@@ -11,6 +11,18 @@ import type { AgentDispatcherConfig } from "../../types";
 type ResumeWorkerResult = Awaited<ReturnType<typeof executeResumeWorkerAction>>;
 type KillThreadResult = Awaited<ReturnType<typeof killTool.execute>>;
 
+type ContinueWorkerConfig = Pick<
+  AgentDispatcherConfig,
+  | "dispatch_plan_path"
+  | "command_file_path"
+  | "mode"
+  | "agent_type"
+  | "kill_policy"
+  | "auto_approve"
+  | "model_map"
+  | "dispatch_repo_root"
+>;
+
 export interface ContinueDispatchPlanRow {
   status: string;
   worker: string;
@@ -28,10 +40,7 @@ export interface ContinueDispatchWorkerResult {
 }
 
 export async function continueDispatchWorker(
-  config: Pick<
-    AgentDispatcherConfig,
-    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map" | "dispatch_repo_root"
-  >,
+  config: ContinueWorkerConfig,
   dispatchPlanRows: ContinueDispatchPlanRow[],
   workerId: string,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult> = launchDispatchWorker,
@@ -104,10 +113,7 @@ export function shouldResetWorkerBeforeContinue(row: Pick<ContinueDispatchPlanRo
 }
 
 async function launchWorkerFromDispatchPlan(
-  config: Pick<
-    AgentDispatcherConfig,
-    "dispatch_plan_path" | "command_file_path" | "mode" | "agent_type" | "kill_policy" | "model_map" | "dispatch_repo_root"
-  >,
+  config: ContinueWorkerConfig,
   dispatchPlanRow: ContinueDispatchPlanRow,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>
 ): Promise<LaunchDispatchWorkerResult> {
@@ -122,6 +128,7 @@ async function launchWorkerFromDispatchPlan(
     agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
     mode: config.mode,
     killPolicy: config.kill_policy,
+    autoApprove: config.auto_approve,
     commandFilePath: config.command_file_path,
     dispatchPlanPath: config.dispatch_plan_path,
     dispatchRepoRoot: resolveConfiguredDispatchRepoRoot(config),
@@ -174,6 +181,7 @@ function isLocalToolBootstrapFailure(message: string): boolean {
     || /\brun launch failed\b/i.test(message)
     || /\bspawn failed: Command failed\b/i.test(message)
     || /\bspawn failed: spawn\b/i.test(message)
+    || /\bspawn failed: Meridian API unreachable\b/i.test(message)
     || /\bNode (?:CLI )?(?:startup|loader)\b/i.test(message);
 }
 

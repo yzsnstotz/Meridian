@@ -1,4 +1,3 @@
-import { execFile as nodeExecFile, spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fsSync from "node:fs";
 import { unlink as unlinkFile, writeFile } from "node:fs/promises";
@@ -24,6 +23,7 @@ import {
   resolveConfiguredDispatchRepoRoot,
   resolveConfiguredDocsRoot
 } from "../agent-dispatcher/dispatch-paths";
+import { createMeridianApiClient, type MeridianApiClient } from "../agent-dispatcher/meridian-api-client";
 import { resolveDispatchModelMapFromMarkdown } from "../agent-dispatcher/model-routing";
 import {
   readWorkersByStatus,
@@ -31,7 +31,7 @@ import {
   type DispatchThreadState,
   type SessionManagerOptions
 } from "../agent-dispatcher/session-manager";
-import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "../agent-dispatcher/tool-entrypoint";
+import runTool from "../../tool-gateway/tools/run";
 import type { BaseRole, RoleContext } from "../base-role";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
@@ -65,6 +65,7 @@ export interface AgentDispatcherRoleOptions {
   lifecycleStoreFactory?: (dispatchPlanPath: string) => LifecycleStoreLike;
   killThread?: (threadId: string) => Promise<void>;
   signalDispatcher?: (dispatcherThreadId: string, status: DispatcherLifecycleStatus) => Promise<void>;
+  meridianApi?: MeridianApiClient;
 }
 
 export class AgentDispatcherRole implements BaseRole {
@@ -97,7 +98,8 @@ export class AgentDispatcherRole implements BaseRole {
     this.createSessionManager = options.sessionManagerFactory ?? defaultSessionManagerFactory;
     this.readPlanWorkersByStatus = options.readWorkersByStatus ?? readWorkersByStatus;
     this.createLifecycleStore = options.lifecycleStoreFactory ?? defaultLifecycleStoreFactory;
-    this.killTrackedThread = options.killThread ?? defaultKillThread;
+    const sharedMeridianApi = options.meridianApi ?? createMeridianApiClient();
+    this.killTrackedThread = options.killThread ?? ((threadId) => defaultKillThread(threadId, sharedMeridianApi));
     this.signalDispatcherThread = options.signalDispatcher ?? defaultSignalDispatcher;
   }
 
@@ -144,6 +146,7 @@ export class AgentDispatcherRole implements BaseRole {
       agentType: this.config.agent_type,
       modelId: this.config.model_id,
       mode: this.config.mode,
+      autoApprove: this.config.auto_approve,
       systemPrompt,
       dispatchRepoRoot: resolveConfiguredDispatchRepoRoot(this.config),
       dispatchPlanPath: this.config.dispatch_plan_path,
@@ -424,12 +427,8 @@ function defaultLifecycleStoreFactory(dispatchPlanPath: string): LifecycleStoreL
   return new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath));
 }
 
-async function defaultKillThread(threadId: string): Promise<void> {
-  await execFile(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
-    "kill",
-    "--thread-id",
-    threadId
-  ]));
+async function defaultKillThread(threadId: string, meridianApi: MeridianApiClient): Promise<void> {
+  await meridianApi.kill(threadId);
 }
 
 async function defaultSignalDispatcher(
@@ -439,31 +438,32 @@ async function defaultSignalDispatcher(
   const commandPath = path.join(tmpdir(), `dispatcher_status_${randomUUID()}.md`);
   await writeFile(commandPath, buildStatusSignalPrompt(status), "utf8");
 
+  let handoffStarted = false;
   try {
-    const child = nodeSpawn(
-      MERIDIAN_TOOL_EXECUTABLE,
-      buildMeridianToolArgs([
-        "run",
-        "--thread-id",
+    const handoff = runTool.execute({
+      thread_id: dispatcherThreadId,
+      command: commandPath,
+      worker: DISPATCHER_STATUS_WORKER_ID
+    });
+    handoffStarted = true;
+
+    handoff.catch((error) => {
+      // eslint-disable-next-line no-console
+      console.warn("dispatcher status signal background run failed", {
         dispatcherThreadId,
-        "--command",
-        commandPath,
-        "--worker",
-        DISPATCHER_STATUS_WORKER_ID
-      ]),
-      {
-        detached: true,
-        stdio: "ignore"
-      }
-    );
-    child.unref();
+        status,
+        error: asError(error).message
+      });
+    });
+
     const timer = setTimeout(() => {
       void unlinkFile(commandPath).catch(() => undefined);
     }, SIGNAL_FILE_CLEANUP_DELAY_MS);
     timer.unref?.();
-  } catch (error) {
-    await unlinkFile(commandPath).catch(() => undefined);
-    throw error;
+  } finally {
+    if (!handoffStarted) {
+      await unlinkFile(commandPath).catch(() => undefined);
+    }
   }
 }
 
@@ -507,19 +507,6 @@ function toDispatchThreadState(lifecycleState: ReturnType<LifecycleStoreLike["lo
       : null,
     workers
   };
-}
-
-function execFile(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    nodeExecFile(command, args, { encoding: "utf8" }, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve({ stdout, stderr });
-    });
-  });
 }
 
 function asError(error: unknown): Error {

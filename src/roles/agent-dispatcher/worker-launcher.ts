@@ -1,14 +1,17 @@
-import { execFile as nodeExecFile, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
-
 import type { KillPolicy } from "../../types";
 import { resolveRequiredDispatchRepoRoot } from "./dispatch-paths";
-import { extractSpawnCliError, parseSpawnCliOutput } from "./meridian-tool-output";
-import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
+import {
+  createMeridianApiClient,
+  MeridianApiError,
+  type MeridianApiClient
+} from "./meridian-api-client";
+import runTool from "../../tool-gateway/tools/run";
 
 export interface LaunchDispatchWorkerConfig {
   agentType: string;
-  mode: string;
+  mode: "bridge" | "pane_bridge";
   killPolicy?: KillPolicy;
+  autoApprove?: boolean;
   commandFilePath: string;
   dispatchPlanPath: string;
   dispatchRepoRoot: string;
@@ -22,38 +25,56 @@ export interface LaunchDispatchWorkerResult {
   error?: string;
 }
 
+export interface DispatchRunHandoffRequest {
+  threadId: string;
+  commandFilePath: string;
+  workerId: string;
+  killPolicy?: KillPolicy;
+}
+
 export interface LaunchDispatchWorkerDeps {
-  execFile(command: string, args: string[]): Promise<{ stdout: string; stderr: string }>;
-  spawn(command: string, args: string[], options: SpawnOptions): {
-    unref(): void;
+  /** Meridian HTTP client. The launcher only submits spawn requests through this boundary. */
+  meridianApi: MeridianApiClient;
+  /**
+   * Fire-and-forget worker run handoff. Meridian owns the actual transport; this helper only
+   * decides *what* to run (command file + worker id) and hands the result lifecycle back to
+   * Meridian-roles's local reconciler. Default implementation calls the in-process
+   * tool-gateway `run` tool instead of spawning a `meridian-tool run` subprocess.
+   */
+  dispatchRunHandoff(request: DispatchRunHandoffRequest): Promise<void>;
+  /**
+   * Called when dispatchRunHandoff rejects asynchronously. Defaults to console.warn so
+   * background run failures are surfaced without crashing the launcher's caller.
+   */
+  onBackgroundRunError?(error: Error, request: DispatchRunHandoffRequest): void;
+}
+
+export function createDefaultLaunchDispatchWorkerDeps(): LaunchDispatchWorkerDeps {
+  const meridianApi = createMeridianApiClient();
+  return {
+    meridianApi,
+    async dispatchRunHandoff(request) {
+      const params: Record<string, string> = {
+        thread_id: request.threadId,
+        command: request.commandFilePath,
+        worker: request.workerId
+      };
+      if (request.killPolicy) {
+        params.kill_policy = request.killPolicy;
+      }
+
+      await runTool.execute(params);
+    }
   };
 }
 
-const defaultDeps: LaunchDispatchWorkerDeps = {
-  execFile(command, args) {
-    return new Promise((resolve, reject) => {
-      nodeExecFile(command, args, { encoding: "utf8" }, (error, stdout, stderr) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve({ stdout, stderr });
-      });
-    });
-  },
-  spawn(command, args, options) {
-    return nodeSpawn(command, args, options);
-  }
-};
-
 export async function launchDispatchWorker(
   config: LaunchDispatchWorkerConfig,
-  deps: LaunchDispatchWorkerDeps = defaultDeps
+  deps: LaunchDispatchWorkerDeps = createDefaultLaunchDispatchWorkerDeps()
 ): Promise<LaunchDispatchWorkerResult> {
-  let spawnArgs: string[];
+  let spawnDir: string;
   try {
-    spawnArgs = buildSpawnArgs(config);
+    spawnDir = resolveSpawnDir(config);
   } catch (error) {
     return {
       ok: false,
@@ -62,97 +83,72 @@ export async function launchDispatchWorker(
     };
   }
 
-  let spawnStdout: string;
+  let threadId: string;
   try {
-    ({ stdout: spawnStdout } = await deps.execFile(MERIDIAN_TOOL_EXECUTABLE, spawnArgs));
-  } catch (error) {
-    return {
-      ok: false,
-      threadId: "",
-      error: `spawn failed: ${extractSpawnCliError(error) ?? asError(error).message}`
-    };
-  }
-
-  const parsedSpawn = parseSpawnCliOutput(spawnStdout);
-  if (parsedSpawn.error) {
-    return {
-      ok: false,
-      threadId: "",
-      error: `spawn failed: ${parsedSpawn.error}`
-    };
-  }
-
-  if (!parsedSpawn.threadId) {
-    return {
-      ok: false,
-      threadId: "",
-      error: "Failed to parse spawn response"
-    };
-  }
-
-  try {
-    const runProcess = deps.spawn(MERIDIAN_TOOL_EXECUTABLE, buildRunArgs(parsedSpawn.threadId, config), {
-      detached: true,
-      stdio: "ignore"
+    const result = await deps.meridianApi.spawn({
+      agentType: config.agentType,
+      mode: config.mode,
+      spawnDir,
+      modelId: config.modelId?.trim() || undefined,
+      autoApprove: config.autoApprove
     });
-    runProcess.unref();
-
-    return {
-      ok: true,
-      threadId: parsedSpawn.threadId
-    };
+    threadId = result.threadId;
   } catch (error) {
     return {
       ok: false,
-      threadId: parsedSpawn.threadId,
-      error: `run launch failed: ${asError(error).message}`
+      threadId: "",
+      error: formatSpawnError(error)
     };
   }
-}
 
-function buildSpawnArgs(config: LaunchDispatchWorkerConfig): string[] {
-  const dispatchRepoRoot = config.dispatchRepoRoot?.trim()
-    || resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]);
-
-  const args = [
-    "spawn",
-    "--agent-type",
-    config.agentType,
-    "--spawn-dir",
-    dispatchRepoRoot,
-    "--mode",
-    config.mode
-  ];
-
-  if (config.modelId?.trim()) {
-    args.push("--model-id", config.modelId.trim());
-  }
-
-  return buildMeridianToolArgs(args);
-}
-
-function buildRunArgs(threadId: string, config: LaunchDispatchWorkerConfig): string[] {
-  const args = [
-    "run",
-    "--thread-id",
+  // Hand off to the in-process run. This is fire-and-forget so the launcher can
+  // return the spawned thread id promptly — Meridian owns the actual run transport
+  // from here, and the background run updates the lifecycle store when it completes.
+  const handoffRequest: DispatchRunHandoffRequest = {
     threadId,
-    "--command",
-    config.commandFilePath,
-    "--worker",
-    config.workerId
-  ];
+    commandFilePath: config.commandFilePath,
+    workerId: config.workerId,
+    killPolicy: config.killPolicy
+  };
+  const handoff = deps.dispatchRunHandoff(handoffRequest);
+  handoff.catch((error) => {
+    const resolvedError = asError(error);
+    if (deps.onBackgroundRunError) {
+      deps.onBackgroundRunError(resolvedError, handoffRequest);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.warn("dispatch worker background run failed", {
+      workerId: handoffRequest.workerId,
+      threadId: handoffRequest.threadId,
+      error: resolvedError.message
+    });
+  });
 
-  if (config.killPolicy) {
-    args.push("--kill-policy", config.killPolicy);
+  return {
+    ok: true,
+    threadId
+  };
+}
+
+function resolveSpawnDir(config: LaunchDispatchWorkerConfig): string {
+  return config.dispatchRepoRoot?.trim()
+    || resolveRequiredDispatchRepoRoot([config.dispatchPlanPath, config.commandFilePath]);
+}
+
+function formatSpawnError(error: unknown): string {
+  if (error instanceof MeridianApiError) {
+    // The client already prefixes "spawn failed: ..." for well-formed error payloads.
+    return error.message.startsWith("spawn failed:")
+      ? error.message
+      : `spawn failed: ${error.message}`;
   }
-
-  return buildMeridianToolArgs(args);
+  return `spawn failed: ${asError(error).message}`;
 }
 
 function asError(error: unknown): Error {
   if (error instanceof Error) {
     return error;
   }
-
   return new Error(String(error));
 }

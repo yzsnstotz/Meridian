@@ -6,10 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   launchDispatchWorker,
+  type DispatchRunHandoffRequest,
   type LaunchDispatchWorkerConfig,
   type LaunchDispatchWorkerDeps
 } from "../worker-launcher";
-import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "../tool-entrypoint";
+import { MeridianApiError, type MeridianApiClient } from "../meridian-api-client";
 
 const tempDirectories = new Set<string>();
 
@@ -25,7 +26,7 @@ afterEach(async () => {
 });
 
 describe("launchDispatchWorker", () => {
-  it("spawns a worker from the enclosing git repo root and detaches meridian-tool run", async () => {
+  it("spawns the worker via /api/spawn from the enclosing git repo root and hands off the run", async () => {
     const harness = await createHarness({
       gitRoot: true,
       nestedDocsBranch: true
@@ -40,36 +41,21 @@ describe("launchDispatchWorker", () => {
       ok: true,
       threadId: "worker-thread-123"
     });
-    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
-      "spawn",
-      "--agent-type",
-      "codex",
-      "--spawn-dir",
-      harness.expectedSpawnDir,
-      "--mode",
-      "pane_bridge",
-      "--model-id",
-      "gpt-5.4"
-    ]));
-    expect(harness.spawn).toHaveBeenCalledWith(
-      MERIDIAN_TOOL_EXECUTABLE,
-      buildMeridianToolArgs([
-        "run",
-        "--thread-id",
-        "worker-thread-123",
-        "--command",
-        harness.commandFilePath,
-        "--worker",
-        "N-01",
-        "--kill-policy",
-        "always"
-      ]),
-      {
-        detached: true,
-        stdio: "ignore"
-      }
-    );
-    expect(harness.runProcess.unref).toHaveBeenCalledTimes(1);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    expect(harness.spawn).toHaveBeenCalledWith({
+      agentType: "codex",
+      mode: "pane_bridge",
+      spawnDir: harness.expectedSpawnDir,
+      modelId: "gpt-5.4",
+      autoApprove: undefined
+    });
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
+      threadId: "worker-thread-123",
+      commandFilePath: harness.commandFilePath,
+      workerId: "N-01",
+      killPolicy: "always"
+    });
   });
 
   it("falls back to the docs branch root when no git metadata is present", async () => {
@@ -83,17 +69,12 @@ describe("launchDispatchWorker", () => {
       harness.deps
     );
 
-    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
-      "spawn",
-      "--agent-type",
-      "codex",
-      "--spawn-dir",
-      harness.expectedSpawnDir,
-      "--mode",
-      "pane_bridge",
-      "--model-id",
-      "gpt-5.4"
-    ]));
+    expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "codex",
+      mode: "pane_bridge",
+      spawnDir: harness.expectedSpawnDir,
+      modelId: "gpt-5.4"
+    }));
   });
 
   it("spawns detached Docs/Projects artifacts from the real project repo root", async () => {
@@ -107,22 +88,33 @@ describe("launchDispatchWorker", () => {
       harness.deps
     );
 
-    expect(harness.execFile).toHaveBeenCalledWith(MERIDIAN_TOOL_EXECUTABLE, buildMeridianToolArgs([
-      "spawn",
-      "--agent-type",
-      "codex",
-      "--spawn-dir",
-      harness.expectedSpawnDir,
-      "--mode",
-      "pane_bridge",
-      "--model-id",
-      "gpt-5.4"
-    ]));
+    expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "codex",
+      mode: "pane_bridge",
+      spawnDir: harness.expectedSpawnDir,
+      modelId: "gpt-5.4"
+    }));
   });
 
-  it("returns a structured error when meridian-tool spawn fails", async () => {
+  it("forwards autoApprove to /api/spawn when set on the launch config", async () => {
     const harness = await createHarness({
-      execFileError: new Error("Command failed: spawn")
+      gitRoot: true,
+      nestedDocsBranch: true
+    });
+
+    await launchDispatchWorker(
+      { ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir), autoApprove: true },
+      harness.deps
+    );
+
+    expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      autoApprove: true
+    }));
+  });
+
+  it("returns a structured spawn error when /api/spawn rejects with a MeridianApiError", async () => {
+    const harness = await createHarness({
+      spawnError: new MeridianApiError("spawn failed: Hub rejected spawn", 400)
     });
 
     const result = await launchDispatchWorker(
@@ -133,14 +125,37 @@ describe("launchDispatchWorker", () => {
     expect(result).toEqual({
       ok: false,
       threadId: "",
-      error: "spawn failed: Command failed: spawn"
+      error: "spawn failed: Hub rejected spawn"
     });
-    expect(harness.spawn).not.toHaveBeenCalled();
+    expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
-  it("fails before spawn when the dispatch repo root cannot be resolved from artifacts", async () => {
-    const execFile = vi.fn();
+  it("wraps unexpected (non-MeridianApiError) spawn rejections with the spawn failed prefix", async () => {
+    const harness = await createHarness({
+      spawnError: new Error("connect ECONNREFUSED 127.0.0.1:3000")
+    });
+
+    const result = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      threadId: "",
+      error: "spawn failed: connect ECONNREFUSED 127.0.0.1:3000"
+    });
+    expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
+  });
+
+  it("fails before /api/spawn when the dispatch repo root cannot be resolved from artifacts", async () => {
     const spawn = vi.fn();
+    const dispatchRunHandoff = vi.fn();
+    const meridianApi: MeridianApiClient = {
+      spawn,
+      run: vi.fn(),
+      kill: vi.fn()
+    };
 
     const result = await launchDispatchWorker({
       agentType: "codex",
@@ -151,8 +166,8 @@ describe("launchDispatchWorker", () => {
       workerId: "N-01",
       modelId: "gpt-5.4"
     }, {
-      execFile,
-      spawn
+      meridianApi,
+      dispatchRunHandoff
     });
 
     expect(result).toEqual({
@@ -160,13 +175,18 @@ describe("launchDispatchWorker", () => {
       threadId: "",
       error: "spawn failed: Failed to resolve dispatch repo root from dispatch artifacts"
     });
-    expect(execFile).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
+    expect(dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
-  it("returns the spawned thread id when detached run launch fails", async () => {
+  it("returns ok with the spawned thread id even when the background run handoff rejects asynchronously", async () => {
+    const backgroundError = new Error("Hub run rejected");
+    const onBackgroundRunError = vi.fn();
     const harness = await createHarness({
-      spawnError: new Error("ENOENT")
+      gitRoot: true,
+      nestedDocsBranch: true,
+      runHandoffAsyncError: backgroundError,
+      onBackgroundRunError
     });
 
     const result = await launchDispatchWorker(
@@ -175,10 +195,15 @@ describe("launchDispatchWorker", () => {
     );
 
     expect(result).toEqual({
-      ok: false,
-      threadId: "worker-thread-123",
-      error: "run launch failed: ENOENT"
+      ok: true,
+      threadId: "worker-thread-123"
     });
+    await flushMicrotasks();
+    expect(onBackgroundRunError).toHaveBeenCalledTimes(1);
+    expect(onBackgroundRunError).toHaveBeenCalledWith(backgroundError, expect.objectContaining({
+      threadId: "worker-thread-123",
+      workerId: "N-01"
+    }) as DispatchRunHandoffRequest);
   });
 });
 
@@ -186,14 +211,13 @@ async function createHarness(overrides: {
   gitRoot?: boolean;
   nestedDocsBranch?: boolean;
   detachedDocsWorkspace?: boolean;
-  stdout?: string;
-  execFileError?: Error;
-  spawnError?: Error;
+  spawnError?: unknown;
+  runHandoffAsyncError?: Error;
+  onBackgroundRunError?: LaunchDispatchWorkerDeps["onBackgroundRunError"];
 } = {}): Promise<{
   deps: LaunchDispatchWorkerDeps;
-  execFile: ReturnType<typeof vi.fn>;
   spawn: ReturnType<typeof vi.fn>;
-  runProcess: { unref: ReturnType<typeof vi.fn> };
+  dispatchRunHandoff: ReturnType<typeof vi.fn>;
   dispatchPlanPath: string;
   commandFilePath: string;
   expectedSpawnDir: string;
@@ -230,29 +254,30 @@ async function createHarness(overrides: {
   await fs.writeFile(commandFilePath, "# command\n", "utf8");
 
   const expectedSpawnDir = overrides.detachedDocsWorkspace ? await fs.realpath(repoRoot) : repoRoot;
-  const runProcess = {
-    unref: vi.fn()
-  };
-  const execFile = overrides.execFileError
-    ? vi.fn().mockRejectedValue(overrides.execFileError)
-    : vi.fn().mockResolvedValue({
-        stdout: overrides.stdout ?? "{\"ok\":true,\"data\":{\"thread_id\":\"worker-thread-123\"}}",
-        stderr: ""
-      });
+
   const spawn = overrides.spawnError
-    ? vi.fn().mockImplementation(() => {
-        throw overrides.spawnError;
-      })
-    : vi.fn().mockReturnValue(runProcess);
+    ? vi.fn().mockRejectedValue(overrides.spawnError)
+    : vi.fn().mockResolvedValue({ threadId: "worker-thread-123" });
+  const meridianApi: MeridianApiClient = {
+    spawn,
+    run: vi.fn(),
+    kill: vi.fn()
+  };
+
+  const dispatchRunHandoff = vi.fn().mockImplementation(async () => {
+    if (overrides.runHandoffAsyncError) {
+      throw overrides.runHandoffAsyncError;
+    }
+  });
 
   return {
     deps: {
-      execFile,
-      spawn
+      meridianApi,
+      dispatchRunHandoff,
+      ...(overrides.onBackgroundRunError ? { onBackgroundRunError: overrides.onBackgroundRunError } : {})
     },
-    execFile,
     spawn,
-    runProcess,
+    dispatchRunHandoff,
     dispatchPlanPath,
     commandFilePath,
     expectedSpawnDir
@@ -274,4 +299,9 @@ function buildConfig(
     workerId: "N-01",
     modelId: "gpt-5.4"
   };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
 }
