@@ -1,474 +1,156 @@
-import * as fs from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { LifecycleStore } from "../../../roles/agent-dispatcher/lifecycle-store";
 import { executeContinueDispatcher, type ContinueDispatcherDeps } from "../continue-dispatcher";
-import type { AppState, DispatchThreadStateV2 } from "../../../types";
-
-const tempDirectories = new Set<string>();
 
 describe("continue-dispatcher tool", () => {
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
-    tempDirectories.clear();
-  });
-
-  it("continues the next eligible worker locally when the roles service is unreachable", async () => {
-    const harness = await createHarness({
-      dispatcherStatus: "paused",
-      planMarkdown: [
-        "# Dispatch Plan",
-        "",
-        "| Status | Batch | Worker | Task | Model | Depends On |",
-        "|--------|-------|--------|------|-------|------------|",
-        "| ✅ | 1 | N-01 | Prior step | CODEX | — |",
-        "| ⬜ | 2 | N-02 | Current step | CODEX | N-01 |",
-        ""
-      ].join("\n"),
-      lifecycleState: {
-        version: 2,
-        dispatcher: {
-          thread_id: "dispatcher-thread-123",
-          started_at: "2026-04-10T00:00:00.000Z",
-          status: "running"
+  it("returns the service response when the roles service is reachable", async () => {
+    const deps = createDeps({
+      postContinue: async () => ({
+        ok: true,
+        body: {
+          ok: true,
+          status: "continued",
+          message: "continued: N-02",
+          worker: "N-02"
         },
-        workers: {},
-        last_reconciled_at: null
-      }
-    });
-    const continueWorker = vi.fn().mockResolvedValue({
-      ok: true,
-      workerId: "N-02",
-      threadId: "worker-thread-456"
+        base_url: "http://127.0.0.1:7701/",
+        status_code: 200
+      })
     });
 
     const result = await executeContinueDispatcher(
-      { dispatcherId: harness.dispatcherId },
-      harness.createDeps({ continueWorker })
+      { dispatcherId: "agent-dispatcher-r03" },
+      deps
     );
 
     expect(result).toEqual({
       ok: true,
       status: "continued",
       message: "continued: N-02",
-      dispatcher_thread_id: "dispatcher-thread-123",
       worker: "N-02"
     });
-    expect(continueWorker).toHaveBeenCalledWith(
-      expect.objectContaining({
-        dispatch_plan_path: harness.planPath,
-        command_file_path: harness.commandFilePath
-      }),
-      [
-        {
-          status: "✅",
-          batch: "1",
-          worker: "N-01",
-          model: "CODEX",
-          depends_on: [],
-          notes: null
-        },
-        {
-          status: "⬜",
-          batch: "2",
-          worker: "N-02",
-          model: "CODEX",
-          depends_on: ["N-01"],
-          notes: null
-        }
-      ],
-      "N-02"
+    expect(deps.postContinue).toHaveBeenCalledWith(
+      "/api/agent-dispatcher/agent-dispatcher-r03/continue"
     );
-    expect(harness.state.roles[0]?.status).toBe("active");
   });
 
-  it("reports still_blocked locally when another non-human worker is already running", async () => {
-    const harness = await createHarness({
-      planMarkdown: [
-        "# Dispatch Plan",
-        "",
-        "| Status | Batch | Worker | Task | Model | Depends On |",
-        "|--------|-------|--------|------|-------|------------|",
-        "| 🔄 | 5 | R-07 | Integration Repair | CODEX | — |",
-        "| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | R-07 |",
-        ""
-      ].join("\n"),
-      lifecycleState: {
-        version: 2,
-        dispatcher: {
-          thread_id: "dispatcher-thread-123",
-          started_at: "2026-04-10T00:00:00.000Z",
-          status: "running"
+  it("uses the worker-specific endpoint when a worker id is provided", async () => {
+    const deps = createDeps({
+      postContinue: async () => ({
+        ok: true,
+        body: {
+          ok: true,
+          status: "continued",
+          message: "continued: R-08",
+          worker: "R-08"
         },
-        workers: {
-          "R-07": {
-            thread_id: "worker-thread-running",
-            trace_id: null,
-            started_at: "2026-04-10T00:00:00.000Z",
-            last_seen_at: "2026-04-10T00:05:00.000Z",
-            status: "running",
-            expected_outputs: [],
-            hub_result: null,
-            command_preamble: null,
-            retry_count: 0
-          }
-        },
-        last_reconciled_at: null
-      }
-    });
-    const continueWorker = vi.fn();
-
-    const result = await executeContinueDispatcher(
-      {
-        dispatcherId: harness.dispatcherId,
-        workerId: "R-08"
-      },
-      harness.createDeps({ continueWorker })
-    );
-
-    expect(result).toEqual({
-      ok: true,
-      status: "still_blocked",
-      message: "still blocked: running worker(s): R-07",
-      worker: "R-08",
-      running_workers: ["R-07"]
-    });
-    expect(continueWorker).not.toHaveBeenCalled();
-  });
-
-  it("ignores blocked running rows when selecting the next local continuation target", async () => {
-    const harness = await createHarness({
-      planMarkdown: [
-        "# Dispatch Plan",
-        "",
-        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
-        "|--------|-------|--------|------|-------|------------|-------|",
-        "| 🔄 | 1 | R-03 | Blocked fix | CODEX | PRE-FLIGHT | **⏳ BLOCKED: PM Blocker Resolution #2 must be confirmed first** |",
-        "| ✅ | 1 | R-01 | Prior fix | CODEX | PRE-FLIGHT | Completed |",
-        "| ⬜ | 2 | E-01R | Follow-on rerun | CODEX | R-01 | Ready to continue |",
-        ""
-      ].join("\n"),
-      lifecycleState: {
-        version: 2,
-        dispatcher: {
-          thread_id: "dispatcher-thread-123",
-          started_at: "2026-04-10T00:00:00.000Z",
-          status: "running"
-        },
-        workers: {
-          "R-01": {
-            thread_id: "worker-thread-r01",
-            trace_id: null,
-            started_at: "2026-04-10T00:00:00.000Z",
-            last_seen_at: "2026-04-10T00:05:00.000Z",
-            status: "completed",
-            expected_outputs: [],
-            hub_result: null,
-            command_preamble: null,
-            retry_count: 0
-          },
-          "R-03": {
-            thread_id: "worker-thread-r03",
-            trace_id: null,
-            started_at: "2026-04-10T00:00:00.000Z",
-            last_seen_at: "2026-04-10T00:05:00.000Z",
-            status: "running",
-            expected_outputs: [],
-            hub_result: null,
-            command_preamble: null,
-            retry_count: 0
-          }
-        },
-        last_reconciled_at: null
-      }
-    });
-    const continueWorker = vi.fn().mockResolvedValue({
-      ok: true,
-      workerId: "E-01R",
-      threadId: "worker-thread-789"
+        base_url: "http://127.0.0.1:7701/",
+        status_code: 200
+      })
     });
 
     const result = await executeContinueDispatcher(
-      { dispatcherId: harness.dispatcherId },
-      harness.createDeps({ continueWorker })
+      { dispatcherId: "agent-dispatcher-r03", workerId: "R-08" },
+      deps
     );
 
     expect(result).toEqual({
       ok: true,
       status: "continued",
-      message: "continued: E-01R",
-      dispatcher_thread_id: "dispatcher-thread-123",
-      worker: "E-01R"
+      message: "continued: R-08",
+      worker: "R-08"
     });
-    expect(continueWorker).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.arrayContaining([
-        expect.objectContaining({
-          worker: "R-03",
-          notes: "**⏳ BLOCKED: PM Blocker Resolution #2 must be confirmed first**"
-        }),
-        expect.objectContaining({
-          worker: "E-01R",
-          notes: "Ready to continue"
-        })
-      ]),
-      "E-01R"
+    expect(deps.postContinue).toHaveBeenCalledWith(
+      "/api/roles/agent-dispatcher-r03/worker/R-08/continue"
     );
   });
 
-  it("preserves local_tool_bootstrap_failed semantics in the local fallback path", async () => {
-    const harness = await createHarness({
-      planMarkdown: [
-        "# Dispatch Plan",
-        "",
-        "| Status | Batch | Worker | Task | Model | Depends On |",
-        "|--------|-------|--------|------|-------|------------|",
-        "| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | — |",
-        ""
-      ].join("\n"),
-      lifecycleState: {
-        version: 2,
-        dispatcher: {
-          thread_id: "dispatcher-thread-123",
-          started_at: "2026-04-10T00:00:00.000Z",
-          status: "running"
-        },
-        workers: {},
-        last_reconciled_at: null
-      }
-    });
-    const continueWorker = vi.fn().mockResolvedValue({
-      ok: false,
-      workerId: "R-08",
-      error: "run launch failed: ENOENT",
-      localToolBootstrapFailure: true
+  it("returns a structured error when the service is unreachable instead of falling back locally", async () => {
+    const deps = createDeps({
+      postContinue: async () => ({
+        ok: false,
+        error: "Meridian-roles service unreachable at http://127.0.0.1:7701/: fetch failed",
+        base_url: "http://127.0.0.1:7701/",
+        service_unreachable: true
+      })
     });
 
     const result = await executeContinueDispatcher(
-      { dispatcherId: harness.dispatcherId },
-      harness.createDeps({ continueWorker })
+      { dispatcherId: "agent-dispatcher-r03" },
+      deps
     );
 
     expect(result).toEqual({
-      ok: true,
-      status: "local_tool_bootstrap_failed",
-      message: "local tool bootstrap failed: run launch failed: ENOENT",
-      worker: "R-08",
-      error: "run launch failed: ENOENT"
+      ok: false,
+      error: "Meridian-roles service unreachable at http://127.0.0.1:7701/: fetch failed",
+      data: {
+        base_url: "http://127.0.0.1:7701/",
+        service_unreachable: true,
+        exit_code: 3
+      }
     });
   });
 
-  it("repairs legacy detached docs roots before local continuation launches a worker", async () => {
-    const harness = await createDetachedDocsHarness({
-      planMarkdown: [
-        "# Dispatch Plan",
-        "",
-        "| Status | Batch | Worker | Task | Model | Depends On |",
-        "|--------|-------|--------|------|-------|------------|",
-        "| ✅ | 1 | PRE-FLIGHT | Prior step | OPUS | — |",
-        "| ❌ | 2 | R-01 | Current step | CODEX | PRE-FLIGHT |",
-        ""
-      ].join("\n"),
-      lifecycleState: {
-        version: 2,
-        dispatcher: {
-          thread_id: "dispatcher-thread-123",
-          started_at: "2026-04-10T00:00:00.000Z",
-          status: "running"
-        },
-        workers: {},
-        last_reconciled_at: null
+  it("returns a structured error when the service returns an HTTP error", async () => {
+    const deps = createDeps({
+      postContinue: async () => ({
+        ok: false,
+        error: "Meridian-roles service request failed (500): Internal Server Error",
+        base_url: "http://127.0.0.1:7701/",
+        service_unreachable: false,
+        status_code: 500
+      })
+    });
+
+    const result = await executeContinueDispatcher(
+      { dispatcherId: "agent-dispatcher-r03" },
+      deps
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Meridian-roles service request failed (500): Internal Server Error",
+      data: {
+        base_url: "http://127.0.0.1:7701/",
+        service_unreachable: false,
+        exit_code: 1,
+        status_code: 500
       }
     });
-    const continueWorker = vi.fn().mockResolvedValue({
-      ok: true,
-      workerId: "R-01",
-      threadId: "worker-thread-456"
+  });
+
+  it("does not attempt local continuation when the service is down", async () => {
+    const postContinue = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "Meridian-roles service unreachable at http://127.0.0.1:7701/: fetch failed",
+      base_url: "http://127.0.0.1:7701/",
+      service_unreachable: true
     });
 
-    await executeContinueDispatcher(
-      { dispatcherId: harness.dispatcherId },
-      harness.createDeps({ continueWorker })
+    const result = await executeContinueDispatcher(
+      { dispatcherId: "agent-dispatcher-r03" },
+      { postContinue }
     );
 
-    expect(continueWorker).toHaveBeenCalledWith(
-      expect.objectContaining({
-        dispatch_plan_path: harness.planPath,
-        command_file_path: harness.commandFilePath,
-        dispatch_repo_root: harness.repoRoot
-      }),
-      expect.any(Array),
-      "R-01"
-    );
+    expect(postContinue).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    expect((result as { data?: { service_unreachable?: boolean } }).data?.service_unreachable).toBe(true);
   });
 });
 
-async function createHarness(options: {
-  dispatcherStatus?: string;
-  planMarkdown: string;
-  lifecycleState: DispatchThreadStateV2;
-}): Promise<{
-  dispatcherId: string;
-  planPath: string;
-  commandFilePath: string;
-  state: AppState;
-  createDeps(overrides?: {
-    continueWorker?: ContinueDispatcherDeps["continueWorker"];
-  }): ContinueDispatcherDeps;
-}> {
-  const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-continue-dispatcher-"));
-  tempDirectories.add(directory);
-
-  const dispatcherId = "agent-dispatcher-r03";
-  const planPath = path.join(directory, "dispatch_plan.md");
-  const commandFilePath = path.join(directory, "agent_dispatch_command.md");
-  const sidecarPath = path.join(directory, "dispatch_threads.json");
-
-  await fs.writeFile(planPath, options.planMarkdown, "utf8");
-  await fs.writeFile(commandFilePath, "# command\n", "utf8");
-  new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath }).save(options.lifecycleState);
-
-  const state: AppState = {
-    roles: [
-      {
-        threadId: dispatcherId,
-        roleType: "agent-dispatcher",
-        status: options.dispatcherStatus ?? "active",
-        config: {
-          dispatch_plan_path: planPath,
-          command_file_path: commandFilePath,
-          user_reply_channels: [
-            {
-              channel: "web",
-              chat_id: "web:ops"
-            }
-          ],
-          agent_type: "codex",
-          mode: "bridge",
-          kill_policy: "always"
-        }
-      }
-    ],
-    promptStore: {}
-  };
+function createDeps(overrides: Partial<ContinueDispatcherDeps> = {}): ContinueDispatcherDeps & {
+  postContinue: ReturnType<typeof vi.fn>;
+} {
+  const postContinue = overrides.postContinue
+    ? vi.fn(overrides.postContinue)
+    : vi.fn().mockResolvedValue({
+        ok: false,
+        error: "Meridian-roles service unreachable",
+        base_url: "http://127.0.0.1:7701/",
+        service_unreachable: true
+      });
 
   return {
-    dispatcherId,
-    planPath,
-    commandFilePath,
-    state,
-    createDeps(overrides = {}) {
-      return {
-        loadState: async () => state,
-        readFile: (filePath: string) => fs.readFile(filePath, "utf8"),
-        saveState: async (nextState: AppState) => {
-          state.roles = nextState.roles;
-          state.promptStore = nextState.promptStore;
-        },
-        loadLifecycle: () => new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath }).load(),
-        continueWorker: overrides.continueWorker ?? vi.fn().mockResolvedValue({
-          ok: true,
-          workerId: "unused"
-        }),
-        postContinue: async () => ({
-          ok: false,
-          error: "Meridian-roles service unreachable at http://127.0.0.1:7701/: fetch failed",
-          base_url: "http://127.0.0.1:7701/",
-          service_unreachable: true
-        })
-      };
-    }
-  };
-}
-
-async function createDetachedDocsHarness(options: {
-  planMarkdown: string;
-  lifecycleState: DispatchThreadStateV2;
-}): Promise<{
-  dispatcherId: string;
-  planPath: string;
-  commandFilePath: string;
-  repoRoot: string;
-  createDeps(overrides?: {
-    continueWorker?: ContinueDispatcherDeps["continueWorker"];
-  }): ContinueDispatcherDeps;
-}> {
-  const workspaceRoot = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-continue-detached-"));
-  tempDirectories.add(workspaceRoot);
-  const repoRootPath = path.join(workspaceRoot, "projects/clawso");
-  await fs.mkdir(path.join(repoRootPath, ".git"), { recursive: true });
-
-  const dispatcherId = "agent-dispatcher-r03";
-  const planPath = path.join(
-    workspaceRoot,
-    "Docs/Projects/clawso/branch/feat-cli/taskspec/dispatch_plan.md"
-  );
-  const commandFilePath = path.join(
-    workspaceRoot,
-    "Docs/Projects/clawso/branch/feat-cli/taskspec/agent_dispatch_command.md"
-  );
-  const sidecarPath = path.join(path.dirname(planPath), "dispatch_threads.json");
-
-  await fs.mkdir(path.dirname(planPath), { recursive: true });
-  await fs.writeFile(planPath, options.planMarkdown, "utf8");
-  await fs.writeFile(commandFilePath, "# command\n", "utf8");
-  new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath }).save(options.lifecycleState);
-
-  const state: AppState = {
-    roles: [
-      {
-        threadId: dispatcherId,
-        roleType: "agent-dispatcher",
-        status: "active",
-        config: {
-          dispatch_plan_path: planPath,
-          command_file_path: commandFilePath,
-          dispatch_repo_root: workspaceRoot,
-          docs_root: path.join(workspaceRoot, "Docs"),
-          user_reply_channels: [
-            {
-              channel: "web",
-              chat_id: "web:ops"
-            }
-          ],
-          agent_type: "codex",
-          mode: "bridge",
-          kill_policy: "always"
-        }
-      }
-    ],
-    promptStore: {}
-  };
-
-  return {
-    dispatcherId,
-    planPath,
-    commandFilePath,
-    repoRoot: await fs.realpath(repoRootPath),
-    createDeps(overrides = {}) {
-      return {
-        loadState: async () => state,
-        readFile: (filePath: string) => fs.readFile(filePath, "utf8"),
-        saveState: async (nextState: AppState) => {
-          state.roles = nextState.roles;
-          state.promptStore = nextState.promptStore;
-        },
-        loadLifecycle: () => new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath }).load(),
-        continueWorker: overrides.continueWorker ?? vi.fn().mockResolvedValue({
-          ok: true,
-          workerId: "unused"
-        }),
-        postContinue: async () => ({
-          ok: false,
-          error: "Meridian-roles service unreachable at http://127.0.0.1:7701/: fetch failed",
-          base_url: "http://127.0.0.1:7701/",
-          service_unreachable: true
-        })
-      };
-    }
+    postContinue
   };
 }

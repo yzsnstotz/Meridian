@@ -48,8 +48,18 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
   })
 }));
 
+const mockRun = vi.fn();
+const mockKill = vi.fn();
+
+vi.mock("../../../roles/agent-dispatcher/meridian-api-client", () => ({
+  createMeridianApiClient: () => ({
+    run: mockRun,
+    kill: mockKill
+  })
+}));
+
 vi.mock("../../ipc-bridge", () => ({
-  sendAndWait: vi.fn()
+  sendViaHttpRelay: vi.fn()
 }));
 
 vi.mock("node:crypto", () => ({
@@ -72,7 +82,6 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import type { HubResult, HubResultStatus, HubRunState } from "../../../types";
-import { sendAndWait } from "../../ipc-bridge";
 import runTool from "../run";
 
 type MockLifecycleStore = {
@@ -84,7 +93,6 @@ type MockLifecycleStore = {
 
 const randomUUIDMock = vi.mocked(randomUUID);
 const readFileMock = vi.mocked(readFile);
-const sendAndWaitMock = vi.mocked(sendAndWait);
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -94,7 +102,7 @@ afterEach(() => {
 describe("run tool", () => {
   it("derives expected outputs from dispatch-plan notes before sendAndWait", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "# Dispatch Plan",
       "",
@@ -121,16 +129,16 @@ describe("run tool", () => {
       expect.any(String)
     );
     expect(lifecycleStore.recordWorkerStart.mock.invocationCallOrder[0]).toBeLessThan(
-      sendAndWaitMock.mock.invocationCallOrder[0]
+      mockRun.mock.invocationCallOrder[0]
     );
-    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
-    expect(sentPayload.payload.content).toContain("You are **CODEX**");
-    expect(sentPayload.payload.content).toContain("worker **N-04**");
-    expect(sentPayload.payload.content).toContain("**N-04**: Ship outputs");
-    expect(sentPayload.payload.content).toContain("/tmp/dispatch/agent_dispatch_command.md");
-    expect(sentPayload.payload.content).not.toContain("# command");
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("You are **CODEX**");
+    expect(sentContent).toContain("worker **N-04**");
+    expect(sentContent).toContain("**N-04**: Ship outputs");
+    expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).not.toContain("# command");
     expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", hubResult);
-    expect(sendAndWaitMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockRun.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]
     );
     expect(result).toEqual({
@@ -147,7 +155,7 @@ describe("run tool", () => {
 
   it("derives worker-specific report outputs from dispatch-plan notes with angle-bracket placeholders", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "# Dispatch Plan",
       "",
@@ -174,7 +182,7 @@ describe("run tool", () => {
 
   it("derives mixed-syntax report-file outputs from the dispatch plan", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "# Dispatch Plan",
       "",
@@ -201,7 +209,7 @@ describe("run tool", () => {
 
   it("keeps successful workers running until reconciliation verifies real outputs", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "# Dispatch Plan",
       "",
@@ -237,7 +245,7 @@ describe("run tool", () => {
 
   it("derives the completion report path from the dispatch command template", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -281,7 +289,7 @@ describe("run tool", () => {
 
   it("derives the completion report path from the dispatch command template with angle-bracket placeholders", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -325,7 +333,7 @@ describe("run tool", () => {
 
   it("derives the completion report path when the command omits the word your", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -369,7 +377,7 @@ describe("run tool", () => {
 
   it("derives the completion report path with angle-bracket placeholders when the command omits the word your", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -413,7 +421,7 @@ describe("run tool", () => {
 
   it("keeps the dispatcher wrapper in control-flow mode instead of implementation mode", async () => {
     const hubResult = buildHubResult("Dispatcher paused", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "# Dispatch Plan",
       "",
@@ -437,18 +445,18 @@ describe("run tool", () => {
       expect.any(String)
     );
 
-    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
-    expect(sentPayload.payload.content).toContain("You are the dispatcher controller.");
-    expect(sentPayload.payload.content).toContain("Treat any local Meridian tool bootstrap failure");
-    expect(sentPayload.payload.content).toContain("create extra repo artifacts");
-    expect(sentPayload.payload.content).not.toContain("completion report): attempt to write the report");
-    expect(sentPayload.payload.content).not.toContain("follow normally (read specs, implement, test, git commit, push)");
-    expect(sentPayload.payload.content).not.toContain("git commit, push");
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("You are the dispatcher controller.");
+    expect(sentContent).toContain("Treat any local Meridian tool bootstrap failure");
+    expect(sentContent).toContain("create extra repo artifacts");
+    expect(sentContent).not.toContain("completion report): attempt to write the report");
+    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+    expect(sentContent).not.toContain("git commit, push");
   });
 
   it("prefers the DELTA-CHECK-specific report path over the generic completion template", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -494,7 +502,7 @@ describe("run tool", () => {
 
   it("prefers the DELTA-CHECK-specific report path over an angle-bracket completion template", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -541,7 +549,7 @@ describe("run tool", () => {
   it("resolves dispatch-plan-relative delta repair artifacts under the plan directory", async () => {
     const planDirectory = "/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration";
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === `${planDirectory}/dispatch_plan.md`) {
         return [
@@ -574,7 +582,7 @@ describe("run tool", () => {
 
   it("keeps a special-node report path when generic Step 5b is dispatch-plan-relative", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/repo/docs/branch/feat/agent_dispatch_command.md") {
         return [
@@ -620,7 +628,7 @@ describe("run tool", () => {
 
   it("keeps a special-node report path when the generic Step 5b template uses angle-bracket placeholders", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/repo/docs/branch/feat/agent_dispatch_command.md") {
         return [
@@ -718,7 +726,7 @@ describe("run tool", () => {
       };
     });
 
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker completed", "success")));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -754,11 +762,11 @@ describe("run tool", () => {
       worker: "N-04"
     });
 
-    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
-    expect(sentPayload.payload.content).toContain("# Previous Attempt Context");
-    expect(sentPayload.payload.content).toContain("Watch the same GUI drift again.");
-    expect(sentPayload.payload.content).toContain("# Earlier Report");
-    expect(sentPayload.payload.content).toContain("avoid repeating the same mistake");
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("# Previous Attempt Context");
+    expect(sentContent).toContain("Watch the same GUI drift again.");
+    expect(sentContent).toContain("# Earlier Report");
+    expect(sentContent).toContain("avoid repeating the same mistake");
   });
 
   it("injects prior reply and report context when a worker is redone with angle-bracket report templates", async () => {
@@ -815,7 +823,7 @@ describe("run tool", () => {
       };
     });
 
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker completed", "success")));
     readFileMock.mockImplementation(async (filePath) => {
       if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
         return [
@@ -851,15 +859,15 @@ describe("run tool", () => {
       worker: "N-04"
     });
 
-    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
-    expect(sentPayload.payload.content).toContain("# Previous Attempt Context");
-    expect(sentPayload.payload.content).toContain("Watch the same GUI drift again.");
-    expect(sentPayload.payload.content).toContain("# Earlier Report");
-    expect(sentPayload.payload.content).toContain("avoid repeating the same mistake");
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("# Previous Attempt Context");
+    expect(sentContent).toContain("Watch the same GUI drift again.");
+    expect(sentContent).toContain("# Earlier Report");
+    expect(sentContent).toContain("avoid repeating the same mistake");
   });
 
   it("surfaces structured still_running results without flattening them to done", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker still running", "partial", "still_running"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker still running", "partial", "still_running")));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -882,7 +890,7 @@ describe("run tool", () => {
 
   it("awaits reconciliation before returning terminal results", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -917,7 +925,7 @@ describe("run tool", () => {
 
   it("does not kill successful workers when lifecycle remains running after reconciliation", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
-    sendAndWaitMock.mockResolvedValue(hubResult);
+    mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "# Dispatch Plan",
       "",
@@ -948,13 +956,12 @@ describe("run tool", () => {
     expect(lifecycleStore.load().workers["R-06"]).toMatchObject({
       status: "running"
     });
-    expect(sendAndWaitMock).toHaveBeenCalledTimes(1);
+    expect(mockRun).toHaveBeenCalledTimes(1);
   });
 
   it("kills successful workers when lifecycle is completed and kill_policy is always", async () => {
-    sendAndWaitMock
-      .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))
-      .mockResolvedValueOnce(buildHubResult("", "success"));
+    mockRun.mockResolvedValueOnce(toApiResult(buildHubResult("Worker completed", "success")));
+    mockKill.mockResolvedValueOnce({ threadId: "thread-222b", status: "success", raw: {} });
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -979,12 +986,8 @@ describe("run tool", () => {
     expect(lifecycleStore.load().workers["R-06B"]).toMatchObject({
       status: "completed"
     });
-    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
-    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
-      intent: "kill",
-      target: "thread-222b",
-      thread_id: "thread-222b"
-    });
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(mockKill).toHaveBeenCalledWith("thread-222b");
   });
 
   it("falls through to the existing kill policy when lifecycle status is unavailable", async () => {
@@ -997,9 +1000,8 @@ describe("run tool", () => {
       }))
     }));
 
-    sendAndWaitMock
-      .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))
-      .mockResolvedValueOnce(buildHubResult("", "success"));
+    mockRun.mockResolvedValueOnce(toApiResult(buildHubResult("Worker completed", "success")));
+    mockKill.mockResolvedValueOnce({ threadId: "thread-222c", status: "success", raw: {} });
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1019,18 +1021,13 @@ describe("run tool", () => {
         summary: "Worker completed"
       }
     });
-    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
-    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
-      intent: "kill",
-      target: "thread-222c",
-      thread_id: "thread-222c"
-    });
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(mockKill).toHaveBeenCalledWith("thread-222c");
   });
 
   it("kills terminal worker threads when kill_policy is always", async () => {
-    sendAndWaitMock
-      .mockResolvedValueOnce(buildHubResult("Worker completed", "success"))
-      .mockResolvedValueOnce(buildHubResult("", "success"));
+    mockRun.mockResolvedValueOnce(toApiResult(buildHubResult("Worker completed", "success")));
+    mockKill.mockResolvedValueOnce({ threadId: "thread-222", status: "success", raw: {} });
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1050,18 +1047,13 @@ describe("run tool", () => {
         summary: "Worker completed"
       }
     });
-    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
-    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
-      intent: "kill",
-      target: "thread-222",
-      thread_id: "thread-222"
-    });
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(mockKill).toHaveBeenCalledWith("thread-222");
   });
 
   it("kills failed worker threads when kill_policy is always", async () => {
-    sendAndWaitMock
-      .mockResolvedValueOnce(buildHubResult("Worker failed", "error"))
-      .mockResolvedValueOnce(buildHubResult("", "success"));
+    mockRun.mockResolvedValueOnce(toApiResult(buildHubResult("Worker failed", "error")));
+    mockKill.mockResolvedValueOnce({ threadId: "thread-333", status: "success", raw: {} });
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1080,16 +1072,12 @@ describe("run tool", () => {
         status: "failed"
       }
     });
-    expect(sendAndWaitMock).toHaveBeenCalledTimes(2);
-    expect(sendAndWaitMock.mock.calls[1]?.[0]).toMatchObject({
-      intent: "kill",
-      target: "thread-333",
-      thread_id: "thread-333"
-    });
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(mockKill).toHaveBeenCalledWith("thread-333");
   });
 
   it("does not kill failed worker threads when kill_policy is on_success", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker failed", "error"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker failed", "error")));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1108,11 +1096,12 @@ describe("run tool", () => {
         status: "failed"
       }
     });
-    expect(sendAndWaitMock).toHaveBeenCalledTimes(1);
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(mockKill).not.toHaveBeenCalled();
   });
 
   it("surfaces structured timeout results without flattening them to failure", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Wait window elapsed", "timeout", "timeout"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Wait window elapsed", "timeout", "timeout")));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1136,7 +1125,7 @@ describe("run tool", () => {
   it("swallows reconciliation failures while still returning the run result", async () => {
     const consoleWarnMock = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     reconcileMock.mockRejectedValueOnce(new Error("Hub unavailable"));
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker completed", "success"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker completed", "success")));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1163,7 +1152,7 @@ describe("run tool", () => {
   });
 
   it("maps Hub errors to failed worker status", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Hub rejected run", "error"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Hub rejected run", "error")));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1183,9 +1172,9 @@ describe("run tool", () => {
     });
   });
 
-  it("leaves the worker in running when sendAndWait throws", async () => {
+  it("leaves the worker in running when the API client throws", async () => {
     const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    sendAndWaitMock.mockRejectedValue(new Error("Hub timeout after 5000ms"));
+    mockRun.mockRejectedValue(new Error("run failed: Meridian API unreachable"));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1207,11 +1196,11 @@ describe("run tool", () => {
     expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
       worker: "N-04",
       threadId: "thread-789",
-      error: "Hub timeout after 5000ms"
+      error: "run failed: Meridian API unreachable"
     });
     expect(result).toEqual({
       ok: false,
-      error: "Hub timeout after 5000ms",
+      error: "run failed: Meridian API unreachable",
       data: {
         worker: "N-04",
         thread_id: "thread-789",
@@ -1222,7 +1211,7 @@ describe("run tool", () => {
 
   it("maps SIGINT cleanup failures to the interrupted contract", async () => {
     const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    sendAndWaitMock.mockRejectedValue(new Error("Tool Gateway interrupted by SIGINT"));
+    mockRun.mockRejectedValue(new Error("Tool Gateway interrupted by SIGINT"));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1254,7 +1243,7 @@ describe("run tool", () => {
   });
 
   it("grants DELTA-CHECK workers permission to modify the dispatch plan", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Delta check done", "success"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Delta check done", "success")));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
       "|--------|-------|--------|------|-------|------------|-------|",
@@ -1267,14 +1256,14 @@ describe("run tool", () => {
       worker: "DELTA-CHECK"
     });
 
-    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
-    expect(sentPayload.payload.content).toContain("may add, remove, or modify rows");
-    expect(sentPayload.payload.content).toContain("**must** write your findings");
-    expect(sentPayload.payload.content).not.toContain("you do not need to write to the dispatch plan yourself");
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("may add, remove, or modify rows");
+    expect(sentContent).toContain("**must** write your findings");
+    expect(sentContent).not.toContain("you do not need to write to the dispatch plan yourself");
   });
 
   it("does not grant plan modification to regular workers", async () => {
-    sendAndWaitMock.mockResolvedValue(buildHubResult("Worker done", "success"));
+    mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker done", "success")));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
       "|--------|-------|--------|------|-------|------------|-------|",
@@ -1287,9 +1276,9 @@ describe("run tool", () => {
       worker: "N-01"
     });
 
-    const sentPayload = sendAndWaitMock.mock.calls[0]?.[0] as { payload: { content: string } };
-    expect(sentPayload.payload.content).toContain("you do not need to write to the dispatch plan yourself");
-    expect(sentPayload.payload.content).not.toContain("may add, remove, or modify rows");
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("you do not need to write to the dispatch plan yourself");
+    expect(sentContent).not.toContain("may add, remove, or modify rows");
   });
 });
 
@@ -1327,4 +1316,14 @@ function mockCommandAndPlanReads(commandPath: string, dispatchPlan: string): voi
 
     throw new Error(`Unexpected readFile path: ${String(filePath)}`);
   });
+}
+
+function toApiResult(hubResult: HubResult) {
+  return {
+    threadId: hubResult.thread_id ?? "dispatch-thread",
+    status: hubResult.status,
+    runState: hubResult.run_state,
+    content: hubResult.content,
+    raw: hubResult
+  };
 }

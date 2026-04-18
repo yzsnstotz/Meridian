@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { sendAndWait } from "./ipc-bridge";
+import { sendViaHttpRelay } from "./ipc-bridge";
 import { loadToolsFromDirectory } from "./loader";
 import { ToolRegistry, type ToolResult } from "./registry";
 
@@ -33,7 +33,7 @@ export async function executeToolCommand(
   }
 }
 
-export { sendAndWait, loadToolsFromDirectory, ToolRegistry };
+export { sendViaHttpRelay, loadToolsFromDirectory, ToolRegistry };
 export type { ParamSchema, ToolDefinition, ToolResult } from "./registry";
 
 function asError(error: unknown): Error {

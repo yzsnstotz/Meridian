@@ -1,20 +1,10 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs/promises";
 import http from "node:http";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HubMessage, HubResult } from "../../types";
-import { sendAndWait } from "../ipc-bridge";
-
-interface TestHubServer {
-  messages: Record<string, unknown>[];
-  callbackSocketPaths: string[];
-  close(): Promise<void>;
-}
+import { sendViaHttpRelay } from "../ipc-bridge";
 
 interface TestHttpRelayServer {
   messages: Record<string, unknown>[];
@@ -22,21 +12,11 @@ interface TestHttpRelayServer {
   close(): Promise<void>;
 }
 
-const tempDirectories = new Set<string>();
-const servers = new Set<TestHubServer>();
 const relayServers = new Set<TestHttpRelayServer>();
-const originalHubSocketPath = process.env.HUB_SOCKET_PATH;
 const originalHubRelayUrl = process.env.MERIDIAN_HUB_RELAY_URL;
-const originalCwd = process.cwd();
+
 afterEach(async () => {
   vi.restoreAllMocks();
-  process.chdir(originalCwd);
-
-  if (originalHubSocketPath === undefined) {
-    delete process.env.HUB_SOCKET_PATH;
-  } else {
-    process.env.HUB_SOCKET_PATH = originalHubSocketPath;
-  }
 
   if (originalHubRelayUrl === undefined) {
     delete process.env.MERIDIAN_HUB_RELAY_URL;
@@ -44,359 +24,18 @@ afterEach(async () => {
     process.env.MERIDIAN_HUB_RELAY_URL = originalHubRelayUrl;
   }
 
-  await Promise.all(Array.from(servers, (server) => server.close().catch(() => undefined)));
   await Promise.all(Array.from(relayServers, (server) => server.close().catch(() => undefined)));
-  await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
-
-  servers.clear();
   relayServers.clear();
-  tempDirectories.clear();
 });
 
-describe("sendAndWait", () => {
-  it("sends a Hub message through a temp reply socket and returns the matching callback", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "success" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-
-    const message = buildHubMessage();
-    const result = await sendAndWait(message, 200);
-
-    expect(result).toMatchObject({
-      trace_id: message.trace_id,
-      thread_id: message.thread_id,
-      status: "success",
-      content: "ok"
-    });
-    expect(hub.messages).toHaveLength(1);
-    expect(hub.messages[0]).toMatchObject({
-      trace_id: message.trace_id,
-      reply_channel: {
-        channel: "socket"
-      }
-    });
-
-    const callbackSocketPath = hub.callbackSocketPaths[0];
-    expect(path.isAbsolute(callbackSocketPath)).toBe(true);
-    expect(path.basename(callbackSocketPath)).toMatch(/^mt-[0-9a-f]{16}\.sock$/);
-    await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("times out when the hub does not callback and removes the temp socket", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "none" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-
-    const message = buildHubMessage();
-    const error = await sendAndWait(message, 50).then(
-      () => null,
-      (caughtError) => caughtError as Error
-    );
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error?.message).toContain("Hub timeout after 50ms");
-    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
-    expect(error?.message).toContain("transport=callback-socket");
-    expect(error?.message).toContain("request_delivery=request-may-have-reached-hub");
-    expect(error?.message).toContain("response_path_failure=timeout");
-    const callbackSocketPath = hub.callbackSocketPaths[0];
-    expect(callbackSocketPath).toBeDefined();
-    await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("cleans up the temp socket when interrupted by SIGINT", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "none" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-
-    const message = buildHubMessage();
-    const pending = sendAndWait(message, 0);
-
-    await vi.waitFor(() => {
-      expect(hub.messages).toHaveLength(1);
-    });
-
-    process.emit("SIGINT");
-
-    await expect(pending).rejects.toThrow("Tool Gateway interrupted by SIGINT");
-    const callbackSocketPath = hub.callbackSocketPaths[0];
-    expect(callbackSocketPath).toBeDefined();
-    await expect(fs.access(callbackSocketPath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("logs an error when the hub callback trace_id does not match before receiving the correct reply", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "mismatch_then_success" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const message = buildHubMessage();
-    const result = await sendAndWait(message, 200);
-
-    expect(result.trace_id).toBe(message.trace_id);
-    expect(errorSpy).toHaveBeenCalledWith(
-      "Hub callback trace_id mismatch",
-      expect.objectContaining({
-        trace_id: message.trace_id,
-        transport: "callback-socket",
-        received_trace_id: expect.any(String)
-      })
-    );
-  });
-
-  it("logs a warning when the hub callback body is empty", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "empty" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    const message = buildHubMessage();
-    const error = await sendAndWait(message, 50).then(
-      () => null,
-      (caughtError) => caughtError as Error
-    );
-
-    expect(error?.message).toContain("Hub callback completed without a response body");
-    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
-    expect(error?.message).toContain("transport=callback-socket");
-    expect(error?.message).toContain("response_path_failure=empty-body");
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Hub callback completed without a response body",
-      expect.objectContaining({
-        trace_id: message.trace_id,
-        transport: "callback-socket",
-        request_delivery: "request-may-have-reached-hub",
-        response_path_failure: "empty-body"
-      })
-    );
-  });
-
-  it("logs a warning when the hub callback body cannot be parsed", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "invalid_json" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    const message = buildHubMessage();
-    const error = await sendAndWait(message, 50).then(
-      () => null,
-      (caughtError) => caughtError as Error
-    );
-
-    expect(error?.message).toContain("Hub callback body could not be parsed");
-    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
-    expect(error?.message).toContain("transport=callback-socket");
-    expect(error?.message).toContain("response_path_failure=invalid-body");
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Hub callback body could not be parsed",
-      expect.objectContaining({
-        trace_id: message.trace_id,
-        transport: "callback-socket",
-        request_delivery: "request-may-have-reached-hub",
-        response_path_failure: "invalid-body",
-        error: expect.any(String)
-      })
-    );
-  });
-
-  it("prefers a workspace-local socket directory before the system temp dir", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, { callbackMode: "success" });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-    process.chdir(directory);
-
-    const originalCreateServer = net.createServer;
-    let blockedTmpBind = false;
-    vi.spyOn(net, "createServer").mockImplementation(((...args: Parameters<typeof net.createServer>) => {
-      const server = originalCreateServer(...args);
-      const originalListen = server.listen.bind(server);
-
-      const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
-        const candidatePath = readSocketPath(listenArgs[0]);
-        if (!blockedTmpBind && candidatePath?.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`)) {
-          blockedTmpBind = true;
-          const error = Object.assign(
-            new Error(`listen EPERM: operation not permitted ${candidatePath}`),
-            { code: "EPERM" }
-          );
-          queueMicrotask(() => {
-            server.emit("error", error);
-          });
-          return server;
-        }
-
-        return originalListen(...listenArgs);
-      };
-      server.listen = listenMock as typeof server.listen;
-
-      return server;
-    }) as typeof net.createServer);
-
-    const result = await sendAndWait(buildHubMessage(), 200);
-
-    expect(result.status).toBe("success");
-    expect(blockedTmpBind).toBe(false);
-    const callbackSocketPath = hub.callbackSocketPaths[0];
-    expect(callbackSocketPath).toBeDefined();
-    expect(path.basename(path.dirname(callbackSocketPath!))).toBe(".tmp");
-    const workspaceRoot = await fs.realpath(directory);
-    await expect(fs.realpath(path.dirname(path.dirname(callbackSocketPath!)))).resolves.toBe(workspaceRoot);
-    await expect(fs.access(hub.callbackSocketPaths[0])).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("falls back to inline Hub responses when callback socket binds are denied", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, {
-      callbackMode: "success",
-      responseMode: "inline"
-    });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    const originalCreateServer = net.createServer;
-    let blockedBindCount = 0;
-    vi.spyOn(net, "createServer").mockImplementation(((...args: Parameters<typeof net.createServer>) => {
-      const server = originalCreateServer(...args);
-      const originalListen = server.listen.bind(server);
-
-      const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
-        const candidatePath = readSocketPath(listenArgs[0]);
-        if (path.basename(candidatePath ?? "").startsWith("mt-")) {
-          blockedBindCount += 1;
-          const error = Object.assign(
-            new Error(`listen EPERM: operation not permitted ${candidatePath}`),
-            { code: "EPERM" }
-          );
-          queueMicrotask(() => {
-            server.emit("error", error);
-          });
-          return server;
-        }
-
-        return originalListen(...listenArgs);
-      };
-      server.listen = listenMock as typeof server.listen;
-
-      return server;
-    }) as typeof net.createServer);
-
-    const message = buildHubMessage({ reply_channel: undefined });
-    const result = await sendAndWait(message, 200);
-
-    expect(result).toMatchObject({
-      trace_id: message.trace_id,
-      status: "success",
-      content: "ok"
-    });
-    expect(blockedBindCount).toBeGreaterThan(0);
-    expect(hub.messages[0]).toMatchObject({
-      trace_id: message.trace_id,
-      reply_channel: {
-        channel: "web",
-        chat_id: "service:meridian-tool"
-      }
-    });
-    expect(hub.callbackSocketPaths).toHaveLength(0);
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Tool Gateway callback socket unavailable; falling back to inline Hub response",
-      expect.objectContaining({
-        trace_id: message.trace_id,
-        transport: "callback-socket",
-        next_transport: "inline",
-        request_delivery: "request-not-sent",
-        response_path_failure: "transport-unavailable",
-        error: expect.stringContaining("listen EPERM")
-      })
-    );
-  });
-
-  it("falls back to inline Hub responses when bind denial only appears in the error message", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const hub = await startHubServer(hubSocketPath, {
-      callbackMode: "success",
-      responseMode: "inline"
-    });
-    servers.add(hub);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    const originalCreateServer = net.createServer;
-    vi.spyOn(net, "createServer").mockImplementation(((...args: Parameters<typeof net.createServer>) => {
-      const server = originalCreateServer(...args);
-      const originalListen = server.listen.bind(server);
-
-      const listenMock = (...listenArgs: Parameters<net.Server["listen"]>) => {
-        const candidatePath = readSocketPath(listenArgs[0]);
-        if (path.basename(candidatePath ?? "").startsWith("mt-")) {
-          const error = new Error(`listen EPERM: operation not permitted ${candidatePath}`);
-          queueMicrotask(() => {
-            server.emit("error", error);
-          });
-          return server;
-        }
-
-        return originalListen(...listenArgs);
-      };
-      server.listen = listenMock as typeof server.listen;
-
-      return server;
-    }) as typeof net.createServer);
-
-    const message = buildHubMessage({ reply_channel: undefined });
-    const result = await sendAndWait(message, 200);
-
-    expect(result).toMatchObject({
-      trace_id: message.trace_id,
-      status: "success",
-      content: "ok"
-    });
-    expect(hub.messages[0]).toMatchObject({
-      trace_id: message.trace_id,
-      reply_channel: {
-        channel: "web",
-        chat_id: "service:meridian-tool"
-      }
-    });
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Tool Gateway callback socket unavailable; falling back to inline Hub response",
-      expect.objectContaining({
-        trace_id: message.trace_id,
-        transport: "callback-socket",
-        next_transport: "inline",
-        request_delivery: "request-not-sent",
-        response_path_failure: "transport-unavailable",
-        error: expect.stringContaining("listen EPERM")
-      })
-    );
-  });
-
-  it("falls back to HTTP relay and injects a web reply channel when socket transports cannot connect", async () => {
-    const directory = await createTempDirectory();
+describe("sendViaHttpRelay", () => {
+  it("sends a Hub message via HTTP relay and returns the parsed result", async () => {
     const relay = await startHttpRelayServer();
     relayServers.add(relay);
-    process.env.HUB_SOCKET_PATH = path.join(directory, "missing-hub.sock");
     process.env.MERIDIAN_HUB_RELAY_URL = relay.url;
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    const message = buildHubMessage({ reply_channel: undefined });
-    const result = await sendAndWait(message, 200);
+    const message = buildHubMessage();
+    const result = await sendViaHttpRelay(message, 5000);
 
     expect(result).toMatchObject({
       trace_id: message.trace_id,
@@ -405,141 +44,94 @@ describe("sendAndWait", () => {
     });
     expect(relay.messages).toHaveLength(1);
     expect(relay.messages[0]).toMatchObject({
-      trace_id: message.trace_id,
+      trace_id: message.trace_id
+    });
+  });
+
+  it("injects a web reply channel when none is provided", async () => {
+    const relay = await startHttpRelayServer();
+    relayServers.add(relay);
+    process.env.MERIDIAN_HUB_RELAY_URL = relay.url;
+
+    const message = buildHubMessage({ reply_channel: undefined });
+    await sendViaHttpRelay(message, 5000);
+
+    expect(relay.messages[0]).toMatchObject({
       reply_channel: {
         channel: "web",
         chat_id: "service:meridian-tool"
       }
     });
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Tool Gateway inline Hub connect also unavailable; falling back to HTTP relay",
-      expect.objectContaining({
-        trace_id: message.trace_id,
-        transport: "inline",
-        next_transport: "http-relay",
-        request_delivery: "request-not-sent",
-        response_path_failure: "transport-unavailable",
-        error: expect.stringContaining("ENOENT")
-      })
+  });
+
+  it("rejects when the relay returns an empty body", async () => {
+    const relay = await startHttpRelayServer({ responseMode: "empty" });
+    relayServers.add(relay);
+    process.env.MERIDIAN_HUB_RELAY_URL = relay.url;
+
+    const message = buildHubMessage();
+    const error = await sendViaHttpRelay(message, 5000).then(
+      () => null,
+      (caughtError) => caughtError as Error
     );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain("HTTP relay completed without a response body");
+    expect(error?.message).toContain(`trace_id=${message.trace_id}`);
+    expect(error?.message).toContain("transport=http-relay");
+    expect(error?.message).toContain("response_path_failure=empty-body");
+  });
+
+  it("rejects when the relay returns invalid JSON", async () => {
+    const relay = await startHttpRelayServer({ responseMode: "invalid_json" });
+    relayServers.add(relay);
+    process.env.MERIDIAN_HUB_RELAY_URL = relay.url;
+
+    const message = buildHubMessage();
+    const error = await sendViaHttpRelay(message, 5000).then(
+      () => null,
+      (caughtError) => caughtError as Error
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain("Invalid HTTP relay response");
+    expect(error?.message).toContain("transport=http-relay");
+    expect(error?.message).toContain("response_path_failure=invalid-body");
+  });
+
+  it("rejects when the relay is unreachable", async () => {
+    process.env.MERIDIAN_HUB_RELAY_URL = "http://127.0.0.1:1/api/hub-relay";
+
+    const message = buildHubMessage();
+    const error = await sendViaHttpRelay(message, 5000).then(
+      () => null,
+      (caughtError) => caughtError as Error
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toMatch(/ECONNREFUSED|EADDRNOTAVAIL/);
+  });
+
+  it("does not use HUB_SOCKET_PATH or direct socket transport", async () => {
+    const relay = await startHttpRelayServer();
+    relayServers.add(relay);
+    process.env.MERIDIAN_HUB_RELAY_URL = relay.url;
+
+    const message = buildHubMessage();
+    await sendViaHttpRelay(message, 5000);
+
+    expect(relay.messages).toHaveLength(1);
+    expect(relay.messages[0]).not.toHaveProperty("reply_channel.socket_path");
   });
 });
 
-async function createTempDirectory(): Promise<string> {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-ipc-bridge-"));
-  tempDirectories.add(directory);
-  return directory;
-}
-
-async function startHubServer(
-  socketPath: string,
-  options: {
-    callbackMode: "success" | "none" | "mismatch_then_success" | "empty" | "invalid_json";
-    responseMode?: "callback" | "inline";
-  }
-): Promise<TestHubServer> {
-  const messages: Record<string, unknown>[] = [];
-  const callbackSocketPaths: string[] = [];
-  let closed = false;
-  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
-    socket.setEncoding("utf8");
-    let raw = "";
-
-    socket.on("data", (chunk: string) => {
-      raw += chunk;
-    });
-
-    socket.once("end", () => {
-      const message = JSON.parse(raw) as Record<string, unknown>;
-      messages.push(message);
-
-      const replyChannel = message.reply_channel as { socket_path?: string } | undefined;
-      if (replyChannel?.socket_path) {
-        callbackSocketPaths.push(replyChannel.socket_path);
-      }
-
-      const response: HubResult = {
-        trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
-        thread_id: typeof message.thread_id === "string" ? message.thread_id : "dispatcher-1",
-        source: "codex",
-        status: "success",
-        content: "ok",
-        attachments: [],
-        timestamp: new Date().toISOString()
-      };
-
-      if (options.responseMode === "inline") {
-        socket.end(JSON.stringify(response));
-        return;
-      }
-
-      if (options.callbackMode === "success" && replyChannel?.socket_path) {
-        void sendCallback(replyChannel.socket_path, response);
-      }
-
-      if (options.callbackMode === "mismatch_then_success" && replyChannel?.socket_path) {
-        const traceId = typeof message.trace_id === "string" ? message.trace_id : randomUUID();
-        const threadId = typeof message.thread_id === "string" ? message.thread_id : "dispatcher-1";
-        const callbackSocketPath = replyChannel.socket_path;
-
-        void sendCallback(callbackSocketPath, {
-          trace_id: randomUUID(),
-          thread_id: threadId,
-          source: "codex",
-          status: "success",
-          content: "mismatch",
-          attachments: [],
-          timestamp: new Date().toISOString()
-        }).then(() => {
-          return sendCallback(callbackSocketPath, {
-            trace_id: traceId,
-            thread_id: threadId,
-            source: "codex",
-            status: "success",
-            content: "ok",
-            attachments: [],
-            timestamp: new Date().toISOString()
-          });
-        });
-      }
-
-      if (options.callbackMode === "empty" && replyChannel?.socket_path) {
-        void sendRawCallback(replyChannel.socket_path, "");
-      }
-
-      if (options.callbackMode === "invalid_json" && replyChannel?.socket_path) {
-        void sendRawCallback(replyChannel.socket_path, "{invalid");
-      }
-
-      socket.end();
-    });
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, () => resolve());
-  });
-
-  return {
-    messages,
-    callbackSocketPaths,
-    async close(): Promise<void> {
-      if (closed) {
-        return;
-      }
-
-      closed = true;
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-      await fs.unlink(socketPath).catch(() => undefined);
-    }
-  };
-}
-
-async function startHttpRelayServer(): Promise<TestHttpRelayServer> {
+async function startHttpRelayServer(
+  options: { responseMode?: "success" | "empty" | "invalid_json" } = {}
+): Promise<TestHttpRelayServer> {
   const messages: Record<string, unknown>[] = [];
   let closed = false;
+  const responseMode = options.responseMode ?? "success";
+
   const server = http.createServer((request, response) => {
     let raw = "";
     request.setEncoding("utf8");
@@ -549,6 +141,19 @@ async function startHttpRelayServer(): Promise<TestHttpRelayServer> {
     request.on("end", () => {
       const message = JSON.parse(raw) as Record<string, unknown>;
       messages.push(message);
+
+      if (responseMode === "empty") {
+        response.statusCode = 200;
+        response.end("");
+        return;
+      }
+
+      if (responseMode === "invalid_json") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "application/json; charset=utf-8");
+        response.end("{invalid");
+        return;
+      }
 
       const result: HubResult = {
         trace_id: typeof message.trace_id === "string" ? message.trace_id : randomUUID(),
@@ -592,21 +197,6 @@ async function startHttpRelayServer(): Promise<TestHttpRelayServer> {
   };
 }
 
-function sendCallback(socketPath: string, response: HubResult): Promise<void> {
-  return sendRawCallback(socketPath, JSON.stringify(response));
-}
-
-function sendRawCallback(socketPath: string, payload: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection(socketPath, () => {
-      socket.end(payload);
-    });
-
-    socket.once("close", () => resolve());
-    socket.once("error", reject);
-  });
-}
-
 function buildHubMessage(overrides: Partial<HubMessage> = {}): Partial<HubMessage> {
   return {
     trace_id: randomUUID(),
@@ -626,15 +216,4 @@ function buildHubMessage(overrides: Partial<HubMessage> = {}): Partial<HubMessag
     },
     ...overrides
   };
-}
-
-function readSocketPath(value: Parameters<net.Server["listen"]>[0]): string | null {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "object" && value !== null && "path" in value && typeof value.path === "string") {
-    return value.path;
-  }
-
-  return null;
 }
