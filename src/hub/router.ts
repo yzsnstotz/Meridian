@@ -2567,8 +2567,8 @@ export class HubRouter {
       return null;
     }
 
-    const maxAttempts = 120;
-    const delayMs = 500;
+    const maxAttempts = config.AGENT_REPLY_WAIT_MAX_ATTEMPTS;
+    const delayMs = config.AGENT_REPLY_WAIT_DELAY_MS;
     const maxUnchangedSnapshotPolls = 3;
     let fallbackCandidate: string | null = null;
     let fallbackTail: string | null = null;

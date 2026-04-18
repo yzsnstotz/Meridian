@@ -1533,7 +1533,7 @@ test("HubRouter times out when an active worker never emits any reply for the cu
     assert.equal(result.content, "Task is running...");
     assert.doesNotMatch(result.content, /stale old snapshot/);
     assert.equal(result.progress?.phase, "running");
-    assert.equal(callCount, 121);
+    assert.equal(callCount, config.AGENT_REPLY_WAIT_MAX_ATTEMPTS + 1);
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }

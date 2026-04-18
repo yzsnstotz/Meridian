@@ -84,6 +84,8 @@ const envSchema = z
     WEB_GUI_HTTPS: envBoolean(false),
     TLS_CERT_PATH: optionalEnvString(),
     TLS_KEY_PATH: optionalEnvString(),
+    AGENT_REPLY_WAIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(600),
+    AGENT_REPLY_WAIT_DELAY_MS: z.coerce.number().int().positive().default(500),
     ANTHROPIC_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
     GEMINI_API_KEY: z.string().optional(),
