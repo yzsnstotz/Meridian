@@ -19,10 +19,10 @@ afterEach(async () => {
 });
 
 describe("parseNormalizedAgentDispatcherConfig", () => {
-  it("repairs detached docs roots and rebuilds generated prompts for persisted dispatchers", async () => {
+  it("preserves explicit dispatch_repo_root without overriding to inferred repo root", async () => {
     const harness = await createDetachedDispatchHarness();
     const threadId = "agent-dispatcher-rehydrated";
-    const stalePrompt = materializeDispatcherSystemPrompt(
+    const prompt = materializeDispatcherSystemPrompt(
       buildSystemPrompt({
         dispatch_plan_path: harness.dispatchPlanPath,
         command_file_path: harness.commandFilePath,
@@ -44,7 +44,7 @@ describe("parseNormalizedAgentDispatcherConfig", () => {
         ...harness.baseConfig,
         dispatch_repo_root: harness.workspaceRoot,
         docs_root: path.join(harness.workspaceRoot, "Docs"),
-        system_prompt: stalePrompt
+        system_prompt: prompt
       },
       { threadId }
     );
@@ -52,15 +52,14 @@ describe("parseNormalizedAgentDispatcherConfig", () => {
     expect(normalized).toMatchObject({
       dispatch_plan_path: harness.dispatchPlanPath,
       command_file_path: harness.commandFilePath,
-      dispatch_repo_root: harness.repoRoot,
-      docs_root: harness.docsRoot
+      dispatch_repo_root: harness.workspaceRoot,
+      docs_root: path.join(harness.workspaceRoot, "Docs")
     });
     expect(normalized?.system_prompt).toContain(`dispatcher_role_id: ${threadId}`);
-    expect(normalized?.system_prompt).toContain(`dispatch_repo_root: ${harness.repoRoot}`);
-    expect(normalized?.system_prompt).not.toContain(`dispatch_repo_root: ${harness.workspaceRoot}`);
+    expect(normalized?.system_prompt).toContain(`dispatch_repo_root: ${harness.workspaceRoot}`);
   });
 
-  it("preserves custom prompts while still repairing detached docs roots", async () => {
+  it("preserves custom prompts without modifying explicit roots", async () => {
     const harness = await createDetachedDispatchHarness();
 
     const normalized = parseNormalizedAgentDispatcherConfig(
@@ -74,8 +73,8 @@ describe("parseNormalizedAgentDispatcherConfig", () => {
     );
 
     expect(normalized).toMatchObject({
-      dispatch_repo_root: harness.repoRoot,
-      docs_root: harness.docsRoot,
+      dispatch_repo_root: harness.workspaceRoot,
+      docs_root: path.join(harness.workspaceRoot, "Docs"),
       system_prompt: "Custom dispatcher instructions stay exactly as written."
     });
   });

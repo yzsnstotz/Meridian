@@ -1,13 +1,5 @@
-import path from "node:path";
-
 import type { AgentDispatcherConfig, AppState, RoleState } from "../../types";
 import { AgentDispatcherConfigSchema } from "../../types";
-import {
-  DEFAULT_AGENT_DISPATCHER_DOCS_ROOT,
-  DEFAULT_AGENT_DISPATCHER_REPO_ROOT,
-  resolveConfiguredDocsRoot,
-  resolveDispatchRepoRoot
-} from "./dispatch-paths";
 import { buildSystemPromptFromConfig, materializeDispatcherSystemPrompt } from "./prompt-builder";
 
 export interface NormalizeAgentDispatcherConfigOptions {
@@ -67,47 +59,11 @@ export function normalizePersistedAgentDispatcherRoleState(roleState: RoleState)
 }
 
 function normalizeLegacyDispatchRepoRoot(config: AgentDispatcherConfig): string | undefined {
-  const explicitRoot = normalizeText(config.dispatch_repo_root);
-  if (!explicitRoot) {
-    return undefined;
-  }
-
-  const inferredRoot = resolveDispatchRepoRoot([
-    config.dispatch_plan_path,
-    config.command_file_path
-  ]);
-
-  const detachedWorkspaceRoot = resolveDetachedWorkspaceRoot(config);
-  if (
-    inferredRoot !== explicitRoot
-    && (explicitRoot === DEFAULT_AGENT_DISPATCHER_REPO_ROOT || explicitRoot === detachedWorkspaceRoot)
-  ) {
-    return inferredRoot;
-  }
-
-  return explicitRoot;
+  return normalizeText(config.dispatch_repo_root);
 }
 
 function normalizeLegacyDocsRoot(config: AgentDispatcherConfig): string | undefined {
-  const explicitRoot = normalizeText(config.docs_root);
-  if (!explicitRoot) {
-    return undefined;
-  }
-
-  const inferredDocsRoot = resolveConfiguredDocsRoot({
-    dispatch_plan_path: config.dispatch_plan_path,
-    command_file_path: config.command_file_path
-  });
-
-  const detachedDocsRoot = resolveDetachedDocsRoot(config);
-  if (
-    inferredDocsRoot !== explicitRoot
-    && (explicitRoot === DEFAULT_AGENT_DISPATCHER_DOCS_ROOT || explicitRoot === detachedDocsRoot)
-  ) {
-    return inferredDocsRoot;
-  }
-
-  return explicitRoot;
+  return normalizeText(config.docs_root);
 }
 
 function normalizeGeneratedSystemPrompt(
@@ -147,45 +103,4 @@ function looksLikeGeneratedAgentDispatcherPrompt(prompt: string): boolean {
 function normalizeText(value: string | null | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
-}
-
-function resolveDetachedWorkspaceRoot(config: AgentDispatcherConfig): string | undefined {
-  const candidate = parseDetachedDocsCandidate(config.dispatch_plan_path)
-    ?? parseDetachedDocsCandidate(config.command_file_path);
-  return candidate?.workspaceRoot;
-}
-
-function resolveDetachedDocsRoot(config: AgentDispatcherConfig): string | undefined {
-  const candidate = parseDetachedDocsCandidate(config.dispatch_plan_path)
-    ?? parseDetachedDocsCandidate(config.command_file_path);
-  return candidate ? path.join(candidate.workspaceRoot, candidate.docsDirectoryName) : undefined;
-}
-
-function parseDetachedDocsCandidate(candidatePath: string): {
-  workspaceRoot: string;
-  docsDirectoryName: string;
-} | null {
-  const normalized = path.resolve(candidatePath).replace(/\\/g, "/");
-  const segments = normalized.split("/");
-
-  for (let index = 0; index <= segments.length - 4; index += 1) {
-    const docsDirectoryName = segments[index];
-    const docsSegment = docsDirectoryName?.toLowerCase();
-    const projectSegment = segments[index + 1]?.toLowerCase();
-    const branchSegment = segments[index + 3]?.toLowerCase();
-
-    if (
-      (docsSegment === "docs")
-      && (projectSegment === "project" || projectSegment === "projects")
-      && branchSegment === "branch"
-    ) {
-      const workspaceRoot = path.normalize(segments.slice(0, index).join("/") || path.sep);
-      return {
-        workspaceRoot,
-        docsDirectoryName
-      };
-    }
-  }
-
-  return null;
 }
