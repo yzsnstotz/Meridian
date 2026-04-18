@@ -1,13 +1,9 @@
-import type { HubMessage, HubResult } from "../../types";
-import { sendAndWait } from "../ipc-bridge";
+import { createMeridianApiClient, MeridianApiError } from "../../roles/agent-dispatcher/meridian-api-client";
 import type { ToolDefinition, ToolResult } from "../registry";
-
-const KILL_TIMEOUT_MS = 5_000;
-const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
 
 const killTool: ToolDefinition = {
   name: "kill",
-  description: "Request Hub to stop a running coding agent thread",
+  description: "Request Meridian to stop a running coding agent thread",
   params: {
     thread_id: {
       type: "string",
@@ -25,8 +21,14 @@ const killTool: ToolDefinition = {
     }
 
     try {
-      const result = await sendAndWait(buildKillMessage(threadId), KILL_TIMEOUT_MS);
-      return mapKillResult(result, threadId);
+      const client = createMeridianApiClient();
+      const result = await client.kill(threadId);
+      return {
+        ok: true,
+        data: {
+          thread_id: result.threadId
+        }
+      };
     } catch (error) {
       if (isKillTimeout(error)) {
         return {
@@ -50,46 +52,13 @@ const killTool: ToolDefinition = {
 
 export default killTool;
 
-function buildKillMessage(threadId: string): Partial<HubMessage> {
-  return {
-    thread_id: threadId,
-    actor_id: MERIDIAN_TOOL_ACTOR_ID,
-    priority: 5,
-    intent: "kill",
-    target: threadId,
-    mode: "bridge",
-    payload: {
-      content: "",
-      attachments: []
-    }
-  };
-}
-
-function mapKillResult(result: HubResult, threadId: string): ToolResult {
-  if (result.status === "error") {
-    return {
-      ok: false,
-      error: result.content,
-      data: {
-        thread_id: threadId
-      }
-    };
-  }
-
-  return {
-    ok: true,
-    data: {
-      thread_id: threadId
-    }
-  };
-}
-
 function requireParam(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function isKillTimeout(error: unknown): boolean {
-  return asError(error).message.startsWith(`Hub timeout after ${KILL_TIMEOUT_MS}ms`);
+  const message = asError(error).message;
+  return message.includes("timed out") || message.includes("timeout");
 }
 
 function asError(error: unknown): Error {

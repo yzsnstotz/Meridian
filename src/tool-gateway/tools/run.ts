@@ -5,9 +5,10 @@ import path from "node:path";
 import type { A2AClient } from "../../a2a/client";
 import { ROLES_SERVICE_ID } from "../../config";
 import { reconcile } from "../../roles/agent-dispatcher/reconciler";
+import { createMeridianApiClient, type MeridianRunResult } from "../../roles/agent-dispatcher/meridian-api-client";
 import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubResult, type HubRunState, type KillPolicy } from "../../types";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
-import { sendAndWait } from "../ipc-bridge";
+import { sendViaHttpRelay } from "../ipc-bridge";
 import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
 
@@ -15,7 +16,6 @@ const DEV_HISTORY_DIRECTORY = "dev_history";
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
-const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
 const INTERRUPTED_ERROR = "interrupted";
 const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERRUPTED_ERROR]);
 const MAX_PREVIOUS_REPLY_CHARS = 6_000;
@@ -93,7 +93,9 @@ const runTool: ToolDefinition = {
       );
       lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
 
-      const result = await sendAndWait(buildRunMessage(threadId, preamble, traceId), 0);
+      const client = createMeridianApiClient();
+      const apiResult = await client.run({ threadId, content: preamble });
+      const result = toHubResult(apiResult, traceId);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
       const lifecycleStatus = lifecycleStore.load().workers[worker]?.status;
@@ -120,19 +122,19 @@ const runTool: ToolDefinition = {
 
 export default runTool;
 
-function buildRunMessage(threadId: string, command: string, traceId: string): Partial<HubMessage> {
+function toHubResult(apiResult: MeridianRunResult, traceId: string): HubResult {
+  const raw = apiResult.raw;
   return {
-    trace_id: traceId,
-    thread_id: threadId,
-    actor_id: MERIDIAN_TOOL_ACTOR_ID,
-    priority: 5,
-    intent: "run",
-    target: threadId,
-    mode: "bridge",
-    payload: {
-      content: command,
-      attachments: []
-    }
+    trace_id: typeof raw.trace_id === "string" ? raw.trace_id : traceId,
+    thread_id: apiResult.threadId,
+    source: (typeof raw.source === "string" ? raw.source : "codex") as HubResult["source"],
+    status: (apiResult.status || "success") as HubResult["status"],
+    run_state: apiResult.runState as HubRunState | undefined,
+    content: apiResult.content ?? "",
+    summary_text: typeof raw.summary_text === "string" ? raw.summary_text : undefined,
+    details_text: typeof raw.details_text === "string" ? raw.details_text : undefined,
+    attachments: Array.isArray(raw.attachments) ? raw.attachments : [],
+    timestamp: typeof raw.timestamp === "string" ? raw.timestamp : new Date().toISOString()
   };
 }
 
@@ -148,7 +150,7 @@ async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, resu
   try {
     await reconcile(lifecycleStore, {
       serviceId: ROLES_SERVICE_ID,
-      sendRequest: (message: HubMessage) => sendAndWait(message, 0)
+      sendRequest: (message: HubMessage) => sendViaHttpRelay(message, 0)
     } as unknown as A2AClient);
   } catch (error) {
     console.warn("run tool reconciliation failed", {

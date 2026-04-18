@@ -1,16 +1,12 @@
-import type { BridgeMode, HubMessage, HubResult } from "../../types";
-import { sendAndWait } from "../ipc-bridge";
+import { createMeridianApiClient, MeridianApiError } from "../../roles/agent-dispatcher/meridian-api-client";
+import type { BridgeMode } from "../../types";
 import type { ToolDefinition, ToolResult } from "../registry";
 
-const SPAWN_THREAD_ID = "spawn";
-const SPAWN_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_ERROR = "Hub timeout after 60s";
-const SPAWN_PARSE_ERROR = "Failed to parse spawn response";
-const MERIDIAN_TOOL_ACTOR_ID = "service:meridian-tool";
 
 const spawnTool: ToolDefinition = {
   name: "spawn",
-  description: "Spawn a coding agent thread through Meridian Hub",
+  description: "Spawn a coding agent thread through Meridian HTTP API",
   params: {
     agent_type: {
       type: "string",
@@ -54,34 +50,19 @@ const spawnTool: ToolDefinition = {
     const autoApprove = parseOptionalBoolean(params.auto_approve);
 
     try {
-      const result = await sendAndWait(buildSpawnMessage({
+      const client = createMeridianApiClient();
+      const result = await client.spawn({
         agentType,
         mode,
-        modelId,
-        effort,
         spawnDir,
+        modelId: effort ? `${modelId} ${effort}` : modelId,
         autoApprove
-      }), SPAWN_TIMEOUT_MS);
-      const transportError = readSpawnTransportError(result);
-      if (transportError) {
-        return {
-          ok: false,
-          error: transportError
-        };
-      }
-
-      const threadId = parseThreadId(result.content);
-      if (!threadId) {
-        return {
-          ok: false,
-          error: SPAWN_PARSE_ERROR
-        };
-      }
+      });
 
       return {
         ok: true,
         data: {
-          thread_id: threadId,
+          thread_id: result.threadId,
           agent_type: agentType,
           mode,
           model_id: modelId
@@ -97,32 +78,6 @@ const spawnTool: ToolDefinition = {
 };
 
 export default spawnTool;
-
-function buildSpawnMessage(args: {
-  agentType: string;
-  mode: BridgeMode;
-  modelId?: string;
-  effort?: string;
-  spawnDir: string;
-  autoApprove?: boolean;
-}): Partial<HubMessage> {
-  return {
-    thread_id: SPAWN_THREAD_ID,
-    actor_id: MERIDIAN_TOOL_ACTOR_ID,
-    priority: 5,
-    intent: "spawn",
-    target: args.agentType,
-    mode: args.mode,
-    payload: {
-      spawn_dir: args.spawnDir,
-      model_id: args.modelId,
-      effort: args.effort,
-      auto_approve: args.autoApprove,
-      content: "",
-      attachments: []
-    }
-  };
-}
 
 const KNOWN_EFFORT_SUFFIXES = new Set(["low", "medium", "high", "xhigh"]);
 
@@ -149,40 +104,6 @@ export function parseModelIdWithEffort(rawModelId: string | undefined): {
   }
 
   return { modelId: rawModelId };
-}
-
-function parseThreadId(content: string): string | null {
-  const match = content.match(/\{[\s\S]*\}/)?.[0];
-  if (!match) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(match) as { thread_id?: unknown };
-    return typeof parsed.thread_id === "string" && parsed.thread_id.trim().length > 0 ? parsed.thread_id : null;
-  } catch {
-    return null;
-  }
-}
-
-function readSpawnTransportError(result: HubResult): string | null {
-  if (result.status === "success") {
-    return null;
-  }
-
-  const details = [
-    result.summary_text,
-    result.details_text,
-    result.content
-  ]
-    .map((value) => value?.trim())
-    .find((value) => Boolean(value));
-
-  if (details) {
-    return details;
-  }
-
-  return `Hub spawn failed with status: ${result.status}`;
 }
 
 function parseBridgeMode(mode: string | undefined): BridgeMode {
@@ -212,7 +133,7 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
 
 function toToolError(error: unknown): string {
   const message = asError(error).message;
-  if (message.startsWith(`Hub timeout after ${SPAWN_TIMEOUT_MS}ms`)) {
+  if (message.includes("timed out") || message.includes("timeout")) {
     return SPAWN_TIMEOUT_ERROR;
   }
 
