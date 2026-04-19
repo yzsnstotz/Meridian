@@ -63,7 +63,10 @@ export function createDefaultLaunchDispatchWorkerDeps(): LaunchDispatchWorkerDep
         params.kill_policy = request.killPolicy;
       }
 
-      await runTool.execute(params);
+      const result = await runTool.execute(params);
+      if (!result.ok) {
+        throw new Error(result.error ?? "dispatch run handoff failed");
+      }
     }
   };
 }

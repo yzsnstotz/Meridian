@@ -78,9 +78,10 @@ const runTool: ToolDefinition = {
 
     process.once("SIGINT", handleSigint);
 
+    const traceId = randomUUID();
+    const lifecycleStore = createLifecycleStore(commandPath);
+
     try {
-      const traceId = randomUUID();
-      const lifecycleStore = createLifecycleStore(commandPath);
       const workerRow = await resolveWorkerRow(commandPath, worker);
       const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
       const previousWorkerState = lifecycleStore.load().workers[worker] as DispatchWorkerState | undefined;
@@ -108,6 +109,31 @@ const runTool: ToolDefinition = {
         threadId,
         error: resolvedError.message
       });
+
+      // Record the failure in the lifecycle store so the worker does not remain
+      // stuck as "running" when the API call throws (e.g. HTTP/network errors
+      // introduced by the R-03/R-05 API migration). Without this, the fire-and-
+      // forget launcher never learns the run failed and the watchdog treats the
+      // worker as a blocking running thread indefinitely.
+      try {
+        const syntheticResult: HubResult = {
+          trace_id: traceId,
+          thread_id: threadId,
+          source: "codex",
+          status: "error",
+          run_state: "timeout",
+          content: resolvedError.message,
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+        lifecycleStore.recordWorkerResult(worker, syntheticResult);
+      } catch (lifecycleError) {
+        console.warn("run tool failed to record error in lifecycle store", {
+          worker,
+          threadId,
+          error: asError(lifecycleError).message
+        });
+      }
 
       if (interrupted || INTERRUPT_MESSAGES.has(resolvedError.message)) {
         return interruptedResult(worker, threadId);
