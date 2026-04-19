@@ -60,11 +60,14 @@ export function createDefaultLaunchDispatcherDeps(): LaunchDispatcherDeps {
   return {
     meridianApi,
     async dispatchRunHandoff(request) {
-      await runTool.execute({
+      const result = await runTool.execute({
         thread_id: request.threadId,
         command: request.commandFilePath,
         worker: request.workerId
       });
+      if (!result.ok) {
+        throw new Error(result.error ?? "dispatcher run handoff failed");
+      }
     },
     writeFile(filePath, contents) {
       return writeFile(filePath, contents, "utf8");

@@ -263,6 +263,16 @@ function determineWorkerTransition(
     }
   }
 
+  // Worker thread exists but is idle with no hub result — the run command never
+  // reached the agent (e.g. fire-and-forget HTTP handoff failed silently).
+  // Transition to abandoned after stale timeout so the watchdog can recover.
+  if (observation.kind === "idle" && !hubResult && !outputsPresent && isStale(startedAt, nowMs, staleTimeoutMs)) {
+    return {
+      to: "abandoned",
+      trigger: "hub_idle:no_result:stale_timeout"
+    };
+  }
+
   return null;
 }
 

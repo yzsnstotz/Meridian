@@ -1172,7 +1172,7 @@ describe("run tool", () => {
     });
   });
 
-  it("leaves the worker in running when the API client throws", async () => {
+  it("records a failed result in the lifecycle store when the API client throws", async () => {
     const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
     mockRun.mockRejectedValue(new Error("run failed: Meridian API unreachable"));
     readFileMock.mockResolvedValue("# command\n");
@@ -1185,13 +1185,19 @@ describe("run tool", () => {
 
     const lifecycleStore = getLifecycleStore();
 
-    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", expect.objectContaining({
+      thread_id: "thread-789",
+      status: "error",
+      run_state: "timeout",
+      content: "run failed: Meridian API unreachable"
+    }));
     expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
       thread_id: "thread-789",
-      trace_id: "11111111-1111-4111-8111-111111111111",
-      status: "running",
-      expected_outputs: ["/tmp/dispatch/dev_history/N-04_report.md"],
-      hub_result: null
+      status: "failed",
+      hub_result: expect.objectContaining({
+        status: "error",
+        run_state: "timeout"
+      })
     });
     expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
       worker: "N-04",
@@ -1222,9 +1228,14 @@ describe("run tool", () => {
 
     const lifecycleStore = getLifecycleStore();
 
-    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    // The lifecycle store records the failure even for SIGINT so the worker
+    // does not remain stuck as "running" in the lifecycle store.
+    expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-07", expect.objectContaining({
+      status: "error",
+      content: "Tool Gateway interrupted by SIGINT"
+    }));
     expect(lifecycleStore.load().workers["N-07"]).toMatchObject({
-      status: "running"
+      status: "failed"
     });
     expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
       worker: "N-07",
