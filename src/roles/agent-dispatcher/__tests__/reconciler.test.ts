@@ -764,6 +764,59 @@ describe("reconcile", () => {
     );
   });
 
+  it("preserves a hub_result written concurrently by the run tool during reconciliation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("dev_history/E-05_report.md");
+
+    // Initial state: E-02 completed with hub_result, E-05 running with no hub_result
+    harness.store.save(buildState({
+      workers: {
+        "E-02": {
+          ...buildRunningWorker("worker-thread-e02", path.join(harness.directory, "dev_history/E-02_report.md")),
+          status: "completed",
+          hub_result: buildTerminalSuccessResult("worker-thread-e02")
+        },
+        "E-05": buildRunningWorker("worker-thread-e05", outputPath)
+      }
+    }));
+
+    // Simulate the race: while the reconciler awaits the hub query for E-05,
+    // the run tool writes E-05's hub_result to disk concurrently.
+    const concurrentHubResult = buildTerminalSuccessResult("worker-thread-e05");
+    concurrentHubResult.content = "E-05 completed its task successfully.";
+    concurrentHubResult.details_text = "Your message:\nRun E-05\n\nAgent reply:\nE-05 completed its task successfully.";
+    let hubQueryCount = 0;
+
+    const { hubClient } = createHubClient(async (message) => {
+      hubQueryCount++;
+      // On the hub status query for E-05, simulate the run tool writing concurrently
+      if (message.intent === "status" && message.thread_id === "worker-thread-e05") {
+        // The run tool writes E-05's hub_result to disk between reconciler's load and save
+        const freshState = harness.store.load();
+        freshState.workers["E-05"] = {
+          ...freshState.workers["E-05"]!,
+          status: "completed",
+          hub_result: concurrentHubResult,
+          last_seen_at: FIXED_NOW
+        };
+        harness.store.save(freshState);
+      }
+      return buildStatusResult(message.thread_id!, "completed");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextState = harness.store.load();
+
+    // E-05 should be completed AND its hub_result should be preserved (not overwritten with null)
+    expect(nextState.workers["E-05"]?.status).toBe("completed");
+    expect(nextState.workers["E-05"]?.hub_result).not.toBeNull();
+    expect(nextState.workers["E-05"]?.hub_result?.content).toBe("E-05 completed its task successfully.");
+    expect(nextState.workers["E-05"]?.hub_result?.details_text).toContain("Agent reply:");
+  });
+
   it("uses the default stale timeout when no override is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

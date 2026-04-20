@@ -154,8 +154,38 @@ export async function reconcile(
     });
   }
 
-  state.last_reconciled_at = nowIso;
-  lifecycleStore.save(state);
+  // Re-read the fresh state before saving to avoid overwriting concurrent writes
+  // from the run tool (fire-and-forget worker completions that landed between our
+  // initial load and now). We merge only the reconciler's status transitions into
+  // the fresh state, preserving any hub_result that was written concurrently.
+  const freshState = lifecycleStore.load();
+  freshState.last_reconciled_at = nowIso;
+
+  for (const change of report.changed) {
+    if (change.workerId === DISPATCHER_ENTRY_ID) {
+      freshState.dispatcher = state.dispatcher;
+      continue;
+    }
+
+    const reconciledWorker = state.workers[change.workerId];
+    if (!reconciledWorker) {
+      continue;
+    }
+
+    const freshWorker = freshState.workers[change.workerId];
+    freshState.workers[change.workerId] = {
+      ...(freshWorker ?? reconciledWorker),
+      status: reconciledWorker.status,
+      last_seen_at: reconciledWorker.last_seen_at,
+      trace_id: reconciledWorker.trace_id || freshWorker?.trace_id || null,
+      // Prefer the fresh hub_result (written by the run tool concurrently) over the
+      // reconciler's stale view. Fall back to the reconciler's recovered result if
+      // no concurrent write occurred.
+      hub_result: freshWorker?.hub_result ?? reconciledWorker.hub_result ?? null
+    };
+  }
+
+  lifecycleStore.save(freshState);
   return report;
 }
 
