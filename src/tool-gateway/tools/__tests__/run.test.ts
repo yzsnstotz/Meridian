@@ -1273,6 +1273,56 @@ describe("run tool", () => {
     expect(sentContent).not.toContain("you do not need to write to the dispatch plan yourself");
   });
 
+  it("refuses to re-dispatch a worker that is already completed", async () => {
+    const completedHub: HubResult = {
+      trace_id: "22222222-2222-4222-8222-222222222222",
+      thread_id: "worker-thread-gate",
+      source: "codex",
+      status: "success",
+      content: "BATCH-1-GATE complete. ✅",
+      attachments: [],
+      timestamp: "2026-04-20T17:05:00.000Z"
+    };
+    const completedWorker = {
+      thread_id: "worker-thread-gate",
+      trace_id: "22222222-2222-4222-8222-222222222222",
+      started_at: "2026-04-20T17:00:00.000Z",
+      last_seen_at: "2026-04-20T17:05:00.000Z",
+      status: "completed",
+      expected_outputs: [],
+      hub_result: completedHub,
+      retry_count: 0
+    };
+
+    // Override the constructor for this test to seed a completed worker
+    lifecycleStoreConstructor.mockImplementationOnce((filePath: string) => ({
+      filePath,
+      recordWorkerStart: vi.fn(),
+      recordWorkerResult: vi.fn(),
+      load: vi.fn(() => ({
+        workers: { "BATCH-1-GATE": { ...completedWorker } }
+      }))
+    }));
+
+    const result = await runTool.execute({
+      thread_id: "thread-new",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "BATCH-1-GATE"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      worker: "BATCH-1-GATE",
+      thread_id: "worker-thread-gate",
+      status: "done",
+      run_state: "completed"
+    });
+    expect((result.data as Record<string, string>).summary).toContain("already completed");
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
   it("does not grant plan modification to regular workers", async () => {
     mockRun.mockResolvedValue(toApiResult(buildHubResult("Worker done", "success")));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [

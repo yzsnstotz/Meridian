@@ -97,6 +97,26 @@ const runTool: ToolDefinition = {
       const workerRow = await resolveWorkerRow(commandPath, worker);
       const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
       const previousWorkerState = lifecycleStore.load().workers[worker] as DispatchWorkerState | undefined;
+
+      // Guard: refuse to re-dispatch a worker that already completed or was
+      // skipped. The AI dispatcher can mistakenly re-dispatch a finished worker
+      // when it doesn't see the terminal state (e.g. relay timeout lost the
+      // result). Without this guard, recordWorkerStart would overwrite the
+      // completed state back to "running" and revert the plan markdown.
+      if (previousWorkerState && (previousWorkerState.status === "completed" || previousWorkerState.status === "skipped")) {
+        const summary = previousWorkerState.hub_result?.content ?? `Worker ${worker} already ${previousWorkerState.status}`;
+        return {
+          ok: true,
+          data: {
+            worker,
+            thread_id: previousWorkerState.thread_id,
+            status: "done",
+            run_state: "completed",
+            summary: `[already ${previousWorkerState.status}] ${summary}`
+          }
+        };
+      }
+
       const preamble = await buildWorkerPreamble(
         worker,
         workerRow,
