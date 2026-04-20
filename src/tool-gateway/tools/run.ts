@@ -21,6 +21,18 @@ const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERR
 const MAX_PREVIOUS_REPLY_CHARS = 6_000;
 const MAX_PREVIOUS_REPORT_CHARS = 6_000;
 const MAX_PREVIOUS_REPORT_FILES = 2;
+const MAX_WORKER_RETRIES = 3;
+const TRANSIENT_RUN_RETRY_DELAYS_MS = [5_000, 15_000];
+const TRANSIENT_ERROR_PATTERNS = [
+  /timed?\s*out/i,
+  /overloaded/i,
+  /too many requests/i,
+  /rate.limit/i,
+  /service.unavailable/i,
+  /ECONNREFUSED/,
+  /ECONNRESET/,
+  /ETIMEDOUT/
+];
 
 const runTool: ToolDefinition = {
   name: "run",
@@ -94,8 +106,28 @@ const runTool: ToolDefinition = {
       );
       lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
 
+      // Enforce max retry cap to prevent infinite retry loops. The AI dispatcher
+      // can re-dispatch failed workers without going through the service-continuation
+      // retry gate (which checks retry_count < 2). recordWorkerStart auto-increments
+      // retry_count when restarting from a terminal state, so we check it here.
+      const retryCount = lifecycleStore.load().workers[worker]?.retry_count ?? 0;
+      if (retryCount > MAX_WORKER_RETRIES) {
+        const exhaustedResult: HubResult = {
+          trace_id: traceId,
+          thread_id: threadId,
+          source: "codex",
+          status: "error",
+          run_state: "timeout",
+          content: `Worker ${worker} exceeded maximum retry count (${MAX_WORKER_RETRIES}). Marking as permanently failed to prevent infinite retry loops.`,
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+        lifecycleStore.recordWorkerResult(worker, exhaustedResult);
+        return failedResult(worker, threadId, exhaustedResult.content);
+      }
+
       const client = createMeridianApiClient();
-      const apiResult = await client.run({ threadId, content: preamble });
+      const apiResult = await runWithTransientRetry(client, threadId, preamble);
       const result = toHubResult(apiResult, traceId);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
@@ -884,6 +916,44 @@ function missingParam(name: string): ToolResult {
 function requireParam(value: string | undefined, name: string): string | null {
   void name;
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function runWithTransientRetry(
+  client: ReturnType<typeof createMeridianApiClient>,
+  threadId: string,
+  content: string
+): Promise<MeridianRunResult> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= TRANSIENT_RUN_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await client.run({ threadId, content });
+    } catch (error) {
+      lastError = asError(error);
+      if (attempt < TRANSIENT_RUN_RETRY_DELAYS_MS.length && isTransientError(lastError)) {
+        const delayMs = TRANSIENT_RUN_RETRY_DELAYS_MS[attempt]!;
+        console.warn("run tool transient error, retrying", {
+          threadId,
+          attempt: attempt + 1,
+          delayMs,
+          error: lastError.message
+        });
+        await delay(delayMs);
+        continue;
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError!;
+}
+
+function isTransientError(error: Error): boolean {
+  return TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(error.message));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function asError(error: unknown): Error {

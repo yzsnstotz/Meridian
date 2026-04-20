@@ -117,6 +117,14 @@ export class LifecycleStore {
     const state = this.load();
     const nowIso = this.now();
     const previousStatus = state.workers[workerId]?.status ?? "pending";
+    const previousRetryCount = state.workers[workerId]?.retry_count ?? 0;
+
+    // When restarting from a terminal state (failed/abandoned), auto-increment
+    // retry_count so that the max-retry cap is enforced even when the restart
+    // is triggered by the AI dispatcher rather than the service-continuation
+    // path (which increments via setWorkerStatus). Restarts from "pending"
+    // have already been incremented by setWorkerStatus, so skip those.
+    const shouldIncrementRetry = previousStatus === "failed" || previousStatus === "abandoned";
 
     state.workers[workerId] = {
       thread_id: threadId,
@@ -127,7 +135,7 @@ export class LifecycleStore {
       expected_outputs: [...expectedOutputs],
       hub_result: null,
       command_preamble: commandPreamble ?? null,
-      retry_count: state.workers[workerId]?.retry_count ?? 0
+      retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount
     };
 
     this.logTransition(workerId, previousStatus, "running", "run_tool_start");
