@@ -142,28 +142,41 @@ const runTool: ToolDefinition = {
         error: resolvedError.message
       });
 
-      // Record the failure in the lifecycle store so the worker does not remain
-      // stuck as "running" when the API call throws (e.g. HTTP/network errors
-      // introduced by the R-03/R-05 API migration). Without this, the fire-and-
-      // forget launcher never learns the run failed and the watchdog treats the
-      // worker as a blocking running thread indefinitely.
-      try {
-        const syntheticResult: HubResult = {
-          trace_id: traceId,
-          thread_id: threadId,
-          source: "codex",
-          status: "error",
-          run_state: "timeout",
-          content: resolvedError.message,
-          attachments: [],
-          timestamp: new Date().toISOString()
-        };
-        lifecycleStore.recordWorkerResult(worker, syntheticResult);
-      } catch (lifecycleError) {
-        console.warn("run tool failed to record error in lifecycle store", {
+      // When the run-tool HTTP call fails with a transient error (timeout,
+      // overload, connection reset) the remote worker may still be executing.
+      // Recording a synthetic "failed/timeout" hub_result would cause the
+      // reconciler to mark the worker as terminal before the agent has had a
+      // chance to finish. Instead, leave the worker as "running" and let the
+      // reconciler / watchdog validate the actual thread status and outputs.
+      //
+      // Only record a synthetic failure for non-transient errors (e.g. 4xx
+      // client errors, malformed responses) where the worker genuinely cannot
+      // have started or will never produce a result.
+      if (!isTransientError(resolvedError)) {
+        try {
+          const syntheticResult: HubResult = {
+            trace_id: traceId,
+            thread_id: threadId,
+            source: "codex",
+            status: "error",
+            run_state: "timeout",
+            content: resolvedError.message,
+            attachments: [],
+            timestamp: new Date().toISOString()
+          };
+          lifecycleStore.recordWorkerResult(worker, syntheticResult);
+        } catch (lifecycleError) {
+          console.warn("run tool failed to record error in lifecycle store", {
+            worker,
+            threadId,
+            error: asError(lifecycleError).message
+          });
+        }
+      } else {
+        console.warn("run tool transient error — worker left as running for reconciler validation", {
           worker,
           threadId,
-          error: asError(lifecycleError).message
+          error: resolvedError.message
         });
       }
 

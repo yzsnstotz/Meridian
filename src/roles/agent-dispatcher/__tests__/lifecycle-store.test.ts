@@ -236,7 +236,7 @@ describe("LifecycleStore", () => {
     });
   });
 
-  it("maps a timeout HubResult to failed", async () => {
+  it("maps a timeout HubResult to running so the reconciler can validate", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
 
@@ -249,7 +249,7 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["N-01"]).toMatchObject({
-      status: "failed",
+      status: "running",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });

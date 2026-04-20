@@ -386,7 +386,11 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
   }
 
   if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
-    return "failed";
+    // A timeout marker means the relay/hub timed out, NOT that the worker
+    // itself failed. Leave the worker as "running" so the reconciler can
+    // validate the actual thread status and outputs before making a terminal
+    // judgment.
+    return "running";
   }
 
   if (isNonCompletionContent(hubResult.content)) {

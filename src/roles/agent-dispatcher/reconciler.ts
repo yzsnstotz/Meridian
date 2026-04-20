@@ -315,6 +315,17 @@ function determineRecordedResultTransition(
   }
 
   if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
+    // A timeout hub_result may be a synthetic marker from the run tool when the
+    // HTTP relay timed out, NOT proof that the worker itself failed. If the
+    // expected outputs are present the worker completed successfully despite
+    // the relay timeout — honour the actual evidence over the stale marker.
+    if (outputsPresent) {
+      return {
+        to: "completed",
+        trigger: "hub_result:timeout:outputs_present"
+      };
+    }
+
     return {
       to: "failed",
       trigger: "hub_result:timeout"
