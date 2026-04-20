@@ -26,8 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
 async function setupDashboard() {
   const list = document.getElementById("roles-list");
   const empty = document.getElementById("roles-empty");
-  const feedback = document.getElementById("dashboard-feedback");
-  const form = document.getElementById("create-role-form");
   const agentDispatcherList = document.getElementById("agent-dispatchers-list");
   const agentDispatcherEmpty = document.getElementById("agent-dispatchers-empty");
   const agentDispatcherForm = document.getElementById("start-agent-dispatcher-form");
@@ -141,12 +139,12 @@ async function setupDashboard() {
           }
 
           try {
-            feedback.textContent = "Deactivating role…";
+            agentDispatcherFeedback.textContent = "Deactivating role…";
             await fetchJson(`/api/role/${encodeURIComponent(threadId)}`, { method: "DELETE" });
-            feedback.textContent = `Role ${threadId} deactivated.`;
+            agentDispatcherFeedback.textContent = `Role ${threadId} deactivated.`;
             await refreshRoles();
           } catch (error) {
-            feedback.textContent = getErrorMessage(error);
+            agentDispatcherFeedback.textContent = getErrorMessage(error);
           }
         });
       });
@@ -377,49 +375,6 @@ async function setupDashboard() {
     }
   }
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    feedback.textContent = "Activating role…";
-
-    const formData = new FormData(form);
-    const payload = {
-      thread_id: normalizeText(formData.get("thread_id")),
-      system_prompt: normalizeText(formData.get("system_prompt")),
-      taskspec: normalizeText(formData.get("taskspec"))
-    };
-
-    const tasksJson = normalizeText(formData.get("tasks_json"));
-    if (tasksJson) {
-      try {
-        payload.tasks = JSON.parse(tasksJson);
-      } catch {
-        feedback.textContent = "tasks JSON must be valid JSON.";
-        return;
-      }
-    }
-
-    Object.keys(payload).forEach((key) => {
-      if (payload[key] === "") {
-        delete payload[key];
-      }
-    });
-
-    try {
-      const created = await fetchJson("/api/role", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      feedback.textContent = `Role ${created.thread_id} activated.`;
-      form.reset();
-      await refreshRoles();
-      window.location.href = `/role/${encodeURIComponent(created.thread_id)}`;
-    } catch (error) {
-      feedback.textContent = getErrorMessage(error);
-    }
-  });
-
   agentDispatcherForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     agentDispatcherFeedback.textContent = "Starting agent dispatcher…";
@@ -480,9 +435,7 @@ async function setupDashboard() {
 
   refreshButton?.addEventListener("click", () => {
     void Promise.all([loadAgentDispatcherReplyOptions(), refreshAgentDispatcherPromptPreview({ force: true }), refreshRoles()]).catch((error) => {
-      const message = getErrorMessage(error);
-      feedback.textContent = message;
-      agentDispatcherFeedback.textContent = message;
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
     });
   });
 
@@ -541,9 +494,7 @@ async function setupDashboard() {
 
   window.setInterval(() => {
     void refreshRoles().catch((error) => {
-      const message = getErrorMessage(error);
-      feedback.textContent = message;
-      agentDispatcherFeedback.textContent = message;
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
     });
   }, POLL_INTERVAL_MS);
 }

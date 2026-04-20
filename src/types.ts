@@ -288,13 +288,6 @@ export const AgentDispatcherEditorConfigSchema = z.object({
 }).strict();
 export type AgentDispatcherEditorConfig = z.infer<typeof AgentDispatcherEditorConfigSchema>;
 
-export function shouldUseAgentDispatcherConfig(config: unknown): boolean {
-  return typeof config === "object"
-    && config !== null
-    && "use_agent_dispatcher" in config
-    && (config as { use_agent_dispatcher?: unknown }).use_agent_dispatcher === true;
-}
-
 // ─── State persistence schema ───────────────────────────────────────────────────
 
 export const RoleStateSchema = z.object({

@@ -160,7 +160,7 @@ describe("RoleRunner", () => {
           result_trace_id: traceId
         }
       ]
-    });
+    }, "agent-dispatcher");
     const runner = new RoleRunner({
       sendToHub: vi.fn(async () => {})
     });

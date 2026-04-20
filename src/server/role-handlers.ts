@@ -28,14 +28,8 @@ import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
 import { executeUpdateWorkerStatusAction } from "../tool-gateway/tools/update-status";
 import {
-  applyEditableDispatcherConfig,
-  cloneDispatcherConfig,
-  hasRunningDispatcherTask,
-  mergeEditableDispatcherConfig,
   parseMutableAgentDispatcherConfig,
-  parseMutableDispatcherConfig,
-  toEditableAgentDispatcherConfig,
-  toEditableDispatcherConfig
+  toEditableAgentDispatcherConfig
 } from "../roles/dispatcher-config-editor";
 import type { PromptStoreRoleBinding } from "../roles/prompt-store";
 import { RoleRegistry } from "../roles/role-registry";
@@ -57,18 +51,15 @@ import {
   type LifecycleStatus,
   DispatchTaskSchema,
   DispatcherConfigSchema,
-  DispatcherEditorConfigPatchSchema,
   HubMessageSchema,
   HubResultSchema,
   KillPolicySchema,
   ReplyChannelSchema,
   RoleTypeSchema,
-  shouldUseAgentDispatcherConfig,
   type AgentDispatcherEditorConfig,
   type AppState,
   type AgentDispatcherConfig,
   type DispatcherConfig,
-  type DispatcherEditorConfig,
   type HubMessage,
   type HubResult,
   type ReplyChannel,
@@ -139,7 +130,6 @@ type RoleRouteMatch =
   | { kind: "preview-agent-dispatcher-prompt" }
   | { kind: "get-role"; threadId: string }
   | { kind: "get-config"; threadId: string }
-  | { kind: "create-role" }
   | { kind: "start-agent-dispatcher" }
   | { kind: "pause-dispatcher"; threadId: string }
   | { kind: "resume-dispatcher"; threadId: string }
@@ -179,7 +169,7 @@ export interface RoleConfigResponse {
   status: string;
   can_edit: boolean;
   blocked_reason?: string;
-  config: DispatcherEditorConfig | AgentDispatcherEditorConfig;
+  config: AgentDispatcherEditorConfig;
 }
 
 export interface DispatchPlanRow {
@@ -330,56 +320,16 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const handlers: RoleHandlers = {
     async getConfig(threadId: string): Promise<RoleConfigResponse> {
       const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
-      if (context.roleType === "agent-dispatcher") {
-        return {
-          thread_id: threadId,
-          status: context.status,
-          can_edit: false,
-          blocked_reason: getAgentDispatcherConfigEditBlockedReason(),
-          config: toEditableAgentDispatcherConfig(context.effectiveConfig)
-        };
-      }
-
-      const canEdit = !hasRunningDispatcherTask(context.effectiveConfig);
-
       return {
         thread_id: threadId,
         status: context.status,
-        can_edit: canEdit,
-        blocked_reason: canEdit ? undefined : getDispatcherConfigEditBlockedReason(),
-        config: toEditableDispatcherConfig(context.effectiveConfig)
+        can_edit: false,
+        blocked_reason: getAgentDispatcherConfigEditBlockedReason(),
+        config: toEditableAgentDispatcherConfig(context.effectiveConfig)
       };
     },
-    async patchConfig(threadId: string, body: unknown): Promise<RoleConfigResponse> {
-      const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
-      if (context.roleType === "agent-dispatcher") {
-        throw createHttpError(409, getAgentDispatcherConfigEditBlockedReason());
-      }
-
-      const parsed = DispatcherEditorConfigPatchSchema.safeParse(body);
-      if (!parsed.success) {
-        throw createHttpError(400, "Invalid dispatcher config edit payload");
-      }
-
-      if (hasRunningDispatcherTask(context.effectiveConfig)) {
-        throw createHttpError(409, getDispatcherConfigEditBlockedReason());
-      }
-
-      const nextEditableConfig = mergeEditableDispatcherConfig(context.effectiveConfig, parsed.data);
-
-      if (context.activeConfig) {
-        applyEditableDispatcherConfig(context.activeConfig, nextEditableConfig);
-      }
-
-      const persistedConfig = context.persistedConfig
-        ? context.persistedConfig
-        : cloneDispatcherConfig(context.activeConfig ?? DispatcherConfigSchema.parse({}));
-      applyEditableDispatcherConfig(persistedConfig, nextEditableConfig);
-      upsertDispatcherRoleState(context.state, context.roleState, threadId, persistedConfig);
-
-      await stateStore.save(AppStateSchema.parse(context.state));
-
-      return handlers.getConfig(threadId);
+    async patchConfig(_threadId: string, _body: unknown): Promise<RoleConfigResponse> {
+      throw createHttpError(409, getAgentDispatcherConfigEditBlockedReason());
     },
     resolveRole(threadId: string): PromptStoreRoleBinding | null {
       return resolveActiveRoleBinding(threadId);
@@ -414,11 +364,6 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           case "get-config":
             writeJson(response, 200, await handlers.getConfig(route.threadId));
             return true;
-          case "create-role": {
-            const created = await createRole(await readJsonBody(request));
-            writeJson(response, 201, created);
-            return true;
-          }
           case "start-agent-dispatcher":
             writeJson(response, 201, await startAgentDispatcher(await readJsonBody(request)));
             return true;
@@ -471,11 +416,6 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   };
 
   return handlers;
-
-  async function createRole(body: unknown): Promise<{ ok: true; thread_id: string; role_type: RoleType }> {
-    const { threadId, roleType } = await activateRole(body);
-    return { ok: true, thread_id: threadId, role_type: roleType };
-  }
 
   async function startAgentDispatcher(body: unknown): Promise<{
     ok: true;
@@ -1128,7 +1068,7 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     throw createHttpError(400, `role_type must be ${forcedRoleType}`);
   }
 
-  const roleType = forcedRoleType ?? requestedRoleType ?? "dispatcher";
+  const roleType = forcedRoleType ?? requestedRoleType ?? "agent-dispatcher";
   if (roleType !== "dispatcher" && roleType !== "agent-dispatcher") {
     throw createHttpError(400, `Unsupported role_type=${roleType}`);
   }
@@ -1165,16 +1105,12 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
       ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
   };
 
-  const config = (roleType === "agent-dispatcher" || shouldUseAgentDispatcherConfig(rawConfig))
-    ? AgentDispatcherConfigSchema.safeParse(rawConfig)
-    : DispatcherConfigSchema.safeParse(rawConfig);
+  const config = AgentDispatcherConfigSchema.safeParse(rawConfig);
   if (!config.success) {
     throw createHttpError(400, "Invalid dispatcher config");
   }
 
-  const normalizedConfig = roleType === "agent-dispatcher"
-    ? materializeAgentDispatcherConfigSystemPrompt(config.data as AgentDispatcherConfig, threadId)
-    : config.data;
+  const normalizedConfig = materializeAgentDispatcherConfigSystemPrompt(config.data as AgentDispatcherConfig, threadId);
 
   return {
     threadId,
@@ -1307,17 +1243,7 @@ function extractDispatcherThreadId(role: ReturnType<RoleRegistry["create"]>): st
     : null;
 }
 
-interface DispatcherRoleConfigContext {
-  roleType: "dispatcher";
-  state: AppState;
-  roleState: RoleState | null;
-  activeConfig: DispatcherConfig | null;
-  persistedConfig: DispatcherConfig | null;
-  effectiveConfig: DispatcherConfig;
-  status: string;
-}
-
-interface AgentDispatcherRoleConfigContext {
+interface RoleConfigContext {
   roleType: "agent-dispatcher";
   state: AppState;
   roleState: RoleState | null;
@@ -1327,8 +1253,6 @@ interface AgentDispatcherRoleConfigContext {
   status: string;
 }
 
-type RoleConfigContext = DispatcherRoleConfigContext | AgentDispatcherRoleConfigContext;
-
 async function loadRoleConfigContext(
   threadId: string,
   stateStore: PersistableStateStore,
@@ -1337,46 +1261,21 @@ async function loadRoleConfigContext(
   const state = await loadState(stateStore);
   const roleState = state.roles.find((role) => role.threadId === threadId) ?? null;
   const activeRole = resolveActiveRole(threadId);
-  const resolvedRoleType = activeRole?.roleType === "agent-dispatcher" || roleState?.roleType === "agent-dispatcher"
-    ? "agent-dispatcher"
-    : activeRole?.roleType === "dispatcher" || roleState?.roleType === "dispatcher"
-      ? "dispatcher"
-      : null;
 
-  if (!resolvedRoleType) {
+  if (!activeRole && !roleState) {
     throw createHttpError(404, `Role not found for thread_id=${threadId}`);
   }
 
-  if (resolvedRoleType === "agent-dispatcher") {
-    const activeConfig = parseMutableAgentDispatcherConfig(activeRole?.config);
-    const persistedConfig = roleState ? parseMutableAgentDispatcherConfig(roleState.config) : null;
-    const effectiveConfig = activeConfig ?? persistedConfig;
-
-    if (!effectiveConfig) {
-      throw createHttpError(500, `Invalid agent dispatcher config for thread_id=${threadId}`);
-    }
-
-    return {
-      roleType: resolvedRoleType,
-      state,
-      roleState,
-      activeConfig,
-      persistedConfig,
-      effectiveConfig,
-      status: roleState?.status ?? "active"
-    };
-  }
-
-  const activeConfig = parseMutableDispatcherConfig(activeRole?.config);
-  const persistedConfig = roleState ? parseMutableDispatcherConfig(roleState.config) : null;
+  const activeConfig = parseMutableAgentDispatcherConfig(activeRole?.config);
+  const persistedConfig = roleState ? parseMutableAgentDispatcherConfig(roleState.config) : null;
   const effectiveConfig = activeConfig ?? persistedConfig;
 
   if (!effectiveConfig) {
-    throw createHttpError(500, `Invalid dispatcher config for thread_id=${threadId}`);
+    throw createHttpError(500, `Invalid agent dispatcher config for thread_id=${threadId}`);
   }
 
   return {
-    roleType: resolvedRoleType,
+    roleType: "agent-dispatcher",
     state,
     roleState,
     activeConfig,
@@ -1384,29 +1283,6 @@ async function loadRoleConfigContext(
     effectiveConfig,
     status: roleState?.status ?? "active"
   };
-}
-
-function upsertDispatcherRoleState(
-  state: AppState,
-  roleState: RoleState | null,
-  threadId: string,
-  config: DispatcherConfig
-): void {
-  const persistedConfig = cloneDispatcherConfig(config);
-
-  if (roleState) {
-    roleState.roleType = "dispatcher";
-    roleState.status = "active";
-    roleState.config = persistedConfig;
-    return;
-  }
-
-  state.roles.push({
-    threadId,
-    roleType: "dispatcher",
-    config: persistedConfig,
-    status: "active"
-  });
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -1466,10 +1342,6 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
 
   if (method === "GET" && parts.length === 4 && parts[0] === "api" && parts[1] === "role" && parts[3] === "config") {
     return { kind: "get-config", threadId: parts[2] };
-  }
-
-  if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "role") {
-    return { kind: "create-role" };
   }
 
   if (method === "POST" && parts.length === 3 && parts[0] === "api" && parts[1] === "agent-dispatcher" && parts[2] === "start") {
@@ -1631,10 +1503,6 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       auto_approve: parsed.data.auto_approve ?? false
     })
   };
-}
-
-function getDispatcherConfigEditBlockedReason(): string {
-  return "Cannot edit dispatcher config while tasks are running";
 }
 
 function getAgentDispatcherConfigEditBlockedReason(): string {

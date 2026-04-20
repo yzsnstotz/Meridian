@@ -11,7 +11,6 @@ import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
-import { DispatcherRole } from "./roles/definitions";
 import { PromptStore } from "./roles/prompt-store";
 import { RoleRegistry } from "./roles/role-registry";
 import { RoleRunner, type RehydrationContext } from "./roles/role-runner";
@@ -27,7 +26,6 @@ import {
 } from "./state-store";
 import {
   AgentDispatcherConfigSchema,
-  shouldUseAgentDispatcherConfig,
   type AgentDispatcherConfig,
   type AppState,
   type HubMessage,
@@ -59,12 +57,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   });
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });
 
-  registry.register(
-    "dispatcher",
-    (threadId, config) => shouldUseAgentDispatcherConfig(config)
-      ? new AgentDispatcherRole(threadId, config, { stateStore })
-      : new DispatcherRole(threadId, config, { stateStore })
-  );
+  registry.register("dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
   registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
 
   const startupActivations = await buildStartupActivations(stateStore, client, log);
