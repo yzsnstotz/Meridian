@@ -1,22 +1,19 @@
-import * as fs from "node:fs/promises";
-import net from "node:net";
-import path from "node:path";
+import http from "node:http";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import notifyTool from "../notify";
 
-const tempDirectories = new Set<string>();
-const servers = new Set<net.Server>();
-const originalHubSocketPath = process.env.HUB_SOCKET_PATH;
+const httpServers = new Set<http.Server>();
+const originalHubRelayUrl = process.env.MERIDIAN_HUB_RELAY_URL;
 const originalReplyChannel = process.env.MERIDIAN_REPLY_CHANNEL;
 const originalReplyChannels = process.env.MERIDIAN_REPLY_CHANNELS;
 
 afterEach(async () => {
-  if (originalHubSocketPath === undefined) {
-    delete process.env.HUB_SOCKET_PATH;
+  if (originalHubRelayUrl === undefined) {
+    delete process.env.MERIDIAN_HUB_RELAY_URL;
   } else {
-    process.env.HUB_SOCKET_PATH = originalHubSocketPath;
+    process.env.MERIDIAN_HUB_RELAY_URL = originalHubRelayUrl;
   }
 
   if (originalReplyChannel === undefined) {
@@ -32,24 +29,20 @@ afterEach(async () => {
   }
 
   await Promise.all(
-    Array.from(servers, (server) =>
+    Array.from(httpServers, (server) =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       }).catch(() => undefined)
     )
   );
-  await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
 
-  servers.clear();
-  tempDirectories.clear();
+  httpServers.clear();
 });
 
 describe("notify tool", () => {
   it("sends intent:reply to the configured reply channel", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const receivedMessages = waitForHubMessages(hubSocketPath, 1);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const { port, receivedMessages } = await startHubRelayServer(1);
+    process.env.MERIDIAN_HUB_RELAY_URL = `http://127.0.0.1:${port}/api/hub-relay`;
     process.env.MERIDIAN_REPLY_CHANNEL = JSON.stringify({
       channel: "telegram",
       chat_id: "telegram:dispatch-room"
@@ -82,10 +75,8 @@ describe("notify tool", () => {
   });
 
   it("fans out to every explicit reply channel override", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const receivedMessages = waitForHubMessages(hubSocketPath, 2);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const { port, receivedMessages } = await startHubRelayServer(2);
+    process.env.MERIDIAN_HUB_RELAY_URL = `http://127.0.0.1:${port}/api/hub-relay`;
 
     const result = await notifyTool.execute({
       message: "override",
@@ -119,10 +110,8 @@ describe("notify tool", () => {
   });
 
   it("prefers the explicit reply_channel parameter over the environment", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const receivedMessages = waitForHubMessages(hubSocketPath, 1);
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    const { port, receivedMessages } = await startHubRelayServer(1);
+    process.env.MERIDIAN_HUB_RELAY_URL = `http://127.0.0.1:${port}/api/hub-relay`;
     process.env.MERIDIAN_REPLY_CHANNEL = JSON.stringify({
       channel: "web",
       chat_id: "service:meridian-roles"
@@ -148,13 +137,11 @@ describe("notify tool", () => {
   });
 
   it("returns ok:false when Hub rejects the reply intent", async () => {
-    const directory = await createTempDirectory();
-    const hubSocketPath = path.join(directory, "hub.sock");
-    const receivedMessages = waitForHubMessages(hubSocketPath, 1, {
+    const { port, receivedMessages } = await startHubRelayServer(1, {
       status: "error",
       content: "Unsupported intent"
     });
-    process.env.HUB_SOCKET_PATH = hubSocketPath;
+    process.env.MERIDIAN_HUB_RELAY_URL = `http://127.0.0.1:${port}/api/hub-relay`;
     process.env.MERIDIAN_REPLY_CHANNEL = JSON.stringify({
       channel: "web",
       chat_id: "web:ops"
@@ -185,44 +172,47 @@ describe("notify tool", () => {
   });
 });
 
-async function createTempDirectory(): Promise<string> {
-  const directory = await fs.mkdtemp("/tmp/meridian-roles-notify-");
-  tempDirectories.add(directory);
-  return directory;
-}
-
-function waitForHubMessages(
-  socketPath: string,
-  count: number,
+function startHubRelayServer(
+  expectedCount: number,
   response: { status?: "success" | "error"; content?: string } = {}
-): Promise<Record<string, unknown>[]> {
-  return new Promise((resolve, reject) => {
+): Promise<{ port: number; receivedMessages: Promise<Record<string, unknown>[]> }> {
+  return new Promise((resolveStart, rejectStart) => {
     const messages: Record<string, unknown>[] = [];
-    const server = net.createServer((socket) => {
-      socket.setEncoding("utf8");
-      let raw = "";
+    let resolveMessages: (messages: Record<string, unknown>[]) => void;
+    const receivedMessages = new Promise<Record<string, unknown>[]>((resolve) => {
+      resolveMessages = resolve;
+    });
 
-      socket.on("data", (chunk: string) => {
-        raw += chunk;
+    const server = http.createServer((request, res) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
       });
-
-      socket.once("end", () => {
+      request.on("end", () => {
         try {
-          const message = JSON.parse(raw) as Record<string, unknown>;
+          const message = JSON.parse(body) as Record<string, unknown>;
           messages.push(message);
-          socket.end(JSON.stringify(buildHubResult(message, response)));
-          if (messages.length === count) {
-            resolve(messages);
+          const hubResult = buildHubResult(message, response);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(hubResult));
+          if (messages.length === expectedCount) {
+            resolveMessages(messages);
           }
         } catch (error) {
-          reject(error);
+          res.writeHead(400);
+          res.end(String(error));
         }
       });
     });
 
-    servers.add(server);
-    server.once("error", reject);
-    server.listen(socketPath);
+    httpServers.add(server);
+    server.once("error", rejectStart);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      resolveStart({ port, receivedMessages });
+    });
   });
 }
 
