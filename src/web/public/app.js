@@ -53,8 +53,6 @@ async function setupDashboard() {
   if (
     !list
     || !empty
-    || !feedback
-    || !form
     || !agentDispatcherList
     || !agentDispatcherEmpty
     || !agentDispatcherForm
@@ -487,9 +485,7 @@ async function setupDashboard() {
     await refreshAgentDispatcherPromptPreview({ force: true });
     await refreshRoles();
   } catch (error) {
-    const message = getErrorMessage(error);
-    feedback.textContent = message;
-    agentDispatcherFeedback.textContent = message;
+    agentDispatcherFeedback.textContent = getErrorMessage(error);
   }
 
   window.setInterval(() => {

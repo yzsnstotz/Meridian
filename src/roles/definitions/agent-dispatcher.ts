@@ -469,19 +469,10 @@ async function defaultSignalDispatcher(
 
 function buildStatusSignalPrompt(status: DispatcherLifecycleStatus): string {
   if (status === "paused") {
-    return [
-      "# Dispatcher Control",
-      "Pause requested by meridian-roles.",
-      "Stop starting new workers as soon as the current tool call finishes.",
-      "Remain idle until a later control message explicitly says to resume."
-    ].join("\n");
+    return "# Dispatcher Control\nPause requested. Stop starting new workers after the current tool call finishes. Remain idle until explicitly resumed.";
   }
 
-  return [
-    "# Dispatcher Control",
-    "Resume requested by meridian-roles.",
-    "Re-read the dispatch plan from disk and continue the dispatch loop from the next eligible worker."
-  ].join("\n");
+  return "# Dispatcher Control\nResume requested. Re-read the dispatch plan from disk and continue from the next eligible worker.";
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {
