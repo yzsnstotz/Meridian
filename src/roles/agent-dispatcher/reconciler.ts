@@ -249,14 +249,37 @@ function determineWorkerTransition(
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
   const hasInlineReport = hubResult ? hubResultContainsInlineReport(hubResult) : false;
 
-  if ((observation.kind === "completed" || observation.kind === "idle") && outputsPresent) {
+  // When hub_result is null the run-tool relay timed out before receiving a
+  // terminal response — the worker may still be actively executing. An "idle"
+  // thread observation is unreliable in this case: the hub can briefly report
+  // "idle" between tool calls while the agent is still working. Only trust a
+  // definitive "completed" observation when there is no hub_result; "idle" is
+  // only strong enough evidence when a hub_result already confirmed the run
+  // finished.
+  const trustIdleAsTerminal = hubResult !== null;
+
+  if (observation.kind === "completed" && outputsPresent) {
     return {
       to: "completed",
       trigger: `hub_status:${observation.rawStatus ?? observation.kind}:outputs_present`
     };
   }
 
-  if ((observation.kind === "completed" || observation.kind === "idle") && hasInlineReport) {
+  if (observation.kind === "idle" && trustIdleAsTerminal && outputsPresent) {
+    return {
+      to: "completed",
+      trigger: `hub_status:${observation.rawStatus ?? observation.kind}:outputs_present`
+    };
+  }
+
+  if (observation.kind === "completed" && hasInlineReport) {
+    return {
+      to: "completed",
+      trigger: `hub_status:${observation.rawStatus ?? observation.kind}:inline_report`
+    };
+  }
+
+  if (observation.kind === "idle" && trustIdleAsTerminal && hasInlineReport) {
     return {
       to: "completed",
       trigger: `hub_status:${observation.rawStatus ?? observation.kind}:inline_report`
