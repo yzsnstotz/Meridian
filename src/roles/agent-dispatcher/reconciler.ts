@@ -286,6 +286,20 @@ function determineWorkerTransition(
     };
   }
 
+  // Lightweight tasks (e.g. PRE-FLIGHT) may complete without producing output
+  // files or inline reports. When the hub confirms the thread is terminal and
+  // we already have a success hub_result, trust that as completed.
+  if (
+    (observation.kind === "completed" || (observation.kind === "idle" && trustIdleAsTerminal))
+    && hubResult?.status === "success"
+    && (!hubResult.run_state || hubResult.run_state === "completed")
+  ) {
+    return {
+      to: "completed",
+      trigger: `hub_status:${observation.rawStatus ?? observation.kind}:success_result`
+    };
+  }
+
   if (observation.kind === "failed") {
     return {
       to: "failed",

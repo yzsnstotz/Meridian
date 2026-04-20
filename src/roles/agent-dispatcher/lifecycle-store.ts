@@ -406,6 +406,13 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
       return "completed";
     }
 
+    // Lightweight tasks (e.g. PRE-FLIGHT) may signal completion with an
+    // explicit marker like "✅" + "complete" without producing output files
+    // or inline reports. Trust the explicit signal.
+    if (isExplicitCompletionContent(hubResult.content)) {
+      return "completed";
+    }
+
     return "running";
   }
 
@@ -421,6 +428,10 @@ const NON_COMPLETION_PATTERNS = [
 
 function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+function isExplicitCompletionContent(content: string): boolean {
+  return /✅/.test(content) && /\bcomplete\b/i.test(content);
 }
 
 function requiresOutputVerification(expectedOutputs: string[]): boolean {

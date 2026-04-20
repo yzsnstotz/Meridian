@@ -817,6 +817,43 @@ describe("reconcile", () => {
     expect(nextState.workers["E-05"]?.hub_result?.details_text).toContain("Agent reply:");
   });
 
+  it("completes a running worker when hub reports completed with a success hub_result but no outputs or inline report", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": {
+          ...buildRunningWorker("worker-thread-pf", path.join(harness.directory, "missing-report.md")),
+          hub_result: {
+            trace_id: "55555555-5555-4555-8555-555555555555",
+            thread_id: "worker-thread-pf",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "**PRE-FLIGHT complete. ✅**",
+            attachments: [],
+            timestamp: "2026-04-03T13:00:00.000Z"
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient(() => buildStatusResult("worker-thread-pf", "completed"));
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("completed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "PRE-FLIGHT",
+        from: "running",
+        to: "completed",
+        trigger: expect.stringContaining("success_result")
+      })
+    );
+  });
+
   it("uses the default stale timeout when no override is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

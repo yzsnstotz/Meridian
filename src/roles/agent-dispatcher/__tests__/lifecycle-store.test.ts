@@ -180,6 +180,26 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("completes when a deferred-success result has an explicit completion marker without inline report", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "reports/PRE-FLIGHT.md"
+    ]);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: "**PRE-FLIGHT complete. ✅**",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("completes immediately when a deferred-success result returns an inline completion report for a report-only worker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("R-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
