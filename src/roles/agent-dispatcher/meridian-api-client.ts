@@ -21,6 +21,8 @@ export interface MeridianSpawnRequest {
   spawnDir: string;
   /** Optional model identifier forwarded to the provider adapter. */
   modelId?: string;
+  /** Optional reasoning effort level (low, medium, high, xhigh). Sent separately from model_id. */
+  effort?: string;
   /** Approval policy. Meridian maps this to provider-specific flags. */
   autoApprove?: boolean;
 }
@@ -195,6 +197,9 @@ function buildSpawnRequestBody(request: MeridianSpawnRequest): Record<string, un
   }
   if (request.modelId?.trim()) {
     body.model_id = request.modelId.trim();
+  }
+  if (request.effort?.trim()) {
+    body.effort = request.effort.trim();
   }
 
   return body;

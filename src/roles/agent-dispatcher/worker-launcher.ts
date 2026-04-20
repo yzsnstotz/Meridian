@@ -6,6 +6,7 @@ import {
   type MeridianApiClient
 } from "./meridian-api-client";
 import runTool from "../../tool-gateway/tools/run";
+import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
 
 export interface LaunchDispatchWorkerConfig {
   agentType: string;
@@ -88,11 +89,13 @@ export async function launchDispatchWorker(
 
   let threadId: string;
   try {
+    const { modelId: parsedModelId, effort: parsedEffort } = parseModelIdWithEffort(config.modelId?.trim() || undefined);
     const result = await deps.meridianApi.spawn({
       agentType: config.agentType,
       mode: config.mode,
       spawnDir,
-      modelId: config.modelId?.trim() || undefined,
+      modelId: parsedModelId,
+      effort: parsedEffort,
       autoApprove: config.autoApprove
     });
     threadId = result.threadId;
