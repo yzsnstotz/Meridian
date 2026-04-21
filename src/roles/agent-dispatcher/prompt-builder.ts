@@ -118,6 +118,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "- If any non-human row is already `🔄`, do not try to route around it locally. Re-read, wait, or notify a human.",
     "Step 3. Interpret responses by JSON shape:",
     '- `status: "continued"`: worker launched. Re-read plan later and continue.',
+    '- `status: "plan_complete"`: all non-human workers have reached a terminal state. Send the final completion notify and stop immediately.',
     '- `status: "still_blocked"`: do not force a launch. Re-read; notify human if block persists.',
     '- `status: "manual_intervention_required"`: a worker reported `:hit limit` or another terminal limit signal. Notify human immediately and pause.',
     '- `status: "local_tool_bootstrap_failed"`: notify human with spawn-failure template and pause.',

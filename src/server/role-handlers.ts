@@ -253,7 +253,7 @@ export interface RoleDetailResponse {
 
 export interface ContinueDispatcherResponse {
   ok: true;
-  status: "continued" | "still_blocked" | "local_tool_bootstrap_failed" | "manual_intervention_required";
+  status: "continued" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required";
   message: string;
   dispatcher_thread_id?: string;
   worker?: string;
@@ -626,6 +626,20 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         };
       }
 
+      // No eligible worker found and no running workers blocking. Check if
+      // all non-human workers have reached a terminal state. If so, the plan
+      // is complete — return a distinct status so the dispatcher AI can send
+      // the final completion notify and stop, instead of relaunching the hub
+      // session in an infinite loop.
+      if (isDispatchPlanComplete(dispatchPlanData.rows, lifecycleState)) {
+        return {
+          ok: true,
+          status: "plan_complete",
+          message: "plan complete: all non-human workers are terminal",
+          ...(effectiveDispatcherThreadId ? { dispatcher_thread_id: effectiveDispatcherThreadId } : {})
+        };
+      }
+
       const started = await startAgentDispatcherHubSession(threadId);
       if (shouldResumeAfterContinue) {
         await setAgentDispatcherStatus(threadId, ACTIVE_ROLE_STATUS);
@@ -634,9 +648,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       return {
         ok: true,
         status: "continued",
-        message: effectiveWorkerId ? `continued: ${effectiveWorkerId}` : "continued: dispatcher",
-        dispatcher_thread_id: started.dispatcher_thread_id,
-        ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {})
+        message: "continued: dispatcher",
+        dispatcher_thread_id: started.dispatcher_thread_id
       };
     } catch (error) {
       const message = getErrorMessage(error);
@@ -1588,6 +1601,38 @@ function isLifecycleTerminal(lifecycleState: DispatchThreadStateV2, workerId: st
   }
 
   return worker.status === "completed" || worker.status === "skipped" || worker.status === "failed";
+}
+
+/**
+ * Returns true when every non-human worker row in the dispatch plan has reached
+ * a terminal status — either in the plan markdown itself or (as a fallback) in
+ * the lifecycle store. This detects the "all done" condition so the dispatcher
+ * can stop instead of infinitely relaunching its hub session.
+ */
+function isDispatchPlanComplete(rows: DispatchPlanRow[], lifecycleState: DispatchThreadStateV2): boolean {
+  const nonHumanRows = rows.filter((row) => !isHumanDispatchRow(row) && row.worker.trim().length > 0);
+  if (nonHumanRows.length === 0) {
+    return false;
+  }
+
+  return nonHumanRows.every((row) => {
+    const planStatus = row.status.trim();
+    if (planStatus === "✅" || planStatus === "⛔ SKIPPED") {
+      return true;
+    }
+
+    // Plan markdown may be stale. Cross-reference lifecycle store.
+    if (planStatus === "❌" || planStatus === "⚠️ ABANDONED") {
+      return isLifecycleTerminal(lifecycleState, row.worker);
+    }
+
+    // A 🔄 row whose lifecycle is terminal means the plan sync lagged behind
+    if (planStatus === "🔄") {
+      return isLifecycleTerminal(lifecycleState, row.worker);
+    }
+
+    return false;
+  });
 }
 
 function isLocalToolBootstrapFailure(message: string): boolean {
