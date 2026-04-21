@@ -217,12 +217,12 @@ describe("reconcile", () => {
         workerId: "N-02",
         from: "running",
         to: "abandoned",
-        trigger: "thread_missing:stale_timeout"
+        trigger: "thread_missing:no_evidence"
       }
     ]);
   });
 
-  it("keeps a running worker unchanged when the thread is missing but the stale timeout has not been exceeded", async () => {
+  it("immediately abandons a running worker when the thread is confirmed missing with no evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -243,11 +243,15 @@ describe("reconcile", () => {
       staleTimeoutMs: 5 * 60 * 1000
     });
 
-    expect(harness.store.load().workers["N-02"]?.status).toBe("running");
-    expect(report).toEqual({
-      changed: [],
-      unchanged: [DISPATCHER_ENTRY_ID, "N-02"]
-    });
+    expect(harness.store.load().workers["N-02"]?.status).toBe("abandoned");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-02",
+        from: "running",
+        to: "abandoned",
+        trigger: "thread_missing:no_evidence"
+      }
+    ]);
   });
 
   it("promotes an abandoned worker to completed when outputs exist on disk", async () => {
@@ -430,7 +434,7 @@ describe("reconcile", () => {
           workerId: "R-02",
           from: "running",
           to: "abandoned",
-          trigger: "thread_missing:stale_timeout"
+          trigger: "thread_missing:no_evidence"
         },
         {
           workerId: "R-03",
