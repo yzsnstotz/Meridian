@@ -90,6 +90,14 @@ function resolveImplicitContinueWorker(
     return null;
   }
 
+  // Don't re-dispatch workers that already reached a terminal success state.
+  // The plan markdown may still show 🔄 due to a stale sync, but the lifecycle
+  // store is authoritative. Re-dispatching a completed/skipped worker would
+  // reset it to pending and cause an infinite re-dispatch loop.
+  if (worker?.status === "completed" || worker?.status === "skipped") {
+    return null;
+  }
+
   const normalizedWorkerId = row.worker.trim();
   return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
 }

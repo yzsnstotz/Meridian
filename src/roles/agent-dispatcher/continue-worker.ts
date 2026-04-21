@@ -1,6 +1,8 @@
 import * as fs from "node:fs/promises";
+import path from "node:path";
 
 import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
+import { LifecycleStore } from "./lifecycle-store";
 import { resolveDispatchModelMapFromMarkdown, resolveImplicitDispatchModelOverride } from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
@@ -57,6 +59,23 @@ export async function continueDispatchWorker(
 
     if (isHumanDispatchRow(dispatchPlanRow)) {
       throw new Error(`Worker is not launchable: ${workerId}`);
+    }
+
+    // Guard: refuse to re-dispatch a worker that already reached a terminal
+    // success state in the lifecycle store. The plan markdown may show 🔄 due
+    // to a stale sync, but the lifecycle store is authoritative. Without this
+    // guard, shouldResetWorkerBeforeContinue would wipe the completed state
+    // back to pending and cause an infinite re-dispatch loop.
+    const lifecycleStore = new LifecycleStore(
+      path.join(path.dirname(config.dispatch_plan_path), "dispatch_threads.json")
+    );
+    const currentWorkerState = lifecycleStore.load().workers[workerId];
+    if (currentWorkerState?.status === "completed" || currentWorkerState?.status === "skipped") {
+      return {
+        ok: true,
+        workerId,
+        threadId: currentWorkerState.thread_id
+      };
     }
 
     if (shouldResetWorkerBeforeContinue(dispatchPlanRow)) {

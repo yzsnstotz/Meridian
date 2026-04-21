@@ -53,6 +53,30 @@ describe("service continuation", () => {
     ], createLifecycleState())).toBeNull();
   });
 
+  it("does not re-dispatch a worker whose plan shows 🔄 but lifecycle is completed", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-01": {
+        status: "completed",
+        thread_id: "worker-thread-r01"
+      }
+    }))).toBeNull();
+  });
+
+  it("does not re-dispatch a worker whose plan shows 🔄 but lifecycle is skipped", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-01": {
+        status: "skipped",
+        thread_id: "worker-thread-r01"
+      }
+    }))).toBeNull();
+  });
+
   it("ignores blocked running rows when selecting the next automatic continuation target", () => {
     expect(resolveServiceContinueWorker([
       {
