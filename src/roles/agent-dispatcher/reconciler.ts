@@ -322,6 +322,21 @@ function determineWorkerTransition(
       };
     }
 
+    // Thread is gone but the hub confirmed success before the thread
+    // disappeared (e.g. killed during restart or cleanup). Trust the hub's
+    // success signal — the work was done. Without this, the worker stays
+    // "running" until stale timeout, then becomes "abandoned" and gets
+    // re-dispatched in an infinite loop.
+    if (
+      hubResult?.status === "success"
+      && (!hubResult.run_state || hubResult.run_state === "completed")
+    ) {
+      return {
+        to: "completed",
+        trigger: "thread_missing:success_result"
+      };
+    }
+
     if (isStale(startedAt, nowMs, staleTimeoutMs)) {
       return {
         to: "abandoned",

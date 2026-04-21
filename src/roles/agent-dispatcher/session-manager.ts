@@ -4,9 +4,11 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import * as fsSync from "node:fs";
+
 import type { StateStore } from "../../state-store";
-import { AppStateSchema, type AppState, type DispatchThreadStateV2 } from "../../types";
-import { LifecycleStore } from "./lifecycle-store";
+import { AppStateSchema, type AppState, type DispatchWorkerState, type DispatchThreadStateV2, type LifecycleStatus } from "../../types";
+import { LifecycleStore, hubResultContainsInlineReport } from "./lifecycle-store";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
 const ACTIVE_STATUS = "active";
@@ -245,14 +247,42 @@ export class SessionManager {
     for (const worker of runningWorkers) {
       await this.killThread(worker.thread_id);
       staleWorkersKilled.push(worker.worker_id);
-      // Do NOT mark abandoned here. The thread is killed, but the worker's true
-      // outcome (completed with outputs, genuinely abandoned, etc.) must be
-      // determined by the reconciler which checks hub_result, expected outputs,
-      // and stale timeout. Blindly stamping "abandoned" would erase workers that
-      // actually completed successfully before the restart.
     }
 
-    if (dispatcherCleared) {
+    // After killing threads, reconcile each worker's lifecycle status based on
+    // the evidence we already have (hub_result, expected_outputs). The reconciler
+    // watchdog would eventually do this, but waiting for the stale timeout (30 min)
+    // leaves workers as "running" with dead threads — causing the new dispatcher
+    // hub to see them as blocked, and once they become abandoned they get
+    // re-dispatched in an infinite loop.
+    let workersReconciled = false;
+    if (staleWorkersKilled.length > 0) {
+      const freshState = lifecycleStore.load();
+      for (const worker of runningWorkers) {
+        const workerState = freshState.workers[worker.worker_id];
+        if (!workerState || workerState.status !== "running") {
+          continue;
+        }
+
+        const resolvedStatus = resolveKilledWorkerStatus(workerState);
+        if (resolvedStatus !== "running") {
+          freshState.workers[worker.worker_id] = {
+            ...workerState,
+            status: resolvedStatus,
+            last_seen_at: new Date().toISOString()
+          };
+          workersReconciled = true;
+        }
+      }
+
+      if (dispatcherCleared) {
+        freshState.dispatcher = buildPendingDispatcherState();
+      }
+
+      if (workersReconciled || dispatcherCleared) {
+        lifecycleStore.save(freshState);
+      }
+    } else if (dispatcherCleared) {
       const nextState = lifecycleStore.load();
       nextState.dispatcher = buildPendingDispatcherState();
       lifecycleStore.save(nextState);
@@ -516,4 +546,59 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+/**
+ * Determine the correct lifecycle status for a worker whose thread was killed
+ * during restart. Uses the same evidence hierarchy as the reconciler but without
+ * querying the (now dead) hub thread.
+ *
+ * Priority:
+ * 1. Expected outputs exist on disk → completed
+ * 2. Hub result contains inline report → completed
+ * 3. Hub result is success/completed → completed (trust the hub; thread is gone)
+ * 4. Hub result is error → failed
+ * 5. No hub result → abandoned
+ */
+function resolveKilledWorkerStatus(worker: DispatchWorkerState): LifecycleStatus {
+  if (expectedOutputsExist(worker.expected_outputs)) {
+    return "completed";
+  }
+
+  if (worker.hub_result && hubResultContainsInlineReport(worker.hub_result)) {
+    return "completed";
+  }
+
+  if (
+    worker.hub_result?.status === "success"
+    && (!worker.hub_result.run_state || worker.hub_result.run_state === "completed")
+  ) {
+    return "completed";
+  }
+
+  if (worker.hub_result?.status === "error") {
+    return "failed";
+  }
+
+  if (!worker.hub_result) {
+    return "abandoned";
+  }
+
+  // Timeout or partial results without output evidence — treat as abandoned
+  // so the retry path can recover.
+  return "abandoned";
+}
+
+function expectedOutputsExist(expectedOutputs: string[]): boolean {
+  if (expectedOutputs.length === 0) {
+    return false;
+  }
+
+  return expectedOutputs.every((filePath) => {
+    try {
+      return fsSync.existsSync(filePath) && fsSync.statSync(filePath).size > 0;
+    } catch {
+      return false;
+    }
+  });
 }
