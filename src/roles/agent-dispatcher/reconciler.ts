@@ -4,7 +4,12 @@ import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
-import { LifecycleStore, hubResultContainsInlineReport, isExplicitCompletionContent } from "./lifecycle-store";
+import {
+  LifecycleStore,
+  hubResultContainsHitLimit,
+  hubResultContainsInlineReport,
+  isExplicitCompletionContent
+} from "./lifecycle-store";
 import { isMissingThreadEvidence } from "./missing-thread";
 
 export interface ReconciliationChange {
@@ -381,6 +386,13 @@ function determineRecordedResultTransition(
     return {
       to: "failed",
       trigger: "hub_result:timeout"
+    };
+  }
+
+  if (hubResultContainsHitLimit(hubResult)) {
+    return {
+      to: "failed",
+      trigger: "hub_result:hit_limit"
     };
   }
 

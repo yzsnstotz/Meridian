@@ -1,4 +1,5 @@
 import type { DispatchThreadStateV2 } from "../../types";
+import { hubResultContainsHitLimit } from "./lifecycle-store";
 
 export interface DispatchContinuationPlanRow {
   status: string;
@@ -24,6 +25,29 @@ export function resolveServiceContinueWorker(
 ): string | null {
   return resolveImplicitContinueWorker(rows, lifecycleState)
     ?? resolveFirstEligibleContinueWorker(rows, lifecycleState);
+}
+
+export function resolveManualInterventionWorker(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  for (const row of rows) {
+    if (isHumanDispatchRow(row)) {
+      continue;
+    }
+
+    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
+    if (!workerState?.hub_result || !hubResultContainsHitLimit(workerState.hub_result)) {
+      continue;
+    }
+
+    const normalizedWorkerId = row.worker.trim();
+    if (normalizedWorkerId.length > 0) {
+      return normalizedWorkerId;
+    }
+  }
+
+  return null;
 }
 
 export function isHumanDispatchRow(row: Pick<DispatchContinuationPlanRow, "model">): boolean {

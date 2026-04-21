@@ -14,7 +14,7 @@ import {
   resolveConfiguredDocsRoot
 } from "../roles/agent-dispatcher/dispatch-paths";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
-import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsHitLimit } from "../roles/agent-dispatcher/lifecycle-store";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import {
   AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
@@ -22,7 +22,11 @@ import {
   materializeDispatcherSystemPrompt
 } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
-import { isHumanDispatchRow, resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-continuation";
+import {
+  isHumanDispatchRow,
+  resolveManualInterventionWorker,
+  resolveServiceContinueWorker
+} from "../roles/agent-dispatcher/service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
@@ -249,7 +253,7 @@ export interface RoleDetailResponse {
 
 export interface ContinueDispatcherResponse {
   ok: true;
-  status: "continued" | "still_blocked" | "local_tool_bootstrap_failed";
+  status: "continued" | "still_blocked" | "local_tool_bootstrap_failed" | "manual_intervention_required";
   message: string;
   dispatcher_thread_id?: string;
   worker?: string;
@@ -538,6 +542,19 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
     const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
     const lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
+    if (manualInterventionWorkerId) {
+      const manualInterventionWorker = lifecycleState.workers[manualInterventionWorkerId];
+      const limitSummary = summarizeHitLimitResult(manualInterventionWorker?.hub_result ?? null);
+      return {
+        ok: true,
+        status: "manual_intervention_required",
+        message: `manual intervention required: ${manualInterventionWorkerId} reported hit limit`,
+        worker: manualInterventionWorkerId,
+        ...(limitSummary ? { error: limitSummary } : {})
+      };
+    }
+
     const effectiveWorkerId = workerId
       ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
@@ -1538,6 +1555,23 @@ function getStatusCode(error: unknown): number {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
+}
+
+function summarizeHitLimitResult(hubResult: HubResult | null): string | null {
+  if (!hubResult || !hubResultContainsHitLimit(hubResult)) {
+    return null;
+  }
+
+  const rawSummary = hubResult.summary_text?.trim()
+    || hubResult.content?.trim()
+    || hubResult.details_text?.trim()
+    || "";
+  if (rawSummary.length === 0) {
+    return "worker reported hit limit";
+  }
+
+  const normalized = rawSummary.replace(/\s+/g, " ");
+  return normalized.length <= 200 ? normalized : `${normalized.slice(0, 200)}…`;
 }
 
 function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {

@@ -74,7 +74,10 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("send the final completion notify and stop");
     expect(prompt).toContain("status: \"continued\"");
     expect(prompt).toContain("status: \"still_blocked\"");
+    expect(prompt).toContain("status: \"manual_intervention_required\"");
     expect(prompt).toContain("status: \"local_tool_bootstrap_failed\"");
+    expect(prompt).toContain("If a worker reply says `:hit limit`");
+    expect(prompt).toContain("Hit limit: `[Dispatcher] ⛔ worker hit limit");
     expect(prompt).toContain("If any non-human row is already `🔄`");
     expect(prompt).toContain("do not try to route around it locally");
     expect(prompt).toContain("service enforces `kill_policy`");

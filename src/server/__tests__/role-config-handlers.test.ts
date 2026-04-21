@@ -986,6 +986,60 @@ describe("role config handlers", () => {
     }
   });
 
+  it("blocks continuation when a worker reply reported hit limit", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-hit-limit-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 5 | R-07 | Integration Repair | CODEX | — | CLI Integration PRD | done |",
+      "| ⬜ | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | review output |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-07": buildLifecycleWorker({
+          thread_id: "worker-thread-r07",
+          status: "completed",
+          hub_result: {
+            ...buildHubResult(":hit limit"),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-r07"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-hit-limit", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-hit-limit/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "manual_intervention_required",
+        message: "manual intervention required: R-07 reported hit limit",
+        worker: "R-07",
+        error: ":hit limit"
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("continues the sole pre-marked running worker when no worker thread was ever recorded", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pre-marked-worker-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -1688,7 +1742,7 @@ describe("role config handlers", () => {
       });
 
       expect(lifecycleStore.load().workers["N-04"]?.status).toBe("pending");
-      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |");
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ✅ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }

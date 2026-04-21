@@ -1775,6 +1775,8 @@ function formatContinueResult(result) {
       return message || "continued";
     case "still_blocked":
       return message || "still blocked";
+    case "manual_intervention_required":
+      return message || "manual intervention required";
     case "local_tool_bootstrap_failed":
       return message || "local tool bootstrap failed";
     default:

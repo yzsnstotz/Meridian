@@ -200,6 +200,26 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult as failed when the worker reply hit a terminal limit", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: ":hit limit"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z",
+      hub_result: expect.objectContaining({
+        content: ":hit limit"
+      })
+    });
+  });
+
   it("completes immediately when a deferred-success result returns an inline completion report for a report-only worker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("R-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [

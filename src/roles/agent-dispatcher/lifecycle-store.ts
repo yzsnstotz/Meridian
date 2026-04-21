@@ -404,6 +404,10 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
     return "running";
   }
 
+  if (hubResultContainsHitLimit(hubResult)) {
+    return "failed";
+  }
+
   if (isNonCompletionContent(hubResult.content)) {
     return "running";
   }
@@ -444,12 +448,32 @@ const NON_COMPLETION_PATTERNS = [
   /BLOCKED\s*[—–-]/
 ];
 
+const HIT_LIMIT_PATTERNS = [
+  /(?:^|[\s>])[:;=-]?\s*hit\s+limit\b/i,
+  /\bcontext(?:\s+window)?\s+limit\b/i,
+  /\btoken\s+limit\b/i
+];
+
 function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
 }
 
 export function isExplicitCompletionContent(content: string): boolean {
   return /✅/.test(content) && /\bcomplete\b/i.test(content);
+}
+
+export function hubResultContainsHitLimit(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): boolean {
+  const combinedContent = [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+
+  return combinedContent.length > 0 && HIT_LIMIT_PATTERNS.some((pattern) => pattern.test(combinedContent));
 }
 
 function requiresOutputVerification(expectedOutputs: string[]): boolean {

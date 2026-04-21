@@ -101,6 +101,42 @@ describe("reconcile", () => {
     });
   });
 
+  it("marks a running worker failed when a stored success HubResult reports hit limit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "A-01": {
+          ...buildRunningWorker("worker-thread-111", path.join(harness.directory, "missing-report.md")),
+          hub_result: {
+            ...buildTerminalSuccessResult("worker-thread-111"),
+            content: ":hit limit"
+          }
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["A-01"]?.status).toBe("failed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report).toEqual({
+      changed: [
+        {
+          workerId: "A-01",
+          from: "running",
+          to: "failed",
+          trigger: "hub_result:hit_limit"
+        }
+      ],
+      unchanged: [DISPATCHER_ENTRY_ID]
+    });
+  });
+
   it("marks a running worker failed when Hub reports an error state", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
