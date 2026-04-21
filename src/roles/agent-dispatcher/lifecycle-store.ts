@@ -427,6 +427,13 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
     return "running";
   }
 
+  // Even when run_state is not "completed" (e.g. "still_running"), trust
+  // explicit completion markers in the content. The worker may have finished
+  // its task while the thread remains alive.
+  if (hubResult.status === "success" && isExplicitCompletionContent(hubResult.content)) {
+    return "completed";
+  }
+
   return "running";
 }
 
@@ -441,7 +448,7 @@ function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
 }
 
-function isExplicitCompletionContent(content: string): boolean {
+export function isExplicitCompletionContent(content: string): boolean {
   return /✅/.test(content) && /\bcomplete\b/i.test(content);
 }
 

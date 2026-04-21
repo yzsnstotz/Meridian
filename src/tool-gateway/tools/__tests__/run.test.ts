@@ -71,7 +71,8 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 vi.mock("../../../roles/agent-dispatcher/lifecycle-store", () => ({
-  LifecycleStore: lifecycleStoreConstructor
+  LifecycleStore: lifecycleStoreConstructor,
+  isExplicitCompletionContent: (content: string) => /✅/.test(content) && /\bcomplete\b/i.test(content)
 }));
 
 vi.mock("../../../roles/agent-dispatcher/reconciler", () => ({

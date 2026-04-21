@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
-import { LifecycleStore, hubResultContainsInlineReport } from "./lifecycle-store";
+import { LifecycleStore, hubResultContainsInlineReport, isExplicitCompletionContent } from "./lifecycle-store";
 import { isMissingThreadEvidence } from "./missing-thread";
 
 export interface ReconciliationChange {
@@ -412,6 +412,15 @@ function determineRecordedResultTransition(
         trigger: "hub_result:inline_report"
       };
     }
+  }
+
+  // Trust explicit completion markers (✅ + "complete") even when run_state
+  // is "still_running" — the worker finished its task but the thread is alive.
+  if (hubResult.status === "success" && isExplicitCompletionContent(hubResult.content)) {
+    return {
+      to: "completed",
+      trigger: "hub_result:explicit_completion_content"
+    };
   }
 
   return null;
