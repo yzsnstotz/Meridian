@@ -1,6 +1,8 @@
 import type { DispatchThreadStateV2 } from "../../types";
 import { hubResultContainsHitLimit } from "./lifecycle-store";
 
+const MAX_AUTOMATIC_RECOVERY_RETRIES = 2;
+
 export interface DispatchContinuationPlanRow {
   status: string;
   batch?: string | null;
@@ -155,9 +157,9 @@ function isEligibleServiceContinueRow(
 
   switch (row.status.trim()) {
     case "⚠️ ABANDONED":
-      return true;
+      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
     case "❌":
-      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < 2;
+      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
     case "⬜":
       return areDispatchDependenciesSatisfied(row, rows, rowsByWorker);
     default:

@@ -607,6 +607,11 @@ function extractCompletionReportTemplate(command: string, workerId: string): str
     return substituteWorkerId(blockMatch[1], workerId);
   }
 
+  const inlineMatch = /Write(?: your)?(?: completion)? report to:\s*`([^`\r\n]+)`/i.exec(command);
+  if (inlineMatch?.[1]) {
+    return substituteWorkerId(inlineMatch[1], workerId);
+  }
+
   return null;
 }
 
@@ -963,7 +968,7 @@ async function runWithTransientRetry(
       return await client.run({ threadId, content });
     } catch (error) {
       lastError = asError(error);
-      if (attempt < TRANSIENT_RUN_RETRY_DELAYS_MS.length && isTransientError(lastError)) {
+      if (attempt < TRANSIENT_RUN_RETRY_DELAYS_MS.length && shouldRetryRunError(lastError)) {
         const delayMs = TRANSIENT_RUN_RETRY_DELAYS_MS[attempt]!;
         console.warn("run tool transient error, retrying", {
           threadId,
@@ -983,6 +988,17 @@ async function runWithTransientRetry(
 
 function isTransientError(error: Error): boolean {
   return TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(error.message));
+}
+
+function shouldRetryRunError(error: Error): boolean {
+  if (!isTransientError(error)) {
+    return false;
+  }
+
+  // `/api/run` is non-idempotent. Once Meridian returns a transient-looking
+  // `run failed: ...` response, the worker may already be executing, so replaying
+  // the same prompt into the same thread can duplicate work.
+  return !/^run failed:/i.test(error.message);
 }
 
 function delay(ms: number): Promise<void> {

@@ -420,6 +420,47 @@ describe("run tool", () => {
     );
   });
 
+  it("derives the completion report path from an inline command template", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "5l: Write completion report to: `/tmp/dispatch/reports/<WORKER_ID>.md`"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 4 | R-03 | Recovery | CODEX | — | Report-only worker. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-inline-report",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-03"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "R-03",
+      "thread-inline-report",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/R-03.md"],
+      expect.any(String)
+    );
+  });
+
   it("keeps the dispatcher wrapper in control-flow mode instead of implementation mode", async () => {
     const hubResult = buildHubResult("Dispatcher paused", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
@@ -1213,6 +1254,42 @@ describe("run tool", () => {
         thread_id: "thread-789",
         status: "failed"
       }
+    });
+  });
+
+  it("does not replay a timed-out run request into the same worker thread", async () => {
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockRun.mockRejectedValue(new Error("run failed: Request timed out — the hub may be overloaded."));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-timeout",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      thread_id: "thread-timeout",
+      status: "running",
+      hub_result: null
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "run failed: Request timed out — the hub may be overloaded.",
+      data: {
+        worker: "N-04",
+        thread_id: "thread-timeout",
+        status: "failed"
+      }
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "N-04",
+      threadId: "thread-timeout",
+      error: "run failed: Request timed out — the hub may be overloaded."
     });
   });
 

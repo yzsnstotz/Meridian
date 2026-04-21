@@ -106,7 +106,7 @@ export async function reconcile(
     const observation = await queryHubThreadObservation(hubClient, worker.thread_id);
     const recoveredHubResult =
       !worker.hub_result && !outputsPresent && observation.kind !== "running"
-        ? await recoverHubResultFromHistory(hubClient, worker.thread_id, worker.trace_id)
+        ? await recoverHubResultFromHistory(hubClient, worker.thread_id, worker.trace_id, worker.started_at)
         : null;
     const effectiveHubResult = recoveredHubResult ?? worker.hub_result;
     const recoveredTransition = determineRecordedResultTransition(effectiveHubResult, outputsPresent);
@@ -465,7 +465,8 @@ export async function queryHubThreadObservation(
 async function recoverHubResultFromHistory(
   hubClient: A2AClient,
   threadId: string | null,
-  traceId: string | null
+  traceId: string | null,
+  startedAt: string | null
 ): Promise<HubResult | null> {
   if (!threadId) {
     return null;
@@ -486,7 +487,7 @@ async function recoverHubResultFromHistory(
   }
 
   const historyEntries = parseConversationHistoryEntries(historyResult.content);
-  const finalReplyEntry = findLatestFinalReplyEntry(historyEntries, traceId);
+  const finalReplyEntry = findLatestFinalReplyEntry(historyEntries, traceId, startedAt);
   if (!finalReplyEntry) {
     return null;
   }
@@ -596,15 +597,16 @@ function parseConversationHistoryEntries(rawContent: string): ConversationHistor
 
 function findLatestFinalReplyEntry(
   historyEntries: ConversationHistoryEntry[],
-  traceId: string | null
+  traceId: string | null,
+  startedAt: string | null
 ): ConversationHistoryEntry | null {
+  const normalizedTraceId = normalizeOptionalTraceId(traceId);
+  const startedAtMs = parseIsoTimestampMs(startedAt);
+  let traceLessFallback: ConversationHistoryEntry | null = null;
+
   for (let index = historyEntries.length - 1; index >= 0; index -= 1) {
     const entry = historyEntries[index];
     if (!entry || entry.event_kind !== "final_reply") {
-      continue;
-    }
-
-    if (traceId && entry.trace_id !== traceId) {
       continue;
     }
 
@@ -615,10 +617,28 @@ function findLatestFinalReplyEntry(
       continue;
     }
 
-    return entry;
+    const entryTraceId = normalizeOptionalTraceId(entry.trace_id);
+    if (normalizedTraceId) {
+      if (entryTraceId === normalizedTraceId) {
+        return entry;
+      }
+
+      if (
+        !traceLessFallback
+        && !entryTraceId
+        && occurredAtOrAfterAttemptStart(entry.timestamp, startedAtMs)
+      ) {
+        traceLessFallback = entry;
+      }
+      continue;
+    }
+
+    if (!startedAtMs || occurredAtOrAfterAttemptStart(entry.timestamp, startedAtMs)) {
+      return entry;
+    }
   }
 
-  return null;
+  return traceLessFallback;
 }
 
 function buildRecoveredHubResult(
@@ -652,6 +672,37 @@ function normalizeHistorySource(value: string | undefined): HubResult["source"] 
 
 function normalizeHistoryTimestamp(value: string | undefined): string {
   return typeof value === "string" && value.trim().length > 0 ? value : new Date().toISOString();
+}
+
+function normalizeOptionalTraceId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseIsoTimestampMs(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const timestampMs = Date.parse(value);
+  return Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+function occurredAtOrAfterAttemptStart(entryTimestamp: string | undefined, startedAtMs: number | null): boolean {
+  if (startedAtMs === null) {
+    return true;
+  }
+
+  if (typeof entryTimestamp !== "string" || entryTimestamp.trim().length === 0) {
+    return false;
+  }
+
+  const entryTimestampMs = Date.parse(entryTimestamp);
+  return Number.isFinite(entryTimestampMs) && entryTimestampMs >= startedAtMs;
 }
 
 function normalizeHistoryText(value: string | undefined): string {

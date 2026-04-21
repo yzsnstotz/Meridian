@@ -725,6 +725,78 @@ describe("reconcile", () => {
     );
   });
 
+  it("recovers a trace-less final reply from Hub history when it was emitted after the current attempt started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-03": buildRunningWorker(
+          "worker-thread-r03",
+          path.join(harness.directory, "missing-r03-report.md"),
+          "2026-04-03T12:20:00.000Z"
+        )
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "Stale reply from an earlier attempt.",
+            raw_content: "# Old completion report",
+            trace_id: null,
+            timestamp: "2026-04-03T12:10:00.000Z"
+          },
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "Worker completed. Returning inline completion report.",
+            details_text: [
+              "Your message:",
+              "Run R-03",
+              "",
+              "Agent reply:",
+              "# R-03 Completion Report",
+              "",
+              "- Status: complete"
+            ].join("\n"),
+            raw_content: [
+              "Worker completed. Returning inline completion report.",
+              "",
+              "# R-03 Completion Report",
+              "",
+              "- Status: complete"
+            ].join("\n"),
+            trace_id: null,
+            timestamp: FIXED_NOW
+          }
+        ]);
+      }
+
+      return buildStatusResult(message.thread_id, "idle");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextWorker = harness.store.load().workers["R-03"];
+
+    expect(nextWorker?.status).toBe("completed");
+    expect(nextWorker?.hub_result?.summary_text).toBe("Worker completed. Returning inline completion report.");
+    expect(nextWorker?.hub_result?.trace_id).toBe("11111111-1111-4111-8111-111111111111");
+    expect(sendRequest.mock.calls.map(([message]) => (message as HubMessage).intent)).toEqual(["status", "history"]);
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "R-03",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      })
+    );
+  });
+
   it("marks a running worker failed when hub_result is success but content contains a provider error", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

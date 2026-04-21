@@ -109,6 +109,17 @@ describe("service continuation", () => {
       }
     }))).toBe("E-01R");
   });
+
+  it("does not auto-continue abandoned rows once the retry threshold is reached", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "⚠️ ABANDONED", batch: "1", worker: "R-03", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-03": {
+        status: "abandoned",
+        retry_count: 2
+      }
+    }))).toBeNull();
+  });
 });
 
 function createLifecycleState(
