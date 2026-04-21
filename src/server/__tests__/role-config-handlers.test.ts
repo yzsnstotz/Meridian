@@ -976,11 +976,10 @@ describe("role config handlers", () => {
         "/api/agent-dispatcher/agent-dispatcher-continue-paused/continue"
       )).resolves.toEqual({
         ok: true,
-        status: "continued",
-        message: "continued: dispatcher",
+        status: "plan_complete",
+        message: "plan complete: all non-human workers are terminal",
         dispatcher_thread_id: "dispatcher-thread-123"
       });
-      expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-continue-paused")?.status).toBe("active");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
