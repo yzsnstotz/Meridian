@@ -138,7 +138,7 @@ export async function reconcile(
       staleTimeoutMs
     );
 
-    if (!transition) {
+    if (!transition || transition.to === worker.status) {
       report.unchanged.push(workerId);
       continue;
     }
@@ -342,12 +342,15 @@ function determineWorkerTransition(
       };
     }
 
-    if (isStale(startedAt, nowMs, staleTimeoutMs)) {
-      return {
-        to: "abandoned",
-        trigger: "thread_missing:stale_timeout"
-      };
-    }
+    // Thread is confirmed gone by the hub with no evidence of completion.
+    // Abandon immediately — the 30-minute stale timeout only makes sense
+    // when we cannot determine the thread's state (e.g. hub unreachable).
+    // When the hub explicitly says "not found", waiting is pointless and
+    // blocks the dispatcher from retrying the worker.
+    return {
+      to: "abandoned",
+      trigger: "thread_missing:no_evidence"
+    };
   }
 
   // Worker thread exists but is idle with no hub result — the run command never
