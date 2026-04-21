@@ -849,7 +849,7 @@ describe("reconcile", () => {
         workerId: "PRE-FLIGHT",
         from: "running",
         to: "completed",
-        trigger: expect.stringContaining("success_result")
+        trigger: expect.stringContaining("explicit_completion_content")
       })
     );
   });

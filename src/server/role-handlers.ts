@@ -542,7 +542,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
     const runningWorkers = findRunningNonHumanWorkers(dispatchPlanData.rows)
-      .filter((candidate) => candidate !== effectiveWorkerId);
+      .filter((candidate) => candidate !== effectiveWorkerId)
+      .filter((candidate) => !isLifecycleTerminal(lifecycleState, candidate));
     if (runningWorkers.length > 0) {
       return {
         ok: true,
@@ -1544,6 +1545,15 @@ function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {
     .filter((row) => row.status === "🔄" && !isHumanDispatchRow(row))
     .map((row) => row.worker)
     .filter((worker) => worker.trim().length > 0);
+}
+
+function isLifecycleTerminal(lifecycleState: DispatchThreadStateV2, workerId: string): boolean {
+  const worker = lifecycleState.workers[workerId];
+  if (!worker) {
+    return false;
+  }
+
+  return worker.status === "completed" || worker.status === "skipped" || worker.status === "failed";
 }
 
 function isLocalToolBootstrapFailure(message: string): boolean {

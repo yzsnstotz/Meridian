@@ -7,7 +7,7 @@ import { ROLES_SERVICE_ID } from "../../config";
 import { reconcile } from "../../roles/agent-dispatcher/reconciler";
 import { createMeridianApiClient, type MeridianRunResult } from "../../roles/agent-dispatcher/meridian-api-client";
 import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubResult, type HubRunState, type KillPolicy } from "../../types";
-import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, isExplicitCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
 import { sendViaHttpRelay } from "../ipc-bridge";
 import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
@@ -234,7 +234,7 @@ function createLifecycleStore(commandPath: string): LifecycleStore {
 }
 
 async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, result: HubResult): Promise<void> {
-  if (inferRunState(result) !== "completed") {
+  if (inferRunState(result) !== "completed" && !isExplicitCompletionContent(result.content)) {
     return;
   }
 
