@@ -293,7 +293,18 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
         continue;
       }
 
-      rowCells[statusColumn] = PLAN_STATUS_SYMBOLS[workerState.status];
+      // Never downgrade a confirmed-terminal plan status. The plan markdown
+      // is the authoritative record when external evidence (merged PR, etc.)
+      // has already marked a worker ✅ or ⛔ SKIPPED. Lifecycle state may
+      // lag behind (e.g. hub_result lost to a timeout) and must not
+      // overwrite confirmed completion.
+      const currentPlanStatus = rowCells[statusColumn].trim();
+      const nextPlanStatus = PLAN_STATUS_SYMBOLS[workerState.status];
+      if (isPlanStatusTerminalSuccess(currentPlanStatus) && nextPlanStatus !== currentPlanStatus) {
+        continue;
+      }
+
+      rowCells[statusColumn] = nextPlanStatus;
       nextLines[rowIndex] = formatTableRow(rowCells);
       mutated = true;
     }
@@ -569,6 +580,10 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function formatTableRow(cells: string[]): string {
   return `| ${cells.join(" | ")} |`;
+}
+
+function isPlanStatusTerminalSuccess(status: string): boolean {
+  return status === "✅" || status === "⛔ SKIPPED";
 }
 
 function inferDispatchPlanPath(filePath: string): string {

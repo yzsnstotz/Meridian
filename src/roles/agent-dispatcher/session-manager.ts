@@ -250,13 +250,19 @@ export class SessionManager {
     }
 
     // After killing threads, reconcile each worker's lifecycle status based on
-    // the evidence we already have (hub_result, expected_outputs). The reconciler
-    // watchdog would eventually do this, but waiting for the stale timeout (30 min)
-    // leaves workers as "running" with dead threads — causing the new dispatcher
-    // hub to see them as blocked, and once they become abandoned they get
-    // re-dispatched in an infinite loop.
+    // the evidence we already have (hub_result, expected_outputs, plan status).
+    // The reconciler watchdog would eventually do this, but waiting for the stale
+    // timeout (30 min) leaves workers as "running" with dead threads — causing the
+    // new dispatcher hub to see them as blocked, and once they become abandoned
+    // they get re-dispatched in an infinite loop.
+    //
+    // The dispatch plan markdown is read as an additional evidence source. When a
+    // worker's plan row already shows ✅ (e.g. because the PR was merged), that
+    // takes precedence over missing hub_result — preventing a false "abandoned"
+    // that would trigger an infinite re-dispatch loop.
     let workersReconciled = false;
     if (staleWorkersKilled.length > 0) {
+      const planWorkerStatuses = readPlanWorkerStatuses(this.dispatchPlanPath);
       const freshState = lifecycleStore.load();
       for (const worker of runningWorkers) {
         const workerState = freshState.workers[worker.worker_id];
@@ -264,7 +270,8 @@ export class SessionManager {
           continue;
         }
 
-        const resolvedStatus = resolveKilledWorkerStatus(workerState);
+        const planStatus = planWorkerStatuses.get(worker.worker_id) ?? null;
+        const resolvedStatus = resolveKilledWorkerStatus(workerState, planStatus);
         if (resolvedStatus !== "running") {
           freshState.workers[worker.worker_id] = {
             ...workerState,
@@ -554,13 +561,25 @@ function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
  * querying the (now dead) hub thread.
  *
  * Priority:
- * 1. Expected outputs exist on disk → completed
- * 2. Hub result contains inline report → completed
- * 3. Hub result is success/completed → completed (trust the hub; thread is gone)
- * 4. Hub result is error → failed
- * 5. No hub result → abandoned
+ * 1. Plan markdown shows ✅ or ⛔ SKIPPED → trust external evidence (merged PR, etc.)
+ * 2. Expected outputs exist on disk → completed
+ * 3. Hub result contains inline report → completed
+ * 4. Hub result is success/completed → completed (trust the hub; thread is gone)
+ * 5. Hub result is error → failed
+ * 6. No hub result → abandoned
  */
-function resolveKilledWorkerStatus(worker: DispatchWorkerState): LifecycleStatus {
+function resolveKilledWorkerStatus(worker: DispatchWorkerState, planStatus: string | null): LifecycleStatus {
+  // The dispatch plan markdown is the authoritative record when external
+  // evidence (e.g. a merged PR) has already confirmed completion. A missing
+  // hub_result (due to relay timeout, etc.) must not override this.
+  if (planStatus === "✅") {
+    return "completed";
+  }
+
+  if (planStatus === "⛔ SKIPPED") {
+    return "skipped";
+  }
+
   if (expectedOutputsExist(worker.expected_outputs)) {
     return "completed";
   }
@@ -587,6 +606,60 @@ function resolveKilledWorkerStatus(worker: DispatchWorkerState): LifecycleStatus
   // Timeout or partial results without output evidence — treat as abandoned
   // so the retry path can recover.
   return "abandoned";
+}
+
+/**
+ * Read the dispatch plan markdown and extract a map of worker ID → plan status symbol.
+ * Returns an empty map if the plan cannot be read.
+ */
+function readPlanWorkerStatuses(dispatchPlanPath: string | null): Map<string, string> {
+  const statuses = new Map<string, string>();
+  if (!dispatchPlanPath) {
+    return statuses;
+  }
+
+  let markdown: string;
+  try {
+    markdown = fsSync.readFileSync(dispatchPlanPath, "utf8");
+  } catch {
+    return statuses;
+  }
+
+  const lines = markdown.split(/\r?\n/);
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const headerCells = parseTableRow(lines[index]);
+    if (!headerCells) {
+      continue;
+    }
+
+    const statusColumn = headerCells.indexOf("Status");
+    const workerColumn = headerCells.indexOf("Worker");
+    if (statusColumn === -1 || workerColumn === -1) {
+      continue;
+    }
+
+    const separatorCells = parseTableRow(lines[index + 1]);
+    if (!separatorCells || separatorCells.length !== headerCells.length || !isSeparatorRow(separatorCells)) {
+      continue;
+    }
+
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowCells = parseTableRow(lines[rowIndex]);
+      if (!rowCells || rowCells.length !== headerCells.length) {
+        break;
+      }
+
+      const workerId = rowCells[workerColumn].trim();
+      const status = rowCells[statusColumn].trim();
+      if (workerId.length > 0 && status.length > 0) {
+        statuses.set(workerId, status);
+      }
+    }
+
+    break;
+  }
+
+  return statuses;
 }
 
 function expectedOutputsExist(expectedOutputs: string[]): boolean {

@@ -633,6 +633,46 @@ describe("LifecycleStore", () => {
     expect(markdown).toContain("| ⚠️ ABANDONED | 1 | N-05 | Abandoned row |");
   });
 
+  it("does not downgrade plan ✅ status when lifecycle state regresses to abandoned", async () => {
+    const harness = await createHarness({
+      planTemplate: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ⬜ | 1 | N-01 | Test row |",
+        ""
+      ].join("\n")
+    });
+
+    // First, mark worker as completed so the plan shows ✅
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "trace-111", []);
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:10.000Z"
+    }));
+
+    // Verify plan now shows ✅
+    const planAfterComplete = fs.readFileSync(harness.dispatchPlanPath, "utf8");
+    expect(planAfterComplete).toContain("| ✅ |");
+
+    // Now simulate onRestart setting the worker to abandoned (no hub_result)
+    const state = harness.store.load();
+    state.workers["N-01"] = {
+      ...state.workers["N-01"]!,
+      status: "abandoned",
+      hub_result: null,
+      last_seen_at: "2026-04-03T12:05:00.000Z"
+    };
+    harness.store.save(state);
+
+    // Plan must still show ✅ — syncPlanView must not downgrade it
+    const planAfterAbandoned = fs.readFileSync(harness.dispatchPlanPath, "utf8");
+    expect(planAfterAbandoned).toContain("| ✅ |");
+    expect(planAfterAbandoned).not.toContain("ABANDONED");
+  });
+
   it("syncs a sibling *_dispatch_plan.md file when dispatch_plan.md is not present", async () => {
     const directory = await fsp.mkdtemp(path.join(tmpdir(), "meridian-roles-lifecycle-store-custom-plan-"));
     tempDirectories.add(directory);
