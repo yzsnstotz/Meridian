@@ -159,7 +159,8 @@ export async function executeResumeWorkerAction(
     `resume_worker:${args.action}`,
     {
       clearHubResult: false,
-      incrementRetryCount: args.action === "retry"
+      incrementRetryCount: false,
+      resetRetryCount: args.action === "retry"
     }
   );
 

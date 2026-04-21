@@ -187,6 +187,7 @@ export class LifecycleStore {
     options: {
       clearHubResult?: boolean;
       incrementRetryCount?: boolean;
+      resetRetryCount?: boolean;
     } = {}
   ): void {
     const state = this.load();
@@ -195,13 +196,14 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
+    const baseRetryCount = options.resetRetryCount ? 0 : (worker.retry_count ?? 0);
     const shouldIncrementRetryCount = options.incrementRetryCount === true && status === "pending";
     state.workers[workerId] = {
       ...worker,
       last_seen_at: this.now(),
       status,
       hub_result: options.clearHubResult ? null : worker.hub_result,
-      retry_count: shouldIncrementRetryCount ? (worker.retry_count ?? 0) + 1 : (worker.retry_count ?? 0)
+      retry_count: shouldIncrementRetryCount ? baseRetryCount + 1 : baseRetryCount
     };
 
     this.logTransition(workerId, worker.status, status, trigger);
