@@ -427,6 +427,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
 
     for (const attachment of result.attachments) {
+      if (!attachment.path) {
+        continue;
+      }
       const filename = attachment.filename ?? path.basename(attachment.path);
       await this.sendDocumentWithRetry(
         botToken,

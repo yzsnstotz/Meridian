@@ -7,6 +7,7 @@ import { buildClaudeStreamArgs } from "../agents/claude";
 import { buildCodexExecArgs, buildCodexResumeArgs } from "../agents/codex";
 import { buildGeminiStreamArgs } from "../agents/gemini";
 import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
+import { cleanupStagedAttachments, transformAttachments } from "../shared/attachment-transform";
 import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
 import { shapeHistoryPayload } from "../shared/history-payload";
 import { createClaudeStreamParser } from "../shared/stream-parsers/claude";
@@ -26,6 +27,7 @@ import {
   ThreadProgressSnapshotSchema,
   type AgentInstance,
   type AgentType,
+  type AttachmentResult,
   type FileAttachment,
   type HubMessage,
   type HubResult,
@@ -51,7 +53,11 @@ import {
 interface AgentClient {
   connect: (socketPath: string) => Promise<void>;
   disconnect: () => void;
-  sendMessage: (content: string, attachments: HubMessage["payload"]["attachments"]) => Promise<Record<string, unknown>>;
+  sendMessage: (
+    content: string,
+    attachments: HubMessage["payload"]["attachments"],
+    agentType?: AgentType
+  ) => Promise<Record<string, unknown>>;
   getStatus: () => Promise<Record<string, unknown>>;
   getMessages?: () => Promise<Record<string, unknown>[]>;
 }
@@ -72,6 +78,11 @@ type AgentReplyWaitResult =
       runState: Exclude<HubRunState, "completed">;
       content: string | null;
     };
+
+interface StreamRunResult {
+  content: string;
+  attachmentResults: AttachmentResult[];
+}
 
 interface SessionAttachmentMetadata {
   channel: string;
@@ -139,6 +150,8 @@ const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 const AGENT_ROLES = new Set(["agent", "assistant"]);
 const THREAD_HISTORY_LIMIT = 400;
+const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
+const ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT = 40_000;
 
 function conversationEntryTypeForEventKind(eventKind: ConversationEventKind): "user" | "agent" {
   return eventKind === "user_send" || eventKind === "terminal_input" ? "user" : "agent";
@@ -193,6 +206,71 @@ function buildSummaryProtocolPrompt(traceId: string): string {
 
 function appendSummaryProtocolPrompt(input: string, traceId: string): string {
   return `${input.trimEnd()}\n${buildSummaryProtocolPrompt(traceId)}`;
+}
+
+function appendExtractedAttachments(
+  content: string,
+  attachments: Array<{ filename: string; content?: string; result: AttachmentResult }>
+): { prompt: string; attachmentResults: AttachmentResult[] } {
+  if (attachments.length === 0) {
+    return {
+      prompt: content,
+      attachmentResults: []
+    };
+  }
+
+  let remainingBudget = ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT;
+  const promptSections: string[] = [];
+  const attachmentResults: AttachmentResult[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.result.status === "rejected") {
+      attachmentResults.push(attachment.result);
+      continue;
+    }
+
+    const rawContent = typeof attachment.content === "string" ? attachment.content : "";
+    const remainingForAttachment = Math.min(ATTACHMENT_INLINE_CHAR_LIMIT, Math.max(remainingBudget, 0));
+    if (remainingForAttachment <= 0) {
+      attachmentResults.push({
+        filename: attachment.filename,
+        status: "rejected",
+        reason: "prompt_budget_exceeded"
+      });
+      continue;
+    }
+
+    const truncated = rawContent.length > remainingForAttachment;
+    const inlinedContent = truncated ? rawContent.slice(0, remainingForAttachment) : rawContent;
+    remainingBudget -= inlinedContent.length;
+
+    const attachmentHeader = truncated
+      ? `Attachment ${attachment.filename} (truncated by Meridian attachment transport):`
+      : `Attachment ${attachment.filename}:`;
+    promptSections.push(
+      [attachmentHeader, `\`\`\`${attachment.filename}`, inlinedContent, "```"].join("\n")
+    );
+    attachmentResults.push(
+      truncated
+        ? {
+            ...attachment.result,
+            reason: attachment.result.reason ?? "truncated"
+          }
+        : attachment.result
+    );
+  }
+
+  if (promptSections.length === 0) {
+    return {
+      prompt: content,
+      attachmentResults
+    };
+  }
+
+  return {
+    prompt: `${content}\n\n${promptSections.join("\n\n")}`,
+    attachmentResults
+  };
 }
 
 function parseSummaryTagId(tagText: string): string | null {
@@ -507,8 +585,10 @@ export class HubRouter {
       if (instance.supportsStream) {
         const streamContent = await this.tryHandleStreamRun(message, threadId);
         if (streamContent !== null) {
-          const content = this.formatRunContent(instance.thread_id, streamContent);
-          const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id);
+          const content = this.formatRunContent(instance.thread_id, streamContent.content);
+          const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
+            attachmentResults: streamContent.attachmentResults
+          });
           this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
           return result;
         }
@@ -518,7 +598,8 @@ export class HubRouter {
       clientConnected = true;
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
       const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
-      const response = await client.sendMessage(runContent, message.payload.attachments);
+      const response = await client.sendMessage(runContent, message.payload.attachments, instance.agent_type);
+      const responseAttachmentResults = this.extractAttachmentResults(response);
       this.registry.setStatus(instance.thread_id, "running");
       const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
       const agentReply = await this.waitForAgentReply(client, previousSnapshot, message.trace_id, runLogContext);
@@ -537,14 +618,25 @@ export class HubRouter {
           instance.agent_type,
           content,
           instance.thread_id,
-          { attachments, runState: "completed" }
+          {
+            attachments,
+            attachmentResults: responseAttachmentResults,
+            runState: "completed"
+          }
         );
         this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
         return result;
       }
 
       if (agentReply?.kind === "non_final") {
-        return this.buildPendingRunResult(message, instance.agent_type, instance.thread_id, agentReply.runState, agentReply.content);
+        return this.buildPendingRunResult(
+          message,
+          instance.agent_type,
+          instance.thread_id,
+          agentReply.runState,
+          agentReply.content,
+          responseAttachmentResults
+        );
       }
 
       const fallbackContent = await this.resolveFallbackRunContent(client, response, previousSnapshot);
@@ -561,7 +653,8 @@ export class HubRouter {
           instance.agent_type,
           instance.thread_id,
           runState,
-          fallbackContent === "Agent is processing..." ? null : fallbackContent
+          fallbackContent === "Agent is processing..." ? null : fallbackContent,
+          responseAttachmentResults
         );
       }
 
@@ -573,7 +666,11 @@ export class HubRouter {
         instance.agent_type,
         content,
         instance.thread_id,
-        { attachments, runState: "completed" }
+        {
+          attachments,
+          attachmentResults: responseAttachmentResults,
+          runState: "completed"
+        }
       );
       this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
       return result;
@@ -590,7 +687,7 @@ export class HubRouter {
     }
   }
 
-  private async tryHandleStreamRun(message: HubMessage, threadId: string): Promise<string | null> {
+  private async tryHandleStreamRun(message: HubMessage, threadId: string): Promise<StreamRunResult | null> {
     const maxAttempts = 3;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -623,19 +720,30 @@ export class HubRouter {
     return null;
   }
 
-  private async runStreamAttempt(message: HubMessage, threadId: string): Promise<string> {
+  private async runStreamAttempt(message: HubMessage, threadId: string): Promise<StreamRunResult> {
     const instance = this.resolveInstance(threadId);
-    const args = this.buildStreamArgs(instance);
-    const prompt = this.buildStreamPrompt(message.payload.content, message.payload.attachments);
-    const parser = this.createStreamParser(instance);
-    const { stdout, process } = this.instanceManager.spawnStreamAgent(
-      threadId,
-      instance.agent_type,
-      args,
-      prompt,
-      message.trace_id
+    const transformedAttachments = await transformAttachments(message.payload.attachments ?? [], instance.agent_type);
+    const textAttachments = transformedAttachments.transformed.filter(
+      (attachment): attachment is Extract<(typeof transformedAttachments.transformed)[number], { kind: "text" }> =>
+        attachment.kind === "text"
     );
-    const stderrSummary = this.captureProcessStderr(process);
+    const imageAttachments = transformedAttachments.transformed.filter(
+      (attachment): attachment is Extract<(typeof transformedAttachments.transformed)[number], { kind: "image" }> =>
+        attachment.kind === "image"
+    );
+    const promptWithAttachments = appendExtractedAttachments(message.payload.content, textAttachments);
+    const imagePaths = imageAttachments
+      .map((attachment) => attachment.path)
+      .filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+    const attachmentResults = [
+      ...promptWithAttachments.attachmentResults,
+      ...imageAttachments.map((attachment) => attachment.result),
+      ...transformedAttachments.rejected.map((attachment) => attachment.result)
+    ];
+    const args = this.buildStreamArgs(instance, imagePaths);
+    const prompt = promptWithAttachments.prompt;
+    const parser = this.createStreamParser(instance);
+    let process: ChildProcess | null = null;
     let finalDelta: OutputDelta | null = null;
     let streamedText = "";
     let explicitResultText: string | null = null;
@@ -643,7 +751,17 @@ export class HubRouter {
     this.registry.setStatus(threadId, "running");
 
     try {
-      for await (const delta of streamFromSpawn(stdout, parser)) {
+      const spawnedAgent = this.instanceManager.spawnStreamAgent(
+        threadId,
+        instance.agent_type,
+        args,
+        prompt,
+        message.trace_id
+      );
+      process = spawnedAgent.process;
+      const stderrSummary = this.captureProcessStderr(spawnedAgent.process);
+
+      for await (const delta of streamFromSpawn(spawnedAgent.stdout, parser)) {
         this.outputBus.pushDelta(message.trace_id, delta);
 
         if (typeof delta.text === "string") {
@@ -671,20 +789,30 @@ export class HubRouter {
       }
 
       if (finalDelta.phase === "error") {
-        return finalDelta.text ?? explicitResultText ?? (streamedText || "Task failed.");
+        return {
+          content: finalDelta.text ?? explicitResultText ?? (streamedText || "Task failed."),
+          attachmentResults
+        };
       }
 
-      return explicitResultText ?? (streamedText || "Task completed.");
+      return {
+        content: explicitResultText ?? (streamedText || "Task completed."),
+        attachmentResults
+      };
     } finally {
-      if (process.exitCode === null && process.signalCode === null) {
+      if (process && process.exitCode === null && process.signalCode === null) {
         process.kill();
       }
+      await cleanupStagedAttachments(transformedAttachments.cleanupPaths);
     }
   }
 
-  private buildStreamArgs(instance: AgentInstance): string[] {
+  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = []): string[] {
     if (instance.agent_type === "claude") {
-      return buildClaudeStreamArgs(instance.model_id, instance.auto_approve);
+      return [
+        ...buildClaudeStreamArgs(instance.model_id, instance.auto_approve),
+        ...imagePaths.flatMap((imagePath) => ["--image", imagePath])
+      ];
     }
     if (instance.agent_type === "gemini") {
       return buildGeminiStreamArgs(instance.model_id);
@@ -1607,6 +1735,36 @@ export class HubRouter {
     }
 
     return attachments;
+  }
+
+  private extractAttachmentResults(response: Record<string, unknown>): AttachmentResult[] {
+    const rawAttachmentResults = response.attachment_results;
+    if (!Array.isArray(rawAttachmentResults)) {
+      return [];
+    }
+
+    const attachmentResults: AttachmentResult[] = [];
+    for (const rawAttachmentResult of rawAttachmentResults) {
+      if (!rawAttachmentResult || typeof rawAttachmentResult !== "object") {
+        continue;
+      }
+
+      const candidate = rawAttachmentResult as Record<string, unknown>;
+      const filename = typeof candidate.filename === "string" ? candidate.filename.trim() : "";
+      const status = typeof candidate.status === "string" ? candidate.status.trim() : "";
+      const reason = typeof candidate.reason === "string" ? candidate.reason.trim() : undefined;
+      if (!filename || (status !== "accepted" && status !== "extracted" && status !== "rejected")) {
+        continue;
+      }
+
+      attachmentResults.push({
+        filename,
+        status,
+        ...(reason ? { reason } : {})
+      });
+    }
+
+    return attachmentResults;
   }
 
   private async resolveCompletionContent(client: AgentClient, threadId: string): Promise<string> {
@@ -2929,7 +3087,8 @@ export class HubRouter {
     source: AgentType,
     threadId: string,
     runState: Exclude<HubRunState, "completed">,
-    fallbackContent: string | null
+    fallbackContent: string | null,
+    attachmentResults: AttachmentResult[] = []
   ): HubResult {
     this.log.warn(
       {
@@ -2954,6 +3113,7 @@ export class HubRouter {
       content: progress.content,
       progress,
       attachments: [],
+      attachment_results: attachmentResults.length > 0 ? attachmentResults : undefined,
       timestamp: progress.updated_at
     });
   }
@@ -3003,6 +3163,7 @@ export class HubRouter {
     threadIdOverride?: string,
     options?: {
       attachments?: FileAttachment[];
+      attachmentResults?: AttachmentResult[];
       telegramInlineKeyboard?: HubResult["telegram_inline_keyboard"];
       runState?: HubResult["run_state"];
     }
@@ -3015,6 +3176,7 @@ export class HubRouter {
       run_state: options?.runState,
       content,
       attachments: options?.attachments ?? [],
+      attachment_results: options?.attachmentResults?.length ? options.attachmentResults : undefined,
       telegram_inline_keyboard: options?.telegramInlineKeyboard,
       timestamp: this.now().toISOString()
     });

@@ -77,12 +77,34 @@ export const ThreadProgressSnapshotSchema = z.object({
 });
 export type ThreadProgressSnapshot = z.infer<typeof ThreadProgressSnapshotSchema>;
 
-export const FileAttachmentSchema = z.object({
-  path: z.string().min(1),
-  filename: z.string().min(1).optional(),
-  mime_type: z.string().min(1).optional()
-});
+export const FileAttachmentSchema = z
+  .object({
+    path: z.string().min(1).optional(),
+    filename: z.string().min(1).optional(),
+    mime_type: z.string().min(1).optional(),
+    content_base64: z.string().min(1).optional(),
+    content_text: z.string().optional()
+  })
+  .refine(
+    (attachment) =>
+      Boolean(attachment.path?.trim()) ||
+      Boolean(attachment.content_base64?.trim()) ||
+      typeof attachment.content_text === "string",
+    {
+      message: "attachments require path, content_base64, or content_text"
+    }
+  );
 export type FileAttachment = z.infer<typeof FileAttachmentSchema>;
+
+export const AttachmentResultStatusSchema = z.enum(["accepted", "extracted", "rejected"]);
+export type AttachmentResultStatus = z.infer<typeof AttachmentResultStatusSchema>;
+
+export const AttachmentResultSchema = z.object({
+  filename: z.string().min(1),
+  status: AttachmentResultStatusSchema,
+  reason: z.string().min(1).optional()
+});
+export type AttachmentResult = z.infer<typeof AttachmentResultSchema>;
 
 export const TelegramInlineButtonSchema = z
   .object({
@@ -183,6 +205,7 @@ export const HubResultSchema = z.object({
   details_text: z.string().optional(),
   progress: ThreadProgressSnapshotSchema.optional(),
   attachments: z.array(FileAttachmentSchema).default([]),
+  attachment_results: z.array(AttachmentResultSchema).optional(),
   telegram_inline_keyboard: TelegramInlineKeyboardSchema.optional(),
   timestamp: z.string().datetime()
 });

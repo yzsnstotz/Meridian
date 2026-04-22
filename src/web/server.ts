@@ -11,6 +11,7 @@ import { config } from "../config";
 import { requestHubMessage, requestHubRunMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
+import { cleanupStagedAttachments, stageInlineAttachments } from "../shared/attachment-transform";
 import { getProviderCapabilities, listProviderCapabilities } from "../shared/provider-capabilities";
 import {
   ProviderModelCatalog as SharedProviderModelCatalog,
@@ -864,20 +865,29 @@ export class WebInterfaceServer {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = runRequestBodySchema.parse(await this.readJsonBody(request));
     const threadSelector = normalizeThreadSelector(body.thread_id);
-    const result = HubResultSchema.parse(
-      await this.requestHubRun(
-        this.buildHubMessage({
-          sessionId,
-          intent: "run",
-          thread_id: threadSelector.thread_id,
-          target: threadSelector.target,
-          content: body.content,
-          attachments: body.attachments
-        })
-      )
-    );
+    const stagedAttachments = await stageInlineAttachments(body.attachments);
 
-    this.respondJson(response, 200, result);
+    try {
+      const result = HubResultSchema.parse(
+        await this.requestHubRun(
+          this.buildHubMessage({
+            sessionId,
+            intent: "run",
+            thread_id: threadSelector.thread_id,
+            target: threadSelector.target,
+            content: body.content,
+            attachments: stagedAttachments.attachments
+          })
+        )
+      );
+
+      this.respondJson(response, 200, {
+        ...result,
+        attachment_results: result.attachment_results ?? []
+      });
+    } finally {
+      await cleanupStagedAttachments(stagedAttachments.cleanupPaths);
+    }
   }
 
   private async handleThreadActionRequest(
