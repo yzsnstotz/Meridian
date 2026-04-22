@@ -319,7 +319,8 @@ describe("reconcile", () => {
       workers: {
         "N-02": {
           ...buildRunningWorker("worker-thread-111", path.join(harness.directory, "done.md")),
-          status: "completed"
+          status: "completed",
+          hub_result: buildTerminalSuccessResult("worker-thread-111")
         }
       }
     }));
@@ -335,6 +336,59 @@ describe("reconcile", () => {
       changed: [],
       unchanged: [DISPATCHER_ENTRY_ID, "N-02"]
     });
+  });
+
+  it("recovers hub_result for completed workers that are missing it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-03": {
+          ...buildRunningWorker("worker-thread-333", path.join(harness.directory, "missing-R-03.md")),
+          status: "completed",
+          hub_result: null
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if ((message as HubMessage).intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "claude",
+            content: "R-03 completed. All assertions passed.",
+            raw_content: "# R-03 Completion Report\n\n**Status**: PASS",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            timestamp: "2026-04-03T12:25:00.000Z"
+          }
+        ]);
+      }
+      return buildStatusResult(message.thread_id, "completed");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextState = harness.store.load();
+
+    expect(nextState.workers["R-03"]?.status).toBe("completed");
+    expect(nextState.workers["R-03"]?.hub_result).not.toBeNull();
+    expect(nextState.workers["R-03"]?.hub_result?.content).toContain("R-03 Completion Report");
+    expect(sendRequest.mock.calls.map(([message]) => ({
+      thread_id: (message as HubMessage).thread_id,
+      intent: (message as HubMessage).intent
+    }))).toEqual([
+      { thread_id: "worker-thread-333", intent: "history" }
+    ]);
+    expect(report.changed).toEqual([
+      {
+        workerId: "R-03",
+        from: "completed",
+        to: "completed",
+        trigger: "hub_result_recovery:completed_without_result"
+      }
+    ]);
   });
 
   it("marks the dispatcher abandoned when its thread is missing", async () => {
@@ -385,7 +439,8 @@ describe("reconcile", () => {
         "R-03": buildRunningWorker("worker-thread-333", path.join(harness.directory, "missing-R-03.md")),
         "R-04": {
           ...buildRunningWorker("worker-thread-444", path.join(harness.directory, "done-R-04.md")),
-          status: "completed"
+          status: "completed",
+          hub_result: buildTerminalSuccessResult("worker-thread-444")
         }
       }
     }));

@@ -159,6 +159,41 @@ export async function reconcile(
     });
   }
 
+  // Recover missing hub_results for workers that were marked completed by
+  // onRestart (via plan evidence such as a merged PR) before the run tool
+  // could record the hub_result. Without this pass, the hub_result is
+  // permanently lost because the main loop above only processes "running"
+  // and "abandoned" workers.
+  // Skip workers that were just transitioned in the main loop — their null
+  // hub_result is expected (they completed via output/observation evidence).
+  const justReconciledWorkerIds = new Set(report.changed.map((change) => change.workerId));
+  for (const [workerId, worker] of Object.entries(state.workers)) {
+    if (worker.status !== "completed" || worker.hub_result !== null || justReconciledWorkerIds.has(workerId)) {
+      continue;
+    }
+
+    const recoveredHubResult = await recoverHubResultFromHistory(
+      hubClient,
+      worker.thread_id,
+      worker.trace_id,
+      worker.started_at
+    );
+    if (recoveredHubResult) {
+      state.workers[workerId] = {
+        ...worker,
+        hub_result: recoveredHubResult,
+        trace_id: recoveredHubResult.trace_id || worker.trace_id,
+        last_seen_at: recoveredHubResult.timestamp ?? worker.last_seen_at
+      };
+      report.changed.push({
+        workerId,
+        from: "completed",
+        to: "completed",
+        trigger: "hub_result_recovery:completed_without_result"
+      });
+    }
+  }
+
   // Re-read the fresh state before saving to avoid overwriting concurrent writes
   // from the run tool (fire-and-forget worker completions that landed between our
   // initial load and now). We merge only the reconciler's status transitions into
