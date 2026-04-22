@@ -8,7 +8,8 @@ import {
   LifecycleStore,
   hubResultContainsHitLimit,
   hubResultContainsInlineReport,
-  isExplicitCompletionContent
+  isExplicitCompletionContent,
+  isNonCompletionContent
 } from "./lifecycle-store";
 import { isMissingThreadEvidence } from "./missing-thread";
 
@@ -298,6 +299,13 @@ function determineWorkerTransition(
   // finished.
   const trustIdleAsTerminal = hubResult !== null;
 
+  // Worker output contains BLOCKED or PAUSE markers — the worker explicitly
+  // signalled that its task cannot proceed. Do not auto-complete regardless of
+  // thread observation, outputs, or inline reports.
+  if (hubResult && isNonCompletionContent(hubResult.content)) {
+    return null;
+  }
+
   if (observation.kind === "completed" && outputsPresent) {
     return {
       to: "completed",
@@ -432,6 +440,13 @@ function determineRecordedResultTransition(
       to: "failed",
       trigger: "hub_result:hit_limit"
     };
+  }
+
+  // Worker output contains BLOCKED or PAUSE markers — the worker explicitly
+  // signalled that its task cannot proceed. Do not transition to "completed"
+  // regardless of other evidence (outputs, inline reports, success status).
+  if (isNonCompletionContent(hubResult.content)) {
+    return null;
   }
 
   if (hubResult.status === "success" && (!hubResult.run_state || hubResult.run_state === "completed")) {

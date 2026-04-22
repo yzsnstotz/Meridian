@@ -1045,6 +1045,70 @@ describe("reconcile", () => {
     );
     expect(harness.store.load().workers["N-02"]?.status).toBe("abandoned");
   });
+
+  it("does not auto-complete a worker whose hub_result contains a BLOCKED marker", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/PRE-FLIGHT.md");
+    const blockedWorker = buildRunningWorker("worker-thread-blocked", outputPath);
+    blockedWorker.hub_result = {
+      trace_id: "88888888-8888-4888-8888-888888888888",
+      thread_id: "worker-thread-blocked",
+      source: "codex",
+      status: "success",
+      run_state: "completed",
+      content: "Status: ⛔ BLOCKED\n\nBaseline test suite is failing on main.",
+      attachments: [],
+      timestamp: FIXED_NOW
+    };
+
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": blockedWorker
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("running");
+    expect(report.unchanged).toContain("PRE-FLIGHT");
+  });
+
+  it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/WORKER.md");
+    const pausedWorker = buildRunningWorker("worker-thread-paused", outputPath);
+    pausedWorker.hub_result = {
+      trace_id: "99999999-9999-4999-8999-999999999999",
+      thread_id: "worker-thread-paused",
+      source: "codex",
+      status: "success",
+      run_state: "completed",
+      content: "⏸ PAUSE — waiting for upstream dependency to be resolved.",
+      attachments: [],
+      timestamp: FIXED_NOW
+    };
+
+    harness.store.save(buildState({
+      workers: {
+        "N-05": pausedWorker
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-05"]?.status).toBe("running");
+    expect(report.unchanged).toContain("N-05");
+  });
 });
 
 async function createHarness() {

@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, isNonCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { LifecycleStatus } from "../../types";
 import killTool from "./kill";
 import { executeUpdateWorkerStatusAction, updateWorkerStatusInMarkdown } from "./update-status";
@@ -130,6 +130,13 @@ export async function executeResumeWorkerAction(
 
   if (args.action === "force-complete" && !args.force) {
     throw new Error("force-complete requires force=true");
+  }
+
+  if (args.action === "force-complete" && worker?.hub_result && isNonCompletionContent(worker.hub_result.content ?? "")) {
+    throw new Error(
+      `Cannot force-complete worker "${args.workerId}": worker output contains a BLOCKED or PAUSE marker. ` +
+      "Resolve the blocker first, then retry the worker."
+    );
   }
 
   if (!worker) {
