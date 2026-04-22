@@ -204,6 +204,77 @@ test("spawn stores auto_approve in the registry when requested", async () => {
   await manager.kill(threadId);
 });
 
+test("spawn stores integration_profile and sandbox_mode on the registry instance", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1104) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn(
+    "codex",
+    "bridge",
+    undefined,
+    undefined,
+    false,
+    undefined,
+    null,
+    "ads_public",
+    "read-only"
+  );
+
+  assert.equal(threadId, "codex_01");
+  assert.equal(registry.get(threadId)?.integration_profile, "ads_public");
+  assert.equal(registry.get(threadId)?.sandbox_mode, "read-only");
+  assert.deepEqual(spawnCalls[0], [
+    "server",
+    "--type=codex",
+    `--socket=${socketPathForThread(threadId)}`,
+    "--",
+    "codex",
+    "--sandbox",
+    "read-only"
+  ]);
+
+  await manager.kill(threadId);
+});
+
+test("spawn rejects unsupported providers for read-only sandbox mode", async () => {
+  const registry = new InstanceRegistry();
+  let spawnCalls = 0;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => {
+      spawnCalls += 1;
+      return new FakeChildProcess(1105) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  await assert.rejects(
+    async () => await manager.spawn("gemini", "bridge", undefined, undefined, false, undefined, null, "ads_public", "read-only"),
+    /Agent type does not support read-only sandbox mode/
+  );
+  assert.equal(spawnCalls, 0);
+});
+
 test("spawn claude bridge includes --allowedTools args", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];

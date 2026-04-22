@@ -39,6 +39,12 @@ export type BridgeMode = z.infer<typeof BridgeModeSchema>;
 export const AgentTypeSchema = z.enum(["claude", "codex", "gemini", "cursor"]);
 export type AgentType = z.infer<typeof AgentTypeSchema>;
 
+export const IntegrationProfileSchema = z.enum(["ads_public"]);
+export type IntegrationProfile = z.infer<typeof IntegrationProfileSchema>;
+
+export const SandboxModeSchema = z.enum(["read-only", "workspace-write"]);
+export type SandboxMode = z.infer<typeof SandboxModeSchema>;
+
 export const ReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 
@@ -131,6 +137,8 @@ export const HubPayloadSchema = z.object({
   model_id: z.string().min(1).optional(),
   effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().optional(),
+  integration_profile: IntegrationProfileSchema.optional(),
+  sandbox_mode: SandboxModeSchema.optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   history_limit: z.number().int().positive().optional(),
@@ -226,6 +234,8 @@ export const AgentInstanceSchema = z.object({
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),
   auto_approve: z.boolean().default(true),
+  integration_profile: z.string().min(1).optional(),
+  sandbox_mode: SandboxModeSchema.optional(),
   /** Hub request trace that created or last correlated this instance (observability only). */
   spawn_trace_id: z.string().nullable().optional()
 });
@@ -275,6 +285,20 @@ export const ProviderModelCatalogSchema = z.object({
   models: z.array(ProviderModelSchema)
 });
 export type ProviderModelCatalog = z.infer<typeof ProviderModelCatalogSchema>;
+
+export const ProviderCapabilitySchema = z.object({
+  agent_type: AgentTypeSchema,
+  supports_ads_safe: z.boolean(),
+  supports_read_only: z.boolean(),
+  supports_images: z.boolean(),
+  supports_text_files: z.boolean(),
+  supports_pdf: z.boolean(),
+  supports_stream_safe: z.boolean()
+});
+export type ProviderCapability = z.infer<typeof ProviderCapabilitySchema>;
+
+export const ProviderCapabilityListSchema = z.array(ProviderCapabilitySchema);
+export type ProviderCapabilityList = z.infer<typeof ProviderCapabilityListSchema>;
 
 export const ServiceEndpointSchema = z.object({
   service: z.string().min(1).optional(),

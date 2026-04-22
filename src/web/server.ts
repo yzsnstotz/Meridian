@@ -11,6 +11,7 @@ import { config } from "../config";
 import { requestHubMessage, requestHubRunMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
+import { getProviderCapabilities, listProviderCapabilities } from "../shared/provider-capabilities";
 import {
   ProviderModelCatalog as SharedProviderModelCatalog,
   type ProviderModelCatalogResult
@@ -21,16 +22,22 @@ import {
   FileAttachmentSchema,
   HubMessageSchema,
   HubResultSchema,
+  IntegrationProfileSchema,
   PaneOutputChunkSchema,
   PaneOutputNotAvailableSchema,
+  ProviderCapabilityListSchema,
+  ProviderCapabilitySchema,
   ReasoningEffortSchema,
+  SandboxModeSchema,
   ThreadProgressSnapshotSchema,
   type AgentType,
   type FileAttachment,
   type HubMessage,
   type HubResult,
+  type IntegrationProfile,
   type Intent,
-  type ReasoningEffort
+  type ReasoningEffort,
+  type SandboxMode
 } from "../types";
 
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -56,6 +63,8 @@ const spawnRequestBodySchema = z.object({
   model_id: z.string().min(1).optional(),
   effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().default(true),
+  integration_profile: IntegrationProfileSchema.optional(),
+  sandbox_mode: SandboxModeSchema.optional(),
   /** Subdirectory name under `config.AGENT_WORKDIR` (GUI picker). */
   repo: z.string().optional(),
   /**
@@ -708,6 +717,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/capabilities" && request.method === "GET") {
+      await this.handleCapabilitiesRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/capture_interval" && request.method === "GET") {
       await this.handleGetCaptureInterval(request, response);
       return;
@@ -908,6 +922,10 @@ export class WebInterfaceServer {
   private async handleSpawnRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = spawnRequestBodySchema.parse(await this.readJsonBody(request));
+    const isAdsPublicProfile = body.integration_profile === "ads_public";
+    const mode = isAdsPublicProfile ? "bridge" : body.mode;
+    const autoApprove = isAdsPublicProfile ? false : body.auto_approve;
+    const sandboxMode = isAdsPublicProfile ? "read-only" : body.sandbox_mode;
     const hostHeader = request.headers.host;
     let spawnDir: string | undefined;
     try {
@@ -925,12 +943,14 @@ export class WebInterfaceServer {
           thread_id: "pending",
           target: body.provider ?? body.type,
           content: "",
-          mode: body.mode,
-          autoApprove: body.auto_approve,
+          mode,
+          autoApprove,
           guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined,
           spawnDir,
           modelId: body.model_id?.trim(),
-          effort: body.effort
+          effort: body.effort,
+          integrationProfile: body.integration_profile,
+          sandboxMode
         })
       )
     );
@@ -1251,6 +1271,28 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, result);
+  }
+
+  private async handleCapabilitiesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    this.resolveSessionId(request, requestUrl, response);
+    const rawType = requestUrl.searchParams.get("type");
+
+    if (rawType) {
+      const agentType = AgentTypeSchema.parse(rawType);
+      try {
+        this.respondJson(response, 200, ProviderCapabilitySchema.parse(getProviderCapabilities(agentType)));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("No provider capabilities configured")) {
+          this.respondJson(response, 404, { error: error.message });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    this.respondJson(response, 200, ProviderCapabilityListSchema.parse(listProviderCapabilities()));
   }
 
   private async handlePushToggleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -1665,6 +1707,8 @@ export class WebInterfaceServer {
     spawnDir?: string;
     modelId?: string;
     effort?: ReasoningEffort;
+    integrationProfile?: IntegrationProfile;
+    sandboxMode?: SandboxMode;
     historyLimit?: number;
     historyMaxContentChars?: number;
     historyMaxDetailChars?: number;
@@ -1685,6 +1729,8 @@ export class WebInterfaceServer {
         ...(params.spawnDir && { spawn_dir: params.spawnDir }),
         ...(params.modelId && { model_id: params.modelId }),
         ...(params.effort && { effort: params.effort }),
+        ...(params.integrationProfile && { integration_profile: params.integrationProfile }),
+        ...(params.sandboxMode && { sandbox_mode: params.sandboxMode }),
         ...(params.historyLimit !== undefined && { history_limit: params.historyLimit }),
         ...(params.historyMaxContentChars !== undefined && { history_max_content_chars: params.historyMaxContentChars }),
         ...(params.historyMaxDetailChars !== undefined && { history_max_detail_chars: params.historyMaxDetailChars }),

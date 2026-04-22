@@ -691,8 +691,19 @@ export class HubRouter {
     }
     if (instance.agent_type === "codex") {
       return instance.codexSessionId
-        ? buildCodexResumeArgs(instance.codexSessionId, instance.model_id, instance.auto_approve, instance.reasoning_effort)
-        : buildCodexExecArgs(instance.model_id, instance.auto_approve, instance.reasoning_effort);
+        ? buildCodexResumeArgs(
+            instance.codexSessionId,
+            instance.model_id,
+            instance.auto_approve,
+            instance.reasoning_effort,
+            instance.sandbox_mode
+          )
+        : buildCodexExecArgs(
+            instance.model_id,
+            instance.auto_approve,
+            instance.reasoning_effort,
+            instance.sandbox_mode
+          );
     }
 
     throw new Error(`Direct streaming is not supported for agent_type=${instance.agent_type}`);
@@ -792,6 +803,10 @@ export class HubRouter {
   private handleTerminalInput(message: HubMessage): HubResult {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
+    const blockedResult = this.blockAdsPublicAction(message, instance);
+    if (blockedResult) {
+      return blockedResult;
+    }
     const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
     if (message.payload.content?.trim()) {
       this.recordUserConversationEntry(threadId, message.payload.content.trim(), message.trace_id, "terminal_input");
@@ -879,6 +894,8 @@ export class HubRouter {
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
     const modelId = message.payload.model_id?.trim() || undefined;
     const reasoningEffort = message.payload.effort;
+    const integrationProfile = message.payload.integration_profile;
+    const sandboxMode = message.payload.sandbox_mode;
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
@@ -886,7 +903,9 @@ export class HubRouter {
       modelId,
       message.payload.auto_approve,
       reasoningEffort,
-      message.trace_id
+      message.trace_id,
+      integrationProfile,
+      sandboxMode
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
@@ -1452,6 +1471,19 @@ export class HubRouter {
     return this.registry.get(threadId);
   }
 
+  private blockAdsPublicAction(message: HubMessage, instance: AgentInstance): HubResult | null {
+    if (instance.integration_profile !== "ads_public") {
+      return null;
+    }
+    return this.buildResult(
+      message,
+      "error",
+      instance.agent_type,
+      "action blocked for ADS public sessions",
+      instance.thread_id
+    );
+  }
+
   sendAutoApproveTerminalInput(threadId: string): void {
     try {
       this.instanceManager.sendTerminalInput(threadId, "all");
@@ -1851,6 +1883,10 @@ export class HubRouter {
   private handleSetAutoApprove(message: HubMessage): HubResult {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
+    const blockedResult = this.blockAdsPublicAction(message, instance);
+    if (blockedResult) {
+      return blockedResult;
+    }
     const value = message.payload.content.trim().toLowerCase() === "true";
     const updated = this.registry.setAutoApprove(threadId, value);
     if (!updated) {
