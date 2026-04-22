@@ -33,7 +33,8 @@ export const DEFAULT_RECONCILE_STALE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DISPATCHER_ENTRY_ID = "dispatcher";
 export const reconciliationFs = {
   existsSync: fs.existsSync,
-  statSync: fs.statSync
+  statSync: fs.statSync,
+  readdirSync: fs.readdirSync
 };
 
 type ReconciliationHubClient = {
@@ -885,17 +886,50 @@ function outputsExist(paths: string[]): boolean {
     return false;
   }
 
-  return paths.every((filePath) => {
-    if (!reconciliationFs.existsSync(filePath)) {
-      return false;
+  return paths.every((filePath) => fileExistsWithSize(filePath) || fileExistsInSubdirectory(filePath));
+}
+
+function fileExistsWithSize(filePath: string): boolean {
+  if (!reconciliationFs.existsSync(filePath)) {
+    return false;
+  }
+
+  try {
+    return reconciliationFs.statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * When the exact expected output path does not exist, search immediate
+ * subdirectories of the parent for the same basename. This handles dispatch
+ * plans that organise reports into round subdirectories (e.g.
+ * `dev_history/v1_round/N-07_report.md`) when the derived expected path
+ * only contains the parent (`dev_history/N-07_report.md`).
+ */
+function fileExistsInSubdirectory(filePath: string): boolean {
+  const directory = path.dirname(filePath);
+  const basename = path.basename(filePath);
+
+  let entries: fs.Dirent[];
+  try {
+    entries = reconciliationFs.readdirSync(directory, { withFileTypes: true }) as fs.Dirent[];
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
     }
 
-    try {
-      return reconciliationFs.statSync(filePath).size > 0;
-    } catch {
-      return false;
+    if (fileExistsWithSize(path.join(directory, entry.name, basename))) {
+      return true;
     }
-  });
+  }
+
+  return false;
 }
 
 function reportedOutputsExist(hubResult: HubResult): boolean {
