@@ -80,10 +80,14 @@ const updateStatusTool: ToolDefinition = {
     try {
       const normalizedStatus = parseRequestedStatus(requestedStatus);
       const workerThreadId = requireParam(params.thread_id);
-      const lifecycleUpdated = await syncWorkerLifecycleState(planPath, worker, normalizedStatus, workerThreadId);
-      if (!lifecycleUpdated) {
-        const markdown = await fs.readFile(planPath, "utf8");
-        const updated = updateWorkerStatusInMarkdown(markdown, worker, normalizedStatus);
+      await syncWorkerLifecycleState(planPath, worker, normalizedStatus, workerThreadId);
+
+      // Always update the plan markdown directly. The lifecycle store's
+      // syncPlanView guard prevents overwriting terminal-success statuses
+      // (✅, ⛔ SKIPPED), but an explicit status change must be reflected.
+      const markdown = await fs.readFile(planPath, "utf8");
+      const updated = updateWorkerStatusInMarkdown(markdown, worker, normalizedStatus);
+      if (updated !== markdown) {
         await fs.writeFile(planPath, updated, "utf8");
       }
       return {
@@ -124,15 +128,20 @@ export async function executeUpdateWorkerStatusAction(
   const lifecycleUpdated = await syncWorkerLifecycleState(args.planPath, args.workerId, normalizedStatus, threadId);
   let resolvedThreadId = threadId;
 
-  if (!lifecycleUpdated) {
-    const markdown = await fs.readFile(args.planPath, "utf8");
-    const updated = updateWorkerStatusInMarkdown(markdown, args.workerId, normalizedStatus);
-    await fs.writeFile(args.planPath, updated, "utf8");
-  } else {
+  if (lifecycleUpdated) {
     const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(args.planPath), {
       dispatchPlanPath: args.planPath
     });
     resolvedThreadId = lifecycleStore.load().workers[args.workerId]?.thread_id ?? threadId;
+  }
+
+  // Always update the plan markdown directly. The lifecycle store's
+  // syncPlanView guard prevents overwriting terminal-success statuses
+  // (✅, ⛔ SKIPPED), but an explicit status change must be reflected.
+  const markdown = await fs.readFile(args.planPath, "utf8");
+  const updated = updateWorkerStatusInMarkdown(markdown, args.workerId, normalizedStatus);
+  if (updated !== markdown) {
+    await fs.writeFile(args.planPath, updated, "utf8");
   }
 
   return {

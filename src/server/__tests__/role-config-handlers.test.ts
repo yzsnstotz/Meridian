@@ -1740,7 +1740,9 @@ describe("role config handlers", () => {
       });
 
       expect(lifecycleStore.load().workers["N-04"]?.status).toBe("pending");
-      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ✅ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |");
+      // Explicit status changes must override the terminal-success guard so
+      // that completed workers can be redone from both the GUI and the CLI.
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
