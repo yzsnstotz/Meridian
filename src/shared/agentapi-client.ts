@@ -4,7 +4,8 @@ import { Readable } from "node:stream";
 import { EventSource } from "eventsource";
 
 import { createLogger } from "../logger";
-import type { FileAttachment } from "../types";
+import { cleanupStagedAttachments, transformAttachments } from "./attachment-transform";
+import type { AgentType, AttachmentResult, FileAttachment } from "../types";
 
 type HttpMethod = "GET" | "POST";
 
@@ -96,6 +97,91 @@ const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_BASE_RECONNECT_DELAY_MS = 500;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 10_000;
 const EVENTS_URL = "http://agentapi/events";
+const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
+const ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT = 40_000;
+
+function appendExtractedAttachments(
+  content: string,
+  attachments: Array<{ filename: string; content?: string; result: AttachmentResult }>
+): { messageContent: string; attachmentResults: AttachmentResult[] } {
+  if (attachments.length === 0) {
+    return {
+      messageContent: content,
+      attachmentResults: []
+    };
+  }
+
+  let remainingBudget = ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT;
+  const sections: string[] = [];
+  const attachmentResults: AttachmentResult[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.result.status === "rejected") {
+      attachmentResults.push(attachment.result);
+      continue;
+    }
+
+    const rawContent = typeof attachment.content === "string" ? attachment.content : "";
+    const remainingForAttachment = Math.min(ATTACHMENT_INLINE_CHAR_LIMIT, Math.max(remainingBudget, 0));
+    if (remainingForAttachment <= 0) {
+      attachmentResults.push({
+        filename: attachment.filename,
+        status: "rejected",
+        reason: "prompt_budget_exceeded"
+      });
+      continue;
+    }
+
+    const truncated = rawContent.length > remainingForAttachment;
+    const inlinedContent = truncated ? rawContent.slice(0, remainingForAttachment) : rawContent;
+    remainingBudget -= inlinedContent.length;
+
+    sections.push(
+      [
+        truncated
+          ? `Attachment ${attachment.filename} (truncated by Meridian attachment transport):`
+          : `Attachment ${attachment.filename}:`,
+        `\`\`\`${attachment.filename}`,
+        inlinedContent,
+        "```"
+      ].join("\n")
+    );
+    attachmentResults.push(
+      truncated
+        ? {
+            ...attachment.result,
+            reason: attachment.result.reason ?? "truncated"
+          }
+        : attachment.result
+    );
+  }
+
+  if (sections.length === 0) {
+    return {
+      messageContent: content,
+      attachmentResults
+    };
+  }
+
+  return {
+    messageContent: `${content}\n\n${sections.join("\n\n")}`,
+    attachmentResults
+  };
+}
+
+function withAttachmentResults(
+  response: AgentMessageResponse,
+  attachmentResults: AttachmentResult[]
+): AgentMessageResponse {
+  if (attachmentResults.length === 0) {
+    return response;
+  }
+
+  return {
+    ...response,
+    attachment_results: attachmentResults
+  };
+}
 
 export class AgentAPIClient {
   private endpoint: AgentEndpoint | null = null;
@@ -142,50 +228,76 @@ export class AgentAPIClient {
     this.threadId = threadId;
   }
 
-  async sendMessage(content: string, attachments: FileAttachment[] = []): Promise<AgentMessageResponse> {
-    const attachmentNotice =
-      attachments.length > 0
-        ? `\n\n[attachments omitted by transport: ${attachments
-            .map((item) => item.filename || item.path)
-            .join(", ")}]`
-        : "";
-    const messageContent = `${content}${attachmentNotice}`;
+  async sendMessage(
+    content: string,
+    attachments: FileAttachment[] = [],
+    agentType: AgentType = "codex"
+  ): Promise<AgentMessageResponse> {
+    const transformedAttachments = await transformAttachments(attachments, agentType);
+    const textAttachments = transformedAttachments.transformed.filter(
+      (attachment): attachment is Extract<(typeof transformedAttachments.transformed)[number], { kind: "text" }> =>
+        attachment.kind === "text"
+    );
+    const transportRejectedAttachments = transformedAttachments.transformed
+      .filter((attachment): attachment is Extract<(typeof transformedAttachments.transformed)[number], { kind: "image" }> =>
+        attachment.kind === "image"
+      )
+      .map((attachment) => ({
+        filename: attachment.filename,
+        result: {
+          filename: attachment.filename,
+          status: "rejected" as const,
+          reason: "unsupported_transport"
+        }
+      }));
+    const preparedMessage = appendExtractedAttachments(content, [
+      ...textAttachments,
+      ...transportRejectedAttachments,
+      ...transformedAttachments.rejected.map((attachment) => ({
+        filename: attachment.filename,
+        result: attachment.result
+      }))
+    ]);
 
     try {
-      const response = await this.requestJson("/message", "POST", {
-        content: messageContent,
-        type: "user"
-      });
+      try {
+        const response = await this.requestJson("/message", "POST", {
+          content: preparedMessage.messageContent,
+          type: "user"
+        });
 
-      if (response && typeof response === "object") {
-        return response as AgentMessageResponse;
+        if (response && typeof response === "object") {
+          return withAttachmentResults(response as AgentMessageResponse, preparedMessage.attachmentResults);
+        }
+      } catch (error) {
+        const summary = error instanceof Error ? error.message : String(error);
+        const shouldFallbackToRaw =
+          summary.includes("HTTP 422 returned for POST /message") ||
+          summary.includes("HTTP 500 returned for POST /message") ||
+          summary.includes("failed to wait for screen to stabilize");
+
+        if (!shouldFallbackToRaw) {
+          throw error;
+        }
+
+        const fallbackResponse = await this.requestJson("/message", "POST", {
+          content: `${preparedMessage.messageContent}\n`,
+          type: "raw"
+        });
+        if (fallbackResponse && typeof fallbackResponse === "object") {
+          return withAttachmentResults(fallbackResponse as AgentMessageResponse, preparedMessage.attachmentResults);
+        }
+
+        throw this.withContext(
+          "POST /message fallback returned invalid payload",
+          new Error("response is not a JSON object")
+        );
       }
-    } catch (error) {
-      const summary = error instanceof Error ? error.message : String(error);
-      const shouldFallbackToRaw =
-        summary.includes("HTTP 422 returned for POST /message") ||
-        summary.includes("HTTP 500 returned for POST /message") ||
-        summary.includes("failed to wait for screen to stabilize");
 
-      if (!shouldFallbackToRaw) {
-        throw error;
-      }
-
-      const fallbackResponse = await this.requestJson("/message", "POST", {
-        content: `${messageContent}\n`,
-        type: "raw"
-      });
-      if (fallbackResponse && typeof fallbackResponse === "object") {
-        return fallbackResponse as AgentMessageResponse;
-      }
-
-      throw this.withContext(
-        "POST /message fallback returned invalid payload",
-        new Error("response is not a JSON object")
-      );
+      throw this.withContext("POST /message returned invalid payload", new Error("response is not a JSON object"));
+    } finally {
+      await cleanupStagedAttachments(transformedAttachments.cleanupPaths);
     }
-
-    throw this.withContext("POST /message returned invalid payload", new Error("response is not a JSON object"));
   }
 
   async getStatus(): Promise<AgentStatus> {
