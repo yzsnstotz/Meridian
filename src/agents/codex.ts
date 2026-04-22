@@ -42,22 +42,22 @@ export function buildCodexSpawnArgs(
   return args;
 }
 
-export function buildCodexExecArgs(modelId?: string, autoApprove?: boolean, reasoningEffort?: ReasoningEffort): string[] {
+export function buildCodexExecArgs(modelId?: string, _autoApprove?: boolean, reasoningEffort?: ReasoningEffort): string[] {
   const args = [codexAgentConfig.command, "exec", "--json"];
   appendReasoningEffortConfig(args, reasoningEffort);
   if (modelId) {
     args.push("--model", modelId);
   }
-  if (autoApprove === true) {
-    args.push("--dangerously-bypass-approvals-and-sandbox");
-  }
+  // codex exec --json is always headless (stdin/stdout); it cannot prompt for
+  // approvals and will reject untrusted directories without this flag.
+  args.push("--dangerously-bypass-approvals-and-sandbox");
   return args;
 }
 
 export function buildCodexResumeArgs(
   sessionId: string,
   modelId?: string,
-  autoApprove?: boolean,
+  _autoApprove?: boolean,
   reasoningEffort?: ReasoningEffort
 ): string[] {
   const args = [codexAgentConfig.command, "exec", "resume", sessionId, "--json"];
@@ -65,8 +65,7 @@ export function buildCodexResumeArgs(
   if (modelId) {
     args.push("--model", modelId);
   }
-  if (autoApprove === true) {
-    args.push("--dangerously-bypass-approvals-and-sandbox");
-  }
+  // Same as buildCodexExecArgs: headless exec always needs the bypass flag.
+  args.push("--dangerously-bypass-approvals-and-sandbox");
   return args;
 }
