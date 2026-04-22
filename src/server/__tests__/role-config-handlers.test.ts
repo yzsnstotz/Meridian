@@ -303,8 +303,7 @@ describe("role config handlers", () => {
     await expect(harness.roleHandlers.getConfig("agent-dispatcher-config")).resolves.toEqual({
       thread_id: "agent-dispatcher-config",
       status: "active",
-      can_edit: false,
-      blocked_reason: "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.",
+      can_edit: true,
       config: {
         dispatch_plan_path: "/tmp/dispatch_plan.md",
         command_file_path: "/tmp/agent_dispatch_command.md",
@@ -2573,7 +2572,7 @@ describe("role config handlers", () => {
     }
   });
 
-  it("always rejects config patches with 409", async () => {
+  it("rejects config patches with unrecognized fields with 400", async () => {
     const harness = createHarness(createPersistedState({
       tasks: [],
       taskspec: "existing"
@@ -2585,7 +2584,7 @@ describe("role config handlers", () => {
         taskspec: "next"
       })
     ).rejects.toMatchObject({
-      statusCode: 409
+      statusCode: 400
     });
   });
 

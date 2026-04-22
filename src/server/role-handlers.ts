@@ -122,6 +122,14 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
   auto_approve: z.boolean().optional()
 });
 
+const AgentDispatcherConfigPatchSchema = z.object({
+  agent_type: AgentTypeSchema.optional(),
+  model_id: z.string().min(1).optional().nullable(),
+  mode: BridgeModeSchema.optional(),
+  kill_policy: KillPolicySchema.optional(),
+  auto_approve: z.boolean().optional()
+}).strict();
+
 const UpdateWorkerStatusRequestSchema = z.object({
   status: z.string().min(1),
   thread_id: z.string().min(1).optional()
@@ -327,13 +335,44 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       return {
         thread_id: threadId,
         status: context.status,
-        can_edit: false,
-        blocked_reason: getAgentDispatcherConfigEditBlockedReason(),
+        can_edit: true,
         config: toEditableAgentDispatcherConfig(context.effectiveConfig)
       };
     },
-    async patchConfig(_threadId: string, _body: unknown): Promise<RoleConfigResponse> {
-      throw createHttpError(409, getAgentDispatcherConfigEditBlockedReason());
+    async patchConfig(threadId: string, body: unknown): Promise<RoleConfigResponse> {
+      const parsed = AgentDispatcherConfigPatchSchema.safeParse(body);
+      if (!parsed.success) {
+        throw createHttpError(400, `Invalid config patch: ${parsed.error.issues.map((i) => i.message).join(", ")}`);
+      }
+
+      const patch = parsed.data;
+      const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
+      const config = context.effectiveConfig;
+
+      if (patch.agent_type !== undefined) config.agent_type = patch.agent_type;
+      if (patch.mode !== undefined) config.mode = patch.mode;
+      if (patch.kill_policy !== undefined) config.kill_policy = patch.kill_policy;
+      if (patch.auto_approve !== undefined) config.auto_approve = patch.auto_approve;
+      if (patch.model_id !== undefined) config.model_id = patch.model_id ?? undefined;
+
+      // Persist to state store
+      if (context.roleState) {
+        context.roleState.config = config;
+        await stateStore.save(context.state);
+      }
+
+      // Update active in-memory role binding
+      const activeBinding = resolveActiveRoleBinding(threadId);
+      if (activeBinding) {
+        (activeBinding as { config: unknown }).config = config;
+      }
+
+      return {
+        thread_id: threadId,
+        status: context.status,
+        can_edit: true,
+        config: toEditableAgentDispatcherConfig(config)
+      };
     },
     resolveRole(threadId: string): PromptStoreRoleBinding | null {
       return resolveActiveRoleBinding(threadId);
@@ -1536,9 +1575,6 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
   };
 }
 
-function getAgentDispatcherConfigEditBlockedReason(): string {
-  return "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.";
-}
 
 function materializeAgentDispatcherConfigSystemPrompt(
   config: AgentDispatcherConfig,
