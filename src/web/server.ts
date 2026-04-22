@@ -8,7 +8,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { config } from "../config";
-import { requestHubMessage } from "../interface/ipc-sender";
+import { requestHubMessage, requestHubRunMessage } from "../interface/ipc-sender";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import {
@@ -195,6 +195,7 @@ export interface WebInterfaceServerOptions {
   tlsKeyPath?: string;
   staticDir?: string;
   requestHub?: (message: HubMessage) => Promise<HubResult>;
+  requestHubRun?: (message: HubMessage) => Promise<HubResult>;
   providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
   logger?: WebInterfaceLogger;
@@ -465,6 +466,7 @@ export class WebInterfaceServer {
   private readonly tlsKeyPath: string;
   private readonly staticDir: string;
   private readonly requestHub: (message: HubMessage) => Promise<HubResult>;
+  private readonly requestHubRun: (message: HubMessage) => Promise<HubResult>;
   private readonly providerModelCatalog: ProviderModelCatalogLookup;
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
   private readonly logger: WebInterfaceLogger;
@@ -483,6 +485,7 @@ export class WebInterfaceServer {
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
     this.staticDir = options.staticDir ?? defaultStaticDir;
     this.requestHub = options.requestHub ?? requestHubMessage;
+    this.requestHubRun = options.requestHubRun ?? requestHubRunMessage;
     this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
@@ -848,7 +851,7 @@ export class WebInterfaceServer {
     const body = runRequestBodySchema.parse(await this.readJsonBody(request));
     const threadSelector = normalizeThreadSelector(body.thread_id);
     const result = HubResultSchema.parse(
-      await this.requestHub(
+      await this.requestHubRun(
         this.buildHubMessage({
           sessionId,
           intent: "run",
