@@ -31,7 +31,9 @@ const TRANSIENT_ERROR_PATTERNS = [
   /service.unavailable/i,
   /ECONNREFUSED/,
   /ECONNRESET/,
-  /ETIMEDOUT/
+  /ETIMEDOUT/,
+  /\bfetch failed\b/i,
+  /\bunreachable\b/i
 ];
 
 const runTool: ToolDefinition = {
@@ -998,7 +1000,15 @@ function shouldRetryRunError(error: Error): boolean {
   // `/api/run` is non-idempotent. Once Meridian returns a transient-looking
   // `run failed: ...` response, the worker may already be executing, so replaying
   // the same prompt into the same thread can duplicate work.
-  return !/^run failed:/i.test(error.message);
+  //
+  // However, when the error indicates the API was *unreachable* (e.g. "fetch failed",
+  // ECONNREFUSED), the request never reached Meridian — the worker cannot have started,
+  // so retry is safe.
+  if (/^run failed:/i.test(error.message)) {
+    return /\bunreachable\b/i.test(error.message);
+  }
+
+  return true;
 }
 
 function delay(ms: number): Promise<void> {

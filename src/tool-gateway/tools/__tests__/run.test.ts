@@ -1214,9 +1214,9 @@ describe("run tool", () => {
     });
   });
 
-  it("records a failed result in the lifecycle store when the API client throws", async () => {
+  it("records a failed result in the lifecycle store when the API client throws a non-transient error", async () => {
     const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    mockRun.mockRejectedValue(new Error("run failed: Meridian API unreachable"));
+    mockRun.mockRejectedValue(new Error("run failed: invalid request body"));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1231,7 +1231,7 @@ describe("run tool", () => {
       thread_id: "thread-789",
       status: "error",
       run_state: "timeout",
-      content: "run failed: Meridian API unreachable"
+      content: "run failed: invalid request body"
     }));
     expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
       thread_id: "thread-789",
@@ -1244,11 +1244,11 @@ describe("run tool", () => {
     expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
       worker: "N-04",
       threadId: "thread-789",
-      error: "run failed: Meridian API unreachable"
+      error: "run failed: invalid request body"
     });
     expect(result).toEqual({
       ok: false,
-      error: "run failed: Meridian API unreachable",
+      error: "run failed: invalid request body",
       data: {
         worker: "N-04",
         thread_id: "thread-789",
