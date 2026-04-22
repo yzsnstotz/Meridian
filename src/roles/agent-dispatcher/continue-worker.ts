@@ -83,7 +83,9 @@ export async function continueDispatchWorker(
       resumeResult = await executeResumeWorkerAction({
         planPath: config.dispatch_plan_path,
         workerId,
-        action: "retry"
+        action: "retry",
+        // Service-owned recovery should count against the automatic retry cap.
+        incrementRetryCountOnRetry: true
       });
     }
 

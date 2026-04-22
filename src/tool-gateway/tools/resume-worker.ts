@@ -23,6 +23,7 @@ export interface ExecuteResumeWorkerActionArgs {
   workerId: string;
   action: ResumeWorkerAction;
   force?: boolean;
+  incrementRetryCountOnRetry?: boolean;
 }
 
 interface ResumeWorkerDeps {
@@ -160,14 +161,15 @@ export async function executeResumeWorkerAction(
   const priorFailureReason = extractPriorFailureReason(worker);
 
   const nextStatus = mapActionToStatus(args.action);
+  const autoIncrementRetryCount = args.action === "retry" && args.incrementRetryCountOnRetry === true;
   lifecycleStore.setWorkerStatus(
     args.workerId,
     nextStatus,
     `resume_worker:${args.action}`,
     {
       clearHubResult: false,
-      incrementRetryCount: false,
-      resetRetryCount: args.action === "retry"
+      incrementRetryCount: autoIncrementRetryCount,
+      resetRetryCount: args.action === "retry" && !autoIncrementRetryCount
     }
   );
 
