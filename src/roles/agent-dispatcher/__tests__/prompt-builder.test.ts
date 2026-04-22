@@ -86,6 +86,19 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("alternate wrappers/transports");
   });
 
+  it("includes scope constraints that fence the dispatcher to control-flow only", () => {
+    const prompt = buildSystemPrompt(createVars());
+
+    expect(prompt).toContain("# Scope Constraints");
+    expect(prompt).toContain("MUST NOT");
+    expect(prompt).toContain("source code");
+    expect(prompt).toContain("git branches");
+    expect(prompt).toContain("Fix bugs");
+    expect(prompt).toContain("Meridian-roles internals");
+    expect(prompt).toContain("non-dispatch work");
+    expect(prompt).toContain("notify and pause instead");
+  });
+
   it("includes abandoned worker recovery instructions", () => {
     const prompt = buildSystemPrompt(createVars());
 
