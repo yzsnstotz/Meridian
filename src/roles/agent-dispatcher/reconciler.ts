@@ -33,7 +33,8 @@ export const DEFAULT_RECONCILE_STALE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DISPATCHER_ENTRY_ID = "dispatcher";
 export const reconciliationFs = {
   existsSync: fs.existsSync,
-  statSync: fs.statSync
+  statSync: fs.statSync,
+  readdirSync: fs.readdirSync
 };
 
 type ReconciliationHubClient = {
@@ -885,17 +886,103 @@ function outputsExist(paths: string[]): boolean {
     return false;
   }
 
-  return paths.every((filePath) => {
-    if (!reconciliationFs.existsSync(filePath)) {
-      return false;
+  return paths.every((filePath) =>
+    fileExistsWithSize(filePath)
+    || fileExistsInSubdirectory(filePath)
+    || fileExistsInSiblingReportDirectory(filePath)
+  );
+}
+
+function fileExistsWithSize(filePath: string): boolean {
+  if (!reconciliationFs.existsSync(filePath)) {
+    return false;
+  }
+
+  try {
+    return reconciliationFs.statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Search immediate subdirectories of the parent for the same basename.
+ * Handles round subdirectories like `dev_history/v1_round/N-07_report.md`.
+ */
+function fileExistsInSubdirectory(filePath: string): boolean {
+  return searchDirectoryForBasename(path.dirname(filePath), path.basename(filePath));
+}
+
+/**
+ * Search sibling report directories with basename variants. Handles cases
+ * where expected output is in `dev_history/` but the actual report is in
+ * `reports/` (or vice versa), possibly with different naming conventions
+ * (`N-07_report.md` vs `N-07.md`).
+ */
+function fileExistsInSiblingReportDirectory(filePath: string): boolean {
+  const directory = path.dirname(filePath);
+  const grandparent = path.dirname(directory);
+  const dirName = path.basename(directory).toLowerCase();
+  const basenameVariants = computeBasenameVariants(path.basename(filePath));
+
+  const siblingDirs = dirName === "reports"
+    ? ["dev_history"]
+    : ["reports"];
+
+  for (const siblingDir of siblingDirs) {
+    const siblingPath = path.join(grandparent, siblingDir);
+    for (const variant of basenameVariants) {
+      if (fileExistsWithSize(path.join(siblingPath, variant))) {
+        return true;
+      }
+
+      if (searchDirectoryForBasename(siblingPath, variant)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function searchDirectoryForBasename(directory: string, basename: string): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = reconciliationFs.readdirSync(directory, { withFileTypes: true }) as fs.Dirent[];
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
     }
 
-    try {
-      return reconciliationFs.statSync(filePath).size > 0;
-    } catch {
-      return false;
+    if (fileExistsWithSize(path.join(directory, entry.name, basename))) {
+      return true;
     }
-  });
+  }
+
+  return false;
+}
+
+/**
+ * Generates basename variants for different naming conventions:
+ * `N-07_report.md` ↔ `N-07.md`
+ */
+function computeBasenameVariants(basename: string): string[] {
+  const variants = [basename];
+  const reportSuffixMatch = basename.match(/^(.+)_report(\.md)$/i);
+  if (reportSuffixMatch) {
+    variants.push(`${reportSuffixMatch[1]}${reportSuffixMatch[2]}`);
+  } else {
+    const extMatch = basename.match(/^(.+)(\.md)$/i);
+    if (extMatch) {
+      variants.push(`${extMatch[1]}_report${extMatch[2]}`);
+    }
+  }
+
+  return variants;
 }
 
 function reportedOutputsExist(hubResult: HubResult): boolean {
