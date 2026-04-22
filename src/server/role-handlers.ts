@@ -15,6 +15,7 @@ import {
 } from "../roles/agent-dispatcher/dispatch-paths";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import { LifecycleStore, hubResultContainsHitLimit } from "../roles/agent-dispatcher/lifecycle-store";
+import { createMeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import {
   AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
@@ -25,8 +26,15 @@ import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import {
   isHumanDispatchRow,
   resolveManualInterventionWorker,
-  resolveServiceContinueWorker
+  resolveServiceContinueWorker,
+  type DispatchContinuationPlanRow
 } from "../roles/agent-dispatcher/service-continuation";
+import {
+  interceptCompletionForValidation,
+  executeValidationCycle,
+  deliverValidatorFeedback,
+  type ValidatorOrchestratorDeps
+} from "../roles/agent-dispatcher/validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
@@ -261,13 +269,14 @@ export interface RoleDetailResponse {
 
 export interface ContinueDispatcherResponse {
   ok: true;
-  status: "continued" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required";
+  status: "continued" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required" | "validation_in_progress" | "validation_feedback_delivered";
   message: string;
   dispatcher_thread_id?: string;
   worker?: string;
   running_workers?: string[];
   resume_result?: Awaited<ReturnType<typeof executeResumeWorkerAction>>;
   error?: string;
+  validation_outcome?: string;
 }
 
 interface DispatchPlanData {
@@ -580,7 +589,24 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
     const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
-    const lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    let lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+
+    // ─── Validation processing ────────────────────────────────────────────
+    const validatorConfig = context.effectiveConfig.validator;
+    if (validatorConfig?.enabled) {
+      const validatorResult = await processValidationQueue(
+        context.effectiveConfig,
+        dispatchPlanData.rows as DispatchContinuationPlanRow[],
+        lifecycleState,
+        log
+      );
+      if (validatorResult) {
+        return validatorResult;
+      }
+      // Reload lifecycle state after validation may have mutated it
+      lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    }
+
     const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (manualInterventionWorkerId) {
       const manualInterventionWorker = lifecycleState.workers[manualInterventionWorkerId];
@@ -1669,6 +1695,114 @@ function isDispatchPlanComplete(rows: DispatchPlanRow[], lifecycleState: Dispatc
 
     return false;
   });
+}
+
+// ─── Validation queue processing ──────────────────────────────────────────────
+
+async function processValidationQueue(
+  config: AgentDispatcherConfig,
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2,
+  log: Logger
+): Promise<ContinueDispatcherResponse | null> {
+  const validatorConfig = config.validator;
+  if (!validatorConfig?.enabled) {
+    return null;
+  }
+
+  const dispatchPlanPath = config.dispatch_plan_path;
+  const lifecycleStore = new LifecycleStore(
+    path.join(path.dirname(dispatchPlanPath), "dispatch_threads.json"),
+    { dispatchPlanPath, log }
+  );
+
+  // Phase 1: Intercept newly completed workers → awaiting_validation
+  for (const row of rows) {
+    const workerId = row.worker.trim();
+    if (!workerId) continue;
+
+    const worker = lifecycleState.workers[workerId];
+    if (worker?.status === "completed" && !worker.validation) {
+      interceptCompletionForValidation(lifecycleStore, validatorConfig, workerId, row);
+    }
+  }
+
+  // Phase 2: Process awaiting_validation workers
+  for (const row of rows) {
+    const workerId = row.worker.trim();
+    if (!workerId) continue;
+
+    const worker = lifecycleStore.load().workers[workerId];
+    if (worker?.status !== "awaiting_validation") continue;
+
+    const spawnDir = resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath);
+    const taskspecPath = resolveTaskspecPath(config);
+    const meridianApi = createMeridianApiClient();
+
+    const deps: ValidatorOrchestratorDeps = {
+      lifecycleStore,
+      validatorConfig,
+      meridianApi,
+      spawnDir,
+      dispatchPlanPath,
+      taskspecPath,
+      log
+    };
+
+    const outcome = await executeValidationCycle(deps, workerId, row);
+
+    return {
+      ok: true,
+      status: "validation_in_progress",
+      message: `validation ${outcome.status} for ${workerId}`,
+      worker: workerId,
+      validation_outcome: outcome.status
+    };
+  }
+
+  // Phase 3: Deliver feedback to fix_requested workers
+  for (const row of rows) {
+    const workerId = row.worker.trim();
+    if (!workerId) continue;
+
+    const worker = lifecycleStore.load().workers[workerId];
+    if (worker?.status !== "fix_requested") continue;
+
+    const meridianApi = createMeridianApiClient();
+    const deps: ValidatorOrchestratorDeps = {
+      lifecycleStore,
+      validatorConfig,
+      meridianApi,
+      spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),
+      dispatchPlanPath,
+      taskspecPath: resolveTaskspecPath(config),
+      log
+    };
+
+    await deliverValidatorFeedback(deps, workerId);
+
+    return {
+      ok: true,
+      status: "validation_feedback_delivered",
+      message: `validator feedback delivered to ${workerId}`,
+      worker: workerId
+    };
+  }
+
+  return null;
+}
+
+function resolveTaskspecPath(config: AgentDispatcherConfig): string | null {
+  const docsRoot = resolveConfiguredDocsRoot(config);
+  if (!docsRoot) return null;
+
+  const taskspecPath = path.join(docsRoot, "taskspec.md");
+  try {
+    fsSync.accessSync(taskspecPath, fsSync.constants.R_OK);
+    return taskspecPath;
+  } catch {
+    return null;
+  }
 }
 
 function isLocalToolBootstrapFailure(message: string): boolean {

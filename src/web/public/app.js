@@ -907,6 +907,10 @@ async function setupPromptEditor() {
   const systemInput = document.getElementById("system-prompt-input");
   const empty = document.getElementById("prompt-task-empty");
   const list = document.getElementById("prompt-task-list");
+  const validatorSection = document.getElementById("validator-prompt-section");
+  const validatorForm = document.getElementById("validator-prompt-form");
+  const validatorInput = document.getElementById("validator-prompt-input");
+  const validatorFeedback = document.getElementById("validator-prompt-feedback");
 
   if (!title || !detailLink || !feedback || !systemForm || !systemInput || !empty || !list) {
     return;
@@ -942,6 +946,19 @@ async function setupPromptEditor() {
       taskCaption.textContent = isAgentDispatcher
         ? "Agent dispatchers only expose the system prompt."
         : "Delete a template to fall back to the base instruction.";
+    }
+
+    // Validator prompt: show for agent-dispatchers, load from __validator__ template
+    if (validatorSection) {
+      if (isAgentDispatcher) {
+        validatorSection.hidden = false;
+        const validatorTask = Array.isArray(prompts.tasks)
+          ? prompts.tasks.find((t) => t.task_id === "__validator__")
+          : null;
+        if (validatorInput) validatorInput.value = validatorTask?.instruction_template || "";
+      } else {
+        validatorSection.hidden = true;
+      }
     }
 
     if (!Array.isArray(prompts.tasks) || prompts.tasks.length === 0) {
@@ -1024,6 +1041,34 @@ async function setupPromptEditor() {
     }
   });
 
+  if (validatorForm && validatorInput && validatorFeedback) {
+    validatorForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const value = validatorInput.value.trim();
+      try {
+        if (value) {
+          validatorFeedback.textContent = "Saving validator prompt…";
+          await fetchJson(`/api/role/${encodeURIComponent(threadId)}/task/${encodeURIComponent("__validator__")}/template`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ instruction_template: value })
+          });
+          validatorFeedback.textContent = "Validator prompt saved.";
+        } else {
+          validatorFeedback.textContent = "Clearing validator prompt…";
+          await fetchJson(`/api/role/${encodeURIComponent(threadId)}/task/${encodeURIComponent("__validator__")}/template`, {
+            method: "DELETE"
+          });
+          validatorFeedback.textContent = "Validator prompt cleared (using default).";
+        }
+        await render();
+      } catch (error) {
+        validatorFeedback.textContent = getErrorMessage(error);
+      }
+    });
+  }
+
   try {
     await render();
   } catch (error) {
@@ -1061,6 +1106,14 @@ async function setupConfigEditor() {
   const cfgAutoApprove = document.getElementById("cfg-auto-approve");
   const cfgReplyChannels = document.getElementById("cfg-reply-channels");
 
+  // Validator config fields
+  const cfgValidatorEnabled = document.getElementById("cfg-validator-enabled");
+  const cfgValidatorAgentType = document.getElementById("cfg-validator-agent-type");
+  const cfgValidatorModelId = document.getElementById("cfg-validator-model-id");
+  const cfgValidatorPassThreshold = document.getElementById("cfg-validator-pass-threshold");
+  const cfgValidatorMaxFixCycles = document.getElementById("cfg-validator-max-fix-cycles");
+  const cfgValidatorBaseBranch = document.getElementById("cfg-validator-base-branch");
+
   if (!title || !detailLink || !status || !feedback || !form || !input || !saveButton) {
     return;
   }
@@ -1080,6 +1133,15 @@ async function setupConfigEditor() {
     if (cfgKillPolicy) cfgKillPolicy.value = config.kill_policy || "always";
     if (cfgAutoApprove) cfgAutoApprove.value = String(config.auto_approve === true);
     if (cfgReplyChannels) cfgReplyChannels.value = JSON.stringify(config.user_reply_channels || [], null, 2);
+
+    // Validator fields
+    const v = config.validator || {};
+    if (cfgValidatorEnabled) cfgValidatorEnabled.value = String(v.enabled === true);
+    if (cfgValidatorAgentType) cfgValidatorAgentType.value = v.agent_type || "claude";
+    if (cfgValidatorModelId) cfgValidatorModelId.value = v.model_id || "";
+    if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.value = v.pass_threshold ?? 0.7;
+    if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.value = v.max_fix_cycles ?? 3;
+    if (cfgValidatorBaseBranch) cfgValidatorBaseBranch.value = v.base_branch || "main";
   };
 
   const setStructuredFieldsDisabled = (disabled) => {
@@ -1088,6 +1150,12 @@ async function setupConfigEditor() {
     if (cfgMode) cfgMode.disabled = disabled;
     if (cfgKillPolicy) cfgKillPolicy.disabled = disabled;
     if (cfgAutoApprove) cfgAutoApprove.disabled = disabled;
+    if (cfgValidatorEnabled) cfgValidatorEnabled.disabled = disabled;
+    if (cfgValidatorAgentType) cfgValidatorAgentType.disabled = disabled;
+    if (cfgValidatorModelId) cfgValidatorModelId.readOnly = disabled;
+    if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.readOnly = disabled;
+    if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.readOnly = disabled;
+    if (cfgValidatorBaseBranch) cfgValidatorBaseBranch.readOnly = disabled;
   };
 
   const collectStructuredPatch = () => {
@@ -1097,6 +1165,18 @@ async function setupConfigEditor() {
     if (cfgMode) patch.mode = cfgMode.value;
     if (cfgKillPolicy) patch.kill_policy = cfgKillPolicy.value;
     if (cfgAutoApprove) patch.auto_approve = cfgAutoApprove.value === "true";
+
+    if (cfgValidatorEnabled) {
+      patch.validator = {
+        enabled: cfgValidatorEnabled.value === "true",
+        agent_type: cfgValidatorAgentType?.value || "claude",
+        model_id: cfgValidatorModelId?.value?.trim() || undefined,
+        pass_threshold: parseFloat(cfgValidatorPassThreshold?.value) || 0.7,
+        max_fix_cycles: parseInt(cfgValidatorMaxFixCycles?.value, 10) || 3,
+        base_branch: cfgValidatorBaseBranch?.value?.trim() || "main"
+      };
+    }
+
     return patch;
   };
 
@@ -1844,6 +1924,10 @@ function formatContinueResult(result) {
       return message || "manual intervention required";
     case "local_tool_bootstrap_failed":
       return message || "local tool bootstrap failed";
+    case "validation_in_progress":
+      return message || "validation in progress";
+    case "validation_feedback_delivered":
+      return message || "validator feedback delivered";
     default:
       return message || "continue result unavailable";
   }
@@ -1866,9 +1950,15 @@ function normalizeDispatchPlanStatus(status) {
     case "⛔ SKIPPED":
     case "skipped":
       return "skipped";
+    case "🔍":
+    case "awaiting_validation":
+      return "awaiting_validation";
     case "pending":
     case "⬜":
     default:
+      if (typeof status === "string" && status.startsWith("🔁")) {
+        return "fix_requested";
+      }
       return "pending";
   }
 }
@@ -1885,6 +1975,10 @@ function toDispatchPlanStatus(status) {
       return "⚠️ ABANDONED";
     case "skipped":
       return "⛔ SKIPPED";
+    case "awaiting_validation":
+      return "🔍";
+    case "fix_requested":
+      return "🔁";
     default:
       return "⬜";
   }
@@ -1900,6 +1994,10 @@ function formatDispatchStatusLabel(status) {
       return "Abandoned";
     case "skipped":
       return "Skipped";
+    case "awaiting_validation":
+      return "Validating";
+    case "fix_requested":
+      return "Fix Requested";
     default:
       return "Pending";
   }
