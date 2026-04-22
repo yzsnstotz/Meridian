@@ -11,3 +11,6 @@ Meridian-roles/
 meridian-roles/
 AGENT.md
 agent.md
+.worktrees/
+.codex-symlink-probe.txt
+src/shared/.codex-write-probe.ts
