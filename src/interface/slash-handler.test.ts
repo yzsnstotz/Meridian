@@ -267,3 +267,7 @@ test("parseSlashCommand parses /autoapprove status as a status query", () => {
 test("getHelpMessage documents /autoapprove", () => {
   assert.match(getHelpMessage(), /\/autoapprove on\|off\|status \[thread=<thread_id>\]/);
 });
+
+test("getHelpMessage documents ADS restart option", () => {
+  assert.match(getHelpMessage(), /\/restart Rebuild\/restart Meridian, meridian-roles, or ADS/);
+});

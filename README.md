@@ -10,7 +10,7 @@
 
 ```text
 spawn - Spawn a new agent instance
-restart - Rebuild and restart Meridian service
+restart - Restart Meridian, meridian-roles, or ADS
 browse - Browse repo and return exact file/folder path
 kill - Kill an existing instance
 status - Get current instance status
