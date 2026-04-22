@@ -706,16 +706,54 @@ function launchRestartDetached(projectRoot: string, scriptPath: string, restartL
   launcher.unref();
 }
 
+interface RestartScriptLaunchSpec {
+  label: string;
+  logSuffix: string;
+  scriptPath: string;
+}
+
+function resolveRestartScript(projectRoot: string, mode: string): RestartScriptLaunchSpec | null {
+  switch (mode) {
+    case "keep_agents":
+      return {
+        scriptPath: path.resolve(projectRoot, "user_scripts/restart_keep_agents.sh"),
+        logSuffix: "keep-agents",
+        label: "Restarting Meridian service and preserving live agents"
+      };
+    case "full_rebuild":
+      return {
+        scriptPath: path.resolve(projectRoot, "rebuild-restart.sh"),
+        logSuffix: "full",
+        label: "Rebuilding Meridian and restarting everything"
+      };
+    case "meridian_roles":
+      return {
+        scriptPath: path.resolve(projectRoot, "user_scripts/restart_meridian_roles.sh"),
+        logSuffix: "meridian-roles",
+        label: "Rebuilding meridian-roles and restarting its service"
+      };
+    case "ads":
+      return {
+        scriptPath: path.resolve(projectRoot, "..", "projects", "ADS", "user_scripts", "rebuild_restart.sh"),
+        logSuffix: "ads",
+        label: "Rebuilding ADS and restarting its service + GUI"
+      };
+    default:
+      return null;
+  }
+}
+
 function buildRestartKeyboard(): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   keyboard.text("Restart Service Keep Agents", `${CALLBACK_PREFIX}:restart_service:keep_agents`).row();
   keyboard.text("Rebuild & Restart Everything", `${CALLBACK_PREFIX}:restart_service:full_rebuild`).row();
-  keyboard.text("Rebuild & Restart meridian-roles", `${CALLBACK_PREFIX}:restart_service:meridian_roles`);
+  keyboard.text("Rebuild & Restart meridian-roles", `${CALLBACK_PREFIX}:restart_service:meridian_roles`).row();
+  keyboard.text("Rebuild & Restart ADS", `${CALLBACK_PREFIX}:restart_service:ads`);
   return keyboard;
 }
 
 async function handleRestartCommand(ctx: Context): Promise<void> {
-  await ctx.reply("Choose Meridian service action:", { reply_markup: buildRestartKeyboard() });
+  await ctx.reply("Choose service action:", { reply_markup: buildRestartKeyboard() });
 }
 
 function buildThreadPickerKeyboard(
@@ -1007,34 +1045,19 @@ async function handlePickerCallbackData(data: string, ctx: Context): Promise<boo
   if (action === "restart_service" && parts[2]) {
     const projectRoot = process.cwd();
     const mode = parts[2];
-    const scriptName =
-      mode === "keep_agents"
-        ? "user_scripts/restart_keep_agents.sh"
-        : mode === "full_rebuild"
-          ? "rebuild-restart.sh"
-          : mode === "meridian_roles"
-            ? "user_scripts/restart_meridian_roles.sh"
-            : null;
-    if (!scriptName) {
+    const restartSpec = resolveRestartScript(projectRoot, mode);
+    if (!restartSpec) {
       await ctx.answerCallbackQuery({ text: "Invalid restart option" });
       return true;
     }
-    const scriptPath = path.resolve(projectRoot, scriptName);
+    const scriptPath = restartSpec.scriptPath;
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Restart script not found: ${scriptPath}`);
     }
 
-    const logSuffix =
-      mode === "keep_agents" ? "keep-agents" : mode === "full_rebuild" ? "full" : "meridian-roles";
-    const restartLogPath = path.join("/tmp", `meridian-restart-${logSuffix}-${Date.now()}.log`);
-    const label =
-      mode === "keep_agents"
-        ? "Restarting Meridian service and preserving live agents"
-        : mode === "full_rebuild"
-          ? "Rebuilding project and restarting everything"
-          : "Rebuilding meridian-roles and restarting its service";
+    const restartLogPath = path.join("/tmp", `meridian-restart-${restartSpec.logSuffix}-${Date.now()}.log`);
 
-    await ctx.editMessageText(`${label}.\nLog: ${restartLogPath}`);
+    await ctx.editMessageText(`${restartSpec.label}.\nLog: ${restartLogPath}`);
     if (!launchRestartViaTmux(projectRoot, scriptPath, restartLogPath)) {
       launchRestartDetached(projectRoot, scriptPath, restartLogPath);
     }

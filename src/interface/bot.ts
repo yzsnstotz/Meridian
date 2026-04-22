@@ -4,7 +4,7 @@ import { config } from "../config";
 
 const BOT_COMMANDS: BotCommand[] = [
   { command: "spawn", description: "Spawn a new agent instance" },
-  { command: "restart", description: "Rebuild and restart Meridian service" },
+  { command: "restart", description: "Restart Meridian, meridian-roles, or ADS" },
   { command: "browse", description: "Browse repo and return exact file/folder path" },
   { command: "kill", description: "Kill an existing instance" },
   { command: "info", description: "Show status of the thread attached to this chat" },
