@@ -3,6 +3,11 @@ import net from "node:net";
 const IPC_SEND_TIMEOUT_MS = 5000;
 // Long-running pane_bridge providers such as Gemini can legitimately exceed 30s.
 const IPC_REQUEST_TIMEOUT_MS = 120000;
+// /api/run can take much longer than the default IPC timeout: stream retries
+// (up to 3 × codex exec attempts) plus waitForAgentReply (600 × 500ms = 5 min).
+// Give the IPC socket enough headroom so the hub router's own timeouts govern
+// the response lifecycle instead of an early IPC socket timeout.
+const IPC_RUN_REQUEST_TIMEOUT_MS = 420000;
 
 export function sendIpcMessage<T extends object>(socketPath: string, payload: T): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -44,7 +49,11 @@ export function sendIpcMessage<T extends object>(socketPath: string, payload: T)
   });
 }
 
-export function sendIpcRequest<TPayload extends object, TResponse>(socketPath: string, payload: TPayload): Promise<TResponse> {
+export function sendIpcRequest<TPayload extends object, TResponse>(
+  socketPath: string,
+  payload: TPayload,
+  timeoutMs: number = IPC_REQUEST_TIMEOUT_MS
+): Promise<TResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let rawResponse = "";
@@ -53,7 +62,7 @@ export function sendIpcRequest<TPayload extends object, TResponse>(socketPath: s
       socket.end();
     });
 
-    socket.setTimeout(IPC_REQUEST_TIMEOUT_MS);
+    socket.setTimeout(timeoutMs);
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
       rawResponse += chunk;
@@ -85,6 +94,8 @@ export function sendIpcRequest<TPayload extends object, TResponse>(socketPath: s
     });
   });
 }
+
+export { IPC_RUN_REQUEST_TIMEOUT_MS };
 
 export function readIpcMessage<T>(raw: string): T {
   return JSON.parse(raw) as T;

@@ -1,6 +1,6 @@
 import { config } from "../config";
 import { createLogger } from "../logger";
-import { sendIpcMessage, sendIpcRequest } from "../shared/ipc";
+import { sendIpcMessage, sendIpcRequest, IPC_RUN_REQUEST_TIMEOUT_MS } from "../shared/ipc";
 import { HubResultSchema, type HubMessage, type HubResult } from "../types";
 
 const interfaceLog = createLogger("interface");
@@ -18,7 +18,11 @@ export async function sendHubMessage(message: HubMessage): Promise<void> {
   );
 }
 
-export async function requestHubMessage(message: HubMessage): Promise<HubResult> {
-  const response = await sendIpcRequest<HubMessage, HubResult>(config.HUB_SOCKET_PATH, message);
+export async function requestHubMessage(message: HubMessage, timeoutMs?: number): Promise<HubResult> {
+  const response = await sendIpcRequest<HubMessage, HubResult>(config.HUB_SOCKET_PATH, message, timeoutMs);
   return HubResultSchema.parse(response);
+}
+
+export async function requestHubRunMessage(message: HubMessage): Promise<HubResult> {
+  return requestHubMessage(message, IPC_RUN_REQUEST_TIMEOUT_MS);
 }
