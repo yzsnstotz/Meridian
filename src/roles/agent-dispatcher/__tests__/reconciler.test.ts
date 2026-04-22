@@ -72,7 +72,6 @@ describe("reconcile", () => {
     vi.setSystemTime(new Date(FIXED_NOW));
 
     const harness = await createHarness();
-    // The report lives in dev_history/v1_round/ but expected_outputs points to dev_history/
     await harness.writeOutput("dev_history/v1_round/N-07_report.md");
     const wrongExpectedPath = path.join(harness.directory, "dev_history", "N-07_report.md");
     harness.store.save(buildState({
@@ -84,9 +83,37 @@ describe("reconcile", () => {
     const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
 
     const report = await reconcile(harness.store, hubClient);
-    const nextState = harness.store.load();
 
-    expect(nextState.workers["N-07"]?.status).toBe("completed");
+    expect(harness.store.load().workers["N-07"]?.status).toBe("completed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-07",
+        from: "running",
+        to: "completed",
+        trigger: "hub_status:completed:outputs_present"
+      }
+    ]);
+  });
+
+  it("marks a running worker completed when outputs exist in a sibling reports/ directory with short basename", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    // Report is in reports/N-07.md but expected_outputs says dev_history/N-07_report.md
+    await harness.writeOutput("reports/N-07.md");
+    const wrongExpectedPath = path.join(harness.directory, "dev_history", "N-07_report.md");
+    harness.store.save(buildState({
+      workers: {
+        "N-07": buildRunningWorker("worker-thread-707", wrongExpectedPath)
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-07"]?.status).toBe("completed");
     expect(report.changed).toEqual([
       {
         workerId: "N-07",
