@@ -360,6 +360,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function asErrorMessage(error: unknown): string {
   if (error instanceof Error) {
+    // Node.js native fetch wraps connection errors (ECONNREFUSED, ETIMEDOUT, etc.)
+    // inside a TypeError("fetch failed") with the real error in `.cause`. Extract the
+    // underlying message so callers can pattern-match on the actual failure reason.
+    const cause = (error as { cause?: unknown }).cause;
+    if (error.message === "fetch failed" && cause instanceof Error && cause.message) {
+      return `fetch failed (${cause.message})`;
+    }
     return error.message;
   }
   return String(error);

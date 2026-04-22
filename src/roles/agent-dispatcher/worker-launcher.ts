@@ -90,7 +90,7 @@ export async function launchDispatchWorker(
   let threadId: string;
   try {
     const { modelId: parsedModelId, effort: parsedEffort } = parseModelIdWithEffort(config.modelId?.trim() || undefined);
-    const result = await deps.meridianApi.spawn({
+    threadId = await spawnWithRetry(deps.meridianApi, {
       agentType: config.agentType,
       mode: config.mode,
       spawnDir,
@@ -98,7 +98,6 @@ export async function launchDispatchWorker(
       effort: parsedEffort,
       autoApprove: config.autoApprove
     });
-    threadId = result.threadId;
   } catch (error) {
     return {
       ok: false,
@@ -135,6 +134,51 @@ export async function launchDispatchWorker(
     ok: true,
     threadId
   };
+}
+
+const SPAWN_RETRY_DELAYS_MS = [3_000, 8_000];
+const SPAWN_TRANSIENT_PATTERNS = [
+  /\bfetch failed\b/i,
+  /\bunreachable\b/i,
+  /ECONNREFUSED/,
+  /ECONNRESET/,
+  /ETIMEDOUT/,
+  /timed?\s*out/i,
+  /service.unavailable/i
+];
+
+async function spawnWithRetry(
+  meridianApi: MeridianApiClient,
+  request: import("./meridian-api-client").MeridianSpawnRequest
+): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const result = await meridianApi.spawn(request);
+      return result.threadId;
+    } catch (error) {
+      lastError = asError(error);
+      if (attempt < SPAWN_RETRY_DELAYS_MS.length && isSpawnTransientError(lastError)) {
+        const delayMs = SPAWN_RETRY_DELAYS_MS[attempt]!;
+        // eslint-disable-next-line no-console
+        console.warn("worker spawn transient error, retrying", {
+          attempt: attempt + 1,
+          delayMs,
+          error: lastError.message
+        });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError!;
+}
+
+function isSpawnTransientError(error: Error): boolean {
+  return SPAWN_TRANSIENT_PATTERNS.some((pattern) => pattern.test(error.message));
 }
 
 function resolveSpawnDir(config: LaunchDispatchWorkerConfig): string {

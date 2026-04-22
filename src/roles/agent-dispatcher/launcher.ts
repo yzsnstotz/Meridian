@@ -95,14 +95,13 @@ export async function launchDispatcher(
 
   let threadId: string;
   try {
-    const result = await deps.meridianApi.spawn({
+    threadId = await spawnWithRetry(deps.meridianApi, {
       agentType: config.agentType,
       mode: config.mode,
       spawnDir,
       modelId: config.modelId?.trim() || undefined,
       autoApprove: config.autoApprove
     });
-    threadId = result.threadId;
   } catch (error) {
     return {
       ok: false,
@@ -173,6 +172,51 @@ function sanitizeDispatcherRoleIdSegment(roleId: string): string {
   const trimmed = roleId.trim();
   const slug = trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   return slug.length > 0 ? slug.slice(0, 120) : "dispatcher";
+}
+
+const SPAWN_RETRY_DELAYS_MS = [3_000, 8_000];
+const SPAWN_TRANSIENT_PATTERNS = [
+  /\bfetch failed\b/i,
+  /\bunreachable\b/i,
+  /ECONNREFUSED/,
+  /ECONNRESET/,
+  /ETIMEDOUT/,
+  /timed?\s*out/i,
+  /service.unavailable/i
+];
+
+async function spawnWithRetry(
+  meridianApi: MeridianApiClient,
+  request: import("./meridian-api-client").MeridianSpawnRequest
+): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const result = await meridianApi.spawn(request);
+      return result.threadId;
+    } catch (error) {
+      lastError = asError(error);
+      if (attempt < SPAWN_RETRY_DELAYS_MS.length && isSpawnTransientError(lastError)) {
+        const delayMs = SPAWN_RETRY_DELAYS_MS[attempt]!;
+        // eslint-disable-next-line no-console
+        console.warn("dispatcher spawn transient error, retrying", {
+          attempt: attempt + 1,
+          delayMs,
+          error: lastError.message
+        });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError!;
+}
+
+function isSpawnTransientError(error: Error): boolean {
+  return SPAWN_TRANSIENT_PATTERNS.some((pattern) => pattern.test(error.message));
 }
 
 function resolveSpawnDir(config: LaunchConfig): string {
