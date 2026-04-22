@@ -456,7 +456,7 @@ const HIT_LIMIT_PATTERNS = [
   /\btoken\s+limit\b/i
 ];
 
-function isNonCompletionContent(content: string): boolean {
+export function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
 }
 

@@ -202,6 +202,54 @@ describe("resume-worker tool", () => {
     )).rejects.toThrow("force-complete requires force=true");
   });
 
+  it("rejects force-complete when worker output contains a BLOCKED marker", async () => {
+    const harness = await createHarness();
+    harness.lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:10:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-456",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Status: ⛔ BLOCKED\n\nBaseline test suite is failing.",
+            attachments: [],
+            timestamp: "2026-04-05T00:10:00.000Z"
+          },
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    await expect(executeResumeWorkerAction(
+      {
+        planPath: harness.planPath,
+        workerId: "N-04",
+        action: "force-complete",
+        force: true
+      },
+      {
+        lifecycleStoreFactory: () => harness.lifecycleStore,
+        killThread: async () => ({ ok: true })
+      }
+    )).rejects.toThrow("BLOCKED or PAUSE marker");
+  });
+
   it("supports the CLI wrapper contract for force-complete", async () => {
     const harness = await createHarness();
     vi.spyOn(killTool, "execute").mockResolvedValue({ ok: true, data: { thread_id: "worker-thread-456" } });
