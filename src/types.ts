@@ -153,6 +153,26 @@ export type LifecycleWorkerEntry = DispatchWorkerState & {
   worker_id: string;
 };
 
+// ─── Auto-Resolve Configuration ─────────────────────────────────────────────────
+
+export interface AutoResolveConfig {
+  enabled: boolean;
+  taskspecDir: string;
+  maxAutoResolveAttempts: number;
+  humanEscalationPatterns: RegExp[];
+}
+
+export const DEFAULT_HUMAN_ESCALATION_PATTERNS: RegExp[] = [
+  /\bMISSING:/i,
+  /\bcredentials?\b/i,
+  /\bauth(?:entication)?\b/i,
+  /\btoken\b/i,
+  /\bAPI\s*key\b/i,
+  /\bservice\s+unavailable\b/i,
+  /\brequires?\s+human\b/i,
+  /\bmanual(?:ly)?\s+(?:repair|fix|resolve)\b/i,
+];
+
 // ─── Agent Instance (aligned with Meridian) ─────────────────────────────────────
 
 export const AgentInstanceSchema = z.object({
