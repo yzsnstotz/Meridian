@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { config } from "../config";
-import type { HubMessage, ThreadProgressSnapshot } from "../types";
+import { ProviderCapabilityListSchema, ProviderCapabilitySchema, type HubMessage, type ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
 process.env.ALLOWED_USER_IDS ??= "123456789";
@@ -745,6 +745,62 @@ test("Web Interface Server switches model through dedicated API", async () => {
   });
 });
 
+test("Web Interface Server lists all provider capabilities without hub calls", async () => {
+  const seenIntents: string[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/capabilities?token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = ProviderCapabilityListSchema.parse(await response.json());
+    assert.deepEqual(
+      payload.map((entry) => entry.agent_type),
+      ["codex", "claude", "gemini"]
+    );
+    assert.equal(payload[0]?.supports_read_only, true);
+    assert.equal(payload[2]?.supports_ads_safe, false);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenIntents.push(message.intent);
+      throw new Error(`Unexpected intent: ${message.intent}`);
+    }
+  });
+
+  assert.deepEqual(seenIntents, []);
+});
+
+test("Web Interface Server filters provider capabilities by type", async () => {
+  const seenIntents: string[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/capabilities?type=codex&token=secret-token`);
+    assert.equal(response.status, 200);
+    const payload = ProviderCapabilitySchema.parse(await response.json());
+    assert.equal(payload.agent_type, "codex");
+    assert.equal(payload.supports_images, false);
+    assert.equal(payload.supports_read_only, true);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenIntents.push(message.intent);
+      throw new Error(`Unexpected intent: ${message.intent}`);
+    }
+  });
+
+  assert.deepEqual(seenIntents, []);
+});
+
+test("Web Interface Server returns not found for provider capabilities that are not configured", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/capabilities?type=cursor&token=secret-token`);
+    assert.equal(response.status, 404);
+    const payload = (await response.json()) as { error: string };
+    assert.match(payload.error, /No provider capabilities configured for agent_type=cursor/);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      throw new Error(`Unexpected intent: ${message.intent}`);
+    }
+  });
+});
+
 test("Web Interface Server bridges pane output over WebSocket", async () => {
   const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-"));
   const socketPath = path.join(socketDir, "hub.sock");
@@ -1042,6 +1098,42 @@ test("Web Interface Server spawn forwards provider alias, model_id, effort, and 
         trace_id: message.trace_id,
         thread_id: "claude_new",
         source: "claude",
+        status: "success",
+        content: "{}",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
+test("Web Interface Server enforces ADS profile spawn safety defaults", async () => {
+  const hubMessages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "codex",
+        mode: "pane_bridge",
+        auto_approve: true,
+        integration_profile: "ads_public",
+        sandbox_mode: "workspace-write"
+      })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(hubMessages.length, 1);
+    assert.equal(hubMessages[0]?.mode, "bridge");
+    assert.equal(hubMessages[0]?.payload.auto_approve, false);
+    assert.equal(hubMessages[0]?.payload.integration_profile, "ads_public");
+    assert.equal(hubMessages[0]?.payload.sandbox_mode, "read-only");
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_ads",
+        source: "codex",
         status: "success",
         content: "{}",
         attachments: [],

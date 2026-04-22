@@ -13,6 +13,8 @@ import {
   PaneOutputChunkSchema,
   PaneSubscribeRequestSchema,
   PaneUnsubscribeRequestSchema,
+  ProviderCapabilityListSchema,
+  ProviderCapabilitySchema,
   ServiceEndpointSchema,
   ThreadProgressSnapshotSchema
 } from "./types";
@@ -83,7 +85,7 @@ test("HubMessageSchema parses new idempotency and tracing fields", () => {
   assert.equal(parsed.intent, "detach");
 });
 
-test("HubMessageSchema parses optional auto_approve and effort payload fields", () => {
+test("HubMessageSchema parses optional spawn profile payload fields", () => {
   const parsed = HubMessageSchema.parse(
     buildHubMessage({
       intent: "spawn",
@@ -92,13 +94,17 @@ test("HubMessageSchema parses optional auto_approve and effort payload fields", 
         content: "spawn",
         attachments: [],
         effort: "xhigh",
-        auto_approve: true
+        auto_approve: true,
+        integration_profile: "ads_public",
+        sandbox_mode: "read-only"
       }
     })
   );
 
   assert.equal(parsed.payload.auto_approve, true);
   assert.equal(parsed.payload.effort, "xhigh");
+  assert.equal(parsed.payload.integration_profile, "ads_public");
+  assert.equal(parsed.payload.sandbox_mode, "read-only");
 });
 
 test("MonitorEventSchema accepts optional span fields", () => {
@@ -181,6 +187,65 @@ test("AgentInstanceSchema defaults auto_approve to true while honoring explicit 
 
   assert.equal(defaultsApplied.auto_approve, true);
   assert.equal(explicitFalse.auto_approve, false);
+});
+
+test("AgentInstanceSchema accepts optional integration_profile and sandbox_mode", () => {
+  const parsed = AgentInstanceSchema.parse({
+    thread_id: "codex_03",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/codex-03.sock",
+    pid: 1236,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString(),
+    integration_profile: "ads_public",
+    sandbox_mode: "read-only"
+  });
+
+  assert.equal(parsed.integration_profile, "ads_public");
+  assert.equal(parsed.sandbox_mode, "read-only");
+});
+
+test("ProviderCapabilitySchema parses ADS capability metadata", () => {
+  const parsed = ProviderCapabilitySchema.parse({
+    agent_type: "claude",
+    supports_ads_safe: true,
+    supports_read_only: true,
+    supports_images: true,
+    supports_text_files: true,
+    supports_pdf: true,
+    supports_stream_safe: true
+  });
+
+  assert.equal(parsed.agent_type, "claude");
+  assert.equal(parsed.supports_stream_safe, true);
+});
+
+test("ProviderCapabilityListSchema parses multiple provider capability entries", () => {
+  const parsed = ProviderCapabilityListSchema.parse([
+    {
+      agent_type: "codex",
+      supports_ads_safe: true,
+      supports_read_only: true,
+      supports_images: false,
+      supports_text_files: true,
+      supports_pdf: false,
+      supports_stream_safe: true
+    },
+    {
+      agent_type: "gemini",
+      supports_ads_safe: false,
+      supports_read_only: false,
+      supports_images: false,
+      supports_text_files: false,
+      supports_pdf: false,
+      supports_stream_safe: false
+    }
+  ]);
+
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[1]?.agent_type, "gemini");
 });
 
 test("HubResultSchema accepts optional Telegram inline keyboards", () => {

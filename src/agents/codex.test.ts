@@ -27,6 +27,25 @@ test("buildCodexSpawnArgs appends auto-approve flag when requested", () => {
   ]);
 });
 
+test("buildCodexSpawnArgs uses read-only sandbox when requested", () => {
+  const args = buildCodexSpawnArgs("bridge", null, "--socket=/tmp/codex.sock", "gpt-5.4", false, "xhigh", "read-only");
+
+  assert.deepEqual(args, [
+    "server",
+    "--type=codex",
+    "--socket=/tmp/codex.sock",
+    "--",
+    "codex",
+    "-c",
+    'model_reasoning_effort="xhigh"',
+    "--model",
+    "gpt-5.4",
+    "--sandbox",
+    "read-only"
+  ]);
+  assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+});
+
 test("buildCodexExecArgs enables direct JSON streaming mode", () => {
   const args = buildCodexExecArgs("gpt-5.4", true, "xhigh");
 
@@ -40,6 +59,23 @@ test("buildCodexExecArgs enables direct JSON streaming mode", () => {
     "gpt-5.4",
     "--dangerously-bypass-approvals-and-sandbox"
   ]);
+});
+
+test("buildCodexExecArgs uses read-only sandbox when requested", () => {
+  const args = buildCodexExecArgs("gpt-5.4", false, "xhigh", "read-only");
+
+  assert.deepEqual(args, [
+    "codex",
+    "exec",
+    "--json",
+    "-c",
+    'model_reasoning_effort="xhigh"',
+    "--model",
+    "gpt-5.4",
+    "--sandbox",
+    "read-only"
+  ]);
+  assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
 
 test("buildCodexExecArgs always includes bypass flag even when autoApprove is false", () => {
@@ -71,6 +107,25 @@ test("buildCodexResumeArgs resumes an existing exec session", () => {
     "gpt-5.4",
     "--dangerously-bypass-approvals-and-sandbox"
   ]);
+});
+
+test("buildCodexResumeArgs uses read-only sandbox when requested", () => {
+  const args = buildCodexResumeArgs("session-123", "gpt-5.4", false, "xhigh", "read-only");
+
+  assert.deepEqual(args, [
+    "codex",
+    "exec",
+    "resume",
+    "session-123",
+    "--json",
+    "-c",
+    'model_reasoning_effort="xhigh"',
+    "--model",
+    "gpt-5.4",
+    "--sandbox",
+    "read-only"
+  ]);
+  assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
 
 test("buildCodexResumeArgs always includes bypass flag even when autoApprove is false", () => {

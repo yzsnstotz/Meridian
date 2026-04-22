@@ -227,6 +227,7 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
     thread_id: "codex_stream_01",
     agent_type: "codex",
     reasoning_effort: "xhigh",
+    sandbox_mode: "read-only",
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_stream_01.sock",
     pid: 301,
@@ -306,7 +307,7 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   assert.equal(first.content, "first answer");
   assert.equal(connectCount, 0);
   assert.deepEqual(spawnCalls[0], {
-    args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"'],
+    args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"', "--sandbox", "read-only"],
     prompt: "hello"
   });
   assert.equal(registry.get("codex_stream_01")?.codexSessionId, "codex-session-123");
@@ -326,7 +327,17 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   assert.equal(second.status, "success");
   assert.equal(second.content, "follow up");
   assert.deepEqual(spawnCalls[1], {
-    args: ["codex", "exec", "resume", "codex-session-123", "--json", "-c", 'model_reasoning_effort="xhigh"'],
+    args: [
+      "codex",
+      "exec",
+      "resume",
+      "codex-session-123",
+      "--json",
+      "-c",
+      'model_reasoning_effort="xhigh"',
+      "--sandbox",
+      "read-only"
+    ],
     prompt: "next"
   });
   assert.deepEqual(pushed, [
@@ -2086,6 +2097,8 @@ test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () 
     modelId: string | undefined;
     autoApprove: boolean | undefined;
     reasoningEffort: string | undefined;
+    integrationProfile: string | undefined;
+    sandboxMode: string | undefined;
   }> = [];
 
   const fakeInstanceManager = {
@@ -2102,9 +2115,21 @@ test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () 
       workingDirectory?: string,
       modelId?: string,
       autoApprove?: boolean,
-      reasoningEffort?: string
+      reasoningEffort?: string,
+      _spawnTraceId?: string | null,
+      integrationProfile?: string,
+      sandboxMode?: string
     ) => {
-      spawnCalls.push({ type, mode, workingDirectory, modelId, autoApprove, reasoningEffort });
+      spawnCalls.push({
+        type,
+        mode,
+        workingDirectory,
+        modelId,
+        autoApprove,
+        reasoningEffort,
+        integrationProfile,
+        sandboxMode
+      });
       registry.register({
         thread_id: "codex_01",
         agent_type: "codex",
@@ -2114,7 +2139,9 @@ test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () 
         tmux_pane: null,
         status: "idle",
         created_at: new Date().toISOString(),
-        auto_approve: autoApprove ?? false
+        auto_approve: autoApprove ?? false,
+        integration_profile: integrationProfile,
+        sandbox_mode: sandboxMode as "read-only" | "workspace-write" | undefined
       });
       return "codex_01";
     },
@@ -2140,7 +2167,9 @@ test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () 
         attachments: [],
         model_id: "o3",
         effort: "xhigh",
-        auto_approve: true
+        auto_approve: true,
+        integration_profile: "ads_public",
+        sandbox_mode: "read-only"
       },
       reply_channel: {
         channel: "telegram",
@@ -2158,10 +2187,108 @@ test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () 
       workingDirectory: undefined,
       modelId: "o3",
       autoApprove: true,
-      reasoningEffort: "xhigh"
+      reasoningEffort: "xhigh",
+      integrationProfile: "ads_public",
+      sandboxMode: "read-only"
     }
   ]);
   assert.equal(registry.get("codex_01")?.auto_approve, true);
+  assert.equal(registry.get("codex_01")?.integration_profile, "ads_public");
+  assert.equal(registry.get("codex_01")?.sandbox_mode, "read-only");
+});
+
+test("HubRouter blocks terminal_input for ADS public threads", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_ads",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_ads.sock",
+    pid: 22,
+    tmux_pane: null,
+    status: "waiting",
+    created_at: new Date().toISOString(),
+    integration_profile: "ads_public",
+    sandbox_mode: "read-only"
+  });
+
+  let sendCalls = 0;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    sendTerminalInput: () => {
+      sendCalls += 1;
+      return "unexpected";
+    },
+    getAttachedThread: () => "codex_ads",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "terminal_input",
+      thread_id: "active",
+      target: "active",
+      payload: {
+        content: "allow",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "error");
+  assert.equal(result.content, "action blocked for ADS public sessions");
+  assert.equal(result.thread_id, "codex_ads");
+  assert.equal(sendCalls, 0);
+});
+
+test("HubRouter blocks set_auto_approve for ADS public threads", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_ads",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_ads.sock",
+    pid: 23,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString(),
+    auto_approve: false,
+    integration_profile: "ads_public",
+    sandbox_mode: "read-only"
+  });
+
+  const router = new HubRouter(registry, {
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "set_auto_approve",
+      thread_id: "codex_ads",
+      target: "codex_ads",
+      payload: {
+        content: "true",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "error");
+  assert.equal(result.content, "action blocked for ADS public sessions");
+  assert.equal(registry.get("codex_ads")?.auto_approve, false);
 });
 
 test("HubRouter list includes attachment owner and attachability by bot interface", async () => {

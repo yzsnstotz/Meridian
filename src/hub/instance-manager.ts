@@ -24,7 +24,8 @@ import type {
   AgentType,
   BridgeMode,
   ProviderModelCatalog as ProviderModelCatalogPayload,
-  ReasoningEffort
+  ReasoningEffort,
+  SandboxMode
 } from "../types";
 import { InstanceRegistry } from "./registry";
 import { buildPersistedHubState, type PersistedHubState } from "./state-store";
@@ -174,7 +175,9 @@ export class InstanceManager {
     modelId?: string,
     autoApprove?: boolean,
     reasoningEffort?: ReasoningEffort,
-    spawnTraceId?: string | null
+    spawnTraceId?: string | null,
+    integrationProfile?: string,
+    sandboxMode?: SandboxMode
   ): Promise<string> {
     return await this.spawnWithRetry(
       type,
@@ -184,7 +187,9 @@ export class InstanceManager {
       modelId,
       autoApprove,
       reasoningEffort,
-      spawnTraceId
+      spawnTraceId,
+      integrationProfile,
+      sandboxMode
     );
   }
 
@@ -353,7 +358,10 @@ export class InstanceManager {
       existing.working_dir,
       existing.model_id,
       existing.auto_approve,
-      existing.reasoning_effort
+      existing.reasoning_effort,
+      null,
+      existing.integration_profile,
+      existing.sandbox_mode
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -553,7 +561,10 @@ export class InstanceManager {
       existing.working_dir,
       nextModelId,
       existing.auto_approve,
-      existing.reasoning_effort
+      existing.reasoning_effort,
+      null,
+      existing.integration_profile,
+      existing.sandbox_mode
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -624,7 +635,9 @@ export class InstanceManager {
     modelId?: string,
     autoApprove?: boolean,
     reasoningEffort?: ReasoningEffort,
-    spawnTraceId?: string | null
+    spawnTraceId?: string | null,
+    integrationProfile?: string,
+    sandboxMode?: SandboxMode
   ): Promise<string> {
     let lastError: unknown;
 
@@ -638,7 +651,9 @@ export class InstanceManager {
           modelId,
           autoApprove,
           reasoningEffort,
-          spawnTraceId
+          spawnTraceId,
+          integrationProfile,
+          sandboxMode
         );
       } catch (error) {
         lastError = error;
@@ -690,18 +705,23 @@ export class InstanceManager {
     modelId?: string,
     autoApprove?: boolean,
     reasoningEffort?: ReasoningEffort,
-    spawnTraceId?: string | null
+    spawnTraceId?: string | null,
+    integrationProfile?: string,
+    sandboxMode?: SandboxMode
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const traceId = spawnTraceId ?? null;
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
+    if (sandboxMode === "read-only" && type !== "codex" && type !== "claude") {
+      throw new Error("Agent type does not support read-only sandbox mode");
+    }
     const endpointBinding = await this.resolveAgentEndpointBinding(threadId);
     const socketPath = endpointBinding.endpoint;
     if (endpointBinding.transport === "socket") {
       await this.removeSocketPath(socketPath);
     }
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
-    const args = this.buildSpawnArgs(type, mode, endpointBinding.listenArg, modelId, autoApprove, reasoningEffort);
+    const args = this.buildSpawnArgs(type, mode, endpointBinding.listenArg, modelId, autoApprove, reasoningEffort, sandboxMode);
     const childEnv = this.buildChildEnv();
 
     if (tmuxSession) {
@@ -752,6 +772,9 @@ export class InstanceManager {
         agent_type: type,
         model_id: modelId,
         reasoning_effort: reasoningEffort,
+        integration_profile: integrationProfile,
+        sandbox_mode: sandboxMode,
+        auto_approve: autoApprove,
         supportsStream: this.supportsStreaming(type),
         mode,
         socket_path: socketPath,
@@ -845,6 +868,9 @@ export class InstanceManager {
       agent_type: type,
       model_id: modelId,
       reasoning_effort: reasoningEffort,
+      integration_profile: integrationProfile,
+      sandbox_mode: sandboxMode,
+      auto_approve: autoApprove,
       supportsStream: this.supportsStreaming(type),
       mode,
       socket_path: socketPath,
@@ -1378,10 +1404,11 @@ export class InstanceManager {
     listenArg: string,
     modelId?: string,
     autoApprove?: boolean,
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    sandboxMode?: SandboxMode
   ): string[] {
     if (type === "codex") {
-      return buildCodexSpawnArgs(mode, null, listenArg, modelId, autoApprove, reasoningEffort);
+      return buildCodexSpawnArgs(mode, null, listenArg, modelId, autoApprove, reasoningEffort, sandboxMode);
     }
     if (type === "claude") {
       return buildClaudeSpawnArgs(mode, null, listenArg, modelId, autoApprove);
