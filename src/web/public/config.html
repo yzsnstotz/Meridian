@@ -79,6 +79,42 @@
               <span>user_reply_channels</span>
               <textarea id="cfg-reply-channels" class="editor-textarea" rows="4" readonly style="min-height: 80px"></textarea>
             </label>
+
+            <fieldset class="field-group">
+              <legend>Validator</legend>
+              <label class="field">
+                <span>enabled</span>
+                <select id="cfg-validator-enabled">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>agent_type</span>
+                <select id="cfg-validator-agent-type">
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cursor">cursor</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <input id="cfg-validator-model-id" type="text" placeholder="(default)" />
+              </label>
+              <label class="field">
+                <span>pass_threshold</span>
+                <input id="cfg-validator-pass-threshold" type="number" min="0" max="1" step="0.05" value="0.7" />
+              </label>
+              <label class="field">
+                <span>max_fix_cycles</span>
+                <input id="cfg-validator-max-fix-cycles" type="number" min="0" max="10" step="1" value="3" />
+              </label>
+              <label class="field">
+                <span>base_branch</span>
+                <input id="cfg-validator-base-branch" type="text" value="main" />
+              </label>
+            </fieldset>
           </div>
           <!-- Fallback raw JSON textarea for non-agent-dispatcher configs -->
           <label class="field" id="config-raw-field">
