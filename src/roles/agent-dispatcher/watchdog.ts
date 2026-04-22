@@ -4,8 +4,9 @@ import path from "node:path";
 import type { A2AClient } from "../../a2a/client";
 import { RECONCILE_INTERVAL_MS } from "../../config";
 import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status";
-import type { DispatchThreadStateV2 } from "../../types";
+import type { AutoResolveConfig, DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
+import { autoResolve } from "./auto-resolver";
 import { LifecycleStore } from "./lifecycle-store";
 import { queryHubThreadObservation, reconcile, type ReconciliationReport } from "./reconciler";
 import {
@@ -29,6 +30,7 @@ export interface WatchdogDeps {
   intervalMs?: number;
   onDispatcherStalled?: (info: DispatcherStallInfo) => Promise<void>;
   isDispatcherPaused?: (dispatchPlanPath: string) => Promise<boolean>;
+  autoResolveConfig?: AutoResolveConfig;
 }
 
 export class ReconciliationWatchdog {
@@ -38,6 +40,7 @@ export class ReconciliationWatchdog {
   private readonly intervalMs: number;
   private readonly onDispatcherStalled: ((info: DispatcherStallInfo) => Promise<void>) | null;
   private readonly isDispatcherPaused: ((dispatchPlanPath: string) => Promise<boolean>) | null;
+  private readonly autoResolveConfig: AutoResolveConfig | null;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -50,6 +53,7 @@ export class ReconciliationWatchdog {
     this.intervalMs = deps.intervalMs ?? RECONCILE_INTERVAL_MS;
     this.onDispatcherStalled = deps.onDispatcherStalled ?? null;
     this.isDispatcherPaused = deps.isDispatcherPaused ?? null;
+    this.autoResolveConfig = deps.autoResolveConfig ?? null;
   }
 
   start(): void {
@@ -135,6 +139,37 @@ export class ReconciliationWatchdog {
         }
 
         reports.push(report);
+
+        if (this.autoResolveConfig) {
+          try {
+            const resolveReport = await autoResolve(
+              lifecycleStore,
+              dispatchPlanPath,
+              this.autoResolveConfig,
+              {
+                log: this.log,
+                writeWorkerFile: async (filePath, content) => {
+                  await fs.mkdir(path.dirname(filePath), { recursive: true });
+                  await fs.writeFile(filePath, content, "utf8");
+                }
+              }
+            );
+
+            if (resolveReport.generated.length > 0 || resolveReport.retried.length > 0 || resolveReport.escalated.length > 0) {
+              this.log.info("Auto-resolve completed", {
+                dispatchPlanPath,
+                generated: resolveReport.generated.map((g) => g.fixWorkerId),
+                retried: resolveReport.retried,
+                escalated: resolveReport.escalated
+              });
+            }
+          } catch (error) {
+            this.log.warn("Auto-resolve failed", {
+              dispatchPlanPath,
+              error: asError(error).message
+            });
+          }
+        }
 
         await this.checkForStalledDispatcher(lifecycleStore, dispatchPlanPath);
       } catch (error) {

@@ -763,6 +763,82 @@ describe("ReconciliationWatchdog", () => {
     expect(stallCallback).not.toHaveBeenCalled();
   });
 
+  it("runs auto-resolve after reconciliation when autoResolveConfig is provided", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    await fsp.writeFile(dispatchPlanPath, [
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 0 | PRE-FLIGHT | Env Check | SONNET | — | |",
+      ""
+    ].join("\n"), "utf8");
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"), {
+      dispatchPlanPath
+    });
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "PRE-FLIGHT": {
+          thread_id: "w-thread-pf",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "a0000000-0000-4000-a000-000000000001",
+            thread_id: "w-thread-pf",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Status: ⛔ BLOCKED\n\nBaseline test suite failing on main.",
+            attachments: [],
+            timestamp: "2026-04-03T12:10:00.000Z"
+          },
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() =>
+      buildStatusResult("w-thread-pf", "completed")
+    );
+
+    const log = silentLog();
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log,
+      intervalMs: 60_000,
+      autoResolveConfig: {
+        enabled: true,
+        taskspecDir: harness.directory,
+        maxAutoResolveAttempts: 1,
+        humanEscalationPatterns: [/\bMISSING:/i]
+      }
+    });
+
+    await watchdog.sweep();
+
+    // Verify FIX task was generated
+    const planContent = await fsp.readFile(dispatchPlanPath, "utf8");
+    expect(planContent).toContain("FIX-PRE-FLIGHT");
+
+    // Verify auto-resolve log was emitted
+    expect(log.info).toHaveBeenCalledWith(
+      "Auto-resolve completed",
+      expect.objectContaining({
+        generated: ["FIX-PRE-FLIGHT"]
+      })
+    );
+  });
+
   it("logs changes detected during sweep", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
