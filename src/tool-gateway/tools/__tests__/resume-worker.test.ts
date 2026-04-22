@@ -162,6 +162,9 @@ describe("resume-worker tool", () => {
       }),
       retry_count: 0
     });
+
+    // Plan markdown must also reflect the reset — not stay stuck at ✅
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool |");
   });
 
   it("falls back to markdown-only retry when a plan row has no lifecycle entry yet", async () => {
