@@ -26,8 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
 async function setupDashboard() {
   const list = document.getElementById("roles-list");
   const empty = document.getElementById("roles-empty");
-  const feedback = document.getElementById("dashboard-feedback");
-  const form = document.getElementById("create-role-form");
   const agentDispatcherList = document.getElementById("agent-dispatchers-list");
   const agentDispatcherEmpty = document.getElementById("agent-dispatchers-empty");
   const agentDispatcherForm = document.getElementById("start-agent-dispatcher-form");
@@ -55,8 +53,6 @@ async function setupDashboard() {
   if (
     !list
     || !empty
-    || !feedback
-    || !form
     || !agentDispatcherList
     || !agentDispatcherEmpty
     || !agentDispatcherForm
@@ -141,12 +137,12 @@ async function setupDashboard() {
           }
 
           try {
-            feedback.textContent = "Deactivating role…";
+            agentDispatcherFeedback.textContent = "Deactivating role…";
             await fetchJson(`/api/role/${encodeURIComponent(threadId)}`, { method: "DELETE" });
-            feedback.textContent = `Role ${threadId} deactivated.`;
+            agentDispatcherFeedback.textContent = `Role ${threadId} deactivated.`;
             await refreshRoles();
           } catch (error) {
-            feedback.textContent = getErrorMessage(error);
+            agentDispatcherFeedback.textContent = getErrorMessage(error);
           }
         });
       });
@@ -377,49 +373,6 @@ async function setupDashboard() {
     }
   }
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    feedback.textContent = "Activating role…";
-
-    const formData = new FormData(form);
-    const payload = {
-      thread_id: normalizeText(formData.get("thread_id")),
-      system_prompt: normalizeText(formData.get("system_prompt")),
-      taskspec: normalizeText(formData.get("taskspec"))
-    };
-
-    const tasksJson = normalizeText(formData.get("tasks_json"));
-    if (tasksJson) {
-      try {
-        payload.tasks = JSON.parse(tasksJson);
-      } catch {
-        feedback.textContent = "tasks JSON must be valid JSON.";
-        return;
-      }
-    }
-
-    Object.keys(payload).forEach((key) => {
-      if (payload[key] === "") {
-        delete payload[key];
-      }
-    });
-
-    try {
-      const created = await fetchJson("/api/role", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      feedback.textContent = `Role ${created.thread_id} activated.`;
-      form.reset();
-      await refreshRoles();
-      window.location.href = `/role/${encodeURIComponent(created.thread_id)}`;
-    } catch (error) {
-      feedback.textContent = getErrorMessage(error);
-    }
-  });
-
   agentDispatcherForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     agentDispatcherFeedback.textContent = "Starting agent dispatcher…";
@@ -480,9 +433,7 @@ async function setupDashboard() {
 
   refreshButton?.addEventListener("click", () => {
     void Promise.all([loadAgentDispatcherReplyOptions(), refreshAgentDispatcherPromptPreview({ force: true }), refreshRoles()]).catch((error) => {
-      const message = getErrorMessage(error);
-      feedback.textContent = message;
-      agentDispatcherFeedback.textContent = message;
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
     });
   });
 
@@ -534,16 +485,12 @@ async function setupDashboard() {
     await refreshAgentDispatcherPromptPreview({ force: true });
     await refreshRoles();
   } catch (error) {
-    const message = getErrorMessage(error);
-    feedback.textContent = message;
-    agentDispatcherFeedback.textContent = message;
+    agentDispatcherFeedback.textContent = getErrorMessage(error);
   }
 
   window.setInterval(() => {
     void refreshRoles().catch((error) => {
-      const message = getErrorMessage(error);
-      feedback.textContent = message;
-      agentDispatcherFeedback.textContent = message;
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
     });
   }, POLL_INTERVAL_MS);
 }
@@ -1098,7 +1045,21 @@ async function setupConfigEditor() {
   const feedback = document.getElementById("config-feedback");
   const form = document.getElementById("config-form");
   const input = document.getElementById("config-input");
+  const rawField = document.getElementById("config-raw-field");
+  const fieldsContainer = document.getElementById("config-fields");
   const saveButton = document.getElementById("config-save-button");
+
+  // Structured field elements
+  const cfgDispatchPlanPath = document.getElementById("cfg-dispatch-plan-path");
+  const cfgCommandFilePath = document.getElementById("cfg-command-file-path");
+  const cfgDispatchRepoRoot = document.getElementById("cfg-dispatch-repo-root");
+  const cfgDocsRoot = document.getElementById("cfg-docs-root");
+  const cfgAgentType = document.getElementById("cfg-agent-type");
+  const cfgModelId = document.getElementById("cfg-model-id");
+  const cfgMode = document.getElementById("cfg-mode");
+  const cfgKillPolicy = document.getElementById("cfg-kill-policy");
+  const cfgAutoApprove = document.getElementById("cfg-auto-approve");
+  const cfgReplyChannels = document.getElementById("cfg-reply-channels");
 
   if (!title || !detailLink || !status || !feedback || !form || !input || !saveButton) {
     return;
@@ -1106,20 +1067,67 @@ async function setupConfigEditor() {
 
   detailLink.href = `/role/${encodeURIComponent(threadId)}`;
 
+  let useStructuredFields = false;
+
+  const populateStructuredFields = (config) => {
+    if (cfgDispatchPlanPath) cfgDispatchPlanPath.value = config.dispatch_plan_path || "";
+    if (cfgCommandFilePath) cfgCommandFilePath.value = config.command_file_path || "";
+    if (cfgDispatchRepoRoot) cfgDispatchRepoRoot.value = config.dispatch_repo_root || "";
+    if (cfgDocsRoot) cfgDocsRoot.value = config.docs_root || "";
+    if (cfgAgentType) cfgAgentType.value = config.agent_type || "claude";
+    if (cfgModelId) cfgModelId.value = config.model_id || "";
+    if (cfgMode) cfgMode.value = config.mode || "pane_bridge";
+    if (cfgKillPolicy) cfgKillPolicy.value = config.kill_policy || "always";
+    if (cfgAutoApprove) cfgAutoApprove.value = String(config.auto_approve === true);
+    if (cfgReplyChannels) cfgReplyChannels.value = JSON.stringify(config.user_reply_channels || [], null, 2);
+  };
+
+  const setStructuredFieldsDisabled = (disabled) => {
+    if (cfgAgentType) cfgAgentType.disabled = disabled;
+    if (cfgModelId) cfgModelId.readOnly = disabled;
+    if (cfgMode) cfgMode.disabled = disabled;
+    if (cfgKillPolicy) cfgKillPolicy.disabled = disabled;
+    if (cfgAutoApprove) cfgAutoApprove.disabled = disabled;
+  };
+
+  const collectStructuredPatch = () => {
+    const patch = {};
+    if (cfgAgentType) patch.agent_type = cfgAgentType.value;
+    if (cfgModelId) patch.model_id = cfgModelId.value.trim() || null;
+    if (cfgMode) patch.mode = cfgMode.value;
+    if (cfgKillPolicy) patch.kill_policy = cfgKillPolicy.value;
+    if (cfgAutoApprove) patch.auto_approve = cfgAutoApprove.value === "true";
+    return patch;
+  };
+
   const applyEditState = (response) => {
     const isAgentDispatcherConfig = isAgentDispatcherLaunchConfig(response.config);
-    input.readOnly = response.can_edit !== true;
+    useStructuredFields = isAgentDispatcherConfig && fieldsContainer;
+
+    if (useStructuredFields) {
+      fieldsContainer.hidden = false;
+      if (rawField) rawField.hidden = true;
+      populateStructuredFields(response.config);
+      setStructuredFieldsDisabled(response.can_edit !== true);
+    } else {
+      if (fieldsContainer) fieldsContainer.hidden = true;
+      if (rawField) rawField.hidden = false;
+      input.readOnly = response.can_edit !== true;
+    }
+
     saveButton.disabled = response.can_edit !== true;
     if (sectionTitle) {
-      sectionTitle.textContent = isAgentDispatcherConfig ? "Launch Config JSON" : "Dispatch Plan JSON";
+      sectionTitle.textContent = isAgentDispatcherConfig ? "Launch Config" : "Dispatch Plan JSON";
     }
     if (lede) {
       lede.textContent = isAgentDispatcherConfig
-        ? "Review the saved launch JSON for this agent dispatcher. Prompt content stays on the prompt editor."
+        ? "Edit launch settings for this agent dispatcher. Path fields and reply channels are read-only."
         : "Edit dispatcher JSON for `tasks` and `taskspec`. Prompt content stays on the prompt editor.";
     }
     status.textContent = response.can_edit
-      ? "Only tasks and taskspec are editable here. Runtime task fields are reset on save."
+      ? (isAgentDispatcherConfig
+        ? "Editable fields: agent_type, model_id, mode, kill_policy, auto_approve. Changes apply to subsequent worker launches."
+        : "Only tasks and taskspec are editable here. Runtime task fields are reset on save.")
       : response.blocked_reason || "Editing is temporarily unavailable.";
   };
 
@@ -1135,11 +1143,15 @@ async function setupConfigEditor() {
     event.preventDefault();
 
     let payload;
-    try {
-      payload = JSON.parse(input.value);
-    } catch {
-      feedback.textContent = "Config JSON must be valid JSON.";
-      return;
+    if (useStructuredFields) {
+      payload = collectStructuredPatch();
+    } else {
+      try {
+        payload = JSON.parse(input.value);
+      } catch {
+        feedback.textContent = "Config JSON must be valid JSON.";
+        return;
+      }
     }
 
     try {
@@ -1153,9 +1165,7 @@ async function setupConfigEditor() {
       title.textContent = response.thread_id;
       input.value = JSON.stringify(response.config, null, 2);
       applyEditState(response);
-      feedback.textContent = response.can_edit
-        ? "Dispatcher config saved."
-        : response.blocked_reason || "Dispatcher config saved, but editing is now unavailable.";
+      feedback.textContent = "Dispatcher config saved.";
     } catch (error) {
       feedback.textContent = getErrorMessage(error);
     }
@@ -1169,6 +1179,8 @@ async function setupConfigEditor() {
     feedback.textContent = getErrorMessage(error);
     input.value = "";
     input.readOnly = true;
+    if (fieldsContainer) fieldsContainer.hidden = true;
+    if (rawField) rawField.hidden = false;
     saveButton.disabled = true;
   }
 }
@@ -1828,6 +1840,8 @@ function formatContinueResult(result) {
       return message || "continued";
     case "still_blocked":
       return message || "still blocked";
+    case "manual_intervention_required":
+      return message || "manual intervention required";
     case "local_tool_bootstrap_failed":
       return message || "local tool bootstrap failed";
     default:

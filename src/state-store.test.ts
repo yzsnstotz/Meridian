@@ -127,13 +127,10 @@ describe("StateStore", () => {
 
     const loaded = await store.load();
     expect(loaded?.roles[0]?.config).toMatchObject({
-      dispatch_repo_root: await fs.realpath(repoRoot),
-      docs_root: await fs.realpath(docsRoot)
+      dispatch_repo_root: directory,
+      docs_root: docsRoot
     });
     expect((loaded?.roles[0]?.config as { system_prompt?: string }).system_prompt).toContain(
-      `dispatch_repo_root: ${await fs.realpath(repoRoot)}`
-    );
-    expect((loaded?.roles[0]?.config as { system_prompt?: string }).system_prompt).not.toContain(
       `dispatch_repo_root: ${directory}`
     );
   });

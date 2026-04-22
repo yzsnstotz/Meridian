@@ -22,7 +22,66 @@
           <p id="config-status" class="muted">Only tasks and taskspec are editable here. Runtime task fields are reset on save.</p>
         </div>
         <form id="config-form" class="stack">
-          <label class="field">
+          <!-- Structured fields for agent-dispatcher config -->
+          <div id="config-fields" hidden>
+            <label class="field">
+              <span>dispatch_plan_path</span>
+              <input id="cfg-dispatch-plan-path" type="text" readonly />
+            </label>
+            <label class="field">
+              <span>command_file_path</span>
+              <input id="cfg-command-file-path" type="text" readonly />
+            </label>
+            <label class="field">
+              <span>dispatch_repo_root</span>
+              <input id="cfg-dispatch-repo-root" type="text" readonly />
+            </label>
+            <label class="field">
+              <span>docs_root</span>
+              <input id="cfg-docs-root" type="text" readonly />
+            </label>
+            <label class="field">
+              <span>agent_type</span>
+              <select id="cfg-agent-type">
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+                <option value="gemini">gemini</option>
+                <option value="cursor">cursor</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>model_id</span>
+              <input id="cfg-model-id" type="text" placeholder="(default)" />
+            </label>
+            <label class="field">
+              <span>mode</span>
+              <select id="cfg-mode">
+                <option value="bridge">bridge</option>
+                <option value="pane_bridge">pane_bridge</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>kill_policy</span>
+              <select id="cfg-kill-policy">
+                <option value="always">always</option>
+                <option value="on_success">on_success</option>
+                <option value="never">never</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>auto_approve</span>
+              <select id="cfg-auto-approve">
+                <option value="false">false</option>
+                <option value="true">true</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>user_reply_channels</span>
+              <textarea id="cfg-reply-channels" class="editor-textarea" rows="4" readonly style="min-height: 80px"></textarea>
+            </label>
+          </div>
+          <!-- Fallback raw JSON textarea for non-agent-dispatcher configs -->
+          <label class="field" id="config-raw-field">
             <span>dispatcher_config</span>
             <textarea id="config-input" class="editor-textarea" rows="18" spellcheck="false"></textarea>
           </label>

@@ -26,6 +26,7 @@ describe("spawn tool", () => {
       mode: "pane_bridge",
       spawnDir: process.cwd(),
       modelId: undefined,
+      effort: undefined,
       autoApprove: undefined
     });
     expect(result).toEqual({
@@ -58,6 +59,7 @@ describe("spawn tool", () => {
       mode: "pane_bridge",
       spawnDir: "/tmp/project",
       modelId: "gpt-5.4",
+      effort: undefined,
       autoApprove: false
     });
     expect(result).toEqual({
@@ -99,7 +101,7 @@ describe("spawn tool", () => {
     });
   });
 
-  it("splits effort suffix from model_id and passes it with the model id", async () => {
+  it("splits effort suffix from model_id and sends them as separate fields", async () => {
     mockSpawn.mockResolvedValue({
       threadId: "thread-xh",
       source: "codex"
@@ -112,7 +114,8 @@ describe("spawn tool", () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       expect.objectContaining({
-        modelId: "gpt-5.4 xhigh"
+        modelId: "gpt-5.4",
+        effort: "xhigh"
       })
     );
     expect(result).toEqual({

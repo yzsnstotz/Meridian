@@ -1,6 +1,9 @@
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
+import path from "node:path";
 
 import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
+import { LifecycleStore } from "./lifecycle-store";
 import { resolveDispatchModelMapFromMarkdown, resolveImplicitDispatchModelOverride } from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
@@ -57,6 +60,23 @@ export async function continueDispatchWorker(
 
     if (isHumanDispatchRow(dispatchPlanRow)) {
       throw new Error(`Worker is not launchable: ${workerId}`);
+    }
+
+    // Guard: refuse to re-dispatch a worker that already reached a terminal
+    // success state in the lifecycle store. The plan markdown may show 🔄 due
+    // to a stale sync, but the lifecycle store is authoritative. Without this
+    // guard, shouldResetWorkerBeforeContinue would wipe the completed state
+    // back to pending and cause an infinite re-dispatch loop.
+    const lifecycleStore = new LifecycleStore(
+      path.join(path.dirname(config.dispatch_plan_path), "dispatch_threads.json")
+    );
+    const currentWorkerState = lifecycleStore.load().workers[workerId];
+    if (currentWorkerState?.status === "completed" || currentWorkerState?.status === "skipped") {
+      return {
+        ok: true,
+        workerId,
+        threadId: currentWorkerState.thread_id
+      };
     }
 
     if (shouldResetWorkerBeforeContinue(dispatchPlanRow)) {
@@ -124,6 +144,9 @@ async function launchWorkerFromDispatchPlan(
     ? resolvedModelMap[modelCode] ?? resolveImplicitDispatchModelOverride(modelCode)
     : undefined;
 
+  const workerSpawnDir = resolveWorkerSpawnDir(config.dispatch_plan_path, dispatchPlanRow.worker)
+    ?? resolveConfiguredDispatchRepoRoot(config);
+
   return launchWorker({
     agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
     mode: config.mode,
@@ -131,7 +154,7 @@ async function launchWorkerFromDispatchPlan(
     autoApprove: config.auto_approve,
     commandFilePath: config.command_file_path,
     dispatchPlanPath: config.dispatch_plan_path,
-    dispatchRepoRoot: resolveConfiguredDispatchRepoRoot(config),
+    dispatchRepoRoot: workerSpawnDir,
     workerId: dispatchPlanRow.worker,
     modelId: resolvedModel?.model_id?.trim() || undefined
   });
@@ -187,4 +210,40 @@ function isLocalToolBootstrapFailure(message: string): boolean {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Reads the worker file (`<WORKER_ID>.md` next to the dispatch plan) and extracts
+ * the `Repo:` field value if present. This allows multi-repo dispatch plans to
+ * spawn each worker in its designated repository instead of using a single
+ * `dispatch_repo_root` for all workers.
+ *
+ * Returns null if the worker file does not exist or has no Repo field.
+ */
+export function resolveWorkerSpawnDir(
+  dispatchPlanPath: string,
+  workerId: string
+): string | null {
+  const workerFilePath = path.join(path.dirname(dispatchPlanPath), `${workerId}.md`);
+
+  let content: string;
+  try {
+    content = fsSync.readFileSync(workerFilePath, "utf8");
+  } catch {
+    return null;
+  }
+
+  return extractRepoFieldFromWorkerFile(content);
+}
+
+const REPO_FIELD_PATTERN = /^[-*]\s*\*{0,2}Repo\*{0,2}\s*:\s*`?([^`\n]+?)`?\s*$/m;
+
+export function extractRepoFieldFromWorkerFile(content: string): string | null {
+  const match = content.match(REPO_FIELD_PATTERN);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const repoPath = match[1].trim();
+  return repoPath.length > 0 ? repoPath : null;
 }

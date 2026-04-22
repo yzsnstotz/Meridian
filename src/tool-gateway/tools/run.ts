@@ -7,7 +7,7 @@ import { ROLES_SERVICE_ID } from "../../config";
 import { reconcile } from "../../roles/agent-dispatcher/reconciler";
 import { createMeridianApiClient, type MeridianRunResult } from "../../roles/agent-dispatcher/meridian-api-client";
 import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubResult, type HubRunState, type KillPolicy } from "../../types";
-import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, isExplicitCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
 import { sendViaHttpRelay } from "../ipc-bridge";
 import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
@@ -21,6 +21,20 @@ const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERR
 const MAX_PREVIOUS_REPLY_CHARS = 6_000;
 const MAX_PREVIOUS_REPORT_CHARS = 6_000;
 const MAX_PREVIOUS_REPORT_FILES = 2;
+const MAX_WORKER_RETRIES = 3;
+const TRANSIENT_RUN_RETRY_DELAYS_MS = [5_000, 15_000];
+const TRANSIENT_ERROR_PATTERNS = [
+  /timed?\s*out/i,
+  /overloaded/i,
+  /too many requests/i,
+  /rate.limit/i,
+  /service.unavailable/i,
+  /ECONNREFUSED/,
+  /ECONNRESET/,
+  /ETIMEDOUT/,
+  /\bfetch failed\b/i,
+  /\bunreachable\b/i
+];
 
 const runTool: ToolDefinition = {
   name: "run",
@@ -78,12 +92,33 @@ const runTool: ToolDefinition = {
 
     process.once("SIGINT", handleSigint);
 
+    const traceId = randomUUID();
+    const lifecycleStore = createLifecycleStore(commandPath);
+
     try {
-      const traceId = randomUUID();
-      const lifecycleStore = createLifecycleStore(commandPath);
       const workerRow = await resolveWorkerRow(commandPath, worker);
       const expectedOutputs = await deriveExpectedOutputs(commandPath, worker);
       const previousWorkerState = lifecycleStore.load().workers[worker] as DispatchWorkerState | undefined;
+
+      // Guard: refuse to re-dispatch a worker that already completed or was
+      // skipped. The AI dispatcher can mistakenly re-dispatch a finished worker
+      // when it doesn't see the terminal state (e.g. relay timeout lost the
+      // result). Without this guard, recordWorkerStart would overwrite the
+      // completed state back to "running" and revert the plan markdown.
+      if (previousWorkerState && (previousWorkerState.status === "completed" || previousWorkerState.status === "skipped")) {
+        const summary = previousWorkerState.hub_result?.content ?? `Worker ${worker} already ${previousWorkerState.status}`;
+        return {
+          ok: true,
+          data: {
+            worker,
+            thread_id: previousWorkerState.thread_id,
+            status: "done",
+            run_state: "completed",
+            summary: `[already ${previousWorkerState.status}] ${summary}`
+          }
+        };
+      }
+
       const preamble = await buildWorkerPreamble(
         worker,
         workerRow,
@@ -93,8 +128,28 @@ const runTool: ToolDefinition = {
       );
       lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
 
+      // Enforce max retry cap to prevent infinite retry loops. The AI dispatcher
+      // can re-dispatch failed workers without going through the service-continuation
+      // retry gate (which checks retry_count < 2). recordWorkerStart auto-increments
+      // retry_count when restarting from a terminal state, so we check it here.
+      const retryCount = lifecycleStore.load().workers[worker]?.retry_count ?? 0;
+      if (retryCount > MAX_WORKER_RETRIES) {
+        const exhaustedResult: HubResult = {
+          trace_id: traceId,
+          thread_id: threadId,
+          source: "codex",
+          status: "error",
+          run_state: "timeout",
+          content: `Worker ${worker} exceeded maximum retry count (${MAX_WORKER_RETRIES}). Marking as permanently failed to prevent infinite retry loops.`,
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+        lifecycleStore.recordWorkerResult(worker, exhaustedResult);
+        return failedResult(worker, threadId, exhaustedResult.content);
+      }
+
       const client = createMeridianApiClient();
-      const apiResult = await client.run({ threadId, content: preamble });
+      const apiResult = await runWithTransientRetry(client, threadId, preamble);
       const result = toHubResult(apiResult, traceId);
       lifecycleStore.recordWorkerResult(worker, result);
       await reconcileAfterTerminalResult(lifecycleStore, result);
@@ -108,6 +163,44 @@ const runTool: ToolDefinition = {
         threadId,
         error: resolvedError.message
       });
+
+      // When the run-tool HTTP call fails with a transient error (timeout,
+      // overload, connection reset) the remote worker may still be executing.
+      // Recording a synthetic "failed/timeout" hub_result would cause the
+      // reconciler to mark the worker as terminal before the agent has had a
+      // chance to finish. Instead, leave the worker as "running" and let the
+      // reconciler / watchdog validate the actual thread status and outputs.
+      //
+      // Only record a synthetic failure for non-transient errors (e.g. 4xx
+      // client errors, malformed responses) where the worker genuinely cannot
+      // have started or will never produce a result.
+      if (!isTransientError(resolvedError)) {
+        try {
+          const syntheticResult: HubResult = {
+            trace_id: traceId,
+            thread_id: threadId,
+            source: "codex",
+            status: "error",
+            run_state: "timeout",
+            content: resolvedError.message,
+            attachments: [],
+            timestamp: new Date().toISOString()
+          };
+          lifecycleStore.recordWorkerResult(worker, syntheticResult);
+        } catch (lifecycleError) {
+          console.warn("run tool failed to record error in lifecycle store", {
+            worker,
+            threadId,
+            error: asError(lifecycleError).message
+          });
+        }
+      } else {
+        console.warn("run tool transient error — worker left as running for reconciler validation", {
+          worker,
+          threadId,
+          error: resolvedError.message
+        });
+      }
 
       if (interrupted || INTERRUPT_MESSAGES.has(resolvedError.message)) {
         return interruptedResult(worker, threadId);
@@ -143,7 +236,7 @@ function createLifecycleStore(commandPath: string): LifecycleStore {
 }
 
 async function reconcileAfterTerminalResult(lifecycleStore: LifecycleStore, result: HubResult): Promise<void> {
-  if (inferRunState(result) !== "completed") {
+  if (inferRunState(result) !== "completed" && !isExplicitCompletionContent(result.content)) {
     return;
   }
 
@@ -516,6 +609,11 @@ function extractCompletionReportTemplate(command: string, workerId: string): str
     return substituteWorkerId(blockMatch[1], workerId);
   }
 
+  const inlineMatch = /Write(?: your)?(?: completion)? report to:\s*`([^`\r\n]+)`/i.exec(command);
+  if (inlineMatch?.[1]) {
+    return substituteWorkerId(inlineMatch[1], workerId);
+  }
+
   return null;
 }
 
@@ -858,6 +956,63 @@ function missingParam(name: string): ToolResult {
 function requireParam(value: string | undefined, name: string): string | null {
   void name;
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function runWithTransientRetry(
+  client: ReturnType<typeof createMeridianApiClient>,
+  threadId: string,
+  content: string
+): Promise<MeridianRunResult> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= TRANSIENT_RUN_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await client.run({ threadId, content });
+    } catch (error) {
+      lastError = asError(error);
+      if (attempt < TRANSIENT_RUN_RETRY_DELAYS_MS.length && shouldRetryRunError(lastError)) {
+        const delayMs = TRANSIENT_RUN_RETRY_DELAYS_MS[attempt]!;
+        console.warn("run tool transient error, retrying", {
+          threadId,
+          attempt: attempt + 1,
+          delayMs,
+          error: lastError.message
+        });
+        await delay(delayMs);
+        continue;
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError!;
+}
+
+function isTransientError(error: Error): boolean {
+  return TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(error.message));
+}
+
+function shouldRetryRunError(error: Error): boolean {
+  if (!isTransientError(error)) {
+    return false;
+  }
+
+  // `/api/run` is non-idempotent. Once Meridian returns a transient-looking
+  // `run failed: ...` response, the worker may already be executing, so replaying
+  // the same prompt into the same thread can duplicate work.
+  //
+  // However, when the error indicates the API was *unreachable* (e.g. "fetch failed",
+  // ECONNREFUSED), the request never reached Meridian — the worker cannot have started,
+  // so retry is safe.
+  if (/^run failed:/i.test(error.message)) {
+    return /\bunreachable\b/i.test(error.message);
+  }
+
+  return true;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function asError(error: unknown): Error {

@@ -1,4 +1,7 @@
 import type { DispatchThreadStateV2 } from "../../types";
+import { hubResultContainsHitLimit } from "./lifecycle-store";
+
+const MAX_AUTOMATIC_RECOVERY_RETRIES = 2;
 
 export interface DispatchContinuationPlanRow {
   status: string;
@@ -24,6 +27,29 @@ export function resolveServiceContinueWorker(
 ): string | null {
   return resolveImplicitContinueWorker(rows, lifecycleState)
     ?? resolveFirstEligibleContinueWorker(rows, lifecycleState);
+}
+
+export function resolveManualInterventionWorker(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  for (const row of rows) {
+    if (isHumanDispatchRow(row)) {
+      continue;
+    }
+
+    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
+    if (!workerState?.hub_result || !hubResultContainsHitLimit(workerState.hub_result)) {
+      continue;
+    }
+
+    const normalizedWorkerId = row.worker.trim();
+    if (normalizedWorkerId.length > 0) {
+      return normalizedWorkerId;
+    }
+  }
+
+  return null;
 }
 
 export function isHumanDispatchRow(row: Pick<DispatchContinuationPlanRow, "model">): boolean {
@@ -90,6 +116,14 @@ function resolveImplicitContinueWorker(
     return null;
   }
 
+  // Don't re-dispatch workers that already reached a terminal success state.
+  // The plan markdown may still show 🔄 due to a stale sync, but the lifecycle
+  // store is authoritative. Re-dispatching a completed/skipped worker would
+  // reset it to pending and cause an infinite re-dispatch loop.
+  if (worker?.status === "completed" || worker?.status === "skipped") {
+    return null;
+  }
+
   const normalizedWorkerId = row.worker.trim();
   return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
 }
@@ -123,9 +157,9 @@ function isEligibleServiceContinueRow(
 
   switch (row.status.trim()) {
     case "⚠️ ABANDONED":
-      return true;
+      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
     case "❌":
-      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < 2;
+      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
     case "⬜":
       return areDispatchDependenciesSatisfied(row, rows, rowsByWorker);
     default:

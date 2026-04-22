@@ -55,7 +55,8 @@ const spawnTool: ToolDefinition = {
         agentType,
         mode,
         spawnDir,
-        modelId: effort ? `${modelId} ${effort}` : modelId,
+        modelId,
+        effort,
         autoApprove
       });
 

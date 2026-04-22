@@ -53,6 +53,30 @@ describe("service continuation", () => {
     ], createLifecycleState())).toBeNull();
   });
 
+  it("does not re-dispatch a worker whose plan shows 🔄 but lifecycle is completed", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-01": {
+        status: "completed",
+        thread_id: "worker-thread-r01"
+      }
+    }))).toBeNull();
+  });
+
+  it("does not re-dispatch a worker whose plan shows 🔄 but lifecycle is skipped", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-01": {
+        status: "skipped",
+        thread_id: "worker-thread-r01"
+      }
+    }))).toBeNull();
+  });
+
   it("ignores blocked running rows when selecting the next automatic continuation target", () => {
     expect(resolveServiceContinueWorker([
       {
@@ -84,6 +108,17 @@ describe("service continuation", () => {
         status: "completed"
       }
     }))).toBe("E-01R");
+  });
+
+  it("does not auto-continue abandoned rows once the retry threshold is reached", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "⚠️ ABANDONED", batch: "1", worker: "R-03", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-03": {
+        status: "abandoned",
+        retry_count: 2
+      }
+    }))).toBeNull();
   });
 });
 

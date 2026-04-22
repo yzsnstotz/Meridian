@@ -21,6 +21,8 @@ export interface MeridianSpawnRequest {
   spawnDir: string;
   /** Optional model identifier forwarded to the provider adapter. */
   modelId?: string;
+  /** Optional reasoning effort level (low, medium, high, xhigh). Sent separately from model_id. */
+  effort?: string;
   /** Approval policy. Meridian maps this to provider-specific flags. */
   autoApprove?: boolean;
 }
@@ -196,6 +198,9 @@ function buildSpawnRequestBody(request: MeridianSpawnRequest): Record<string, un
   if (request.modelId?.trim()) {
     body.model_id = request.modelId.trim();
   }
+  if (request.effort?.trim()) {
+    body.effort = request.effort.trim();
+  }
 
   return body;
 }
@@ -355,6 +360,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function asErrorMessage(error: unknown): string {
   if (error instanceof Error) {
+    // Node.js native fetch wraps connection errors (ECONNREFUSED, ETIMEDOUT, etc.)
+    // inside a TypeError("fetch failed") with the real error in `.cause`. Extract the
+    // underlying message so callers can pattern-match on the actual failure reason.
+    const cause = (error as { cause?: unknown }).cause;
+    if (error.message === "fetch failed" && cause instanceof Error && cause.message) {
+      return `fetch failed (${cause.message})`;
+    }
     return error.message;
   }
   return String(error);

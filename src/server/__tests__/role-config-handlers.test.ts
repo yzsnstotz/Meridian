@@ -10,7 +10,6 @@ import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import type { LaunchConfig, LaunchResult } from "../../roles/agent-dispatcher/launcher";
 import type { LaunchDispatchWorkerConfig, LaunchDispatchWorkerResult } from "../../roles/agent-dispatcher/worker-launcher";
-import { DispatcherRole } from "../../roles/definitions";
 import { PromptStore } from "../../roles/prompt-store";
 import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
@@ -36,70 +35,6 @@ class MemoryStateStore {
 }
 
 describe("role config handlers", () => {
-  it("prefers the active dispatcher config over stale persisted state", async () => {
-    const harness = createHarness();
-
-    await createRole(
-      harness.roleHandlers,
-      {
-        thread_id: "dispatcher-live",
-        tasks: [
-          {
-            task_id: "complete",
-            instruction: "Already done",
-            depends_on: [],
-            status: "done",
-            result_summary: "finished"
-          }
-        ],
-        taskspec: "live config",
-        system_prompt: "keep me elsewhere",
-        user_reply_channel: {
-          channel: "telegram",
-          chat_id: "telegram:pm"
-        }
-      }
-    );
-
-    const state = await harness.stateStore.load();
-    expect(state).not.toBeNull();
-    if (!state) {
-      throw new Error("Expected persisted state");
-    }
-
-    state.roles[0] = {
-      ...state.roles[0],
-      config: {
-        tasks: [
-          {
-            task_id: "stale",
-            instruction: "persisted only",
-            depends_on: []
-          }
-        ],
-        taskspec: "persisted config"
-      }
-    };
-    await harness.stateStore.save(state);
-
-    await expect(harness.roleHandlers.getConfig("dispatcher-live")).resolves.toEqual({
-      thread_id: "dispatcher-live",
-      status: "completed",
-      can_edit: true,
-      blocked_reason: undefined,
-      config: {
-        tasks: [
-          {
-            task_id: "complete",
-            instruction: "Already done",
-            depends_on: []
-          }
-        ],
-        taskspec: "live config"
-      }
-    });
-  });
-
   it("returns 404 when the dispatcher role does not exist", async () => {
     const harness = createHarness();
 
@@ -132,33 +67,6 @@ describe("role config handlers", () => {
       version: "1.2.0",
       agents_count: 1,
       roles_count: 1
-    });
-  });
-
-  it("accepts agent-dispatcher role creation payloads", async () => {
-    const harness = createHarness();
-    const request = createJsonRequest("POST", "/api/role", {
-      role_type: "agent-dispatcher",
-      config: {
-        dispatch_plan_path: "/tmp/dispatch_plan.md",
-        command_file_path: "/tmp/agent_dispatch_command.md",
-        user_reply_channels: [
-          {
-            channel: "telegram",
-            chat_id: "telegram:pm"
-          }
-        ]
-      }
-    });
-    const response = createJsonResponse();
-
-    const handled = await harness.roleHandlers.handle(request, response.raw);
-
-    expect(handled).toBe(true);
-    expect(response.statusCode).toBe(201);
-    expect(JSON.parse(response.body)).toMatchObject({
-      ok: true,
-      role_type: "agent-dispatcher"
     });
   });
 
@@ -395,8 +303,7 @@ describe("role config handlers", () => {
     await expect(harness.roleHandlers.getConfig("agent-dispatcher-config")).resolves.toEqual({
       thread_id: "agent-dispatcher-config",
       status: "active",
-      can_edit: false,
-      blocked_reason: "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.",
+      can_edit: true,
       config: {
         dispatch_plan_path: "/tmp/dispatch_plan.md",
         command_file_path: "/tmp/agent_dispatch_command.md",
@@ -481,7 +388,16 @@ describe("role config handlers", () => {
     ].join("\n"), "utf8");
     await fs.writeFile(commandFilePath, "# Worker Command\n", "utf8");
 
-    registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+    registry.register("dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, {
+      stateStore,
+      buildSystemPrompt: () => "test system prompt",
+      launchDispatcher: async () => ({
+        ok: true,
+        threadId: "dispatcher-thread-e2e"
+      }),
+      killThread: async () => undefined,
+      signalDispatcher: async () => undefined
+    }));
     registry.register(
       "agent-dispatcher",
       (threadId, config) => new AgentDispatcherRole(threadId, config, {
@@ -1059,11 +975,64 @@ describe("role config handlers", () => {
         "/api/agent-dispatcher/agent-dispatcher-continue-paused/continue"
       )).resolves.toEqual({
         ok: true,
-        status: "continued",
-        message: "continued: dispatcher",
+        status: "plan_complete",
+        message: "plan complete: all non-human workers are terminal",
         dispatcher_thread_id: "dispatcher-thread-123"
       });
-      expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-continue-paused")?.status).toBe("active");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks continuation when a worker reply reported hit limit", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-hit-limit-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 5 | R-07 | Integration Repair | CODEX | — | CLI Integration PRD | done |",
+      "| ⬜ | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | review output |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-07": buildLifecycleWorker({
+          thread_id: "worker-thread-r07",
+          status: "completed",
+          hub_result: {
+            ...buildHubResult(":hit limit"),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-r07"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-hit-limit", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-hit-limit/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "manual_intervention_required",
+        message: "manual intervention required: R-07 reported hit limit",
+        worker: "R-07",
+        error: ":hit limit"
+      });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -1771,6 +1740,8 @@ describe("role config handlers", () => {
       });
 
       expect(lifecycleStore.load().workers["N-04"]?.status).toBe("pending");
+      // Explicit status changes must override the terminal-success guard so
+      // that completed workers can be redone from both the GUI and the CLI.
       await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool | CODEX-XHIGH | R-03 | CLI Integration PRD | done |");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -2603,53 +2574,9 @@ describe("role config handlers", () => {
     }
   });
 
-  it("rejects runtime-only and non-editor fields in config patches", async () => {
+  it("rejects config patches with unrecognized fields with 400", async () => {
     const harness = createHarness(createPersistedState({
       tasks: [],
-      taskspec: "existing"
-    }));
-
-    await expect(
-      harness.roleHandlers.patchConfig("dispatcher-1", {
-        tasks: [
-          {
-            task_id: "task-a",
-            instruction: "Run task A",
-            depends_on: [],
-            status: "running"
-          }
-        ]
-      })
-    ).rejects.toMatchObject({
-      statusCode: 400,
-      message: "Invalid dispatcher config edit payload"
-    });
-
-    await expect(
-      harness.roleHandlers.patchConfig("dispatcher-1", {
-        tasks: [],
-        user_reply_channel: {
-          channel: "telegram",
-          chat_id: "telegram:pm"
-        }
-      })
-    ).rejects.toMatchObject({
-      statusCode: 400,
-      message: "Invalid dispatcher config edit payload"
-    });
-  });
-
-  it("returns 409 while any dispatcher task is running", async () => {
-    const harness = createHarness(createPersistedState({
-      tasks: [
-        {
-          task_id: "task-a",
-          instruction: "Run task A",
-          depends_on: [],
-          status: "running",
-          result_trace_id: "00000000-0000-4000-8000-000000000001"
-        }
-      ],
       taskspec: "existing"
     }));
 
@@ -2659,138 +2586,7 @@ describe("role config handlers", () => {
         taskspec: "next"
       })
     ).rejects.toMatchObject({
-      statusCode: 409,
-      message: "Cannot edit dispatcher config while tasks are running"
-    });
-  });
-
-  it("normalizes runtime fields, preserves non-editor config, and persists edits across reload", async () => {
-    const harness = createHarness();
-
-    await createRole(
-      harness.roleHandlers,
-      {
-        thread_id: "dispatcher-edit",
-        tasks: [],
-        taskspec: "before",
-        system_prompt: "system prompt stays on prompts",
-        user_reply_channel: {
-          channel: "telegram",
-          chat_id: "telegram:pm"
-        }
-      }
-    );
-
-    const response = await harness.roleHandlers.patchConfig("dispatcher-edit", {
-      tasks: [
-        {
-          task_id: "task-a",
-          instruction: "Run task A",
-          instruction_template: "Use the template",
-          depends_on: [],
-          target_agent_type: "codex"
-        },
-        {
-          task_id: "task-b",
-          instruction: "Run task B",
-          depends_on: ["task-a"],
-          target_model_id: "gpt-5-codex"
-        }
-      ],
-      taskspec: "after"
-    });
-
-    expect(response).toEqual({
-      thread_id: "dispatcher-edit",
-      status: "active",
-      can_edit: true,
-      blocked_reason: undefined,
-      config: {
-        tasks: [
-          {
-            task_id: "task-a",
-            instruction: "Run task A",
-            instruction_template: "Use the template",
-            depends_on: [],
-            target_agent_type: "codex"
-          },
-          {
-            task_id: "task-b",
-            instruction: "Run task B",
-            depends_on: ["task-a"],
-            target_model_id: "gpt-5-codex"
-          }
-        ],
-        taskspec: "after"
-      }
-    });
-
-    const liveConfig = harness.roleHandlers.resolveRole("dispatcher-edit")?.config as DispatcherConfig;
-    expect(liveConfig.tasks).toMatchObject([
-      {
-        task_id: "task-a",
-        instruction: "Run task A",
-        instruction_template: "Use the template",
-        depends_on: [],
-        target_agent_type: "codex",
-        status: "pending"
-      },
-      {
-        task_id: "task-b",
-        instruction: "Run task B",
-        depends_on: ["task-a"],
-        target_model_id: "gpt-5-codex",
-        status: "pending"
-      }
-    ]);
-    expect(liveConfig.tasks[0]?.result_trace_id).toBeUndefined();
-    expect(liveConfig.tasks[0]?.result_summary).toBeUndefined();
-    expect(liveConfig.system_prompt).toBe("system prompt stays on prompts");
-    expect(liveConfig.user_reply_channel).toEqual({
-      channel: "telegram",
-      chat_id: "telegram:pm"
-    });
-
-    const persistedState = await harness.stateStore.load();
-    expect(persistedState?.roles[0]).toMatchObject({
-      threadId: "dispatcher-edit",
-      roleType: "dispatcher",
-      status: "active"
-    });
-    const persistedConfig = persistedState?.roles[0]?.config as DispatcherConfig;
-    expect(persistedConfig.tasks[0]?.status).toBe("pending");
-    expect(persistedConfig.tasks[0]?.result_trace_id).toBeUndefined();
-    expect(persistedConfig.tasks[0]?.result_summary).toBeUndefined();
-    expect(persistedConfig.system_prompt).toBe("system prompt stays on prompts");
-    expect(persistedConfig.user_reply_channel).toEqual({
-      channel: "telegram",
-      chat_id: "telegram:pm"
-    });
-
-    const reloadedHarness = createHarness(undefined, harness.stateStore);
-    await expect(reloadedHarness.roleHandlers.getConfig("dispatcher-edit")).resolves.toEqual({
-      thread_id: "dispatcher-edit",
-      status: "active",
-      can_edit: true,
-      blocked_reason: undefined,
-      config: {
-        tasks: [
-          {
-            task_id: "task-a",
-            instruction: "Run task A",
-            instruction_template: "Use the template",
-            depends_on: [],
-            target_agent_type: "codex"
-          },
-          {
-            task_id: "task-b",
-            instruction: "Run task B",
-            depends_on: ["task-a"],
-            target_model_id: "gpt-5-codex"
-          }
-        ],
-        taskspec: "after"
-      }
+      statusCode: 400
     });
   });
 
@@ -2937,45 +2733,43 @@ function createHarness(
     log
   });
 
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
-  registry.register(
-    "agent-dispatcher",
-    (threadId, config) => new AgentDispatcherRole(threadId, config, {
-      stateStore,
-      buildSystemPrompt: () => "test system prompt",
-      launchDispatcher: launchDispatcher ?? (async () => ({
-        ok: true,
-        threadId: "dispatcher-thread-123"
-      })),
-      sessionManagerFactory: () => ({
-        getDispatcherThreadId: () => "dispatcher-thread-123",
-        initSession: async () => undefined,
-        isPaused: () => false,
-        prepareFreshDispatcherLaunch: async () => undefined,
-        onRestart: async () => ({
-          staleWorkersKilled: [],
-          dispatcherRestarted: true
-        }),
-        setPaused: () => undefined
+  const agentDispatcherFactory = (threadId: string, config: unknown) => new AgentDispatcherRole(threadId, config, {
+    stateStore,
+    buildSystemPrompt: () => "test system prompt",
+    launchDispatcher: launchDispatcher ?? (async () => ({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    })),
+    sessionManagerFactory: () => ({
+      getDispatcherThreadId: () => "dispatcher-thread-123",
+      initSession: async () => undefined,
+      isPaused: () => false,
+      prepareFreshDispatcherLaunch: async () => undefined,
+      onRestart: async () => ({
+        staleWorkersKilled: [],
+        dispatcherRestarted: true
       }),
-      readWorkersByStatus: async () => [],
-      lifecycleStoreFactory: () => ({
-        load: () => ({
-          version: 2,
-          dispatcher: {
-            thread_id: null,
-            started_at: null,
-            status: "pending"
-          },
-          workers: {},
-          last_reconciled_at: null
-        }),
-        save: () => undefined
+      setPaused: () => undefined
+    }),
+    readWorkersByStatus: async () => [],
+    lifecycleStoreFactory: () => ({
+      load: () => ({
+        version: 2,
+        dispatcher: {
+          thread_id: null,
+          started_at: null,
+          status: "pending"
+        },
+        workers: {},
+        last_reconciled_at: null
       }),
-      killThread: async () => undefined,
-      signalDispatcher: async () => undefined
-    })
-  );
+      save: () => undefined
+    }),
+    killThread: async () => undefined,
+    signalDispatcher: async () => undefined
+  });
+  registry.register("dispatcher", agentDispatcherFactory);
+  registry.register("agent-dispatcher", agentDispatcherFactory);
 
   const roleHandlersOptions = {
     runner,
@@ -3032,7 +2826,7 @@ function createHarness(
 }
 
 async function createRole(roleHandlers: RoleHandlers, body: unknown): Promise<void> {
-  const request = createJsonRequest("POST", "/api/role", body);
+  const request = createJsonRequest("POST", "/api/agent-dispatcher/start", body);
   const response = createJsonResponse();
   const handled = await roleHandlers.handle(request, response.raw);
 

@@ -71,7 +71,8 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 vi.mock("../../../roles/agent-dispatcher/lifecycle-store", () => ({
-  LifecycleStore: lifecycleStoreConstructor
+  LifecycleStore: lifecycleStoreConstructor,
+  isExplicitCompletionContent: (content: string) => /✅/.test(content) && /\bcomplete\b/i.test(content)
 }));
 
 vi.mock("../../../roles/agent-dispatcher/reconciler", () => ({
@@ -415,6 +416,47 @@ describe("run tool", () => {
       "thread-preflight-angle",
       "11111111-1111-4111-8111-111111111111",
       ["/tmp/dispatch/reports/PRE-FLIGHT.md"],
+      expect.any(String)
+    );
+  });
+
+  it("derives the completion report path from an inline command template", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "5l: Write completion report to: `/tmp/dispatch/reports/<WORKER_ID>.md`"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 4 | R-03 | Recovery | CODEX | — | Report-only worker. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-inline-report",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-03"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "R-03",
+      "thread-inline-report",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/R-03.md"],
       expect.any(String)
     );
   });
@@ -1172,9 +1214,9 @@ describe("run tool", () => {
     });
   });
 
-  it("leaves the worker in running when the API client throws", async () => {
+  it("records a failed result in the lifecycle store when the API client throws a non-transient error", async () => {
     const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    mockRun.mockRejectedValue(new Error("run failed: Meridian API unreachable"));
+    mockRun.mockRejectedValue(new Error("run failed: invalid request body"));
     readFileMock.mockResolvedValue("# command\n");
 
     const result = await runTool.execute({
@@ -1185,27 +1227,69 @@ describe("run tool", () => {
 
     const lifecycleStore = getLifecycleStore();
 
-    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", expect.objectContaining({
+      thread_id: "thread-789",
+      status: "error",
+      run_state: "timeout",
+      content: "run failed: invalid request body"
+    }));
     expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
       thread_id: "thread-789",
-      trace_id: "11111111-1111-4111-8111-111111111111",
-      status: "running",
-      expected_outputs: ["/tmp/dispatch/dev_history/N-04_report.md"],
-      hub_result: null
+      status: "failed",
+      hub_result: expect.objectContaining({
+        status: "error",
+        run_state: "timeout"
+      })
     });
     expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
       worker: "N-04",
       threadId: "thread-789",
-      error: "run failed: Meridian API unreachable"
+      error: "run failed: invalid request body"
     });
     expect(result).toEqual({
       ok: false,
-      error: "run failed: Meridian API unreachable",
+      error: "run failed: invalid request body",
       data: {
         worker: "N-04",
         thread_id: "thread-789",
         status: "failed"
       }
+    });
+  });
+
+  it("does not replay a timed-out run request into the same worker thread", async () => {
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockRun.mockRejectedValue(new Error("run failed: Request timed out — the hub may be overloaded."));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-timeout",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      thread_id: "thread-timeout",
+      status: "running",
+      hub_result: null
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "run failed: Request timed out — the hub may be overloaded.",
+      data: {
+        worker: "N-04",
+        thread_id: "thread-timeout",
+        status: "failed"
+      }
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "N-04",
+      threadId: "thread-timeout",
+      error: "run failed: Request timed out — the hub may be overloaded."
     });
   });
 
@@ -1222,9 +1306,14 @@ describe("run tool", () => {
 
     const lifecycleStore = getLifecycleStore();
 
-    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    // The lifecycle store records the failure even for SIGINT so the worker
+    // does not remain stuck as "running" in the lifecycle store.
+    expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-07", expect.objectContaining({
+      status: "error",
+      content: "Tool Gateway interrupted by SIGINT"
+    }));
     expect(lifecycleStore.load().workers["N-07"]).toMatchObject({
-      status: "running"
+      status: "failed"
     });
     expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
       worker: "N-07",
@@ -1260,6 +1349,56 @@ describe("run tool", () => {
     expect(sentContent).toContain("may add, remove, or modify rows");
     expect(sentContent).toContain("**must** write your findings");
     expect(sentContent).not.toContain("you do not need to write to the dispatch plan yourself");
+  });
+
+  it("refuses to re-dispatch a worker that is already completed", async () => {
+    const completedHub: HubResult = {
+      trace_id: "22222222-2222-4222-8222-222222222222",
+      thread_id: "worker-thread-gate",
+      source: "codex",
+      status: "success",
+      content: "BATCH-1-GATE complete. ✅",
+      attachments: [],
+      timestamp: "2026-04-20T17:05:00.000Z"
+    };
+    const completedWorker = {
+      thread_id: "worker-thread-gate",
+      trace_id: "22222222-2222-4222-8222-222222222222",
+      started_at: "2026-04-20T17:00:00.000Z",
+      last_seen_at: "2026-04-20T17:05:00.000Z",
+      status: "completed",
+      expected_outputs: [],
+      hub_result: completedHub,
+      retry_count: 0
+    };
+
+    // Override the constructor for this test to seed a completed worker
+    lifecycleStoreConstructor.mockImplementationOnce((filePath: string) => ({
+      filePath,
+      recordWorkerStart: vi.fn(),
+      recordWorkerResult: vi.fn(),
+      load: vi.fn(() => ({
+        workers: { "BATCH-1-GATE": { ...completedWorker } }
+      }))
+    }));
+
+    const result = await runTool.execute({
+      thread_id: "thread-new",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "BATCH-1-GATE"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({
+      worker: "BATCH-1-GATE",
+      thread_id: "worker-thread-gate",
+      status: "done",
+      run_state: "completed"
+    });
+    expect((result.data as Record<string, string>).summary).toContain("already completed");
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
   });
 
   it("does not grant plan modification to regular workers", async () => {

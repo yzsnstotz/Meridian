@@ -3,10 +3,10 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, isNonCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { LifecycleStatus } from "../../types";
 import killTool from "./kill";
-import { executeUpdateWorkerStatusAction } from "./update-status";
+import { executeUpdateWorkerStatusAction, updateWorkerStatusInMarkdown } from "./update-status";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const ResumeWorkerActionSchema = z.enum(["retry", "skip", "force-complete"]);
@@ -132,6 +132,13 @@ export async function executeResumeWorkerAction(
     throw new Error("force-complete requires force=true");
   }
 
+  if (args.action === "force-complete" && worker?.hub_result && isNonCompletionContent(worker.hub_result.content ?? "")) {
+    throw new Error(
+      `Cannot force-complete worker "${args.workerId}": worker output contains a BLOCKED or PAUSE marker. ` +
+      "Resolve the blocker first, then retry the worker."
+    );
+  }
+
   if (!worker) {
     const nextStatus = mapActionToStatus(args.action);
     await executeUpdateWorkerStatusAction({
@@ -159,9 +166,16 @@ export async function executeResumeWorkerAction(
     `resume_worker:${args.action}`,
     {
       clearHubResult: false,
-      incrementRetryCount: args.action === "retry"
+      incrementRetryCount: false,
+      resetRetryCount: args.action === "retry"
     }
   );
+
+  // The lifecycle store's syncPlanView guard prevents overwriting
+  // terminal-success plan statuses (✅, ⛔ SKIPPED). An explicit resume
+  // action must always be reflected in the plan markdown, so update it
+  // directly as well.
+  await forceUpdatePlanMarkdown(args.planPath, args.workerId, nextStatus);
 
   const updatedState = lifecycleStore.load();
   const retryCount = updatedState.workers[args.workerId]?.retry_count ?? 0;
@@ -290,6 +304,18 @@ function extractPriorFailureReason(
 
   const MAX_REASON_LENGTH = 200;
   return content.length > MAX_REASON_LENGTH ? `${content.slice(0, MAX_REASON_LENGTH)}…` : content;
+}
+
+async function forceUpdatePlanMarkdown(
+  planPath: string,
+  workerId: string,
+  status: LifecycleStatus
+): Promise<void> {
+  const markdown = await fs.readFile(planPath, "utf8");
+  const updated = updateWorkerStatusInMarkdown(markdown, workerId, status);
+  if (updated !== markdown) {
+    await fs.writeFile(planPath, updated, "utf8");
+  }
 }
 
 function asError(error: unknown): Error {

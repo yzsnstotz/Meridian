@@ -117,6 +117,14 @@ export class LifecycleStore {
     const state = this.load();
     const nowIso = this.now();
     const previousStatus = state.workers[workerId]?.status ?? "pending";
+    const previousRetryCount = state.workers[workerId]?.retry_count ?? 0;
+
+    // When restarting from a terminal state (failed/abandoned), auto-increment
+    // retry_count so that the max-retry cap is enforced even when the restart
+    // is triggered by the AI dispatcher rather than the service-continuation
+    // path (which increments via setWorkerStatus). Restarts from "pending"
+    // have already been incremented by setWorkerStatus, so skip those.
+    const shouldIncrementRetry = previousStatus === "failed" || previousStatus === "abandoned";
 
     state.workers[workerId] = {
       thread_id: threadId,
@@ -127,7 +135,7 @@ export class LifecycleStore {
       expected_outputs: [...expectedOutputs],
       hub_result: null,
       command_preamble: commandPreamble ?? null,
-      retry_count: state.workers[workerId]?.retry_count ?? 0
+      retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount
     };
 
     this.logTransition(workerId, previousStatus, "running", "run_tool_start");
@@ -179,6 +187,7 @@ export class LifecycleStore {
     options: {
       clearHubResult?: boolean;
       incrementRetryCount?: boolean;
+      resetRetryCount?: boolean;
     } = {}
   ): void {
     const state = this.load();
@@ -187,13 +196,14 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
+    const baseRetryCount = options.resetRetryCount ? 0 : (worker.retry_count ?? 0);
     const shouldIncrementRetryCount = options.incrementRetryCount === true && status === "pending";
     state.workers[workerId] = {
       ...worker,
       last_seen_at: this.now(),
       status,
       hub_result: options.clearHubResult ? null : worker.hub_result,
-      retry_count: shouldIncrementRetryCount ? (worker.retry_count ?? 0) + 1 : (worker.retry_count ?? 0)
+      retry_count: shouldIncrementRetryCount ? baseRetryCount + 1 : baseRetryCount
     };
 
     this.logTransition(workerId, worker.status, status, trigger);
@@ -285,7 +295,18 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
         continue;
       }
 
-      rowCells[statusColumn] = PLAN_STATUS_SYMBOLS[workerState.status];
+      // Never downgrade a confirmed-terminal plan status. The plan markdown
+      // is the authoritative record when external evidence (merged PR, etc.)
+      // has already marked a worker ✅ or ⛔ SKIPPED. Lifecycle state may
+      // lag behind (e.g. hub_result lost to a timeout) and must not
+      // overwrite confirmed completion.
+      const currentPlanStatus = rowCells[statusColumn].trim();
+      const nextPlanStatus = PLAN_STATUS_SYMBOLS[workerState.status];
+      if (isPlanStatusTerminalSuccess(currentPlanStatus) && nextPlanStatus !== currentPlanStatus) {
+        continue;
+      }
+
+      rowCells[statusColumn] = nextPlanStatus;
       nextLines[rowIndex] = formatTableRow(rowCells);
       mutated = true;
     }
@@ -378,6 +399,14 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
   }
 
   if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
+    // A timeout marker means the relay/hub timed out, NOT that the worker
+    // itself failed. Leave the worker as "running" so the reconciler can
+    // validate the actual thread status and outputs before making a terminal
+    // judgment.
+    return "running";
+  }
+
+  if (hubResultContainsHitLimit(hubResult)) {
     return "failed";
   }
 
@@ -394,7 +423,21 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
       return "completed";
     }
 
+    // Lightweight tasks (e.g. PRE-FLIGHT) may signal completion with an
+    // explicit marker like "✅" + "complete" without producing output files
+    // or inline reports. Trust the explicit signal.
+    if (isExplicitCompletionContent(hubResult.content)) {
+      return "completed";
+    }
+
     return "running";
+  }
+
+  // Even when run_state is not "completed" (e.g. "still_running"), trust
+  // explicit completion markers in the content. The worker may have finished
+  // its task while the thread remains alive.
+  if (hubResult.status === "success" && isExplicitCompletionContent(hubResult.content)) {
+    return "completed";
   }
 
   return "running";
@@ -407,8 +450,32 @@ const NON_COMPLETION_PATTERNS = [
   /BLOCKED\s*[—–-]/
 ];
 
-function isNonCompletionContent(content: string): boolean {
+const HIT_LIMIT_PATTERNS = [
+  /(?:^|[\s>])[:;=-]?\s*hit\s+limit\b/i,
+  /\bcontext(?:\s+window)?\s+limit\b/i,
+  /\btoken\s+limit\b/i
+];
+
+export function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+export function isExplicitCompletionContent(content: string): boolean {
+  return /✅/.test(content) && /\bcomplete\b/i.test(content);
+}
+
+export function hubResultContainsHitLimit(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): boolean {
+  const combinedContent = [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+
+  return combinedContent.length > 0 && HIT_LIMIT_PATTERNS.some((pattern) => pattern.test(combinedContent));
 }
 
 function requiresOutputVerification(expectedOutputs: string[]): boolean {
@@ -546,6 +613,10 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function formatTableRow(cells: string[]): string {
   return `| ${cells.join(" | ")} |`;
+}
+
+function isPlanStatusTerminalSuccess(status: string): boolean {
+  return status === "✅" || status === "⛔ SKIPPED";
 }
 
 function inferDispatchPlanPath(filePath: string): string {

@@ -169,7 +169,7 @@ describe("SessionManager", () => {
     await waitForRoleStatus(harness.stateStore, "agent-dispatcher-role-2", "active");
   });
 
-  it("kills running lifecycle workers during restart but preserves their status for reconciliation", async () => {
+  it("kills running lifecycle workers during restart and reconciles their status from evidence", async () => {
     const harness = await createHarness();
     const lifecycle = createLifecycleStoreMock({
       version: 2,
@@ -261,10 +261,78 @@ describe("SessionManager", () => {
       started_at: null,
       status: "pending"
     });
-    // Workers stay "running" — reconciler will promote/abandon based on outputs & hub state
-    expect(lifecycle.getState().workers["R-01"]?.status).toBe("running");
+    // Killed workers are reconciled based on hub_result and expected_outputs.
+    // R-01: no hub_result → abandoned; N-02: already completed (not killed); N-03: no hub_result → abandoned
+    expect(lifecycle.getState().workers["R-01"]?.status).toBe("abandoned");
     expect(lifecycle.getState().workers["N-02"]?.status).toBe("completed");
-    expect(lifecycle.getState().workers["N-03"]?.status).toBe("running");
+    expect(lifecycle.getState().workers["N-03"]?.status).toBe("abandoned");
+  });
+
+  it("respects plan ✅ status during restart reconciliation even when hub_result is missing", async () => {
+    const harness = await createHarness({
+      planContent: [
+        "# Dispatch Plan",
+        "",
+        "## Master Dispatch Table",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready |",
+        "| ✅ | 1 | R-01 | OAuth fix |",
+        "| ✅ | 2 | R-02 | UI consolidation |",
+        ""
+      ].join("\n")
+    });
+    const lifecycle = createLifecycleStoreMock({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: FIXED_NOW,
+        status: "running"
+      },
+      workers: {
+        "R-01": {
+          thread_id: "worker-thread-111",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "R-02": {
+          thread_id: "worker-thread-222",
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 1
+        }
+      },
+      last_reconciled_at: null
+    });
+    const killCalls = vi.fn().mockResolvedValue({ stdout: "{\"ok\":true}\n", stderr: "" });
+    const manager = new SessionManager("agent-dispatcher-role-plan", {
+      stateStore: harness.stateStore,
+      lifecycleStore: lifecycle.store,
+      execFile: killCalls
+    });
+
+    await manager.initSession("dispatcher-thread-123", harness.dispatchPlanPath);
+    const result = await manager.onRestart();
+
+    expect(result).toEqual({
+      staleWorkersKilled: ["R-01", "R-02"],
+      dispatcherRestarted: true
+    });
+    // Both workers have no hub_result, but plan shows ✅ → completed (not abandoned)
+    expect(lifecycle.getState().workers["R-01"]?.status).toBe("completed");
+    expect(lifecycle.getState().workers["R-02"]?.status).toBe("completed");
   });
 
   it("skips kill attempts when lifecycle store has no running dispatcher or workers", async () => {
@@ -331,7 +399,7 @@ describe("SessionManager", () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options?: { planContent?: string }): Promise<{
   directory: string;
   dispatchPlanPath: string;
   sidecarPath: string;
@@ -342,7 +410,7 @@ async function createHarness(): Promise<{
 
   const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
   const sidecarPath = path.join(directory, "dispatch_threads.json");
-  await fs.writeFile(dispatchPlanPath, buildDispatchPlan(), "utf8");
+  await fs.writeFile(dispatchPlanPath, options?.planContent ?? buildDispatchPlan(), "utf8");
 
   return {
     directory,

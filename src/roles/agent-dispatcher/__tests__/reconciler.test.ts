@@ -67,6 +67,36 @@ describe("reconcile", () => {
     expect(statSpy).toHaveBeenCalledWith(outputPath);
   });
 
+  it("marks a running worker completed when outputs exist in a round subdirectory of the expected path", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    // The report lives in dev_history/v1_round/ but expected_outputs points to dev_history/
+    await harness.writeOutput("dev_history/v1_round/N-07_report.md");
+    const wrongExpectedPath = path.join(harness.directory, "dev_history", "N-07_report.md");
+    harness.store.save(buildState({
+      workers: {
+        "N-07": buildRunningWorker("worker-thread-707", wrongExpectedPath)
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextState = harness.store.load();
+
+    expect(nextState.workers["N-07"]?.status).toBe("completed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-07",
+        from: "running",
+        to: "completed",
+        trigger: "hub_status:completed:outputs_present"
+      }
+    ]);
+  });
+
   it("marks a running worker completed from a stored successful HubResult when outputs exist", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -95,6 +125,42 @@ describe("reconcile", () => {
           from: "running",
           to: "completed",
           trigger: "hub_result:outputs_present"
+        }
+      ],
+      unchanged: [DISPATCHER_ENTRY_ID]
+    });
+  });
+
+  it("marks a running worker failed when a stored success HubResult reports hit limit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "A-01": {
+          ...buildRunningWorker("worker-thread-111", path.join(harness.directory, "missing-report.md")),
+          hub_result: {
+            ...buildTerminalSuccessResult("worker-thread-111"),
+            content: ":hit limit"
+          }
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["A-01"]?.status).toBe("failed");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(report).toEqual({
+      changed: [
+        {
+          workerId: "A-01",
+          from: "running",
+          to: "failed",
+          trigger: "hub_result:hit_limit"
         }
       ],
       unchanged: [DISPATCHER_ENTRY_ID]
@@ -181,12 +247,12 @@ describe("reconcile", () => {
         workerId: "N-02",
         from: "running",
         to: "abandoned",
-        trigger: "thread_missing:stale_timeout"
+        trigger: "thread_missing:no_evidence"
       }
     ]);
   });
 
-  it("keeps a running worker unchanged when the thread is missing but the stale timeout has not been exceeded", async () => {
+  it("immediately abandons a running worker when the thread is confirmed missing with no evidence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -207,11 +273,15 @@ describe("reconcile", () => {
       staleTimeoutMs: 5 * 60 * 1000
     });
 
-    expect(harness.store.load().workers["N-02"]?.status).toBe("running");
-    expect(report).toEqual({
-      changed: [],
-      unchanged: [DISPATCHER_ENTRY_ID, "N-02"]
-    });
+    expect(harness.store.load().workers["N-02"]?.status).toBe("abandoned");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-02",
+        from: "running",
+        to: "abandoned",
+        trigger: "thread_missing:no_evidence"
+      }
+    ]);
   });
 
   it("promotes an abandoned worker to completed when outputs exist on disk", async () => {
@@ -279,7 +349,8 @@ describe("reconcile", () => {
       workers: {
         "N-02": {
           ...buildRunningWorker("worker-thread-111", path.join(harness.directory, "done.md")),
-          status: "completed"
+          status: "completed",
+          hub_result: buildTerminalSuccessResult("worker-thread-111")
         }
       }
     }));
@@ -295,6 +366,59 @@ describe("reconcile", () => {
       changed: [],
       unchanged: [DISPATCHER_ENTRY_ID, "N-02"]
     });
+  });
+
+  it("recovers hub_result for completed workers that are missing it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-03": {
+          ...buildRunningWorker("worker-thread-333", path.join(harness.directory, "missing-R-03.md")),
+          status: "completed",
+          hub_result: null
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if ((message as HubMessage).intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "claude",
+            content: "R-03 completed. All assertions passed.",
+            raw_content: "# R-03 Completion Report\n\n**Status**: PASS",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            timestamp: "2026-04-03T12:25:00.000Z"
+          }
+        ]);
+      }
+      return buildStatusResult(message.thread_id, "completed");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextState = harness.store.load();
+
+    expect(nextState.workers["R-03"]?.status).toBe("completed");
+    expect(nextState.workers["R-03"]?.hub_result).not.toBeNull();
+    expect(nextState.workers["R-03"]?.hub_result?.content).toContain("R-03 Completion Report");
+    expect(sendRequest.mock.calls.map(([message]) => ({
+      thread_id: (message as HubMessage).thread_id,
+      intent: (message as HubMessage).intent
+    }))).toEqual([
+      { thread_id: "worker-thread-333", intent: "history" }
+    ]);
+    expect(report.changed).toEqual([
+      {
+        workerId: "R-03",
+        from: "completed",
+        to: "completed",
+        trigger: "hub_result_recovery:completed_without_result"
+      }
+    ]);
   });
 
   it("marks the dispatcher abandoned when its thread is missing", async () => {
@@ -345,7 +469,8 @@ describe("reconcile", () => {
         "R-03": buildRunningWorker("worker-thread-333", path.join(harness.directory, "missing-R-03.md")),
         "R-04": {
           ...buildRunningWorker("worker-thread-444", path.join(harness.directory, "done-R-04.md")),
-          status: "completed"
+          status: "completed",
+          hub_result: buildTerminalSuccessResult("worker-thread-444")
         }
       }
     }));
@@ -394,7 +519,7 @@ describe("reconcile", () => {
           workerId: "R-02",
           from: "running",
           to: "abandoned",
-          trigger: "thread_missing:stale_timeout"
+          trigger: "thread_missing:no_evidence"
         },
         {
           workerId: "R-03",
@@ -689,6 +814,78 @@ describe("reconcile", () => {
     );
   });
 
+  it("recovers a trace-less final reply from Hub history when it was emitted after the current attempt started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "R-03": buildRunningWorker(
+          "worker-thread-r03",
+          path.join(harness.directory, "missing-r03-report.md"),
+          "2026-04-03T12:20:00.000Z"
+        )
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "Stale reply from an earlier attempt.",
+            raw_content: "# Old completion report",
+            trace_id: null,
+            timestamp: "2026-04-03T12:10:00.000Z"
+          },
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "Worker completed. Returning inline completion report.",
+            details_text: [
+              "Your message:",
+              "Run R-03",
+              "",
+              "Agent reply:",
+              "# R-03 Completion Report",
+              "",
+              "- Status: complete"
+            ].join("\n"),
+            raw_content: [
+              "Worker completed. Returning inline completion report.",
+              "",
+              "# R-03 Completion Report",
+              "",
+              "- Status: complete"
+            ].join("\n"),
+            trace_id: null,
+            timestamp: FIXED_NOW
+          }
+        ]);
+      }
+
+      return buildStatusResult(message.thread_id, "idle");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextWorker = harness.store.load().workers["R-03"];
+
+    expect(nextWorker?.status).toBe("completed");
+    expect(nextWorker?.hub_result?.summary_text).toBe("Worker completed. Returning inline completion report.");
+    expect(nextWorker?.hub_result?.trace_id).toBe("11111111-1111-4111-8111-111111111111");
+    expect(sendRequest.mock.calls.map(([message]) => (message as HubMessage).intent)).toEqual(["status", "history"]);
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "R-03",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:inline_report"
+      })
+    );
+  });
+
   it("marks a running worker failed when hub_result is success but content contains a provider error", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -764,6 +961,96 @@ describe("reconcile", () => {
     );
   });
 
+  it("preserves a hub_result written concurrently by the run tool during reconciliation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("dev_history/E-05_report.md");
+
+    // Initial state: E-02 completed with hub_result, E-05 running with no hub_result
+    harness.store.save(buildState({
+      workers: {
+        "E-02": {
+          ...buildRunningWorker("worker-thread-e02", path.join(harness.directory, "dev_history/E-02_report.md")),
+          status: "completed",
+          hub_result: buildTerminalSuccessResult("worker-thread-e02")
+        },
+        "E-05": buildRunningWorker("worker-thread-e05", outputPath)
+      }
+    }));
+
+    // Simulate the race: while the reconciler awaits the hub query for E-05,
+    // the run tool writes E-05's hub_result to disk concurrently.
+    const concurrentHubResult = buildTerminalSuccessResult("worker-thread-e05");
+    concurrentHubResult.content = "E-05 completed its task successfully.";
+    concurrentHubResult.details_text = "Your message:\nRun E-05\n\nAgent reply:\nE-05 completed its task successfully.";
+    let hubQueryCount = 0;
+
+    const { hubClient } = createHubClient(async (message) => {
+      hubQueryCount++;
+      // On the hub status query for E-05, simulate the run tool writing concurrently
+      if (message.intent === "status" && message.thread_id === "worker-thread-e05") {
+        // The run tool writes E-05's hub_result to disk between reconciler's load and save
+        const freshState = harness.store.load();
+        freshState.workers["E-05"] = {
+          ...freshState.workers["E-05"]!,
+          status: "completed",
+          hub_result: concurrentHubResult,
+          last_seen_at: FIXED_NOW
+        };
+        harness.store.save(freshState);
+      }
+      return buildStatusResult(message.thread_id!, "completed");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextState = harness.store.load();
+
+    // E-05 should be completed AND its hub_result should be preserved (not overwritten with null)
+    expect(nextState.workers["E-05"]?.status).toBe("completed");
+    expect(nextState.workers["E-05"]?.hub_result).not.toBeNull();
+    expect(nextState.workers["E-05"]?.hub_result?.content).toBe("E-05 completed its task successfully.");
+    expect(nextState.workers["E-05"]?.hub_result?.details_text).toContain("Agent reply:");
+  });
+
+  it("completes a running worker when hub reports completed with a success hub_result but no outputs or inline report", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": {
+          ...buildRunningWorker("worker-thread-pf", path.join(harness.directory, "missing-report.md")),
+          hub_result: {
+            trace_id: "55555555-5555-4555-8555-555555555555",
+            thread_id: "worker-thread-pf",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "**PRE-FLIGHT complete. ✅**",
+            attachments: [],
+            timestamp: "2026-04-03T13:00:00.000Z"
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient(() => buildStatusResult("worker-thread-pf", "completed"));
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("completed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "PRE-FLIGHT",
+        from: "running",
+        to: "completed",
+        trigger: expect.stringContaining("explicit_completion_content")
+      })
+    );
+  });
+
   it("uses the default stale timeout when no override is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -787,6 +1074,70 @@ describe("reconcile", () => {
       DEFAULT_RECONCILE_STALE_TIMEOUT_MS
     );
     expect(harness.store.load().workers["N-02"]?.status).toBe("abandoned");
+  });
+
+  it("does not auto-complete a worker whose hub_result contains a BLOCKED marker", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/PRE-FLIGHT.md");
+    const blockedWorker = buildRunningWorker("worker-thread-blocked", outputPath);
+    blockedWorker.hub_result = {
+      trace_id: "88888888-8888-4888-8888-888888888888",
+      thread_id: "worker-thread-blocked",
+      source: "codex",
+      status: "success",
+      run_state: "completed",
+      content: "Status: ⛔ BLOCKED\n\nBaseline test suite is failing on main.",
+      attachments: [],
+      timestamp: FIXED_NOW
+    };
+
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": blockedWorker
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("running");
+    expect(report.unchanged).toContain("PRE-FLIGHT");
+  });
+
+  it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/WORKER.md");
+    const pausedWorker = buildRunningWorker("worker-thread-paused", outputPath);
+    pausedWorker.hub_result = {
+      trace_id: "99999999-9999-4999-8999-999999999999",
+      thread_id: "worker-thread-paused",
+      source: "codex",
+      status: "success",
+      run_state: "completed",
+      content: "⏸ PAUSE — waiting for upstream dependency to be resolved.",
+      attachments: [],
+      timestamp: FIXED_NOW
+    };
+
+    harness.store.save(buildState({
+      workers: {
+        "N-05": pausedWorker
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-05"]?.status).toBe("running");
+    expect(report.unchanged).toContain("N-05");
   });
 });
 

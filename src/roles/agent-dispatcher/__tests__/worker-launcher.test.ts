@@ -132,7 +132,7 @@ describe("launchDispatchWorker", () => {
 
   it("wraps unexpected (non-MeridianApiError) spawn rejections with the spawn failed prefix", async () => {
     const harness = await createHarness({
-      spawnError: new Error("connect ECONNREFUSED 127.0.0.1:3000")
+      spawnError: new Error("unexpected internal error")
     });
 
     const result = await launchDispatchWorker(
@@ -143,7 +143,7 @@ describe("launchDispatchWorker", () => {
     expect(result).toEqual({
       ok: false,
       threadId: "",
-      error: "spawn failed: connect ECONNREFUSED 127.0.0.1:3000"
+      error: "spawn failed: unexpected internal error"
     });
     expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });

@@ -180,6 +180,59 @@ describe("update-status tool", () => {
     });
   });
 
+  it("resets a completed worker to pending even when the plan already shows ✅", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-update-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ✅ | 1 | R-01 | OAuth fix |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-05T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": {
+            thread_id: "worker-thread-789",
+            trace_id: null,
+            started_at: "2026-04-05T00:00:00.000Z",
+            last_seen_at: "2026-04-05T00:10:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const result = await updateStatusTool.execute({
+      plan: planPath,
+      worker: "R-01",
+      status: "pending"
+    });
+
+    expect(result).toEqual({ ok: true, data: { worker: "R-01", status: "pending" } });
+    await expect(fs.readFile(planPath, "utf8")).resolves.toContain("| ⬜ | 1 | R-01 | OAuth fix |");
+  });
+
   it("returns an error for unsupported statuses", async () => {
     const result = await updateStatusTool.execute({
       plan: "/tmp/nowhere.md",

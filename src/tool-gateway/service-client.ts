@@ -41,6 +41,17 @@ export async function postRolesServiceJson<T>(pathname: string, body: unknown): 
   });
 }
 
+export async function patchRolesServiceJson<T>(pathname: string, body: unknown): Promise<JsonRequestResult<T>> {
+  return requestRolesService<T>(pathname, {
+    method: "PATCH",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+}
+
 async function requestRolesService<T>(pathname: string, init: RequestInit): Promise<JsonRequestResult<T>> {
   const baseUrl = resolveRolesServiceBaseUrl();
   const requestUrl = new URL(pathname, baseUrl);

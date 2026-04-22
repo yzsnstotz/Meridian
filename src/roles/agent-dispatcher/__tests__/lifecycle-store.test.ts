@@ -180,6 +180,46 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("completes when a deferred-success result has an explicit completion marker without inline report", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "reports/PRE-FLIGHT.md"
+    ]);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: "**PRE-FLIGHT complete. ✅**",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
+  it("marks a success HubResult as failed when the worker reply hit a terminal limit", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: ":hit limit"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z",
+      hub_result: expect.objectContaining({
+        content: ":hit limit"
+      })
+    });
+  });
+
   it("completes immediately when a deferred-success result returns an inline completion report for a report-only worker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("R-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
@@ -236,7 +276,7 @@ describe("LifecycleStore", () => {
     });
   });
 
-  it("maps a timeout HubResult to failed", async () => {
+  it("maps a timeout HubResult to running so the reconciler can validate", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
 
@@ -249,7 +289,7 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["N-01"]).toMatchObject({
-      status: "failed",
+      status: "running",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });
@@ -611,6 +651,46 @@ describe("LifecycleStore", () => {
     expect(markdown).toContain("| ✅ | 1 | N-03 | Completed row |");
     expect(markdown).toContain("| ❌ | 1 | N-04 | Failed row |");
     expect(markdown).toContain("| ⚠️ ABANDONED | 1 | N-05 | Abandoned row |");
+  });
+
+  it("does not downgrade plan ✅ status when lifecycle state regresses to abandoned", async () => {
+    const harness = await createHarness({
+      planTemplate: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ⬜ | 1 | N-01 | Test row |",
+        ""
+      ].join("\n")
+    });
+
+    // First, mark worker as completed so the plan shows ✅
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "trace-111", []);
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:10.000Z"
+    }));
+
+    // Verify plan now shows ✅
+    const planAfterComplete = fs.readFileSync(harness.dispatchPlanPath, "utf8");
+    expect(planAfterComplete).toContain("| ✅ |");
+
+    // Now simulate onRestart setting the worker to abandoned (no hub_result)
+    const state = harness.store.load();
+    state.workers["N-01"] = {
+      ...state.workers["N-01"]!,
+      status: "abandoned",
+      hub_result: null,
+      last_seen_at: "2026-04-03T12:05:00.000Z"
+    };
+    harness.store.save(state);
+
+    // Plan must still show ✅ — syncPlanView must not downgrade it
+    const planAfterAbandoned = fs.readFileSync(harness.dispatchPlanPath, "utf8");
+    expect(planAfterAbandoned).toContain("| ✅ |");
+    expect(planAfterAbandoned).not.toContain("ABANDONED");
   });
 
   it("syncs a sibling *_dispatch_plan.md file when dispatch_plan.md is not present", async () => {
