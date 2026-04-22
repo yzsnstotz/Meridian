@@ -79,6 +79,16 @@ export async function continueDispatchWorker(
       };
     }
 
+    // fix_requested workers keep their existing thread alive — just return it
+    // so the caller (role-handlers) can deliver validator feedback to it.
+    if (currentWorkerState?.status === "fix_requested") {
+      return {
+        ok: true,
+        workerId,
+        threadId: currentWorkerState.thread_id
+      };
+    }
+
     if (shouldResetWorkerBeforeContinue(dispatchPlanRow)) {
       resumeResult = await executeResumeWorkerAction({
         planPath: config.dispatch_plan_path,
