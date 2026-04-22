@@ -42,6 +42,20 @@ test("buildCodexExecArgs enables direct JSON streaming mode", () => {
   ]);
 });
 
+test("buildCodexExecArgs always includes bypass flag even when autoApprove is false", () => {
+  const args = buildCodexExecArgs("gpt-5.4", false);
+
+  assert.ok(args.includes("--dangerously-bypass-approvals-and-sandbox"),
+    "headless exec must always bypass approvals");
+});
+
+test("buildCodexExecArgs always includes bypass flag even when autoApprove is undefined", () => {
+  const args = buildCodexExecArgs("gpt-5.4");
+
+  assert.ok(args.includes("--dangerously-bypass-approvals-and-sandbox"),
+    "headless exec must always bypass approvals");
+});
+
 test("buildCodexResumeArgs resumes an existing exec session", () => {
   const args = buildCodexResumeArgs("session-123", "gpt-5.4", true, "xhigh");
 
@@ -57,4 +71,11 @@ test("buildCodexResumeArgs resumes an existing exec session", () => {
     "gpt-5.4",
     "--dangerously-bypass-approvals-and-sandbox"
   ]);
+});
+
+test("buildCodexResumeArgs always includes bypass flag even when autoApprove is false", () => {
+  const args = buildCodexResumeArgs("session-456", "gpt-5.4", false);
+
+  assert.ok(args.includes("--dangerously-bypass-approvals-and-sandbox"),
+    "headless resume must always bypass approvals");
 });
