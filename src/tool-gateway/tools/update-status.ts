@@ -11,7 +11,9 @@ const LIFECYCLE_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
   completed: "✅",
   failed: "❌",
   abandoned: "⚠️ ABANDONED",
-  skipped: "⛔ SKIPPED"
+  skipped: "⛔ SKIPPED",
+  awaiting_validation: "🔍",
+  fix_requested: "🔁"
 } as const;
 
 const STATUS_ALIASES = {
@@ -22,7 +24,9 @@ const STATUS_ALIASES = {
   completed: "completed",
   failed: "failed",
   abandoned: "abandoned",
-  skipped: "skipped"
+  skipped: "skipped",
+  awaiting_validation: "awaiting_validation",
+  fix_requested: "fix_requested"
 } as const;
 
 type RequestedStatus = keyof typeof STATUS_ALIASES;

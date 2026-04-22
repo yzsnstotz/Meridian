@@ -7,6 +7,7 @@ import type { Logger } from "../base-role";
 import {
   DispatchThreadStateV2Schema,
   type DispatchThreadStateV2,
+  type DispatchWorkerState,
   type HubResult,
   type LifecycleStatus,
   type LifecycleWorkerEntry
@@ -34,7 +35,9 @@ const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
   completed: "✅",
   failed: "❌",
   abandoned: "⚠️ ABANDONED",
-  skipped: "⛔ SKIPPED"
+  skipped: "⛔ SKIPPED",
+  awaiting_validation: "🔍",
+  fix_requested: "🔁"
 };
 
 export interface LifecycleStoreOptions {
@@ -93,6 +96,12 @@ export class LifecycleStore {
     const normalized = DispatchThreadStateV2Schema.parse(state);
     writeFileAtomically(this.filePath, `${JSON.stringify(normalized, null, 2)}\n`, this.beforeCommit);
     this.syncPlanView(normalized);
+  }
+
+  private mutate(mutator: (state: DispatchThreadStateV2) => void): void {
+    const state = this.load();
+    mutator(state);
+    this.save(state);
   }
 
   recordDispatcher(threadId: string): void {
@@ -259,6 +268,83 @@ export class LifecycleStore {
       trigger
     });
   }
+
+  // ─── Validation lifecycle transitions ──────────────────────────────────────
+
+  transitionToAwaitingValidation(workerId: string, maxFixCycles: number): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker) return;
+
+      const prevStatus = worker.status;
+      worker.status = "awaiting_validation";
+      worker.validation = {
+        current_cycle: worker.validation?.current_cycle ?? 0,
+        max_fix_cycles: maxFixCycles,
+        validator_thread_id: null,
+        last_score: worker.validation?.last_score ?? null,
+        last_feedback: worker.validation?.last_feedback ?? null,
+        history: worker.validation?.history ?? []
+      };
+      this.logTransition(workerId, prevStatus, "awaiting_validation", "validation_intercept");
+    });
+  }
+
+  transitionToFixRequested(
+    workerId: string,
+    score: number,
+    feedback: string,
+    validatorThreadId: string
+  ): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker || !worker.validation) return;
+
+      const prevStatus = worker.status;
+      const cycle = worker.validation.current_cycle + 1;
+      worker.status = "fix_requested";
+      worker.validation.current_cycle = cycle;
+      worker.validation.last_score = score;
+      worker.validation.last_feedback = feedback;
+      worker.validation.validator_thread_id = null;
+      worker.validation.history.push({
+        cycle,
+        score,
+        feedback,
+        validator_thread_id: validatorThreadId,
+        timestamp: this.now()
+      });
+      this.logTransition(workerId, prevStatus, "fix_requested", "validation_below_threshold");
+    });
+  }
+
+  transitionToValidated(workerId: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker) return;
+
+      const prevStatus = worker.status;
+      worker.status = "completed";
+      if (worker.validation) {
+        worker.validation.validator_thread_id = null;
+      }
+      this.logTransition(workerId, prevStatus, "completed", "validation_passed");
+    });
+  }
+
+  transitionToValidationFailed(workerId: string, reason?: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker) return;
+
+      const prevStatus = worker.status;
+      worker.status = "failed";
+      if (worker.validation) {
+        worker.validation.validator_thread_id = null;
+      }
+      this.logTransition(workerId, prevStatus, "failed", reason ?? "validation_max_cycles_exhausted");
+    });
+  }
 }
 
 function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string): string {
@@ -301,7 +387,7 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
       // lag behind (e.g. hub_result lost to a timeout) and must not
       // overwrite confirmed completion.
       const currentPlanStatus = rowCells[statusColumn].trim();
-      const nextPlanStatus = PLAN_STATUS_SYMBOLS[workerState.status];
+      const nextPlanStatus = resolveDisplayStatus(workerState);
       if (isPlanStatusTerminalSuccess(currentPlanStatus) && nextPlanStatus !== currentPlanStatus) {
         continue;
       }
@@ -613,6 +699,14 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function formatTableRow(cells: string[]): string {
   return `| ${cells.join(" | ")} |`;
+}
+
+function resolveDisplayStatus(worker: DispatchWorkerState): string {
+  if (worker.status === "fix_requested" && worker.validation) {
+    const { current_cycle, max_fix_cycles } = worker.validation;
+    return `🔁 FIX ${current_cycle}/${max_fix_cycles}`;
+  }
+  return PLAN_STATUS_SYMBOLS[worker.status];
 }
 
 function isPlanStatusTerminalSuccess(status: string): boolean {
