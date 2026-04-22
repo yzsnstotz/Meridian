@@ -886,7 +886,11 @@ function outputsExist(paths: string[]): boolean {
     return false;
   }
 
-  return paths.every((filePath) => fileExistsWithSize(filePath) || fileExistsInSubdirectory(filePath));
+  return paths.every((filePath) =>
+    fileExistsWithSize(filePath)
+    || fileExistsInSubdirectory(filePath)
+    || fileExistsInSiblingReportDirectory(filePath)
+  );
 }
 
 function fileExistsWithSize(filePath: string): boolean {
@@ -902,16 +906,46 @@ function fileExistsWithSize(filePath: string): boolean {
 }
 
 /**
- * When the exact expected output path does not exist, search immediate
- * subdirectories of the parent for the same basename. This handles dispatch
- * plans that organise reports into round subdirectories (e.g.
- * `dev_history/v1_round/N-07_report.md`) when the derived expected path
- * only contains the parent (`dev_history/N-07_report.md`).
+ * Search immediate subdirectories of the parent for the same basename.
+ * Handles round subdirectories like `dev_history/v1_round/N-07_report.md`.
  */
 function fileExistsInSubdirectory(filePath: string): boolean {
-  const directory = path.dirname(filePath);
-  const basename = path.basename(filePath);
+  return searchDirectoryForBasename(path.dirname(filePath), path.basename(filePath));
+}
 
+/**
+ * Search sibling report directories with basename variants. Handles cases
+ * where expected output is in `dev_history/` but the actual report is in
+ * `reports/` (or vice versa), possibly with different naming conventions
+ * (`N-07_report.md` vs `N-07.md`).
+ */
+function fileExistsInSiblingReportDirectory(filePath: string): boolean {
+  const directory = path.dirname(filePath);
+  const grandparent = path.dirname(directory);
+  const dirName = path.basename(directory).toLowerCase();
+  const basenameVariants = computeBasenameVariants(path.basename(filePath));
+
+  const siblingDirs = dirName === "reports"
+    ? ["dev_history"]
+    : ["reports"];
+
+  for (const siblingDir of siblingDirs) {
+    const siblingPath = path.join(grandparent, siblingDir);
+    for (const variant of basenameVariants) {
+      if (fileExistsWithSize(path.join(siblingPath, variant))) {
+        return true;
+      }
+
+      if (searchDirectoryForBasename(siblingPath, variant)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function searchDirectoryForBasename(directory: string, basename: string): boolean {
   let entries: fs.Dirent[];
   try {
     entries = reconciliationFs.readdirSync(directory, { withFileTypes: true }) as fs.Dirent[];
@@ -930,6 +964,25 @@ function fileExistsInSubdirectory(filePath: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Generates basename variants for different naming conventions:
+ * `N-07_report.md` ↔ `N-07.md`
+ */
+function computeBasenameVariants(basename: string): string[] {
+  const variants = [basename];
+  const reportSuffixMatch = basename.match(/^(.+)_report(\.md)$/i);
+  if (reportSuffixMatch) {
+    variants.push(`${reportSuffixMatch[1]}${reportSuffixMatch[2]}`);
+  } else {
+    const extMatch = basename.match(/^(.+)(\.md)$/i);
+    if (extMatch) {
+      variants.push(`${extMatch[1]}_report${extMatch[2]}`);
+    }
+  }
+
+  return variants;
 }
 
 function reportedOutputsExist(hubResult: HubResult): boolean {

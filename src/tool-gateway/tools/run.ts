@@ -259,7 +259,7 @@ async function cleanupWorkerThread(
   killPolicy: KillPolicy,
   lifecycleStatus?: string
 ): Promise<void> {
-  if (lifecycleStatus === "running") {
+  if (lifecycleStatus === "running" || lifecycleStatus === "awaiting_validation" || lifecycleStatus === "fix_requested") {
     return;
   }
 
@@ -513,7 +513,108 @@ async function deriveExpectedOutputs(commandPath: string, workerId: string): Pro
     return [completionReportOutput];
   }
 
+  const conventionOutput = await deriveExpectedOutputFromConvention(commandPath, workerId);
+  if (conventionOutput) {
+    return [conventionOutput];
+  }
+
   return [path.join(path.dirname(commandPath), DEV_HISTORY_DIRECTORY, `${workerId}_report.md`)];
+}
+
+/**
+ * Probes the directory structure next to the command file to detect the
+ * convention used for report outputs. Some dispatch plans place reports in
+ * `reports/` (with short basenames like `N-07.md`) instead of `dev_history/`
+ * (with `N-07_report.md`). By detecting existing reports we can derive the
+ * correct expected output path for new workers.
+ */
+async function deriveExpectedOutputFromConvention(commandPath: string, workerId: string): Promise<string | null> {
+  const baseDir = path.dirname(commandPath);
+
+  // Check reports/ directory — some plans use `reports/{workerId}.md`
+  const reportsDir = path.join(baseDir, "reports");
+  if (await directoryExistsAsync(reportsDir)) {
+    const shortName = path.join(reportsDir, `${workerId}.md`);
+    const longName = path.join(reportsDir, `${workerId}_report.md`);
+    // Prefer whichever naming convention already exists for other workers
+    const existingConvention = await probeReportNamingConvention(reportsDir);
+    if (existingConvention === "short") {
+      return shortName;
+    }
+    if (existingConvention === "long") {
+      return longName;
+    }
+    // reports/ dir exists but empty — use short name (convention for reports/)
+    return shortName;
+  }
+
+  // Check dev_history/ with subdirectories (e.g. dev_history/v1_round/)
+  const devHistoryDir = path.join(baseDir, DEV_HISTORY_DIRECTORY);
+  if (await directoryExistsAsync(devHistoryDir)) {
+    const subdirReport = await findReportInSubdirectories(devHistoryDir, `${workerId}_report.md`);
+    if (subdirReport) {
+      return subdirReport;
+    }
+  }
+
+  return null;
+}
+
+async function directoryExistsAsync(dirPath: string): Promise<boolean> {
+  try {
+    const stat = await import("node:fs/promises").then((fsp) => fsp.stat(dirPath));
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function probeReportNamingConvention(reportsDir: string): Promise<"short" | "long" | null> {
+  try {
+    const { readdir } = await import("node:fs/promises");
+    const entries = await readdir(reportsDir);
+    for (const entry of entries) {
+      if (entry.endsWith("_report.md")) {
+        return "long";
+      }
+      if (entry.endsWith(".md")) {
+        return "short";
+      }
+    }
+  } catch {
+    // directory unreadable
+  }
+  return null;
+}
+
+async function findReportInSubdirectories(parentDir: string, basename: string): Promise<string | null> {
+  try {
+    const { readdir, stat } = await import("node:fs/promises");
+    const entries = await readdir(parentDir);
+    for (const entry of entries) {
+      const entryPath = path.join(parentDir, entry);
+      try {
+        const entryStat = await stat(entryPath);
+        if (!entryStat.isDirectory()) {
+          continue;
+        }
+        const candidate = path.join(entryPath, basename);
+        try {
+          const candidateStat = await stat(candidate);
+          if (candidateStat.size > 0) {
+            return candidate;
+          }
+        } catch {
+          // file doesn't exist in this subdir
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // parent doesn't exist
+  }
+  return null;
 }
 
 async function deriveExpectedOutputsFromPlan(commandPath: string, workerId: string): Promise<string[]> {
