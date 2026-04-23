@@ -299,9 +299,9 @@ function createTerminalBehaviorHarness(html: string): {
     lastFlushedContent: "",
     lastRunResultAtMs: 0,
     serverHistoryAuthoritative: false,
-    CHAT_HISTORY_MAX_CONTENT_CHARS: 4000,
-    CHAT_HISTORY_MAX_DETAIL_CHARS: 12000,
-    CHAT_HISTORY_MAX_RAW_CHARS: 12000,
+    CHAT_HISTORY_MAX_CONTENT_CHARS: -1,
+    CHAT_HISTORY_MAX_DETAIL_CHARS: -1,
+    CHAT_HISTORY_MAX_RAW_CHARS: -1,
     CHAT_HISTORY_TRUNCATION_LABEL: "[History truncated]",
     document: {
       body: new FakeElement("body"),
@@ -591,9 +591,9 @@ test("terminal chat history restores from local storage and disables replay when
   assert.match(terminalHtml, /CHAT_HISTORY_STORAGE_KEY/);
   assert.match(terminalHtml, /CHAT_HISTORY_RESTORE_LIMIT/);
   assert.match(terminalHtml, /limit=/);
-  assert.match(terminalHtml, /max_content_chars=/);
-  assert.match(terminalHtml, /max_detail_chars=/);
-  assert.match(terminalHtml, /max_raw_chars=/);
+  assert.doesNotMatch(terminalHtml, /max_content_chars=/);
+  assert.doesNotMatch(terminalHtml, /max_detail_chars=/);
+  assert.doesNotMatch(terminalHtml, /max_raw_chars=/);
   assert.match(terminalHtml, /restoreChatHistory\(\)/);
   assert.match(terminalHtml, /restoreServerChatHistory\(entries\)/);
   assert.match(terminalHtml, /serverHistoryRestored = restoreServerChatHistory\(entries\)/);
@@ -705,7 +705,7 @@ test("terminal local history restore only rehydrates the most recent entries", a
   assert.equal(collectRenderedText(chatMessagesEl.children[59] as FakeElement), "entry-75");
 });
 
-test("terminal server history restore truncates oversized bubble content before rendering", async () => {
+test("terminal server history restore renders oversized bubble content in full", async () => {
   const terminalHtml = await readTerminalHtml();
   const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
   const restoreServerChatHistory = context.restoreServerChatHistory as (entries: unknown[]) => boolean;
@@ -726,10 +726,7 @@ test("terminal server history restore truncates oversized bubble content before 
   assert.equal(restored, true);
   assert.equal(chatMessagesEl.children.length, 1);
   const bubble = chatMessagesEl.children[0] as FakeElement;
-  assert.match(collectRenderedText(bubble.children[0] as FakeElement), /\[History truncated\]/);
-  assert.ok(collectRenderedText(bubble.children[0] as FakeElement).length <= 4000);
-  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length > 4000);
-  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length <= 12032);
+  assert.equal(collectRenderedText(bubble), oversized);
 });
 
 test("terminal quiet-period liveness updates a single keyed progress bubble in place", async () => {
@@ -756,7 +753,7 @@ test("terminal quiet-period liveness updates a single keyed progress bubble in p
   );
 });
 
-test("terminal progress snapshot rendering truncates oversized content and keeps detail access", async () => {
+test("terminal progress snapshot rendering shows oversized content in full", async () => {
   const terminalHtml = await readTerminalHtml();
   const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
   const renderProgressSnapshot = context.renderProgressSnapshot as (snapshot: Record<string, unknown>) => void;
@@ -770,13 +767,10 @@ test("terminal progress snapshot rendering truncates oversized content and keeps
 
   assert.equal(chatMessagesEl.children.length, 1);
   const bubble = chatMessagesEl.children[0] as FakeElement;
-  assert.match(collectRenderedText(bubble.children[0] as FakeElement), /\[History truncated\]/);
-  assert.ok(collectRenderedText(bubble.children[0] as FakeElement).length <= 4000);
-  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length > 4000);
-  assert.ok(collectRenderedText(bubble.children[1] as FakeElement).length <= 12032);
+  assert.equal(collectRenderedText(bubble), oversized);
 });
 
-test("terminal structured run bubble resolver prefers summary/details over raw usage payloads", async () => {
+test("terminal structured run bubble resolver shows full agent reply from structured details", async () => {
   const terminalHtml = await readTerminalHtml();
   const context: Record<string, unknown> = {
     fallbackSummaryText: "Update received. Expand details for full output."
@@ -800,7 +794,7 @@ test("terminal structured run bubble resolver prefers summary/details over raw u
   });
 
   assert.deepEqual(payload, {
-    content: "Worker completed. Returning inline completion report.",
+    content: "# Delta Check Report",
     detailsText: "Your message:\nrun delta-check\n\nAgent reply:\n# Delta Check Report",
     rawContent: '{\n  "input_tokens": 2937398,\n  "cached_input_tokens": 2833408,\n  "output_tokens": 28673\n}',
     hasStructuredDetails: true,

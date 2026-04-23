@@ -1138,9 +1138,9 @@
       var CHAT_HISTORY_MAX_ITEMS = 200;
       var CHAT_HISTORY_RESTORE_LIMIT = 60;
       var CHAT_HISTORY_BOOTSTRAP_LIMIT = 60;
-      var CHAT_HISTORY_MAX_CONTENT_CHARS = 4000;
-      var CHAT_HISTORY_MAX_DETAIL_CHARS = 12000;
-      var CHAT_HISTORY_MAX_RAW_CHARS = 12000;
+      var CHAT_HISTORY_MAX_CONTENT_CHARS = -1;
+      var CHAT_HISTORY_MAX_DETAIL_CHARS = -1;
+      var CHAT_HISTORY_MAX_RAW_CHARS = -1;
       var CHAT_HISTORY_TRUNCATION_LABEL = "[History truncated]";
       var fallbackSummaryText = "Update received. Expand details for full output.";
       var suppressibleMessageState = Object.create(null);
@@ -1994,8 +1994,7 @@
           .map(function(line) { return line.replace(/\s+$/, ""); });
         var summaryLines = rawLines
           .filter(function(line) { return !isLowValueLine(line); })
-          .filter(function(line) { return !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line); })
-          .slice(0, 20);
+          .filter(function(line) { return !/^(\+\+\+|---|@@|diff\s|index\s)/.test(line); });
         return {
           summary: (summaryLines.join("\n").trim() || fallbackSummaryText),
           details: normalized.trim(),
@@ -2747,10 +2746,7 @@
         if (!threadId) return Promise.resolve([]);
         var query = [
           "thread_id=" + encodeURIComponent(threadId),
-          "limit=" + encodeURIComponent(String(CHAT_HISTORY_BOOTSTRAP_LIMIT)),
-          "max_content_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_CONTENT_CHARS)),
-          "max_detail_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_DETAIL_CHARS)),
-          "max_raw_chars=" + encodeURIComponent(String(CHAT_HISTORY_MAX_RAW_CHARS))
+          "limit=" + encodeURIComponent(String(CHAT_HISTORY_BOOTSTRAP_LIMIT))
         ].join("&");
         return window.MeridianWeb.fetchWithAuth("/api/history?" + query)
           .then(function(res) {
@@ -3479,12 +3475,19 @@
         var rawContent = typeof result.content === "string" ? result.content.trim() : "";
         var summaryText = typeof result.summary_text === "string" ? result.summary_text.trim() : "";
         var detailsText = typeof result.details_text === "string" ? result.details_text.trim() : "";
-        var lowValue = isUsageStatsPayload(rawContent);
-        var content = summaryText || rawContent;
-
-        if (!content && detailsText) {
-          content = fallbackSummaryText;
+        var agentReplyText = "";
+        if (detailsText) {
+          var replyMarker = "\n\nAgent reply:\n";
+          var replyMarkerIndex = detailsText.indexOf(replyMarker);
+          if (replyMarkerIndex >= 0) {
+            agentReplyText = detailsText.slice(replyMarkerIndex + replyMarker.length).trim();
+          } else if (detailsText.indexOf("Agent reply:\n") === 0) {
+            agentReplyText = detailsText.slice("Agent reply:\n".length).trim();
+          }
         }
+        var lowValue = isUsageStatsPayload(rawContent);
+        var content = agentReplyText || summaryText || rawContent || detailsText;
+
         if (!detailsText && summaryText && rawContent && rawContent !== summaryText && !lowValue) {
           detailsText = rawContent;
         }
