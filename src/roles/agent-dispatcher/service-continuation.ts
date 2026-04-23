@@ -124,6 +124,12 @@ function resolveImplicitContinueWorker(
     return null;
   }
 
+  // Validation-owned workers are not eligible for implicit continuation.
+  // The validator orchestrator manages their lifecycle.
+  if (worker?.status === "awaiting_validation" || worker?.status === "fix_requested") {
+    return null;
+  }
+
   const normalizedWorkerId = row.worker.trim();
   return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
 }
@@ -155,7 +161,8 @@ function isEligibleServiceContinueRow(
     return false;
   }
 
-  switch (row.status.trim()) {
+  const trimmedStatus = row.status.trim();
+  switch (trimmedStatus) {
     case "⚠️ ABANDONED":
       return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
     case "❌":
@@ -163,6 +170,10 @@ function isEligibleServiceContinueRow(
     case "⬜":
       return areDispatchDependenciesSatisfied(row, rows, rowsByWorker);
     default:
+      // fix_requested workers (🔁 FIX N/M) are eligible — they need feedback delivery
+      if (trimmedStatus.startsWith("🔁")) {
+        return true;
+      }
       return false;
   }
 }

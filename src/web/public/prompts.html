@@ -33,6 +33,23 @@
         </form>
       </section>
 
+      <section id="validator-prompt-section" class="panel" hidden>
+        <div class="panel-heading">
+          <h2>Validator Prompt</h2>
+          <p class="muted">Custom prompt for the validator agent. Leave empty to use the built-in default.</p>
+        </div>
+        <form id="validator-prompt-form" class="stack">
+          <label class="field">
+            <span>validator_prompt</span>
+            <textarea id="validator-prompt-input" rows="8"></textarea>
+          </label>
+          <div class="actions">
+            <button type="submit" class="primary-button">Save Validator Prompt</button>
+            <p id="validator-prompt-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+
       <section class="panel">
         <div class="panel-heading">
           <h2>Per-Task Templates</h2>
