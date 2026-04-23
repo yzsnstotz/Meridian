@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scheduler — meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      .status-badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 0.85em;
+        font-weight: 600;
+      }
+      .status-badge.idle { background: #444; color: #ccc; }
+      .status-badge.waiting { background: #1a3a5c; color: #5cb3ff; }
+      .status-badge.active_run { background: #1a3c1a; color: #5cff5c; }
+      .status-badge.paused { background: #5c4a1a; color: #ffcc5c; }
+      .status-badge.completed_max_cycles { background: #1a3a5c; color: #5cb3ff; }
+      .status-badge.manual_intervention_required { background: #5c1a1a; color: #ff5c5c; }
+
+      .summary-table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+      .summary-table th,
+      .summary-table td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #333; }
+      .summary-table th { color: #888; font-weight: 500; width: 200px; }
+
+      .controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 1em 0; }
+      .controls button { min-width: 100px; }
+
+      .run-history-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+      .run-history-table th,
+      .run-history-table td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #333; }
+      .run-history-table th { color: #888; }
+      .run-history-table td.outcome-completed { color: #5cff5c; }
+      .run-history-table td.outcome-failed { color: #ff5c5c; }
+      .run-history-table td.outcome-cancelled { color: #888; }
+
+      .config-form .field { margin-bottom: 8px; }
+      .config-form select, .config-form input[type="text"], .config-form input[type="number"] {
+        width: 100%; padding: 6px 8px; background: #1a1a2e; border: 1px solid #444; color: #eee; border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow"><a href="/" style="color:inherit;text-decoration:none">Role Layer Console</a></p>
+        <h1 id="scheduler-title">Scheduler</h1>
+        <p class="lede" id="scheduler-plan-path">—</p>
+      </section>
+
+      <!-- Status Panel -->
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Status</h2>
+          <span id="scheduler-status-badge" class="status-badge idle">idle</span>
+        </div>
+        <table class="summary-table">
+          <tbody>
+            <tr><th>Mode</th><td id="s-mode">—</td></tr>
+            <tr><th>Scheduler ID</th><td id="s-id">—</td></tr>
+            <tr><th>Status</th><td id="s-status">—</td></tr>
+            <tr><th>Next Run At</th><td id="s-next-run">—</td></tr>
+            <tr><th>Active Run ID</th><td id="s-active-run">—</td></tr>
+            <tr><th>Dispatcher Thread</th><td id="s-dispatcher-thread">—</td></tr>
+            <tr><th>Completed Cycles</th><td id="s-completed-cycles">0</td></tr>
+            <tr><th>Last Outcome</th><td id="s-last-outcome">—</td></tr>
+            <tr><th>Last Report</th><td id="s-last-report">—</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Controls -->
+      <section class="panel">
+        <div class="panel-heading"><h2>Controls</h2></div>
+        <div class="controls">
+          <button class="primary-button" data-action="start">Start</button>
+          <button class="ghost-button" data-action="stop">Stop</button>
+          <button class="ghost-button" data-action="pause">Pause</button>
+          <button class="ghost-button" data-action="resume">Resume</button>
+          <button class="primary-button" data-action="run-now">Run Now</button>
+          <button class="ghost-button" style="color:#ff5c5c" data-action="cancel-run">Cancel Run</button>
+        </div>
+        <p id="control-feedback" class="feedback" role="status" aria-live="polite"></p>
+      </section>
+
+      <!-- Schedule Config -->
+      <section class="panel">
+        <div class="panel-heading"><h2>Schedule Config</h2></div>
+        <form id="config-form" class="config-form stack">
+          <div class="summary-grid">
+            <label class="field">
+              <span>scheduler_mode</span>
+              <select id="cfg-mode" name="scheduler_mode">
+                <option value="none">none</option>
+                <option value="cron">cron</option>
+                <option value="interval">interval</option>
+                <option value="loop">loop</option>
+              </select>
+            </label>
+            <label class="field" id="cfg-cron-wrap">
+              <span>cron_expression</span>
+              <input id="cfg-cron" name="cron_expression" type="text" placeholder="0 9 * * 1-5" />
+            </label>
+            <label class="field">
+              <span>timezone</span>
+              <input id="cfg-timezone" name="timezone" type="text" placeholder="system" />
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field" id="cfg-interval-wrap">
+              <span>interval_seconds</span>
+              <input id="cfg-interval" name="interval_seconds" type="number" min="1" />
+            </label>
+            <label class="field">
+              <span>max_cycles</span>
+              <input id="cfg-max-cycles" name="max_cycles" type="number" min="1" />
+            </label>
+            <label class="field">
+              <span>delay_between_cycles_seconds</span>
+              <input id="cfg-delay" name="delay_between_cycles_seconds" type="number" min="0" />
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
+              <span>report_base_dir</span>
+              <input id="cfg-report-dir" name="report_base_dir" type="text" />
+            </label>
+            <label class="field">
+              <span>catch_up_policy</span>
+              <select id="cfg-catchup" name="catch_up_policy">
+                <option value="skip_missed">skip_missed</option>
+                <option value="run_one">run_one</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary-button">Save Config</button>
+            <p id="config-feedback" class="feedback" role="status"></p>
+          </div>
+        </form>
+        <div id="next-run-preview" class="muted" style="margin-top:8px"></div>
+      </section>
+
+      <!-- Run History -->
+      <section class="panel">
+        <div class="panel-heading"><h2>Run History</h2></div>
+        <div id="run-history-empty" class="empty-state">No runs yet.</div>
+        <table id="run-history-table" class="run-history-table" hidden>
+          <thead>
+            <tr>
+              <th>Run ID</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Duration</th>
+              <th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody id="run-history-body"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const POLL_INTERVAL_MS = 3000;
+      const schedulerId = window.location.pathname.split('/').pop();
+
+      async function fetchScheduler() {
+        try {
+          const res = await fetch(`/api/scheduler/${encodeURIComponent(schedulerId)}`);
+          if (!res.ok) return null;
+          return await res.json();
+        } catch { return null; }
+      }
+
+      function updateStatus(data) {
+        if (!data || !data.ok) return;
+        const c = data.config || {};
+        const rs = data.run_state || {};
+
+        document.getElementById('scheduler-title').textContent = `Scheduler: ${data.scheduler_id}`;
+        document.getElementById('scheduler-plan-path').textContent = c.dispatch_plan_path || '—';
+        document.getElementById('s-id').textContent = data.scheduler_id;
+        document.getElementById('s-mode').textContent = c.scheduler_mode || 'none';
+
+        const status = rs.status || 'idle';
+        document.getElementById('s-status').textContent = status;
+        const badge = document.getElementById('scheduler-status-badge');
+        badge.textContent = status.replace(/_/g, ' ');
+        badge.className = 'status-badge ' + status;
+
+        document.getElementById('s-next-run').textContent = rs.next_run_at || data.next_run_preview || '—';
+        document.getElementById('s-active-run').textContent = rs.current_run_id || '—';
+        document.getElementById('s-dispatcher-thread').textContent = rs.current_dispatcher_thread_id || '—';
+        document.getElementById('s-completed-cycles').textContent = rs.completed_cycles ?? 0;
+        document.getElementById('s-last-outcome').textContent = rs.last_run_outcome || '—';
+        document.getElementById('s-last-report').textContent = rs.last_report_path || '—';
+
+        // Populate config form
+        setVal('cfg-mode', c.scheduler_mode);
+        setVal('cfg-cron', c.cron_expression);
+        setVal('cfg-timezone', c.timezone);
+        setVal('cfg-interval', c.interval_seconds);
+        setVal('cfg-max-cycles', c.max_cycles);
+        setVal('cfg-delay', c.delay_between_cycles_seconds);
+        setVal('cfg-report-dir', c.report_base_dir);
+        setVal('cfg-catchup', c.catch_up_policy);
+
+        if (data.next_run_preview) {
+          document.getElementById('next-run-preview').textContent = 'Next cron fire: ' + data.next_run_preview;
+        }
+
+        // Run history
+        const runs = (rs.run_history || []).slice().reverse();
+        const tbody = document.getElementById('run-history-body');
+        const table = document.getElementById('run-history-table');
+        const empty = document.getElementById('run-history-empty');
+
+        if (runs.length === 0) {
+          table.hidden = true;
+          empty.hidden = false;
+        } else {
+          table.hidden = false;
+          empty.hidden = true;
+          tbody.innerHTML = runs.map(r => {
+            const outcomeClass = (r.terminal_outcome || '').includes('completed') ? 'outcome-completed'
+              : (r.terminal_outcome || '').includes('failed') ? 'outcome-failed'
+              : 'outcome-cancelled';
+            return `<tr>
+              <td title="${r.run_id}">${(r.run_id || '').slice(0, 8)}</td>
+              <td>${formatTime(r.actual_start_time)}</td>
+              <td>${formatTime(r.completed_time)}</td>
+              <td>${r.duration_seconds != null ? r.duration_seconds + 's' : '—'}</td>
+              <td class="${outcomeClass}">${r.terminal_outcome || '—'}</td>
+            </tr>`;
+          }).join('');
+        }
+      }
+
+      function setVal(id, val) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (val !== undefined && val !== null) el.value = String(val);
+      }
+
+      function formatTime(iso) {
+        if (!iso) return '—';
+        try { return new Date(iso).toLocaleString(); } catch { return iso; }
+      }
+
+      // Controls
+      document.querySelectorAll('[data-action]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const action = btn.dataset.action;
+          const feedback = document.getElementById('control-feedback');
+          feedback.textContent = '';
+
+          try {
+            const res = await fetch(`/api/scheduler/${encodeURIComponent(schedulerId)}/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+            const data = await res.json();
+            feedback.textContent = data.ok ? `${action}: OK` : (data.error || 'Failed');
+            feedback.style.color = data.ok ? '#5cff5c' : '#ff5c5c';
+          } catch (err) {
+            feedback.textContent = err.message;
+            feedback.style.color = '#ff5c5c';
+          }
+        });
+      });
+
+      // Config save
+      document.getElementById('config-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const feedback = document.getElementById('config-feedback');
+        feedback.textContent = '';
+
+        const form = e.target;
+        const body = {};
+        const mode = form.scheduler_mode.value;
+        body.scheduler_mode = mode;
+        if (form.cron_expression.value) body.cron_expression = form.cron_expression.value;
+        if (form.timezone.value) body.timezone = form.timezone.value;
+        if (form.interval_seconds.value) body.interval_seconds = parseInt(form.interval_seconds.value, 10);
+        if (form.max_cycles.value) body.max_cycles = parseInt(form.max_cycles.value, 10);
+        if (form.delay_between_cycles_seconds.value) body.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
+        if (form.report_base_dir.value) body.report_base_dir = form.report_base_dir.value;
+        if (form.catch_up_policy.value) body.catch_up_policy = form.catch_up_policy.value;
+
+        try {
+          const res = await fetch(`/api/scheduler/${encodeURIComponent(schedulerId)}/config`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          const data = await res.json();
+          feedback.textContent = data.ok ? 'Config saved' : (data.error || 'Failed');
+          feedback.style.color = data.ok ? '#5cff5c' : '#ff5c5c';
+        } catch (err) {
+          feedback.textContent = err.message;
+          feedback.style.color = '#ff5c5c';
+        }
+      });
+
+      // Polling
+      async function poll() {
+        const data = await fetchScheduler();
+        updateStatus(data);
+      }
+
+      poll();
+      setInterval(poll, POLL_INTERVAL_MS);
+    </script>
+  </body>
+</html>

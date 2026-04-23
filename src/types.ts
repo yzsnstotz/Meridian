@@ -216,7 +216,7 @@ export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
 // ─── meridian-roles specific types ──────────────────────────────────────────────
 
-export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher"]);
+export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher", "scheduler"]);
 export type RoleType = z.infer<typeof RoleTypeSchema>;
 
 export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed"]);
@@ -366,6 +366,110 @@ export const AppStateSchema = z.object({
   promptStore: PromptStoreSchema
 });
 export type AppState = z.infer<typeof AppStateSchema>;
+
+// ─── Scheduler role schemas ─────────────────────────────────────────────────
+
+export const SchedulerModeSchema = z.enum(["none", "cron", "interval", "loop"]);
+export type SchedulerMode = z.infer<typeof SchedulerModeSchema>;
+
+export const CatchUpPolicySchema = z.enum(["skip_missed", "run_one"]);
+export type CatchUpPolicy = z.infer<typeof CatchUpPolicySchema>;
+
+export const TerminalOutcomeSchema = z.enum([
+  "completed",
+  "completed_with_skips",
+  "failed",
+  "manual_intervention_required",
+  "cancelled",
+  "overlap_skipped"
+]);
+export type TerminalOutcome = z.infer<typeof TerminalOutcomeSchema>;
+
+export const SchedulerStatusSchema = z.enum([
+  "idle",
+  "waiting",
+  "active_run",
+  "paused",
+  "completed_max_cycles",
+  "manual_intervention_required"
+]);
+export type SchedulerStatus = z.infer<typeof SchedulerStatusSchema>;
+
+export const SchedulerConfigSchema = z.object({
+  // ── Target dispatcher ──
+  dispatch_plan_path: z.string().min(1),
+  command_file_path: z.string().min(1),
+  dispatch_repo_root: z.string().min(1).optional(),
+  docs_root: z.string().min(1).optional(),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1),
+
+  // ── Dispatcher agent settings (pass-through to child dispatcher) ──
+  agent_type: AgentTypeSchema.default("claude"),
+  model_id: z.string().min(1).optional(),
+  mode: BridgeModeSchema.default("pane_bridge"),
+  kill_policy: KillPolicySchema.default("always"),
+  auto_approve: z.boolean().default(false),
+  model_map: DispatchModelMapSchema.optional(),
+  validator: ValidatorConfigSchema.optional(),
+
+  // ── Schedule config ──
+  scheduler_mode: SchedulerModeSchema.default("none"),
+
+  // Cron mode
+  cron_expression: z.string().optional(),
+  timezone: z.string().default("system"),
+
+  // Interval mode
+  interval_seconds: z.number().int().min(1).optional(),
+
+  // Loop/Interval shared
+  start_immediately: z.boolean().optional(),
+  max_cycles: z.number().int().min(1).optional(),
+  delay_between_cycles_seconds: z.number().int().min(0).default(0),
+
+  // Archival
+  report_base_dir: z.string().min(1),
+
+  // Recovery
+  catch_up_policy: CatchUpPolicySchema.default("skip_missed")
+});
+export type SchedulerConfig = z.infer<typeof SchedulerConfigSchema>;
+
+export const SchedulerRunWorkerSummarySchema = z.object({
+  worker_id: z.string().min(1),
+  status: z.string().min(1),
+  thread_id: z.string().min(1).optional(),
+  retry_count: z.number().int().min(0).default(0),
+  report_path: z.string().optional()
+});
+export type SchedulerRunWorkerSummary = z.infer<typeof SchedulerRunWorkerSummarySchema>;
+
+export const SchedulerRunSummarySchema = z.object({
+  run_id: z.string().min(1),
+  scheduler_mode: SchedulerModeSchema,
+  planned_start_time: z.string().datetime().nullable(),
+  actual_start_time: z.string().datetime(),
+  completed_time: z.string().datetime().nullable(),
+  duration_seconds: z.number().nullable(),
+  dispatcher_thread_id: z.string().min(1).nullable(),
+  terminal_outcome: TerminalOutcomeSchema.nullable(),
+  workers: z.array(SchedulerRunWorkerSummarySchema).default([])
+});
+export type SchedulerRunSummary = z.infer<typeof SchedulerRunSummarySchema>;
+
+export const SchedulerRunStateSchema = z.object({
+  status: SchedulerStatusSchema.default("idle"),
+  current_run_id: z.string().nullable().default(null),
+  current_dispatcher_thread_id: z.string().nullable().default(null),
+  completed_cycles: z.number().int().min(0).default(0),
+  next_run_at: z.string().nullable().default(null),
+  last_run_completed_at: z.string().nullable().default(null),
+  last_run_outcome: TerminalOutcomeSchema.nullable().default(null),
+  last_report_path: z.string().nullable().default(null),
+  plan_lock_owner: z.string().nullable().default(null),
+  run_history: z.array(SchedulerRunSummarySchema).default([])
+});
+export type SchedulerRunState = z.infer<typeof SchedulerRunStateSchema>;
 
 function cloneReplyChannel(replyChannel: ReplyChannel): ReplyChannel {
   return { ...replyChannel };

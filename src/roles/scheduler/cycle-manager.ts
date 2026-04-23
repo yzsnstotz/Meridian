@@ -1,0 +1,419 @@
+import * as fs from "node:fs";
+import path from "node:path";
+
+import type {
+  SchedulerConfig,
+  SchedulerRunState,
+  TerminalOutcome,
+  DispatchThreadStateV2
+} from "../../types";
+import { SchedulerStateStore } from "./scheduler-state-store";
+import { acquirePlanLock, releasePlanLock } from "./plan-lock";
+import { archiveRun, type ArchiveResult } from "./archiver";
+
+const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+
+// Terminal statuses for non-human workers
+const TERMINAL_STATUSES = new Set(["completed", "failed", "abandoned", "skipped"]);
+
+// Statuses that represent human-safe completion (auto-continue)
+const AUTO_CONTINUE_OUTCOMES = new Set<TerminalOutcome>(["completed", "completed_with_skips"]);
+
+// Statuses that require human intervention (pause scheduler)
+const PAUSE_OUTCOMES = new Set<TerminalOutcome>(["failed", "manual_intervention_required"]);
+
+// Human/PM model codes
+const HUMAN_MODELS = new Set(["HUMAN", "PM"]);
+
+export interface CycleStartResult {
+  ok: boolean;
+  run_id?: string;
+  error?: string;
+}
+
+export interface CycleCompletionResult {
+  terminal_outcome: TerminalOutcome;
+  should_continue: boolean;
+  archive?: ArchiveResult;
+  error?: string;
+}
+
+export function canStartCycle(
+  stateStore: SchedulerStateStore,
+  schedulerThreadId: string
+): { ok: boolean; reason?: string } {
+  const state = stateStore.load();
+
+  if (state.status === "active_run") {
+    return { ok: false, reason: "A cycle is already active" };
+  }
+  if (state.status === "manual_intervention_required") {
+    return { ok: false, reason: "Manual intervention required before next cycle" };
+  }
+  if (state.status === "completed_max_cycles") {
+    return { ok: false, reason: "Max cycles reached" };
+  }
+
+  if (state.plan_lock_owner && state.plan_lock_owner !== schedulerThreadId) {
+    return { ok: false, reason: `Plan locked by ${state.plan_lock_owner}` };
+  }
+
+  return { ok: true };
+}
+
+export function startCycle(
+  stateStore: SchedulerStateStore,
+  config: SchedulerConfig,
+  schedulerThreadId: string,
+  runId: string,
+  plannedStartTime: string | null
+): CycleStartResult {
+  // Acquire plan lock
+  const lockResult = acquirePlanLock(stateStore, schedulerThreadId, runId);
+  if (!lockResult.acquired) {
+    return {
+      ok: false,
+      error: `Plan lock held by ${lockResult.held_by}`
+    };
+  }
+
+  // Reset dispatch plan statuses
+  resetDispatchPlan(config.dispatch_plan_path);
+
+  // Reset lifecycle sidecar
+  resetLifecycleSidecar(config.dispatch_plan_path);
+
+  // Update scheduler run state
+  const state = stateStore.load();
+  state.status = "active_run";
+  state.current_run_id = runId;
+  state.current_dispatcher_thread_id = null;
+  stateStore.save(state);
+
+  return { ok: true, run_id: runId };
+}
+
+export function recordDispatcherLaunch(
+  stateStore: SchedulerStateStore,
+  dispatcherThreadId: string
+): void {
+  const state = stateStore.load();
+  state.current_dispatcher_thread_id = dispatcherThreadId;
+  stateStore.save(state);
+}
+
+export function detectCycleCompletion(
+  config: SchedulerConfig
+): { complete: boolean; outcome?: TerminalOutcome } {
+  const threadsPath = path.join(path.dirname(config.dispatch_plan_path), DISPATCH_THREADS_FILENAME);
+
+  let threadsContent: string;
+  try {
+    threadsContent = fs.readFileSync(threadsPath, "utf8");
+  } catch {
+    return { complete: false };
+  }
+
+  let lifecycleState: DispatchThreadStateV2;
+  try {
+    lifecycleState = JSON.parse(threadsContent) as DispatchThreadStateV2;
+  } catch {
+    return { complete: false };
+  }
+
+  if (!lifecycleState.workers || Object.keys(lifecycleState.workers).length === 0) {
+    return { complete: false };
+  }
+
+  // Also parse the plan to check for human/PM rows without lifecycle entries
+  const planPath = config.dispatch_plan_path;
+  const planWorkers = parsePlanWorkerModels(planPath);
+
+  let hasFailure = false;
+  let hasSkips = false;
+  let hasManualIntervention = false;
+
+  for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+    const model = planWorkers.get(workerId);
+    if (model && HUMAN_MODELS.has(model.toUpperCase())) {
+      // Human/PM workers don't block completion but may require intervention
+      if (!TERMINAL_STATUSES.has(worker.status)) {
+        hasManualIntervention = true;
+      }
+      continue;
+    }
+
+    if (!TERMINAL_STATUSES.has(worker.status)) {
+      return { complete: false };
+    }
+
+    if (worker.status === "failed" || worker.status === "abandoned") {
+      hasFailure = true;
+    }
+    if (worker.status === "skipped") {
+      hasSkips = true;
+    }
+  }
+
+  // Check for unresolved human rows in plan that don't have lifecycle entries
+  for (const [workerId, model] of planWorkers) {
+    if (!HUMAN_MODELS.has(model.toUpperCase())) {
+      continue;
+    }
+    const worker = lifecycleState.workers[workerId];
+    if (!worker || !TERMINAL_STATUSES.has(worker.status)) {
+      hasManualIntervention = true;
+    }
+  }
+
+  if (hasManualIntervention) {
+    return { complete: true, outcome: "manual_intervention_required" };
+  }
+  if (hasFailure) {
+    return { complete: true, outcome: "failed" };
+  }
+  if (hasSkips) {
+    return { complete: true, outcome: "completed_with_skips" };
+  }
+  return { complete: true, outcome: "completed" };
+}
+
+export function completeCycle(
+  stateStore: SchedulerStateStore,
+  config: SchedulerConfig,
+  schedulerThreadId: string
+): CycleCompletionResult {
+  const state = stateStore.load();
+
+  if (!state.current_run_id) {
+    return {
+      terminal_outcome: "cancelled",
+      should_continue: false,
+      error: "No active run to complete"
+    };
+  }
+
+  const detection = detectCycleCompletion(config);
+  if (!detection.complete || !detection.outcome) {
+    return {
+      terminal_outcome: "cancelled",
+      should_continue: false,
+      error: "Cycle not yet complete"
+    };
+  }
+
+  const now = new Date().toISOString();
+  const outcome = detection.outcome;
+
+  // Archive the run
+  let archive: ArchiveResult;
+  try {
+    archive = archiveRun({
+      runId: state.current_run_id,
+      config,
+      actualStartTime: state.last_run_completed_at ?? now, // best effort
+      completedTime: now,
+      dispatcherThreadId: state.current_dispatcher_thread_id,
+      terminalOutcome: outcome,
+      completedCycles: state.completed_cycles + 1,
+      plannedStartTime: state.next_run_at
+    });
+  } catch (error) {
+    // Archival failure — do NOT reset plan
+    state.status = "manual_intervention_required";
+    stateStore.save(state);
+    return {
+      terminal_outcome: outcome,
+      should_continue: false,
+      error: `Archival failed: ${asError(error).message}`
+    };
+  }
+
+  // Reset safety check
+  if (!archive.planSnapshotMatches) {
+    state.status = "manual_intervention_required";
+    stateStore.save(state);
+    return {
+      terminal_outcome: outcome,
+      should_continue: false,
+      archive,
+      error: "Plan changed during archival — reset blocked"
+    };
+  }
+
+  // Update state
+  state.completed_cycles += 1;
+  state.last_run_completed_at = now;
+  state.last_run_outcome = outcome;
+  state.last_report_path = archive.reportPath;
+  state.current_run_id = null;
+  state.current_dispatcher_thread_id = null;
+
+  // Append run summary
+  stateStore.appendRunSummary({
+    run_id: state.current_run_id ?? archive.archiveDir.split("/").pop() ?? "unknown",
+    scheduler_mode: config.scheduler_mode,
+    planned_start_time: state.next_run_at,
+    actual_start_time: state.last_run_completed_at ?? now,
+    completed_time: now,
+    duration_seconds: null,
+    dispatcher_thread_id: state.current_dispatcher_thread_id,
+    terminal_outcome: outcome,
+    workers: []
+  });
+
+  // Determine next action
+  const shouldContinue = AUTO_CONTINUE_OUTCOMES.has(outcome);
+
+  if (PAUSE_OUTCOMES.has(outcome)) {
+    state.status = "manual_intervention_required";
+  } else if (config.max_cycles && state.completed_cycles >= config.max_cycles) {
+    state.status = "completed_max_cycles";
+  } else if (shouldContinue) {
+    state.status = "waiting";
+  } else {
+    state.status = "idle";
+  }
+
+  // Release plan lock
+  releasePlanLock(stateStore, schedulerThreadId);
+
+  stateStore.save(state);
+
+  return {
+    terminal_outcome: outcome,
+    should_continue: shouldContinue && state.status === "waiting",
+    archive
+  };
+}
+
+export function cancelCycle(
+  stateStore: SchedulerStateStore,
+  schedulerThreadId: string
+): void {
+  const state = stateStore.load();
+  const now = new Date().toISOString();
+
+  state.status = "idle";
+  state.current_run_id = null;
+  state.current_dispatcher_thread_id = null;
+  state.last_run_completed_at = now;
+  state.last_run_outcome = "cancelled";
+
+  releasePlanLock(stateStore, schedulerThreadId);
+  stateStore.save(state);
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+function resetDispatchPlan(planPath: string): void {
+  let content: string;
+  try {
+    content = fs.readFileSync(planPath, "utf8");
+  } catch {
+    return;
+  }
+
+  // Reset all status cells in the dispatch plan table
+  const lines = content.split(/\r?\n/);
+  let mutated = false;
+
+  for (let i = 0; i < lines.length - 1; i++) {
+    const headerCells = parseTableRow(lines[i]!);
+    if (!headerCells) continue;
+
+    const statusCol = headerCells.indexOf("Status");
+    if (statusCol === -1) continue;
+
+    const separatorCells = parseTableRow(lines[i + 1]!);
+    if (!separatorCells || !isSeparatorRow(separatorCells)) continue;
+
+    for (let j = i + 2; j < lines.length; j++) {
+      const rowCells = parseTableRow(lines[j]!);
+      if (!rowCells || rowCells.length !== headerCells.length) break;
+
+      const currentStatus = rowCells[statusCol]!.trim();
+      if (currentStatus !== "⬜") {
+        rowCells[statusCol] = "⬜";
+        lines[j] = `| ${rowCells.join(" | ")} |`;
+        mutated = true;
+      }
+    }
+    break;
+  }
+
+  if (mutated) {
+    fs.writeFileSync(planPath, lines.join("\n"), "utf8");
+  }
+}
+
+function resetLifecycleSidecar(planPath: string): void {
+  const threadsPath = path.join(path.dirname(planPath), DISPATCH_THREADS_FILENAME);
+  const emptyState = {
+    version: 2,
+    dispatcher: { thread_id: null, started_at: null, status: "pending" },
+    workers: {},
+    last_reconciled_at: null
+  };
+
+  fs.mkdirSync(path.dirname(threadsPath), { recursive: true });
+  fs.writeFileSync(threadsPath, `${JSON.stringify(emptyState, null, 2)}\n`, "utf8");
+}
+
+function parsePlanWorkerModels(planPath: string): Map<string, string> {
+  const models = new Map<string, string>();
+
+  let content: string;
+  try {
+    content = fs.readFileSync(planPath, "utf8");
+  } catch {
+    return models;
+  }
+
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length - 1; i++) {
+    const headerCells = parseTableRow(lines[i]!);
+    if (!headerCells) continue;
+
+    const workerCol = headerCells.indexOf("Worker");
+    const modelCol = headerCells.indexOf("Model");
+    if (workerCol === -1 || modelCol === -1) continue;
+
+    const separatorCells = parseTableRow(lines[i + 1]!);
+    if (!separatorCells || !isSeparatorRow(separatorCells)) continue;
+
+    for (let j = i + 2; j < lines.length; j++) {
+      const rowCells = parseTableRow(lines[j]!);
+      if (!rowCells || rowCells.length !== headerCells.length) break;
+
+      const workerId = rowCells[workerCol]!.trim();
+      const model = rowCells[modelCol]!.trim();
+      if (workerId && model) {
+        models.set(workerId, model);
+      }
+    }
+    break;
+  }
+
+  return models;
+}
+
+function parseTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|")) return null;
+
+  const withoutLeading = trimmed.slice(1);
+  const normalized = withoutLeading.endsWith("|")
+    ? withoutLeading.slice(0, -1)
+    : withoutLeading;
+
+  return normalized.split("|").map((cell) => cell.trim());
+}
+
+function isSeparatorRow(cells: string[]): boolean {
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}

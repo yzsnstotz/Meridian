@@ -7,12 +7,14 @@ import { GUI_LISTEN_HOST, GUI_PORT } from "../config";
 import type { Logger } from "../roles/base-role";
 import type { PromptHandlers } from "./prompt-handlers";
 import type { RoleHandlers } from "./role-handlers";
+import type { SchedulerHandlers } from "./scheduler-handlers";
 
 export interface HttpServerOptions {
   port?: number;
   host?: string;
   roleHandlers: RoleHandlers;
   promptHandlers: PromptHandlers;
+  schedulerHandlers?: SchedulerHandlers;
   publicDir?: string;
   log?: Logger;
 }
@@ -24,6 +26,7 @@ export class HttpServer {
   private readonly log: Logger;
   private readonly roleHandlers: RoleHandlers;
   private readonly promptHandlers: PromptHandlers;
+  private readonly schedulerHandlers: SchedulerHandlers | null;
   private server: Server | null = null;
 
   constructor(options: HttpServerOptions) {
@@ -33,6 +36,7 @@ export class HttpServer {
     this.log = options.log ?? console;
     this.roleHandlers = options.roleHandlers;
     this.promptHandlers = options.promptHandlers;
+    this.schedulerHandlers = options.schedulerHandlers ?? null;
   }
 
   async listen(): Promise<void> {
@@ -82,6 +86,10 @@ export class HttpServer {
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
       if (await this.promptHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.schedulerHandlers && await this.schedulerHandlers.handle(request, response)) {
         return;
       }
 
@@ -153,6 +161,10 @@ function mapPublicAsset(pathname: string): { fileName: string; contentType: stri
 
   if (/^\/role\/[^/]+\/config$/.test(pathname)) {
     return { fileName: "config.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/scheduler\/[^/]+$/.test(pathname)) {
+    return { fileName: "scheduler.html", contentType: "text/html; charset=utf-8" };
   }
 
   if (pathname === "/app.js") {

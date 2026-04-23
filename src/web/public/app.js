@@ -150,6 +150,51 @@ async function setupDashboard() {
       list.dataset.renderSignature = roleSignature;
     }
 
+    // Render schedulers
+    const schedulerListEl = document.getElementById("schedulers-list");
+    const schedulerEmptyEl = document.getElementById("schedulers-empty");
+    if (schedulerListEl && schedulerEmptyEl) {
+      const schedulerRoles = roles.filter((role) => role.role_type === "scheduler");
+      if (schedulerRoles.length === 0) {
+        schedulerEmptyEl.hidden = false;
+        schedulerListEl.replaceChildren();
+      } else {
+        schedulerEmptyEl.hidden = true;
+        schedulerListEl.replaceChildren();
+        schedulerRoles.forEach((role) => {
+          const card = document.createElement("article");
+          card.className = "role-card";
+          card.innerHTML = `
+            <div class="role-card-header">
+              <code>${escapeHtml(role.thread_id)}</code>
+              <span class="status-pill status-${escapeHtml(role.status)}">${escapeHtml(role.status)}</span>
+            </div>
+            <dl class="meta-grid">
+              <div><dt>type</dt><dd>scheduler</dd></div>
+            </dl>
+            <div class="card-actions">
+              <a class="ghost-link" href="/scheduler/${encodeURIComponent(role.thread_id)}">Open detail</a>
+              <button type="button" class="danger-button" data-scheduler-thread="${escapeHtml(role.thread_id)}">Deactivate</button>
+            </div>
+          `;
+          bindLocationNavigation(card.querySelector("a.ghost-link"));
+          schedulerListEl.appendChild(card);
+        });
+        schedulerListEl.querySelectorAll("[data-scheduler-thread]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const threadId = button.getAttribute("data-scheduler-thread");
+            if (!threadId) return;
+            try {
+              await fetchJson(`/api/scheduler/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+              await refreshRoles();
+            } catch (error) {
+              agentDispatcherFeedback.textContent = getErrorMessage(error);
+            }
+          });
+        });
+      }
+    }
+
     const agentDispatcherRoles = roles.filter((role) => role.role_type === "agent-dispatcher");
     if (agentDispatcherRoles.length === 0) {
       agentDispatcherEmpty.hidden = false;

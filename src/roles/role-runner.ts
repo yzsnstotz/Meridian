@@ -42,10 +42,13 @@ export class RoleRunner {
     this.roles.set(role.threadId, role);
 
     try {
-      if (rehydrationContext?.needsReactivation) {
-        await restartRehydratedAgentDispatcher(role);
-      } else if (rehydrationContext && await tryResumeRehydratedAgentDispatcher(role, this.context)) {
-        return;
+      // Scheduler handles its own state recovery; skip dispatcher-specific rehydration
+      if (role.roleType !== "scheduler") {
+        if (rehydrationContext?.needsReactivation) {
+          await restartRehydratedAgentDispatcher(role);
+        } else if (rehydrationContext && await tryResumeRehydratedAgentDispatcher(role, this.context)) {
+          return;
+        }
       }
 
       await role.onActivate(this.context);

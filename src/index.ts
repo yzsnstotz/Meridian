@@ -11,12 +11,14 @@ import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
+import { SchedulerRole } from "./roles/definitions/scheduler";
 import { PromptStore } from "./roles/prompt-store";
 import { RoleRegistry } from "./roles/role-registry";
 import { RoleRunner, type RehydrationContext } from "./roles/role-runner";
 import { createPromptHandlers } from "./server/prompt-handlers";
 import { HttpServer } from "./server/http-server";
 import { createRoleHandlers } from "./server/role-handlers";
+import { createSchedulerHandlers } from "./server/scheduler-handlers";
 import {
   ACTIVE_ROLE_STATUS,
   PAUSED_ROLE_STATUS,
@@ -59,6 +61,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
 
   registry.register("dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
   registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
+  registry.register("scheduler", (threadId, config) => new SchedulerRole(threadId, config, { stateStore }));
 
   const startupActivations = await buildStartupActivations(stateStore, client, log);
   await reconcileStartupDispatchers(startupActivations, client, log);
@@ -79,10 +82,17 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     resolveRole: roleHandlers.resolveRole
   });
   const promptHandlers = createPromptHandlers(promptStore);
+  const schedulerHandlers = createSchedulerHandlers({
+    runner,
+    registry,
+    stateStore,
+    log
+  });
   const httpServer = new HttpServer({
     port: GUI_PORT,
     roleHandlers,
     promptHandlers,
+    schedulerHandlers,
     log
   });
   const watchdog = new ReconciliationWatchdog({
