@@ -208,6 +208,75 @@ describe("run tool", () => {
     );
   });
 
+  it("does not treat implementation workers as report-only just because their completion artifact is a report", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | N-01 | Fix OpenClaw setup flow | CODEX | PRE-FLIGHT | Write completion report to `/tmp/dispatch/reports/<WORKER_ID>.md`. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-implementation-report",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-01"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("follow normally (read specs, implement, test, git commit, push)");
+    expect(sentContent).not.toContain("this is a report-only worker");
+    expect(sentContent).not.toContain("Do NOT create git commits, branches, pushes, or PRs");
+  });
+
+  it("keeps report-only delivery suppression when the worker row is explicit", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | R-01 | Report-only audit | CODEX | PRE-FLIGHT | Write completion report to `/tmp/dispatch/reports/<WORKER_ID>.md`. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-explicit-report-only",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "R-01"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("this is a report-only worker");
+    expect(sentContent).toContain("Do NOT create git commits, branches, pushes, or PRs");
+    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+  });
+
+  it("keeps report-only delivery suppression for PRE-FLIGHT control workers", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 0 | PRE-FLIGHT | Environment health check | CODEX | — | Write completion report to `/tmp/dispatch/reports/<WORKER_ID>.md`. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-preflight-control",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "PRE-FLIGHT"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("this is a report-only worker");
+    expect(sentContent).toContain("Do NOT create git commits, branches, pushes, or PRs");
+    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+  });
+
   it("keeps successful workers running until reconciliation verifies real outputs", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));

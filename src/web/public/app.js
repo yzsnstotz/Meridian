@@ -1374,6 +1374,7 @@ function renderDispatchDetailCard(detail) {
         <div class="dispatch-detail-messages">
           ${renderDispatchMessage("Dispatch Command", detail.command, "No dispatch command captured yet.")}
           ${renderDispatchMessage("Agent Reply", detail.reply, "No agent reply captured yet.")}
+          ${renderDispatchValidationMessage(detail.validation)}
         </div>
       </div>
     </details>
@@ -1594,6 +1595,62 @@ function renderDispatchMessage(label, detail, emptyMessage) {
         : `<p class="dispatch-message-empty">${escapeHtml(emptyMessage)}</p>`}
     </section>
   `;
+}
+
+function renderDispatchValidationMessage(validation) {
+  const history = Array.isArray(validation?.history) ? validation.history : [];
+  const latest = history.length > 0 ? history[history.length - 1] : null;
+  const score = typeof validation?.last_score === "number"
+    ? validation.last_score
+    : (typeof latest?.score === "number" ? latest.score : null);
+  const feedback = normalizeText(validation?.last_feedback) || normalizeText(latest?.feedback);
+  const cycle = typeof latest?.cycle === "number"
+    ? latest.cycle
+    : (typeof validation?.current_cycle === "number" ? validation.current_cycle : null);
+  const maxCycles = typeof validation?.max_fix_cycles === "number" ? validation.max_fix_cycles : null;
+  const validatorThreadId = normalizeText(latest?.validator_thread_id)
+    || normalizeText(validation?.validator_thread_id)
+    || "validator";
+
+  if (!validation) {
+    return renderDispatchMessage("Validator Reply", null, "No validator reply captured yet.");
+  }
+
+  const contentParts = [];
+  if (score !== null) {
+    contentParts.push(`Score: ${formatValidatorScore(score)}`);
+  }
+  if (cycle !== null || maxCycles !== null) {
+    contentParts.push(`Cycle: ${cycle ?? "---"}/${maxCycles ?? "---"}`);
+  }
+  if (feedback) {
+    if (contentParts.length > 0) {
+      contentParts.push("");
+    }
+    contentParts.push(feedback);
+  }
+
+  return renderDispatchMessage(
+    "Validator Reply",
+    {
+      trace_id: null,
+      sender_name: validatorThreadId,
+      sender_agent_type: "validator",
+      sender_model: score === null ? null : `score ${formatValidatorScore(score)}`,
+      sender_thread_id: validatorThreadId,
+      timestamp: latest?.timestamp || null,
+      content: contentParts.join("\n")
+    },
+    "No validator reply captured yet."
+  );
+}
+
+function formatValidatorScore(score) {
+  if (typeof score !== "number" || !Number.isFinite(score)) {
+    return "---";
+  }
+
+  return score.toFixed(2);
 }
 
 function formatDispatchSender(detail) {

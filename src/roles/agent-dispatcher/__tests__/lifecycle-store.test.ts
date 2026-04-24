@@ -770,6 +770,37 @@ describe("LifecycleStore", () => {
       })
     );
   });
+
+  it("persists validator pass feedback before marking a worker completed", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.transitionToAwaitingValidation("N-01", 3);
+
+    harness.store.transitionToValidated("N-01", {
+      score: 0.92,
+      feedback: "Implementation matches the task and tests passed.",
+      validatorThreadId: "validator-thread-999"
+    });
+
+    expect(harness.store.load().workers["N-01"]).toMatchObject({
+      status: "completed",
+      validation: {
+        current_cycle: 1,
+        max_fix_cycles: 3,
+        validator_thread_id: null,
+        last_score: 0.92,
+        last_feedback: "Implementation matches the task and tests passed.",
+        history: [
+          expect.objectContaining({
+            cycle: 1,
+            score: 0.92,
+            feedback: "Implementation matches the task and tests passed.",
+            validator_thread_id: "validator-thread-999"
+          })
+        ]
+      }
+    });
+  });
 });
 
 async function createHarness(options: {

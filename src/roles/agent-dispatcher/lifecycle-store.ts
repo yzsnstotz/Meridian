@@ -301,24 +301,13 @@ export class LifecycleStore {
       if (!worker || !worker.validation) return;
 
       const prevStatus = worker.status;
-      const cycle = worker.validation.current_cycle + 1;
       worker.status = "fix_requested";
-      worker.validation.current_cycle = cycle;
-      worker.validation.last_score = score;
-      worker.validation.last_feedback = feedback;
-      worker.validation.validator_thread_id = null;
-      worker.validation.history.push({
-        cycle,
-        score,
-        feedback,
-        validator_thread_id: validatorThreadId,
-        timestamp: this.now()
-      });
+      recordValidationOutcome(worker, score, feedback, validatorThreadId, this.now);
       this.logTransition(workerId, prevStatus, "fix_requested", "validation_below_threshold");
     });
   }
 
-  transitionToValidated(workerId: string): void {
+  transitionToValidated(workerId: string, validationResult?: ValidationTransitionResult): void {
     this.mutate((state) => {
       const worker = state.workers[workerId];
       if (!worker) return;
@@ -326,13 +315,27 @@ export class LifecycleStore {
       const prevStatus = worker.status;
       worker.status = "completed";
       if (worker.validation) {
-        worker.validation.validator_thread_id = null;
+        if (validationResult) {
+          recordValidationOutcome(
+            worker,
+            validationResult.score,
+            validationResult.feedback,
+            validationResult.validatorThreadId,
+            this.now
+          );
+        } else {
+          worker.validation.validator_thread_id = null;
+        }
       }
       this.logTransition(workerId, prevStatus, "completed", "validation_passed");
     });
   }
 
-  transitionToValidationFailed(workerId: string, reason?: string): void {
+  transitionToValidationFailed(
+    workerId: string,
+    reason?: string,
+    validationResult?: ValidationTransitionResult
+  ): void {
     this.mutate((state) => {
       const worker = state.workers[workerId];
       if (!worker) return;
@@ -340,11 +343,52 @@ export class LifecycleStore {
       const prevStatus = worker.status;
       worker.status = "failed";
       if (worker.validation) {
-        worker.validation.validator_thread_id = null;
+        if (validationResult) {
+          recordValidationOutcome(
+            worker,
+            validationResult.score,
+            validationResult.feedback,
+            validationResult.validatorThreadId,
+            this.now
+          );
+        } else {
+          worker.validation.validator_thread_id = null;
+        }
       }
       this.logTransition(workerId, prevStatus, "failed", reason ?? "validation_max_cycles_exhausted");
     });
   }
+}
+
+interface ValidationTransitionResult {
+  score: number;
+  feedback: string;
+  validatorThreadId: string;
+}
+
+function recordValidationOutcome(
+  worker: DispatchWorkerState,
+  score: number,
+  feedback: string,
+  validatorThreadId: string,
+  now: () => string
+): void {
+  if (!worker.validation) {
+    return;
+  }
+
+  const cycle = worker.validation.current_cycle + 1;
+  worker.validation.current_cycle = cycle;
+  worker.validation.last_score = score;
+  worker.validation.last_feedback = feedback;
+  worker.validation.validator_thread_id = null;
+  worker.validation.history.push({
+    cycle,
+    score,
+    feedback,
+    validator_thread_id: validatorThreadId,
+    timestamp: now()
+  });
 }
 
 function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string): string {
