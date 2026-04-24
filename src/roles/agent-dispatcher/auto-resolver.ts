@@ -176,9 +176,11 @@ export async function autoResolve(
   const planRows = parseDispatchPlanRows(planMarkdown);
   const planWorkerIds = new Set(planRows.map((r) => r.worker_id));
 
-  // Check each running worker for BLOCKED/PAUSE content
+  // Check each active or newly-failed worker for BLOCKED/PAUSE content. BLOCKED
+  // replies are terminal for status reporting, but still eligible for an
+  // auto-generated FIX task.
   for (const [workerId, worker] of Object.entries(state.workers)) {
-    if (worker.status !== "running") continue;
+    if (worker.status !== "running" && worker.status !== "failed") continue;
     if (!worker.hub_result?.content) continue;
     if (!isNonCompletionContent(worker.hub_result.content)) continue;
 

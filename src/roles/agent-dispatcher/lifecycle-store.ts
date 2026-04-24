@@ -541,6 +541,10 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
     return "failed";
   }
 
+  if (hubResultContainsFailureSignal(hubResult)) {
+    return "failed";
+  }
+
   if (isNonCompletionContent(hubResult.content)) {
     return "running";
   }
@@ -587,6 +591,26 @@ const HIT_LIMIT_PATTERNS = [
   /\btoken\s+limit\b/i
 ];
 
+const FAILURE_SIGNAL_PATTERNS = [
+  /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
+  /⛔\s*BLOCKED\b/i,
+  /"result"\s*:\s*"(?:failed|blocked|error)"/i,
+  /"exit_code"\s*:\s*[1-9]\d*/i,
+  /\bexited\s+`?[1-9]\d*`?/i,
+  /(?:^|\n)\s*FAIL:\s+/i,
+  /\bAI auto-tests failed\b/i,
+  /\btool failure\b/i,
+  /\bfailed the worker acceptance checks\b/i,
+  /\bWorker\s+`?[\w-]+`?\s+is\s+blocked\b/i,
+  /\bblocked by missing upstream artifacts\b/i,
+  /\b(?:cannot|can't)\s+(?:proceed|continue|run)\b/i,
+  /\bmanifest\b[\s\S]{0,80}\b(?:missing|absent|not found)\b/i,
+  /\bI need permission\b/i,
+  /\bpermission to read\b/i,
+  /\bgrant (?:read )?access\b/i
+];
+
 export function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
 }
@@ -598,6 +622,19 @@ export function isExplicitCompletionContent(content: string): boolean {
 export function hubResultContainsHitLimit(
   hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
 ): boolean {
+  return hubResultContainsPattern(hubResult, HIT_LIMIT_PATTERNS);
+}
+
+export function hubResultContainsFailureSignal(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): boolean {
+  return hubResultContainsPattern(hubResult, FAILURE_SIGNAL_PATTERNS);
+}
+
+function hubResultContainsPattern(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">,
+  patterns: RegExp[]
+): boolean {
   const combinedContent = [
     hubResult.content,
     hubResult.summary_text,
@@ -606,7 +643,7 @@ export function hubResultContainsHitLimit(
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n\n");
 
-  return combinedContent.length > 0 && HIT_LIMIT_PATTERNS.some((pattern) => pattern.test(combinedContent));
+  return combinedContent.length > 0 && patterns.some((pattern) => pattern.test(combinedContent));
 }
 
 function requiresOutputVerification(expectedOutputs: string[]): boolean {

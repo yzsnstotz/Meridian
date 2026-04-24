@@ -11,6 +11,7 @@ import type {
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { acquirePlanLock, releasePlanLock } from "./plan-lock";
 import { archiveRun, type ArchiveResult } from "./archiver";
+import { hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
@@ -136,14 +137,15 @@ export function detectCycleCompletion(
 
   if (planWorkers.size === 0) {
     for (const worker of Object.values(lifecycleState.workers)) {
-      if (!TERMINAL_STATUSES.has(worker.status)) {
+      const workerStatus = getEffectiveWorkerStatus(worker);
+      if (!TERMINAL_STATUSES.has(workerStatus)) {
         return { complete: false };
       }
 
-      if (worker.status === "failed" || worker.status === "abandoned") {
+      if (workerStatus === "failed" || workerStatus === "abandoned") {
         hasFailure = true;
       }
-      if (worker.status === "skipped") {
+      if (workerStatus === "skipped") {
         hasSkips = true;
       }
     }
@@ -154,8 +156,9 @@ export function detectCycleCompletion(
     for (const [workerId, model] of planWorkers) {
       const worker = lifecycleState.workers[workerId];
       const isHumanWorker = HUMAN_MODELS.has(model.toUpperCase());
+      const workerStatus = getEffectiveWorkerStatus(worker);
 
-      if (!worker || !TERMINAL_STATUSES.has(worker.status)) {
+      if (!worker || !TERMINAL_STATUSES.has(workerStatus)) {
         if (isHumanWorker) {
           hasManualIntervention = true;
           continue;
@@ -167,10 +170,10 @@ export function detectCycleCompletion(
         continue;
       }
 
-      if (worker.status === "failed" || worker.status === "abandoned") {
+      if (workerStatus === "failed" || workerStatus === "abandoned") {
         hasFailure = true;
       }
-      if (worker.status === "skipped") {
+      if (workerStatus === "skipped") {
         hasSkips = true;
       }
     }
@@ -180,13 +183,14 @@ export function detectCycleCompletion(
         continue;
       }
 
-      if (!TERMINAL_STATUSES.has(worker.status)) {
+      const workerStatus = getEffectiveWorkerStatus(worker);
+      if (!TERMINAL_STATUSES.has(workerStatus)) {
         return { complete: false };
       }
-      if (worker.status === "failed" || worker.status === "abandoned") {
+      if (workerStatus === "failed" || workerStatus === "abandoned") {
         hasFailure = true;
       }
-      if (worker.status === "skipped") {
+      if (workerStatus === "skipped") {
         hasSkips = true;
       }
     }
@@ -202,6 +206,18 @@ export function detectCycleCompletion(
     return { complete: true, outcome: "completed_with_skips" };
   }
   return { complete: true, outcome: "completed" };
+}
+
+function getEffectiveWorkerStatus(worker: DispatchThreadStateV2["workers"][string] | undefined): string {
+  if (!worker) {
+    return "pending";
+  }
+
+  if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
+    return "failed";
+  }
+
+  return worker.status;
 }
 
 export function completeCycle(

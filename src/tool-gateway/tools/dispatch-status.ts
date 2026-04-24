@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
-import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsFailureSignal } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { DispatchThreadStateV2 } from "../../types";
 import type { ToolDefinition, ToolResult } from "../registry";
 
@@ -179,20 +179,33 @@ function buildWorkerStatus(
   generatedAt: string
 ): DispatchStatusWorker {
   const workerState = lifecycleState.workers[row.worker_id];
+  const lifecycleStatus = getEffectiveLifecycleStatus(workerState);
   const staleDurationMs = getStaleDurationMs(row.status, workerState?.last_seen_at, staleThresholdMinutes, generatedAt);
 
   return {
     ...row,
-    lifecycle_status: workerState?.status ?? null,
+    lifecycle_status: lifecycleStatus,
     thread_id: workerState?.thread_id ?? null,
     last_seen_at: workerState?.last_seen_at ?? null,
     retry_count: workerState?.retry_count ?? 0,
-    failure_reason: extractFailureReason(workerState),
+    failure_reason: extractFailureReason(workerState, lifecycleStatus),
     stale: staleDurationMs !== null,
     stale_label: staleDurationMs === null ? null : "⚠️ STALE",
     stale_duration_minutes: staleDurationMs === null ? null : Math.floor(staleDurationMs / 60_000),
     stale_duration_human: staleDurationMs === null ? null : formatDuration(staleDurationMs)
   };
+}
+
+function getEffectiveLifecycleStatus(workerState: DispatchThreadStateV2["workers"][string] | undefined): string | null {
+  if (!workerState) {
+    return null;
+  }
+
+  if (workerState.status !== "failed" && workerState.hub_result && hubResultContainsFailureSignal(workerState.hub_result)) {
+    return "failed";
+  }
+
+  return workerState.status;
 }
 
 function summarizeWorkers(workers: DispatchStatusWorker[]): DispatchStatusReport["summary"] {
@@ -236,8 +249,11 @@ function summarizeWorkers(workers: DispatchStatusWorker[]): DispatchStatusReport
   );
 }
 
-function extractFailureReason(workerState: DispatchThreadStateV2["workers"][string] | undefined): string | null {
-  if (!workerState || workerState.status !== "failed") {
+function extractFailureReason(
+  workerState: DispatchThreadStateV2["workers"][string] | undefined,
+  lifecycleStatus: string | null
+): string | null {
+  if (!workerState || lifecycleStatus !== "failed") {
     return null;
   }
 

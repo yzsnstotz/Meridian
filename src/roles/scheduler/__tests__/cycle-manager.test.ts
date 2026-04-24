@@ -58,6 +58,49 @@ describe("detectCycleCompletion", () => {
 
     expect(detectCycleCompletion(buildConfig(planPath))).toEqual({ complete: false });
   });
+
+  it("treats completed lifecycle rows with failed worker reports as failed", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "clawhub-skill-scan-plan.md");
+    await fs.writeFile(planPath, [
+      "| Status | batch | worker | task | model | depends_on |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ✅ | 1 | W-CATALOG | Catalog Sweep | CODEX-HIGH | PRE-FLIGHT |",
+      ""
+    ].join("\n"), "utf8");
+
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: { thread_id: "dispatcher-thread", started_at: null, status: "completed" },
+      workers: {
+        "W-CATALOG": {
+          thread_id: "worker-thread",
+          trace_id: null,
+          started_at: "2026-04-24T19:02:00.000Z",
+          last_seen_at: "2026-04-24T19:03:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            thread_id: "worker-thread",
+            trace_id: null,
+            status: "success",
+            run_state: "completed",
+            content: "- Result: `⛔ FAILED`\n- Exit Code: `1`\nFAIL: manifest missing",
+            summary_text: null,
+            details_text: null,
+            attachments: [],
+            timestamp: "2026-04-24T19:03:00.000Z"
+          },
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    expect(detectCycleCompletion(buildConfig(planPath))).toEqual({ complete: true, outcome: "failed" });
+  });
 });
 
 function buildConfig(dispatchPlanPath: string): SchedulerConfig {

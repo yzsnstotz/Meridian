@@ -311,7 +311,7 @@ describe("LifecycleStore", () => {
     });
   });
 
-  it("keeps a success HubResult running when content indicates BLOCKED", async () => {
+  it("marks a success HubResult failed when content reports BLOCKED", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
 
@@ -323,7 +323,48 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["N-01"]).toMatchObject({
-      status: "running",
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
+  it("marks a success HubResult failed when the worker report contains failure signals", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-CATALOG", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-CATALOG", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      content: [
+        "# W-CATALOG Completion Report",
+        "",
+        "- Result: `⛔ FAILED`",
+        "- Exit Code: `1`",
+        "",
+        "FAIL: manifest missing"
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-CATALOG"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
+  it("marks a success HubResult failed when content requests read permission", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("DISPATCHER", "dispatcher-thread", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("DISPATCHER", buildHubResult({
+      thread_id: "dispatcher-thread",
+      status: "success",
+      content: "I need permission to read the dispatch command file. Could you grant read access?",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers.DISPATCHER).toMatchObject({
+      status: "failed",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });

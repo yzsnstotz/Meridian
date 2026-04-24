@@ -8,6 +8,8 @@ import type {
   TerminalOutcome,
   DispatchThreadStateV2
 } from "../../types";
+import { hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
+import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "../../tool-gateway/tools/dispatch-status";
 
 export interface ArchiveContext {
   runId: string;
@@ -55,7 +57,14 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
 
   // Copy worker outputs
   const workerOutputsDir = path.join(archiveDir, "worker_outputs");
-  const workerSummaries = copyWorkerOutputs(lifecycleState, planDir, workerOutputsDir);
+  const planRows = planContent ? parseDispatchPlanRows(planContent) : [];
+  const workerSummaries = copyWorkerOutputs(
+    lifecycleState,
+    planRows,
+    planDir,
+    ctx.config.report_base_dir,
+    workerOutputsDir
+  );
 
   // Build run summary
   const durationMs = new Date(ctx.completedTime).getTime() - new Date(ctx.actualStartTime).getTime();
@@ -94,33 +103,36 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
 
 function copyWorkerOutputs(
   lifecycleState: DispatchThreadStateV2 | null,
+  planRows: DispatchPlanWorkerRow[],
   planDir: string,
+  reportBaseDir: string,
   outputsDir: string
 ): SchedulerRunWorkerSummary[] {
   const summaries: SchedulerRunWorkerSummary[] = [];
 
-  if (!lifecycleState || !lifecycleState.workers) {
-    return summaries;
-  }
-
   let outputsDirCreated = false;
+  const workerEntries = buildArchiveWorkerEntries(lifecycleState, planRows);
 
-  for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+  for (const { workerId, planRow } of workerEntries) {
+    const worker = lifecycleState?.workers?.[workerId];
     const summary: SchedulerRunWorkerSummary = {
       worker_id: workerId,
-      status: worker.status,
-      thread_id: worker.thread_id || undefined,
-      retry_count: worker.retry_count ?? 0
+      status: getWorkerArchiveStatus(worker, planRow),
+      thread_id: worker?.thread_id || undefined,
+      retry_count: worker?.retry_count ?? 0
     };
 
     // Try copying worker report files from common locations
     const reportCandidates = [
+      path.join(reportBaseDir, `${workerId}.md`),
+      path.join(reportBaseDir, `${workerId}_report.md`),
+      path.join(reportBaseDir, `${workerId}.json`),
       path.join(planDir, "reports", `${workerId}.md`),
       path.join(planDir, "reports", `${workerId}_report.md`)
     ];
 
     // Also check expected_outputs
-    if (worker.expected_outputs) {
+    if (worker?.expected_outputs) {
       for (const outputPath of worker.expected_outputs) {
         if (outputPath.endsWith(".md") || outputPath.endsWith(".json")) {
           reportCandidates.push(outputPath);
@@ -151,6 +163,46 @@ function copyWorkerOutputs(
   }
 
   return summaries;
+}
+
+function buildArchiveWorkerEntries(
+  lifecycleState: DispatchThreadStateV2 | null,
+  planRows: DispatchPlanWorkerRow[]
+): Array<{ workerId: string; planRow: DispatchPlanWorkerRow | null }> {
+  const entries = new Map<string, { workerId: string; planRow: DispatchPlanWorkerRow | null }>();
+
+  for (const row of planRows) {
+    entries.set(row.worker_id, { workerId: row.worker_id, planRow: row });
+  }
+
+  if (lifecycleState?.workers) {
+    for (const workerId of Object.keys(lifecycleState.workers)) {
+      if (!entries.has(workerId)) {
+        entries.set(workerId, { workerId, planRow: null });
+      }
+    }
+  }
+
+  return Array.from(entries.values());
+}
+
+function getWorkerArchiveStatus(
+  worker: DispatchThreadStateV2["workers"][string] | undefined,
+  planRow: DispatchPlanWorkerRow | null
+): string {
+  if (worker) {
+    if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
+      return "failed";
+    }
+
+    return worker.status;
+  }
+
+  if (planRow) {
+    return planRow.status;
+  }
+
+  return "missing";
 }
 
 function buildMarkdownReport(summary: SchedulerRunSummary, ctx: ArchiveContext): string {
