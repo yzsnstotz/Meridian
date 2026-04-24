@@ -188,12 +188,20 @@ export async function executeValidationCycle(
 
   // Decision gate
   if (parsed.score >= threshold) {
-    lifecycleStore.transitionToValidated(workerId);
+    lifecycleStore.transitionToValidated(workerId, {
+      score: parsed.score,
+      feedback: parsed.feedback,
+      validatorThreadId
+    });
     return { status: "passed", score: parsed.score };
   }
 
   if (validation.current_cycle >= validation.max_fix_cycles) {
-    lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted");
+    lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted", {
+      score: parsed.score,
+      feedback: parsed.feedback,
+      validatorThreadId
+    });
     return {
       status: "failed",
       score: parsed.score,
@@ -231,7 +239,7 @@ export async function deliverValidatorFeedback(
   }
 
   const validation = worker.validation;
-  if (!validation?.last_feedback || !validation.last_score) {
+  if (!validation?.last_feedback || validation.last_score === null || validation.last_score === undefined) {
     return false;
   }
 

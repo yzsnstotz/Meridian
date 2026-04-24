@@ -230,6 +230,24 @@ export interface DispatchWorkerDetail {
   trace_id: string | null;
   command: DispatchMessageDetail | null;
   reply: DispatchMessageDetail | null;
+  validation: DispatchValidationDetail | null;
+}
+
+export interface DispatchValidationDetail {
+  current_cycle: number;
+  max_fix_cycles: number;
+  validator_thread_id: string | null;
+  last_score: number | null;
+  last_feedback: string | null;
+  history: DispatchValidationHistoryEntry[];
+}
+
+export interface DispatchValidationHistoryEntry {
+  cycle: number;
+  score: number;
+  feedback: string;
+  validator_thread_id: string;
+  timestamp: string;
 }
 
 export interface RoleDetailResponse {
@@ -2168,7 +2186,31 @@ function buildDispatchWorkerDetail(
           timestamp: worker?.hub_result?.timestamp ?? worker?.last_seen_at ?? null,
           content: replyContent
         }
-      : null
+      : null,
+    validation: buildDispatchValidationDetail(worker?.validation)
+  };
+}
+
+function buildDispatchValidationDetail(
+  validation: DispatchWorkerState["validation"] | undefined
+): DispatchValidationDetail | null {
+  if (!validation) {
+    return null;
+  }
+
+  return {
+    current_cycle: validation.current_cycle,
+    max_fix_cycles: validation.max_fix_cycles,
+    validator_thread_id: validation.validator_thread_id,
+    last_score: validation.last_score,
+    last_feedback: validation.last_feedback,
+    history: validation.history.map((entry) => ({
+      cycle: entry.cycle,
+      score: entry.score,
+      feedback: entry.feedback,
+      validator_thread_id: entry.validator_thread_id,
+      timestamp: entry.timestamp
+    }))
   };
 }
 

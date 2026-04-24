@@ -362,7 +362,7 @@ async function buildWorkerPreamble(
   }
   if (!isDispatcherWorker(workerId)) {
     lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
-    if (isReportOnlyWorker(expectedOutputs)) {
+    if (isReportOnlyWorker(workerId, row, expectedOutputs)) {
       lines.push(`- **Steps 5c–5d**: this is a report-only worker. Do NOT create git commits, branches, pushes, or PRs for the report artifact; return the report result and stop.`);
     } else {
       lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
@@ -875,8 +875,12 @@ function substituteWorkerId(templatePath: string, workerId: string): string {
     .trim();
 }
 
-function isReportOnlyWorker(expectedOutputs: string[]): boolean {
-  return expectedOutputs.length > 0 && expectedOutputs.every((candidatePath) => isReportArtifactPath(candidatePath));
+function isReportOnlyWorker(workerId: string, row: DispatchPlanRow | null, expectedOutputs: string[]): boolean {
+  if (expectedOutputs.length === 0 || !expectedOutputs.every((candidatePath) => isReportArtifactPath(candidatePath))) {
+    return false;
+  }
+
+  return REPORT_ONLY_WORKERS.has(workerId) || hasExplicitReportOnlyIntent(row);
 }
 
 function isReportArtifactPath(candidatePath: string): boolean {
@@ -894,6 +898,12 @@ function isReportArtifactPath(candidatePath: string): boolean {
 }
 
 const PLAN_MODIFYING_WORKERS = new Set(["DELTA-CHECK", "PR-REVIEW"]);
+const REPORT_ONLY_WORKERS = new Set(["PRE-FLIGHT", "DELTA-CHECK", "PR-REVIEW"]);
+
+function hasExplicitReportOnlyIntent(row: DispatchPlanRow | null): boolean {
+  const text = [row?.task, row?.notes].filter(Boolean).join(" ").toLowerCase();
+  return /\breport[-\s]?only\b/.test(text) || /\bno\s+non[-\s]?report\s+outputs?\s+required\b/.test(text);
+}
 
 function isDispatcherWorker(workerId: string): boolean {
   return workerId === DISPATCHER_WORKER_ID;
