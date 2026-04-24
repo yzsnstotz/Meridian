@@ -200,7 +200,7 @@ function summarizeWorkers(workers: DispatchStatusWorker[]): DispatchStatusReport
     (summary, worker) => {
       summary.total += 1;
 
-      switch (categorizeStatus(worker.status)) {
+      switch (categorizeStatus(worker.lifecycle_status ?? worker.status)) {
         case "pending":
           summary.pending += 1;
           break;
@@ -263,19 +263,19 @@ function extractFailureReason(workerState: DispatchThreadStateV2["workers"][stri
 }
 
 function categorizeStatus(status: string): "pending" | "running" | "completed" | "failed" | "skipped" {
-  if (status === "⬜") {
+  if (status === "⬜" || status === "pending") {
     return "pending";
   }
 
-  if (status === "🔄") {
+  if (status === "🔄" || status === "running" || status === "awaiting_validation" || status === "fix_requested") {
     return "running";
   }
 
-  if (status === "✅") {
+  if (status === "✅" || status === "completed") {
     return "completed";
   }
 
-  if (status === "⛔ SKIPPED") {
+  if (status === "⛔ SKIPPED" || status === "skipped") {
     return "skipped";
   }
 

@@ -23,7 +23,173 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
+/* ═══════════════════════════════════════════════════════════════
+   Tab Navigation
+   ═══════════════════════════════════════════════════════════════ */
+
+function setupTabNavigation() {
+  const tabs = document.querySelectorAll(".nav-tab[data-tab]");
+  const panels = document.querySelectorAll(".tab-panel");
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const target = tab.dataset.tab;
+      tabs.forEach((t) => t.classList.remove("active"));
+      panels.forEach((p) => p.classList.remove("active"));
+      tab.classList.add("active");
+      const panel = document.getElementById(`tab-${target}`);
+      if (panel) panel.classList.add("active");
+    });
+  });
+}
+
+function updateTabCounts(roles) {
+  const dispatchers = roles.filter((r) => r.role_type === "agent-dispatcher");
+  const schedulers = roles.filter((r) => r.role_type === "scheduler");
+  const otherRoles = roles;
+
+  setTabCount("nav-dispatcher-count", dispatchers.length);
+  setTabCount("nav-scheduler-count", schedulers.length);
+  setTabCount("nav-role-count", otherRoles.length);
+}
+
+function setTabCount(elementId, count) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (count > 0) {
+    el.textContent = String(count);
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Validator Toggle (dispatcher creation form)
+   ═══════════════════════════════════════════════════════════════ */
+
+function setupValidatorToggle() {
+  const toggle = document.getElementById("agent-dispatcher-validator-enabled");
+  const fields = document.getElementById("agent-dispatcher-validator-fields");
+  if (!toggle || !fields) return;
+
+  toggle.addEventListener("change", () => {
+    fields.hidden = !toggle.checked;
+  });
+}
+
+function collectValidatorConfig() {
+  const toggle = document.getElementById("agent-dispatcher-validator-enabled");
+  if (!toggle || !toggle.checked) return undefined;
+
+  return {
+    enabled: true,
+    agent_type: document.getElementById("agent-dispatcher-validator-agent-type")?.value || "claude",
+    model_id: document.getElementById("agent-dispatcher-validator-model-id")?.value?.trim() || undefined,
+    pass_threshold: parseFloat(document.getElementById("agent-dispatcher-validator-pass-threshold")?.value) || 0.7,
+    max_fix_cycles: parseInt(document.getElementById("agent-dispatcher-validator-max-fix-cycles")?.value, 10) || 3,
+    base_branch: document.getElementById("agent-dispatcher-validator-base-branch")?.value?.trim() || "main"
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Scheduler Creation (taskspec-compatible)
+   ═══════════════════════════════════════════════════════════════ */
+
+function setupSchedulerCreation() {
+  const form = document.getElementById("create-scheduler-form");
+  const feedback = document.getElementById("create-scheduler-feedback");
+  const taskspecDirInput = document.getElementById("new-scheduler-taskspec-dir");
+  const planPathInput = document.getElementById("new-scheduler-plan-path");
+  const reportDirInput = document.getElementById("new-scheduler-report-dir");
+
+  if (!form || !feedback) return;
+
+  // Auto-fill plan path from taskspec_dir
+  if (taskspecDirInput && planPathInput) {
+    taskspecDirInput.addEventListener("change", () => {
+      const dir = taskspecDirInput.value.trim();
+      if (dir && !planPathInput.value.trim()) {
+        const normalized = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+        const projectRoot = normalized.endsWith("/taskspec") ? normalized.slice(0, -"/taskspec".length) : normalized;
+        const projectName = projectRoot.split("/").filter(Boolean).pop() || "dispatch";
+        planPathInput.value = `${normalized}/${projectName}-plan.md`;
+        if (reportDirInput && !reportDirInput.value.trim()) {
+          reportDirInput.value = `${projectRoot}/reports`;
+        }
+      }
+    });
+
+    taskspecDirInput.addEventListener("blur", () => {
+      taskspecDirInput.dispatchEvent(new Event("change"));
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    feedback.textContent = "Creating scheduler...";
+
+    const config = {};
+    const mode = form.scheduler_mode?.value;
+    config.scheduler_mode = mode || "none";
+
+    const planPath = form.dispatch_plan_path?.value?.trim();
+    if (!planPath) {
+      feedback.textContent = "dispatch_plan_path is required.";
+      return;
+    }
+    config.dispatch_plan_path = planPath;
+
+    const reportBaseDir = form.report_base_dir?.value?.trim();
+    if (!reportBaseDir) {
+      feedback.textContent = "report_base_dir is required.";
+      return;
+    }
+
+    // Derive command_file_path from plan path
+    const planDir = planPath.substring(0, planPath.lastIndexOf("/"));
+    config.command_file_path = `${planDir}/agent_dispatch_command.md`;
+
+    if (form.cron_expression?.value) config.cron_expression = form.cron_expression.value;
+    if (form.timezone?.value) config.timezone = form.timezone.value;
+    if (form.interval_seconds?.value) config.interval_seconds = parseInt(form.interval_seconds.value, 10);
+    if (form.max_cycles?.value) config.max_cycles = parseInt(form.max_cycles.value, 10);
+    if (form.delay_between_cycles_seconds?.value) {
+      config.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
+    }
+    if (form.dispatch_repo_root?.value) config.dispatch_repo_root = form.dispatch_repo_root.value;
+    if (form.docs_root?.value) config.docs_root = form.docs_root.value;
+    config.report_base_dir = reportBaseDir;
+    if (form.catch_up_policy?.value) config.catch_up_policy = form.catch_up_policy.value;
+
+    // Default reply channel for scheduler
+    config.user_reply_channels = [{ channel: "web", chat_id: "web:ops" }];
+
+    try {
+      const result = await fetchJson("/api/scheduler", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config })
+      });
+
+      const schedulerId = result?.scheduler_id || result?.thread_id || "unknown";
+      feedback.textContent = `Scheduler ${schedulerId} created.`;
+      form.reset();
+    } catch (error) {
+      feedback.textContent = getErrorMessage(error);
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Dashboard Setup
+   ═══════════════════════════════════════════════════════════════ */
+
 async function setupDashboard() {
+  setupTabNavigation();
+  setupValidatorToggle();
+  setupSchedulerCreation();
+
   const list = document.getElementById("roles-list");
   const empty = document.getElementById("roles-empty");
   const agentDispatcherList = document.getElementById("agent-dispatchers-list");
@@ -94,9 +260,16 @@ async function setupDashboard() {
       agentDispatcherDetailCache.clear();
       empty.hidden = false;
       agentDispatcherEmpty.hidden = false;
+      updateTabCounts([]);
+
+      const schedulerListEl = document.getElementById("schedulers-list");
+      const schedulerEmptyEl = document.getElementById("schedulers-empty");
+      if (schedulerListEl) schedulerListEl.replaceChildren();
+      if (schedulerEmptyEl) schedulerEmptyEl.hidden = false;
       return;
     }
 
+    updateTabCounts(roles);
     empty.hidden = true;
     const roleSignature = JSON.stringify(roles.map((role) => ({
       thread_id: role.thread_id,
@@ -137,7 +310,7 @@ async function setupDashboard() {
           }
 
           try {
-            agentDispatcherFeedback.textContent = "Deactivating role…";
+            agentDispatcherFeedback.textContent = "Deactivating role...";
             await fetchJson(`/api/role/${encodeURIComponent(threadId)}`, { method: "DELETE" });
             agentDispatcherFeedback.textContent = `Role ${threadId} deactivated.`;
             await refreshRoles();
@@ -266,7 +439,7 @@ async function setupDashboard() {
           <dl class="meta-grid">
             <div><dt>current worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
             <div><dt>${escapeHtml(taskContext.label)}</dt><dd>${escapeHtml(taskContext.summary)}</dd></div>
-            <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+            <div><dt>agent</dt><dd>${escapeHtml(detail.agent_type || "---")}</dd></div>
             <div><dt>model</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
             <div><dt>auto_approve</dt><dd>${detail.auto_approve === true ? "true" : "false"}</dd></div>
           </dl>
@@ -302,7 +475,7 @@ async function setupDashboard() {
 
           try {
             if (action === "start-hub") {
-              agentDispatcherFeedback.textContent = `Starting Hub session for ${threadId}…`;
+              agentDispatcherFeedback.textContent = `Starting Hub session for ${threadId}...`;
               const started = await fetchJson(`/api/agent-dispatcher/${encodeURIComponent(threadId)}/start-hub`, {
                 method: "POST"
               });
@@ -354,7 +527,7 @@ async function setupDashboard() {
     manualTelegramUserSelect.replaceChildren();
     const customUserOption = document.createElement("option");
     customUserOption.value = "";
-    customUserOption.textContent = "Custom — type chat id below";
+    customUserOption.textContent = "Custom --- type chat id below";
     manualTelegramUserSelect.appendChild(customUserOption);
     allowedIds.forEach((id) => {
       const opt = document.createElement("option");
@@ -401,6 +574,11 @@ async function setupDashboard() {
       payload.user_reply_channels = replyChannels;
     }
 
+    const validatorConfig = collectValidatorConfig();
+    if (validatorConfig) {
+      payload.validator = validatorConfig;
+    }
+
     const response = await fetchJson("/api/agent-dispatcher/prompt-preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -420,7 +598,7 @@ async function setupDashboard() {
 
   agentDispatcherForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    agentDispatcherFeedback.textContent = "Starting agent dispatcher…";
+    agentDispatcherFeedback.textContent = "Starting agent dispatcher...";
 
     const replyChannels = collectAgentDispatcherReplyChannels(
       manualChannelSelect,
@@ -449,6 +627,11 @@ async function setupDashboard() {
       system_prompt: normalizeText(agentDispatcherPromptInput.value)
     };
 
+    const validatorConfig = collectValidatorConfig();
+    if (validatorConfig) {
+      payload.validator = validatorConfig;
+    }
+
     Object.keys(payload).forEach((key) => {
       if (payload[key] === "") {
         delete payload[key];
@@ -466,6 +649,10 @@ async function setupDashboard() {
       agentDispatcherForm.reset();
       dispatchRepoRootInput.value = "";
       docsRootInput.value = "";
+      const validatorToggle = document.getElementById("agent-dispatcher-validator-enabled");
+      const validatorFields = document.getElementById("agent-dispatcher-validator-fields");
+      if (validatorToggle) validatorToggle.checked = false;
+      if (validatorFields) validatorFields.hidden = true;
       await loadAgentDispatcherReplyOptions();
       agentDispatcherPromptDirty = false;
       await refreshAgentDispatcherPromptPreview({ force: true });
@@ -540,6 +727,10 @@ async function setupDashboard() {
   }, POLL_INTERVAL_MS);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Role Detail
+   ═══════════════════════════════════════════════════════════════ */
+
 async function setupRoleDetail() {
   const threadId = decodeThreadId(["role", ""]);
   if (!threadId) {
@@ -608,9 +799,9 @@ async function setupRoleDetail() {
         <div><dt>status</dt><dd><span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span></dd></div>
         <div><dt>dispatcher_thread_id</dt><dd><code>${escapeHtml(detail.dispatcher_thread_id || "pending")}</code></dd></div>
         <div><dt>current_worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
-        <div><dt>agent_type</dt><dd>${escapeHtml(detail.agent_type || "—")}</dd></div>
+        <div><dt>agent_type</dt><dd>${escapeHtml(detail.agent_type || "---")}</dd></div>
         <div><dt>model_id</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
-        <div><dt>mode</dt><dd>${escapeHtml(detail.mode || "—")}</dd></div>
+        <div><dt>mode</dt><dd>${escapeHtml(detail.mode || "---")}</dd></div>
         <div><dt>auto_approve</dt><dd>${detail.auto_approve === true ? "true" : "false"}</dd></div>
       `
       : `
@@ -656,7 +847,7 @@ async function setupRoleDetail() {
         startHubBound = true;
         startHubBtn.addEventListener("click", async () => {
           try {
-            startHubFeedback.textContent = "Starting Hub session…";
+            startHubFeedback.textContent = "Starting Hub session...";
             const started = await fetchJson(
               `/api/agent-dispatcher/${encodeURIComponent(threadId)}/start-hub`,
               { method: "POST" }
@@ -678,7 +869,7 @@ async function setupRoleDetail() {
 
           try {
             continueHubBtn.disabled = true;
-            startHubFeedback.textContent = "Continuing dispatcher…";
+            startHubFeedback.textContent = "Continuing dispatcher...";
             const continued = await fetchJson(
               `/api/agent-dispatcher/${encodeURIComponent(threadId)}/continue`,
               { method: "POST" }
@@ -761,7 +952,7 @@ async function setupRoleDetail() {
           try {
             if (isContinueWorker) {
               if (dispatchPlanFeedback) {
-                dispatchPlanFeedback.textContent = `Continuing ${workerId}…`;
+                dispatchPlanFeedback.textContent = `Continuing ${workerId}...`;
               }
 
               const continued = await fetchJson(
@@ -777,7 +968,7 @@ async function setupRoleDetail() {
               }
             } else if (resumeAction) {
               if (dispatchPlanFeedback) {
-                dispatchPlanFeedback.textContent = `${formatResumeActionLabel(resumeAction)} ${workerId}…`;
+                dispatchPlanFeedback.textContent = `${formatResumeActionLabel(resumeAction)} ${workerId}...`;
               }
 
               const payload = resumeAction === "force-complete"
@@ -804,7 +995,7 @@ async function setupRoleDetail() {
               }
 
               if (dispatchPlanFeedback) {
-                dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusSelect.value)}…`;
+                dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusSelect.value)}...`;
               }
 
               await fetchJson(
@@ -869,14 +1060,14 @@ async function setupRoleDetail() {
         <div class="task-card-header">
           <div>
             <h3>${escapeHtml(task.task_id)}</h3>
-            <p class="task-deps">depends_on: ${escapeHtml((task.depends_on || []).join(", ") || "—")}</p>
+            <p class="task-deps">depends_on: ${escapeHtml((task.depends_on || []).join(", ") || "---")}</p>
           </div>
           <span class="status-pill status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
         </div>
         <p class="instruction">${escapeHtml(task.instruction)}</p>
         <dl class="meta-grid">
-          <div><dt>trace_id</dt><dd><code>${escapeHtml(task.trace_id || "—")}</code></dd></div>
-          <div><dt>result</dt><dd>${escapeHtml(task.result_summary || "—")}</dd></div>
+          <div><dt>trace_id</dt><dd><code>${escapeHtml(task.trace_id || "---")}</code></dd></div>
+          <div><dt>result</dt><dd>${escapeHtml(task.result_summary || "---")}</dd></div>
         </dl>
       `;
       tasks.appendChild(item);
@@ -935,6 +1126,10 @@ async function setupRoleDetail() {
     });
   }, POLL_INTERVAL_MS);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Prompt Editor
+   ═══════════════════════════════════════════════════════════════ */
 
 async function setupPromptEditor() {
   const threadId = decodeThreadId(["role", "", "prompts"]);
@@ -1039,7 +1234,7 @@ async function setupPromptEditor() {
 
       saveButton?.addEventListener("click", async () => {
         try {
-          feedback.textContent = `Saving template for ${task.task_id}…`;
+          feedback.textContent = `Saving template for ${task.task_id}...`;
           await fetchJson(`/api/role/${encodeURIComponent(threadId)}/task/${encodeURIComponent(task.task_id)}/template`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1054,7 +1249,7 @@ async function setupPromptEditor() {
 
       deleteButton?.addEventListener("click", async () => {
         try {
-          feedback.textContent = `Deleting template for ${task.task_id}…`;
+          feedback.textContent = `Deleting template for ${task.task_id}...`;
           await fetchJson(`/api/role/${encodeURIComponent(threadId)}/task/${encodeURIComponent(task.task_id)}/template`, {
             method: "DELETE"
           });
@@ -1073,7 +1268,7 @@ async function setupPromptEditor() {
     event.preventDefault();
 
     try {
-      feedback.textContent = "Saving system prompt…";
+      feedback.textContent = "Saving system prompt...";
       await fetchJson(`/api/role/${encodeURIComponent(threadId)}/prompt`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1093,7 +1288,7 @@ async function setupPromptEditor() {
       const value = validatorInput.value.trim();
       try {
         if (value) {
-          validatorFeedback.textContent = "Saving validator prompt…";
+          validatorFeedback.textContent = "Saving validator prompt...";
           await fetchJson(`/api/role/${encodeURIComponent(threadId)}/task/${encodeURIComponent("__validator__")}/template`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1101,7 +1296,7 @@ async function setupPromptEditor() {
           });
           validatorFeedback.textContent = "Validator prompt saved.";
         } else {
-          validatorFeedback.textContent = "Clearing validator prompt…";
+          validatorFeedback.textContent = "Clearing validator prompt...";
           await fetchJson(`/api/role/${encodeURIComponent(threadId)}/task/${encodeURIComponent("__validator__")}/template`, {
             method: "DELETE"
           });
@@ -1120,6 +1315,10 @@ async function setupPromptEditor() {
     feedback.textContent = getErrorMessage(error);
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Config Editor
+   ═══════════════════════════════════════════════════════════════ */
 
 async function setupConfigEditor() {
   const threadId = decodeThreadId(["role", "", "config"]);
@@ -1280,7 +1479,7 @@ async function setupConfigEditor() {
     }
 
     try {
-      feedback.textContent = "Saving dispatcher config…";
+      feedback.textContent = "Saving dispatcher config...";
       const response = await fetchJson(`/api/role/${encodeURIComponent(threadId)}/config`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1309,6 +1508,10 @@ async function setupConfigEditor() {
     saveButton.disabled = true;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Rendering Helpers
+   ═══════════════════════════════════════════════════════════════ */
 
 function renderRoleDetailError(elements, message) {
   elements.title.textContent = "Role unavailable";
@@ -1360,16 +1563,16 @@ function renderDispatchDetailCard(detail) {
         <div class="dispatch-detail-header">
           <div class="dispatch-detail-title">
             <h3>${escapeHtml(taskLabel)}</h3>
-            <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" · ") || "Worker detail")}</p>
+            <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" / ") || "Worker detail")}</p>
           </div>
           <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
         </div>
       </summary>
       <div class="dispatch-detail-body">
         <dl class="summary-grid">
-          <div><dt>worker</dt><dd><code>${escapeHtml(detail.worker_id || "—")}</code></dd></div>
-          <div><dt>worker_thread</dt><dd><code>${escapeHtml(detail.worker_thread_id || "—")}</code></dd></div>
-          <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "—")}</code></dd></div>
+          <div><dt>worker</dt><dd><code>${escapeHtml(detail.worker_id || "---")}</code></dd></div>
+          <div><dt>worker_thread</dt><dd><code>${escapeHtml(detail.worker_thread_id || "---")}</code></dd></div>
+          <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "---")}</code></dd></div>
         </dl>
         <div class="dispatch-detail-messages">
           ${renderDispatchMessage("Dispatch Command", detail.command, "No dispatch command captured yet.")}
@@ -1411,7 +1614,7 @@ function renderDispatchPlanRow(row, detail = null) {
       <td><code>${escapeHtml(row.worker)}</code></td>
       <td>${escapeHtml(row.task)}</td>
       <td>${escapeHtml(row.model)}</td>
-      <td>${escapeHtml(row.depends_on || "—")}</td>
+      <td>${escapeHtml(row.depends_on || "---")}</td>
       <td>${renderDispatchPlanActions(row)}</td>
     </tr>
     ${detail ? renderDispatchPlanDetailRow(detail) : ""}
@@ -1424,11 +1627,11 @@ function renderDispatchPlanOrphanDetailRow(detail) {
   return `
     <tr class="dispatch-plan-row dispatch-plan-row-with-detail dispatch-plan-row-orphan">
       <td>${renderDispatchPlanStatus(syntheticRow)}</td>
-      <td>—</td>
-      <td><code>${escapeHtml(syntheticRow.worker || "—")}</code></td>
-      <td>${escapeHtml(syntheticRow.task || "—")}</td>
-      <td>${escapeHtml(syntheticRow.model || "—")}</td>
-      <td>—</td>
+      <td>---</td>
+      <td><code>${escapeHtml(syntheticRow.worker || "---")}</code></td>
+      <td>${escapeHtml(syntheticRow.task || "---")}</td>
+      <td>${escapeHtml(syntheticRow.model || "---")}</td>
+      <td>---</td>
       <td>${renderDispatchPlanActions(syntheticRow)}</td>
     </tr>
     ${renderDispatchPlanDetailRow(detail)}
@@ -1472,7 +1675,7 @@ function buildDispatchPlanSyntheticRow(detail) {
     worker: detail?.worker_id || "",
     task: detail?.task || "",
     model: detail?.model || detail?.applied_model || "",
-    depends_on: "—",
+    depends_on: "---",
     thread_id: detail?.worker_thread_id || ""
   };
 }
@@ -1482,7 +1685,7 @@ function renderDispatchPlanStatus(row) {
 
   return `
     <div class="dispatch-plan-status">
-      <span>${escapeHtml(row.status || "—")}</span>
+      <span>${escapeHtml(row.status || "---")}</span>
       ${staleLabel ? `<span class="stale-pill">${escapeHtml(staleLabel)}</span>` : ""}
     </div>
   `;
@@ -1565,14 +1768,14 @@ function formatDispatchPlanStaleLabel(row) {
     ? `${row.stale_duration_minutes}min`
     : normalizeText(row.stale_duration_human);
 
-  return minutes ? `⚠️ STALE ${minutes}` : "⚠️ STALE";
+  return minutes ? `STALE ${minutes}` : "STALE";
 }
 
 function renderDispatchMessage(label, detail, emptyMessage) {
   const sender = formatDispatchSender(detail);
   const senderModel = typeof detail?.sender_model === "string" && detail.sender_model.trim().length > 0
     ? detail.sender_model.trim()
-    : "—";
+    : "---";
   const timestamp = formatTimestamp(detail?.timestamp);
 
   return `
@@ -1585,7 +1788,7 @@ function renderDispatchMessage(label, detail, emptyMessage) {
         <p class="dispatch-message-caption">${escapeHtml(timestamp)}</p>
       </div>
       <dl class="dispatch-meta">
-        <div><dt>trace_id</dt><dd><code>${escapeHtml(detail?.trace_id || "—")}</code></dd></div>
+        <div><dt>trace_id</dt><dd><code>${escapeHtml(detail?.trace_id || "---")}</code></dd></div>
         <div><dt>sender</dt><dd>${escapeHtml(sender)}</dd></div>
         <div><dt>model</dt><dd>${escapeHtml(senderModel)}</dd></div>
         <div><dt>time</dt><dd>${escapeHtml(timestamp)}</dd></div>
@@ -1655,7 +1858,7 @@ function formatValidatorScore(score) {
 
 function formatDispatchSender(detail) {
   if (!detail) {
-    return "—";
+    return "---";
   }
 
   const senderName = typeof detail.sender_name === "string" && detail.sender_name.trim().length > 0
@@ -1668,12 +1871,12 @@ function formatDispatchSender(detail) {
     ? detail.sender_model.trim()
     : "";
 
-  return [senderName, senderType, senderModel].filter(Boolean).join(" · ");
+  return [senderName, senderType, senderModel].filter(Boolean).join(" / ");
 }
 
 function formatTimestamp(value) {
   if (typeof value !== "string" || value.trim().length === 0) {
-    return "—";
+    return "---";
   }
 
   const parsed = new Date(value);
@@ -1686,6 +1889,10 @@ function formatTimestamp(value) {
     timeStyle: "medium"
   }).format(parsed);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Manual Reply Channel UI
+   ═══════════════════════════════════════════════════════════════ */
 
 function syncManualReplyChatPlaceholder(manualChannelSelect, manualChatIdInput) {
   if (!manualChatIdInput) {
@@ -1775,6 +1982,10 @@ function collectAgentDispatcherReplyChannels(
     chat_id: manualChatId
   }];
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Dispatcher State Helpers
+   ═══════════════════════════════════════════════════════════════ */
 
 function pruneAgentDispatcherDetailCache(cache, threadIds) {
   const activeThreadIds = new Set(threadIds);
@@ -1894,7 +2105,7 @@ function resolveDispatcherTaskContext(detail) {
     const dispatchDetail = detailByWorker.get(workerKey) ?? null;
     const taskLabel = normalizeText(dispatchPlanRow?.task || dispatchDetail?.task);
     const workerLabel = normalizeText(workerId) || normalizeText(dispatchDetail?.worker_id) || "idle";
-    const summary = [workerLabel, taskLabel].filter(Boolean).join(" · ") || "No running or pending task.";
+    const summary = [workerLabel, taskLabel].filter(Boolean).join(" / ") || "No running or pending task.";
 
     return {
       label,
@@ -1971,14 +2182,18 @@ function isHumanDispatchModel(model) {
   return normalized === "HUMAN" || normalized === "PM";
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Status / Label Formatting
+   ═══════════════════════════════════════════════════════════════ */
+
 function formatDispatcherControlProgress(action, threadId) {
   switch (action) {
     case "continue":
-      return `Continuing ${threadId}…`;
+      return `Continuing ${threadId}...`;
     case "pause":
-      return `Pausing ${threadId}…`;
+      return `Pausing ${threadId}...`;
     default:
-      return `Resuming ${threadId}…`;
+      return `Resuming ${threadId}...`;
   }
 }
 
@@ -2037,28 +2252,21 @@ function formatContinueResult(result) {
 
 function normalizeDispatchPlanStatus(status) {
   switch (status) {
-    case "🔄":
     case "running":
       return "running";
-    case "✅":
     case "completed":
       return "completed";
-    case "❌":
     case "failed":
       return "failed";
-    case "⚠️ ABANDONED":
     case "abandoned":
       return "abandoned";
-    case "⛔ SKIPPED":
     case "skipped":
       return "skipped";
-    case "🔍":
     case "awaiting_validation":
       return "awaiting_validation";
     case "pending":
-    case "⬜":
     default:
-      if (typeof status === "string" && status.startsWith("🔁")) {
+      if (typeof status === "string" && status.startsWith("fix")) {
         return "fix_requested";
       }
       return "pending";
@@ -2068,21 +2276,21 @@ function normalizeDispatchPlanStatus(status) {
 function toDispatchPlanStatus(status) {
   switch (normalizeDispatchPlanStatus(status)) {
     case "running":
-      return "🔄";
+      return "running";
     case "completed":
-      return "✅";
+      return "completed";
     case "failed":
-      return "❌";
+      return "failed";
     case "abandoned":
-      return "⚠️ ABANDONED";
+      return "abandoned";
     case "skipped":
-      return "⛔ SKIPPED";
+      return "skipped";
     case "awaiting_validation":
-      return "🔍";
+      return "awaiting_validation";
     case "fix_requested":
-      return "🔁";
+      return "fix_requested";
     default:
-      return "⬜";
+      return "pending";
   }
 }
 
@@ -2127,6 +2335,10 @@ function setDispatchPlanControlsDisabled(dispatchPlanBody, disabled) {
     }
   });
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Utilities
+   ═══════════════════════════════════════════════════════════════ */
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);

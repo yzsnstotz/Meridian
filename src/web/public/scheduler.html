@@ -5,52 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Scheduler — meridian-roles</title>
     <link rel="stylesheet" href="/style.css" />
-    <style>
-      .status-badge {
-        display: inline-block;
-        padding: 2px 10px;
-        border-radius: 12px;
-        font-size: 0.85em;
-        font-weight: 600;
-      }
-      .status-badge.idle { background: #444; color: #ccc; }
-      .status-badge.waiting { background: #1a3a5c; color: #5cb3ff; }
-      .status-badge.active_run { background: #1a3c1a; color: #5cff5c; }
-      .status-badge.paused { background: #5c4a1a; color: #ffcc5c; }
-      .status-badge.completed_max_cycles { background: #1a3a5c; color: #5cb3ff; }
-      .status-badge.manual_intervention_required { background: #5c1a1a; color: #ff5c5c; }
-
-      .summary-table { width: 100%; border-collapse: collapse; margin: 1em 0; }
-      .summary-table th,
-      .summary-table td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #333; }
-      .summary-table th { color: #888; font-weight: 500; width: 200px; }
-
-      .controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 1em 0; }
-      .controls button { min-width: 100px; }
-
-      .run-history-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-      .run-history-table th,
-      .run-history-table td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #333; }
-      .run-history-table th { color: #888; }
-      .run-history-table td.outcome-completed { color: #5cff5c; }
-      .run-history-table td.outcome-failed { color: #ff5c5c; }
-      .run-history-table td.outcome-cancelled { color: #888; }
-
-      .config-form .field { margin-bottom: 8px; }
-      .config-form select, .config-form input[type="text"], .config-form input[type="number"] {
-        width: 100%; padding: 6px 8px; background: #1a1a2e; border: 1px solid #444; color: #eee; border-radius: 4px;
-      }
-    </style>
   </head>
   <body>
+    <!-- ── Global Nav ──────────────────────────────────────── -->
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/">Dispatchers</a>
+        <a class="nav-tab active" href="/">Schedulers</a>
+        <a class="nav-tab" href="/">Roles</a>
+      </div>
+    </nav>
+
     <main class="shell">
-      <section class="hero">
-        <p class="eyebrow"><a href="/" style="color:inherit;text-decoration:none">Role Layer Console</a></p>
+      <!-- Header -->
+      <section class="hero hero-compact">
+        <a class="back-link" href="/">← Dashboard</a>
+        <p class="eyebrow">Scheduler Detail</p>
         <h1 id="scheduler-title">Scheduler</h1>
-        <p class="lede" id="scheduler-plan-path">—</p>
+        <p class="lede" id="scheduler-plan-path">---</p>
       </section>
 
-      <!-- Status Panel -->
+      <!-- Status + Stats -->
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-card-value" id="s-status-val">idle</div>
+          <div class="stat-card-label">Status</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-value" id="s-completed-cycles">0</div>
+          <div class="stat-card-label">Completed Cycles</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-value" id="s-next-run-val">---</div>
+          <div class="stat-card-label">Next Run</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-value" id="s-last-outcome-val">---</div>
+          <div class="stat-card-label">Last Outcome</div>
+        </div>
+      </div>
+
+      <!-- Status Detail -->
       <section class="panel">
         <div class="panel-heading">
           <h2>Status</h2>
@@ -58,15 +57,13 @@
         </div>
         <table class="summary-table">
           <tbody>
-            <tr><th>Mode</th><td id="s-mode">—</td></tr>
-            <tr><th>Scheduler ID</th><td id="s-id">—</td></tr>
-            <tr><th>Status</th><td id="s-status">—</td></tr>
-            <tr><th>Next Run At</th><td id="s-next-run">—</td></tr>
-            <tr><th>Active Run ID</th><td id="s-active-run">—</td></tr>
-            <tr><th>Dispatcher Thread</th><td id="s-dispatcher-thread">—</td></tr>
-            <tr><th>Completed Cycles</th><td id="s-completed-cycles">0</td></tr>
-            <tr><th>Last Outcome</th><td id="s-last-outcome">—</td></tr>
-            <tr><th>Last Report</th><td id="s-last-report">—</td></tr>
+            <tr><th>Mode</th><td id="s-mode">---</td></tr>
+            <tr><th>Scheduler ID</th><td id="s-id">---</td></tr>
+            <tr><th>Status</th><td id="s-status">---</td></tr>
+            <tr><th>Next Run At</th><td id="s-next-run">---</td></tr>
+            <tr><th>Active Run ID</th><td id="s-active-run">---</td></tr>
+            <tr><th>Dispatcher Thread</th><td id="s-dispatcher-thread">---</td></tr>
+            <tr><th>Last Report</th><td id="s-last-report">---</td></tr>
           </tbody>
         </table>
       </section>
@@ -80,14 +77,50 @@
           <button class="ghost-button" data-action="pause">Pause</button>
           <button class="ghost-button" data-action="resume">Resume</button>
           <button class="primary-button" data-action="run-now">Run Now</button>
-          <button class="ghost-button" style="color:#ff5c5c" data-action="cancel-run">Cancel Run</button>
+          <button class="danger-button" data-action="cancel-run">Cancel Run</button>
         </div>
-        <p id="control-feedback" class="feedback" role="status" aria-live="polite"></p>
+        <p id="control-feedback" class="feedback" role="status" aria-live="polite" style="margin-top:10px"></p>
+      </section>
+
+      <!-- Dispatch Plan Progress -->
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Plan Progress</h2>
+            <p id="dispatch-progress-summary" class="muted">No dispatch status loaded.</p>
+          </div>
+        </div>
+        <div id="dispatch-progress-error" class="empty-state" hidden></div>
+        <div id="dispatch-progress-empty" class="empty-state">No dispatch rows loaded.</div>
+        <div class="table-shell">
+          <table id="dispatch-progress-table" class="run-history-table dispatch-progress-table" hidden>
+            <thead>
+              <tr>
+                <th>Plan</th>
+                <th>Lifecycle</th>
+                <th>Batch</th>
+                <th>Worker</th>
+                <th>Task</th>
+                <th>Model</th>
+                <th>Depends</th>
+                <th>Thread</th>
+                <th>Issue</th>
+              </tr>
+            </thead>
+            <tbody id="dispatch-progress-body"></tbody>
+          </table>
+        </div>
       </section>
 
       <!-- Schedule Config -->
-      <section class="panel">
-        <div class="panel-heading"><h2>Schedule Config</h2></div>
+      <section class="panel panel-form">
+        <div class="panel-heading">
+          <div>
+            <h2>Schedule Config</h2>
+            <p class="muted">Update when and where this scheduler reruns the saved dispatch plan.</p>
+            <p class="muted">Example: run every weekday at 09:00 and archive each run under a project reports folder.</p>
+          </div>
+        </div>
         <form id="config-form" class="config-form stack">
           <div class="summary-grid">
             <label class="field">
@@ -98,34 +131,71 @@
                 <option value="interval">interval</option>
                 <option value="loop">loop</option>
               </select>
+              <small class="field-hint muted">
+                Schedule type. Example: <code>cron</code> for calendar time, <code>interval</code> for fixed spacing, <code>loop</code> after each completion.
+              </small>
             </label>
             <label class="field" id="cfg-cron-wrap">
               <span>cron_expression</span>
               <input id="cfg-cron" name="cron_expression" type="text" placeholder="0 9 * * 1-5" />
+              <small class="field-hint muted">
+                Cron mode only, 5 fields, no seconds. Example: <code>0 9 * * 1-5</code> runs weekdays at 09:00.
+              </small>
             </label>
             <label class="field">
               <span>timezone</span>
               <input id="cfg-timezone" name="timezone" type="text" placeholder="system" />
+              <small class="field-hint muted">
+                Timezone for cron math. Example: <code>Asia/Tokyo</code>; use <code>system</code> for the server timezone.
+              </small>
             </label>
           </div>
           <div class="summary-grid">
             <label class="field" id="cfg-interval-wrap">
               <span>interval_seconds</span>
               <input id="cfg-interval" name="interval_seconds" type="number" min="1" />
+              <small class="field-hint muted">
+                Interval mode spacing in seconds. Example: <code>3600</code> runs about once per hour.
+              </small>
             </label>
             <label class="field">
               <span>max_cycles</span>
               <input id="cfg-max-cycles" name="max_cycles" type="number" min="1" />
+              <small class="field-hint muted">
+                Optional run limit. Example: <code>10</code> stops after 10 completed cycles.
+              </small>
             </label>
             <label class="field">
               <span>delay_between_cycles_seconds</span>
               <input id="cfg-delay" name="delay_between_cycles_seconds" type="number" min="0" />
+              <small class="field-hint muted">
+                Loop mode wait after a cycle completes. Example: <code>300</code> waits 5 minutes.
+              </small>
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
+              <span>dispatch_repo_root</span>
+              <input id="cfg-dispatch-repo-root" name="dispatch_repo_root" type="text" placeholder="/abs/path/to/repo" />
+              <small class="field-hint muted">
+                Optional worker sandbox repo. Example: <code>/Users/yzliu/work/Meridian/Meridian-roles</code>.
+              </small>
+            </label>
+            <label class="field">
+              <span>docs_root</span>
+              <input id="cfg-docs-root" name="docs_root" type="text" placeholder="/abs/path/to/Docs/Projects/<repo>" />
+              <small class="field-hint muted">
+                Optional detached docs root. Example: <code>/Users/yzliu/work/Docs/Projects/meridian-roles</code>.
+              </small>
             </label>
           </div>
           <div class="summary-grid">
             <label class="field">
               <span>report_base_dir</span>
               <input id="cfg-report-dir" name="report_base_dir" type="text" />
+              <small class="field-hint muted">
+                Archive base for run reports. Example: <code>/Users/yzliu/work/Docs/Projects/meridian-roles/reports/nightly</code>.
+              </small>
             </label>
             <label class="field">
               <span>catch_up_policy</span>
@@ -133,6 +203,9 @@
                 <option value="skip_missed">skip_missed</option>
                 <option value="run_one">run_one</option>
               </select>
+              <small class="field-hint muted">
+                Missed cron policy value stored with the scheduler. Example: <code>skip_missed</code>.
+              </small>
             </label>
           </div>
           <div class="actions">
@@ -147,18 +220,20 @@
       <section class="panel">
         <div class="panel-heading"><h2>Run History</h2></div>
         <div id="run-history-empty" class="empty-state">No runs yet.</div>
-        <table id="run-history-table" class="run-history-table" hidden>
-          <thead>
-            <tr>
-              <th>Run ID</th>
-              <th>Start</th>
-              <th>End</th>
-              <th>Duration</th>
-              <th>Outcome</th>
-            </tr>
-          </thead>
-          <tbody id="run-history-body"></tbody>
-        </table>
+        <div class="table-shell">
+          <table id="run-history-table" class="run-history-table" hidden>
+            <thead>
+              <tr>
+                <th>Run ID</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Duration</th>
+                <th>Outcome</th>
+              </tr>
+            </thead>
+            <tbody id="run-history-body"></tbody>
+          </table>
+        </div>
       </section>
     </main>
 
@@ -180,7 +255,7 @@
         const rs = data.run_state || {};
 
         document.getElementById('scheduler-title').textContent = `Scheduler: ${data.scheduler_id}`;
-        document.getElementById('scheduler-plan-path').textContent = c.dispatch_plan_path || '—';
+        document.getElementById('scheduler-plan-path').textContent = c.dispatch_plan_path || '---';
         document.getElementById('s-id').textContent = data.scheduler_id;
         document.getElementById('s-mode').textContent = c.scheduler_mode || 'none';
 
@@ -190,12 +265,16 @@
         badge.textContent = status.replace(/_/g, ' ');
         badge.className = 'status-badge ' + status;
 
-        document.getElementById('s-next-run').textContent = rs.next_run_at || data.next_run_preview || '—';
-        document.getElementById('s-active-run').textContent = rs.current_run_id || '—';
-        document.getElementById('s-dispatcher-thread').textContent = rs.current_dispatcher_thread_id || '—';
+        // Stat cards
+        document.getElementById('s-status-val').textContent = status.replace(/_/g, ' ');
         document.getElementById('s-completed-cycles').textContent = rs.completed_cycles ?? 0;
-        document.getElementById('s-last-outcome').textContent = rs.last_run_outcome || '—';
-        document.getElementById('s-last-report').textContent = rs.last_report_path || '—';
+        document.getElementById('s-next-run-val').textContent = formatTimeShort(rs.next_run_at || data.next_run_preview);
+        document.getElementById('s-last-outcome-val').textContent = rs.last_run_outcome || '---';
+
+        document.getElementById('s-next-run').textContent = rs.next_run_at || data.next_run_preview || '---';
+        document.getElementById('s-active-run').textContent = rs.current_run_id || '---';
+        document.getElementById('s-dispatcher-thread').textContent = rs.current_dispatcher_thread_id || '---';
+        document.getElementById('s-last-report').textContent = rs.last_report_path || '---';
 
         // Populate config form
         setVal('cfg-mode', c.scheduler_mode);
@@ -204,12 +283,16 @@
         setVal('cfg-interval', c.interval_seconds);
         setVal('cfg-max-cycles', c.max_cycles);
         setVal('cfg-delay', c.delay_between_cycles_seconds);
+        setVal('cfg-dispatch-repo-root', c.dispatch_repo_root);
+        setVal('cfg-docs-root', c.docs_root);
         setVal('cfg-report-dir', c.report_base_dir);
         setVal('cfg-catchup', c.catch_up_policy);
 
         if (data.next_run_preview) {
           document.getElementById('next-run-preview').textContent = 'Next cron fire: ' + data.next_run_preview;
         }
+
+        renderDispatchProgress(data.dispatch_status, data.dispatch_status_error);
 
         // Run history
         const runs = (rs.run_history || []).slice().reverse();
@@ -228,14 +311,68 @@
               : (r.terminal_outcome || '').includes('failed') ? 'outcome-failed'
               : 'outcome-cancelled';
             return `<tr>
-              <td title="${r.run_id}">${(r.run_id || '').slice(0, 8)}</td>
+              <td title="${r.run_id}"><code>${(r.run_id || '').slice(0, 8)}</code></td>
               <td>${formatTime(r.actual_start_time)}</td>
               <td>${formatTime(r.completed_time)}</td>
-              <td>${r.duration_seconds != null ? r.duration_seconds + 's' : '—'}</td>
-              <td class="${outcomeClass}">${r.terminal_outcome || '—'}</td>
+              <td>${r.duration_seconds != null ? r.duration_seconds + 's' : '---'}</td>
+              <td class="${outcomeClass}">${r.terminal_outcome || '---'}</td>
             </tr>`;
           }).join('');
         }
+      }
+
+      function renderDispatchProgress(report, error) {
+        const summaryEl = document.getElementById('dispatch-progress-summary');
+        const errorEl = document.getElementById('dispatch-progress-error');
+        const emptyEl = document.getElementById('dispatch-progress-empty');
+        const table = document.getElementById('dispatch-progress-table');
+        const tbody = document.getElementById('dispatch-progress-body');
+
+        if (error) {
+          errorEl.hidden = false;
+          errorEl.textContent = 'Dispatch status error: ' + error;
+        } else {
+          errorEl.hidden = true;
+          errorEl.textContent = '';
+        }
+
+        const workers = Array.isArray(report?.workers) ? report.workers : [];
+        if (workers.length === 0) {
+          table.hidden = true;
+          emptyEl.hidden = false;
+          summaryEl.textContent = error ? 'Unable to load dispatch plan progress.' : 'No dispatch rows loaded.';
+          tbody.innerHTML = '';
+          return;
+        }
+
+        table.hidden = false;
+        emptyEl.hidden = true;
+
+        const s = report.summary || {};
+        const generated = formatTime(report.generated_at);
+        summaryEl.textContent =
+          `${s.total ?? workers.length} total, ${s.pending ?? 0} pending, ${s.running ?? 0} running, ` +
+          `${s.completed ?? 0} completed, ${s.failed ?? 0} failed, ${s.skipped ?? 0} skipped, ` +
+          `${s.stale ?? 0} stale. Updated ${generated}.`;
+
+        tbody.innerHTML = workers.map((worker) => {
+          const planStatus = worker.status || '---';
+          const lifecycleStatus = worker.lifecycle_status || 'pending';
+          const issue = worker.failure_reason || worker.stale_duration_human || '---';
+          const issueLabel = worker.stale && !worker.failure_reason ? `stale ${issue}` : issue;
+
+          return `<tr>
+            <td><span class="status-badge ${statusClass(planStatus)}">${escapeHtml(planStatus)}</span></td>
+            <td><span class="status-badge ${statusClass(lifecycleStatus)}">${escapeHtml(lifecycleStatus)}</span></td>
+            <td>${escapeHtml(worker.batch || '---')}</td>
+            <td><code>${escapeHtml(worker.worker_id || '---')}</code></td>
+            <td>${escapeHtml(worker.task || '---')}</td>
+            <td>${escapeHtml(worker.model || '---')}</td>
+            <td>${escapeHtml(formatDepends(worker.depends_on))}</td>
+            <td>${worker.thread_id ? `<code>${escapeHtml(worker.thread_id)}</code>` : '---'}</td>
+            <td>${escapeHtml(issueLabel)}</td>
+          </tr>`;
+        }).join('');
       }
 
       function setVal(id, val) {
@@ -245,8 +382,42 @@
       }
 
       function formatTime(iso) {
-        if (!iso) return '—';
+        if (!iso) return '---';
         try { return new Date(iso).toLocaleString(); } catch { return iso; }
+      }
+
+      function formatTimeShort(iso) {
+        if (!iso) return '---';
+        try {
+          const d = new Date(iso);
+          return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        } catch { return iso; }
+      }
+
+      function formatDepends(dependsOn) {
+        return Array.isArray(dependsOn) && dependsOn.length > 0 ? dependsOn.join(', ') : '---';
+      }
+
+      function statusClass(status) {
+        const normalized = String(status || '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+
+        if (status === '⬜') return 'pending';
+        if (status === '🔄') return 'running';
+        if (status === '✅') return 'completed';
+        if (status === '⛔ SKIPPED') return 'skipped';
+        return normalized || 'idle';
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
       }
 
       // Controls
@@ -260,10 +431,8 @@
             const res = await fetch(`/api/scheduler/${encodeURIComponent(schedulerId)}/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
             const data = await res.json();
             feedback.textContent = data.ok ? `${action}: OK` : (data.error || 'Failed');
-            feedback.style.color = data.ok ? '#5cff5c' : '#ff5c5c';
           } catch (err) {
             feedback.textContent = err.message;
-            feedback.style.color = '#ff5c5c';
           }
         });
       });
@@ -283,6 +452,8 @@
         if (form.interval_seconds.value) body.interval_seconds = parseInt(form.interval_seconds.value, 10);
         if (form.max_cycles.value) body.max_cycles = parseInt(form.max_cycles.value, 10);
         if (form.delay_between_cycles_seconds.value) body.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
+        if (form.dispatch_repo_root.value) body.dispatch_repo_root = form.dispatch_repo_root.value;
+        if (form.docs_root.value) body.docs_root = form.docs_root.value;
         if (form.report_base_dir.value) body.report_base_dir = form.report_base_dir.value;
         if (form.catch_up_policy.value) body.catch_up_policy = form.catch_up_policy.value;
 
@@ -294,10 +465,8 @@
           });
           const data = await res.json();
           feedback.textContent = data.ok ? 'Config saved' : (data.error || 'Failed');
-          feedback.style.color = data.ok ? '#5cff5c' : '#ff5c5c';
         } catch (err) {
           feedback.textContent = err.message;
-          feedback.style.color = '#ff5c5c';
         }
       });
 

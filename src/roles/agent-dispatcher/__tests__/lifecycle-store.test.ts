@@ -702,7 +702,7 @@ describe("LifecycleStore", () => {
     await fsp.writeFile(dispatchPlanPath, [
       "# Dispatch Plan",
       "",
-      "| Status | Batch | Worker | Task |",
+      "| Status | batch | worker | task |",
       "|--------|-------|--------|------|",
       "| ⬜ | 0 | PRE-FLIGHT | Environment Health Check |",
       ""
@@ -718,6 +718,29 @@ describe("LifecycleStore", () => {
 
     await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
       "| ✅ | 0 | PRE-FLIGHT | Environment Health Check |"
+    );
+  });
+
+  it("syncs a sibling project -plan.md file when dispatch_plan.md is not present", async () => {
+    const directory = await fsp.mkdtemp(path.join(tmpdir(), "meridian-roles-lifecycle-store-hyphen-plan-"));
+    tempDirectories.add(directory);
+
+    const filePath = path.join(directory, "dispatch_threads.json");
+    const dispatchPlanPath = path.join(directory, "clawhub-skill-scan-plan.md");
+    await fsp.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task |",
+      "|--------|-------|--------|------|",
+      "| ⬜ | 0 | PRE-FLIGHT | Environment Health Check |",
+      ""
+    ].join("\n"), "utf8");
+
+    const store = new LifecycleStore(filePath);
+    store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+      "| 🔄 | 0 | PRE-FLIGHT | Environment Health Check |"
     );
   });
 

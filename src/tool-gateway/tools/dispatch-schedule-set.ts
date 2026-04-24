@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   buildServiceErrorData,
+  patchRolesServiceJson,
   postRolesServiceJson,
   requestRolesServiceJson
 } from "../service-client";
@@ -59,6 +60,16 @@ const dispatchScheduleSetTool: ToolDefinition = {
       required: true,
       description: "Base directory for run archives and reports"
     },
+    repo_root: {
+      type: "string",
+      required: false,
+      description: "Dispatcher sandbox root. Auto-detected from dispatch artifacts when omitted"
+    },
+    docs_root: {
+      type: "string",
+      required: false,
+      description: "Detached docs root. Auto-detected from dispatch artifacts when omitted"
+    },
     start_immediately: {
       type: "string",
       required: false,
@@ -101,6 +112,8 @@ const dispatchScheduleSetTool: ToolDefinition = {
         report_base_dir: reportDir
       };
 
+      if (params.repo_root) config.dispatch_repo_root = params.repo_root;
+      if (params.docs_root) config.docs_root = params.docs_root;
       if (params.cron) config.cron_expression = params.cron;
       if (params.timezone) config.timezone = params.timezone;
       if (params.interval_seconds) config.interval_seconds = parseInt(params.interval_seconds, 10);
@@ -113,7 +126,7 @@ const dispatchScheduleSetTool: ToolDefinition = {
 
       // If updating existing scheduler
       if (params.scheduler_id) {
-        const response = await postRolesServiceJson<unknown>(
+        const response = await patchRolesServiceJson<unknown>(
           `/api/scheduler/${encodeURIComponent(params.scheduler_id)}/config`,
           config
         );

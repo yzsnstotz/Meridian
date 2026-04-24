@@ -15,6 +15,7 @@ import {
   type SchedulerConfig
 } from "../types";
 import { parseCronExpression, nextCronFire } from "../roles/scheduler/cron-parser";
+import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
 
@@ -153,12 +154,16 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
       }
     }
 
+    const dispatchStatusResult = await loadSchedulerDispatchStatus(config.dispatch_plan_path);
+
     return {
       ok: true,
       scheduler_id: threadId,
       config,
       run_state: runState,
-      next_run_preview: nextRunPreview
+      next_run_preview: nextRunPreview,
+      dispatch_status: dispatchStatusResult.dispatchStatus,
+      dispatch_status_error: dispatchStatusResult.error
     };
   }
 
@@ -281,6 +286,23 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
       throw createHttpError(404, `Scheduler not found: ${threadId}`);
     }
     return role as SchedulerRole;
+  }
+
+  async function loadSchedulerDispatchStatus(dispatchPlanPath: string): Promise<{
+    dispatchStatus: Awaited<ReturnType<typeof buildDispatchStatusReport>> | null;
+    error: string | null;
+  }> {
+    try {
+      return {
+        dispatchStatus: await buildDispatchStatusReport(dispatchPlanPath),
+        error: null
+      };
+    } catch (error) {
+      return {
+        dispatchStatus: null,
+        error: getErrorMessage(error)
+      };
+    }
   }
 }
 
