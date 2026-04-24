@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   SchedulerConfig,
   SchedulerRunState,
+  SchedulerRunSummary,
   TerminalOutcome,
   DispatchThreadStateV2
 } from "../../types";
@@ -133,36 +134,61 @@ export function detectCycleCompletion(
   let hasSkips = false;
   let hasManualIntervention = false;
 
-  for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
-    const model = planWorkers.get(workerId);
-    if (model && HUMAN_MODELS.has(model.toUpperCase())) {
-      // Human/PM workers don't block completion but may require intervention
+  if (planWorkers.size === 0) {
+    for (const worker of Object.values(lifecycleState.workers)) {
       if (!TERMINAL_STATUSES.has(worker.status)) {
-        hasManualIntervention = true;
+        return { complete: false };
       }
-      continue;
+
+      if (worker.status === "failed" || worker.status === "abandoned") {
+        hasFailure = true;
+      }
+      if (worker.status === "skipped") {
+        hasSkips = true;
+      }
+    }
+  } else {
+    // Every plan row must either have reached a terminal lifecycle state or, for
+    // human rows, be surfaced as manual intervention. Extra lifecycle rows such
+    // as the wrapper dispatcher cannot prove the actual plan completed.
+    for (const [workerId, model] of planWorkers) {
+      const worker = lifecycleState.workers[workerId];
+      const isHumanWorker = HUMAN_MODELS.has(model.toUpperCase());
+
+      if (!worker || !TERMINAL_STATUSES.has(worker.status)) {
+        if (isHumanWorker) {
+          hasManualIntervention = true;
+          continue;
+        }
+        return { complete: false };
+      }
+
+      if (isHumanWorker) {
+        continue;
+      }
+
+      if (worker.status === "failed" || worker.status === "abandoned") {
+        hasFailure = true;
+      }
+      if (worker.status === "skipped") {
+        hasSkips = true;
+      }
     }
 
-    if (!TERMINAL_STATUSES.has(worker.status)) {
-      return { complete: false };
-    }
+    for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+      if (planWorkers.has(workerId)) {
+        continue;
+      }
 
-    if (worker.status === "failed" || worker.status === "abandoned") {
-      hasFailure = true;
-    }
-    if (worker.status === "skipped") {
-      hasSkips = true;
-    }
-  }
-
-  // Check for unresolved human rows in plan that don't have lifecycle entries
-  for (const [workerId, model] of planWorkers) {
-    if (!HUMAN_MODELS.has(model.toUpperCase())) {
-      continue;
-    }
-    const worker = lifecycleState.workers[workerId];
-    if (!worker || !TERMINAL_STATUSES.has(worker.status)) {
-      hasManualIntervention = true;
+      if (!TERMINAL_STATUSES.has(worker.status)) {
+        return { complete: false };
+      }
+      if (worker.status === "failed" || worker.status === "abandoned") {
+        hasFailure = true;
+      }
+      if (worker.status === "skipped") {
+        hasSkips = true;
+      }
     }
   }
 
@@ -185,7 +211,11 @@ export function completeCycle(
 ): CycleCompletionResult {
   const state = stateStore.load();
 
-  if (!state.current_run_id) {
+  const runId = state.current_run_id;
+  const dispatcherThreadId = state.current_dispatcher_thread_id;
+  const plannedStartTime = state.next_run_at;
+
+  if (!runId) {
     return {
       terminal_outcome: "cancelled",
       should_continue: false,
@@ -209,14 +239,14 @@ export function completeCycle(
   let archive: ArchiveResult;
   try {
     archive = archiveRun({
-      runId: state.current_run_id,
+      runId,
       config,
       actualStartTime: state.last_run_completed_at ?? now, // best effort
       completedTime: now,
-      dispatcherThreadId: state.current_dispatcher_thread_id,
+      dispatcherThreadId,
       terminalOutcome: outcome,
       completedCycles: state.completed_cycles + 1,
-      plannedStartTime: state.next_run_at
+      plannedStartTime
     });
   } catch (error) {
     // Archival failure — do NOT reset plan
@@ -246,21 +276,21 @@ export function completeCycle(
   state.last_run_completed_at = now;
   state.last_run_outcome = outcome;
   state.last_report_path = archive.reportPath;
-  state.current_run_id = null;
-  state.current_dispatcher_thread_id = null;
 
-  // Append run summary
-  stateStore.appendRunSummary({
-    run_id: state.current_run_id ?? archive.archiveDir.split("/").pop() ?? "unknown",
+  state.run_history.push(readArchivedRunSummary(archive.jsonReportPath) ?? {
+    run_id: runId,
     scheduler_mode: config.scheduler_mode,
-    planned_start_time: state.next_run_at,
+    planned_start_time: plannedStartTime,
     actual_start_time: state.last_run_completed_at ?? now,
     completed_time: now,
     duration_seconds: null,
-    dispatcher_thread_id: state.current_dispatcher_thread_id,
+    dispatcher_thread_id: dispatcherThreadId,
     terminal_outcome: outcome,
     workers: []
   });
+
+  state.current_run_id = null;
+  state.current_dispatcher_thread_id = null;
 
   // Determine next action
   const shouldContinue = AUTO_CONTINUE_OUTCOMES.has(outcome);
@@ -277,6 +307,7 @@ export function completeCycle(
 
   // Release plan lock
   releasePlanLock(stateStore, schedulerThreadId);
+  state.plan_lock_owner = null;
 
   stateStore.save(state);
 
@@ -301,6 +332,7 @@ export function cancelCycle(
   state.last_run_outcome = "cancelled";
 
   releasePlanLock(stateStore, schedulerThreadId);
+  state.plan_lock_owner = null;
   stateStore.save(state);
 }
 
@@ -375,8 +407,9 @@ function parsePlanWorkerModels(planPath: string): Map<string, string> {
     const headerCells = parseTableRow(lines[i]!);
     if (!headerCells) continue;
 
-    const workerCol = headerCells.indexOf("Worker");
-    const modelCol = headerCells.indexOf("Model");
+    const normalizedHeaders = headerCells.map(normalizeHeaderCell);
+    const workerCol = normalizedHeaders.indexOf("worker");
+    const modelCol = normalizedHeaders.indexOf("model");
     if (workerCol === -1 || modelCol === -1) continue;
 
     const separatorCells = parseTableRow(lines[i + 1]!);
@@ -410,8 +443,24 @@ function parseTableRow(line: string): string[] | null {
   return normalized.split("|").map((cell) => cell.trim());
 }
 
+function normalizeHeaderCell(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function readArchivedRunSummary(jsonReportPath: string): SchedulerRunSummary | null {
+  try {
+    return JSON.parse(fs.readFileSync(jsonReportPath, "utf8")) as SchedulerRunSummary;
+  } catch {
+    return null;
+  }
 }
 
 function asError(error: unknown): Error {

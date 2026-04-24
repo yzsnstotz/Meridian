@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import path from "node:path";
 
 import type { SchedulerConfig, SchedulerMode, TerminalOutcome } from "../../types";
+import { buildDispatchStatusReport } from "../../tool-gateway/tools/dispatch-status";
+import { executeContinueDispatcher } from "../../tool-gateway/tools/continue-dispatcher";
 import type { Logger } from "../base-role";
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { nextCronFire, parseCronExpression } from "./cron-parser";
@@ -12,6 +16,9 @@ import {
   completeCycle,
   cancelCycle
 } from "./cycle-manager";
+
+const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 
 export interface SchedulerEngineCallbacks {
   launchDispatcher(config: SchedulerConfig, runId: string): Promise<string>;
@@ -289,7 +296,10 @@ export class SchedulerEngine {
 
   private async checkCycleCompletion(): Promise<void> {
     const detection = detectCycleCompletion(this.config);
-    if (!detection.complete) return;
+    if (!detection.complete) {
+      await this.continueIncompleteCycle();
+      return;
+    }
 
     this.clearPollTimer();
 
@@ -311,6 +321,50 @@ export class SchedulerEngine {
 
     if (result.should_continue) {
       this.scheduleNextCycle();
+    }
+  }
+
+  private async continueIncompleteCycle(): Promise<void> {
+    let report: Awaited<ReturnType<typeof buildDispatchStatusReport>>;
+    try {
+      report = await buildDispatchStatusReport(this.config.dispatch_plan_path);
+    } catch (error) {
+      this.log.warn("Scheduler: failed to read dispatch status for continuation", {
+        schedulerThreadId: this.schedulerThreadId,
+        error: asError(error).message
+      });
+      return;
+    }
+
+    if (report.summary.running > 0 || report.summary.pending === 0 || this.isDispatcherControllerRunning()) {
+      return;
+    }
+
+    const result = await executeContinueDispatcher({ dispatcherId: this.schedulerThreadId });
+    if (!result.ok) {
+      this.log.warn("Scheduler: continue-dispatcher failed", {
+        schedulerThreadId: this.schedulerThreadId,
+        error: result.error
+      });
+      return;
+    }
+
+    this.log.info("Scheduler: continued incomplete cycle", {
+      schedulerThreadId: this.schedulerThreadId,
+      status: (result as { status?: unknown }).status,
+      worker: (result as { worker?: unknown }).worker
+    });
+  }
+
+  private isDispatcherControllerRunning(): boolean {
+    try {
+      const threadsPath = path.join(path.dirname(this.config.dispatch_plan_path), DISPATCH_THREADS_FILENAME);
+      const parsed = JSON.parse(fs.readFileSync(threadsPath, "utf8")) as {
+        workers?: Record<string, { status?: unknown }>;
+      };
+      return parsed.workers?.[DISPATCHER_WORKER_ID]?.status === "running";
+    } catch {
+      return false;
     }
   }
 

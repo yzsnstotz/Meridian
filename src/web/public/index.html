@@ -8,214 +8,425 @@
     <script defer src="/app.js"></script>
   </head>
   <body data-page="dashboard">
+    <!-- ── Global Nav ──────────────────────────────────────── -->
+    <nav class="global-nav">
+      <div class="nav-brand">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" data-tab="dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></button>
+        <button class="nav-tab" data-tab="schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></button>
+        <button class="nav-tab" data-tab="roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></button>
+      </div>
+    </nav>
+
     <main class="shell">
-      <section class="hero">
-        <p class="eyebrow">Role Layer Console</p>
-        <h1>meridian-roles</h1>
-        <p class="lede">Dispatcher roles, task DAG state, and prompt overrides in one local control plane.</p>
-      </section>
+      <!-- ════════════════════════════════════════════════════
+           TAB: DISPATCHERS
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-dispatchers" class="tab-panel active">
 
-      <section class="panel panel-form">
-        <div class="panel-heading">
-          <div>
-            <h2>Start Agent Dispatcher</h2>
-            <p class="muted">Launch the dispatcher controller with a dispatch plan. Meridian owns runtime transport; this form sets neutral launch policy and manual reply routing.</p>
+        <!-- ── Start Dispatcher Form ─────────────────────── -->
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <div>
+              <h2>Start Agent Dispatcher</h2>
+              <p class="muted">Launch with a dispatch plan. Meridian owns runtime transport; this form sets neutral launch policy.</p>
+            </div>
+            <button type="button" class="ghost-button" data-action="refresh-roles">Refresh</button>
           </div>
-          <button type="button" class="ghost-button" data-action="refresh-roles">Refresh</button>
-        </div>
-        <form id="start-agent-dispatcher-form" class="stack">
-          <label class="field">
-            <span>dispatch_plan_path</span>
-            <input
-              id="agent-dispatcher-dispatch-plan-path"
-              name="dispatch_plan_path"
-              type="text"
-              placeholder="/abs/path/to/dispatch_plan.md"
-              required
-            />
-          </label>
+          <form id="start-agent-dispatcher-form" class="stack">
+            <!-- Plan Paths -->
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_plan_path</span>
+                <input
+                  id="agent-dispatcher-dispatch-plan-path"
+                  name="dispatch_plan_path"
+                  type="text"
+                  placeholder="/abs/path/to/dispatch_plan.md"
+                  required
+                />
+              </label>
+              <label class="field">
+                <span>command_file_path</span>
+                <input
+                  id="agent-dispatcher-command-file-path"
+                  name="command_file_path"
+                  type="text"
+                  placeholder="/abs/path/to/agent_dispatch_command.md"
+                  required
+                />
+              </label>
+            </div>
 
-          <label class="field">
-            <span>command_file_path</span>
-            <input
-              id="agent-dispatcher-command-file-path"
-              name="command_file_path"
-              type="text"
-              placeholder="/abs/path/to/agent_dispatch_command.md"
-              required
-            />
-          </label>
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_repo_root</span>
+                <input
+                  id="agent-dispatcher-dispatch-repo-root"
+                  name="dispatch_repo_root"
+                  type="text"
+                  placeholder="auto-detect from dispatch_plan_path"
+                />
+              </label>
+              <label class="field">
+                <span>docs_root</span>
+                <input
+                  id="agent-dispatcher-docs-root"
+                  name="docs_root"
+                  type="text"
+                  placeholder="auto-detect from dispatch artifacts"
+                />
+              </label>
+            </div>
 
-          <div class="summary-grid">
+            <!-- Reply Channels -->
+            <div id="agent-dispatcher-manual-fallback-wrap" class="summary-grid manual-fallback-wrap">
+              <label class="field">
+                <span>manual_reply_channel</span>
+                <select id="agent-dispatcher-manual-channel" name="manual_reply_channel">
+                  <option value="web">web</option>
+                  <option value="telegram">telegram</option>
+                </select>
+              </label>
+
+              <label class="field" id="agent-dispatcher-manual-telegram-user-field" hidden>
+                <span>telegram_user_id</span>
+                <select
+                  id="agent-dispatcher-manual-telegram-user"
+                  name="manual_telegram_user_id"
+                  aria-label="Telegram user id from ALLOWED_USER_IDS"
+                >
+                  <option value="">Custom — type chat id below</option>
+                </select>
+              </label>
+
+              <label class="field" id="agent-dispatcher-manual-bot-field" hidden>
+                <span>manual_reply_bot_id</span>
+                <select id="agent-dispatcher-manual-bot-id" name="manual_reply_bot_id" aria-label="Telegram bot numeric id">
+                  <option value="">Hub default (omit bot_id)</option>
+                </select>
+              </label>
+
+              <label class="field" id="agent-dispatcher-manual-chat-id-field">
+                <span>manual_reply_chat_id</span>
+                <input
+                  id="agent-dispatcher-manual-chat-id"
+                  name="manual_reply_chat_id"
+                  type="text"
+                  placeholder="web:gui-demo"
+                  autocomplete="off"
+                  aria-describedby="agent-dispatcher-manual-chat-id-hint"
+                />
+                <small id="agent-dispatcher-manual-chat-id-hint" class="field-hint muted">
+                  Web: use a composite id such as <code>web:gui-demo</code>. Telegram: pick an operator or enter a custom chat id.
+                </small>
+              </label>
+            </div>
+
+            <!-- Agent Config -->
+            <div class="summary-grid">
+              <label class="field">
+                <span>agent_type</span>
+                <select id="agent-dispatcher-agent-type" name="agent_type">
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <input
+                  id="agent-dispatcher-model-id"
+                  name="model_id"
+                  type="text"
+                  placeholder="Optional provider model id"
+                />
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="agent-dispatcher-mode" name="mode">
+                  <option value="pane_bridge">pane_bridge</option>
+                  <option value="bridge">bridge</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>kill_policy</span>
+                <select id="agent-dispatcher-kill-policy" name="kill_policy">
+                  <option value="always">always</option>
+                  <option value="on_success">on_success</option>
+                  <option value="never">never</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>auto_approve</span>
+                <input
+                  id="agent-dispatcher-auto-approve"
+                  name="auto_approve"
+                  type="checkbox"
+                />
+                <small class="field-hint muted">
+                  Neutral approval policy only. Meridian maps provider-specific launch flags.
+                </small>
+              </label>
+            </div>
+
+            <!-- Validator Config (Issue #1: accessible at launch time) -->
+            <fieldset class="field-group" id="agent-dispatcher-validator-group">
+              <legend>Validator</legend>
+              <div class="validator-toggle-row">
+                <input type="checkbox" id="agent-dispatcher-validator-enabled" name="validator_enabled" />
+                <label for="agent-dispatcher-validator-enabled">Enable validator for this dispatcher</label>
+              </div>
+              <div id="agent-dispatcher-validator-fields" class="validator-fields" hidden>
+                <label class="field">
+                  <span>validator agent_type</span>
+                  <select id="agent-dispatcher-validator-agent-type" name="validator_agent_type">
+                    <option value="claude">claude</option>
+                    <option value="codex">codex</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>validator model_id</span>
+                  <input
+                    id="agent-dispatcher-validator-model-id"
+                    name="validator_model_id"
+                    type="text"
+                    placeholder="(default)"
+                  />
+                </label>
+                <label class="field">
+                  <span>pass_threshold</span>
+                  <input
+                    id="agent-dispatcher-validator-pass-threshold"
+                    name="validator_pass_threshold"
+                    type="number"
+                    min="0" max="1" step="0.05"
+                    value="0.7"
+                  />
+                </label>
+                <label class="field">
+                  <span>max_fix_cycles</span>
+                  <input
+                    id="agent-dispatcher-validator-max-fix-cycles"
+                    name="validator_max_fix_cycles"
+                    type="number"
+                    min="0" max="10" step="1"
+                    value="3"
+                  />
+                </label>
+                <label class="field">
+                  <span>base_branch</span>
+                  <input
+                    id="agent-dispatcher-validator-base-branch"
+                    name="validator_base_branch"
+                    type="text"
+                    value="main"
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- System Prompt -->
             <label class="field">
-              <span>dispatch_repo_root</span>
-              <input
-                id="agent-dispatcher-dispatch-repo-root"
-                name="dispatch_repo_root"
-                type="text"
-                placeholder="auto-detect from dispatch_plan_path"
-              />
+              <span>system_prompt</span>
+              <textarea
+                id="agent-dispatcher-system-prompt"
+                class="editor-textarea"
+                name="system_prompt"
+                rows="16"
+                spellcheck="false"
+              ></textarea>
             </label>
 
-            <label class="field">
-              <span>docs_root</span>
-              <input
-                id="agent-dispatcher-docs-root"
-                name="docs_root"
-                type="text"
-                placeholder="auto-detect from dispatch artifacts"
-              />
-            </label>
+            <div class="actions">
+              <button id="agent-dispatcher-prompt-reset" type="button" class="ghost-button">Reset Default Prompt</button>
+              <p class="muted">Resets to the current default — stays editable before launch.</p>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="primary-button">Start Agent Dispatcher</button>
+              <p id="agent-dispatcher-feedback" class="feedback" role="status" aria-live="polite"></p>
+            </div>
+          </form>
+        </section>
+
+        <!-- ── Active Dispatchers ────────────────────────── -->
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Active Agent Dispatchers</h2>
+              <p class="muted">Live status, current worker, and latest dispatcher tail.</p>
+            </div>
           </div>
+          <div id="agent-dispatchers-empty" class="empty-state">No active agent dispatchers.</div>
+          <div id="agent-dispatchers-list" class="card-grid"></div>
+        </section>
+      </div>
 
-          <div id="agent-dispatcher-manual-fallback-wrap" class="summary-grid manual-fallback-wrap">
-            <label class="field">
-              <span>manual_reply_channel</span>
-              <select id="agent-dispatcher-manual-channel" name="manual_reply_channel">
-                <option value="web">web</option>
-                <option value="telegram">telegram</option>
-              </select>
-            </label>
+      <!-- ════════════════════════════════════════════════════
+           TAB: SCHEDULERS
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-schedulers" class="tab-panel">
 
-            <label class="field" id="agent-dispatcher-manual-telegram-user-field" hidden>
-              <span>telegram_user_id</span>
-              <select
-                id="agent-dispatcher-manual-telegram-user"
-                name="manual_telegram_user_id"
-                aria-label="Telegram user id from ALLOWED_USER_IDS"
-              >
-                <option value="">Custom — type chat id below</option>
-              </select>
-            </label>
-
-            <label class="field" id="agent-dispatcher-manual-bot-field" hidden>
-              <span>manual_reply_bot_id</span>
-              <select id="agent-dispatcher-manual-bot-id" name="manual_reply_bot_id" aria-label="Telegram bot numeric id">
-                <option value="">Hub default (omit bot_id)</option>
-              </select>
-            </label>
-
-            <label class="field" id="agent-dispatcher-manual-chat-id-field">
-              <span>manual_reply_chat_id</span>
-              <input
-                id="agent-dispatcher-manual-chat-id"
-                name="manual_reply_chat_id"
-                type="text"
-                placeholder="web:gui-demo"
-                autocomplete="off"
-                aria-describedby="agent-dispatcher-manual-chat-id-hint"
-              />
-              <small id="agent-dispatcher-manual-chat-id-hint" class="field-hint muted">
-                Web: required — use a composite id such as <code>web:gui-demo</code>. Telegram: if you selected an
-                operator in <strong>telegram_user_id</strong>, you do <strong>not</strong> need this field (it stays
-                hidden). Use this only for <strong>Custom</strong> operator — numeric id or
-                <code>telegram:&lt;id&gt;</code>.
-              </small>
-            </label>
+        <!-- ── Create Scheduler ──────────────────────────── -->
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <div>
+              <h2>Create Scheduler</h2>
+              <p class="muted">Register a new routine job scheduler. Point it at a taskspec directory or dispatch plan.</p>
+              <p class="muted">Example: run a dispatch plan every weekday at 09:00 and archive reports under a project reports folder.</p>
+            </div>
           </div>
+          <form id="create-scheduler-form" class="stack">
+            <div class="summary-grid">
+              <label class="field">
+                <span>taskspec_dir</span>
+                <input
+                  id="new-scheduler-taskspec-dir"
+                  name="taskspec_dir"
+                  type="text"
+                  placeholder="/abs/path/to/taskspec/"
+                />
+                <small class="field-hint muted">
+                  Optional helper. Example: <code>/Users/yzliu/work/Docs/Projects/routine-job/clawhub-skill-scan/taskspec</code>; fills <code>clawhub-skill-scan-plan.md</code> and a sibling reports folder.
+                </small>
+              </label>
+              <label class="field">
+                <span>dispatch_plan_path</span>
+                <input
+                  id="new-scheduler-plan-path"
+                  name="dispatch_plan_path"
+                  type="text"
+                  placeholder="/abs/path/to/dispatch_plan.md"
+                />
+                <small class="field-hint muted">
+                  Required plan file the scheduler resets and runs. Example: <code>/Users/yzliu/work/Docs/Projects/app/branch/feat/taskspec/dispatch_plan.md</code>.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>scheduler_mode</span>
+                <select id="new-scheduler-mode" name="scheduler_mode">
+                  <option value="none">none</option>
+                  <option value="cron">cron</option>
+                  <option value="interval">interval</option>
+                  <option value="loop">loop</option>
+                </select>
+                <small class="field-hint muted">
+                  Schedule type. Example: <code>cron</code> for calendar time, <code>interval</code> for fixed spacing, <code>loop</code> after each completion.
+                </small>
+              </label>
+              <label class="field">
+                <span>cron_expression</span>
+                <input id="new-scheduler-cron" name="cron_expression" type="text" placeholder="0 9 * * 1-5" />
+                <small class="field-hint muted">
+                  Cron mode only, 5 fields, no seconds. Example: <code>0 9 * * 1-5</code> runs weekdays at 09:00.
+                </small>
+              </label>
+              <label class="field">
+                <span>timezone</span>
+                <input id="new-scheduler-timezone" name="timezone" type="text" placeholder="system (e.g. Asia/Tokyo)" />
+                <small class="field-hint muted">
+                  Timezone for cron math. Example: <code>Asia/Tokyo</code>; use <code>system</code> for the server timezone.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>interval_seconds</span>
+                <input id="new-scheduler-interval" name="interval_seconds" type="number" min="1" />
+                <small class="field-hint muted">
+                  Interval mode spacing in seconds. Example: <code>3600</code> runs about once per hour.
+                </small>
+              </label>
+              <label class="field">
+                <span>max_cycles</span>
+                <input id="new-scheduler-max-cycles" name="max_cycles" type="number" min="1" />
+                <small class="field-hint muted">
+                  Optional run limit. Example: <code>10</code> stops after 10 completed cycles.
+                </small>
+              </label>
+              <label class="field">
+                <span>delay_between_cycles_seconds</span>
+                <input id="new-scheduler-delay" name="delay_between_cycles_seconds" type="number" min="0" />
+                <small class="field-hint muted">
+                  Loop mode wait after a cycle completes. Example: <code>300</code> waits 5 minutes.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_repo_root</span>
+                <input id="new-scheduler-repo-root" name="dispatch_repo_root" type="text" placeholder="/abs/path/to/repo" />
+                <small class="field-hint muted">
+                  Optional worker sandbox repo. Example: <code>/Users/yzliu/work/Meridian/Meridian-roles</code>.
+                </small>
+              </label>
+              <label class="field">
+                <span>docs_root</span>
+                <input id="new-scheduler-docs-root" name="docs_root" type="text" placeholder="/abs/path/to/Docs/Projects/..." />
+                <small class="field-hint muted">
+                  Optional detached docs root. Example: <code>/Users/yzliu/work/Docs/Projects/meridian-roles</code>.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>report_base_dir</span>
+                <input id="new-scheduler-report-dir" name="report_base_dir" type="text" placeholder="/abs/path/to/reports" required />
+                <small class="field-hint muted">
+                  Required archive base. Example: <code>/Users/yzliu/work/Docs/Projects/meridian-roles/reports/nightly</code>.
+                </small>
+              </label>
+              <label class="field">
+                <span>catch_up_policy</span>
+                <select id="new-scheduler-catchup" name="catch_up_policy">
+                  <option value="skip_missed">skip_missed</option>
+                  <option value="run_one">run_one</option>
+                </select>
+                <small class="field-hint muted">
+                  Missed cron policy value stored with the scheduler. Example: <code>skip_missed</code>.
+                </small>
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary-button">Create Scheduler</button>
+              <p id="create-scheduler-feedback" class="feedback" role="status" aria-live="polite"></p>
+            </div>
+          </form>
+        </section>
 
-          <div class="summary-grid">
-            <label class="field">
-              <span>agent_type</span>
-              <select id="agent-dispatcher-agent-type" name="agent_type">
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>model_id</span>
-              <input
-                id="agent-dispatcher-model-id"
-                name="model_id"
-                type="text"
-                placeholder="Optional provider model id"
-              />
-            </label>
-
-            <label class="field">
-              <span>mode</span>
-              <select id="agent-dispatcher-mode" name="mode">
-                <option value="pane_bridge">pane_bridge</option>
-                <option value="bridge">bridge</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>kill_policy</span>
-              <select id="agent-dispatcher-kill-policy" name="kill_policy">
-                <option value="always">always</option>
-                <option value="on_success">on_success</option>
-                <option value="never">never</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>auto_approve</span>
-              <input
-                id="agent-dispatcher-auto-approve"
-                name="auto_approve"
-                type="checkbox"
-              />
-              <small class="field-hint muted">
-                Neutral approval policy only. Meridian maps provider-specific launch flags.
-              </small>
-            </label>
+        <!-- ── Active Schedulers ─────────────────────────── -->
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Active Schedulers</h2>
+              <p class="muted">Routine job schedulers managing dispatch plan cycles.</p>
+            </div>
           </div>
+          <div id="schedulers-empty" class="empty-state">No active schedulers.</div>
+          <div id="schedulers-list" class="card-grid"></div>
+        </section>
+      </div>
 
-          <label class="field">
-            <span>system_prompt</span>
-            <textarea
-              id="agent-dispatcher-system-prompt"
-              class="editor-textarea"
-              name="system_prompt"
-              rows="16"
-              spellcheck="false"
-            ></textarea>
-          </label>
-
-          <div class="actions">
-            <button id="agent-dispatcher-prompt-reset" type="button" class="ghost-button">Reset Default Prompt</button>
-            <p class="muted">This starts from the current default prompt and stays editable before launch.</p>
+      <!-- ════════════════════════════════════════════════════
+           TAB: ROLES
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-roles" class="tab-panel">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>All Active Roles</h2>
+            <p class="muted">Live state read from the persisted role store.</p>
           </div>
-
-          <div class="actions">
-            <button type="submit" class="primary-button">Start Agent Dispatcher</button>
-            <p id="agent-dispatcher-feedback" class="feedback" role="status" aria-live="polite"></p>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-heading">
-          <div>
-            <h2>Active Agent Dispatchers</h2>
-            <p class="muted">Live status, current worker, and latest dispatcher tail.</p>
-          </div>
-        </div>
-        <div id="agent-dispatchers-empty" class="empty-state">No active agent dispatchers.</div>
-        <div id="agent-dispatchers-list" class="card-grid"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-heading">
-          <div>
-            <h2>Schedulers</h2>
-            <p class="muted">Routine job schedulers managing dispatch plan cycles.</p>
-          </div>
-        </div>
-        <div id="schedulers-empty" class="empty-state">No active schedulers.</div>
-        <div id="schedulers-list" class="card-grid"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-heading">
-          <h2>Active Roles</h2>
-          <p class="muted">Live state is read from the persisted role store.</p>
-        </div>
-        <div id="roles-empty" class="empty-state">No active roles.</div>
-        <div id="roles-list" class="card-grid"></div>
-      </section>
+          <div id="roles-empty" class="empty-state">No active roles.</div>
+          <div id="roles-list" class="card-grid"></div>
+        </section>
+      </div>
     </main>
   </body>
 </html>

@@ -219,6 +219,8 @@ Params:
 - `--plan <path>`: required dispatch plan path
 - `--model-map <CODE=provider:model,...>`: optional inline model override map
 - `--model-map-file <path>`: optional JSON file containing `{ "CODE": { "provider": "...", "model_id": "..." } }`
+- `--repo-root <path>`: optional dispatcher sandbox root override
+- `--docs-root <path>`: optional detached docs root override
 
 Rules:
 - Pass either `--model-map` or `--model-map-file`, not both.
@@ -230,6 +232,7 @@ Examples:
 ```bash
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map 'CODEX=codex:gpt-5.4,OPUS=claude:claude-opus-4-6'
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map-file /tmp/model-map.json
+meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
 ```
 
 Success payload includes:
@@ -240,6 +243,32 @@ Success payload includes:
 - `model_map`
 - `warnings`
 - `dispatch_status`
+
+### `dispatch-schedule-set`
+
+Create or update a `scheduler` role for a routine dispatch plan.
+
+Params:
+- `--plan <path>`: required dispatch plan path
+- `--mode <none|cron|interval|loop>`: required scheduler mode
+- `--report-dir <path>`: required base directory for scheduler run archives
+- `--repo-root <path>`: optional dispatcher sandbox root override for child dispatcher launches
+- `--docs-root <path>`: optional detached docs root override for child dispatcher launches
+- `--cron <expr>`: optional cron expression for `cron` mode
+- `--timezone <iana-or-system>`: optional timezone
+- `--interval-seconds <n>`: optional interval for `interval` mode
+- `--max-cycles <n>`: optional max cycle count
+- `--delay-between-cycles-seconds <n>`: optional delay for `loop` mode
+- `--start-immediately <true|false>`: optional first-run behavior
+- `--catch-up-policy <skip_missed|run_one>`: optional cron catch-up policy
+- `--scheduler-id <thread-id>`: optional existing scheduler to patch instead of creating a new one
+
+Examples:
+
+```bash
+meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode cron --cron '0 9 * * *' --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
+meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode loop --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --delay-between-cycles-seconds 300 --scheduler-id scheduler-abcd1234
+```
 
 ### `list-roles`
 

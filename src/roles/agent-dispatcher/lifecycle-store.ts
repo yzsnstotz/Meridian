@@ -400,8 +400,9 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
       continue;
     }
 
-    const statusColumn = headerCells.indexOf("Status");
-    const workerColumn = headerCells.indexOf("Worker");
+    const normalizedHeaders = headerCells.map(normalizeHeaderCell);
+    const statusColumn = normalizedHeaders.indexOf("status");
+    const workerColumn = normalizedHeaders.indexOf("worker");
     if (statusColumn === -1 || workerColumn === -1) {
       continue;
     }
@@ -737,6 +738,14 @@ function parseTableRow(line: string): string[] | null {
   return normalized.split("|").map((cell) => cell.trim());
 }
 
+function normalizeHeaderCell(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
 }
@@ -770,7 +779,12 @@ function inferDispatchPlanPath(filePath: string): string {
 
   try {
     const candidates = fs.readdirSync(directory)
-      .filter((entry) => entry === DISPATCH_PLAN_FILENAME || entry.endsWith("_dispatch_plan.md"))
+      .filter((entry) =>
+        entry === DISPATCH_PLAN_FILENAME
+        || entry.endsWith("_dispatch_plan.md")
+        || entry.endsWith("-dispatch-plan.md")
+        || entry.endsWith("-plan.md")
+      )
       .sort();
     if (candidates.length === 1) {
       return path.join(directory, candidates[0]!);
