@@ -74,6 +74,10 @@ export class SchedulerEngine {
       return;
     }
 
+    if (state.status === "manual_intervention_required" || state.status === "completed_max_cycles" || state.status === "paused") {
+      return;
+    }
+
     this.scheduleNextCycle();
   }
 
@@ -169,6 +173,15 @@ export class SchedulerEngine {
 
     const nextRunAt = new Date(Date.now() + delayMs).toISOString();
     const currentState = this.stateStore.load();
+    if (
+      currentState.status === "manual_intervention_required" ||
+      currentState.status === "completed_max_cycles" ||
+      currentState.status === "paused" ||
+      currentState.status === "active_run"
+    ) {
+      return;
+    }
+
     currentState.status = "waiting";
     currentState.next_run_at = nextRunAt;
     this.stateStore.save(currentState);
