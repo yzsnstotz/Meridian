@@ -431,10 +431,13 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
       // failed acceptance report.
       const currentPlanStatus = rowCells[statusColumn].trim();
       const nextPlanStatus = resolveDisplayStatus(workerState);
+      const hasFailureEvidence =
+        workerState.status === "failed" ||
+        (workerState.hub_result ? hubResultContainsFailureSignal(workerState.hub_result) : false);
       if (
         isPlanStatusTerminalSuccess(currentPlanStatus)
         && nextPlanStatus !== currentPlanStatus
-        && !isPlanStatusFailure(nextPlanStatus)
+        && !hasFailureEvidence
       ) {
         continue;
       }
@@ -597,8 +600,10 @@ const FAILURE_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /⛔\s*BLOCKED\b/i,
+  /\bdid\s+not\s+complete\b/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,
   /"exit_code"\s*:\s*[1-9]\d*/i,
+  /\bexit\s+code\s*:?\s*`?[1-9]\d*`?/i,
   /\bexited\s+`?[1-9]\d*`?/i,
   /(?:^|\n)\s*FAIL:\s+/i,
   /\bAI auto-tests failed\b/i,
@@ -807,10 +812,6 @@ function resolveDisplayStatus(worker: DispatchWorkerState): string {
 
 function isPlanStatusTerminalSuccess(status: string): boolean {
   return status === "✅" || status === "⛔ SKIPPED";
-}
-
-function isPlanStatusFailure(status: string): boolean {
-  return status === "❌" || status.startsWith("⚠️");
 }
 
 function inferDispatchPlanPath(filePath: string): string {
