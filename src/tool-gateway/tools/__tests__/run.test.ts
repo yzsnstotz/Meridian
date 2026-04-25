@@ -11,12 +11,16 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
     return {
       filePath,
       recordWorkerStart: vi.fn((workerId: string, threadId: string, traceId: string, expectedOutputs: string[]) => {
+        const previousRetryCount = typeof workers[workerId]?.retry_count === "number"
+          ? workers[workerId].retry_count as number
+          : 0;
         workers[workerId] = {
           thread_id: threadId,
           trace_id: traceId,
           status: "running",
           expected_outputs: [...expectedOutputs],
-          hub_result: null
+          hub_result: null,
+          retry_count: previousRetryCount
         };
       }),
       recordWorkerResult: vi.fn((workerId: string, hubResult: { status: string; run_state?: string }) => {
@@ -39,6 +43,29 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
               ? "completed"
               : "running",
           hub_result: hubResult
+        };
+      }),
+      setWorkerStatus: vi.fn((
+        workerId: string,
+        status: string,
+        _trigger: string,
+        options: { clearHubResult?: boolean; incrementRetryCount?: boolean } = {}
+      ) => {
+        const worker = workers[workerId];
+        if (!worker) {
+          throw new Error(`Worker not found: ${workerId}`);
+        }
+
+        const previousRetryCount = typeof worker.retry_count === "number"
+          ? worker.retry_count as number
+          : 0;
+        workers[workerId] = {
+          ...worker,
+          status,
+          hub_result: options.clearHubResult ? null : worker.hub_result,
+          retry_count: options.incrementRetryCount && status === "pending"
+            ? previousRetryCount + 1
+            : previousRetryCount
         };
       }),
       load: vi.fn(() => ({
@@ -89,6 +116,7 @@ type MockLifecycleStore = {
   filePath: string;
   recordWorkerStart: ReturnType<typeof vi.fn>;
   recordWorkerResult: ReturnType<typeof vi.fn>;
+  setWorkerStatus: ReturnType<typeof vi.fn>;
   load: ReturnType<typeof vi.fn>;
 };
 
@@ -96,6 +124,7 @@ const randomUUIDMock = vi.mocked(randomUUID);
 const readFileMock = vi.mocked(readFile);
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.clearAllMocks();
   randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
 });
@@ -1359,6 +1388,98 @@ describe("run tool", () => {
       worker: "N-04",
       threadId: "thread-timeout",
       error: "run failed: Request timed out — the hub may be overloaded."
+    });
+  });
+
+  it("keeps a Meridian API headers timeout running because the worker may have started", async () => {
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockRun.mockRejectedValue(new Error(
+      "run failed: Meridian API unreachable at http://127.0.0.1:3000/: fetch failed (Headers Timeout Error)"
+    ));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-headers-timeout",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.setWorkerStatus).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      thread_id: "thread-headers-timeout",
+      status: "running",
+      hub_result: null
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "run failed: Meridian API unreachable at http://127.0.0.1:3000/: fetch failed (Headers Timeout Error)",
+      data: {
+        worker: "N-04",
+        thread_id: "thread-headers-timeout",
+        status: "failed"
+      }
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "N-04",
+      threadId: "thread-headers-timeout",
+      error: "run failed: Meridian API unreachable at http://127.0.0.1:3000/: fetch failed (Headers Timeout Error)"
+    });
+  });
+
+  it("resets a connection-refused Meridian API run request to pending for scheduler retry", async () => {
+    vi.useFakeTimers();
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockRun.mockRejectedValue(new Error(
+      "run failed: Meridian API unreachable at http://127.0.0.1:3000/: fetch failed (connect ECONNREFUSED 127.0.0.1:3000)"
+    ));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const pendingResult = runTool.execute({
+      thread_id: "thread-unreachable",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    await vi.runAllTimersAsync();
+    const result = await pendingResult;
+    const lifecycleStore = getLifecycleStore();
+
+    expect(mockRun).toHaveBeenCalledTimes(3);
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.setWorkerStatus).toHaveBeenCalledWith(
+      "N-04",
+      "pending",
+      "run_tool_delivery_unreachable",
+      {
+        clearHubResult: true,
+        incrementRetryCount: true
+      }
+    );
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      thread_id: "thread-unreachable",
+      status: "pending",
+      hub_result: null,
+      retry_count: 1
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "run failed: Meridian API unreachable at http://127.0.0.1:3000/: fetch failed (connect ECONNREFUSED 127.0.0.1:3000)",
+      data: {
+        worker: "N-04",
+        thread_id: "thread-unreachable",
+        status: "failed"
+      }
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "N-04",
+      threadId: "thread-unreachable",
+      error: "run failed: Meridian API unreachable at http://127.0.0.1:3000/: fetch failed (connect ECONNREFUSED 127.0.0.1:3000)"
     });
   });
 

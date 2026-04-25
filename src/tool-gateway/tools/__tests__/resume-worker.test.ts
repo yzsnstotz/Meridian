@@ -75,6 +75,35 @@ describe("resume-worker tool", () => {
     expect(harness.lifecycleStore.load().workers["N-04"]?.retry_count).toBe(0);
   });
 
+  it("accepts lowercase dispatch-plan table headers", async () => {
+    const harness = await createHarness();
+    await fs.writeFile(
+      harness.planPath,
+      [
+        "| status | batch | worker | task |",
+        "|--------|-------|--------|------|",
+        "| 🔄 | 2 | N-04 | Resume Worker Tool |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      {
+        lifecycleStoreFactory: () => harness.lifecycleStore,
+        killThread: async () => ({ ok: true })
+      }
+    );
+
+    expect(result).toMatchObject({
+      worker: "N-04",
+      action: "retry",
+      status: "pending"
+    });
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool |");
+  });
+
   it("preserves retry_count across recordWorkerStart after manual retry", async () => {
     const harness = await createHarness();
 

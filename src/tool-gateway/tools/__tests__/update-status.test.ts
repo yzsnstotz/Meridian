@@ -29,6 +29,21 @@ describe("update-status tool", () => {
     expect(updated).toContain("| ✅ | 2 | N-04 | Run |");
   });
 
+  it("updates markdown tables that use lowercase status and worker headers", () => {
+    const markdown = [
+      "# Plan",
+      "",
+      "| status | batch | worker | task |",
+      "|--------|-------|--------|------|",
+      "| ⬜ | 2 | N-05 | Tools |",
+      ""
+    ].join("\n");
+
+    const updated = updateWorkerStatusInMarkdown(markdown, "N-05", "done");
+
+    expect(updated).toContain("| ✅ | 2 | N-05 | Tools |");
+  });
+
   it("writes the updated markdown back to disk", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-update-status-");
     tempDirectories.add(directory);

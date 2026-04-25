@@ -164,17 +164,37 @@ const runTool: ToolDefinition = {
         error: resolvedError.message
       });
 
-      // When the run-tool HTTP call fails with a transient error (timeout,
-      // overload, connection reset) the remote worker may still be executing.
+      // When the run-tool HTTP call fails with a transient error after the
+      // request reached Meridian, the remote worker may still be executing.
       // Recording a synthetic "failed/timeout" hub_result would cause the
       // reconciler to mark the worker as terminal before the agent has had a
-      // chance to finish. Instead, leave the worker as "running" and let the
+      // chance to finish. Instead, leave those workers as "running" and let the
       // reconciler / watchdog validate the actual thread status and outputs.
+      //
+      // Some Meridian API unreachable errors are different: if the connection
+      // failed before the request could reach Meridian, the command cannot have
+      // reached the agent. Reset that worker to pending so scheduler continuation
+      // can retry it. Header timeouts are intentionally excluded because the
+      // server may have accepted the request and started the worker before the
+      // client saw response headers.
       //
       // Only record a synthetic failure for non-transient errors (e.g. 4xx
       // client errors, malformed responses) where the worker genuinely cannot
       // have started or will never produce a result.
-      if (!isTransientError(resolvedError)) {
+      if (isUndeliveredRunRequestError(resolvedError)) {
+        try {
+          lifecycleStore.setWorkerStatus(worker, "pending", "run_tool_delivery_unreachable", {
+            clearHubResult: true,
+            incrementRetryCount: true
+          });
+        } catch (lifecycleError) {
+          console.warn("run tool failed to reset undelivered worker for retry", {
+            worker,
+            threadId,
+            error: asError(lifecycleError).message
+          });
+        }
+      } else if (!isTransientError(resolvedError)) {
         try {
           const syntheticResult: HubResult = {
             trace_id: traceId,
@@ -1116,10 +1136,15 @@ function shouldRetryRunError(error: Error): boolean {
   // ECONNREFUSED), the request never reached Meridian — the worker cannot have started,
   // so retry is safe.
   if (/^run failed:/i.test(error.message)) {
-    return /\bunreachable\b/i.test(error.message);
+    return isUndeliveredRunRequestError(error);
   }
 
   return true;
+}
+
+function isUndeliveredRunRequestError(error: Error): boolean {
+  return /^run failed:\s*Meridian API unreachable\b/i.test(error.message)
+    && !/\bHeaders Timeout\b/i.test(error.message);
 }
 
 function delay(ms: number): Promise<void> {

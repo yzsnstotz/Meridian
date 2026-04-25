@@ -225,7 +225,7 @@ async function assertWorkerExistsInPlan(planPath: string, workerId: string): Pro
       continue;
     }
 
-    workerColumn = headerCells.indexOf("Worker");
+    workerColumn = findHeaderColumn(headerCells, "worker");
     if (workerColumn === -1) {
       continue;
     }
@@ -285,6 +285,15 @@ function parseTableRow(line: string): string[] | null {
 
 function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function findHeaderColumn(cells: string[], expected: string): number {
+  const normalizedExpected = normalizeHeaderCell(expected);
+  return cells.findIndex((cell) => normalizeHeaderCell(cell) === normalizedExpected);
+}
+
+function normalizeHeaderCell(cell: string): string {
+  return cell.trim().replace(/[_\s-]+/g, " ").toLowerCase();
 }
 
 function extractPriorFailureReason(

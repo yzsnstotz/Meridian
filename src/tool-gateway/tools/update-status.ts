@@ -170,8 +170,8 @@ export function updateWorkerStatusInMarkdown(
       continue;
     }
 
-    const statusColumn = headerCells.indexOf("Status");
-    const workerColumn = headerCells.indexOf("Worker");
+    const statusColumn = findHeaderColumn(headerCells, "status");
+    const workerColumn = findHeaderColumn(headerCells, "worker");
     if (statusColumn === -1 || workerColumn === -1) {
       continue;
     }
@@ -223,6 +223,15 @@ function parseTableRow(line: string): string[] | null {
 
 function isSeparatorRow(cells: string[]): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function findHeaderColumn(cells: string[], expected: string): number {
+  const normalizedExpected = normalizeHeaderCell(expected);
+  return cells.findIndex((cell) => normalizeHeaderCell(cell) === normalizedExpected);
+}
+
+function normalizeHeaderCell(cell: string): string {
+  return cell.trim().replace(/[_\s-]+/g, " ").toLowerCase();
 }
 
 function formatTableRow(cells: string[]): string {
