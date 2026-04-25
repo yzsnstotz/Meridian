@@ -8,7 +8,7 @@ import type {
   TerminalOutcome,
   DispatchThreadStateV2
 } from "../../types";
-import { hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "../../tool-gateway/tools/dispatch-status";
 
 export interface ArchiveContext {
@@ -37,12 +37,6 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
   const planDir = path.dirname(planPath);
   const threadsPath = path.join(planDir, "dispatch_threads.json");
 
-  // Copy plan snapshot
-  const planContent = safeReadFile(planPath);
-  if (planContent !== null) {
-    fs.writeFileSync(path.join(archiveDir, "dispatch_plan.md"), planContent, "utf8");
-  }
-
   // Copy lifecycle sidecar snapshot
   const threadsContent = safeReadFile(threadsPath);
   let lifecycleState: DispatchThreadStateV2 | null = null;
@@ -53,6 +47,17 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
     } catch {
       // ignore parse errors
     }
+  }
+
+  // Copy plan snapshot. Render it through the lifecycle sidecar first so the
+  // archived plan cannot preserve stale markdown statuses that disagree with
+  // worker output evidence.
+  const sourcePlanContent = safeReadFile(planPath);
+  const planContent = sourcePlanContent !== null
+    ? renderArchivePlanSnapshot(sourcePlanContent, threadsPath, planPath, lifecycleState)
+    : null;
+  if (planContent !== null) {
+    fs.writeFileSync(path.join(archiveDir, "dispatch_plan.md"), planContent, "utf8");
   }
 
   // Copy worker outputs
@@ -91,7 +96,7 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
 
   // Return snapshot match status for reset safety check
   const currentPlanContent = safeReadFile(planPath);
-  const planSnapshotMatches = currentPlanContent === planContent;
+  const planSnapshotMatches = currentPlanContent === sourcePlanContent;
 
   return {
     archiveDir,
@@ -99,6 +104,23 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
     jsonReportPath,
     planSnapshotMatches
   };
+}
+
+function renderArchivePlanSnapshot(
+  planContent: string,
+  threadsPath: string,
+  planPath: string,
+  lifecycleState: DispatchThreadStateV2 | null
+): string {
+  if (!lifecycleState) {
+    return planContent;
+  }
+
+  try {
+    return new LifecycleStore(threadsPath, { dispatchPlanPath: planPath }).toPlanMarkdown(planContent);
+  } catch {
+    return planContent;
+  }
 }
 
 function copyWorkerOutputs(
