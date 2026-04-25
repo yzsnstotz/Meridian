@@ -373,6 +373,31 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("does not fail a success HubResult that documents expected exit code handling", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("N-02", "worker-thread-222", "22222222-2222-4222-8222-222222222222", []);
+
+    harness.store.recordWorkerResult("N-02", buildHubResult({
+      thread_id: "worker-thread-222",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "# N-02 Report — Bundled script permission fix",
+        "",
+        "- Status: Verified already delivered on `main`",
+        "- Exit code `126` emits the specific user-visible error:",
+        "  `Script permission denied — attempted auto-fix, please retry`",
+        "- `cargo check` passed."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["N-02"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content requests read permission", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("DISPATCHER", "dispatcher-thread", "11111111-1111-4111-8111-111111111111", []);
