@@ -596,17 +596,20 @@ const HIT_LIMIT_PATTERNS = [
   /\btoken\s+limit\b/i
 ];
 
-const FAILURE_SIGNAL_PATTERNS = [
+const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
-  /⛔\s*BLOCKED\b/i,
-  /\bdid\s+not\s+complete\b/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,
   /"exit_code"\s*:\s*[1-9]\d*/i,
+  /(?:^|\n)\s*FAIL:\s+/i
+];
+
+const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
+  /⛔\s*BLOCKED\b/i,
+  /\bdid\s+not\s+complete\b/i,
   /\b(?:failed|fails|failure|error|errored|crashed|terminated|stopped|aborted)\b[^\n.]{0,80}\bexit\s+code\s*:?\s*`?[1-9]\d*`?/i,
   /\b(?:command|process|script|tool|test|build|check|run)\s+(?:failed|exited|finished|ended|terminated)\s+(?:with\s+)?(?:exit\s+)?code\s*:?\s*`?[1-9]\d*`?/i,
   /\bexited\s+(?:with\s+)?(?:exit\s+)?code\s*:?\s*`?[1-9]\d*`?/i,
-  /(?:^|\n)\s*FAIL:\s+/i,
   /\bAI auto-tests failed\b/i,
   /\btool failure\b/i,
   /\bfailed the worker acceptance checks\b/i,
@@ -617,6 +620,16 @@ const FAILURE_SIGNAL_PATTERNS = [
   /\bI need permission\b/i,
   /\bpermission to read\b/i,
   /\bgrant (?:read )?access\b/i
+];
+
+const BENIGN_FAILURE_CONTEXT_PATTERNS = [
+  /\b(?:no|zero)\b[^\n]{0,80}\b(?:failed|failures?|blocked|errors?)\b/i,
+  /\b0\s+(?:failed|failures?|errors?)\b/i,
+  /\bno\s+longer\b[^\n]{0,80}\b(?:fail(?:ed|ure)?|blocked|cannot|can't|missing|permission)\b/i,
+  /\b(?:fail(?:ed|ure)?|blocked|cannot|can't|missing|permission)\b[^\n]{0,80}\bno\s+longer\b/i,
+  /\b(?:document(?:s|ed|ing)?|regression|coverage|covers|covered|negative\s+(?:case|test|scenario)|test\s+case|scenario)\b/i,
+  /\b(?:verified|expected|handled|handles|emits|shows|reports|prevents|fixed)\b[^\n]{0,120}\b(?:fail(?:ed|ure)?|blocked|cannot|can't|missing|permission|exit\s+code|error\s+path)\b/i,
+  /\b(?:fail(?:ed|ure)?|blocked|cannot|can't|missing|permission|exit\s+code)\b[^\n]{0,120}\b(?:verified|expected|handled|handles|emits|shows|reports|prevents|fixed)\b/i
 ];
 
 export function isNonCompletionContent(content: string): boolean {
@@ -636,22 +649,48 @@ export function hubResultContainsHitLimit(
 export function hubResultContainsFailureSignal(
   hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
 ): boolean {
-  return hubResultContainsPattern(hubResult, FAILURE_SIGNAL_PATTERNS);
+  const combinedContent = combineHubResultText(hubResult);
+  if (combinedContent.length === 0) {
+    return false;
+  }
+
+  if (STRUCTURED_FAILURE_SIGNAL_PATTERNS.some((pattern) => pattern.test(combinedContent))) {
+    return true;
+  }
+
+  return combinedContent
+    .split(/\r?\n/)
+    .some((line) => {
+      const normalized = line.trim();
+      return normalized.length > 0
+        && !isBenignFailureContextLine(normalized)
+        && CONTEXTUAL_FAILURE_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized));
+    });
 }
 
 function hubResultContainsPattern(
   hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">,
   patterns: RegExp[]
 ): boolean {
-  const combinedContent = [
+  const combinedContent = combineHubResultText(hubResult);
+
+  return combinedContent.length > 0 && patterns.some((pattern) => pattern.test(combinedContent));
+}
+
+function combineHubResultText(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): string {
+  return [
     hubResult.content,
     hubResult.summary_text,
     hubResult.details_text
   ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n\n");
+}
 
-  return combinedContent.length > 0 && patterns.some((pattern) => pattern.test(combinedContent));
+function isBenignFailureContextLine(line: string): boolean {
+  return BENIGN_FAILURE_CONTEXT_PATTERNS.some((pattern) => pattern.test(line));
 }
 
 function requiresOutputVerification(expectedOutputs: string[]): boolean {
