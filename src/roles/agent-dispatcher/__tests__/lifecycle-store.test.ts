@@ -398,6 +398,32 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("does not fail success reports that document negative cases", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-CATALOG", "worker-thread-333", "33333333-3333-4333-8333-333333333333", []);
+
+    harness.store.recordWorkerResult("W-CATALOG", buildHubResult({
+      thread_id: "worker-thread-333",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "# W-CATALOG Completion Report",
+        "",
+        "- Status: ✅ Complete",
+        "- Verified manifest missing error handling is surfaced to the user.",
+        "- No AI auto-tests failed.",
+        "- The prior cannot proceed path no longer occurs.",
+        "- Regression coverage documents command failed with exit code `1` copy."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-CATALOG"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content requests read permission", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("DISPATCHER", "dispatcher-thread", "11111111-1111-4111-8111-111111111111", []);
