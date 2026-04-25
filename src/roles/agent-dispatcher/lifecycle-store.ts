@@ -426,14 +426,16 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
         continue;
       }
 
-      // Never downgrade a confirmed-terminal plan status. The plan markdown
-      // is the authoritative record when external evidence (merged PR, etc.)
-      // has already marked a worker ✅ or ⛔ SKIPPED. Lifecycle state may
-      // lag behind (e.g. hub_result lost to a timeout) and must not
-      // overwrite confirmed completion.
+      // Never downgrade a confirmed-terminal plan status unless the worker
+      // output itself contains failure evidence. A stale ✅ must not hide a
+      // failed acceptance report.
       const currentPlanStatus = rowCells[statusColumn].trim();
       const nextPlanStatus = resolveDisplayStatus(workerState);
-      if (isPlanStatusTerminalSuccess(currentPlanStatus) && nextPlanStatus !== currentPlanStatus) {
+      if (
+        isPlanStatusTerminalSuccess(currentPlanStatus)
+        && nextPlanStatus !== currentPlanStatus
+        && !isPlanStatusFailure(nextPlanStatus)
+      ) {
         continue;
       }
 
@@ -792,6 +794,10 @@ function formatTableRow(cells: string[]): string {
 }
 
 function resolveDisplayStatus(worker: DispatchWorkerState): string {
+  if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
+    return PLAN_STATUS_SYMBOLS.failed;
+  }
+
   if (worker.status === "fix_requested" && worker.validation) {
     const { current_cycle, max_fix_cycles } = worker.validation;
     return `🔁 FIX ${current_cycle}/${max_fix_cycles}`;
@@ -801,6 +807,10 @@ function resolveDisplayStatus(worker: DispatchWorkerState): string {
 
 function isPlanStatusTerminalSuccess(status: string): boolean {
   return status === "✅" || status === "⛔ SKIPPED";
+}
+
+function isPlanStatusFailure(status: string): boolean {
+  return status === "❌" || status.startsWith("⚠️");
 }
 
 function inferDispatchPlanPath(filePath: string): string {
