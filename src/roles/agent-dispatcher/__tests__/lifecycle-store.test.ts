@@ -352,6 +352,27 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when final text says the command failed with an exit code", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-DETAIL", "worker-thread-222", "22222222-2222-4222-8222-222222222222", []);
+
+    harness.store.recordWorkerResult("W-DETAIL", buildHubResult({
+      thread_id: "worker-thread-222",
+      status: "success",
+      content: [
+        "`W-DETAIL` did not complete.",
+        "The command failed with exit code `1` before any JSON summary was produced.",
+        "Error: better_sqlite3.node was compiled against a different Node.js version."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-DETAIL"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content requests read permission", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("DISPATCHER", "dispatcher-thread", "11111111-1111-4111-8111-111111111111", []);
