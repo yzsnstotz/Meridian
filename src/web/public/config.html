@@ -3,16 +3,28 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Config Editor</title>
+    <title>Config Editor — meridian-roles</title>
     <link rel="stylesheet" href="/style.css" />
     <script defer src="/app.js"></script>
   </head>
   <body data-page="config-editor">
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/">Dispatchers</a>
+        <a class="nav-tab" href="/">Schedulers</a>
+        <a class="nav-tab" href="/">Roles</a>
+      </div>
+    </nav>
+
     <main class="shell">
       <section class="hero hero-compact">
-        <a id="config-detail-link" class="back-link" href="/">← Task Detail</a>
+        <a id="config-detail-link" class="back-link" href="/">← Role Detail</a>
         <p class="eyebrow">Config Editor</p>
-        <h1 id="config-title">Loading config…</h1>
+        <h1 id="config-title">Loading config...</h1>
         <p id="config-lede" class="lede">Edit dispatcher JSON for `tasks` and `taskspec`. Prompt content stays on the prompt editor.</p>
       </section>
 
@@ -24,74 +36,30 @@
         <form id="config-form" class="stack">
           <!-- Structured fields for agent-dispatcher config -->
           <div id="config-fields" hidden>
-            <label class="field">
-              <span>dispatch_plan_path</span>
-              <input id="cfg-dispatch-plan-path" type="text" readonly />
-            </label>
-            <label class="field">
-              <span>command_file_path</span>
-              <input id="cfg-command-file-path" type="text" readonly />
-            </label>
-            <label class="field">
-              <span>dispatch_repo_root</span>
-              <input id="cfg-dispatch-repo-root" type="text" readonly />
-            </label>
-            <label class="field">
-              <span>docs_root</span>
-              <input id="cfg-docs-root" type="text" readonly />
-            </label>
-            <label class="field">
-              <span>agent_type</span>
-              <select id="cfg-agent-type">
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-                <option value="gemini">gemini</option>
-                <option value="cursor">cursor</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>model_id</span>
-              <input id="cfg-model-id" type="text" placeholder="(default)" />
-            </label>
-            <label class="field">
-              <span>mode</span>
-              <select id="cfg-mode">
-                <option value="bridge">bridge</option>
-                <option value="pane_bridge">pane_bridge</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>kill_policy</span>
-              <select id="cfg-kill-policy">
-                <option value="always">always</option>
-                <option value="on_success">on_success</option>
-                <option value="never">never</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>auto_approve</span>
-              <select id="cfg-auto-approve">
-                <option value="false">false</option>
-                <option value="true">true</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>user_reply_channels</span>
-              <textarea id="cfg-reply-channels" class="editor-textarea" rows="4" readonly style="min-height: 80px"></textarea>
-            </label>
-
-            <fieldset class="field-group">
-              <legend>Validator</legend>
+            <div class="summary-grid">
               <label class="field">
-                <span>enabled</span>
-                <select id="cfg-validator-enabled">
-                  <option value="false">false</option>
-                  <option value="true">true</option>
-                </select>
+                <span>dispatch_plan_path</span>
+                <input id="cfg-dispatch-plan-path" type="text" readonly />
               </label>
               <label class="field">
+                <span>command_file_path</span>
+                <input id="cfg-command-file-path" type="text" readonly />
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_repo_root</span>
+                <input id="cfg-dispatch-repo-root" type="text" readonly />
+              </label>
+              <label class="field">
+                <span>docs_root</span>
+                <input id="cfg-docs-root" type="text" readonly />
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
                 <span>agent_type</span>
-                <select id="cfg-validator-agent-type">
+                <select id="cfg-agent-type">
                   <option value="claude">claude</option>
                   <option value="codex">codex</option>
                   <option value="gemini">gemini</option>
@@ -100,20 +68,76 @@
               </label>
               <label class="field">
                 <span>model_id</span>
-                <input id="cfg-validator-model-id" type="text" placeholder="(default)" />
+                <input id="cfg-model-id" type="text" placeholder="(default)" />
               </label>
               <label class="field">
-                <span>pass_threshold</span>
-                <input id="cfg-validator-pass-threshold" type="number" min="0" max="1" step="0.05" value="0.7" />
+                <span>mode</span>
+                <select id="cfg-mode">
+                  <option value="bridge">bridge</option>
+                  <option value="pane_bridge">pane_bridge</option>
+                </select>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>kill_policy</span>
+                <select id="cfg-kill-policy">
+                  <option value="always">always</option>
+                  <option value="on_success">on_success</option>
+                  <option value="never">never</option>
+                </select>
               </label>
               <label class="field">
-                <span>max_fix_cycles</span>
-                <input id="cfg-validator-max-fix-cycles" type="number" min="0" max="10" step="1" value="3" />
+                <span>auto_approve</span>
+                <select id="cfg-auto-approve">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
               </label>
-              <label class="field">
-                <span>base_branch</span>
-                <input id="cfg-validator-base-branch" type="text" value="main" />
-              </label>
+            </div>
+            <label class="field">
+              <span>user_reply_channels</span>
+              <textarea id="cfg-reply-channels" class="editor-textarea" rows="4" readonly style="min-height: 80px"></textarea>
+            </label>
+
+            <fieldset class="field-group">
+              <legend>Validator</legend>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>enabled</span>
+                  <select id="cfg-validator-enabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>agent_type</span>
+                  <select id="cfg-validator-agent-type">
+                    <option value="claude">claude</option>
+                    <option value="codex">codex</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>model_id</span>
+                  <input id="cfg-validator-model-id" type="text" placeholder="(default)" />
+                </label>
+              </div>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>pass_threshold</span>
+                  <input id="cfg-validator-pass-threshold" type="number" min="0" max="1" step="0.05" value="0.7" />
+                </label>
+                <label class="field">
+                  <span>max_fix_cycles</span>
+                  <input id="cfg-validator-max-fix-cycles" type="number" min="0" max="10" step="1" value="3" />
+                </label>
+                <label class="field">
+                  <span>base_branch</span>
+                  <input id="cfg-validator-base-branch" type="text" value="main" />
+                </label>
+              </div>
             </fieldset>
           </div>
           <!-- Fallback raw JSON textarea for non-agent-dispatcher configs -->

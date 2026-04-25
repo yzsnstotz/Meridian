@@ -3,16 +3,28 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Role Detail</title>
+    <title>Role Detail — meridian-roles</title>
     <link rel="stylesheet" href="/style.css" />
     <script defer src="/app.js"></script>
   </head>
   <body data-page="role-detail">
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/">Dispatchers</a>
+        <a class="nav-tab" href="/">Schedulers</a>
+        <a class="nav-tab" href="/">Roles</a>
+      </div>
+    </nav>
+
     <main class="shell">
       <section class="hero hero-compact">
         <a id="dashboard-link" class="back-link" href="/">← Dashboard</a>
-        <p class="eyebrow">Task Detail</p>
-        <h1 id="role-title">Loading role…</h1>
+        <p class="eyebrow">Role Detail</p>
+        <h1 id="role-title">Loading role...</h1>
         <p id="role-subtitle" class="lede">Fetching dispatcher detail.</p>
       </section>
 
@@ -50,7 +62,7 @@
         <div class="panel-heading">
           <div>
             <h2>Dispatch Plan Status</h2>
-            <p class="muted">Parsed from the active dispatch plan file. Each task now shows its matching dispatch detail inline below the row.</p>
+            <p class="muted">Parsed from the active dispatch plan file. Each task shows its matching dispatch detail inline.</p>
           </div>
         </div>
         <p id="dispatch-plan-feedback" class="feedback dispatch-plan-feedback" role="status" aria-live="polite"></p>
