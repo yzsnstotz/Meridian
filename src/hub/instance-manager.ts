@@ -99,6 +99,7 @@ const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
 const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
 /** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
 const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
+const CODEX_PANE_READINESS_MAX_ATTEMPTS = 12;
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
 type AgentEndpointBinding = {
   endpoint: string;
@@ -976,6 +977,11 @@ export class InstanceManager {
     endpoint: string,
     traceId?: string | null
   ): Promise<void> {
+    if (agentType === "codex") {
+      await this.assertCodexPromptReadyFromTmux(threadId, tmuxSession, traceId);
+      return;
+    }
+
     if (agentType !== "gemini") {
       return;
     }
@@ -992,6 +998,81 @@ export class InstanceManager {
     }
 
     await this.assertGeminiPromptReadyFromTmux(threadId, tmuxSession, traceId);
+  }
+
+  private async assertCodexPromptReadyFromTmux(
+    threadId: string,
+    tmuxSession: string,
+    traceId?: string | null
+  ): Promise<void> {
+    let updatePromptDismissed = false;
+    let lastVisibleText = "";
+    const maxAttempts = Math.min(this.startupAttempts, CODEX_PANE_READINESS_MAX_ATTEMPTS);
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const child = this.children.get(threadId);
+      if (!child || !this.isChildRunning(child)) {
+        const exitCode = child?.exitCode ?? null;
+        const signal = child?.signalCode ?? null;
+        throw new Error(
+          `Codex pane prompt did not stabilize for thread_id=${threadId}: ` +
+          `agentapi process exited before pane prompt became ready (exit_code=${exitCode}, signal=${signal})`
+        );
+      }
+
+      try {
+        const visibleText = this.captureVisibleTmuxText(tmuxSession);
+        const lower = visibleText.toLowerCase();
+        const updatePromptVisible = this.isCodexUpdatePromptVisible(lower);
+        lastVisibleText = visibleText;
+
+        if (updatePromptVisible) {
+          this.sendTmuxKeys(tmuxSession, ["3", "Enter"]);
+          updatePromptDismissed = true;
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, this.startupDelayMs);
+          });
+          continue;
+        }
+
+        if (this.isCodexPromptReadyVisible(visibleText)) {
+          return;
+        }
+
+        if (!updatePromptDismissed && attempt >= 2) {
+          return;
+        }
+        if (updatePromptDismissed && visibleText.trim()) {
+          return;
+        }
+      } catch (error) {
+        if (attempt === 0) {
+          this.log.warn(
+            {
+              operation: "pane_prompt_probe_failed",
+              trace_id: traceId ?? null,
+              thread_id: threadId,
+              tmux_session: tmuxSession,
+              attempt,
+              err: error instanceof Error ? error.message : String(error)
+            },
+            "Initial Codex pane prompt readiness probe failed"
+          );
+        }
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, this.startupDelayMs);
+      });
+    }
+
+    if (updatePromptDismissed && this.isCodexUpdatePromptVisible(lastVisibleText.toLowerCase())) {
+      const preview = lastVisibleText ? lastVisibleText.slice(0, 240) : "";
+      throw new Error(
+        `Codex update prompt could not be dismissed for thread_id=${threadId}` +
+        (preview ? `: last_visible_text=${JSON.stringify(preview)}` : "")
+      );
+    }
   }
 
   private async assertGeminiScreenReady(
@@ -1180,6 +1261,23 @@ export class InstanceManager {
     return (
       normalizedLowerText.includes("we're making changes to gemini cli") ||
       normalizedLowerText.includes("goo.gle/geminicli-updates")
+    );
+  }
+
+  private isCodexUpdatePromptVisible(normalizedLowerText: string): boolean {
+    return (
+      normalizedLowerText.includes("update available") &&
+      normalizedLowerText.includes("skip until next version") &&
+      normalizedLowerText.includes("press enter to continue")
+    );
+  }
+
+  private isCodexPromptReadyVisible(visibleText: string): boolean {
+    const normalizedLowerText = visibleText.toLowerCase();
+    return (
+      normalizedLowerText.includes("openai codex") &&
+      normalizedLowerText.includes("model:") &&
+      visibleText.includes("›")
     );
   }
 
