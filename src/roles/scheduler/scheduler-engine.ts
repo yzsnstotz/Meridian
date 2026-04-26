@@ -343,6 +343,10 @@ export class SchedulerEngine {
     this.recoverCurrentRunOutputEvidence();
     await this.cleanupTerminalWorkerThreads();
 
+    if (await this.hasRunningToolProgress()) {
+      return;
+    }
+
     const detection = detectCycleCompletion(this.config);
     if (!detection.complete) {
       await this.continueIncompleteCycle();
@@ -408,6 +412,15 @@ export class SchedulerEngine {
     });
   }
 
+  private async hasRunningToolProgress(): Promise<boolean> {
+    try {
+      const report = await buildDispatchStatusReport(this.config.dispatch_plan_path);
+      return report.workers.some((worker) => worker.progress?.status === "running");
+    } catch {
+      return false;
+    }
+  }
+
   private resolveServiceContinueWorker(workers: DispatchStatusWorker[]): string | null {
     try {
       const lifecycleState = new LifecycleStore(this.resolveDispatchThreadsPath()).load();
@@ -447,7 +460,7 @@ export class SchedulerEngine {
       }
 
       const outputPath = worker.expected_outputs.find((candidate) => {
-        return isCurrentRunOutputPath(candidate, currentRunReportDir) && isNonEmptyFile(candidate);
+        return isCurrentRunOutputPath(candidate, currentRunReportDir) && isRecoverableOutputFile(candidate, worker.started_at);
       });
       if (!outputPath) {
         continue;
@@ -620,10 +633,15 @@ function isCurrentRunOutputPath(candidatePath: string, currentRunReportDir: stri
   return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function isNonEmptyFile(candidatePath: string): boolean {
+function isRecoverableOutputFile(candidatePath: string, workerStartedAt: string | null | undefined): boolean {
   try {
     const stat = fs.statSync(candidatePath);
-    return stat.isFile() && stat.size > 0;
+    if (!stat.isFile() || stat.size <= 0) {
+      return false;
+    }
+
+    const startedMs = Date.parse(workerStartedAt ?? "");
+    return !Number.isFinite(startedMs) || stat.mtimeMs >= startedMs;
   } catch {
     return false;
   }

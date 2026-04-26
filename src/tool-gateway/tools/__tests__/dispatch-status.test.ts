@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import dispatchStatusTool, { parseDispatchPlanRows } from "../dispatch-status";
+import dispatchStatusTool, { buildDispatchStatusReport, parseDispatchPlanRows } from "../dispatch-status";
 
 const tempDirectories = new Set<string>();
 
@@ -152,5 +152,60 @@ describe("dispatch-status tool", () => {
         ]
       })
     });
+  });
+
+  it("includes ClawHub tool progress from an explicit progress file", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const manifestPath = `${directory}/W-DETAIL.remaining-managed.json`;
+    const progressPath = `${directory}/detail-fetch.progress.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        `| 🔄 | 2 | W-DETAIL | clawhub-fetch detail-fetch --manifest ${manifestPath} --progress ${progressPath} | CODEX-HIGH | W-CATALOG | — | managed detail fetch |`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      progressPath,
+      JSON.stringify({
+        schema_version: 1,
+        command: "detail-fetch",
+        scan_run_id: "daily-2026-04-27",
+        status: "running",
+        manifest_path: manifestPath,
+        total: 35324,
+        processed: 7326,
+        success: 7326,
+        failed: 0,
+        skipped: 0,
+        skipped_existing: 0,
+        remaining: 27998,
+        started_at: "2026-04-27T00:00:00.000Z",
+        updated_at: "2026-04-27T06:00:00.000Z",
+        pid: 71436
+      }, null, 2),
+      "utf8"
+    );
+
+    const report = await buildDispatchStatusReport(planPath);
+
+    expect(report.workers[0]).toEqual(expect.objectContaining({
+      worker_id: "W-DETAIL",
+      progress: expect.objectContaining({
+        command: "detail-fetch",
+        status: "running",
+        total: 35324,
+        processed: 7326,
+        remaining: 27998,
+        progress_path: progressPath
+      })
+    }));
   });
 });
