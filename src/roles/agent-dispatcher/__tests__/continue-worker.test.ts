@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";

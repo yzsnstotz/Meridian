@@ -122,7 +122,6 @@ export async function launchDispatchWorker(
       deps.onBackgroundRunError(resolvedError, handoffRequest);
       return;
     }
-    // eslint-disable-next-line no-console
     console.warn("dispatch worker background run failed", {
       workerId: handoffRequest.workerId,
       threadId: handoffRequest.threadId,
@@ -161,7 +160,6 @@ async function spawnWithRetry(
       lastError = asError(error);
       if (attempt < SPAWN_RETRY_DELAYS_MS.length && isSpawnTransientError(lastError)) {
         const delayMs = SPAWN_RETRY_DELAYS_MS[attempt]!;
-        // eslint-disable-next-line no-console
         console.warn("worker spawn transient error, retrying", {
           attempt: attempt + 1,
           delayMs,

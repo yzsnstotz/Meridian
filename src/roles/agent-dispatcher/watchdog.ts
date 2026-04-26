@@ -289,11 +289,6 @@ async function resolveRecoverableWorkerState(
   }
 }
 
-function isHumanOwnedModel(model: string | null): boolean {
-  const normalized = typeof model === "string" ? model.trim().toUpperCase() : "";
-  return normalized === "HUMAN" || normalized === "PM";
-}
-
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {
   return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
 }

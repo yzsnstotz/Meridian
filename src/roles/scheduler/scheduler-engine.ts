@@ -3,11 +3,13 @@ import * as fs from "node:fs";
 import path from "node:path";
 
 import type { SchedulerConfig, SchedulerMode, TerminalOutcome } from "../../types";
-import { buildDispatchStatusReport } from "../../tool-gateway/tools/dispatch-status";
-import { executeContinueDispatcher } from "../../tool-gateway/tools/continue-dispatcher";
+import { buildDispatchStatusReport, type DispatchStatusWorker } from "../../tool-gateway/tools/dispatch-status";
 import type { Logger } from "../base-role";
+import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
+import { LifecycleStore } from "../agent-dispatcher/lifecycle-store";
+import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
 import { SchedulerStateStore } from "./scheduler-state-store";
-import { nextCronFire, parseCronExpression } from "./cron-parser";
+import { nextCronFire } from "./cron-parser";
 import {
   canStartCycle,
   startCycle,
@@ -24,6 +26,7 @@ export interface SchedulerEngineCallbacks {
   launchDispatcher(config: SchedulerConfig, runId: string): Promise<string>;
   killDispatcher(threadId: string): Promise<void>;
   notifyChannels(config: SchedulerConfig, message: string): Promise<void>;
+  continueWorker?(config: SchedulerConfig, workerId: string): Promise<ContinueDispatchWorkerResult>;
 }
 
 export interface SchedulerEngineOptions {
@@ -372,9 +375,14 @@ export class SchedulerEngine {
       return;
     }
 
-    const result = await executeContinueDispatcher({ dispatcherId: this.schedulerThreadId });
+    const workerId = this.resolveServiceContinueWorker(report.workers);
+    if (!workerId) {
+      return;
+    }
+
+    const result = await this.continueSchedulerWorker(workerId, report.workers);
     if (!result.ok) {
-      this.log.warn("Scheduler: continue-dispatcher failed", {
+      this.log.warn("Scheduler: continue worker failed", {
         schedulerThreadId: this.schedulerThreadId,
         error: result.error
       });
@@ -383,21 +391,51 @@ export class SchedulerEngine {
 
     this.log.info("Scheduler: continued incomplete cycle", {
       schedulerThreadId: this.schedulerThreadId,
-      status: (result as { status?: unknown }).status,
-      worker: (result as { worker?: unknown }).worker
+      worker: result.workerId
     });
+  }
+
+  private resolveServiceContinueWorker(workers: DispatchStatusWorker[]): string | null {
+    try {
+      const lifecycleState = new LifecycleStore(this.resolveDispatchThreadsPath()).load();
+      return resolveServiceContinueWorkerFromWorkerRows(workers, lifecycleState);
+    } catch (error) {
+      this.log.warn("Scheduler: failed to resolve next worker for continuation", {
+        schedulerThreadId: this.schedulerThreadId,
+        error: asError(error).message
+      });
+      return null;
+    }
+  }
+
+  private async continueSchedulerWorker(
+    workerId: string,
+    workers: DispatchStatusWorker[]
+  ): Promise<ContinueDispatchWorkerResult> {
+    if (this.callbacks.continueWorker) {
+      return this.callbacks.continueWorker(this.config, workerId);
+    }
+
+    return continueDispatchWorker(
+      this.config,
+      workers.map(toContinueDispatchPlanRow),
+      workerId
+    );
   }
 
   private isDispatcherControllerRunning(): boolean {
     try {
-      const threadsPath = path.join(path.dirname(this.config.dispatch_plan_path), DISPATCH_THREADS_FILENAME);
-      const parsed = JSON.parse(fs.readFileSync(threadsPath, "utf8")) as {
+      const parsed = JSON.parse(fs.readFileSync(this.resolveDispatchThreadsPath(), "utf8")) as {
         workers?: Record<string, { status?: unknown }>;
       };
       return parsed.workers?.[DISPATCHER_WORKER_ID]?.status === "running";
     } catch {
       return false;
     }
+  }
+
+  private resolveDispatchThreadsPath(): string {
+    return path.join(path.dirname(this.config.dispatch_plan_path), DISPATCH_THREADS_FILENAME);
   }
 
   private clearTimers(): void {
@@ -418,6 +456,15 @@ export class SchedulerEngine {
       this.pollTimer = null;
     }
   }
+}
+
+function toContinueDispatchPlanRow(worker: DispatchStatusWorker): ContinueDispatchPlanRow {
+  return {
+    status: worker.status,
+    worker: worker.worker_id,
+    model: worker.model ?? "",
+    notes: worker.notes
+  };
 }
 
 // ─── Notification builders ──────────────────────────────────────────────────

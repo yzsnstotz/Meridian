@@ -50,19 +50,19 @@ export function nextCronFire(expression: string, after: Date, timezone: string):
 
     if (!cron.month.values.has(parts.month)) {
       // Skip to next month
-      candidate = advanceToNextMonth(candidate, resolvedTz);
+      candidate = advanceToNextMonth(candidate);
       continue;
     }
 
     if (!cron.dayOfMonth.values.has(parts.day) || !cron.dayOfWeek.values.has(parts.dow)) {
       // Skip to next day
-      candidate = advanceToNextDay(candidate, resolvedTz);
+      candidate = advanceToNextDay(candidate);
       continue;
     }
 
     if (!cron.hour.values.has(parts.hour)) {
       // Skip to next hour
-      candidate = advanceToNextHour(candidate, resolvedTz);
+      candidate = advanceToNextHour(candidate);
       continue;
     }
 
@@ -174,7 +174,7 @@ function getDatePartsInTimezone(date: Date, timezone: string): DateParts {
   };
 }
 
-function advanceToNextMonth(date: Date, _timezone: string): Date {
+function advanceToNextMonth(date: Date): Date {
   const next = new Date(date.getTime());
   next.setDate(1);
   next.setHours(0, 0, 0, 0);
@@ -182,14 +182,14 @@ function advanceToNextMonth(date: Date, _timezone: string): Date {
   return next;
 }
 
-function advanceToNextDay(date: Date, _timezone: string): Date {
+function advanceToNextDay(date: Date): Date {
   const next = new Date(date.getTime());
   next.setHours(0, 0, 0, 0);
   next.setTime(next.getTime() + 24 * 60 * 60_000);
   return next;
 }
 
-function advanceToNextHour(date: Date, _timezone: string): Date {
+function advanceToNextHour(date: Date): Date {
   const next = new Date(date.getTime());
   next.setMinutes(0, 0, 0);
   next.setTime(next.getTime() + 60 * 60_000);
