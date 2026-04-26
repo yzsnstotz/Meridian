@@ -412,11 +412,19 @@ export class SchedulerEngine {
 
   private recoverCurrentRunOutputEvidence(): void {
     const state = this.stateStore.load();
-    if (state.status !== "active_run" || !state.current_run_report_dir) {
+    if (state.status !== "active_run") {
       return;
     }
 
-    const currentRunReportDir = path.resolve(state.current_run_report_dir);
+    const currentRunReportDir = resolveCurrentRunReportDir(
+      state.current_run_report_dir,
+      state.current_run_id,
+      this.config.report_base_dir
+    );
+    if (!currentRunReportDir) {
+      return;
+    }
+
     const lifecycleStore = new LifecycleStore(this.resolveDispatchThreadsPath());
     const lifecycleState = lifecycleStore.load();
     const nowIso = new Date().toISOString();
@@ -522,6 +530,23 @@ function toContinueDispatchPlanRow(worker: DispatchStatusWorker): ContinueDispat
   };
 }
 
+function resolveCurrentRunReportDir(
+  persistedReportDir: string | null,
+  currentRunId: string | null,
+  reportBaseDir: string
+): string | null {
+  if (persistedReportDir?.trim()) {
+    return path.resolve(persistedReportDir);
+  }
+
+  const runId = currentRunId?.trim();
+  if (!runId) {
+    return null;
+  }
+
+  return path.resolve(reportBaseDir, "run", sanitizePathSegment(runId));
+}
+
 function isCurrentRunOutputPath(candidatePath: string, currentRunReportDir: string): boolean {
   const resolvedCandidate = path.resolve(candidatePath);
   const relative = path.relative(currentRunReportDir, resolvedCandidate);
@@ -587,6 +612,11 @@ function normalizeAgentType(value: string): AgentType {
     default:
       return "codex";
   }
+}
+
+function sanitizePathSegment(value: string): string {
+  const sanitized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return sanitized.length > 0 ? sanitized : "run";
 }
 
 function isUuid(value: string | null): value is string {
