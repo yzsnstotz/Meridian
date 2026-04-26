@@ -58,6 +58,7 @@ export function buildEmptyRunState(): SchedulerRunState {
   return {
     status: "idle",
     current_run_id: null,
+    current_run_report_dir: null,
     current_dispatcher_thread_id: null,
     completed_cycles: 0,
     next_run_at: null,

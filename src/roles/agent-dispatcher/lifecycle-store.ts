@@ -597,6 +597,8 @@ const HIT_LIMIT_PATTERNS = [
 ];
 
 const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
+  /(?:^|\n)\s*(?:#{1,6}\s*)?Outcome\s*\n+\s*`?\s*(?:FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*(?:-\s*)?Outcome\s*:?\s*`?\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,
@@ -614,6 +616,8 @@ const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
   /\bAI auto-tests failed\b/i,
   /\btool failure\b/i,
   /\bfailed the worker acceptance checks\b/i,
+  /\b(?:finished|ended|completed|stopped)\s+as\s+`?BLOCKED`?\b/i,
+  /\bBlocking issue:\b/i,
   /\bWorker\s+`?[\w-]+`?\s+is\s+blocked\b/i,
   /\b`?[\w-]+`?\s+is\s+blocked\b/i,
   /\bblocked by missing upstream artifacts\b/i,
@@ -625,6 +629,7 @@ const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
 ];
 
 const BENIGN_FAILURE_CONTEXT_PATTERNS = [
+  /\bno\s+blocking\s+issues?\b/i,
   /\b(?:no|zero)\b[^\n]{0,80}\b(?:failed|failures?|blocked|errors?)\b/i,
   /\b0\s+(?:failed|failures?|errors?)\b/i,
   /\bno\s+longer\b[^\n]{0,80}\b(?:fail(?:ed|ure)?|blocked|cannot|can't|missing|permission)\b/i,

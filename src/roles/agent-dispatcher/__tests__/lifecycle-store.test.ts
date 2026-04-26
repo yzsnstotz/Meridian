@@ -328,6 +328,35 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when a report-only worker finished as BLOCKED", async () => {
+    const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "reports", "run", "run-001", "PRE-FLIGHT.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# PRE-FLIGHT Completion Report\n\n## Outcome\n\nBLOCKED\n", "utf8");
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      reportPath
+    ]);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "PRE-FLIGHT finished as `BLOCKED`.",
+        "",
+        `Report written to [PRE-FLIGHT.md](${reportPath}).`,
+        "",
+        "Blocking issue: `/Volumes/Elements/github-ai-automation-solutions` does not exist."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when the worker report contains failure signals", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("W-CATALOG", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

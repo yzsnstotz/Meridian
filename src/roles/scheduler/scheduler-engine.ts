@@ -283,8 +283,7 @@ export class SchedulerEngine {
       this.stateStore,
       config,
       this.schedulerThreadId,
-      runId,
-      plannedStartTime
+      runId
     );
 
     if (!result.ok) {

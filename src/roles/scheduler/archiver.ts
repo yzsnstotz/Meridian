@@ -30,7 +30,7 @@ export interface ArchiveResult {
 }
 
 export function archiveRun(ctx: ArchiveContext): ArchiveResult {
-  const archiveDir = path.join(ctx.config.report_base_dir, "runs", ctx.runId);
+  const archiveDir = path.join(ctx.config.report_base_dir, "run", ctx.runId);
   fs.mkdirSync(archiveDir, { recursive: true });
 
   const planPath = ctx.config.dispatch_plan_path;
@@ -68,6 +68,7 @@ export function archiveRun(ctx: ArchiveContext): ArchiveResult {
     planRows,
     planDir,
     ctx.config.report_base_dir,
+    archiveDir,
     workerOutputsDir
   );
 
@@ -128,6 +129,7 @@ function copyWorkerOutputs(
   planRows: DispatchPlanWorkerRow[],
   planDir: string,
   reportBaseDir: string,
+  archiveDir: string,
   outputsDir: string
 ): SchedulerRunWorkerSummary[] {
   const summaries: SchedulerRunWorkerSummary[] = [];
@@ -146,6 +148,9 @@ function copyWorkerOutputs(
 
     // Try copying worker report files from common locations
     const reportCandidates = [
+      path.join(archiveDir, `${workerId}.md`),
+      path.join(archiveDir, `${workerId}_report.md`),
+      path.join(archiveDir, `${workerId}.json`),
       path.join(reportBaseDir, `${workerId}.md`),
       path.join(reportBaseDir, `${workerId}_report.md`),
       path.join(reportBaseDir, `${workerId}.json`),

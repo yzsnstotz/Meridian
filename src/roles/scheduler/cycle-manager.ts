@@ -3,7 +3,6 @@ import path from "node:path";
 
 import type {
   SchedulerConfig,
-  SchedulerRunState,
   SchedulerRunSummary,
   TerminalOutcome,
   DispatchThreadStateV2
@@ -67,8 +66,7 @@ export function startCycle(
   stateStore: SchedulerStateStore,
   config: SchedulerConfig,
   schedulerThreadId: string,
-  runId: string,
-  plannedStartTime: string | null
+  runId: string
 ): CycleStartResult {
   // Acquire plan lock
   const lockResult = acquirePlanLock(stateStore, schedulerThreadId, runId);
@@ -89,6 +87,7 @@ export function startCycle(
   const state = stateStore.load();
   state.status = "active_run";
   state.current_run_id = runId;
+  state.current_run_report_dir = path.join(config.report_base_dir, "run", runId);
   state.current_dispatcher_thread_id = null;
   stateStore.save(state);
 
@@ -306,6 +305,7 @@ export function completeCycle(
   });
 
   state.current_run_id = null;
+  state.current_run_report_dir = null;
   state.current_dispatcher_thread_id = null;
 
   // Determine next action
@@ -343,6 +343,7 @@ export function cancelCycle(
 
   state.status = "idle";
   state.current_run_id = null;
+  state.current_run_report_dir = null;
   state.current_dispatcher_thread_id = null;
   state.last_run_completed_at = now;
   state.last_run_outcome = "cancelled";

@@ -1211,6 +1211,51 @@ describe("reconcile", () => {
     );
   });
 
+  it("marks a worker failed when a report-only hub_result says it finished as BLOCKED", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/run/run-001/PRE-FLIGHT.md");
+    const blockedWorker = buildRunningWorker("worker-thread-blocked", outputPath);
+    blockedWorker.hub_result = {
+      trace_id: "88888888-8888-4888-8888-888888888888",
+      thread_id: "worker-thread-blocked",
+      source: "codex",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "PRE-FLIGHT finished as `BLOCKED`.",
+        "",
+        `Report written to [PRE-FLIGHT.md](${outputPath}).`,
+        "",
+        "Blocking issue: `/Volumes/Elements/github-ai-automation-solutions` does not exist."
+      ].join("\n"),
+      attachments: [],
+      timestamp: FIXED_NOW
+    };
+
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": blockedWorker
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("failed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "PRE-FLIGHT",
+        from: "running",
+        to: "failed",
+        trigger: "hub_result:failure_signal"
+      })
+    );
+  });
+
   it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

@@ -474,6 +474,61 @@ describe("run tool", () => {
     );
   });
 
+  it("overrides scheduler worker reports into the active run directory", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write completion report to:",
+          "```",
+          "/tmp/dispatch/reports/[WORKER_ID].md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 0 | PRE-FLIGHT | Environment check | OPUS | — | Report-only worker. |"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/scheduler_state.json") {
+        return JSON.stringify({
+          status: "active_run",
+          current_run_id: "run-123",
+          current_run_report_dir: "/tmp/dispatch/reports/run/run-123"
+        });
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-preflight-run-report",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "PRE-FLIGHT"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "PRE-FLIGHT",
+      "thread-preflight-run-report",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/run/run-123/PRE-FLIGHT.md"],
+      expect.any(String)
+    );
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("write the completion report to `/tmp/dispatch/reports/run/run-123/PRE-FLIGHT.md`");
+    expect(sentContent).toContain("supersedes any report path in the command file");
+  });
+
   it("derives the completion report path with angle-bracket placeholders when the command omits the word your", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));

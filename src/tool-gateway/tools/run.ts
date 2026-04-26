@@ -16,6 +16,7 @@ const DEV_HISTORY_DIRECTORY = "dev_history";
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const SCHEDULER_STATE_FILENAME = "scheduler_state.json";
 const INTERRUPTED_ERROR = "interrupted";
 const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERRUPTED_ERROR]);
 const MAX_PREVIOUS_REPLY_CHARS = 6_000;
@@ -381,7 +382,11 @@ async function buildWorkerPreamble(
     lines.push(`- **Skip Step 5a** (mark complete in dispatch plan) — the lifecycle store handles this from the Hub result.`);
   }
   if (!isDispatcherWorker(workerId)) {
+    const schedulerRunReportOutput = findSchedulerRunReportOutput(expectedOutputs, workerId);
     lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
+    if (schedulerRunReportOutput) {
+      lines.push(`- **Scheduler report path override**: write the completion report to \`${schedulerRunReportOutput}\`. Create the parent directory if needed. This supersedes any report path in the command file.`);
+    }
     if (isReportOnlyWorker(workerId, row, expectedOutputs)) {
       lines.push(`- **Steps 5c–5d**: this is a report-only worker. Do NOT create git commits, branches, pushes, or PRs for the report artifact; return the report result and stop.`);
     } else {
@@ -390,6 +395,16 @@ async function buildWorkerPreamble(
   }
 
   return lines.join("\n");
+}
+
+function findSchedulerRunReportOutput(expectedOutputs: string[], workerId: string): string | null {
+  const normalizedWorkerId = workerId.toLowerCase();
+  return expectedOutputs.find((outputPath) => {
+    const normalized = outputPath.replace(/\\/g, "/").toLowerCase();
+    const basename = path.basename(normalized);
+    return normalized.includes("/run/")
+      && (basename === `${normalizedWorkerId}.md` || basename === `${normalizedWorkerId}_report.md`);
+  }) ?? null;
 }
 
 async function buildPreviousAttemptContext(
@@ -523,22 +538,136 @@ async function deriveExpectedOutputs(commandPath: string, workerId: string): Pro
     return [];
   }
 
+  const schedulerRunReportOutput = await deriveSchedulerRunReportOutput(commandPath, workerId);
   const planOutputs = await deriveExpectedOutputsFromPlan(commandPath, workerId);
   if (planOutputs.length > 0) {
-    return planOutputs;
+    return applySchedulerRunReportOverride(planOutputs, schedulerRunReportOutput, commandPath, workerId);
   }
 
   const completionReportOutput = await deriveExpectedCompletionReportOutput(commandPath, workerId);
   if (completionReportOutput) {
-    return [completionReportOutput];
+    return applySchedulerRunReportOverride([completionReportOutput], schedulerRunReportOutput, commandPath, workerId);
   }
 
   const conventionOutput = await deriveExpectedOutputFromConvention(commandPath, workerId);
   if (conventionOutput) {
-    return [conventionOutput];
+    return applySchedulerRunReportOverride([conventionOutput], schedulerRunReportOutput, commandPath, workerId);
+  }
+
+  if (schedulerRunReportOutput) {
+    return [schedulerRunReportOutput];
   }
 
   return [path.join(path.dirname(commandPath), DEV_HISTORY_DIRECTORY, `${workerId}_report.md`)];
+}
+
+async function deriveSchedulerRunReportOutput(commandPath: string, workerId: string): Promise<string | null> {
+  const schedulerState = await loadActiveSchedulerRunState(commandPath);
+  if (!schedulerState) {
+    return null;
+  }
+
+  const reportDirectory = schedulerState.currentRunReportDir
+    ?? path.join(path.dirname(commandPath), "reports", "run", sanitizePathSegment(schedulerState.currentRunId));
+
+  return path.join(reportDirectory, `${workerId}.md`);
+}
+
+async function loadActiveSchedulerRunState(commandPath: string): Promise<{
+  currentRunId: string;
+  currentRunReportDir: string | null;
+} | null> {
+  let raw: string;
+
+  try {
+    raw = await readFile(path.join(path.dirname(commandPath), SCHEDULER_STATE_FILENAME), "utf8");
+  } catch {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  const state = parsed as {
+    status?: unknown;
+    current_run_id?: unknown;
+    current_run_report_dir?: unknown;
+  };
+  if (state.status !== "active_run" || typeof state.current_run_id !== "string") {
+    return null;
+  }
+
+  const currentRunId = state.current_run_id.trim();
+  if (currentRunId.length === 0) {
+    return null;
+  }
+
+  const currentRunReportDir = typeof state.current_run_report_dir === "string" && state.current_run_report_dir.trim().length > 0
+    ? path.resolve(state.current_run_report_dir)
+    : null;
+
+  return {
+    currentRunId,
+    currentRunReportDir
+  };
+}
+
+function applySchedulerRunReportOverride(
+  outputs: string[],
+  schedulerRunReportOutput: string | null,
+  commandPath: string,
+  workerId: string
+): string[] {
+  if (!schedulerRunReportOutput) {
+    return outputs;
+  }
+
+  let replacedReportPath = false;
+  const rewritten = outputs.map((outputPath) => {
+    if (!isWorkerCompletionReportPath(outputPath, commandPath, workerId)) {
+      return outputPath;
+    }
+
+    replacedReportPath = true;
+    return schedulerRunReportOutput;
+  });
+
+  if (!replacedReportPath) {
+    rewritten.push(schedulerRunReportOutput);
+  }
+
+  return [...new Set(rewritten)];
+}
+
+function isWorkerCompletionReportPath(candidatePath: string, commandPath: string, workerId: string): boolean {
+  const normalized = path.normalize(candidatePath);
+  const normalizedBase = path.normalize(path.dirname(commandPath));
+  const basename = path.basename(normalized).toLowerCase();
+  const workerBasename = workerId.toLowerCase();
+  const isWorkerReportName = basename === `${workerBasename}.md` || basename === `${workerBasename}_report.md`;
+  if (!isWorkerReportName) {
+    return false;
+  }
+
+  const normalizedForMatch = normalized.replace(/\\/g, "/").toLowerCase();
+  if (normalizedForMatch.includes("/reports/") || normalizedForMatch.includes("/dev_history/")) {
+    return true;
+  }
+
+  return path.dirname(normalized) === normalizedBase;
+}
+
+function sanitizePathSegment(value: string): string {
+  const sanitized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return sanitized.length > 0 ? sanitized : "run";
 }
 
 /**

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { detectCycleCompletion } from "../cycle-manager";
+import { detectCycleCompletion, startCycle } from "../cycle-manager";
+import { SchedulerStateStore, buildEmptyRunState } from "../scheduler-state-store";
 import type { SchedulerConfig } from "../../../types";
 
 const tempDirectories = new Set<string>();
@@ -15,6 +16,30 @@ afterEach(async () => {
 });
 
 describe("detectCycleCompletion", () => {
+  it("records an active run report directory under reports/run/<run_id>", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, [
+      "| Status | batch | worker | task | model | depends_on |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ✅ | 0 | PRE-FLIGHT | Environment Health Check | CODEX-HIGH | — |",
+      ""
+    ].join("\n"), "utf8");
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save(buildEmptyRunState());
+    const result = startCycle(stateStore, buildConfig(planPath), "scheduler-1", "run-001");
+
+    expect(result).toEqual({ ok: true, run_id: "run-001" });
+    expect(stateStore.load()).toMatchObject({
+      status: "active_run",
+      current_run_id: "run-001",
+      current_run_report_dir: path.join(directory, "reports", "run", "run-001")
+    });
+  });
+
   it("does not complete when lowercase plan rows are missing lifecycle entries", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
     tempDirectories.add(directory);
