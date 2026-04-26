@@ -245,10 +245,21 @@ export function resolveWorkerSpawnDir(
     return null;
   }
 
-  return extractRepoFieldFromWorkerFile(content);
+  const repoField = extractRepoFieldFromWorkerFile(content);
+  if (!repoField || isReadOnlyMultiRepoAlias(repoField)) {
+    return null;
+  }
+
+  const explicitPath = resolvePathLikeRepoField(repoField, dispatchPlanPath);
+  if (explicitPath) {
+    return explicitPath;
+  }
+
+  return resolveRepoMapPath(dispatchPlanPath, repoField, workerId);
 }
 
-const REPO_FIELD_PATTERN = /^[-*]\s*\*{0,2}Repo\*{0,2}\s*:\s*`?([^`\n]+?)`?\s*$/m;
+const REPO_FIELD_PATTERN = /^[-*]\s*\*{0,2}Repo\*{0,2}\s*:\s*(.+?)\s*$/m;
+const ABSOLUTE_PATH_PATTERN = /(?:^|[\s(])((?:~|\/)[^`)\s]+)/;
 
 export function extractRepoFieldFromWorkerFile(content: string): string | null {
   const match = content.match(REPO_FIELD_PATTERN);
@@ -256,6 +267,186 @@ export function extractRepoFieldFromWorkerFile(content: string): string | null {
     return null;
   }
 
-  const repoPath = match[1].trim();
+  const rawRepoField = match[1].trim();
+  const backtickValues = Array.from(
+    rawRepoField.matchAll(/`([^`]+)`/g),
+    (value) => value[1]?.trim() ?? ""
+  ).filter((value) => value.length > 0);
+  const absoluteBacktickPath = backtickValues.find(isAbsoluteOrHomePath);
+  if (absoluteBacktickPath) {
+    return absoluteBacktickPath;
+  }
+
+  const absolutePath = rawRepoField.match(ABSOLUTE_PATH_PATTERN)?.[1]?.trim();
+  if (absolutePath) {
+    return absolutePath;
+  }
+
+  const repoPath = stripRepoQualifier(rawRepoField.replace(/`/g, ""));
   return repoPath.length > 0 ? repoPath : null;
+}
+
+interface RepoMapEntry {
+  prefixes: string[];
+  repo: string;
+  repoPath: string;
+}
+
+function resolveRepoMapPath(
+  dispatchPlanPath: string,
+  repoField: string,
+  workerId: string
+): string | null {
+  let dispatchPlanMarkdown: string;
+  try {
+    dispatchPlanMarkdown = fsSync.readFileSync(dispatchPlanPath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const repoMapEntries = extractRepoMapEntries(dispatchPlanMarkdown);
+  if (repoMapEntries.length === 0) {
+    return null;
+  }
+
+  const normalizedRepoField = normalizeRepoAlias(repoField);
+  const aliasMatch = repoMapEntries.find((entry) => {
+    return normalizeRepoAlias(entry.repo) === normalizedRepoField
+      && isUsableRepoMapPath(entry.repoPath);
+  });
+  if (aliasMatch) {
+    return stripMarkdownCell(aliasMatch.repoPath);
+  }
+
+  const prefixMatch = repoMapEntries.find((entry) => {
+    return isUsableRepoMapPath(entry.repoPath)
+      && entry.prefixes.some((prefix) => repoPrefixMatchesWorker(prefix, workerId));
+  });
+  return prefixMatch ? stripMarkdownCell(prefixMatch.repoPath) : null;
+}
+
+function extractRepoMapEntries(markdown: string): RepoMapEntry[] {
+  const lines = markdown.split(/\r?\n/);
+  const entries: RepoMapEntry[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const headerCells = splitMarkdownTableRow(line).map((cell) => normalizeRepoAlias(cell));
+    if (!headerCells.includes("prefix") || !headerCells.includes("repo") || !headerCells.includes("path")) {
+      continue;
+    }
+
+    const prefixIndex = headerCells.indexOf("prefix");
+    const repoIndex = headerCells.indexOf("repo");
+    const pathIndex = headerCells.indexOf("path");
+
+    for (let rowIndex = index + 1; rowIndex < lines.length; rowIndex += 1) {
+      const row = lines[rowIndex] ?? "";
+      if (!row.trim().startsWith("|")) {
+        break;
+      }
+      if (/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(row)) {
+        continue;
+      }
+
+      const cells = splitMarkdownTableRow(row);
+      const repoPath = cells[pathIndex] ? stripMarkdownCell(cells[pathIndex]) : "";
+      entries.push({
+        prefixes: splitRepoPrefixes(cells[prefixIndex] ?? ""),
+        repo: stripMarkdownCell(cells[repoIndex] ?? ""),
+        repoPath
+      });
+    }
+
+    break;
+  }
+
+  return entries;
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|")) {
+    return [];
+  }
+
+  return trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function splitRepoPrefixes(value: string): string[] {
+  return stripMarkdownCell(value)
+    .split(",")
+    .map((prefix) => prefix.trim())
+    .filter((prefix) => prefix.length > 0);
+}
+
+function repoPrefixMatchesWorker(prefix: string, workerId: string): boolean {
+  const normalizedPrefix = normalizeRepoPrefix(prefix);
+  if (!normalizedPrefix) {
+    return false;
+  }
+
+  const normalizedWorker = workerId.trim().toUpperCase();
+  if (!normalizedPrefix.includes("*")) {
+    return normalizedPrefix === normalizedWorker;
+  }
+
+  const pattern = new RegExp(`^${escapeRegExp(normalizedPrefix).replace(/\\\*/g, ".*")}$`);
+  return pattern.test(normalizedWorker);
+}
+
+function resolvePathLikeRepoField(repoField: string, dispatchPlanPath: string): string | null {
+  const trimmed = repoField.trim();
+  if (path.isAbsolute(trimmed) || trimmed.startsWith("~/")) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith(".") || trimmed.includes("/") || trimmed.includes("\\")) {
+    return path.resolve(path.dirname(dispatchPlanPath), trimmed);
+  }
+
+  return null;
+}
+
+function isUsableRepoMapPath(repoPath: string): boolean {
+  const normalized = normalizeRepoAlias(repoPath);
+  return normalized.length > 0 && normalized !== "n/a" && normalized !== "na";
+}
+
+function isReadOnlyMultiRepoAlias(value: string): boolean {
+  const normalized = normalizeRepoAlias(value);
+  return normalized === "both" || normalized === "both repos" || normalized === "read only";
+}
+
+function stripRepoQualifier(value: string): string {
+  return value.replace(/\s*\([^)]*\)\s*$/g, "").trim();
+}
+
+function stripMarkdownCell(value: string): string {
+  return stripRepoQualifier(value.replace(/[`*_]/g, "")).trim();
+}
+
+function normalizeRepoAlias(value: string): string {
+  return stripMarkdownCell(value)
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ");
+}
+
+function normalizeRepoPrefix(value: string): string {
+  return stripMarkdownCell(value)
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+function isAbsoluteOrHomePath(value: string): boolean {
+  return path.isAbsolute(value) || value.startsWith("~/");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
