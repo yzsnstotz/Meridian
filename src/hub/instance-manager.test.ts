@@ -1080,6 +1080,38 @@ test("status persists the live current model reported by agentapi", async () => 
   await manager.kill(threadId);
 });
 
+test("status normalizes stable agentapi state to waiting", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: socketPathForThread("codex_01"),
+    pid: 3402,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({
+        status: "stable",
+        agent_type: "codex"
+      })
+    })
+  });
+
+  const status = await manager.status("codex_01");
+
+  assert.equal(status.instance.status, "waiting");
+  assert.equal(registry.get("codex_01")?.status, "waiting");
+});
+
 test("status infers the live current model from agent messages when status omits it", async () => {
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
