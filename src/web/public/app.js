@@ -2011,6 +2011,10 @@ function resolveDispatcherCardControl(detail) {
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
 
+  if (isTerminalDispatcherStatus(status)) {
+    return { action: "continue", label: formatTerminalDispatcherStatus(status), disabled: true };
+  }
+
   if (liveWorker) {
     return { action: "continue", label: "Working", disabled: true };
   }
@@ -2035,6 +2039,17 @@ function resolveDispatcherDetailControls(detail) {
   const hasLiveThread = hasLiveDispatcherThread(detail);
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
+
+  if (isTerminalDispatcherStatus(status)) {
+    return {
+      showContinue: true,
+      continueLabel: formatTerminalDispatcherStatus(status),
+      continueDisabled: true,
+      showLifecycle: false,
+      lifecycleAction: null,
+      lifecycleLabel: ""
+    };
+  }
 
   if (liveWorker) {
     return {
@@ -2092,6 +2107,14 @@ function resolveDispatcherDetailControls(detail) {
 
 function hasLiveDispatcherThread(detail) {
   return normalizeText(detail?.dispatcher_thread_id).length > 0;
+}
+
+function isTerminalDispatcherStatus(status) {
+  return status === "completed";
+}
+
+function formatTerminalDispatcherStatus(status) {
+  return status === "completed" ? "Completed" : status;
 }
 
 function resolveDispatcherTaskContext(detail) {

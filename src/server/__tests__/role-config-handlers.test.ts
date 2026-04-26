@@ -2574,6 +2574,147 @@ describe("role config handlers", () => {
     }
   });
 
+  it("projects completed for finished agent-dispatcher plans instead of persisted active", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-complete-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-list-complete",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | R-01 | Complete work | CODEX | — | PRD | done |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "completed"
+      },
+      workers: {
+        "R-01": buildLifecycleWorker({
+          status: "completed"
+        })
+      },
+      last_reconciled_at: "2026-04-07T14:15:00.000Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(persistedState);
+
+      await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            thread_id: "agent-dispatcher-list-complete",
+            status: "completed",
+            task_count: 1
+          })
+        ])
+      );
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-list-complete")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-list-complete",
+        status: "completed",
+        current_worker: null
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("projects scheduler run state from /api/roles instead of persisted active", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-scheduler-list-status-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const schedulerStatePath = path.join(tempDir, "scheduler_state.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "scheduler-list-waiting",
+          roleType: "scheduler",
+          status: "active",
+          config: {
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+            dispatch_repo_root: tempDir,
+            docs_root: tempDir,
+            user_reply_channels: [
+              {
+                channel: "web",
+                chat_id: "web:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "pane_bridge",
+            kill_policy: "always",
+            auto_approve: true,
+            scheduler_mode: "cron",
+            cron_expression: "0 6 * * *",
+            timezone: "Asia/Tokyo",
+            report_base_dir: path.join(tempDir, "reports"),
+            catch_up_policy: "skip_missed"
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await fs.writeFile(schedulerStatePath, `${JSON.stringify({
+      status: "waiting",
+      current_run_id: null,
+      current_dispatcher_thread_id: null,
+      completed_cycles: 1,
+      next_run_at: "2026-04-26T21:00:00.000Z",
+      last_run_completed_at: "2026-04-26T06:52:50.422Z",
+      last_run_outcome: "completed",
+      last_report_path: null,
+      plan_lock_owner: null,
+      run_history: []
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(persistedState);
+
+      await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            thread_id: "scheduler-list-waiting",
+            role_type: "scheduler",
+            status: "waiting"
+          })
+        ])
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects config patches with unrecognized fields with 400", async () => {
     const harness = createHarness(createPersistedState({
       tasks: [],
