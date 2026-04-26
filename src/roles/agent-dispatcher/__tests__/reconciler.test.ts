@@ -158,6 +158,44 @@ describe("reconcile", () => {
     });
   });
 
+  it("keeps a worker running when its stored HubResult reports another worker's output", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const preflightReportPath = await harness.writeOutput(
+      "reports/run/run-001/PRE-FLIGHT.md",
+      "# PRE-FLIGHT Completion Report\n\n- Status: ✅ Complete\n"
+    );
+    const catalogReportPath = path.join(harness.directory, "reports", "run", "run-001", "W-CATALOG.md");
+    harness.store.save(buildState({
+      workers: {
+        "W-CATALOG": {
+          ...buildRunningWorker("worker-thread-222", catalogReportPath),
+          hub_result: {
+            ...buildTerminalSuccessResult("worker-thread-222"),
+            content: [
+              "PRE-FLIGHT completed with exit code `0`.",
+              "",
+              `Report written to [PRE-FLIGHT.md](${preflightReportPath}).`
+            ].join("\n")
+          }
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["W-CATALOG"]?.status).toBe("running");
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(report).toEqual({
+      changed: [],
+      unchanged: [DISPATCHER_ENTRY_ID, "W-CATALOG"]
+    });
+  });
+
   it("marks a running worker failed when a stored success HubResult reports hit limit", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -739,7 +777,7 @@ describe("reconcile", () => {
       workers: {
         "N-06": {
           ...buildRunningWorker("worker-thread-666", path.join(harness.directory, "missing-N-06-report.md")),
-          hub_result: buildInlineReportResult("worker-thread-666")
+          hub_result: buildInlineReportResult("worker-thread-666", "N-06")
         }
       }
     }));
@@ -1408,7 +1446,7 @@ function buildMissingThreadResult(threadId: string): HubResult {
   };
 }
 
-function buildInlineReportResult(threadId: string): HubResult {
+function buildInlineReportResult(threadId: string, workerId = "R-02"): HubResult {
   return {
     trace_id: "33333333-3333-4333-8333-333333333333",
     thread_id: threadId,
@@ -1418,7 +1456,7 @@ function buildInlineReportResult(threadId: string): HubResult {
     content: [
       "Worker completed. Returning inline completion report.",
       "",
-      "# R-02 — Completion Report",
+      `# ${workerId} — Completion Report`,
       "",
       "- **Status**: ✅ Complete",
       "",
@@ -1428,7 +1466,7 @@ function buildInlineReportResult(threadId: string): HubResult {
       "## Sub-task Results",
       "| Sub-task | Status |",
       "|----------|--------|",
-      "| R-02.1 | ✅ |",
+      `| ${workerId}.1 | ✅ |`,
       "",
       "## AI Auto-Test Results",
       "```bash",
