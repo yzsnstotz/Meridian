@@ -1149,7 +1149,7 @@ describe("role config handlers", () => {
       expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
         workerId: "R-11",
         agentType: "codex",
-        modelId: "gpt-5.4 high",
+        modelId: "gpt-5.5 high",
         mode: "bridge",
         killPolicy: "always",
         commandFilePath: "/tmp/agent_dispatch_command.md",

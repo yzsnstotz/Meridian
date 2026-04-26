@@ -65,15 +65,15 @@ describe("resolveDispatchModelMapFromMarkdown", () => {
       },
       "CODEX-HIGH": {
         provider: "codex",
-        model_id: "gpt-5.4 high"
+        model_id: "gpt-5.5 high"
       },
       "CODEX-XHIGH": {
         provider: "codex",
-        model_id: "gpt-5.4 xhigh"
+        model_id: "gpt-5.5 xhigh"
       },
       OPUS: {
         provider: "claude",
-        model_id: "claude-opus-4-6"
+        model_id: "claude-opus-4-7"
       },
       SONNET: {
         provider: "claude",

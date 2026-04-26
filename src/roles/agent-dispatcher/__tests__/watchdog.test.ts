@@ -1215,7 +1215,7 @@ describe("continueDispatchWorker", () => {
     });
     expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
       agentType: "claude",
-      modelId: "claude-opus-4-6",
+      modelId: "claude-opus-4-7",
       dispatchRepoRoot: harness.directory,
       workerId: "PRE-FLIGHT"
     }));

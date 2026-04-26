@@ -327,11 +327,11 @@
                   <option value="">provider default</option>
                   <optgroup label="codex">
                     <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
-                    <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
-                    <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                    <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                    <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
                   </optgroup>
                   <optgroup label="claude">
-                    <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                    <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
                     <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
                   </optgroup>
                   <optgroup label="gemini">
@@ -353,17 +353,6 @@
                 </small>
               </label>
             </div>
-            <label class="field">
-              <span>model_map</span>
-              <textarea
-                id="new-scheduler-model-map"
-                name="model_map"
-                placeholder='{"CODEX":{"provider":"codex","model_id":"gpt-5.4 high"}}'
-              ></textarea>
-              <small class="field-hint muted">
-                Optional JSON object mapping dispatch plan model codes to provider/model pairs.
-              </small>
-            </label>
             <div class="summary-grid">
               <label class="field">
                 <span>scheduler_mode</span>
