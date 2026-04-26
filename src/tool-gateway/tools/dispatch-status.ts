@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import { LifecycleStore, hubResultContainsFailureSignal } from "../../roles/agent-dispatcher/lifecycle-store";
@@ -28,6 +29,27 @@ export interface DispatchStatusWorker extends DispatchPlanWorkerRow {
   stale_label: string | null;
   stale_duration_minutes: number | null;
   stale_duration_human: string | null;
+  progress: DispatchWorkerProgress | null;
+}
+
+export interface DispatchWorkerProgress {
+  progress_path: string;
+  command: string;
+  scan_run_id: string | null;
+  status: string;
+  total: number | null;
+  processed: number | null;
+  success: number | null;
+  failed: number | null;
+  skipped: number | null;
+  skipped_existing: number | null;
+  remaining: number | null;
+  started_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+  pid: number | null;
+  rate_limit_waits: number | null;
+  last_skill: { owner: string; slug: string } | null;
 }
 
 export interface DispatchStatusReport extends Record<string, unknown> {
@@ -107,7 +129,15 @@ export async function buildDispatchStatusReport(
 
   const lifecycleState = new LifecycleStore(resolveDispatchThreadsPath(planPath)).load();
   const generatedAt = new Date().toISOString();
-  const workers = rows.map((row) => buildWorkerStatus(row, lifecycleState, staleThresholdMinutes, generatedAt));
+  const scanRunId = await loadCurrentScanRunId(planPath);
+  const progress = await Promise.all(rows.map((row) => loadWorkerProgress(row, scanRunId)));
+  const workers = rows.map((row, index) => buildWorkerStatus(
+    row,
+    lifecycleState,
+    staleThresholdMinutes,
+    generatedAt,
+    progress[index] ?? null
+  ));
 
   return {
     plan: planPath,
@@ -176,7 +206,8 @@ function buildWorkerStatus(
   row: DispatchPlanWorkerRow,
   lifecycleState: DispatchThreadStateV2,
   staleThresholdMinutes: number,
-  generatedAt: string
+  generatedAt: string,
+  progress: DispatchWorkerProgress | null
 ): DispatchStatusWorker {
   const workerState = lifecycleState.workers[row.worker_id];
   const lifecycleStatus = getEffectiveLifecycleStatus(workerState);
@@ -192,7 +223,8 @@ function buildWorkerStatus(
     stale: staleDurationMs !== null,
     stale_label: staleDurationMs === null ? null : "⚠️ STALE",
     stale_duration_minutes: staleDurationMs === null ? null : Math.floor(staleDurationMs / 60_000),
-    stale_duration_human: staleDurationMs === null ? null : formatDuration(staleDurationMs)
+    stale_duration_human: staleDurationMs === null ? null : formatDuration(staleDurationMs),
+    progress
   };
 }
 
@@ -213,7 +245,7 @@ function summarizeWorkers(workers: DispatchStatusWorker[]): DispatchStatusReport
     (summary, worker) => {
       summary.total += 1;
 
-      switch (categorizeStatus(worker.lifecycle_status ?? worker.status)) {
+      switch (categorizeStatus(getSummaryStatus(worker))) {
         case "pending":
           summary.pending += 1;
           break;
@@ -249,6 +281,14 @@ function summarizeWorkers(workers: DispatchStatusWorker[]): DispatchStatusReport
   );
 }
 
+function getSummaryStatus(worker: DispatchStatusWorker): string {
+  if (worker.progress?.status === "running" || worker.progress?.status === "failed") {
+    return worker.progress.status;
+  }
+
+  return worker.lifecycle_status ?? worker.status;
+}
+
 function extractFailureReason(
   workerState: DispatchThreadStateV2["workers"][string] | undefined,
   lifecycleStatus: string | null
@@ -276,6 +316,237 @@ function extractFailureReason(
   // Truncate raw content to a useful summary
   const MAX_REASON_LENGTH = 200;
   return content.length > MAX_REASON_LENGTH ? `${content.slice(0, MAX_REASON_LENGTH)}…` : content;
+}
+
+async function loadWorkerProgress(row: DispatchPlanWorkerRow, scanRunId: string | null): Promise<DispatchWorkerProgress | null> {
+  const expandedTask = expandScanRunId(row.task, scanRunId);
+  const progressPath = resolveProgressPath(expandedTask);
+  if (!progressPath) {
+    return computeClawHubProgressFallback(row, expandedTask);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.readFile(progressPath, "utf8"));
+  } catch {
+    return computeClawHubProgressFallback(row, expandedTask);
+  }
+
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  return {
+    progress_path: progressPath,
+    command: readString(parsed.command) ?? "unknown",
+    scan_run_id: readString(parsed.scan_run_id),
+    status: readString(parsed.status) ?? "unknown",
+    total: readNumber(parsed.total),
+    processed: readNumber(parsed.processed),
+    success: readNumber(parsed.success),
+    failed: readNumber(parsed.failed),
+    skipped: readNumber(parsed.skipped),
+    skipped_existing: readNumber(parsed.skipped_existing),
+    remaining: readNumber(parsed.remaining),
+    started_at: readString(parsed.started_at),
+    updated_at: readString(parsed.updated_at),
+    completed_at: readString(parsed.completed_at),
+    pid: readNumber(parsed.pid),
+    rate_limit_waits: readNumber(parsed.rate_limit_waits),
+    last_skill: readLastSkill(parsed.last_skill)
+  };
+}
+
+function resolveProgressPath(task: string | null): string | null {
+  if (!task) {
+    return null;
+  }
+
+  const explicit = extractOptionValue(task, "progress");
+  if (explicit) {
+    return path.resolve(explicit);
+  }
+
+  const manifestPath = extractOptionValue(task, "manifest");
+  if (!manifestPath) {
+    return null;
+  }
+
+  if (/\bdetail-fetch\b/.test(task)) {
+    return path.join(path.dirname(path.resolve(manifestPath)), "detail-fetch.progress.json");
+  }
+
+  if (/\bssr-enrich\b/.test(task)) {
+    return path.join(path.dirname(path.resolve(manifestPath)), "ssr-enrich.progress.json");
+  }
+
+  return null;
+}
+
+async function computeClawHubProgressFallback(
+  row: DispatchPlanWorkerRow,
+  task: string | null
+): Promise<DispatchWorkerProgress | null> {
+  if (!task || !/\bclawhub-fetch\b/.test(task) || !/\bdetail-fetch\b/.test(task)) {
+    return null;
+  }
+
+  const dbPath = extractOptionValue(task, "db");
+  const taskManifestPath = extractOptionValue(task, "manifest");
+  if (!dbPath || !taskManifestPath) {
+    return null;
+  }
+
+  const manifestPath = await resolveManagedDetailManifestPath(row, taskManifestPath);
+  const manifest = await readJsonFile(manifestPath);
+  if (!isRecord(manifest) || !Array.isArray(manifest.skills)) {
+    return null;
+  }
+
+  const versionKeys = loadClawHubVersionKeys(dbPath);
+  if (!versionKeys) {
+    return null;
+  }
+
+  const total = manifest.skills.length;
+  const processed = manifest.skills.reduce((count, skill) => {
+    if (!isRecord(skill)) {
+      return count;
+    }
+
+    const owner = readString(skill.owner);
+    const slug = readString(skill.slug);
+    const version = readString(skill.latest_version);
+    if (!owner || !slug || !version) {
+      return count;
+    }
+
+    return versionKeys.has(`${owner}/${slug}@${version}`) ? count + 1 : count;
+  }, 0);
+  const remaining = Math.max(0, total - processed);
+
+  return {
+    progress_path: manifestPath,
+    command: "detail-fetch",
+    scan_run_id: readString(manifest.scan_run_id),
+    status: remaining > 0 ? "running" : "completed",
+    total,
+    processed,
+    success: processed,
+    failed: 0,
+    skipped: 0,
+    skipped_existing: 0,
+    remaining,
+    started_at: null,
+    updated_at: new Date().toISOString(),
+    completed_at: null,
+    pid: null,
+    rate_limit_waits: null,
+    last_skill: null
+  };
+}
+
+async function resolveManagedDetailManifestPath(
+  row: DispatchPlanWorkerRow,
+  manifestPath: string
+): Promise<string> {
+  if (row.worker_id !== "W-DETAIL") {
+    return path.resolve(manifestPath);
+  }
+
+  const managedManifestPath = path.join(path.dirname(path.resolve(manifestPath)), "W-DETAIL.remaining-managed.json");
+  return await fileExists(managedManifestPath) ? managedManifestPath : path.resolve(manifestPath);
+}
+
+function loadClawHubVersionKeys(dbPath: string): Set<string> | null {
+  let rows: unknown;
+  try {
+    const output = execFileSync("sqlite3", [
+      "-json",
+      dbPath,
+      "SELECT owner, slug, version_string FROM clawhub_skill_version"
+    ], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024
+    }).trim();
+    rows = output ? JSON.parse(output) : [];
+  } catch {
+    return null;
+  }
+
+  if (!Array.isArray(rows)) {
+    return null;
+  }
+
+  return new Set(rows.flatMap((row) => {
+    if (!isRecord(row)) {
+      return [];
+    }
+
+    const owner = readString(row.owner);
+    const slug = readString(row.slug);
+    const version = readString(row.version_string);
+    return owner && slug && version ? [`${owner}/${slug}@${version}`] : [];
+  }));
+}
+
+async function loadCurrentScanRunId(planPath: string): Promise<string | null> {
+  const state = await readJsonFile(path.join(path.dirname(planPath), "scheduler_state.json"));
+  return isRecord(state) ? readString(state.current_scan_run_id) : null;
+}
+
+function expandScanRunId(task: string | null, scanRunId: string | null): string | null {
+  if (!task || !scanRunId) {
+    return task;
+  }
+
+  return task.replace(/\$\{SCAN_RUN_ID\}|\$SCAN_RUN_ID/g, scanRunId);
+}
+
+async function readJsonFile(filePath: string): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractOptionValue(command: string, optionName: string): string | null {
+  const pattern = new RegExp(`(?:^|\\s)--${optionName}(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|([^\\s]+))`);
+  const match = command.match(pattern);
+  const value = match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+  return value ? value.replace(/^`|`$/g, "") : null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readLastSkill(value: unknown): { owner: string; slug: string } | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const owner = readString(value.owner);
+  const slug = readString(value.slug);
+  return owner && slug ? { owner, slug } : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function categorizeStatus(status: string): "pending" | "running" | "completed" | "failed" | "skipped" {

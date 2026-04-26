@@ -103,6 +103,7 @@
                 <th>Batch</th>
                 <th>Worker</th>
                 <th>Task</th>
+                <th>Tool Progress</th>
                 <th>Model</th>
                 <th>Depends</th>
                 <th>Thread</th>
@@ -422,6 +423,7 @@
             <td>${escapeHtml(worker.batch || '---')}</td>
             <td><code>${escapeHtml(worker.worker_id || '---')}</code></td>
             <td>${escapeHtml(worker.task || '---')}</td>
+            <td>${formatToolProgress(worker.progress)}</td>
             <td>${escapeHtml(worker.model || '---')}</td>
             <td>${escapeHtml(formatDepends(worker.depends_on))}</td>
             <td>${worker.thread_id ? `<code>${escapeHtml(worker.thread_id)}</code>` : '---'}</td>
@@ -451,6 +453,36 @@
 
       function formatDepends(dependsOn) {
         return Array.isArray(dependsOn) && dependsOn.length > 0 ? dependsOn.join(', ') : '---';
+      }
+
+      function formatToolProgress(progress) {
+        if (!progress) return '---';
+
+        const command = progress.command || 'tool';
+        const processed = formatCount(progress.processed);
+        const total = formatCount(progress.total);
+        const remaining = formatCount(progress.remaining);
+        const success = formatCount(progress.success);
+        const failed = formatCount(progress.failed);
+        const skipped = formatCount(progress.skipped);
+        const updated = formatTime(progress.updated_at);
+        const lastSkill = progress.last_skill
+          ? `${progress.last_skill.owner}/${progress.last_skill.slug}`
+          : null;
+
+        return [
+          `<div class="tool-progress">`,
+          `<div><span class="status-badge ${statusClass(progress.status)}">${escapeHtml(progress.status || 'unknown')}</span> <strong>${escapeHtml(command)}</strong></div>`,
+          `<div class="tool-progress-main">${processed} / ${total} processed</div>`,
+          `<div class="tool-progress-muted">${remaining} remaining; ${success} success, ${failed} failed, ${skipped} skipped</div>`,
+          `<div class="tool-progress-muted">Updated ${escapeHtml(updated)}</div>`,
+          lastSkill ? `<div class="tool-progress-muted">${escapeHtml(lastSkill)}</div>` : '',
+          `</div>`
+        ].join('');
+      }
+
+      function formatCount(value) {
+        return Number.isFinite(value) ? Number(value).toLocaleString() : '---';
       }
 
       function statusClass(status) {

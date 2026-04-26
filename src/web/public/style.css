@@ -959,7 +959,21 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 
 .dispatch-progress-table td { vertical-align: top; }
 .dispatch-progress-table td:nth-child(5) { min-width: 220px; }
+.dispatch-progress-table td:nth-child(6) { min-width: 220px; }
 .dispatch-progress-table code { overflow-wrap: anywhere; }
+.tool-progress {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.tool-progress-main {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.tool-progress-muted {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
 
 .config-form .field { margin-bottom: 8px; }
 
