@@ -146,9 +146,13 @@ function normalizeOptionalHost(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function mapPublicAsset(pathname: string): { fileName: string; contentType: string } | null {
+export function mapPublicAsset(pathname: string): { fileName: string; contentType: string } | null {
   if (pathname === "/" || pathname === "/index.html") {
     return { fileName: "index.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/role\/scheduler-[^/]+$/.test(pathname)) {
+    return { fileName: "scheduler.html", contentType: "text/html; charset=utf-8" };
   }
 
   if (/^\/role\/[^/]+$/.test(pathname)) {

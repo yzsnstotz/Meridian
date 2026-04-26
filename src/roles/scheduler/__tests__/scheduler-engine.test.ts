@@ -55,6 +55,51 @@ describe("SchedulerEngine", () => {
       last_run_outcome: "failed"
     });
   });
+
+  it("reschedules a max-cycle scheduler when config now allows more cycles", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, "", "utf8");
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "completed_max_cycles",
+      completed_cycles: 2,
+      last_run_outcome: "completed"
+    });
+
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: {
+        ...buildConfig(planPath),
+        max_cycles: 5
+      },
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher: vi.fn(),
+        notifyChannels: vi.fn()
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    engine.start();
+
+    expect(stateStore.load()).toMatchObject({
+      status: "waiting",
+      completed_cycles: 2,
+      last_run_outcome: "completed"
+    });
+    expect(stateStore.load().next_run_at).toEqual(expect.any(String));
+  });
 });
 
 function buildConfig(dispatchPlanPath: string): SchedulerConfig {
