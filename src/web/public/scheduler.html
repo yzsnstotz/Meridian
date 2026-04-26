@@ -239,6 +239,7 @@
     </main>
 
     <script>
+      (() => {
       const POLL_INTERVAL_MS = 3000;
       const schedulerId = window.location.pathname.split('/').pop();
 
@@ -479,6 +480,7 @@
 
       poll();
       setInterval(poll, POLL_INTERVAL_MS);
+      })();
     </script>
   </body>
 </html>

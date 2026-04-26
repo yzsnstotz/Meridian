@@ -138,7 +138,29 @@ function resolvePublicDir(): string {
   const direct = path.resolve(__dirname, "../web/public");
   const fallback = path.resolve(__dirname, "../../src/web/public");
 
+  return selectPublicDir(direct, fallback);
+}
+
+export function selectPublicDir(direct: string, fallback: string): string {
+  if (hasRequiredPublicAssets(direct)) {
+    return direct;
+  }
+
+  if (hasRequiredPublicAssets(fallback)) {
+    return fallback;
+  }
+
   return fsSync.existsSync(direct) ? direct : fallback;
+}
+
+function hasRequiredPublicAssets(directory: string): boolean {
+  return ["index.html", "app.js", "style.css", "scheduler.html"].every((fileName) => {
+    try {
+      return fsSync.statSync(path.join(directory, fileName)).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 function normalizeOptionalHost(value: string | undefined): string | undefined {
