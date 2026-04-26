@@ -268,10 +268,10 @@
         // Stat cards
         document.getElementById('s-status-val').textContent = status.replace(/_/g, ' ');
         document.getElementById('s-completed-cycles').textContent = rs.completed_cycles ?? 0;
-        document.getElementById('s-next-run-val').textContent = formatTimeShort(rs.next_run_at || data.next_run_preview);
+        document.getElementById('s-next-run-val').textContent = formatTimeShort(rs.next_run_at);
         document.getElementById('s-last-outcome-val').textContent = rs.last_run_outcome || '---';
 
-        document.getElementById('s-next-run').textContent = rs.next_run_at || data.next_run_preview || '---';
+        document.getElementById('s-next-run').textContent = rs.next_run_at || '---';
         document.getElementById('s-active-run').textContent = rs.current_run_id || '---';
         document.getElementById('s-dispatcher-thread').textContent = rs.current_dispatcher_thread_id || '---';
         document.getElementById('s-last-report').textContent = rs.last_report_path || '---';
@@ -288,9 +288,9 @@
         setVal('cfg-report-dir', c.report_base_dir);
         setVal('cfg-catchup', c.catch_up_policy);
 
-        if (data.next_run_preview) {
-          document.getElementById('next-run-preview').textContent = 'Next cron fire: ' + data.next_run_preview;
-        }
+        document.getElementById('next-run-preview').textContent = data.next_run_preview
+          ? 'Next cron preview: ' + data.next_run_preview
+          : '';
 
         renderDispatchProgress(data.dispatch_status, data.dispatch_status_error);
 

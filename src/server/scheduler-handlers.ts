@@ -12,7 +12,8 @@ import {
   AppStateSchema,
   SchedulerConfigSchema,
   type AppState,
-  type SchedulerConfig
+  type SchedulerConfig,
+  type SchedulerRunState
 } from "../types";
 import { parseCronExpression, nextCronFire } from "../roles/scheduler/cron-parser";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
@@ -45,6 +46,8 @@ const CreateSchedulerBodySchema = z.object({
 const RunNowBodySchema = z.object({
   report_base_dir: z.string().min(1).optional()
 }).optional();
+
+const NEXT_RUN_PREVIEW_STATUSES = new Set(["idle", "waiting"]);
 
 export interface SchedulerHandlersOptions {
   runner: RoleRunner;
@@ -143,16 +146,7 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     const engine = role.getEngine();
     const config = engine?.getConfig() ?? role.config;
 
-    // Compute next-run preview for cron
-    let nextRunPreview: string | null = null;
-    if (config.scheduler_mode === "cron" && config.cron_expression) {
-      try {
-        const nextFire = nextCronFire(config.cron_expression, new Date(), config.timezone ?? "system");
-        nextRunPreview = nextFire.toISOString();
-      } catch {
-        // ignore
-      }
-    }
+    const nextRunPreview = computeSchedulerNextRunPreview(config, runState);
 
     const dispatchStatusResult = await loadSchedulerDispatchStatus(config.dispatch_plan_path);
 
@@ -303,6 +297,27 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
         error: getErrorMessage(error)
       };
     }
+  }
+}
+
+export function computeSchedulerNextRunPreview(
+  config: SchedulerConfig,
+  runState: SchedulerRunState | null,
+  now = new Date()
+): string | null {
+  if (runState && !NEXT_RUN_PREVIEW_STATUSES.has(runState.status)) {
+    return null;
+  }
+
+  if (config.scheduler_mode !== "cron" || !config.cron_expression) {
+    return null;
+  }
+
+  try {
+    const nextFire = nextCronFire(config.cron_expression, now, config.timezone ?? "system");
+    return nextFire.toISOString();
+  } catch {
+    return null;
   }
 }
 
