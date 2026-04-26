@@ -323,7 +323,21 @@
               </label>
               <label class="field">
                 <span>model_id</span>
-                <input id="new-scheduler-model-id" name="model_id" type="text" placeholder="provider default" />
+                <select id="new-scheduler-model-id" name="model_id">
+                  <option value="">provider default</option>
+                  <optgroup label="codex">
+                    <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                    <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                    <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                  </optgroup>
+                  <optgroup label="claude">
+                    <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                    <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                  </optgroup>
+                  <optgroup label="gemini">
+                    <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                  </optgroup>
+                </select>
                 <small class="field-hint muted">
                   Optional dispatcher model override. Leave blank to use the provider default.
                 </small>

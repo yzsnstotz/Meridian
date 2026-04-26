@@ -5,6 +5,22 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
 describe("scheduler detail public scripts", () => {
+  it("uses model dropdowns for scheduler creation and detail config", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const indexHtml = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
+    const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
+
+    expect(indexHtml).toContain('<select id="new-scheduler-model-id" name="model_id">');
+    expect(indexHtml).not.toContain('<input id="new-scheduler-model-id"');
+    expect(indexHtml).toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
+    expect(indexHtml).toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+
+    expect(schedulerHtml).toContain('<select id="cfg-model-id" name="model_id">');
+    expect(schedulerHtml).not.toContain('<input id="cfg-model-id"');
+    expect(schedulerHtml).toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
+    expect(schedulerHtml).toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+  });
+
   it("submits scheduler creation with dispatcher agent and model settings", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
