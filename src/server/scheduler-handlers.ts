@@ -180,7 +180,13 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     // Partial config update — merge with existing
     const currentConfig = engine?.getConfig() ?? role.config;
     const patch = body as Record<string, unknown>;
-    const merged = { ...currentConfig, ...patch };
+    const merged: Record<string, unknown> = { ...currentConfig, ...patch };
+    if (patch.model_id === null || patch.model_id === "") {
+      delete merged.model_id;
+    }
+    if (patch.model_map === null || patch.model_map === "") {
+      delete merged.model_map;
+    }
     const validated = SchedulerConfigSchema.parse(merged);
 
     if (validated.scheduler_mode === "cron" && validated.cron_expression) {

@@ -11,6 +11,8 @@ export const ACTIVE_ROLE_STATUS = "active";
 export const PAUSED_ROLE_STATUS = "paused";
 export const NEEDS_REACTIVATION_ROLE_STATUS = "needs_reactivation";
 
+let tempFileCounter = 0;
+
 export function isStartupRehydratableRoleStatus(status: string): boolean {
   return status === ACTIVE_ROLE_STATUS || status === PAUSED_ROLE_STATUS || status === NEEDS_REACTIVATION_ROLE_STATUS;
 }
@@ -24,7 +26,7 @@ export class StateStore {
   async save(state: AppState): Promise<void> {
     const normalizedState = AppStateSchema.parse(state);
     const directory = path.dirname(this.filePath);
-    const tempFilePath = `${this.filePath}.tmp`;
+    const tempFilePath = createTempFilePath(this.filePath);
     const payload = `${JSON.stringify(normalizedState, null, 2)}\n`;
 
     try {
@@ -60,6 +62,14 @@ export class StateStore {
       throw error;
     }
   }
+}
+
+function createTempFilePath(filePath: string): string {
+  tempFileCounter = tempFileCounter >= Number.MAX_SAFE_INTEGER ? 1 : tempFileCounter + 1;
+  const directory = path.dirname(filePath);
+  const basename = path.basename(filePath);
+
+  return path.join(directory, `.${basename}.${process.pid}.${Date.now()}.${tempFileCounter}.tmp`);
 }
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {

@@ -5,6 +5,83 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
 describe("scheduler detail public scripts", () => {
+  it("submits scheduler creation with dispatcher agent and model settings", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const elements = new Map<string, Record<string, unknown>>();
+    const form = getElementStub(elements, "create-scheduler-form");
+    Object.assign(form, {
+      scheduler_mode: { value: "cron" },
+      dispatch_plan_path: { value: "/tmp/project/dispatch_plan.md" },
+      report_base_dir: { value: "/tmp/project/reports" },
+      cron_expression: { value: "0 9 * * 1-5" },
+      timezone: { value: "Asia/Tokyo" },
+      interval_seconds: { value: "" },
+      max_cycles: { value: "" },
+      delay_between_cycles_seconds: { value: "" },
+      dispatch_repo_root: { value: "/tmp/project" },
+      docs_root: { value: "/tmp/docs" },
+      agent_type: { value: "codex" },
+      model_id: { value: "gpt-5.4 high" },
+      mode: { value: "pane_bridge" },
+      model_map: { value: '{"CODEX":{"provider":"codex","model_id":"gpt-5.4 high"}}' },
+      catch_up_policy: { value: "skip_missed" },
+      reset: () => undefined
+    });
+    let schedulerRequestBody: unknown = null;
+
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "dashboard" } },
+        addEventListener: () => undefined,
+        getElementById: (id: string) => getElementStub(elements, id),
+        querySelector: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async (url: string, options?: { body?: string }) => {
+        if (url === "/api/scheduler") {
+          schedulerRequestBody = JSON.parse(options?.body ?? "{}");
+          return jsonResponse({ ok: true, scheduler_id: "scheduler-test" });
+        }
+
+        return jsonResponse([]);
+      },
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    vm.runInContext("setupSchedulerCreation()", context);
+    const submitHandler = getElementHandlers(form).submit;
+    if (!submitHandler) {
+      throw new Error("create scheduler form did not register submit handler");
+    }
+
+    await submitHandler({
+      preventDefault: () => undefined
+    });
+
+    expect(schedulerRequestBody).toMatchObject({
+      config: {
+        agent_type: "codex",
+        model_id: "gpt-5.4 high",
+        mode: "pane_bridge",
+        model_map: {
+          CODEX: {
+            provider: "codex",
+            model_id: "gpt-5.4 high"
+          }
+        }
+      }
+    });
+  });
+
   it("loads beside the shared dashboard script without global declaration conflicts", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
@@ -110,6 +187,110 @@ describe("scheduler detail public scripts", () => {
       className: "status-badge waiting"
     });
   });
+
+  it("populates and saves scheduler dispatcher agent settings", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
+    const schedulerScript = extractInlineScripts(schedulerHtml).join("\n");
+    const elements = new Map<string, Record<string, unknown>>();
+    let patchBody: unknown = null;
+
+    const context = vm.createContext({
+      console,
+      document: {
+        getElementById: (id: string) => getElementStub(elements, id),
+        querySelectorAll: () => []
+      },
+      fetch: async (url: string, options?: { body?: string; method?: string }) => {
+        if (url === "/api/scheduler/scheduler-bf02b39c/config" && options?.method === "PATCH") {
+          patchBody = JSON.parse(options.body ?? "{}");
+          return jsonResponse({ ok: true });
+        }
+
+        if (url === "/api/scheduler/scheduler-bf02b39c") {
+          return jsonResponse({
+            ok: true,
+            scheduler_id: "scheduler-bf02b39c",
+            config: {
+              dispatch_plan_path: "/tmp/dispatch_plan.md",
+              scheduler_mode: "cron",
+              agent_type: "codex",
+              model_id: "gpt-5.4 high",
+              mode: "pane_bridge",
+              model_map: {
+                CODEX: {
+                  provider: "codex",
+                  model_id: "gpt-5.4 high"
+                }
+              }
+            },
+            run_state: {
+              status: "waiting",
+              completed_cycles: 0,
+              run_history: []
+            }
+          });
+        }
+
+        return { ok: false, json: async () => ({}) };
+      },
+      setInterval: () => undefined,
+      window: {
+        location: {
+          pathname: "/scheduler/scheduler-bf02b39c",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(schedulerScript, context, { filename: "scheduler.html inline script" });
+    await flushAsync();
+
+    expect(getElementStub(elements, "cfg-agent-type")).toMatchObject({ value: "codex" });
+    expect(getElementStub(elements, "cfg-model-id")).toMatchObject({ value: "gpt-5.4 high" });
+    expect(getElementStub(elements, "cfg-agent-mode")).toMatchObject({ value: "pane_bridge" });
+    expect(String(getElementStub(elements, "cfg-model-map").value)).toContain('"CODEX"');
+
+    const configForm = getElementStub(elements, "config-form");
+    Object.assign(configForm, {
+      scheduler_mode: { value: "cron" },
+      cron_expression: { value: "0 9 * * 1-5" },
+      timezone: { value: "Asia/Tokyo" },
+      interval_seconds: { value: "" },
+      max_cycles: { value: "" },
+      delay_between_cycles_seconds: { value: "" },
+      dispatch_repo_root: { value: "" },
+      docs_root: { value: "" },
+      report_base_dir: { value: "/tmp/reports" },
+      catch_up_policy: { value: "skip_missed" },
+      agent_type: { value: "claude" },
+      model_id: { value: "claude-opus-4-6" },
+      mode: { value: "bridge" },
+      model_map: { value: '{"OPUS":{"provider":"claude","model_id":"claude-opus-4-6"}}' }
+    });
+
+    const submitHandler = getElementHandlers(configForm).submit;
+    if (!submitHandler) {
+      throw new Error("scheduler config form did not register submit handler");
+    }
+
+    await submitHandler({
+      preventDefault: () => undefined,
+      target: configForm
+    });
+
+    expect(patchBody).toMatchObject({
+      agent_type: "claude",
+      model_id: "claude-opus-4-6",
+      mode: "bridge",
+      model_map: {
+        OPUS: {
+          provider: "claude",
+          model_id: "claude-opus-4-6"
+        }
+      }
+    });
+  });
 });
 
 function extractInlineScripts(html: string): string[] {
@@ -117,8 +298,12 @@ function extractInlineScripts(html: string): string[] {
 }
 
 function createElementStub(): Record<string, unknown> {
+  const handlers: Record<string, (event: Record<string, unknown>) => unknown> = {};
   return {
-    addEventListener: () => undefined,
+    __handlers: handlers,
+    addEventListener: (event: string, handler: (event: Record<string, unknown>) => unknown) => {
+      handlers[event] = handler;
+    },
     className: "",
     dataset: {},
     hidden: false,
@@ -126,6 +311,10 @@ function createElementStub(): Record<string, unknown> {
     textContent: "",
     value: ""
   };
+}
+
+function getElementHandlers(element: Record<string, unknown>): Record<string, (event: Record<string, unknown>) => unknown> {
+  return element.__handlers as Record<string, (event: Record<string, unknown>) => unknown>;
 }
 
 function getElementStub(elements: Map<string, Record<string, unknown>>, id: string): Record<string, unknown> {

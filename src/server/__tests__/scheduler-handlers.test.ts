@@ -65,6 +65,59 @@ describe("computeSchedulerNextRunPreview", () => {
 });
 
 describe("scheduler config updates", () => {
+  it("patches and clears dispatcher provider and model routing settings", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-config-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+
+    const handlers = createHarness();
+
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-model-config-test",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    await expect(invokeJson(handlers, "PATCH", "/api/scheduler/scheduler-model-config-test/config", {
+      agent_type: "claude",
+      model_id: "claude-opus-4-6",
+      mode: "bridge",
+      model_map: {
+        OPUS: {
+          provider: "claude",
+          model_id: "claude-opus-4-6"
+        }
+      }
+    })).resolves.toMatchObject({
+      ok: true,
+      config: expect.objectContaining({
+        agent_type: "claude",
+        model_id: "claude-opus-4-6",
+        mode: "bridge",
+        model_map: {
+          OPUS: {
+            provider: "claude",
+            model_id: "claude-opus-4-6"
+          }
+        }
+      })
+    });
+
+    const cleared = await invokeJson<{ config: Record<string, unknown> }>(
+      handlers,
+      "PATCH",
+      "/api/scheduler/scheduler-model-config-test/config",
+      {
+        model_id: null,
+        model_map: null
+      }
+    );
+
+    expect(cleared.config).not.toHaveProperty("model_id");
+    expect(cleared.config).not.toHaveProperty("model_map");
+  });
+
   it("releases completed_max_cycles when max_cycles is increased past completed cycles", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-config-"));
     tempDirectories.add(directory);

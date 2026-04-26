@@ -310,6 +310,48 @@
             </div>
             <div class="summary-grid">
               <label class="field">
+                <span>agent_type</span>
+                <select id="new-scheduler-agent-type" name="agent_type">
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cursor">cursor</option>
+                </select>
+                <small class="field-hint muted">
+                  Dispatcher provider used when the scheduler launches the child dispatcher.
+                </small>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <input id="new-scheduler-model-id" name="model_id" type="text" placeholder="provider default" />
+                <small class="field-hint muted">
+                  Optional dispatcher model override. Leave blank to use the provider default.
+                </small>
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="new-scheduler-agent-mode" name="mode">
+                  <option value="pane_bridge">pane_bridge</option>
+                  <option value="bridge">bridge</option>
+                </select>
+                <small class="field-hint muted">
+                  Launch mode for the scheduler-owned child dispatcher.
+                </small>
+              </label>
+            </div>
+            <label class="field">
+              <span>model_map</span>
+              <textarea
+                id="new-scheduler-model-map"
+                name="model_map"
+                placeholder='{"CODEX":{"provider":"codex","model_id":"gpt-5.4 high"}}'
+              ></textarea>
+              <small class="field-hint muted">
+                Optional JSON object mapping dispatch plan model codes to provider/model pairs.
+              </small>
+            </label>
+            <div class="summary-grid">
+              <label class="field">
                 <span>scheduler_mode</span>
                 <select id="new-scheduler-mode" name="scheduler_mode">
                   <option value="none">none</option>

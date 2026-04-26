@@ -125,6 +125,48 @@
         <form id="config-form" class="config-form stack">
           <div class="summary-grid">
             <label class="field">
+              <span>agent_type</span>
+              <select id="cfg-agent-type" name="agent_type">
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+                <option value="gemini">gemini</option>
+                <option value="cursor">cursor</option>
+              </select>
+              <small class="field-hint muted">
+                Dispatcher provider used for future scheduler-owned dispatcher launches.
+              </small>
+            </label>
+            <label class="field">
+              <span>model_id</span>
+              <input id="cfg-model-id" name="model_id" type="text" placeholder="provider default" />
+              <small class="field-hint muted">
+                Optional dispatcher model override. Leave blank to use the provider default.
+              </small>
+            </label>
+            <label class="field">
+              <span>mode</span>
+              <select id="cfg-agent-mode" name="mode">
+                <option value="pane_bridge">pane_bridge</option>
+                <option value="bridge">bridge</option>
+              </select>
+              <small class="field-hint muted">
+                Launch mode for future child dispatcher sessions.
+              </small>
+            </label>
+          </div>
+          <label class="field">
+            <span>model_map</span>
+            <textarea
+              id="cfg-model-map"
+              name="model_map"
+              placeholder='{"CODEX":{"provider":"codex","model_id":"gpt-5.4 high"}}'
+            ></textarea>
+            <small class="field-hint muted">
+              Optional JSON object mapping dispatch plan model codes to provider/model pairs.
+            </small>
+          </label>
+          <div class="summary-grid">
+            <label class="field">
               <span>scheduler_mode</span>
               <select id="cfg-mode" name="scheduler_mode">
                 <option value="none">none</option>
@@ -287,6 +329,10 @@
         setVal('cfg-delay', c.delay_between_cycles_seconds);
         setVal('cfg-dispatch-repo-root', c.dispatch_repo_root);
         setVal('cfg-docs-root', c.docs_root);
+        setVal('cfg-agent-type', c.agent_type || 'claude');
+        setVal('cfg-model-id', c.model_id || '');
+        setVal('cfg-agent-mode', c.mode || 'pane_bridge');
+        setVal('cfg-model-map', formatModelMap(c.model_map));
         setVal('cfg-report-dir', c.report_base_dir);
         setVal('cfg-catchup', c.catch_up_policy);
 
@@ -383,6 +429,21 @@
         if (val !== undefined && val !== null) el.value = String(val);
       }
 
+      function formatModelMap(modelMap) {
+        if (!modelMap || typeof modelMap !== 'object' || Array.isArray(modelMap)) return '';
+        return JSON.stringify(modelMap, null, 2);
+      }
+
+      function parseModelMapInput(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('model_map must be a JSON object.');
+        }
+        return parsed;
+      }
+
       function formatTime(iso) {
         if (!iso) return '---';
         try { return new Date(iso).toLocaleString(); } catch { return iso; }
@@ -456,6 +517,15 @@
         if (form.delay_between_cycles_seconds.value) body.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
         if (form.dispatch_repo_root.value) body.dispatch_repo_root = form.dispatch_repo_root.value;
         if (form.docs_root.value) body.docs_root = form.docs_root.value;
+        if (form.agent_type.value) body.agent_type = form.agent_type.value;
+        body.model_id = form.model_id.value.trim() || null;
+        if (form.mode.value) body.mode = form.mode.value;
+        try {
+          body.model_map = parseModelMapInput(form.model_map.value);
+        } catch (err) {
+          feedback.textContent = err.message;
+          return;
+        }
         if (form.report_base_dir.value) body.report_base_dir = form.report_base_dir.value;
         if (form.catch_up_policy.value) body.catch_up_policy = form.catch_up_policy.value;
 
