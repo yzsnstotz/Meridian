@@ -61,11 +61,15 @@ export class SchedulerEngine {
 
   updateConfig(config: SchedulerConfig): void {
     this.config = config;
+    if (this.releaseCompletedMaxCyclesIfConfigAllows()) {
+      this.scheduleNextCycle();
+    }
   }
 
   start(): void {
     this.stopped = false;
 
+    this.releaseCompletedMaxCyclesIfConfigAllows();
     const state = this.stateStore.load();
 
     if (state.status === "active_run") {
@@ -79,6 +83,21 @@ export class SchedulerEngine {
     }
 
     this.scheduleNextCycle();
+  }
+
+  private releaseCompletedMaxCyclesIfConfigAllows(): boolean {
+    const state = this.stateStore.load();
+    if (state.status !== "completed_max_cycles") {
+      return false;
+    }
+    if (this.config.max_cycles && state.completed_cycles >= this.config.max_cycles) {
+      return false;
+    }
+
+    state.status = "idle";
+    state.next_run_at = null;
+    this.stateStore.save(state);
+    return true;
   }
 
   stop(): void {

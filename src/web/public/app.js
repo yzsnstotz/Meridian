@@ -3,6 +3,10 @@ const POLL_INTERVAL_MS = 3000;
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
 
+  if (page !== "dashboard") {
+    void refreshGlobalNavCounts();
+  }
+
   if (page === "dashboard") {
     void setupDashboard();
     return;
@@ -31,16 +35,28 @@ function setupTabNavigation() {
   const tabs = document.querySelectorAll(".nav-tab[data-tab]");
   const panels = document.querySelectorAll(".tab-panel");
 
+  const activateTab = (target) => {
+    tabs.forEach((t) => t.classList.remove("active"));
+    panels.forEach((p) => p.classList.remove("active"));
+
+    const tab = Array.from(tabs).find((candidate) => candidate.dataset.tab === target);
+    const panel = document.getElementById(`tab-${target}`);
+    if (!tab || !panel) return;
+
+    tab.classList.add("active");
+    panel.classList.add("active");
+  };
+
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
-      const target = tab.dataset.tab;
-      tabs.forEach((t) => t.classList.remove("active"));
-      panels.forEach((p) => p.classList.remove("active"));
-      tab.classList.add("active");
-      const panel = document.getElementById(`tab-${target}`);
-      if (panel) panel.classList.add("active");
+      activateTab(tab.dataset.tab);
     });
   });
+
+  const initialTab = new URLSearchParams(window.location.search).get("tab");
+  if (initialTab) {
+    activateTab(initialTab);
+  }
 }
 
 function updateTabCounts(roles) {
@@ -61,6 +77,17 @@ function setTabCount(elementId, count) {
     el.hidden = false;
   } else {
     el.hidden = true;
+  }
+}
+
+async function refreshGlobalNavCounts() {
+  try {
+    const roles = await fetchJson("/api/roles");
+    if (Array.isArray(roles)) {
+      updateTabCounts(roles);
+    }
+  } catch {
+    // Navigation counts are non-critical on detail pages.
   }
 }
 
@@ -282,6 +309,9 @@ async function setupDashboard() {
       list.replaceChildren();
 
       roles.forEach((role) => {
+        const detailHref = role.role_type === "scheduler"
+          ? `/scheduler/${encodeURIComponent(role.thread_id)}`
+          : `/role/${encodeURIComponent(role.thread_id)}`;
         const card = document.createElement("article");
         card.className = "role-card";
         card.innerHTML = `
@@ -294,7 +324,7 @@ async function setupDashboard() {
             <div><dt>tasks</dt><dd>${escapeHtml(String(role.task_count))}</dd></div>
           </dl>
           <div class="card-actions">
-            <a class="ghost-link" href="/role/${encodeURIComponent(role.thread_id)}">Open detail</a>
+            <a class="ghost-link" href="${detailHref}">Open detail</a>
             <button type="button" class="danger-button" data-thread="${escapeHtml(role.thread_id)}">Deactivate</button>
           </div>
         `;
@@ -780,6 +810,11 @@ async function setupRoleDetail() {
 
   const render = async () => {
     const detail = await fetchJson(`/api/role/${encodeURIComponent(threadId)}`);
+    if (detail.role_type === "scheduler") {
+      window.location.assign(`/scheduler/${encodeURIComponent(detail.thread_id)}`);
+      return;
+    }
+
     const nextRenderSignature = JSON.stringify(detail);
     if (hasRendered && lastRenderSignature === nextRenderSignature) {
       return;

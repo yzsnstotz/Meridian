@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Scheduler — meridian-roles</title>
     <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
   </head>
-  <body>
+  <body data-page="scheduler-detail">
     <!-- ── Global Nav ──────────────────────────────────────── -->
     <nav class="global-nav">
       <a class="nav-brand" href="/">
@@ -14,9 +15,9 @@
         meridian-roles
       </a>
       <div class="nav-tabs">
-        <a class="nav-tab" href="/">Dispatchers</a>
-        <a class="nav-tab active" href="/">Schedulers</a>
-        <a class="nav-tab" href="/">Roles</a>
+        <a class="nav-tab" href="/?tab=dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab active" href="/?tab=schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></a>
       </div>
     </nav>
 
