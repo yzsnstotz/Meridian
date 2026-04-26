@@ -69,6 +69,48 @@ describe("StateStore", () => {
     await expect(fs.readFile(stateFilePath, "utf8")).resolves.toContain("\"threadId\": \"dispatcher-1\"");
   });
 
+  it("uses isolated temporary files for concurrent saves", async () => {
+    const directory = await createTempDirectory();
+    const stateFilePath = path.join(directory, "state.json");
+    let writesStarted = 0;
+    const writePaths = new Set<string>();
+    let releaseWrites: (() => void) | null = null;
+    const allWritesStarted = new Promise<void>((resolve) => {
+      releaseWrites = resolve;
+    });
+
+    const store = new StateStore(stateFilePath, {
+      mkdir: fs.mkdir.bind(fs),
+      writeFile: async (targetPath, contents, encoding) => {
+        writePaths.add(String(targetPath));
+        writesStarted += 1;
+        if (writesStarted === 2) {
+          releaseWrites?.();
+        }
+        await allWritesStarted;
+        await fs.writeFile(targetPath, contents, encoding);
+      },
+      rename: fs.rename.bind(fs),
+      unlink: fs.unlink.bind(fs),
+      readFile: fs.readFile.bind(fs)
+    });
+
+    const secondState: AppState = {
+      ...sampleState,
+      roles: [
+        {
+          ...sampleState.roles[0],
+          threadId: "dispatcher-2"
+        }
+      ]
+    };
+
+    await expect(Promise.all([store.save(sampleState), store.save(secondState)])).resolves.toHaveLength(2);
+    expect(writePaths.size).toBe(2);
+    const loaded = await store.load();
+    expect(["dispatcher-1", "dispatcher-2"]).toContain(loaded?.roles[0]?.threadId);
+  });
+
   it("normalizes persisted agent-dispatcher roots and generated prompts on load", async () => {
     const directory = await createTempDirectory();
     const repoRoot = path.join(directory, "projects/clawso");
@@ -139,9 +181,13 @@ describe("StateStore", () => {
     const directory = await createTempDirectory();
     const stateFilePath = path.join(directory, "state.json");
     const renameError = Object.assign(new Error("rename failed"), { code: "EXDEV" });
+    let tempFilePath = "";
     const store = new StateStore(stateFilePath, {
       mkdir: fs.mkdir.bind(fs),
-      writeFile: fs.writeFile.bind(fs),
+      writeFile: async (targetPath, contents, encoding) => {
+        tempFilePath = String(targetPath);
+        await fs.writeFile(targetPath, contents, encoding);
+      },
       rename: async () => {
         throw renameError;
       },
@@ -166,7 +212,8 @@ describe("StateStore", () => {
       `Failed to replace state file at "${stateFilePath}" while saving state to "${stateFilePath}". rename failed.`
     );
     await expect(fs.readFile(stateFilePath, "utf8")).resolves.toBe(originalContents);
-    await expect(fs.access(`${stateFilePath}.tmp`)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(tempFilePath).not.toBe("");
+    await expect(fs.access(tempFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("wraps directory creation failures with an actionable STATE_FILE_PATH hint", async () => {
@@ -194,11 +241,12 @@ describe("StateStore", () => {
   it("cleans up temp files when writing the temporary state file fails", async () => {
     const directory = await createTempDirectory();
     const stateFilePath = path.join(directory, "state.json");
-    const tempFilePath = `${stateFilePath}.tmp`;
+    let tempFilePath = "";
     const writeError = Object.assign(new Error("EACCES: permission denied, open temp file"), { code: "EACCES" });
     const store = new StateStore(stateFilePath, {
       mkdir: fs.mkdir.bind(fs),
       writeFile: async (targetPath, contents, encoding) => {
+        tempFilePath = String(targetPath);
         await fs.writeFile(targetPath, contents, encoding);
         throw writeError;
       },
@@ -207,9 +255,8 @@ describe("StateStore", () => {
       readFile: fs.readFile.bind(fs)
     });
 
-    await expect(store.save(sampleState)).rejects.toThrow(
-      `Failed to write temporary state file at "${tempFilePath}" while saving state to "${stateFilePath}". EACCES: permission denied, open temp file.`
-    );
+    await expect(store.save(sampleState)).rejects.toThrow("Failed to write temporary state file");
+    expect(tempFilePath).not.toBe("");
     await expect(store.save(sampleState)).rejects.toThrow('Set STATE_FILE_PATH to a writable absolute path');
     await expect(fs.access(tempFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
