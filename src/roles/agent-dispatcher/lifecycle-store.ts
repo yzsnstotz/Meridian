@@ -615,6 +615,7 @@ const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
   /\bexited\s+(?:with\s+)?(?:exit\s+)?code\s*:?\s*`?[1-9]\d*`?/i,
   /\b(?:command|process|script|tool|test|build|check|run)\b[^\n]{0,80}\bexited\s+`?[1-9]\d*`?\b/i,
   /\bAI auto-tests failed\b/i,
+  /\bauto-?tests?\s+failed\b/i,
   /\btool failure\b/i,
   /\bfailed the worker acceptance checks\b/i,
   /\b(?:finished|ended|completed|stopped)\s+as\s+`?BLOCKED`?\b/i,
