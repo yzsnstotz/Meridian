@@ -381,6 +381,30 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when a report has failed status and non-zero exit code", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-CATALOG", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-CATALOG", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      content: [
+        "# W-CATALOG Completion Report",
+        "",
+        "- Status: FAILED",
+        "- Exit code: 1",
+        "",
+        "No JSON summary output was produced because startup failed."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-CATALOG"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when final text says the command failed with an exit code", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("W-DETAIL", "worker-thread-222", "22222222-2222-4222-8222-222222222222", []);

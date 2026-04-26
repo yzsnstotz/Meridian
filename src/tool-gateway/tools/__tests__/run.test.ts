@@ -503,7 +503,7 @@ describe("run tool", () => {
         return JSON.stringify({
           status: "active_run",
           current_run_id: "run-123",
-          current_run_report_dir: "/tmp/dispatch/reports/run/run-123"
+          current_run_report_dir: "/tmp/dispatch/reports/runs/run-123"
         });
       }
 
@@ -521,11 +521,11 @@ describe("run tool", () => {
       "PRE-FLIGHT",
       "thread-preflight-run-report",
       "11111111-1111-4111-8111-111111111111",
-      ["/tmp/dispatch/reports/run/run-123/PRE-FLIGHT.md"],
+      ["/tmp/dispatch/reports/runs/run-123/PRE-FLIGHT.md"],
       expect.any(String)
     );
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("write the completion report to `/tmp/dispatch/reports/run/run-123/PRE-FLIGHT.md`");
+    expect(sentContent).toContain("write the completion report to `/tmp/dispatch/reports/runs/run-123/PRE-FLIGHT.md`");
     expect(sentContent).toContain("supersedes any report path in the command file");
   });
 

@@ -62,7 +62,7 @@ describe("archiveRun", () => {
       plannedStartTime: null
     });
 
-    expect(result.archiveDir).toBe(path.join(reportBaseDir, "run", "run-001"));
+    expect(result.archiveDir).toBe(path.join(reportBaseDir, "runs", "run-001"));
     await expect(fs.access(path.join(result.archiveDir, "worker_outputs", "PRE-FLIGHT.md"))).resolves.toBeUndefined();
 
     const report = JSON.parse(await fs.readFile(result.jsonReportPath, "utf8"));
@@ -132,7 +132,7 @@ describe("archiveRun", () => {
       plannedStartTime: null
     });
 
-    expect(result.archiveDir).toBe(path.join(reportBaseDir, "run", "run-002"));
+    expect(result.archiveDir).toBe(path.join(reportBaseDir, "runs", "run-002"));
     await expect(fs.readFile(path.join(result.archiveDir, "dispatch_plan.md"), "utf8"))
       .resolves.toContain("| ❌ | 1 | W-CATALOG | Catalog Sweep | CODEX-HIGH | PRE-FLIGHT |");
 

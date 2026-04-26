@@ -611,7 +611,7 @@ function resolveCurrentRunReportDir(
     return null;
   }
 
-  return path.resolve(reportBaseDir, "run", sanitizePathSegment(runId));
+  return path.resolve(reportBaseDir, "runs", sanitizePathSegment(runId));
 }
 
 function isCurrentRunOutputPath(candidatePath: string, currentRunReportDir: string): boolean {

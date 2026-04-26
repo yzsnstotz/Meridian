@@ -30,7 +30,7 @@ export interface ArchiveResult {
 }
 
 export function archiveRun(ctx: ArchiveContext): ArchiveResult {
-  const archiveDir = path.join(ctx.config.report_base_dir, "run", ctx.runId);
+  const archiveDir = path.join(ctx.config.report_base_dir, "runs", ctx.runId);
   fs.mkdirSync(archiveDir, { recursive: true });
 
   const planPath = ctx.config.dispatch_plan_path;

@@ -172,7 +172,10 @@ describe("scheduler detail public scripts", () => {
               status: "waiting",
               completed_cycles: 2,
               next_run_at: "2026-04-26T21:00:00.000Z",
+              current_run_id: "run-active",
+              current_run_report_dir: "/tmp/reports/runs/run-active",
               last_run_outcome: "completed",
+              last_report_path: "/tmp/reports/runs/run-previous/report.md",
               run_history: []
             }
           });
@@ -205,6 +208,12 @@ describe("scheduler detail public scripts", () => {
     expect(getElementStub(elements, "scheduler-status-badge")).toMatchObject({
       textContent: "waiting",
       className: "status-badge waiting"
+    });
+    expect(getElementStub(elements, "s-active-run-report-dir")).toMatchObject({
+      textContent: "/tmp/reports/runs/run-active"
+    });
+    expect(getElementStub(elements, "s-last-report")).toMatchObject({
+      textContent: "/tmp/reports/runs/run-previous/report.md"
     });
   });
 

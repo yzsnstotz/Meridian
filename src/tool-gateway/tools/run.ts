@@ -411,7 +411,7 @@ function findSchedulerRunReportOutput(expectedOutputs: string[], workerId: strin
   return expectedOutputs.find((outputPath) => {
     const normalized = outputPath.replace(/\\/g, "/").toLowerCase();
     const basename = path.basename(normalized);
-    return normalized.includes("/run/")
+    return (normalized.includes("/runs/") || normalized.includes("/run/"))
       && (basename === `${normalizedWorkerId}.md` || basename === `${normalizedWorkerId}_report.md`);
   }) ?? null;
 }
@@ -577,7 +577,7 @@ async function deriveSchedulerRunReportOutput(commandPath: string, workerId: str
   }
 
   const reportDirectory = schedulerState.currentRunReportDir
-    ?? path.join(path.dirname(commandPath), "reports", "run", sanitizePathSegment(schedulerState.currentRunId));
+    ?? path.join(path.dirname(commandPath), "reports", "runs", sanitizePathSegment(schedulerState.currentRunId));
 
   return path.join(reportDirectory, `${workerId}.md`);
 }

@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("detectCycleCompletion", () => {
-  it("records an active run report directory under reports/run/<run_id>", async () => {
+  it("records an active run report directory under reports/runs/<run_id>", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
     tempDirectories.add(directory);
 
@@ -36,7 +36,7 @@ describe("detectCycleCompletion", () => {
     expect(stateStore.load()).toMatchObject({
       status: "active_run",
       current_run_id: "run-001",
-      current_run_report_dir: path.join(directory, "reports", "run", "run-001")
+      current_run_report_dir: path.join(directory, "reports", "runs", "run-001")
     });
   });
 
