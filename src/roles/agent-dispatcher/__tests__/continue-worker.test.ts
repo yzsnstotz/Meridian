@@ -42,6 +42,18 @@ describe("extractRepoFieldFromWorkerFile", () => {
     expect(extractRepoFieldFromWorkerFile(content)).toBe("/tmp/my-repo");
   });
 
+  it("prefers an inline absolute repo path over the display alias", () => {
+    const content = "- **Repo**: `github-ai-automation-scan` (`/Users/work/github-ai-automation-scan`)";
+
+    expect(extractRepoFieldFromWorkerFile(content)).toBe("/Users/work/github-ai-automation-scan");
+  });
+
+  it("strips read-only qualifier text from repo aliases", () => {
+    const content = "- **Repo**: both (read-only — no code changes, no branch creation)";
+
+    expect(extractRepoFieldFromWorkerFile(content)).toBe("both");
+  });
+
   it("returns null when no Repo field exists", () => {
     const content = "### N-01 — Init\n\n- **Runtime**: Node.js";
 
@@ -59,7 +71,18 @@ describe("resolveWorkerSpawnDir", () => {
     tempDirectories.add(dir);
 
     const planPath = path.join(dir, "dispatch_plan.md");
-    await fsPromises.writeFile(planPath, "# Plan\n", "utf8");
+    await fsPromises.writeFile(planPath, [
+      "# Plan",
+      "",
+      "## Repo Map",
+      "",
+      "| Prefix | Repo | Path | Base Branch |",
+      "|--------|------|------|-------------|",
+      "| `T-*` | `github-ai-automation-scan` | `/Users/work/github-ai-automation-scan` | `main` |",
+      "| `M-*` | `Meridian-roles` | `/Users/work/Meridian/Meridian-roles` | `main` |",
+      "| `PRE-FLIGHT`, `*-GATE` | both (read-only) | n/a | n/a |",
+      ""
+    ].join("\n"), "utf8");
 
     for (const [workerId, content] of Object.entries(workerFiles)) {
       await fsPromises.writeFile(path.join(dir, `${workerId}.md`), content, "utf8");
@@ -98,5 +121,23 @@ describe("resolveWorkerSpawnDir", () => {
 
     expect(resolveWorkerSpawnDir(planPath, "N-06")).toBe("/Users/work/projects/ADS");
     expect(resolveWorkerSpawnDir(planPath, "R-01")).toBe("/Users/work/meridian");
+  });
+
+  it("resolves repo aliases through the dispatch plan repo map", async () => {
+    const planPath = await createTempPlan({
+      "T-DB-SCHEMA": "- **Repo**: `github-ai-automation-scan`\n- **Runtime**: Python",
+      "M-SCHEDULER-WIRE": "- **Repo**: `Meridian-roles`\n- **Runtime**: TypeScript"
+    });
+
+    expect(resolveWorkerSpawnDir(planPath, "T-DB-SCHEMA")).toBe("/Users/work/github-ai-automation-scan");
+    expect(resolveWorkerSpawnDir(planPath, "M-SCHEDULER-WIRE")).toBe("/Users/work/Meridian/Meridian-roles");
+  });
+
+  it("does not resolve read-only both repo aliases as literal directories", async () => {
+    const planPath = await createTempPlan({
+      "PRE-FLIGHT": "- **Repo**: both (read-only — no code changes, no branch creation)"
+    });
+
+    expect(resolveWorkerSpawnDir(planPath, "PRE-FLIGHT")).toBeNull();
   });
 });
