@@ -599,6 +599,7 @@ const HIT_LIMIT_PATTERNS = [
 const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*(?:#{1,6}\s*)?Outcome\s*\n+\s*`?\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*(?:-\s*)?Outcome\s*:?\s*`?\s*(?:FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*(?:-\s*)?Status\s*:?\s*`?\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,

@@ -63,8 +63,9 @@
             <tr><th>Status</th><td id="s-status">---</td></tr>
             <tr><th>Next Run At</th><td id="s-next-run">---</td></tr>
             <tr><th>Active Run ID</th><td id="s-active-run">---</td></tr>
+            <tr><th>Active Report Dir</th><td id="s-active-run-report-dir">---</td></tr>
             <tr><th>Dispatcher Thread</th><td id="s-dispatcher-thread">---</td></tr>
-            <tr><th>Last Report</th><td id="s-last-report">---</td></tr>
+            <tr><th>Last Completed Report</th><td id="s-last-report">---</td></tr>
           </tbody>
         </table>
       </section>
@@ -322,6 +323,7 @@
 
         document.getElementById('s-next-run').textContent = rs.next_run_at || '---';
         document.getElementById('s-active-run').textContent = rs.current_run_id || '---';
+        document.getElementById('s-active-run-report-dir').textContent = rs.current_run_report_dir || '---';
         document.getElementById('s-dispatcher-thread').textContent = rs.current_dispatcher_thread_id || '---';
         document.getElementById('s-last-report').textContent = rs.last_report_path || '---';
 

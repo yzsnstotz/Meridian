@@ -200,7 +200,7 @@ describe("SchedulerEngine", () => {
       "| ⬜ | 2 | W-02 | Second worker | CODEX-HIGH | W-01 | |"
     ].join("\n"), "utf8");
 
-    const runReportDir = path.join(directory, "reports", "run", "run-001");
+    const runReportDir = path.join(directory, "reports", "runs", "run-001");
     await fs.mkdir(runReportDir, { recursive: true });
     const reportPath = path.join(runReportDir, "W-01.md");
     await fs.writeFile(reportPath, [
@@ -295,7 +295,7 @@ describe("SchedulerEngine", () => {
       "| ⬜ | 2 | W-02 | Second worker | CODEX-HIGH | W-01 | |"
     ].join("\n"), "utf8");
 
-    const runReportDir = path.join(directory, "reports", "run", "run-001");
+    const runReportDir = path.join(directory, "reports", "runs", "run-001");
     await fs.mkdir(runReportDir, { recursive: true });
     const reportPath = path.join(runReportDir, "W-01.md");
     await fs.writeFile(reportPath, [

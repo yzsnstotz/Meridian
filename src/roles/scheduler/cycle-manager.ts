@@ -88,7 +88,7 @@ export function startCycle(
   const state = stateStore.load();
   state.status = "active_run";
   state.current_run_id = runId;
-  state.current_run_report_dir = path.join(config.report_base_dir, "run", runId);
+  state.current_run_report_dir = path.join(config.report_base_dir, "runs", runId);
   state.current_scan_run_id = deriveScanRunId(config, plannedStartTime);
   state.current_dispatcher_thread_id = null;
   stateStore.save(state);
