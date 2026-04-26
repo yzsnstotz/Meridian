@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
 
-import type { SchedulerConfig, SchedulerMode, TerminalOutcome } from "../../types";
+import type { AgentType, HubResult, LifecycleStatus, SchedulerConfig, SchedulerMode, TerminalOutcome } from "../../types";
 import { buildDispatchStatusReport, type DispatchStatusWorker } from "../../tool-gateway/tools/dispatch-status";
 import type { Logger } from "../base-role";
 import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
-import { LifecycleStore } from "../agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
 import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { nextCronFire } from "./cron-parser";
@@ -330,6 +330,8 @@ export class SchedulerEngine {
   }
 
   private async checkCycleCompletion(): Promise<void> {
+    this.recoverCurrentRunOutputEvidence();
+
     const detection = detectCycleCompletion(this.config);
     if (!detection.complete) {
       await this.continueIncompleteCycle();
@@ -408,6 +410,59 @@ export class SchedulerEngine {
     }
   }
 
+  private recoverCurrentRunOutputEvidence(): void {
+    const state = this.stateStore.load();
+    if (state.status !== "active_run" || !state.current_run_report_dir) {
+      return;
+    }
+
+    const currentRunReportDir = path.resolve(state.current_run_report_dir);
+    const lifecycleStore = new LifecycleStore(this.resolveDispatchThreadsPath());
+    const lifecycleState = lifecycleStore.load();
+    const nowIso = new Date().toISOString();
+    let mutated = false;
+
+    for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+      if (worker.status !== "running") {
+        continue;
+      }
+
+      const outputPath = worker.expected_outputs.find((candidate) => {
+        return isCurrentRunOutputPath(candidate, currentRunReportDir) && isNonEmptyFile(candidate);
+      });
+      if (!outputPath) {
+        continue;
+      }
+
+      const content = readFileIfPresent(outputPath);
+      if (content === null) {
+        continue;
+      }
+
+      const status = classifyRecoveredOutputStatus(content);
+      lifecycleState.workers[workerId] = {
+        ...worker,
+        status,
+        last_seen_at: nowIso,
+        hub_result: worker.hub_result ?? buildRecoveredOutputHubResult({
+          content,
+          outputPath,
+          source: normalizeAgentType(this.config.agent_type),
+          threadId: worker.thread_id,
+          traceId: worker.trace_id,
+          status,
+          timestamp: nowIso
+        })
+      };
+      lifecycleStore.logTransition(workerId, "running", status, "scheduler_current_run_output");
+      mutated = true;
+    }
+
+    if (mutated) {
+      lifecycleStore.save(lifecycleState);
+    }
+  }
+
   private async continueSchedulerWorker(
     workerId: string,
     workers: DispatchStatusWorker[]
@@ -465,6 +520,78 @@ function toContinueDispatchPlanRow(worker: DispatchStatusWorker): ContinueDispat
     model: worker.model ?? "",
     notes: worker.notes
   };
+}
+
+function isCurrentRunOutputPath(candidatePath: string, currentRunReportDir: string): boolean {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const relative = path.relative(currentRunReportDir, resolvedCandidate);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isNonEmptyFile(candidatePath: string): boolean {
+  try {
+    const stat = fs.statSync(candidatePath);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+function readFileIfPresent(candidatePath: string): string | null {
+  try {
+    return fs.readFileSync(candidatePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function classifyRecoveredOutputStatus(content: string): Extract<LifecycleStatus, "completed" | "failed"> {
+  if (hubResultContainsFailureSignal({ content }) || isNonCompletionContent(content)) {
+    return "failed";
+  }
+
+  return "completed";
+}
+
+function buildRecoveredOutputHubResult(options: {
+  content: string;
+  outputPath: string;
+  source: AgentType;
+  threadId: string;
+  traceId: string | null;
+  status: Extract<LifecycleStatus, "completed" | "failed">;
+  timestamp: string;
+}): HubResult {
+  return {
+    trace_id: isUuid(options.traceId) ? options.traceId : randomUUID(),
+    thread_id: options.threadId,
+    source: options.source,
+    status: options.status === "failed" ? "error" : "success",
+    run_state: "completed",
+    content: options.content,
+    attachments: [{
+      path: options.outputPath,
+      filename: path.basename(options.outputPath)
+    }],
+    timestamp: options.timestamp
+  };
+}
+
+function normalizeAgentType(value: string): AgentType {
+  switch (value) {
+    case "claude":
+    case "codex":
+    case "gemini":
+    case "cursor":
+      return value;
+    default:
+      return "codex";
+  }
+}
+
+function isUuid(value: string | null): value is string {
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 // ─── Notification builders ──────────────────────────────────────────────────
