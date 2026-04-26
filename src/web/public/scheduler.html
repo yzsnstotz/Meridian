@@ -142,11 +142,11 @@
                 <option value="">provider default</option>
                 <optgroup label="codex">
                   <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
-                  <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
-                  <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                  <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                  <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
                 </optgroup>
                 <optgroup label="claude">
-                  <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                  <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
                   <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
                 </optgroup>
                 <optgroup label="gemini">
@@ -168,17 +168,6 @@
               </small>
             </label>
           </div>
-          <label class="field">
-            <span>model_map</span>
-            <textarea
-              id="cfg-model-map"
-              name="model_map"
-              placeholder='{"CODEX":{"provider":"codex","model_id":"gpt-5.4 high"}}'
-            ></textarea>
-            <small class="field-hint muted">
-              Optional JSON object mapping dispatch plan model codes to provider/model pairs.
-            </small>
-          </label>
           <div class="summary-grid">
             <label class="field">
               <span>scheduler_mode</span>
@@ -298,6 +287,8 @@
       (() => {
       const POLL_INTERVAL_MS = 3000;
       const schedulerId = window.location.pathname.split('/').pop();
+      let configFormDirty = false;
+      let configFormSaving = false;
 
       async function fetchScheduler() {
         try {
@@ -334,21 +325,21 @@
         document.getElementById('s-dispatcher-thread').textContent = rs.current_dispatcher_thread_id || '---';
         document.getElementById('s-last-report').textContent = rs.last_report_path || '---';
 
-        // Populate config form
-        setVal('cfg-mode', c.scheduler_mode);
-        setVal('cfg-cron', c.cron_expression);
-        setVal('cfg-timezone', c.timezone);
-        setVal('cfg-interval', c.interval_seconds);
-        setVal('cfg-max-cycles', c.max_cycles);
-        setVal('cfg-delay', c.delay_between_cycles_seconds);
-        setVal('cfg-dispatch-repo-root', c.dispatch_repo_root);
-        setVal('cfg-docs-root', c.docs_root);
-        setVal('cfg-agent-type', c.agent_type || 'claude');
-        setVal('cfg-model-id', c.model_id || '');
-        setVal('cfg-agent-mode', c.mode || 'pane_bridge');
-        setVal('cfg-model-map', formatModelMap(c.model_map));
-        setVal('cfg-report-dir', c.report_base_dir);
-        setVal('cfg-catchup', c.catch_up_policy);
+        if (!configFormDirty && !configFormSaving) {
+          setVal('cfg-mode', c.scheduler_mode);
+          setVal('cfg-cron', c.cron_expression);
+          setVal('cfg-timezone', c.timezone);
+          setVal('cfg-interval', c.interval_seconds);
+          setVal('cfg-max-cycles', c.max_cycles);
+          setVal('cfg-delay', c.delay_between_cycles_seconds);
+          setVal('cfg-dispatch-repo-root', c.dispatch_repo_root);
+          setVal('cfg-docs-root', c.docs_root);
+          setVal('cfg-agent-type', c.agent_type || 'claude');
+          setVal('cfg-model-id', c.model_id || '');
+          setVal('cfg-agent-mode', c.mode || 'pane_bridge');
+          setVal('cfg-report-dir', c.report_base_dir);
+          setVal('cfg-catchup', c.catch_up_policy);
+        }
 
         document.getElementById('next-run-preview').textContent = data.next_run_preview
           ? 'Next cron preview: ' + data.next_run_preview
@@ -443,21 +434,6 @@
         if (val !== undefined && val !== null) el.value = String(val);
       }
 
-      function formatModelMap(modelMap) {
-        if (!modelMap || typeof modelMap !== 'object' || Array.isArray(modelMap)) return '';
-        return JSON.stringify(modelMap, null, 2);
-      }
-
-      function parseModelMapInput(value) {
-        const raw = String(value || '').trim();
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('model_map must be a JSON object.');
-        }
-        return parsed;
-      }
-
       function formatTime(iso) {
         if (!iso) return '---';
         try { return new Date(iso).toLocaleString(); } catch { return iso; }
@@ -515,7 +491,14 @@
       });
 
       // Config save
-      document.getElementById('config-form').addEventListener('submit', async (e) => {
+      const configForm = document.getElementById('config-form');
+      configForm.addEventListener('input', () => {
+        configFormDirty = true;
+      });
+      configForm.addEventListener('change', () => {
+        configFormDirty = true;
+      });
+      configForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const feedback = document.getElementById('config-feedback');
         feedback.textContent = '';
@@ -534,15 +517,10 @@
         if (form.agent_type.value) body.agent_type = form.agent_type.value;
         body.model_id = form.model_id.value.trim() || null;
         if (form.mode.value) body.mode = form.mode.value;
-        try {
-          body.model_map = parseModelMapInput(form.model_map.value);
-        } catch (err) {
-          feedback.textContent = err.message;
-          return;
-        }
         if (form.report_base_dir.value) body.report_base_dir = form.report_base_dir.value;
         if (form.catch_up_policy.value) body.catch_up_policy = form.catch_up_policy.value;
 
+        configFormSaving = true;
         try {
           const res = await fetch(`/api/scheduler/${encodeURIComponent(schedulerId)}/config`, {
             method: 'PATCH',
@@ -551,8 +529,15 @@
           });
           const data = await res.json();
           feedback.textContent = data.ok ? 'Config saved' : (data.error || 'Failed');
+          if (data.ok) {
+            configFormDirty = false;
+            configFormSaving = false;
+            await poll();
+          }
         } catch (err) {
           feedback.textContent = err.message;
+        } finally {
+          configFormSaving = false;
         }
       });
 

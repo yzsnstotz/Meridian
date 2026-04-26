@@ -190,14 +190,6 @@ function setupSchedulerCreation() {
     if (form.model_id?.value?.trim()) config.model_id = form.model_id.value.trim();
     if (form.mode?.value) config.mode = form.mode.value;
 
-    try {
-      const modelMap = parseModelMapInput(form.model_map?.value);
-      if (modelMap) config.model_map = modelMap;
-    } catch (error) {
-      feedback.textContent = getErrorMessage(error);
-      return;
-    }
-
     config.report_base_dir = reportBaseDir;
     if (form.catch_up_policy?.value) config.catch_up_policy = form.catch_up_policy.value;
 
@@ -2469,18 +2461,6 @@ function decodeThreadId(pattern) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function parseModelMapInput(value) {
-  const raw = normalizeText(value);
-  if (!raw) return null;
-
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("model_map must be a JSON object.");
-  }
-
-  return parsed;
 }
 
 function getErrorMessage(error) {

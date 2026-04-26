@@ -12,13 +12,23 @@ describe("scheduler detail public scripts", () => {
 
     expect(indexHtml).toContain('<select id="new-scheduler-model-id" name="model_id">');
     expect(indexHtml).not.toContain('<input id="new-scheduler-model-id"');
-    expect(indexHtml).toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
-    expect(indexHtml).toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+    expect(indexHtml).toContain('<option value="gpt-5.5 high">codex: gpt-5.5 high</option>');
+    expect(indexHtml).toContain('<option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>');
+    expect(indexHtml).toContain('<option value="claude-opus-4-7">claude: claude-opus-4-7</option>');
+    expect(indexHtml).not.toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
+    expect(indexHtml).not.toContain('<option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>');
+    expect(indexHtml).not.toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+    expect(indexHtml).not.toContain('id="new-scheduler-model-map"');
 
     expect(schedulerHtml).toContain('<select id="cfg-model-id" name="model_id">');
     expect(schedulerHtml).not.toContain('<input id="cfg-model-id"');
-    expect(schedulerHtml).toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
-    expect(schedulerHtml).toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+    expect(schedulerHtml).toContain('<option value="gpt-5.5 high">codex: gpt-5.5 high</option>');
+    expect(schedulerHtml).toContain('<option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>');
+    expect(schedulerHtml).toContain('<option value="claude-opus-4-7">claude: claude-opus-4-7</option>');
+    expect(schedulerHtml).not.toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
+    expect(schedulerHtml).not.toContain('<option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>');
+    expect(schedulerHtml).not.toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+    expect(schedulerHtml).not.toContain('id="cfg-model-map"');
   });
 
   it("submits scheduler creation with dispatcher agent and model settings", async () => {
@@ -38,9 +48,8 @@ describe("scheduler detail public scripts", () => {
       dispatch_repo_root: { value: "/tmp/project" },
       docs_root: { value: "/tmp/docs" },
       agent_type: { value: "codex" },
-      model_id: { value: "gpt-5.4 high" },
+      model_id: { value: "gpt-5.5 high" },
       mode: { value: "pane_bridge" },
-      model_map: { value: '{"CODEX":{"provider":"codex","model_id":"gpt-5.4 high"}}' },
       catch_up_policy: { value: "skip_missed" },
       reset: () => undefined
     });
@@ -86,16 +95,11 @@ describe("scheduler detail public scripts", () => {
     expect(schedulerRequestBody).toMatchObject({
       config: {
         agent_type: "codex",
-        model_id: "gpt-5.4 high",
-        mode: "pane_bridge",
-        model_map: {
-          CODEX: {
-            provider: "codex",
-            model_id: "gpt-5.4 high"
-          }
-        }
+        model_id: "gpt-5.5 high",
+        mode: "pane_bridge"
       }
     });
+    expect((schedulerRequestBody as { config?: Record<string, unknown> }).config).not.toHaveProperty("model_map");
   });
 
   it("loads beside the shared dashboard script without global declaration conflicts", async () => {
@@ -210,6 +214,7 @@ describe("scheduler detail public scripts", () => {
     const schedulerScript = extractInlineScripts(schedulerHtml).join("\n");
     const elements = new Map<string, Record<string, unknown>>();
     let patchBody: unknown = null;
+    let intervalHandler: (() => void | Promise<void>) | undefined;
 
     const context = vm.createContext({
       console,
@@ -231,14 +236,8 @@ describe("scheduler detail public scripts", () => {
               dispatch_plan_path: "/tmp/dispatch_plan.md",
               scheduler_mode: "cron",
               agent_type: "codex",
-              model_id: "gpt-5.4 high",
-              mode: "pane_bridge",
-              model_map: {
-                CODEX: {
-                  provider: "codex",
-                  model_id: "gpt-5.4 high"
-                }
-              }
+              model_id: "gpt-5.5 high",
+              mode: "pane_bridge"
             },
             run_state: {
               status: "waiting",
@@ -250,7 +249,10 @@ describe("scheduler detail public scripts", () => {
 
         return { ok: false, json: async () => ({}) };
       },
-      setInterval: () => undefined,
+      setInterval: (handler: () => void | Promise<void>) => {
+        intervalHandler = handler;
+        return undefined;
+      },
       window: {
         location: {
           pathname: "/scheduler/scheduler-bf02b39c",
@@ -263,11 +265,20 @@ describe("scheduler detail public scripts", () => {
     await flushAsync();
 
     expect(getElementStub(elements, "cfg-agent-type")).toMatchObject({ value: "codex" });
-    expect(getElementStub(elements, "cfg-model-id")).toMatchObject({ value: "gpt-5.4 high" });
+    expect(getElementStub(elements, "cfg-model-id")).toMatchObject({ value: "gpt-5.5 high" });
     expect(getElementStub(elements, "cfg-agent-mode")).toMatchObject({ value: "pane_bridge" });
-    expect(String(getElementStub(elements, "cfg-model-map").value)).toContain('"CODEX"');
 
     const configForm = getElementStub(elements, "config-form");
+    const cfgAgentType = getElementStub(elements, "cfg-agent-type");
+    cfgAgentType.value = "claude";
+    getElementHandlers(configForm).change?.({ target: cfgAgentType });
+    if (!intervalHandler) {
+      throw new Error("scheduler detail did not register polling interval");
+    }
+    await intervalHandler();
+    await flushAsync();
+    expect(getElementStub(elements, "cfg-agent-type")).toMatchObject({ value: "claude" });
+
     Object.assign(configForm, {
       scheduler_mode: { value: "cron" },
       cron_expression: { value: "0 9 * * 1-5" },
@@ -280,9 +291,8 @@ describe("scheduler detail public scripts", () => {
       report_base_dir: { value: "/tmp/reports" },
       catch_up_policy: { value: "skip_missed" },
       agent_type: { value: "claude" },
-      model_id: { value: "claude-opus-4-6" },
-      mode: { value: "bridge" },
-      model_map: { value: '{"OPUS":{"provider":"claude","model_id":"claude-opus-4-6"}}' }
+      model_id: { value: "claude-opus-4-7" },
+      mode: { value: "bridge" }
     });
 
     const submitHandler = getElementHandlers(configForm).submit;
@@ -297,15 +307,10 @@ describe("scheduler detail public scripts", () => {
 
     expect(patchBody).toMatchObject({
       agent_type: "claude",
-      model_id: "claude-opus-4-6",
-      mode: "bridge",
-      model_map: {
-        OPUS: {
-          provider: "claude",
-          model_id: "claude-opus-4-6"
-        }
-      }
+      model_id: "claude-opus-4-7",
+      mode: "bridge"
     });
+    expect(patchBody).not.toHaveProperty("model_map");
   });
 });
 
