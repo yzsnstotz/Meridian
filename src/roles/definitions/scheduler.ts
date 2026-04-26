@@ -60,7 +60,7 @@ export class SchedulerRole implements BaseRole {
     this.schedulerStateStore = new SchedulerStateStore(this.config.dispatch_plan_path);
 
     const callbacks: SchedulerEngineCallbacks = {
-      launchDispatcher: (config, _runId) => this.launchChildDispatcher(config),
+      launchDispatcher: (config) => this.launchChildDispatcher(config),
       killDispatcher: async (threadId) => { await this.meridianApi.kill(threadId); },
       notifyChannels: (config, message) => this.notifyChannels(config, message)
     };

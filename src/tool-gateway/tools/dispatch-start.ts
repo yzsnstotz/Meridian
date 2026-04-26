@@ -210,11 +210,6 @@ export async function executeDispatchStart(args: {
   };
 }
 
-function normalizeOptionalPath(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? path.resolve(trimmed) : undefined;
-}
-
 async function resolveModelMap(args: {
   modelMap?: string;
   modelMapFile?: string;

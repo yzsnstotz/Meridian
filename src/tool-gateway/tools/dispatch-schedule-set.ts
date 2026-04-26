@@ -9,8 +9,6 @@ import {
 } from "../service-client";
 import type { ToolDefinition, ToolResult } from "../registry";
 
-const ReplyChannelsPayloadSchema_INLINE = null; // we reuse the existing channel resolution
-
 const DEFAULT_FALLBACK_REPLY_CHANNEL = {
   channel: "web",
   chat_id: "web:ops"

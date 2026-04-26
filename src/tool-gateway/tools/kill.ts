@@ -1,4 +1,4 @@
-import { createMeridianApiClient, MeridianApiError } from "../../roles/agent-dispatcher/meridian-api-client";
+import { createMeridianApiClient } from "../../roles/agent-dispatcher/meridian-api-client";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const killTool: ToolDefinition = {

@@ -13,7 +13,6 @@ import http from "node:http";
 import { GUI_PORT } from "../config";
 import { HubResultSchema, type HubMessage, type HubResult } from "../types";
 
-const DEFAULT_HTTP_RELAY_TIMEOUT_MS = 120_000;
 const MERIDIAN_TOOL_CHAT_ID = "service:meridian-tool";
 const HUB_RELAY_URL_ENV = "MERIDIAN_HUB_RELAY_URL";
 

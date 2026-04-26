@@ -1104,6 +1104,10 @@ describe("reconcile", () => {
     const nextState = harness.store.load();
 
     // E-05 should be completed AND its hub_result should be preserved (not overwritten with null)
+    expect(hubQueryCount).toBe(1);
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({ workerId: "E-05", from: "running", to: "completed" })
+    );
     expect(nextState.workers["E-05"]?.status).toBe("completed");
     expect(nextState.workers["E-05"]?.hub_result).not.toBeNull();
     expect(nextState.workers["E-05"]?.hub_result?.content).toBe("E-05 completed its task successfully.");

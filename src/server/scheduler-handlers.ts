@@ -7,7 +7,7 @@ import type { Logger } from "../roles/base-role";
 import { SchedulerRole } from "../roles/definitions/scheduler";
 import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
-import { StateStore, ACTIVE_ROLE_STATUS } from "../state-store";
+import { StateStore } from "../state-store";
 import {
   AppStateSchema,
   SchedulerConfigSchema,

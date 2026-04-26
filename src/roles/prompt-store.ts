@@ -59,8 +59,8 @@ export class PromptStore {
   async getPrompts(threadId: string): Promise<PromptSnapshot> {
     const context = await this.loadThreadContext(threadId);
     const promptEntry = context.state.promptStore[threadId];
-    const promptOverride = normalizeSystemPrompt(promptEntry?.system_prompt, context.roleType);
-    const persistedPrompt = normalizeSystemPrompt(context.config.system_prompt, context.roleType);
+    const promptOverride = normalizeSystemPrompt(promptEntry?.system_prompt);
+    const persistedPrompt = normalizeSystemPrompt(context.config.system_prompt);
 
     return {
       system_prompt: promptOverride ?? persistedPrompt ?? context.defaultSystemPrompt,
@@ -75,7 +75,7 @@ export class PromptStore {
   async setSystemPrompt(threadId: string, systemPrompt: string): Promise<void> {
     const context = await this.loadThreadContext(threadId);
     const promptEntry = ensurePromptEntry(context.state.promptStore, threadId);
-    const nextSystemPrompt = normalizeSystemPrompt(systemPrompt, context.roleType);
+    const nextSystemPrompt = normalizeSystemPrompt(systemPrompt);
 
     if (nextSystemPrompt === undefined) {
       delete promptEntry.system_prompt;
@@ -123,7 +123,7 @@ export class PromptStore {
     const state = AppStateSchema.parse((await this.stateStore.load()) ?? { roles: [], promptStore: {} });
     const liveConfig = this.resolveLiveConfig(threadId);
     const persistedRole = findPersistedRole(state, threadId);
-    const persistedConfig = persistedRole ? parseMutableRoleConfig(persistedRole.config, "agent-dispatcher") : null;
+    const persistedConfig = persistedRole ? parseMutableRoleConfig(persistedRole.config) : null;
     const resolvedConfig = liveConfig ?? persistedConfig;
     const roleType = liveConfig?.roleType ?? persistedConfig?.roleType ?? "agent-dispatcher";
 
@@ -149,7 +149,7 @@ export class PromptStore {
       return null;
     }
 
-    return parseMutableRoleConfig(binding.config, "agent-dispatcher");
+    return parseMutableRoleConfig(binding.config);
   }
 
   private async persistContext(context: PromptThreadContext): Promise<void> {
@@ -211,10 +211,7 @@ interface PromptRoleConfig {
   config: PromptMutableConfig;
 }
 
-function parseMutableRoleConfig(
-  config: unknown,
-  _roleType: "agent-dispatcher"
-): PromptRoleConfig | null {
+function parseMutableRoleConfig(config: unknown): PromptRoleConfig | null {
   const parsed = AgentDispatcherConfigSchema.safeParse(config);
   if (parsed.success) {
     return {
@@ -230,10 +227,7 @@ function isAgentDispatcherConfig(config: PromptMutableConfig): config is AgentDi
   return AgentDispatcherConfigSchema.safeParse(config).success;
 }
 
-function normalizeSystemPrompt(
-  systemPrompt: string | undefined,
-  _roleType: "agent-dispatcher"
-): string | undefined {
+function normalizeSystemPrompt(systemPrompt: string | undefined): string | undefined {
   if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
     return undefined;
   }

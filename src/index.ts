@@ -12,6 +12,7 @@ import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
 import { SchedulerRole } from "./roles/definitions/scheduler";
+import { SchedulerStateStore } from "./roles/scheduler/scheduler-state-store";
 import { PromptStore } from "./roles/prompt-store";
 import { RoleRegistry } from "./roles/role-registry";
 import { RoleRunner, type RehydrationContext } from "./roles/role-runner";
@@ -28,11 +29,13 @@ import {
 } from "./state-store";
 import {
   AgentDispatcherConfigSchema,
+  SchedulerConfigSchema,
   type AgentDispatcherConfig,
   type AppState,
   type HubMessage,
   type HubResult,
-  type RoleState
+  type RoleState,
+  type SchedulerConfig
 } from "./types";
 import { parseDispatchPlanRows } from "./tool-gateway/tools/dispatch-status";
 
@@ -658,19 +661,29 @@ function isHumanModel(model: string | null | undefined): boolean {
   return normalized === "HUMAN" || normalized === "PM";
 }
 
-async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
+export async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
   const state = await loadAppState(stateStore);
   const eligibleStatuses = new Set(["active", "paused", "needs_reactivation"]);
   const paths: string[] = [];
 
   for (const role of state.roles) {
-    if (role.roleType !== "agent-dispatcher" || !eligibleStatuses.has(role.status)) {
+    if (!eligibleStatuses.has(role.status)) {
       continue;
     }
 
-    const config = parseAgentDispatcherConfig(role);
-    if (config) {
-      paths.push(config.dispatch_plan_path);
+    if (role.roleType === "agent-dispatcher") {
+      const config = parseAgentDispatcherConfig(role);
+      if (config) {
+        paths.push(config.dispatch_plan_path);
+      }
+      continue;
+    }
+
+    if (role.roleType === "scheduler") {
+      const config = parseSchedulerConfig(role);
+      if (config && isSchedulerRunActive(config)) {
+        paths.push(config.dispatch_plan_path);
+      }
     }
   }
 
@@ -684,6 +697,23 @@ function parseAgentDispatcherConfig(roleState: RoleState): AgentDispatcherConfig
 
   const parsed = AgentDispatcherConfigSchema.safeParse(roleState.config);
   return parsed.success ? parsed.data : null;
+}
+
+function parseSchedulerConfig(roleState: RoleState): SchedulerConfig | null {
+  if (roleState.roleType !== "scheduler") {
+    return null;
+  }
+
+  const parsed = SchedulerConfigSchema.safeParse(roleState.config);
+  return parsed.success ? parsed.data : null;
+}
+
+function isSchedulerRunActive(config: SchedulerConfig): boolean {
+  try {
+    return new SchedulerStateStore(config.dispatch_plan_path).load().status === "active_run";
+  } catch {
+    return false;
+  }
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {

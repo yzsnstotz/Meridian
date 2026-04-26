@@ -448,7 +448,6 @@ async function defaultSignalDispatcher(
     handoffStarted = true;
 
     handoff.catch((error) => {
-      // eslint-disable-next-line no-console
       console.warn("dispatcher status signal background run failed", {
         dispatcherThreadId,
         status,
