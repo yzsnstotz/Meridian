@@ -66,7 +66,8 @@ export function startCycle(
   stateStore: SchedulerStateStore,
   config: SchedulerConfig,
   schedulerThreadId: string,
-  runId: string
+  runId: string,
+  plannedStartTime: string | null = null
 ): CycleStartResult {
   // Acquire plan lock
   const lockResult = acquirePlanLock(stateStore, schedulerThreadId, runId);
@@ -88,6 +89,7 @@ export function startCycle(
   state.status = "active_run";
   state.current_run_id = runId;
   state.current_run_report_dir = path.join(config.report_base_dir, "run", runId);
+  state.current_scan_run_id = deriveScanRunId(config, plannedStartTime);
   state.current_dispatcher_thread_id = null;
   stateStore.save(state);
 
@@ -306,6 +308,7 @@ export function completeCycle(
 
   state.current_run_id = null;
   state.current_run_report_dir = null;
+  state.current_scan_run_id = null;
   state.current_dispatcher_thread_id = null;
 
   // Determine next action
@@ -344,6 +347,7 @@ export function cancelCycle(
   state.status = "idle";
   state.current_run_id = null;
   state.current_run_report_dir = null;
+  state.current_scan_run_id = null;
   state.current_dispatcher_thread_id = null;
   state.last_run_completed_at = now;
   state.last_run_outcome = "cancelled";
@@ -354,6 +358,49 @@ export function cancelCycle(
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
+
+function deriveScanRunId(config: SchedulerConfig, plannedStartTime: string | null): string | null {
+  if (!isClawhubSkillScanConfig(config)) {
+    return null;
+  }
+
+  return `daily-${formatDateInTimezone(plannedStartTime ?? new Date().toISOString(), config.timezone)}`;
+}
+
+function isClawhubSkillScanConfig(config: SchedulerConfig): boolean {
+  const fields = [
+    config.dispatch_plan_path,
+    config.command_file_path,
+    config.dispatch_repo_root,
+    config.docs_root
+  ].filter((value): value is string => typeof value === "string");
+
+  return fields.some((value) => value.includes("clawhub-skill-scan"));
+}
+
+function formatDateInTimezone(isoTimestamp: string, timezone: string): string {
+  const date = new Date(isoTimestamp);
+  const timeZone = timezone === "system" ? undefined : timezone;
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(date);
+    const year = parts.find((part) => part.type === "year")?.value;
+    const month = parts.find((part) => part.type === "month")?.value;
+    const day = parts.find((part) => part.type === "day")?.value;
+    if (year && month && day) {
+      return `${year}-${month}-${day}`;
+    }
+  } catch {
+    // Fall back to UTC below when an invalid timezone is configured.
+  }
+
+  return date.toISOString().slice(0, 10);
+}
 
 function resetDispatchPlan(planPath: string): void {
   let content: string;

@@ -347,6 +347,15 @@ async function buildWorkerPreamble(
     lines.push("");
   }
 
+  const schedulerState = await loadActiveSchedulerRunState(commandPath);
+  if (schedulerState?.currentScanRunId) {
+    lines.push(`# Scheduler Cycle Context`);
+    lines.push(`SCHEDULER_RUN_ID: ${schedulerState.currentRunId}`);
+    lines.push(`SCAN_RUN_ID: ${schedulerState.currentScanRunId}`);
+    lines.push("Use this exact `SCAN_RUN_ID`; do not recompute it from the local date.");
+    lines.push("");
+  }
+
   const previousAttemptContext = await buildPreviousAttemptContext(previousWorkerState, expectedOutputs);
   if (previousAttemptContext) {
     lines.push(`# Previous Attempt Context`);
@@ -576,6 +585,7 @@ async function deriveSchedulerRunReportOutput(commandPath: string, workerId: str
 async function loadActiveSchedulerRunState(commandPath: string): Promise<{
   currentRunId: string;
   currentRunReportDir: string | null;
+  currentScanRunId: string | null;
 } | null> {
   let raw: string;
 
@@ -600,6 +610,7 @@ async function loadActiveSchedulerRunState(commandPath: string): Promise<{
     status?: unknown;
     current_run_id?: unknown;
     current_run_report_dir?: unknown;
+    current_scan_run_id?: unknown;
   };
   if (state.status !== "active_run" || typeof state.current_run_id !== "string") {
     return null;
@@ -613,10 +624,14 @@ async function loadActiveSchedulerRunState(commandPath: string): Promise<{
   const currentRunReportDir = typeof state.current_run_report_dir === "string" && state.current_run_report_dir.trim().length > 0
     ? path.resolve(state.current_run_report_dir)
     : null;
+  const currentScanRunId = typeof state.current_scan_run_id === "string" && state.current_scan_run_id.trim().length > 0
+    ? state.current_scan_run_id.trim()
+    : null;
 
   return {
     currentRunId,
-    currentRunReportDir
+    currentRunReportDir,
+    currentScanRunId
   };
 }
 

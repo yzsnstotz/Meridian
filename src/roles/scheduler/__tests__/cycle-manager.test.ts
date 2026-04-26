@@ -40,6 +40,36 @@ describe("detectCycleCompletion", () => {
     });
   });
 
+  it("derives a stable daily scan run id from the planned cron fire time", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "clawhub-skill-scan-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "clawhub-skill-scan-plan.md");
+    await fs.writeFile(planPath, [
+      "| Status | batch | worker | task | model | depends_on |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ✅ | 0 | PRE-FLIGHT | Environment Health Check | CODEX-HIGH | — |",
+      ""
+    ].join("\n"), "utf8");
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save(buildEmptyRunState());
+    const result = startCycle(
+      stateStore,
+      buildConfig(planPath),
+      "scheduler-1",
+      "run-001",
+      "2026-04-24T21:00:00.000Z"
+    );
+
+    expect(result).toEqual({ ok: true, run_id: "run-001" });
+    expect(stateStore.load()).toMatchObject({
+      status: "active_run",
+      current_run_id: "run-001",
+      current_scan_run_id: "daily-2026-04-25"
+    });
+  });
+
   it("does not complete when lowercase plan rows are missing lifecycle entries", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
     tempDirectories.add(directory);

@@ -461,6 +461,7 @@ export const SchedulerRunStateSchema = z.object({
   status: SchedulerStatusSchema.default("idle"),
   current_run_id: z.string().nullable().default(null),
   current_run_report_dir: z.string().nullable().default(null),
+  current_scan_run_id: z.string().nullable().default(null),
   current_dispatcher_thread_id: z.string().nullable().default(null),
   completed_cycles: z.number().int().min(0).default(0),
   next_run_at: z.string().nullable().default(null),

@@ -529,6 +529,56 @@ describe("run tool", () => {
     expect(sentContent).toContain("supersedes any report path in the command file");
   });
 
+  it("passes the scheduler scan run id to workers without requiring local date recomputation", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "Write completion report to:",
+          "```",
+          "/tmp/dispatch/reports/[WORKER_ID].md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 1 | W-CATALOG | Catalog sweep | CODEX-HIGH | PRE-FLIGHT | Writes manifest. |"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/scheduler_state.json") {
+        return JSON.stringify({
+          status: "active_run",
+          current_run_id: "run-123",
+          current_run_report_dir: "/tmp/dispatch/reports/run/run-123",
+          current_scan_run_id: "daily-2026-04-25"
+        });
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-catalog-scan-id",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "W-CATALOG"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("# Scheduler Cycle Context");
+    expect(sentContent).toContain("SCHEDULER_RUN_ID: run-123");
+    expect(sentContent).toContain("SCAN_RUN_ID: daily-2026-04-25");
+    expect(sentContent).toContain("Use this exact `SCAN_RUN_ID`; do not recompute it from the local date.");
+  });
+
   it("derives the completion report path with angle-bracket placeholders when the command omits the word your", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
