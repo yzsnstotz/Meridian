@@ -23,6 +23,7 @@ import {
   materializeDispatcherSystemPrompt
 } from "../roles/agent-dispatcher/prompt-builder";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
+import { SchedulerStateStore } from "../roles/scheduler/scheduler-state-store";
 import {
   isHumanDispatchRow,
   resolveManualInterventionWorker,
@@ -68,6 +69,7 @@ import {
   KillPolicySchema,
   ReplyChannelSchema,
   RoleTypeSchema,
+  SchedulerConfigSchema,
   type AgentDispatcherEditorConfig,
   type AppState,
   type AgentDispatcherConfig,
@@ -978,12 +980,12 @@ async function getRole(
     return response;
   }
 
+  const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
   let lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
-  let effectiveRoleStatus = deriveAgentDispatcherRoleStatus(role.status, lifecycleState);
+  let effectiveRoleStatus = deriveAgentDispatcherRoleStatus(role.status, lifecycleState, dispatchPlan.rows);
   if (effectiveRoleStatus !== role.status) {
     await persistAgentDispatcherRoleStatus(stateStore, role.threadId, effectiveRoleStatus);
   }
-  const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
   const dispatchPlanRows = await enrichDispatchPlanRows(
     agentDispatcherConfig.dispatch_plan_path,
     dispatchPlan.rows,
@@ -1018,7 +1020,7 @@ async function getRole(
   let sessionLog = sessionLogResult.lines;
   if (sessionLogResult.dispatcherMissing) {
     lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
-    effectiveRoleStatus = deriveAgentDispatcherRoleStatus(effectiveRoleStatus, lifecycleState);
+    effectiveRoleStatus = deriveAgentDispatcherRoleStatus(effectiveRoleStatus, lifecycleState, dispatchPlan.rows);
     dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
     dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
     continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
@@ -1308,6 +1310,10 @@ function resolvePersistedAgentDispatcherRoleState(
 }
 
 async function resolvePresentedRoleStatus(role: RoleState, log: Logger): Promise<string> {
+  if (role.roleType === "scheduler") {
+    return resolvePresentedSchedulerRoleStatus(role, log);
+  }
+
   if (role.roleType !== "agent-dispatcher") {
     return role.status;
   }
@@ -1318,10 +1324,37 @@ async function resolvePresentedRoleStatus(role: RoleState, log: Logger): Promise
   }
 
   const lifecycleState = await loadDispatchLifecycleState(config.dispatch_plan_path, log);
-  return deriveAgentDispatcherRoleStatus(role.status, lifecycleState);
+  const dispatchPlan = await loadDispatchPlanData(config.dispatch_plan_path, log);
+  return deriveAgentDispatcherRoleStatus(role.status, lifecycleState, dispatchPlan.rows);
 }
 
-function deriveAgentDispatcherRoleStatus(roleStatus: string, lifecycleState: DispatchThreadStateV2): string {
+function resolvePresentedSchedulerRoleStatus(role: RoleState, log: Logger): string {
+  const parsed = SchedulerConfigSchema.safeParse(role.config);
+  if (!parsed.success) {
+    return role.status;
+  }
+
+  try {
+    return new SchedulerStateStore(parsed.data.dispatch_plan_path).load().status;
+  } catch (error) {
+    log.warn("Failed to resolve scheduler run state for role list", {
+      threadId: role.threadId,
+      error: getErrorMessage(error)
+    });
+    return role.status;
+  }
+}
+
+function deriveAgentDispatcherRoleStatus(
+  roleStatus: string,
+  lifecycleState: DispatchThreadStateV2,
+  rows: DispatchPlanRow[] = []
+): string {
+  const terminalStatus = resolveDispatchPlanTerminalRoleStatus(rows, lifecycleState);
+  if (terminalStatus) {
+    return terminalStatus;
+  }
+
   if (roleStatus === NEEDS_REACTIVATION_ROLE_STATUS) {
     return roleStatus;
   }
@@ -1329,6 +1362,46 @@ function deriveAgentDispatcherRoleStatus(roleStatus: string, lifecycleState: Dis
   return REACTIVATION_REQUIRED_DISPATCHER_STATUSES.has(lifecycleState.dispatcher.status)
     ? NEEDS_REACTIVATION_ROLE_STATUS
     : roleStatus;
+}
+
+function resolveDispatchPlanTerminalRoleStatus(
+  rows: DispatchPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): "completed" | "failed" | null {
+  const nonHumanRows = rows.filter((row) => !isHumanDispatchRow(row) && row.worker.trim().length > 0);
+  if (nonHumanRows.length === 0) {
+    return null;
+  }
+
+  const statuses = nonHumanRows.map((row) => resolveDispatchRowTerminalStatus(row, lifecycleState));
+  if (statuses.some((status) => status === null)) {
+    return null;
+  }
+
+  return statuses.some((status) => status === "failed") ? "failed" : "completed";
+}
+
+function resolveDispatchRowTerminalStatus(
+  row: DispatchPlanRow,
+  lifecycleState: DispatchThreadStateV2
+): "completed" | "failed" | null {
+  const planStatus = row.status.trim();
+  const lifecycleStatus = lifecycleState.workers[row.worker]?.status;
+
+  if (planStatus === "✅" || planStatus === "⛔ SKIPPED") {
+    return "completed";
+  }
+  if (planStatus === "❌" || planStatus === "⚠️ ABANDONED") {
+    return "failed";
+  }
+  if (lifecycleStatus === "completed" || lifecycleStatus === "skipped") {
+    return "completed";
+  }
+  if (lifecycleStatus === "failed" || lifecycleStatus === "abandoned") {
+    return "failed";
+  }
+
+  return null;
 }
 
 async function persistAgentDispatcherRoleStatus(

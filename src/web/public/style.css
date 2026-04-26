@@ -570,25 +570,25 @@ textarea[readonly], button:disabled {
   border: 1px solid transparent;
 }
 
-.status-active, .status-running {
+.status-active, .status-running, .status-active_run {
   color: var(--signal-blue);
   background: var(--signal-blue-muted);
   border-color: rgba(80, 144, 255, 0.15);
 }
 
-.status-paused {
+.status-paused, .status-waiting, .status-idle {
   color: var(--signal-amber);
   background: var(--signal-amber-muted);
   border-color: rgba(240, 160, 48, 0.15);
 }
 
-.status-completed, .status-done {
+.status-completed, .status-done, .status-completed_max_cycles {
   color: var(--signal-green);
   background: var(--signal-green-muted);
   border-color: rgba(56, 217, 137, 0.15);
 }
 
-.status-error, .status-failed {
+.status-error, .status-failed, .status-manual_intervention_required {
   color: var(--signal-red);
   background: var(--signal-red-muted);
   border-color: rgba(224, 85, 85, 0.15);
