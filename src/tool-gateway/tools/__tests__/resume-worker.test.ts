@@ -75,6 +75,36 @@ describe("resume-worker tool", () => {
     expect(harness.lifecycleStore.load().workers["N-04"]?.retry_count).toBe(0);
   });
 
+  it("clears a prior failure hub result when retrying a failed worker", async () => {
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-04"] = {
+      ...state.workers["N-04"]!,
+      status: "failed",
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "worker-thread-456",
+        source: "codex",
+        status: "error",
+        run_state: "completed",
+        content: "Status: BLOCKED",
+        attachments: [],
+        timestamp: "2026-04-05T00:05:00.000Z"
+      }
+    };
+    harness.lifecycleStore.save(state);
+
+    await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+
+    expect(harness.lifecycleStore.load().workers["N-04"]).toMatchObject({
+      status: "pending",
+      hub_result: null
+    });
+  });
+
   it("accepts lowercase dispatch-plan table headers", async () => {
     const harness = await createHarness();
     await fs.writeFile(

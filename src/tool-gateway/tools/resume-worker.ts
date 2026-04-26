@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { LifecycleStore, isNonCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsFailureSignal, isNonCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { LifecycleStatus } from "../../types";
 import killTool from "./kill";
 import { executeUpdateWorkerStatusAction, updateWorkerStatusInMarkdown } from "./update-status";
@@ -162,12 +162,15 @@ export async function executeResumeWorkerAction(
 
   const nextStatus = mapActionToStatus(args.action);
   const autoIncrementRetryCount = args.action === "retry" && args.incrementRetryCountOnRetry === true;
+  const clearFailureResult = args.action === "retry"
+    && worker.hub_result !== null
+    && (worker.status === "failed" || hubResultContainsFailureSignal(worker.hub_result));
   lifecycleStore.setWorkerStatus(
     args.workerId,
     nextStatus,
     `resume_worker:${args.action}`,
     {
-      clearHubResult: false,
+      clearHubResult: clearFailureResult,
       incrementRetryCount: autoIncrementRetryCount,
       resetRetryCount: args.action === "retry" && !autoIncrementRetryCount
     }
