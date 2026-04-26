@@ -259,6 +259,35 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("does not complete a worker from another worker's reported output path", async () => {
+    const harness = await createHarness();
+    const preflightReportPath = path.join(harness.directory, "reports", "run", "run-001", "PRE-FLIGHT.md");
+    const catalogReportPath = path.join(harness.directory, "reports", "run", "run-001", "W-CATALOG.md");
+    await fsp.mkdir(path.dirname(preflightReportPath), { recursive: true });
+    await fsp.writeFile(preflightReportPath, "# PRE-FLIGHT Completion Report\n\n- Status: ✅ Complete\n", "utf8");
+
+    harness.store.recordWorkerStart("W-CATALOG", "worker-thread-222", "22222222-2222-4222-8222-222222222222", [
+      catalogReportPath
+    ]);
+
+    harness.store.recordWorkerResult("W-CATALOG", buildHubResult({
+      thread_id: "worker-thread-222",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "PRE-FLIGHT completed with exit code `0`.",
+        "",
+        `Report written to [PRE-FLIGHT.md](${preflightReportPath}).`
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-CATALOG"]).toMatchObject({
+      status: "running",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("maps an error HubResult to failed", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

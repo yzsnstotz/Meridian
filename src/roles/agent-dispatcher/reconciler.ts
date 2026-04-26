@@ -89,7 +89,12 @@ export async function reconcile(
     }
 
     const outputsPresent = outputsExist(worker.expected_outputs);
-    const recordedResultTransition = determineRecordedResultTransition(worker.hub_result, outputsPresent);
+    const recordedResultTransition = determineRecordedResultTransition(
+      workerId,
+      worker.hub_result,
+      outputsPresent,
+      worker.expected_outputs
+    );
     if (recordedResultTransition) {
       state.workers[workerId] = {
         ...worker,
@@ -118,7 +123,12 @@ export async function reconcile(
         ? await recoverHubResultFromHistory(hubClient, worker.thread_id, worker.trace_id, worker.started_at)
         : null;
     const effectiveHubResult = recoveredHubResult ?? worker.hub_result;
-    const recoveredTransition = determineRecordedResultTransition(effectiveHubResult, outputsPresent);
+    const recoveredTransition = determineRecordedResultTransition(
+      workerId,
+      effectiveHubResult,
+      outputsPresent,
+      worker.expected_outputs
+    );
     if (recoveredTransition) {
       const terminalTimestamp = effectiveHubResult?.timestamp ?? nowIso;
       state.workers[workerId] = {
@@ -139,9 +149,11 @@ export async function reconcile(
     }
 
     const transition = determineWorkerTransition(
+      workerId,
       observation,
       outputsPresent,
       effectiveHubResult,
+      worker.expected_outputs,
       worker.started_at,
       nowMs,
       staleTimeoutMs
@@ -289,14 +301,18 @@ async function reconcileDispatcher(
 }
 
 function determineWorkerTransition(
+  workerId: string,
   observation: HubThreadObservation,
   outputsPresent: boolean,
   hubResult: HubResult | null,
+  expectedOutputs: string[],
   startedAt: string,
   nowMs: number,
   staleTimeoutMs: number
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
   const hasInlineReport = hubResult ? hubResultContainsInlineReport(hubResult) : false;
+  const requiresExpectedOutput = expectedOutputs.length > 0;
+  const hasWorkerInlineReport = hasInlineReport && hubResult !== null && hubResultReferencesWorker(hubResult, workerId);
 
   // When hub_result is null the run-tool relay timed out before receiving a
   // terminal response — the worker may still be actively executing. An "idle"
@@ -335,14 +351,14 @@ function determineWorkerTransition(
     };
   }
 
-  if (observation.kind === "completed" && hasInlineReport) {
+  if (observation.kind === "completed" && hasInlineReport && (!requiresExpectedOutput || hasWorkerInlineReport)) {
     return {
       to: "completed",
       trigger: `hub_status:${observation.rawStatus ?? observation.kind}:inline_report`
     };
   }
 
-  if (observation.kind === "idle" && trustIdleAsTerminal && hasInlineReport) {
+  if (observation.kind === "idle" && trustIdleAsTerminal && hasInlineReport && (!requiresExpectedOutput || hasWorkerInlineReport)) {
     return {
       to: "completed",
       trigger: `hub_status:${observation.rawStatus ?? observation.kind}:inline_report`
@@ -356,6 +372,7 @@ function determineWorkerTransition(
     (observation.kind === "completed" || (observation.kind === "idle" && trustIdleAsTerminal))
     && hubResult?.status === "success"
     && (!hubResult.run_state || hubResult.run_state === "completed")
+    && (!requiresExpectedOutput || hubResultReferencesWorker(hubResult, workerId))
   ) {
     return {
       to: "completed",
@@ -378,7 +395,7 @@ function determineWorkerTransition(
       };
     }
 
-    if (hasInlineReport) {
+    if (hasInlineReport && (!requiresExpectedOutput || hasWorkerInlineReport)) {
       return {
         to: "completed",
         trigger: "thread_missing:inline_report"
@@ -393,6 +410,7 @@ function determineWorkerTransition(
     if (
       hubResult?.status === "success"
       && (!hubResult.run_state || hubResult.run_state === "completed")
+      && (!requiresExpectedOutput || hubResultReferencesWorker(hubResult, workerId))
     ) {
       return {
         to: "completed",
@@ -425,8 +443,10 @@ function determineWorkerTransition(
 }
 
 function determineRecordedResultTransition(
+  workerId: string,
   hubResult: HubResult | null,
-  outputsPresent: boolean
+  outputsPresent: boolean,
+  expectedOutputs: string[]
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
   if (!hubResult) {
     return null;
@@ -486,6 +506,31 @@ function determineRecordedResultTransition(
       };
     }
 
+    if (expectedOutputs.length > 0) {
+      if (reportedOutputsExist(hubResult, expectedOutputs)) {
+        return {
+          to: "completed",
+          trigger: "hub_result:reported_outputs_present"
+        };
+      }
+
+      if (hubResultContainsInlineReport(hubResult) && hubResultReferencesWorker(hubResult, workerId)) {
+        return {
+          to: "completed",
+          trigger: "hub_result:inline_report"
+        };
+      }
+
+      if (isExplicitCompletionContent(hubResult.content) && hubResultReferencesWorker(hubResult, workerId)) {
+        return {
+          to: "completed",
+          trigger: "hub_result:explicit_completion_content"
+        };
+      }
+
+      return null;
+    }
+
     if (reportedOutputsExist(hubResult)) {
       return {
         to: "completed",
@@ -504,6 +549,10 @@ function determineRecordedResultTransition(
   // Trust explicit completion markers (✅ + "complete") even when run_state
   // is "still_running" — the worker finished its task but the thread is alive.
   if (hubResult.status === "success" && isExplicitCompletionContent(hubResult.content)) {
+    if (expectedOutputs.length > 0 && !hubResultReferencesWorker(hubResult, workerId)) {
+      return null;
+    }
+
     return {
       to: "completed",
       trigger: "hub_result:explicit_completion_content"
@@ -999,11 +1048,22 @@ function computeBasenameVariants(basename: string): string[] {
     }
   }
 
-  return variants;
+  if (/^delta-check_report\.md$/i.test(basename)) {
+    variants.push("delta_check_report.md");
+  }
+  if (/^pr-review_report\.md$/i.test(basename)) {
+    variants.push("pr_review_report.md");
+  }
+
+  return [...new Set(variants)];
 }
 
-function reportedOutputsExist(hubResult: HubResult): boolean {
+function reportedOutputsExist(hubResult: HubResult, expectedOutputs: string[] = []): boolean {
   return extractReportedOutputPaths(hubResult).some((filePath) => {
+    if (!reportedOutputMatchesExpected(filePath, expectedOutputs)) {
+      return false;
+    }
+
     if (!isCompletionArtifactPath(filePath) || !reconciliationFs.existsSync(filePath)) {
       return false;
     }
@@ -1043,6 +1103,48 @@ function normalizeReportedOutputPath(candidatePath: string): string | null {
   }
 
   return path.normalize(normalized);
+}
+
+function reportedOutputMatchesExpected(reportedPath: string, expectedOutputs: string[]): boolean {
+  if (expectedOutputs.length === 0) {
+    return true;
+  }
+
+  const reportedBasename = path.basename(reportedPath).toLowerCase();
+  return expectedOutputs.some((expectedOutput) => {
+    const expectedBasename = path.basename(expectedOutput).toLowerCase();
+    return computeBasenameVariants(expectedBasename)
+      .map((variant) => variant.toLowerCase())
+      .includes(reportedBasename);
+  });
+}
+
+function hubResultReferencesWorker(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">,
+  workerId: string
+): boolean {
+  const normalizedWorkerId = workerId.trim();
+  if (normalizedWorkerId.length === 0) {
+    return false;
+  }
+
+  const combinedContent = [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+  if (combinedContent.length === 0) {
+    return false;
+  }
+
+  return new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(normalizedWorkerId)}($|[^A-Za-z0-9_-])`, "i")
+    .test(combinedContent);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isCompletionArtifactPath(filePath: string): boolean {

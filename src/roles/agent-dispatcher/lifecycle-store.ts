@@ -158,7 +158,7 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
-    const nextStatus = mapHubResultToLifecycleStatus(hubResult, requiresOutputVerification(worker.expected_outputs));
+    const nextStatus = mapHubResultToLifecycleStatus(workerId, hubResult, worker.expected_outputs);
     state.workers[workerId] = {
       ...worker,
       thread_id: hubResult.thread_id || worker.thread_id,
@@ -529,7 +529,9 @@ function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
   });
 }
 
-function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilReconciled: boolean): LifecycleStatus {
+function mapHubResultToLifecycleStatus(workerId: string, hubResult: HubResult, expectedOutputs: string[]): LifecycleStatus {
+  const deferSuccessUntilReconciled = requiresOutputVerification(expectedOutputs);
+
   if (hubResult.status === "error") {
     return "failed";
   }
@@ -559,14 +561,18 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
       return "completed";
     }
 
-    if (reportedOutputsExist(hubResult) || hubResultContainsInlineReport(hubResult)) {
+    if (
+      expectedOutputsExist(expectedOutputs)
+      || reportedOutputsExist(hubResult, expectedOutputs)
+      || (hubResultContainsInlineReport(hubResult) && hubResultReferencesWorker(hubResult, workerId))
+    ) {
       return "completed";
     }
 
     // Lightweight tasks (e.g. PRE-FLIGHT) may signal completion with an
     // explicit marker like "✅" + "complete" without producing output files
     // or inline reports. Trust the explicit signal.
-    if (isExplicitCompletionContent(hubResult.content)) {
+    if (isExplicitCompletionContent(hubResult.content) && hubResultReferencesWorker(hubResult, workerId)) {
       return "completed";
     }
 
@@ -577,6 +583,9 @@ function mapHubResultToLifecycleStatus(hubResult: HubResult, deferSuccessUntilRe
   // explicit completion markers in the content. The worker may have finished
   // its task while the thread remains alive.
   if (hubResult.status === "success" && isExplicitCompletionContent(hubResult.content)) {
+    if (deferSuccessUntilReconciled && !hubResultReferencesWorker(hubResult, workerId)) {
+      return "running";
+    }
     return "completed";
   }
 
@@ -706,8 +715,30 @@ function requiresOutputVerification(expectedOutputs: string[]): boolean {
   return expectedOutputs.length > 0;
 }
 
-function reportedOutputsExist(hubResult: HubResult): boolean {
+function expectedOutputsExist(expectedOutputs: string[]): boolean {
+  if (expectedOutputs.length === 0) {
+    return false;
+  }
+
+  return expectedOutputs.every((filePath) => {
+    if (!fs.existsSync(filePath)) {
+      return false;
+    }
+
+    try {
+      return fs.statSync(filePath).size > 0;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function reportedOutputsExist(hubResult: HubResult, expectedOutputs: string[] = []): boolean {
   return extractReportedOutputPaths(hubResult).some((filePath) => {
+    if (!reportedOutputMatchesExpected(filePath, expectedOutputs)) {
+      return false;
+    }
+
     if (!isCompletionArtifactPath(filePath) || !fs.existsSync(filePath)) {
       return false;
     }
@@ -747,6 +778,64 @@ function normalizeReportedOutputPath(candidatePath: string): string | null {
   }
 
   return path.normalize(normalized);
+}
+
+function reportedOutputMatchesExpected(reportedPath: string, expectedOutputs: string[]): boolean {
+  if (expectedOutputs.length === 0) {
+    return true;
+  }
+
+  const reportedBasename = path.basename(reportedPath).toLowerCase();
+  return expectedOutputs.some((expectedOutput) => {
+    const expectedBasename = path.basename(expectedOutput).toLowerCase();
+    return computeBasenameVariants(expectedBasename)
+      .map((variant) => variant.toLowerCase())
+      .includes(reportedBasename);
+  });
+}
+
+function hubResultReferencesWorker(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">,
+  workerId: string
+): boolean {
+  const normalizedWorkerId = workerId.trim();
+  if (normalizedWorkerId.length === 0) {
+    return false;
+  }
+
+  const combinedContent = combineHubResultText(hubResult);
+  if (combinedContent.length === 0) {
+    return false;
+  }
+
+  return new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(normalizedWorkerId)}($|[^A-Za-z0-9_-])`, "i")
+    .test(combinedContent);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function computeBasenameVariants(basename: string): string[] {
+  const variants = [basename];
+  const reportSuffixMatch = basename.match(/^(.+)_report(\.md)$/i);
+  if (reportSuffixMatch) {
+    variants.push(`${reportSuffixMatch[1]}${reportSuffixMatch[2]}`);
+  } else {
+    const extMatch = basename.match(/^(.+)(\.md)$/i);
+    if (extMatch) {
+      variants.push(`${extMatch[1]}_report${extMatch[2]}`);
+    }
+  }
+
+  if (/^delta-check_report\.md$/i.test(basename)) {
+    variants.push("delta_check_report.md");
+  }
+  if (/^pr-review_report\.md$/i.test(basename)) {
+    variants.push("pr_review_report.md");
+  }
+
+  return [...new Set(variants)];
 }
 
 function isCompletionArtifactPath(filePath: string): boolean {
