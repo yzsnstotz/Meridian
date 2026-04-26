@@ -270,6 +270,20 @@ meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meri
 meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode loop --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --delay-between-cycles-seconds 300 --scheduler-id scheduler-abcd1234
 ```
 
+### `schedule-list`
+
+List static scheduler registry entries from `roles/schedules` and validate each entry against `SchedulerConfigSchema`.
+
+Params:
+- `--registry-dir <path>`: optional directory containing schedule JSON files
+
+Examples:
+
+```bash
+meridian-roles schedule-list
+meridian-roles schedule-list --registry-dir /Users/yzliu/work/Meridian/Meridian-roles/roles/schedules
+```
+
 ### `list-roles`
 
 List configured Meridian roles by querying `GET /api/roles`.

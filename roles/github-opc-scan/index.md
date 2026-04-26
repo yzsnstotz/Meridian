@@ -60,7 +60,7 @@ The tool reads the file through `--query-partitions-config` or the built-in defa
 
 ## Scheduler Validator Placeholder
 
-Phase 0 scheduler config intentionally has no validator block. `M-SCHEDULER-WIRE` should register the Phase 0 routine with `validator: null`.
+Phase 0 scheduler config intentionally omits the `validator` field entirely. `M-SCHEDULER-WIRE` registers the Phase 0 routine without a validator block so the omission is explicit rather than accidental.
 
 Phase 0.5 worker `T-SCHEDULER-VALIDATOR` will add a validator configuration such as `validator: { agent_type: "validator", ... }` and route validation through `/Users/yzliu/work/Meridian/Meridian-roles/src/roles/agent-dispatcher/validator-orchestrator.ts` using artifact-mediated inputs and outputs.
 
