@@ -185,7 +185,7 @@ describe("SchedulerEngine", () => {
     }), "W-02");
   });
 
-  it("recovers a running worker from its current-run completion report before continuing", async () => {
+  it("recovers a running worker from its fallback current-run completion report before continuing", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
     tempDirectories.add(directory);
 
@@ -247,7 +247,7 @@ describe("SchedulerEngine", () => {
       ...buildEmptyRunState(),
       status: "active_run",
       current_run_id: "run-001",
-      current_run_report_dir: runReportDir
+      current_run_report_dir: null
     });
 
     const continueWorker = vi.fn(async () => ({
