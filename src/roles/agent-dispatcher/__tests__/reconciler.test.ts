@@ -913,6 +913,75 @@ describe("reconcile", () => {
     );
   });
 
+  it("recovers a failed final reply from Hub history when a sibling report artifact already exists", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const expectedOutput = path.join(harness.directory, "dev_history/W-ANALYTICS_report.md");
+    await harness.writeOutput(
+      "reports/W-ANALYTICS.md",
+      [
+        "# W-ANALYTICS Report",
+        "",
+        "- Status: BLOCKED",
+        "- Exit code: 1",
+        "- Reason: current scan output directory was missing."
+      ].join("\n")
+    );
+
+    harness.store.save(buildState({
+      workers: {
+        "W-ANALYTICS": {
+          ...buildRunningWorker(
+            "worker-thread-analytics",
+            expectedOutput,
+            "2026-04-03T12:20:00.000Z"
+          ),
+          trace_id: "11111111-1111-4111-8111-111111111111"
+        }
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "`W-ANALYTICS` is blocked.",
+            raw_content: [
+              "`W-ANALYTICS` is blocked.",
+              "",
+              "The analytics command exited `1` because the expected output directory was missing."
+            ].join("\n"),
+            trace_id: "99999999-9999-4999-8999-999999999999",
+            timestamp: "2026-04-03T12:25:00.000Z"
+          }
+        ]);
+      }
+
+      return buildStatusResult(message.thread_id, "running");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextWorker = harness.store.load().workers["W-ANALYTICS"];
+
+    expect(nextWorker?.status).toBe("failed");
+    expect(nextWorker?.trace_id).toBe("99999999-9999-4999-8999-999999999999");
+    expect(nextWorker?.hub_result?.content).toContain("analytics command exited `1`");
+    expect(nextWorker?.last_seen_at).toBe("2026-04-03T12:25:00.000Z");
+    expect(sendRequest.mock.calls.map(([message]) => (message as HubMessage).intent)).toEqual(["status", "history"]);
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "W-ANALYTICS",
+        from: "running",
+        to: "failed",
+        trigger: "hub_result:failure_signal"
+      })
+    );
+  });
+
   it("marks a running worker failed when hub_result is success but content contains a provider error", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -1103,7 +1172,7 @@ describe("reconcile", () => {
     expect(harness.store.load().workers["N-02"]?.status).toBe("abandoned");
   });
 
-  it("does not auto-complete a worker whose hub_result contains a BLOCKED marker", async () => {
+  it("marks a worker failed when its hub_result contains a BLOCKED marker", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -1131,8 +1200,15 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("running");
-    expect(report.unchanged).toContain("PRE-FLIGHT");
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("failed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "PRE-FLIGHT",
+        from: "running",
+        to: "failed",
+        trigger: "hub_result:failure_signal"
+      })
+    );
   });
 
   it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {

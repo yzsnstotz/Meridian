@@ -6,6 +6,7 @@ import type { A2AClient } from "../../a2a/client";
 import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
 import {
   LifecycleStore,
+  hubResultContainsFailureSignal,
   hubResultContainsHitLimit,
   hubResultContainsInlineReport,
   isExplicitCompletionContent,
@@ -106,8 +107,14 @@ export async function reconcile(
     }
 
     const observation = await queryHubThreadObservation(hubClient, worker.thread_id);
+    const shouldRecoverHubResult =
+      !worker.hub_result
+      && (
+        (observation.kind === "running" && (outputsPresent || isStale(worker.started_at, nowMs, staleTimeoutMs)))
+        || (!outputsPresent && observation.kind !== "running")
+      );
     const recoveredHubResult =
-      !worker.hub_result && !outputsPresent && observation.kind !== "running"
+      shouldRecoverHubResult
         ? await recoverHubResultFromHistory(hubClient, worker.thread_id, worker.trace_id, worker.started_at)
         : null;
     const effectiveHubResult = recoveredHubResult ?? worker.hub_result;
@@ -300,6 +307,13 @@ function determineWorkerTransition(
   // finished.
   const trustIdleAsTerminal = hubResult !== null;
 
+  if (hubResult && hubResultContainsFailureSignal(hubResult)) {
+    return {
+      to: "failed",
+      trigger: "hub_result:failure_signal"
+    };
+  }
+
   // Worker output contains BLOCKED or PAUSE markers — the worker explicitly
   // signalled that its task cannot proceed. Do not auto-complete regardless of
   // thread observation, outputs, or inline reports.
@@ -443,8 +457,15 @@ function determineRecordedResultTransition(
     };
   }
 
-  // Worker output contains BLOCKED or PAUSE markers — the worker explicitly
-  // signalled that its task cannot proceed. Do not transition to "completed"
+  if (hubResultContainsFailureSignal(hubResult)) {
+    return {
+      to: "failed",
+      trigger: "hub_result:failure_signal"
+    };
+  }
+
+  // Worker output contains PAUSE markers — the worker explicitly signalled
+  // that its task cannot proceed yet. Do not transition to "completed"
   // regardless of other evidence (outputs, inline reports, success status).
   if (isNonCompletionContent(hubResult.content)) {
     return null;
@@ -656,7 +677,7 @@ function findLatestFinalReplyEntry(
 ): ConversationHistoryEntry | null {
   const normalizedTraceId = normalizeOptionalTraceId(traceId);
   const startedAtMs = parseIsoTimestampMs(startedAt);
-  let traceLessFallback: ConversationHistoryEntry | null = null;
+  let attemptFallback: ConversationHistoryEntry | null = null;
 
   for (let index = historyEntries.length - 1; index >= 0; index -= 1) {
     const entry = historyEntries[index];
@@ -677,12 +698,8 @@ function findLatestFinalReplyEntry(
         return entry;
       }
 
-      if (
-        !traceLessFallback
-        && !entryTraceId
-        && occurredAtOrAfterAttemptStart(entry.timestamp, startedAtMs)
-      ) {
-        traceLessFallback = entry;
+      if (!attemptFallback && occurredAtOrAfterAttemptStart(entry.timestamp, startedAtMs)) {
+        attemptFallback = entry;
       }
       continue;
     }
@@ -692,7 +709,7 @@ function findLatestFinalReplyEntry(
     }
   }
 
-  return traceLessFallback;
+  return attemptFallback;
 }
 
 function buildRecoveredHubResult(
