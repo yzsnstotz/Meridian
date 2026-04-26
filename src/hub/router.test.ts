@@ -1064,6 +1064,61 @@ test("HubRouter list backfills the live current model when the registry has none
   assert.equal(listed[0]?.current_model_id, "gpt-5.4");
 });
 
+test("HubRouter list refreshes live status when the model is already known", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 12,
+    tmux_pane: null,
+    status: "running",
+    model_id: "gpt-5.4",
+    created_at: new Date().toISOString()
+  });
+
+  let statusCalls = 0;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    status: async (threadId: string) => {
+      statusCalls += 1;
+      return {
+        instance: {
+          ...registry.get(threadId)!,
+          status: "waiting" as const
+        },
+        agent_status: {
+          status: "stable",
+          current_model_id: "gpt-5.4"
+        }
+      };
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(baseMessage({ intent: "list", target: "all", thread_id: "global" }));
+  const listed = JSON.parse(result.content) as Array<Record<string, unknown>>;
+
+  assert.equal(statusCalls, 1);
+  assert.equal(listed[0]?.status, "waiting");
+  assert.equal(listed[0]?.current_model_id, "gpt-5.4");
+});
+
 test("HubRouter returns error result when target thread is missing", async () => {
   const router = new HubRouter(new InstanceRegistry(), {
     clientFactory: () => ({

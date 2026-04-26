@@ -1287,7 +1287,7 @@ export class InstanceManager {
       await client.connect(instance.socket_path);
       const rawStatus = await client.getStatus();
       const enrichedStatus = await this.enrichRawStatusWithLiveModel(rawStatus, client);
-      const reportedStatus = this.toKnownStatus(enrichedStatus.status);
+      const reportedStatus = this.normalizeAgentapiStatus(enrichedStatus.status);
       const reportedModelId = this.extractReportedModelId(enrichedStatus);
       return {
         ...instance,
@@ -2003,14 +2003,20 @@ export class InstanceManager {
     return resolved;
   }
 
-  private toKnownStatus(candidate: unknown): AgentInstanceStatus | null {
+  private normalizeAgentapiStatus(candidate: unknown): AgentInstanceStatus | null {
     if (typeof candidate !== "string") {
       return null;
     }
-    if (!VALID_INSTANCE_STATUSES.has(candidate as AgentInstanceStatus)) {
+
+    const normalized = candidate.trim().toLowerCase();
+    if (normalized === "stable" || normalized === "done" || normalized === "completed") {
+      return "waiting";
+    }
+
+    if (!VALID_INSTANCE_STATUSES.has(normalized as AgentInstanceStatus)) {
       return null;
     }
-    return candidate as AgentInstanceStatus;
+    return normalized as AgentInstanceStatus;
   }
 
   private applyLiveStatus(
@@ -2019,7 +2025,7 @@ export class InstanceManager {
     rawStatus: Record<string, unknown>
   ): AgentInstance {
     let updatedInstance = instance;
-    const reportedStatus = this.toKnownStatus(rawStatus.status);
+    const reportedStatus = this.normalizeAgentapiStatus(rawStatus.status);
     if (reportedStatus && reportedStatus !== updatedInstance.status) {
       updatedInstance = this.registry.setStatus(threadId, reportedStatus) ?? updatedInstance;
     }

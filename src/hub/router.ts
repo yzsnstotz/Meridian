@@ -947,6 +947,7 @@ export class HubRouter {
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const status = await this.instanceManager.status(threadId);
+    this.persistStateSafely();
     const content = this.appendAttachmentSummary(JSON.stringify(status, null, 2), status.instance.thread_id);
     return this.buildResult(
       message,
@@ -964,9 +965,10 @@ export class HubRouter {
       .filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
     const listedInstances = await Promise.all(instances.map(async (instance) => {
       let currentInstance = instance;
-      if (!currentInstance.model_id && typeof this.instanceManager.status === "function") {
+      if (typeof this.instanceManager.status === "function") {
         try {
           currentInstance = (await this.instanceManager.status(currentInstance.thread_id)).instance;
+          this.persistStateSafely();
         } catch (error) {
           this.log.debug(
             {
@@ -976,7 +978,7 @@ export class HubRouter {
               pid: currentInstance.pid,
               err: error instanceof Error ? error.message : String(error)
             },
-            "Continuing list response without a live current-model backfill"
+            "Continuing list response without a live instance status refresh"
           );
         }
       }
