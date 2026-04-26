@@ -280,6 +280,90 @@ describe("SchedulerEngine", () => {
       dispatch_plan_path: planPath
     }), "W-02");
   });
+
+  it("kills a recovered completed worker before continuing the next scheduler worker", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends on | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | W-01 | First worker | CODEX-HIGH | — | |",
+      "| ⬜ | 2 | W-02 | Second worker | CODEX-HIGH | W-01 | |"
+    ].join("\n"), "utf8");
+
+    const runReportDir = path.join(directory, "reports", "run", "run-001");
+    await fs.mkdir(runReportDir, { recursive: true });
+    const reportPath = path.join(runReportDir, "W-01.md");
+    await fs.writeFile(reportPath, [
+      "# W-01 Completion Report",
+      "",
+      "## Outcome",
+      "",
+      "✅"
+    ].join("\n"), "utf8");
+
+    const lifecycleStore = new LifecycleStore(path.join(directory, "dispatch_threads.json"));
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      workers: {
+        "W-01": {
+          thread_id: "thread-w01",
+          trace_id: null,
+          started_at: "2026-04-26T06:00:00.000Z",
+          last_seen_at: "2026-04-26T06:01:00.000Z",
+          status: "running",
+          expected_outputs: [reportPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "active_run",
+      current_run_id: "run-001",
+      current_run_report_dir: null
+    });
+
+    const killDispatcher = vi.fn(async () => undefined);
+    const continueWorker = vi.fn(async () => ({
+      ok: true,
+      workerId: "W-02",
+      threadId: "thread-w02"
+    }));
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: buildConfig(planPath),
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher,
+        notifyChannels: vi.fn(),
+        continueWorker
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    await (engine as unknown as { checkCycleCompletion(): Promise<void> }).checkCycleCompletion();
+
+    expect(lifecycleStore.load().workers["W-01"]?.status).toBe("completed");
+    expect(killDispatcher).toHaveBeenCalledWith("thread-w01");
+    expect(continueWorker).toHaveBeenCalledWith(expect.objectContaining({
+      dispatch_plan_path: planPath
+    }), "W-02");
+  });
 });
 
 function buildConfig(dispatchPlanPath: string): SchedulerConfig {

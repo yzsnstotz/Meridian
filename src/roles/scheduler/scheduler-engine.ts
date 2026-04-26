@@ -2,7 +2,16 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
 
-import type { AgentType, HubResult, LifecycleStatus, SchedulerConfig, SchedulerMode, TerminalOutcome } from "../../types";
+import type {
+  AgentType,
+  DispatchWorkerState,
+  HubResult,
+  KillPolicy,
+  LifecycleStatus,
+  SchedulerConfig,
+  SchedulerMode,
+  TerminalOutcome
+} from "../../types";
 import { buildDispatchStatusReport, type DispatchStatusWorker } from "../../tool-gateway/tools/dispatch-status";
 import type { Logger } from "../base-role";
 import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
@@ -47,6 +56,7 @@ export class SchedulerEngine {
   private scheduleTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private readonly cleanedTerminalThreadIds = new Set<string>();
 
   private static readonly POLL_INTERVAL_MS = 30_000;
 
@@ -331,6 +341,7 @@ export class SchedulerEngine {
 
   private async checkCycleCompletion(): Promise<void> {
     this.recoverCurrentRunOutputEvidence();
+    await this.cleanupTerminalWorkerThreads();
 
     const detection = detectCycleCompletion(this.config);
     if (!detection.complete) {
@@ -468,6 +479,62 @@ export class SchedulerEngine {
 
     if (mutated) {
       lifecycleStore.save(lifecycleState);
+    }
+  }
+
+  private async cleanupTerminalWorkerThreads(): Promise<void> {
+    if (this.config.kill_policy === "never") {
+      return;
+    }
+
+    let lifecycleState: ReturnType<LifecycleStore["load"]>;
+    try {
+      lifecycleState = new LifecycleStore(this.resolveDispatchThreadsPath()).load();
+    } catch (error) {
+      this.log.warn("Scheduler: failed to read dispatch lifecycle for terminal cleanup", {
+        schedulerThreadId: this.schedulerThreadId,
+        error: asError(error).message
+      });
+      return;
+    }
+
+    const activeThreadIds = new Set<string>();
+    for (const worker of Object.values(lifecycleState.workers)) {
+      const threadId = normalizeThreadId(worker.thread_id);
+      if (threadId && isCleanupBlockingLifecycleStatus(worker.status)) {
+        activeThreadIds.add(threadId);
+      }
+    }
+
+    const attemptedThreadIds = new Set<string>();
+    for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+      const threadId = normalizeThreadId(worker.thread_id);
+      if (!threadId || attemptedThreadIds.has(threadId) || this.cleanedTerminalThreadIds.has(threadId)) {
+        continue;
+      }
+
+      if (activeThreadIds.has(threadId) || !shouldCleanupTerminalWorker(worker, this.config.kill_policy)) {
+        continue;
+      }
+
+      attemptedThreadIds.add(threadId);
+      try {
+        await this.callbacks.killDispatcher(threadId);
+        this.cleanedTerminalThreadIds.add(threadId);
+      } catch (error) {
+        const message = asError(error).message;
+        if (isMissingThreadCleanupError(message)) {
+          this.cleanedTerminalThreadIds.add(threadId);
+          continue;
+        }
+
+        this.log.warn("Scheduler: terminal worker cleanup kill failed", {
+          schedulerThreadId: this.schedulerThreadId,
+          workerId,
+          threadId,
+          error: message
+        });
+      }
     }
   }
 
@@ -612,6 +679,35 @@ function normalizeAgentType(value: string): AgentType {
     default:
       return "codex";
   }
+}
+
+function shouldCleanupTerminalWorker(worker: DispatchWorkerState, killPolicy: KillPolicy): boolean {
+  if (killPolicy === "never") {
+    return false;
+  }
+
+  if (worker.status === "completed") {
+    return killPolicy === "always" || killPolicy === "on_success";
+  }
+
+  if (worker.status === "failed" || worker.status === "abandoned" || worker.status === "skipped") {
+    return killPolicy === "always";
+  }
+
+  return false;
+}
+
+function isCleanupBlockingLifecycleStatus(status: LifecycleStatus): boolean {
+  return status === "running" || status === "awaiting_validation" || status === "fix_requested";
+}
+
+function normalizeThreadId(threadId: string | null | undefined): string | null {
+  const normalized = threadId?.trim();
+  return normalized ? normalized : null;
+}
+
+function isMissingThreadCleanupError(message: string): boolean {
+  return /\bnot found\b/i.test(message) || /\bmissing\b/i.test(message) || /\bunknown thread\b/i.test(message);
 }
 
 function sanitizePathSegment(value: string): string {
