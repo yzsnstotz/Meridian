@@ -3049,6 +3049,74 @@ describe("role config handlers", () => {
     }
   });
 
+  it("clears sticky terminal agent-dispatcher status when the plan is no longer terminal", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-retry-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-retry-active",
+          roleType: "agent-dispatcher",
+          status: "failed",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | Ω-1 | V-01-A | Retry verification | CODEX-XHIGH | BATCH-2-GATE | TaskSpec | running retry |",
+      "| ⬜ | Ω-1 | V-01-B | Human verification | HUMAN | V-01-A | TaskSpec | human follow-up |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "pending"
+      },
+      workers: {
+        "V-01-A": buildLifecycleWorker({
+          status: "running"
+        })
+      },
+      last_reconciled_at: "2026-04-07T14:15:00.000Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(persistedState);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-retry-active")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-retry-active",
+        status: "active",
+        current_worker: "V-01-A"
+      });
+      expect((await harness.stateStore.load())?.roles.find((role) => role.threadId === "agent-dispatcher-retry-active")?.status)
+        .toBe("active");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("projects scheduler run state from /api/roles instead of persisted active", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-scheduler-list-status-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

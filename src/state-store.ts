@@ -10,11 +10,33 @@ const WRITABLE_STATE_FILE_EXAMPLE = "/tmp/meridian-roles/state.json";
 export const ACTIVE_ROLE_STATUS = "active";
 export const PAUSED_ROLE_STATUS = "paused";
 export const NEEDS_REACTIVATION_ROLE_STATUS = "needs_reactivation";
+export const COMPLETED_ROLE_STATUS = "completed";
+export const FAILED_ROLE_STATUS = "failed";
+
+const REHYDRATABLE_ROLE_STATUSES = new Set([
+  ACTIVE_ROLE_STATUS,
+  PAUSED_ROLE_STATUS,
+  NEEDS_REACTIVATION_ROLE_STATUS
+]);
+
+const RECONCILABLE_AGENT_DISPATCHER_ROLE_STATUSES = new Set([
+  ...REHYDRATABLE_ROLE_STATUSES,
+  COMPLETED_ROLE_STATUS,
+  FAILED_ROLE_STATUS
+]);
 
 let tempFileCounter = 0;
 
 export function isStartupRehydratableRoleStatus(status: string): boolean {
-  return status === ACTIVE_ROLE_STATUS || status === PAUSED_ROLE_STATUS || status === NEEDS_REACTIVATION_ROLE_STATUS;
+  return REHYDRATABLE_ROLE_STATUSES.has(status);
+}
+
+export function isReconcilableAgentDispatcherRoleStatus(status: string): boolean {
+  return RECONCILABLE_AGENT_DISPATCHER_ROLE_STATUSES.has(status);
+}
+
+export function isTerminalAgentDispatcherRoleStatus(status: string): boolean {
+  return status === COMPLETED_ROLE_STATUS || status === FAILED_ROLE_STATUS;
 }
 
 export class StateStore {

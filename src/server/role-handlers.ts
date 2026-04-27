@@ -53,7 +53,8 @@ import { RoleRegistry } from "../roles/role-registry";
 import { RoleRunner } from "../roles/role-runner";
 import {
   ACTIVE_ROLE_STATUS,
-  isStartupRehydratableRoleStatus,
+  isReconcilableAgentDispatcherRoleStatus,
+  isTerminalAgentDispatcherRoleStatus,
   NEEDS_REACTIVATION_ROLE_STATUS,
   PAUSED_ROLE_STATUS,
   StateStore
@@ -626,7 +627,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     let lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
     let effectiveWorkerId = workerId
       ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
-    const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
+    const shouldActivateAfterContinue = context.status !== ACTIVE_ROLE_STATUS;
 
     const preValidationRunningWorkers = findBlockingRunningNonHumanWorkers(
       dispatchPlanData.rows,
@@ -730,7 +731,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           throw new Error(continued.error ?? "Failed to launch dispatch worker");
         }
 
-        if (shouldResumeAfterContinue) {
+        if (shouldActivateAfterContinue) {
           await setAgentDispatcherStatus(threadId, ACTIVE_ROLE_STATUS);
         }
 
@@ -759,7 +760,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       }
 
       const started = await startAgentDispatcherHubSession(threadId);
-      if (shouldResumeAfterContinue) {
+      if (shouldActivateAfterContinue) {
         await setAgentDispatcherStatus(threadId, ACTIVE_ROLE_STATUS);
       }
 
@@ -1329,10 +1330,8 @@ async function resolveReconciliableAgentDispatcherConfig(
 }
 
 function resolvePersistedAgentDispatcherConfig(state: AppState): AgentDispatcherConfig | null {
-  const eligibleStatuses = new Set([ACTIVE_ROLE_STATUS, PAUSED_ROLE_STATUS, NEEDS_REACTIVATION_ROLE_STATUS]);
-
   for (const role of state.roles) {
-    if (role.roleType !== "agent-dispatcher" || !eligibleStatuses.has(role.status)) {
+    if (role.roleType !== "agent-dispatcher" || !isReconcilableAgentDispatcherRoleStatus(role.status)) {
       continue;
     }
 
@@ -1353,7 +1352,7 @@ function resolvePersistedAgentDispatcherRoleState(
     if (
       role.threadId === threadId &&
       role.roleType === "agent-dispatcher" &&
-      isStartupRehydratableRoleStatus(role.status)
+      isReconcilableAgentDispatcherRoleStatus(role.status)
     ) {
       return role;
     }
@@ -1412,9 +1411,15 @@ function deriveAgentDispatcherRoleStatus(
     return roleStatus;
   }
 
-  return REACTIVATION_REQUIRED_DISPATCHER_STATUSES.has(lifecycleState.dispatcher.status)
-    ? NEEDS_REACTIVATION_ROLE_STATUS
-    : roleStatus;
+  if (REACTIVATION_REQUIRED_DISPATCHER_STATUSES.has(lifecycleState.dispatcher.status)) {
+    return NEEDS_REACTIVATION_ROLE_STATUS;
+  }
+
+  if (isTerminalAgentDispatcherRoleStatus(roleStatus)) {
+    return ACTIVE_ROLE_STATUS;
+  }
+
+  return roleStatus;
 }
 
 function resolveDispatchPlanTerminalRoleStatus(
