@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.meridian.routine-job-hub</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/yzliu/work/meridian/meridian-roles</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bun</string>
+    <string>run</string>
+    <string>src/routine-job-hub/server.ts</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ROUTINE_JOB_HUB_PORT</key>
+    <string>8765</string>
+    <key>ROUTINE_JOB_HUB_REGISTRY</key>
+    <string>/Users/yzliu/work/Docs/Projects/routine-job/hub.json</string>
+  </dict>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/yzliu/work/meridian/meridian-roles/logs/routine-job-hub.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/yzliu/work/meridian/meridian-roles/logs/routine-job-hub.err.log</string>
+</dict>
+</plist>
