@@ -97,7 +97,7 @@ export async function reconcile(
       continue;
     }
 
-    const outputsPresent = outputsExist(worker.expected_outputs);
+    const outputsPresent = outputsExist(worker.expected_outputs, worker.started_at);
     const workerToolProcessRunning = isWorkerToolProcessRunning(
       planRows.get(workerId),
       readWorkerScanRunId(worker.command_preamble),
@@ -107,7 +107,8 @@ export async function reconcile(
       workerId,
       worker.hub_result,
       outputsPresent,
-      worker.expected_outputs
+      worker.expected_outputs,
+      worker.started_at
     );
     if (recordedResultTransition && shouldApplyWorkerTransition(recordedResultTransition, workerToolProcessRunning)) {
       state.workers[workerId] = {
@@ -142,7 +143,8 @@ export async function reconcile(
       workerId,
       effectiveHubResult,
       outputsPresent,
-      worker.expected_outputs
+      worker.expected_outputs,
+      worker.started_at
     );
     if (recoveredTransition && shouldApplyWorkerTransition(recoveredTransition, workerToolProcessRunning)) {
       const terminalTimestamp = effectiveHubResult?.timestamp ?? nowIso;
@@ -365,7 +367,7 @@ function determineWorkerTransition(
     return null;
   }
 
-  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs)) {
+  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
     return {
       to: "failed",
       trigger: "output_artifact:failure_signal"
@@ -486,13 +488,14 @@ function determineRecordedResultTransition(
   workerId: string,
   hubResult: HubResult | null,
   outputsPresent: boolean,
-  expectedOutputs: string[]
+  expectedOutputs: string[],
+  startedAt: string
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
   if (!hubResult) {
     return null;
   }
 
-  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs)) {
+  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
     return {
       to: "failed",
       trigger: "output_artifact:failure_signal"
@@ -994,17 +997,17 @@ function isMissingThreadResult(content: string): boolean {
   return isMissingThreadEvidence(content);
 }
 
-function outputsExist(paths: string[]): boolean {
+function outputsExist(paths: string[], startedAt?: string): boolean {
   if (paths.length === 0) {
     return false;
   }
 
-  return paths.every((filePath) => findExistingOutputArtifactPaths(filePath).length > 0);
+  return paths.every((filePath) => findExistingOutputArtifactPaths(filePath, startedAt).length > 0);
 }
 
-function outputArtifactsContainFailureSignal(paths: string[]): boolean {
+function outputArtifactsContainFailureSignal(paths: string[], startedAt?: string): boolean {
   return paths.some((filePath) =>
-    findExistingOutputArtifactPaths(filePath).some((artifactPath) => {
+    findExistingOutputArtifactPaths(filePath, startedAt).some((artifactPath) => {
       try {
         const content = reconciliationFs.readFileSync(artifactPath, "utf8");
         return hubResultContainsFailureSignal({ content });
@@ -1015,32 +1018,34 @@ function outputArtifactsContainFailureSignal(paths: string[]): boolean {
   );
 }
 
-function findExistingOutputArtifactPaths(filePath: string): string[] {
+function findExistingOutputArtifactPaths(filePath: string, startedAt?: string): string[] {
+  const startedAtMs = parseArtifactFreshnessBaseline(startedAt);
   return [...new Set([
-    ...findExistingFileWithSize(filePath),
-    ...findOutputArtifactsInSubdirectories(filePath),
-    ...findOutputArtifactsInSiblingReportDirectories(filePath)
+    ...findExistingFileWithSize(filePath, startedAtMs),
+    ...findOutputArtifactsInSubdirectories(filePath, startedAtMs),
+    ...findOutputArtifactsInSiblingReportDirectories(filePath, startedAtMs)
   ])];
 }
 
-function findExistingFileWithSize(filePath: string): string[] {
-  return fileExistsWithSize(filePath) ? [filePath] : [];
+function findExistingFileWithSize(filePath: string, startedAtMs: number | null = null): string[] {
+  return fileExistsWithSize(filePath, startedAtMs) ? [filePath] : [];
 }
 
-function fileExistsWithSize(filePath: string): boolean {
+function fileExistsWithSize(filePath: string, startedAtMs: number | null = null): boolean {
   if (!reconciliationFs.existsSync(filePath)) {
     return false;
   }
 
   try {
-    return reconciliationFs.statSync(filePath).size > 0;
+    const stats = reconciliationFs.statSync(filePath);
+    return stats.size > 0 && outputArtifactBelongsToAttempt(stats, startedAtMs);
   } catch {
     return false;
   }
 }
 
-function findOutputArtifactsInSubdirectories(filePath: string): string[] {
-  return searchDirectoryForBasename(path.dirname(filePath), path.basename(filePath));
+function findOutputArtifactsInSubdirectories(filePath: string, startedAtMs: number | null = null): string[] {
+  return searchDirectoryForBasename(path.dirname(filePath), path.basename(filePath), startedAtMs);
 }
 
 /**
@@ -1049,7 +1054,10 @@ function findOutputArtifactsInSubdirectories(filePath: string): string[] {
  * `reports/` (or vice versa), possibly with different naming conventions
  * (`N-07_report.md` vs `N-07.md`).
  */
-function findOutputArtifactsInSiblingReportDirectories(filePath: string): string[] {
+function findOutputArtifactsInSiblingReportDirectories(
+  filePath: string,
+  startedAtMs: number | null = null
+): string[] {
   const directory = path.dirname(filePath);
   const grandparent = path.dirname(directory);
   const dirName = path.basename(directory).toLowerCase();
@@ -1063,15 +1071,19 @@ function findOutputArtifactsInSiblingReportDirectories(filePath: string): string
   for (const siblingDir of siblingDirs) {
     const siblingPath = path.join(grandparent, siblingDir);
     for (const variant of basenameVariants) {
-      matches.push(...findExistingFileWithSize(path.join(siblingPath, variant)));
-      matches.push(...searchDirectoryForBasename(siblingPath, variant));
+      matches.push(...findExistingFileWithSize(path.join(siblingPath, variant), startedAtMs));
+      matches.push(...searchDirectoryForBasename(siblingPath, variant, startedAtMs));
     }
   }
 
   return matches;
 }
 
-function searchDirectoryForBasename(directory: string, basename: string): string[] {
+function searchDirectoryForBasename(
+  directory: string,
+  basename: string,
+  startedAtMs: number | null = null
+): string[] {
   let entries: fs.Dirent[];
   try {
     entries = reconciliationFs.readdirSync(directory, { withFileTypes: true }) as fs.Dirent[];
@@ -1085,10 +1097,27 @@ function searchDirectoryForBasename(directory: string, basename: string): string
       continue;
     }
 
-    matches.push(...findExistingFileWithSize(path.join(directory, entry.name, basename)));
+    matches.push(...findExistingFileWithSize(path.join(directory, entry.name, basename), startedAtMs));
   }
 
   return matches;
+}
+
+function parseArtifactFreshnessBaseline(startedAt: string | undefined): number | null {
+  if (!startedAt) {
+    return null;
+  }
+
+  const startedAtMs = Date.parse(startedAt);
+  return Number.isFinite(startedAtMs) ? startedAtMs : null;
+}
+
+function outputArtifactBelongsToAttempt(stats: fs.Stats, startedAtMs: number | null): boolean {
+  if (startedAtMs === null) {
+    return true;
+  }
+
+  return stats.mtimeMs >= startedAtMs;
 }
 
 /**
