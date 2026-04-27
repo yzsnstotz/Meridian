@@ -531,6 +531,45 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("does not fail a success HubResult because prompt instructions in details_text mention failures", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("R-01", "worker-thread-444", "44444444-4444-4444-8444-444444444444", []);
+
+    harness.store.recordWorkerResult("R-01", buildHubResult({
+      thread_id: "worker-thread-444",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "R-01 is already merged on `main` via PR #155.",
+        "",
+        "Verification run:",
+        "- `npm run client:typecheck` passed",
+        "- `cargo check` passed",
+        "- Git delivery self-test passed"
+      ].join("\n"),
+      summary_text: [
+        "R-01 is already merged on `main` via PR #155.",
+        "Verification passed."
+      ].join("\n"),
+      details_text: [
+        "Your message:",
+        "If you encounter an environment problem (missing tool, broken `cargo check`), **do not silently work around it**. Report `⛔ BLOCKED` with the exact error.",
+        "If any test fails OR any assertion is not satisfied, do NOT proceed to commit — fix and re-run, or stop with `⛔ BLOCKED` if the issue is out of your scope.",
+        "- **A dependency you thought was `✅` turns out broken**: stop. Mark `⛔ BLOCKED — <DEP_ID> regressed`.",
+        "",
+        "Agent reply:",
+        "R-01 is already merged on `main` via PR #155.",
+        "Verification passed."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["R-01"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content requests read permission", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("DISPATCHER", "dispatcher-thread", "11111111-1111-4111-8111-111111111111", []);
