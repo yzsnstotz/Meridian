@@ -1446,6 +1446,40 @@ describe("reconcile", () => {
     );
   });
 
+  it("marks a running worker failed when its output report has a bold Markdown blocked result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/V-01-A.md", [
+      "# V-01-A Report",
+      "",
+      "**Worker**: V-01-A",
+      "**Result**: BLOCKED",
+      "",
+      "V-01-A did not create the required empty commit or PR because two Runtime Contract assertions did not pass."
+    ].join("\n"));
+    harness.store.save(buildState({
+      workers: {
+        "V-01-A": buildRunningWorker("worker-thread-v01a", outputPath)
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["V-01-A"]?.status).toBe("failed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "V-01-A",
+        from: "running",
+        to: "failed",
+        trigger: "output_artifact:failure_signal"
+      })
+    );
+  });
+
   it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
