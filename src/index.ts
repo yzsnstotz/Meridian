@@ -25,6 +25,7 @@ import {
   PAUSED_ROLE_STATUS,
   NEEDS_REACTIVATION_ROLE_STATUS,
   StateStore,
+  isReconcilableAgentDispatcherRoleStatus,
   isStartupRehydratableRoleStatus
 } from "./state-store";
 import {
@@ -579,10 +580,9 @@ async function resolveThreadIdForDispatchPlanPath(
   dispatchPlanPath: string
 ): Promise<string | null> {
   const state = await loadAppState(stateStore);
-  const eligibleStatuses = new Set(["active", "paused", "needs_reactivation"]);
 
   for (const role of state.roles) {
-    if (role.roleType !== "agent-dispatcher" || !eligibleStatuses.has(role.status)) {
+    if (role.roleType !== "agent-dispatcher" || !isReconcilableAgentDispatcherRoleStatus(role.status)) {
       continue;
     }
 
@@ -607,17 +607,21 @@ async function tryContinueDispatchWorker(
 
   const state = await loadAppState(stateStore);
   const roleState = state.roles.find((role) => {
-    if (role.roleType !== "agent-dispatcher" || !isStartupRehydratableRoleStatus(role.status)) {
+    if (role.roleType !== "agent-dispatcher" || !isReconcilableAgentDispatcherRoleStatus(role.status)) {
       return false;
     }
 
     const config = parseAgentDispatcherConfig(role);
     return config?.dispatch_plan_path === dispatchPlanPath;
   }) ?? null;
-  if (roleState?.status === PAUSED_ROLE_STATUS) {
+  if (!roleState) {
     return null;
   }
-  const config = roleState ? parseAgentDispatcherConfig(roleState) : null;
+
+  if (roleState.status === PAUSED_ROLE_STATUS) {
+    return null;
+  }
+  const config = parseAgentDispatcherConfig(roleState);
   if (!config) {
     return null;
   }
@@ -653,7 +657,33 @@ async function tryContinueDispatchWorker(
     return null;
   }
 
+  await persistAgentDispatcherRoleStatus(stateStore, roleState.threadId, ACTIVE_ROLE_STATUS, log);
+
   return workerId;
+}
+
+async function persistAgentDispatcherRoleStatus(
+  stateStore: StateStore,
+  threadId: string,
+  status: string,
+  log: typeof console
+): Promise<void> {
+  const state = await loadAppState(stateStore);
+  const role = state.roles.find((entry) => entry.threadId === threadId);
+  if (!role || role.roleType !== "agent-dispatcher" || role.status === status) {
+    return;
+  }
+
+  role.status = status;
+  try {
+    await stateStore.save(state);
+  } catch (error) {
+    log.warn("Watchdog failed to persist agent-dispatcher role status", {
+      threadId,
+      status,
+      error: asError(error).message
+    });
+  }
 }
 
 function isHumanModel(model: string | null | undefined): boolean {
@@ -663,15 +693,14 @@ function isHumanModel(model: string | null | undefined): boolean {
 
 export async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
   const state = await loadAppState(stateStore);
-  const eligibleStatuses = new Set(["active", "paused", "needs_reactivation"]);
   const paths: string[] = [];
 
   for (const role of state.roles) {
-    if (!eligibleStatuses.has(role.status)) {
-      continue;
-    }
-
     if (role.roleType === "agent-dispatcher") {
+      if (!isReconcilableAgentDispatcherRoleStatus(role.status)) {
+        continue;
+      }
+
       const config = parseAgentDispatcherConfig(role);
       if (config) {
         paths.push(config.dispatch_plan_path);
