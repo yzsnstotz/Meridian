@@ -165,6 +165,206 @@ describe("scheduler config updates", () => {
       })
     });
   });
+
+  it("returns dispatcher-style plan rows and worker reply details", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-detail-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const sidecarPath = path.join(directory, "dispatch_threads.json");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | R-01 | Build scheduler GUI controls | CODEX | — | PRD | done |",
+      "| ⬜ | 1 | R-02 | Add browser tests | CODEX | R-01 | PRD | ready |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-scheduler",
+        started_at: "2026-04-27T01:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-01": {
+          thread_id: "worker-thread-r01",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-27T01:01:00.000Z",
+          last_seen_at: "2026-04-27T01:03:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-r01",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Agent completed R-01.",
+            details_text: [
+              "Your message:",
+              "Run R-01.",
+              "",
+              "Agent reply:",
+              "Agent completed R-01."
+            ].join("\n"),
+            attachments: [],
+            timestamp: "2026-04-27T01:03:00.000Z"
+          },
+          command_preamble: "Run R-01.",
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    const handlers = createHarness();
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-detail-data",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    const detail = await invokeJson<{
+      dispatch_plan?: { rows?: Array<Record<string, unknown>> };
+      dispatch_details?: Array<Record<string, unknown>>;
+      continue_worker?: string | null;
+      current_worker?: string | null;
+    }>(handlers, "GET", "/api/scheduler/scheduler-detail-data");
+
+    expect(detail.dispatch_plan?.rows).toEqual([
+      expect.objectContaining({
+        worker: "R-01",
+        lifecycle_status: "completed",
+        thread_id: "worker-thread-r01"
+      }),
+      expect.objectContaining({
+        worker: "R-02",
+        lifecycle_status: null
+      })
+    ]);
+    expect(detail.dispatch_details).toEqual([
+      expect.objectContaining({
+        worker_id: "R-01",
+        status: "completed",
+        command: expect.objectContaining({ content: "Run R-01." }),
+        reply: expect.objectContaining({ content: "Agent completed R-01." })
+      })
+    ]);
+    expect(detail.continue_worker).toBe("R-02");
+    expect(detail.current_worker).toBeNull();
+  });
+
+  it("continues a scheduler worker through the scheduler-scoped endpoint", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-continue-"));
+    tempDirectories.add(directory);
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 1 | R-01 | Continue from scheduler | CODEX | — | PRD | ready |"
+    ].join("\n"), "utf8");
+
+    const continueWorker = vi.fn(async () => ({
+      ok: true,
+      workerId: "R-01",
+      threadId: "worker-thread-r01"
+    }));
+    const handlers = createHarness({ continueWorker });
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-worker-continue",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    await expect(invokeJson(
+      handlers,
+      "POST",
+      "/api/scheduler/scheduler-worker-continue/worker/R-01/continue",
+      {}
+    )).resolves.toMatchObject({
+      ok: true,
+      status: "continued",
+      message: "continued: R-01",
+      worker: "R-01"
+    });
+    expect(continueWorker).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatch_plan_path: dispatchPlanPath }),
+      "R-01"
+    );
+  });
+
+  it("updates scheduler worker resume and manual statuses through scheduler endpoints", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-actions-"));
+    tempDirectories.add(directory);
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const sidecarPath = path.join(directory, "dispatch_threads.json");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 1 | R-01 | Running worker | CODEX | — | PRD | active |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-scheduler",
+        started_at: "2026-04-27T01:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-01": {
+          thread_id: "worker-thread-r01",
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: "2026-04-27T01:01:00.000Z",
+          last_seen_at: "2026-04-27T01:02:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: "Run R-01.",
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    const handlers = createHarness();
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-worker-actions",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    await expect(invokeJson(
+      handlers,
+      "POST",
+      "/api/scheduler/scheduler-worker-actions/worker/R-01/resume",
+      { action: "skip" }
+    )).resolves.toMatchObject({
+      ok: true,
+      result: expect.objectContaining({
+        worker: "R-01",
+        action: "skip",
+        status: "skipped"
+      })
+    });
+    await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⛔ SKIPPED | 1 | R-01 |");
+
+    await expect(invokeJson(
+      handlers,
+      "PATCH",
+      "/api/scheduler/scheduler-worker-actions/worker/R-01/status",
+      { status: "completed" }
+    )).resolves.toMatchObject({
+      ok: true,
+      result: expect.objectContaining({
+        worker: "R-01",
+        status: "completed"
+      })
+    });
+    await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ✅ | 1 | R-01 |");
+  });
 });
 
 function buildConfig(dispatchPlanPath = path.join("/tmp", "dispatch_plan.md")): SchedulerConfig {
@@ -199,7 +399,9 @@ class MemoryStateStore {
   }
 }
 
-function createHarness(): SchedulerHandlers {
+function createHarness(options: {
+  continueWorker?: (config: SchedulerConfig, workerId: string) => Promise<{ ok: boolean; workerId: string; threadId?: string; error?: string }>;
+} = {}): SchedulerHandlers {
   const stateStore = new MemoryStateStore();
   const registry = new RoleRegistry();
   const runner = new RoleRunner({
@@ -219,6 +421,7 @@ function createHarness(): SchedulerHandlers {
       ok: true,
       threadId: "dispatcher-thread-test"
     }),
+    continueWorker: options.continueWorker,
     meridianApi: {
       spawn: async () => ({ threadId: "spawn-thread-test" }),
       run: async (request) => ({

@@ -16,7 +16,17 @@ import {
   type SchedulerRunState
 } from "../types";
 import { parseCronExpression, nextCronFire } from "../roles/scheduler/cron-parser";
+import { resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-continuation";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
+import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
+import { executeUpdateWorkerStatusAction } from "../tool-gateway/tools/update-status";
+import {
+  buildDispatchWorkerDetails,
+  enrichDispatchPlanRows,
+  loadDispatchLifecycleState,
+  loadDispatchPlanData,
+  resolveCurrentWorker
+} from "./role-handlers";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
 
@@ -36,6 +46,9 @@ type SchedulerRouteMatch =
   | { kind: "resume-schedule"; threadId: string }
   | { kind: "run-now"; threadId: string }
   | { kind: "cancel-run"; threadId: string }
+  | { kind: "continue-worker"; threadId: string; workerId: string }
+  | { kind: "resume-worker"; threadId: string; workerId: string }
+  | { kind: "update-worker-status"; threadId: string; workerId: string }
   | { kind: "delete-scheduler"; threadId: string };
 
 const CreateSchedulerBodySchema = z.object({
@@ -46,6 +59,11 @@ const CreateSchedulerBodySchema = z.object({
 const RunNowBodySchema = z.object({
   report_base_dir: z.string().min(1).optional()
 }).optional();
+
+const UpdateWorkerStatusRequestSchema = z.object({
+  status: z.string().min(1),
+  thread_id: z.string().min(1).optional()
+});
 
 const NEXT_RUN_PREVIEW_STATUSES = new Set(["idle", "waiting"]);
 
@@ -103,6 +121,15 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
           case "cancel-run":
             writeJson(response, 200, await cancelRun(route.threadId));
             return true;
+          case "continue-worker":
+            writeJson(response, 200, await continueSchedulerWorker(route.threadId, route.workerId));
+            return true;
+          case "resume-worker":
+            writeJson(response, 200, await resumeSchedulerWorker(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
+          case "update-worker-status":
+            writeJson(response, 200, await updateSchedulerWorkerStatus(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
           case "delete-scheduler":
             writeJson(response, 200, await deleteScheduler(route.threadId));
             return true;
@@ -147,8 +174,13 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     const config = engine?.getConfig() ?? role.config;
 
     const nextRunPreview = computeSchedulerNextRunPreview(config, runState);
-
     const dispatchStatusResult = await loadSchedulerDispatchStatus(config.dispatch_plan_path);
+    const dispatchPlanData = await loadDispatchPlanData(config.dispatch_plan_path, log);
+    const lifecycleState = await loadDispatchLifecycleState(config.dispatch_plan_path, log);
+    const dispatchPlanRows = await enrichDispatchPlanRows(config.dispatch_plan_path, dispatchPlanData.rows, log);
+    const dispatcherThreadId = runState?.current_dispatcher_thread_id
+      ?? lifecycleState.dispatcher.thread_id
+      ?? null;
 
     return {
       ok: true,
@@ -157,7 +189,22 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
       run_state: runState,
       next_run_preview: nextRunPreview,
       dispatch_status: dispatchStatusResult.dispatchStatus,
-      dispatch_status_error: dispatchStatusResult.error
+      dispatch_status_error: dispatchStatusResult.error,
+      continue_worker: resolveServiceContinueWorker(dispatchPlanRows, lifecycleState),
+      current_worker: resolveCurrentWorker(dispatchPlanRows, lifecycleState),
+      dispatch_details: buildDispatchWorkerDetails(
+        lifecycleState,
+        dispatchPlanRows,
+        dispatchPlanData.modelLegend,
+        {
+          roleId: threadId,
+          dispatcherThreadId,
+          dispatcherAgentType: config.agent_type
+        }
+      ),
+      dispatch_plan: {
+        rows: dispatchPlanRows
+      }
     };
   }
 
@@ -278,6 +325,78 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     return { ok: true, scheduler_id: threadId, action: "cancelled" };
   }
 
+  async function continueSchedulerWorker(threadId: string, workerId: string) {
+    const role = resolveSchedulerRole(threadId);
+    const engine = role.getEngine();
+    if (!engine) throw createHttpError(500, "Scheduler engine not initialized");
+
+    const result = await engine.continueWorker(workerId);
+    if (!result.ok) {
+      throw createHttpError(409, result.error ?? `Failed to continue ${workerId}`);
+    }
+
+    return {
+      ok: true,
+      status: "continued",
+      message: `continued: ${workerId}`,
+      worker: workerId,
+      ...(result.threadId ? { worker_thread_id: result.threadId } : {}),
+      ...(result.resumeResult ? { resume_result: result.resumeResult } : {})
+    };
+  }
+
+  async function resumeSchedulerWorker(threadId: string, workerId: string, body: unknown) {
+    const role = resolveSchedulerRole(threadId);
+    const config = role.getEngine()?.getConfig() ?? role.config;
+    const parsed = ResumeWorkerActionRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid resume worker payload");
+    }
+    if (parsed.data.action === "force-complete" && !parsed.data.force) {
+      throw createHttpError(400, "force-complete requires force=true");
+    }
+
+    return {
+      ok: true,
+      result: await executeResumeWorkerAction({
+        planPath: config.dispatch_plan_path,
+        workerId,
+        action: parsed.data.action,
+        force: parsed.data.force ?? false
+      })
+    };
+  }
+
+  async function updateSchedulerWorkerStatus(threadId: string, workerId: string, body: unknown) {
+    const role = resolveSchedulerRole(threadId);
+    const config = role.getEngine()?.getConfig() ?? role.config;
+    const parsed = UpdateWorkerStatusRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid worker status payload");
+    }
+
+    try {
+      return {
+        ok: true,
+        result: await executeUpdateWorkerStatusAction({
+          planPath: config.dispatch_plan_path,
+          workerId,
+          status: parsed.data.status,
+          threadId: parsed.data.thread_id ?? null
+        })
+      };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.startsWith("Unsupported status:")) {
+        throw createHttpError(400, message);
+      }
+      if (message.includes("Worker not found")) {
+        throw createHttpError(404, message);
+      }
+      throw error;
+    }
+  }
+
   async function deleteScheduler(threadId: string) {
     await runner.deactivate(threadId);
     return { ok: true, scheduler_id: threadId, action: "deleted" };
@@ -388,6 +507,39 @@ function matchSchedulerRoute(request: IncomingMessage): SchedulerRouteMatch | nu
   // POST /api/scheduler/:threadId/cancel-run
   if (method === "POST" && parts.length === 4 && parts[0] === "api" && parts[1] === "scheduler" && parts[3] === "cancel-run") {
     return { kind: "cancel-run", threadId: parts[2]! };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "scheduler"
+    && parts[3] === "worker"
+    && parts[5] === "continue"
+  ) {
+    return { kind: "continue-worker", threadId: parts[2]!, workerId: parts[4]! };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "scheduler"
+    && parts[3] === "worker"
+    && parts[5] === "resume"
+  ) {
+    return { kind: "resume-worker", threadId: parts[2]!, workerId: parts[4]! };
+  }
+
+  if (
+    method === "PATCH"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "scheduler"
+    && parts[3] === "worker"
+    && parts[5] === "status"
+  ) {
+    return { kind: "update-worker-status", threadId: parts[2]!, workerId: parts[4]! };
   }
 
   // DELETE /api/scheduler/:threadId

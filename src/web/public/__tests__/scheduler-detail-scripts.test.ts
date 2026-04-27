@@ -200,12 +200,12 @@ describe("scheduler detail public scripts", () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
     const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
-    const schedulerScript = extractInlineScripts(schedulerHtml).join("\n");
     const element = createElementStub();
 
     const context = vm.createContext({
       console,
       document: {
+        body: { dataset: { page: "scheduler-detail" } },
         addEventListener: () => undefined,
         getElementById: () => element,
         querySelectorAll: () => []
@@ -220,18 +220,13 @@ describe("scheduler detail public scripts", () => {
       }
     });
 
+    expect(extractInlineScripts(schedulerHtml)).toHaveLength(0);
     vm.runInContext(appScript, context, { filename: "app.js" });
-
-    expect(() => {
-      vm.runInContext(schedulerScript, context, { filename: "scheduler.html inline script" });
-    }).not.toThrow();
   });
 
   it("updates scheduler detail nav counts and status from the same APIs as the dashboard", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
-    const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
-    const schedulerScript = extractInlineScripts(schedulerHtml).join("\n");
     const elements = new Map<string, Record<string, unknown>>();
     const handlers: { domContentLoaded?: () => void } = {};
 
@@ -287,7 +282,6 @@ describe("scheduler detail public scripts", () => {
     });
 
     vm.runInContext(appScript, context, { filename: "app.js" });
-    vm.runInContext(schedulerScript, context, { filename: "scheduler.html inline script" });
     const domContentLoaded = handlers.domContentLoaded;
     if (!domContentLoaded) {
       throw new Error("app.js did not register a DOMContentLoaded handler");
@@ -313,8 +307,7 @@ describe("scheduler detail public scripts", () => {
 
   it("populates and saves scheduler dispatcher agent settings", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
-    const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
-    const schedulerScript = extractInlineScripts(schedulerHtml).join("\n");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
     const elements = new Map<string, Record<string, unknown>>();
     let patchBody: unknown = null;
     let intervalHandler: (() => void | Promise<void>) | undefined;
@@ -322,6 +315,8 @@ describe("scheduler detail public scripts", () => {
     const context = vm.createContext({
       console,
       document: {
+        body: { dataset: { page: "scheduler-detail" } },
+        addEventListener: () => undefined,
         getElementById: (id: string) => getElementStub(elements, id),
         querySelectorAll: () => []
       },
@@ -366,7 +361,8 @@ describe("scheduler detail public scripts", () => {
       }
     });
 
-    vm.runInContext(schedulerScript, context, { filename: "scheduler.html inline script" });
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    vm.runInContext("setupSchedulerDetail()", context);
     await flushAsync();
 
     expect(getElementStub(elements, "cfg-agent-type")).toMatchObject({ value: "codex" });
@@ -422,6 +418,82 @@ describe("scheduler detail public scripts", () => {
       scan_run_id_prefix: "routine"
     });
     expect(patchBody).not.toHaveProperty("model_map");
+  });
+
+  it("renders scheduler worker actions and inline agent reply cards", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const elements = new Map<string, Record<string, unknown>>();
+    const handlers: { domContentLoaded?: () => void } = {};
+
+    const context = createSchedulerDetailContext(elements, handlers);
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const domContentLoaded = handlers.domContentLoaded;
+    if (!domContentLoaded) {
+      throw new Error("app.js did not register a DOMContentLoaded handler");
+    }
+    domContentLoaded();
+    await flushAsync();
+    await flushAsync();
+
+    const html = String(getElementStub(elements, "dispatch-progress-body").innerHTML);
+    expect(html).toContain('data-resume-action="retry"');
+    expect(html).toContain('data-resume-action="skip"');
+    expect(html).toContain('data-resume-action="force-complete"');
+    expect(html).toContain("data-status-apply");
+    expect(html).toContain("Agent Reply");
+    expect(html).toContain("Agent is working on R-01.");
+  });
+
+  it("posts scheduler worker action buttons to scheduler-scoped endpoints", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const elements = new Map<string, Record<string, unknown>>();
+    const handlers: { domContentLoaded?: () => void } = {};
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+
+    const context = createSchedulerDetailContext(elements, handlers, requests);
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const domContentLoaded = handlers.domContentLoaded;
+    if (!domContentLoaded) {
+      throw new Error("app.js did not register a DOMContentLoaded handler");
+    }
+    domContentLoaded();
+    await flushAsync();
+    await flushAsync();
+
+    const dispatchBody = getElementStub(elements, "dispatch-progress-body");
+    const clickHandler = getElementHandlers(dispatchBody).click;
+    if (!clickHandler) {
+      throw new Error("scheduler worker action handler was not registered");
+    }
+
+    await clickHandler({
+      target: new FakeButton({
+        workerId: "R-01",
+        resumeAction: "skip"
+      })
+    });
+
+    expect(requests).toContainEqual({
+      url: "/api/scheduler/scheduler-gui-actions/worker/R-01/resume",
+      method: "POST",
+      body: { action: "skip" }
+    });
+
+    await clickHandler({
+      target: new FakeButton({
+        workerId: "R-01",
+        statusApply: true,
+        selectedStatus: "completed"
+      })
+    });
+
+    expect(requests).toContainEqual({
+      url: "/api/scheduler/scheduler-gui-actions/worker/R-01/status",
+      method: "PATCH",
+      body: { status: "completed" }
+    });
   });
 });
 
@@ -483,4 +555,203 @@ function jsonResponse(body: unknown): { ok: true; json: () => Promise<unknown>; 
 
 async function flushAsync(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+function createSchedulerDetailContext(
+  elements: Map<string, Record<string, unknown>>,
+  handlers: { domContentLoaded?: () => void },
+  requests: Array<{ url: string; method?: string; body?: unknown }> = []
+): vm.Context {
+  return vm.createContext({
+    console,
+    document: {
+      body: { dataset: { page: "scheduler-detail" } },
+      addEventListener: (event: string, handler: () => void) => {
+        if (event === "DOMContentLoaded") handlers.domContentLoaded = handler;
+      },
+      getElementById: (id: string) => getElementStub(elements, id),
+      querySelectorAll: () => []
+    },
+    Element: FakeElement,
+    HTMLButtonElement: FakeButton,
+    HTMLSelectElement: FakeSelect,
+    fetch: async (url: string, options?: { body?: string; method?: string }) => {
+      if (url.includes("/worker/")) {
+        requests.push({
+          url,
+          method: options?.method,
+          body: options?.body ? JSON.parse(options.body) : undefined
+        });
+        return jsonResponse({ ok: true, status: "updated" });
+      }
+
+      if (url === "/api/roles") {
+        return jsonResponse([]);
+      }
+
+      if (url === "/api/scheduler/scheduler-gui-actions") {
+        return jsonResponse({
+          ok: true,
+          scheduler_id: "scheduler-gui-actions",
+          config: {
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            scheduler_mode: "cron"
+          },
+          run_state: {
+            status: "active_run",
+            completed_cycles: 0,
+            run_history: []
+          },
+          dispatch_status: {
+            summary: {
+              total: 1,
+              pending: 0,
+              running: 1,
+              completed: 0,
+              failed: 0,
+              skipped: 0,
+              stale: 0
+            },
+            workers: [
+              {
+                status: "running",
+                lifecycle_status: "running",
+                batch: "B1",
+                worker_id: "R-01",
+                task: "Run worker",
+                model: "gpt-5.5 high",
+                depends_on: [],
+                thread_id: "thread-r-01"
+              }
+            ],
+            generated_at: "2026-04-27T00:00:00.000Z"
+          },
+          dispatch_plan: {
+            rows: [
+              {
+                status: "running",
+                lifecycle_status: "running",
+                batch: "B1",
+                worker: "R-01",
+                task: "Run worker",
+                model: "gpt-5.5 high",
+                depends_on: "",
+                thread_id: "thread-r-01"
+              }
+            ]
+          },
+          dispatch_details: [
+            {
+              worker_id: "R-01",
+              status: "running",
+              task: "Run worker",
+              model: "gpt-5.5 high",
+              worker_thread_id: "thread-r-01",
+              command: {
+                content: "Run R-01."
+              },
+              reply: {
+                content: "Agent is working on R-01."
+              }
+            }
+          ]
+        });
+      }
+
+      return jsonResponse({});
+    },
+    Intl,
+    setInterval: () => undefined,
+    URLSearchParams,
+    window: {
+      confirm: () => true,
+      location: {
+        pathname: "/scheduler/scheduler-gui-actions",
+        search: ""
+      }
+    }
+  });
+}
+
+class FakeElement {
+  getAttribute(_name: string): string | null {
+    void _name;
+    return null;
+  }
+
+  hasAttribute(_name: string): boolean {
+    void _name;
+    return false;
+  }
+
+  closest(_selector: string): FakeElement | null {
+    void _selector;
+    return this;
+  }
+
+  querySelector(_selector: string): FakeElement | null {
+    void _selector;
+    return null;
+  }
+}
+
+class FakeSelect extends FakeElement {
+  value: string;
+
+  constructor(value: string) {
+    super();
+    this.value = value;
+  }
+}
+
+class FakeButton extends FakeElement {
+  private readonly workerId: string;
+  private readonly resumeAction?: string;
+  private readonly statusApply: boolean;
+  private readonly selectedStatus: string;
+
+  constructor(options: { workerId: string; resumeAction?: string; statusApply?: boolean; selectedStatus?: string }) {
+    super();
+    this.workerId = options.workerId;
+    this.resumeAction = options.resumeAction;
+    this.statusApply = Boolean(options.statusApply);
+    this.selectedStatus = options.selectedStatus ?? "pending";
+  }
+
+  override getAttribute(name: string): string | null {
+    if (name === "data-worker-id") return this.workerId;
+    if (name === "data-resume-action") return this.resumeAction ?? null;
+    return null;
+  }
+
+  override hasAttribute(name: string): boolean {
+    if (name === "data-resume-action") return Boolean(this.resumeAction);
+    if (name === "data-status-apply") return this.statusApply;
+    return false;
+  }
+
+  override closest(selector: string): FakeElement | null {
+    if (selector === "[data-continue-worker], [data-resume-action], [data-status-apply]") {
+      return this;
+    }
+
+    if (selector === "tr") {
+      return new FakeTableRow(this.selectedStatus);
+    }
+
+    return null;
+  }
+}
+
+class FakeTableRow extends FakeElement {
+  private readonly selectedStatus: string;
+
+  constructor(selectedStatus: string) {
+    super();
+    this.selectedStatus = selectedStatus;
+  }
+
+  override querySelector(selector: string): FakeElement | null {
+    return selector === "[data-worker-status]" ? new FakeSelect(this.selectedStatus) : null;
+  }
 }

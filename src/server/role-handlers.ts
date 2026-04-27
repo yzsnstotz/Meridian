@@ -56,7 +56,6 @@ import {
   isReconcilableAgentDispatcherRoleStatus,
   isTerminalAgentDispatcherRoleStatus,
   NEEDS_REACTIVATION_ROLE_STATUS,
-  PAUSED_ROLE_STATUS,
   StateStore
 } from "../state-store";
 import {
@@ -308,12 +307,12 @@ export interface ContinueDispatcherResponse {
   validation_outcome?: string;
 }
 
-interface DispatchPlanData {
+export interface DispatchPlanData {
   rows: DispatchPlanRow[];
   modelLegend: DispatchPlanModelLegend;
 }
 
-type DispatchPlanModelLegend = Record<string, {
+export type DispatchPlanModelLegend = Record<string, {
   provider: string | null;
   model_id: string | null;
 }>;
@@ -2002,7 +2001,7 @@ function resolveDispatchThreadPath(dispatchPlanPath: string): string {
   return path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME);
 }
 
-async function loadDispatchLifecycleState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadStateV2> {
+export async function loadDispatchLifecycleState(dispatchPlanPath: string, log: Logger): Promise<DispatchThreadStateV2> {
   try {
     return new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath)).load();
   } catch (error) {
@@ -2024,7 +2023,7 @@ async function loadDispatchLifecycleState(dispatchPlanPath: string, log: Logger)
   }
 }
 
-async function loadDispatchPlanData(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanData> {
+export async function loadDispatchPlanData(dispatchPlanPath: string, log: Logger): Promise<DispatchPlanData> {
   try {
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
     return {
@@ -2043,7 +2042,7 @@ async function loadDispatchPlanData(dispatchPlanPath: string, log: Logger): Prom
   }
 }
 
-async function enrichDispatchPlanRows(
+export async function enrichDispatchPlanRows(
   dispatchPlanPath: string,
   rows: DispatchPlanRow[],
   log: Logger
@@ -2260,7 +2259,7 @@ function handleMissingDispatcherThreadEvidence(
   return true;
 }
 
-function buildDispatchWorkerDetails(
+export function buildDispatchWorkerDetails(
   lifecycleState: DispatchThreadStateV2,
   dispatchPlanRows: DispatchPlanRow[],
   modelLegend: DispatchPlanModelLegend,
@@ -2485,7 +2484,7 @@ function normalizeConversationSection(value: string | undefined): string | null 
   return normalized.length > 0 ? normalized : null;
 }
 
-function resolveCurrentWorker(rows: DispatchPlanRow[], trackerState: DispatchThreadStateV2): string | null {
+export function resolveCurrentWorker(rows: DispatchPlanRow[], trackerState: DispatchThreadStateV2): string | null {
   const inProgressWorker = rows.find((row) => row.status === "🔄")?.worker;
   if (inProgressWorker) {
     return inProgressWorker;

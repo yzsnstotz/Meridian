@@ -185,6 +185,21 @@ export class SchedulerEngine {
     await this.callbacks.notifyChannels(this.config, buildCancelNotification(this.schedulerThreadId)).catch(() => {});
   }
 
+  async continueWorker(workerId: string): Promise<ContinueDispatchWorkerResult> {
+    let report: Awaited<ReturnType<typeof buildDispatchStatusReport>>;
+    try {
+      report = await buildDispatchStatusReport(this.config.dispatch_plan_path);
+    } catch (error) {
+      return {
+        ok: false,
+        workerId,
+        error: asError(error).message
+      };
+    }
+
+    return this.continueSchedulerWorker(workerId, report.workers);
+  }
+
   // ─── Internal scheduling logic ──────────────────────────────────────────────
 
   private scheduleNextCycle(): void {
