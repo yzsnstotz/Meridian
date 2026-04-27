@@ -154,6 +154,83 @@ describe("dispatch-status tool", () => {
     });
   });
 
+  it("keeps completed workers completed when details_text only contains prompt failure instructions", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 1 | R-01 | Frontend nav restructure | CODEX-HIGH | PRE-FLIGHT | Hermes brief | merged |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-05T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": {
+            thread_id: "worker-thread-456",
+            trace_id: null,
+            started_at: "2026-04-05T00:00:00.000Z",
+            last_seen_at: "2026-04-05T00:10:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: {
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              thread_id: "worker-thread-456",
+              source: "codex",
+              status: "success",
+              run_state: "completed",
+              content: "R-01 is already merged on `main`; verification passed.",
+              summary_text: "R-01 is already merged on `main`; verification passed.",
+              details_text: [
+                "Your message:",
+                "If any test fails OR any assertion is not satisfied, stop with `⛔ BLOCKED`.",
+                "",
+                "Agent reply:",
+                "R-01 is already merged on `main`; verification passed."
+              ].join("\n"),
+              attachments: [],
+              timestamp: "2026-04-05T00:10:00.000Z"
+            }
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      summary: expect.objectContaining({
+        completed: 1,
+        failed: 0,
+        stale: 0
+      }),
+      workers: [
+        expect.objectContaining({
+          worker_id: "R-01",
+          status: "✅",
+          lifecycle_status: "completed",
+          failure_reason: null,
+          stale: false
+        })
+      ]
+    }));
+  });
+
   it("includes ClawHub tool progress from an explicit progress file", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
     tempDirectories.add(directory);

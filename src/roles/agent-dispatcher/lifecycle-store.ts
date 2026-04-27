@@ -668,7 +668,7 @@ export function hubResultContainsHitLimit(
 export function hubResultContainsFailureSignal(
   hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
 ): boolean {
-  const combinedContent = combineHubResultText(hubResult);
+  const combinedContent = combineHubResultSignalText(hubResult);
   if (combinedContent.length === 0) {
     return false;
   }
@@ -691,9 +691,36 @@ function hubResultContainsPattern(
   hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">,
   patterns: RegExp[]
 ): boolean {
-  const combinedContent = combineHubResultText(hubResult);
+  const combinedContent = combineHubResultSignalText(hubResult);
 
   return combinedContent.length > 0 && patterns.some((pattern) => pattern.test(combinedContent));
+}
+
+function combineHubResultSignalText(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): string {
+  return [
+    hubResult.content,
+    hubResult.summary_text,
+    extractAgentReplyDetailsText(hubResult.details_text)
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+}
+
+function extractAgentReplyDetailsText(detailsText: string | undefined): string | null {
+  if (typeof detailsText !== "string" || detailsText.trim().length === 0) {
+    return null;
+  }
+
+  const marker = "Agent reply:";
+  const markerIndex = detailsText.lastIndexOf(marker);
+  if (markerIndex === -1) {
+    return detailsText;
+  }
+
+  const replyText = detailsText.slice(markerIndex + marker.length).trim();
+  return replyText.length > 0 ? replyText : null;
 }
 
 function combineHubResultText(
