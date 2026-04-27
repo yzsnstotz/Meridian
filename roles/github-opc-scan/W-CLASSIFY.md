@@ -11,6 +11,15 @@
 
 Runs the `github-ai-automation-scan classify` subcommand to score accepted candidates across the Phase 0 12-dimension formula and 4-layer judgment contract. Grey-zone reclassification is handled inside the tool.
 
+R-01 classification uses the PRD §5.4 / Appendix B §B.A15 three-lane interface taxonomy:
+
+- `automation_readiness` / `interface_lane="cli"` for agent-callable command-line tools with runnable entrypoints, structured output, command schemas, or OpenClaw-style manifests.
+- `agent_local_api_readiness` / `interface_lane="local_api"` for local service-shaped tools exposing REST, JSON-RPC, gRPC, OpenAPI/Swagger, FastAPI/Flask/Express servers, or MCP manifests. MCP is a sub-class of this lane.
+- `user_readiness` / `interface_lane="gui"` for non-technical graphical applications.
+- `interface_lane="mixed"` when the repo has meaningful evidence for more than one lane.
+
+The broadened `automation_readiness_score` rubric scores the strength of the agent-callable surface without preferring CLI over local API. Either surface counts when the integration ergonomics are strong, and the classify tool must set `interface_lane` from the observed surface evidence.
+
 - **CLI command**: `github-ai-automation-scan classify`
 - **Database**: `/Volumes/Elements/github-ai-automation-solutions/github-ai-automation-solutions.db`
 - **Input**: `/tmp/github-opc-scan/${SCAN_RUN_ID}/prefiltered_candidates.json`
@@ -19,6 +28,7 @@ Runs the `github-ai-automation-scan classify` subcommand to score accepted candi
 - **Output dir**: `/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/output/${SCAN_RUN_ID}`
 - **Rate limit**: Codex calls and audit logging are handled inside the CLI tool
 - **JSON summary**: top-level `status`, `subcommand`, `scan_run_id`, `result`; result includes classification counts and reclassification rate
+- **Persistence contract**: `candidate_current.interface_lane` is populated as `cli`, `local_api`, `gui`, or `mixed`.
 
 #### Sub-tasks
 
@@ -42,7 +52,8 @@ Runs the `github-ai-automation-scan classify` subcommand to score accepted candi
 **W-CLASSIFY.3 - Validate JSON summary**
 - Parse stdout as JSON.
 - Require `status == "ok"`, `subcommand == "classify"`, matching `scan_run_id`, and result keys `candidates_classified`, `reclassify_calls`, `reclassification_rate`.
-- **Acceptance**: JSON summary is valid and classification output is present.
+- Verify classified rows written by this run have `candidate_current.interface_lane` either populated with one of `cli`, `local_api`, `gui`, `mixed` or left NULL only for rows that predate the R-01 schema and were not classified in this run.
+- **Acceptance**: JSON summary is valid, classification output is present, and R-01 classified rows carry the lane field.
 
 #### AI Auto-Tests
 
@@ -73,6 +84,15 @@ summary = json.load(open(sys.argv[2], encoding="utf-8"))
 assert summary["scan_run_id"] == sys.argv[3]
 print("OK: classify summary valid")
 PY
+
+missing_interface_lane=$(sqlite3 "${DB}" "
+SELECT COUNT(*) AS missing_interface_lane
+FROM candidate_current
+WHERE last_classified_at IS NOT NULL
+  AND interface_lane IS NULL;
+")
+test "${missing_interface_lane}" = "0"
+echo "OK: classified rows include interface_lane"
 ```
 
 #### Completion Protocol
