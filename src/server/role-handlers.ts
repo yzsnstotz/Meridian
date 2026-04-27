@@ -1889,6 +1889,16 @@ async function processValidationQueue(
     const worker = lifecycleStore.load().workers[workerId];
     if (worker?.status !== "awaiting_validation") continue;
 
+    if (worker.validation?.validator_thread_id) {
+      return {
+        ok: true,
+        status: "validation_in_progress",
+        message: `validation already running for ${workerId}`,
+        worker: workerId,
+        validation_outcome: "running"
+      };
+    }
+
     const spawnDir = resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath);
     const taskspecPath = resolveTaskspecPath(config);
     const meridianApi = createMeridianApiClient();
@@ -1903,14 +1913,28 @@ async function processValidationQueue(
       log
     };
 
-    const outcome = await executeValidationCycle(deps, workerId, row);
+    void executeValidationCycle(deps, workerId, row)
+      .then((outcome) => {
+        log.info("Validator cycle finished", {
+          event: "validator_cycle_finished",
+          worker_id: workerId,
+          status: outcome.status
+        });
+      })
+      .catch((error) => {
+        log.warn("Validator cycle failed unexpectedly", {
+          event: "validator_cycle_unhandled_error",
+          worker_id: workerId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
 
     return {
       ok: true,
       status: "validation_in_progress",
-      message: `validation ${outcome.status} for ${workerId}`,
+      message: `validation started for ${workerId}`,
       worker: workerId,
-      validation_outcome: outcome.status
+      validation_outcome: "started"
     };
   }
 

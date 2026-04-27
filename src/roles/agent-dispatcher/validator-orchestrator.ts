@@ -137,6 +137,7 @@ export async function executeValidationCycle(
       autoApprove: validatorConfig.auto_approve
     });
     validatorThreadId = spawnResult.threadId;
+    lifecycleStore.recordValidatorStart(workerId, validatorThreadId);
     log.info("Validator spawned", {
       event: "validator_spawned",
       worker_id: workerId,
@@ -160,6 +161,7 @@ export async function executeValidationCycle(
     const reason = `validator run failed: ${asErrorMessage(error)}`;
     log.warn("Validator run failed", { event: "validator_run_error", worker_id: workerId, error: reason });
     await safeKill(meridianApi, validatorThreadId, log);
+    lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
     return { status: "error", reason };
   }
 
@@ -175,6 +177,7 @@ export async function executeValidationCycle(
       worker_id: workerId,
       content_length: content.length
     });
+    lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
     return { status: "error", reason: "could not parse validator output" };
   }
 

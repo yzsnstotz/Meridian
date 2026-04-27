@@ -290,6 +290,24 @@ export class LifecycleStore {
     });
   }
 
+  recordValidatorStart(workerId: string, validatorThreadId: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker?.validation) return;
+
+      worker.validation.validator_thread_id = validatorThreadId;
+    });
+  }
+
+  clearValidatorStart(workerId: string, validatorThreadId: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker?.validation || worker.validation.validator_thread_id !== validatorThreadId) return;
+
+      worker.validation.validator_thread_id = null;
+    });
+  }
+
   transitionToFixRequested(
     workerId: string,
     score: number,

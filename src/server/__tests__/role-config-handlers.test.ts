@@ -1188,6 +1188,127 @@ describe("role config handlers", () => {
     }
   });
 
+  it("returns immediately after starting validation during continue", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-validation-async-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | N-02 | Build Complete | CODEX | — | TaskSpec | awaiting validation |",
+      "| ⬜ | 2 | R-04 | Runtime Followup | CODEX | N-02 | TaskSpec | blocked by validation |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-02": buildLifecycleWorker({
+          thread_id: "worker-thread-n02",
+          status: "awaiting_validation",
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    let timeout: NodeJS.Timeout | undefined;
+    let runStarted = false;
+    const fetchSpy = vi.fn((input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      const url = input instanceof Request
+        ? input.url
+        : input instanceof URL
+          ? input.href
+          : input.toString();
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/spawn") {
+        return Promise.resolve(new Response(JSON.stringify({
+          ok: true,
+          thread_id: "validator-thread-n02"
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }));
+      }
+
+      if (pathname === "/api/run") {
+        runStarted = true;
+        return new Promise<Response>(() => undefined);
+      }
+
+      throw new Error(`unexpected Meridian API request: ${pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    try {
+      const harness = createHarness();
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-continue-validation-async",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          pass_threshold: 0.7,
+          max_fix_cycles: 3,
+          base_branch: "main"
+        }
+      });
+
+      const result = await Promise.race([
+        invokeJson(
+          harness.roleHandlers,
+          "POST",
+          "/api/agent-dispatcher/agent-dispatcher-continue-validation-async/continue"
+        ),
+        new Promise((resolve) => {
+          timeout = setTimeout(() => resolve({ timed_out: true }), 50);
+        })
+      ]);
+
+      expect(result).toEqual({
+        ok: true,
+        status: "validation_in_progress",
+        message: "validation started for N-02",
+        worker: "N-02",
+        validation_outcome: "started"
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(runStarted).toBe(true);
+      expect(lifecycleStore.load().workers["N-02"]?.validation?.validator_thread_id).toBe("validator-thread-n02");
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("blocks continuation when a worker reply reported hit limit", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-hit-limit-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
