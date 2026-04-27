@@ -38,6 +38,10 @@
   --transition: 120ms ease;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body {
