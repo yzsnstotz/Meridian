@@ -41,7 +41,8 @@ export const DISPATCHER_ENTRY_ID = "dispatcher";
 export const reconciliationFs = {
   existsSync: fs.existsSync,
   statSync: fs.statSync,
-  readdirSync: fs.readdirSync
+  readdirSync: fs.readdirSync,
+  readFileSync: fs.readFileSync
 };
 
 type ReconciliationHubClient = {
@@ -364,6 +365,13 @@ function determineWorkerTransition(
     return null;
   }
 
+  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs)) {
+    return {
+      to: "failed",
+      trigger: "output_artifact:failure_signal"
+    };
+  }
+
   if (observation.kind === "completed" && outputsPresent) {
     return {
       to: "completed",
@@ -482,6 +490,13 @@ function determineRecordedResultTransition(
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
   if (!hubResult) {
     return null;
+  }
+
+  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs)) {
+    return {
+      to: "failed",
+      trigger: "output_artifact:failure_signal"
+    };
   }
 
   if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
@@ -984,11 +999,32 @@ function outputsExist(paths: string[]): boolean {
     return false;
   }
 
-  return paths.every((filePath) =>
-    fileExistsWithSize(filePath)
-    || fileExistsInSubdirectory(filePath)
-    || fileExistsInSiblingReportDirectory(filePath)
+  return paths.every((filePath) => findExistingOutputArtifactPaths(filePath).length > 0);
+}
+
+function outputArtifactsContainFailureSignal(paths: string[]): boolean {
+  return paths.some((filePath) =>
+    findExistingOutputArtifactPaths(filePath).some((artifactPath) => {
+      try {
+        const content = reconciliationFs.readFileSync(artifactPath, "utf8");
+        return hubResultContainsFailureSignal({ content });
+      } catch {
+        return false;
+      }
+    })
   );
+}
+
+function findExistingOutputArtifactPaths(filePath: string): string[] {
+  return [...new Set([
+    ...findExistingFileWithSize(filePath),
+    ...findOutputArtifactsInSubdirectories(filePath),
+    ...findOutputArtifactsInSiblingReportDirectories(filePath)
+  ])];
+}
+
+function findExistingFileWithSize(filePath: string): string[] {
+  return fileExistsWithSize(filePath) ? [filePath] : [];
 }
 
 function fileExistsWithSize(filePath: string): boolean {
@@ -1003,11 +1039,7 @@ function fileExistsWithSize(filePath: string): boolean {
   }
 }
 
-/**
- * Search immediate subdirectories of the parent for the same basename.
- * Handles round subdirectories like `dev_history/v1_round/N-07_report.md`.
- */
-function fileExistsInSubdirectory(filePath: string): boolean {
+function findOutputArtifactsInSubdirectories(filePath: string): string[] {
   return searchDirectoryForBasename(path.dirname(filePath), path.basename(filePath));
 }
 
@@ -1017,7 +1049,7 @@ function fileExistsInSubdirectory(filePath: string): boolean {
  * `reports/` (or vice versa), possibly with different naming conventions
  * (`N-07_report.md` vs `N-07.md`).
  */
-function fileExistsInSiblingReportDirectory(filePath: string): boolean {
+function findOutputArtifactsInSiblingReportDirectories(filePath: string): string[] {
   const directory = path.dirname(filePath);
   const grandparent = path.dirname(directory);
   const dirName = path.basename(directory).toLowerCase();
@@ -1027,41 +1059,36 @@ function fileExistsInSiblingReportDirectory(filePath: string): boolean {
     ? ["dev_history"]
     : ["reports"];
 
+  const matches: string[] = [];
   for (const siblingDir of siblingDirs) {
     const siblingPath = path.join(grandparent, siblingDir);
     for (const variant of basenameVariants) {
-      if (fileExistsWithSize(path.join(siblingPath, variant))) {
-        return true;
-      }
-
-      if (searchDirectoryForBasename(siblingPath, variant)) {
-        return true;
-      }
+      matches.push(...findExistingFileWithSize(path.join(siblingPath, variant)));
+      matches.push(...searchDirectoryForBasename(siblingPath, variant));
     }
   }
 
-  return false;
+  return matches;
 }
 
-function searchDirectoryForBasename(directory: string, basename: string): boolean {
+function searchDirectoryForBasename(directory: string, basename: string): string[] {
   let entries: fs.Dirent[];
   try {
     entries = reconciliationFs.readdirSync(directory, { withFileTypes: true }) as fs.Dirent[];
   } catch {
-    return false;
+    return [];
   }
 
+  const matches: string[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) {
       continue;
     }
 
-    if (fileExistsWithSize(path.join(directory, entry.name, basename))) {
-      return true;
-    }
+    matches.push(...findExistingFileWithSize(path.join(directory, entry.name, basename)));
   }
 
-  return false;
+  return matches;
 }
 
 /**

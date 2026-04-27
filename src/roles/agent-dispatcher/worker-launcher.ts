@@ -50,6 +50,8 @@ export interface LaunchDispatchWorkerDeps {
   onBackgroundRunError?(error: Error, request: DispatchRunHandoffRequest): void;
 }
 
+const activeRunHandoffsByThreadId = new Map<string, DispatchRunHandoffRequest>();
+
 export function createDefaultLaunchDispatchWorkerDeps(): LaunchDispatchWorkerDeps {
   const meridianApi = createMeridianApiClient();
   return {
@@ -115,8 +117,22 @@ export async function launchDispatchWorker(
     workerId: config.workerId,
     killPolicy: config.killPolicy
   };
-  const handoff = deps.dispatchRunHandoff(handoffRequest);
-  handoff.catch((error) => {
+
+  if (activeRunHandoffsByThreadId.has(threadId)) {
+    return {
+      ok: false,
+      threadId,
+      error: `spawn failed: Meridian returned active thread id ${threadId} for another in-flight worker`
+    };
+  }
+
+  activeRunHandoffsByThreadId.set(threadId, handoffRequest);
+  const handoff = Promise.resolve().then(() => deps.dispatchRunHandoff(handoffRequest));
+  handoff.finally(() => {
+    if (activeRunHandoffsByThreadId.get(threadId) === handoffRequest) {
+      activeRunHandoffsByThreadId.delete(threadId);
+    }
+  }).catch((error) => {
     const resolvedError = asError(error);
     if (deps.onBackgroundRunError) {
       deps.onBackgroundRunError(resolvedError, handoffRequest);

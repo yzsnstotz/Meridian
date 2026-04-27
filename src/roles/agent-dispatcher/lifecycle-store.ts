@@ -607,11 +607,12 @@ const HIT_LIMIT_PATTERNS = [
 ];
 
 const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
-  /(?:^|\n)\s*(?:#{1,6}\s*)?Outcome\s*\n+\s*`?\s*(?:FAILED|BLOCKED)\b/i,
-  /(?:^|\n)\s*(?:-\s*)?Outcome\s*:?\s*`?\s*(?:FAILED|BLOCKED)\b/i,
-  /(?:^|\n)\s*(?:-\s*)?Status\s*:?\s*`?\s*(?:FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*(?:#{1,6}\s*)?Outcome\s*\n+\s*`?\s*(?:⛔\s*)?(?:FAIL|FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*(?:-\s*)?Outcome\s*:?\s*`?\s*(?:⛔\s*)?(?:FAIL|FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*(?:-\s*)?Status\s*:?\s*`?\s*(?:⛔\s*)?(?:FAIL|FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*Result:\s*`?\s*⛔\s*(?:FAILED|BLOCKED)\b/i,
+  /(?:^|\n)\s*⛔\s*(?:FAIL|FAILED|BLOCKED)\b/i,
   /(?:^|[.!?]\s*)BLOCKED\s*[—–-]\s*[\w-]+\s*:/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,
   /"exit_code"\s*:\s*[1-9]\d*/i,

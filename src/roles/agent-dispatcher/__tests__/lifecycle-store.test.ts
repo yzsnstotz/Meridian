@@ -501,6 +501,31 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when a report outcome says fail with a stop marker", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      content: [
+        "# PRE-FLIGHT Report",
+        "",
+        "## Outcome",
+        "",
+        "⛔ FAIL",
+        "",
+        "python3 is below the required version."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when final text reports auto-test failure", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("W-CATALOG", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

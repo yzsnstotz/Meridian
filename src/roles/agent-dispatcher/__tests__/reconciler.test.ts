@@ -1116,7 +1116,7 @@ describe("reconcile", () => {
         workerId: "W-ANALYTICS",
         from: "running",
         to: "failed",
-        trigger: "hub_result:failure_signal"
+        trigger: "output_artifact:failure_signal"
       })
     );
   });
@@ -1395,6 +1395,53 @@ describe("reconcile", () => {
         from: "running",
         to: "failed",
         trigger: "hub_result:failure_signal"
+      })
+    );
+  });
+
+  it("marks a worker failed when a timeout result has an output report with a failure outcome", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/PRE-FLIGHT.md", [
+      "# PRE-FLIGHT Report",
+      "",
+      "## Outcome",
+      "",
+      "⛔ FAIL",
+      "",
+      "Tool repo is not on main."
+    ].join("\n"));
+    const worker = buildRunningWorker("worker-thread-preflight", outputPath);
+    worker.hub_result = {
+      trace_id: "88888888-8888-4888-8888-888888888888",
+      thread_id: "worker-thread-preflight",
+      source: "codex",
+      status: "partial",
+      run_state: "timeout",
+      content: "Waiting for approval...",
+      attachments: [],
+      timestamp: FIXED_NOW
+    };
+
+    harness.store.save(buildState({
+      workers: {
+        "PRE-FLIGHT": worker
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "waiting"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("failed");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "PRE-FLIGHT",
+        from: "running",
+        to: "failed",
+        trigger: "output_artifact:failure_signal"
       })
     );
   });

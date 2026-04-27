@@ -205,6 +205,38 @@ describe("launchDispatchWorker", () => {
       workerId: "N-01"
     }) as DispatchRunHandoffRequest);
   });
+
+  it("refuses to hand off a second worker to the same active thread id", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true,
+      runHandoffMode: "pending"
+    });
+    harness.spawn.mockResolvedValue({ threadId: "worker-thread-collision" });
+
+    const first = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+    const second = await launchDispatchWorker(
+      {
+        ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+        workerId: "N-02"
+      },
+      harness.deps
+    );
+
+    expect(first).toEqual({
+      ok: true,
+      threadId: "worker-thread-collision"
+    });
+    expect(second).toEqual({
+      ok: false,
+      threadId: "worker-thread-collision",
+      error: "spawn failed: Meridian returned active thread id worker-thread-collision for another in-flight worker"
+    });
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function createHarness(overrides: {
@@ -213,6 +245,7 @@ async function createHarness(overrides: {
   detachedDocsWorkspace?: boolean;
   spawnError?: unknown;
   runHandoffAsyncError?: Error;
+  runHandoffMode?: "resolve" | "pending";
   onBackgroundRunError?: LaunchDispatchWorkerDeps["onBackgroundRunError"];
 } = {}): Promise<{
   deps: LaunchDispatchWorkerDeps;
@@ -265,6 +298,9 @@ async function createHarness(overrides: {
   };
 
   const dispatchRunHandoff = vi.fn().mockImplementation(async () => {
+    if (overrides.runHandoffMode === "pending") {
+      await new Promise(() => undefined);
+    }
     if (overrides.runHandoffAsyncError) {
       throw overrides.runHandoffAsyncError;
     }
