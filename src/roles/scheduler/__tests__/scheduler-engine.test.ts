@@ -380,6 +380,106 @@ describe("SchedulerEngine", () => {
     expect(continueWorker).not.toHaveBeenCalled();
   });
 
+  it("pauses for manual intervention when a failed tool progress blocks downstream workers", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const progressPath = path.join(directory, "detail-fetch.progress.json");
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends on | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| ✅ | 1 | W-CATALOG | First worker | CODEX-HIGH | — | |",
+      `| ✅ | 2 | W-DETAIL | clawhub-fetch detail-fetch --progress ${progressPath} | CODEX-HIGH | W-CATALOG | |`,
+      "| ⬜ | 3 | W-SSR | Second worker | CODEX-HIGH | W-DETAIL | |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(progressPath, `${JSON.stringify({
+      command: "detail-fetch",
+      scan_run_id: "daily-2026-04-27",
+      status: "failed",
+      total: 35324,
+      processed: 35294,
+      success: 35294,
+      failed: 30,
+      skipped: 0,
+      remaining: 30,
+      updated_at: "2026-04-27T13:35:12.774Z"
+    }, null, 2)}\n`, "utf8");
+
+    const lifecycleStore = new LifecycleStore(path.join(directory, "dispatch_threads.json"));
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      workers: {
+        "W-CATALOG": {
+          thread_id: "thread-catalog",
+          trace_id: null,
+          started_at: "2026-04-26T06:00:00.000Z",
+          last_seen_at: "2026-04-26T06:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-DETAIL": {
+          thread_id: "thread-detail",
+          trace_id: null,
+          started_at: "2026-04-26T07:00:00.000Z",
+          last_seen_at: "2026-04-26T07:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 2
+        }
+      }
+    });
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "active_run",
+      current_run_id: "run-001"
+    });
+
+    const continueWorker = vi.fn(async () => ({
+      ok: true,
+      workerId: "W-SSR",
+      threadId: "thread-ssr"
+    }));
+    const notifyChannels = vi.fn();
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: buildConfig(planPath),
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher: vi.fn(),
+        notifyChannels,
+        continueWorker
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    await (engine as unknown as { checkCycleCompletion(): Promise<void> }).checkCycleCompletion();
+
+    expect(continueWorker).not.toHaveBeenCalled();
+    expect(stateStore.load()).toMatchObject({
+      status: "manual_intervention_required",
+      last_run_outcome: "manual_intervention_required"
+    });
+    expect(notifyChannels).toHaveBeenCalledWith(expect.objectContaining({
+      dispatch_plan_path: planPath
+    }), expect.stringContaining("W-DETAIL"));
+  });
+
   it("does not recover a current-run report while the matching tool process is still running", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
     tempDirectories.add(directory);

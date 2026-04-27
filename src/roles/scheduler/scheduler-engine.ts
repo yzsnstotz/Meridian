@@ -399,6 +399,7 @@ export class SchedulerEngine {
 
     const workerId = this.resolveServiceContinueWorker(report.workers);
     if (!workerId) {
+      await this.pauseForManualInterventionIfBlocked(report.workers);
       return;
     }
 
@@ -415,6 +416,29 @@ export class SchedulerEngine {
       schedulerThreadId: this.schedulerThreadId,
       worker: result.workerId
     });
+  }
+
+  private async pauseForManualInterventionIfBlocked(workers: DispatchStatusWorker[]): Promise<void> {
+    const blocker = workers.find(isManualInterventionBlocker);
+    if (!blocker) {
+      return;
+    }
+
+    const state = this.stateStore.load();
+    if (state.status !== "active_run") {
+      return;
+    }
+
+    state.status = "manual_intervention_required";
+    state.last_run_outcome = "manual_intervention_required";
+    state.next_run_at = null;
+    this.stateStore.save(state);
+    this.clearPollTimer();
+
+    await Promise.resolve(this.callbacks.notifyChannels(
+      this.config,
+      buildManualInterventionNotification(this.schedulerThreadId, blocker)
+    )).catch(() => {});
   }
 
   private async hasRunningToolProgress(): Promise<boolean> {
@@ -743,6 +767,10 @@ function isMissingThreadCleanupError(message: string): boolean {
   return /\bnot found\b/i.test(message) || /\bmissing\b/i.test(message) || /\bunknown thread\b/i.test(message);
 }
 
+function isManualInterventionBlocker(worker: DispatchStatusWorker): boolean {
+  return worker.status === "❌" || worker.lifecycle_status === "failed" || worker.progress?.status === "failed";
+}
+
 function sanitizePathSegment(value: string): string {
   const sanitized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   return sanitized.length > 0 ? sanitized : "run";
@@ -795,6 +823,19 @@ function buildOverlapNotification(
     `Planned: ${plannedStartTime ?? "now"}`,
     `Reason: Previous run still active`
   ].join("\n");
+}
+
+function buildManualInterventionNotification(
+  schedulerThreadId: string,
+  blocker: DispatchStatusWorker
+): string {
+  return [
+    `**Scheduler manual intervention required**`,
+    `Scheduler: ${schedulerThreadId}`,
+    `Worker: ${blocker.worker_id}`,
+    blocker.failure_reason ? `Reason: ${blocker.failure_reason}` : null,
+    `Time: ${new Date().toISOString()}`
+  ].filter(Boolean).join("\n");
 }
 
 function buildCancelNotification(schedulerThreadId: string): string {

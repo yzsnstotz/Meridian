@@ -654,6 +654,7 @@ const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|[.!?]\s*)BLOCKED\s*[—–-]\s*[\w-]+\s*:/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,
   /"exit_code"\s*:\s*[1-9]\d*/i,
+  /"failed"\s*:\s*[1-9]\d*/i,
   /(?:^|\n)\s*FAIL:\s+/i
 ];
 
