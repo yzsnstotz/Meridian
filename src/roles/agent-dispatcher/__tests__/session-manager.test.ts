@@ -268,6 +268,56 @@ describe("SessionManager", () => {
     expect(lifecycle.getState().workers["N-03"]?.status).toBe("abandoned");
   });
 
+  it("marks a killed running worker failed when its fresh output report is blocked", async () => {
+    const harness = await createHarness();
+    const outputPath = path.join(harness.directory, "reports", "V-01-A.md");
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, [
+      "# V-01-A Report",
+      "",
+      "**Result**: BLOCKED",
+      "",
+      "Verification did not pass."
+    ].join("\n"), "utf8");
+
+    const lifecycle = createLifecycleStoreMock({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: FIXED_NOW,
+        status: "running"
+      },
+      workers: {
+        "V-01-A": {
+          thread_id: "worker-thread-v01a",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "running",
+          expected_outputs: [outputPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    const killCalls = vi.fn().mockResolvedValue({ stdout: "{\"ok\":true}\n", stderr: "" });
+    const manager = new SessionManager("agent-dispatcher-role-v01a", {
+      stateStore: harness.stateStore,
+      lifecycleStore: lifecycle.store,
+      execFile: killCalls
+    });
+
+    const result = await manager.onRestart();
+
+    expect(result).toEqual({
+      staleWorkersKilled: ["V-01-A"],
+      dispatcherRestarted: true
+    });
+    expect(lifecycle.getState().workers["V-01-A"]?.status).toBe("failed");
+  });
+
   it("respects plan ✅ status during restart reconciliation even when hub_result is missing", async () => {
     const harness = await createHarness({
       planContent: [

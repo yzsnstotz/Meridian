@@ -141,6 +141,77 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when a fresh expected output report is blocked", async () => {
+    const harness = await createHarness();
+    const outputPath = path.join(harness.directory, "reports", "V-01-A.md");
+    await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+
+    harness.store.recordWorkerStart(
+      "V-01-A",
+      "worker-thread-v01a",
+      "11111111-1111-4111-8111-111111111111",
+      [outputPath]
+    );
+    await fsp.writeFile(outputPath, [
+      "# V-01-A Report",
+      "",
+      "**Result**: BLOCKED",
+      "",
+      "Verification failed."
+    ].join("\n"), "utf8");
+
+    harness.store.recordWorkerResult("V-01-A", buildHubResult({
+      thread_id: "worker-thread-v01a",
+      status: "success",
+      run_state: "completed",
+      content: "Report written.",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["V-01-A"]).toMatchObject({
+      status: "failed",
+      hub_result: expect.objectContaining({
+        content: "Report written."
+      })
+    });
+  });
+
+  it("does not complete a retry from a blocked output report written before the attempt started", async () => {
+    const harness = await createHarness();
+    const outputPath = path.join(harness.directory, "reports", "V-01-A.md");
+    await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+    await fsp.writeFile(outputPath, [
+      "# V-01-A Report",
+      "",
+      "**Result**: BLOCKED",
+      "",
+      "Previous attempt failed."
+    ].join("\n"), "utf8");
+    await fsp.utimes(
+      outputPath,
+      new Date("2026-04-03T12:00:00.000Z"),
+      new Date("2026-04-03T12:00:00.000Z")
+    );
+
+    harness.store.recordWorkerStart(
+      "V-01-A",
+      "worker-thread-v01a-retry",
+      "11111111-1111-4111-8111-111111111111",
+      [outputPath]
+    );
+    harness.store.recordWorkerResult("V-01-A", buildHubResult({
+      thread_id: "worker-thread-v01a-retry",
+      status: "success",
+      run_state: "completed",
+      content: "No fresh report yet.",
+      timestamp: "2026-04-03T12:30:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["V-01-A"]).toMatchObject({
+      status: "running"
+    });
+  });
+
   it("completes immediately when a deferred-success result returns an inline validation report", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
@@ -700,12 +771,11 @@ describe("LifecycleStore", () => {
   it("completes immediately when a deferred-success result reports a real completion artifact", async () => {
     const harness = await createHarness();
     const reportPath = path.join(harness.directory, "dev_history", "v1_round", "R-02_report.md");
-    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
-    await fsp.writeFile(reportPath, "# R-02 Completion Report\n", "utf8");
-
     harness.store.recordWorkerStart("R-02", "worker-thread-222", "22222222-2222-4222-8222-222222222222", [
       "dev_history/v1_round/R-02_report.md"
     ]);
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# R-02 Completion Report\n", "utf8");
 
     harness.store.recordWorkerResult("R-02", buildHubResult({
       thread_id: "worker-thread-222",
@@ -723,12 +793,11 @@ describe("LifecycleStore", () => {
   it("completes immediately when a deferred-success result reports a real completion artifact with a URI fragment", async () => {
     const harness = await createHarness();
     const reportPath = path.join(harness.directory, "dev_history", "v1_round", "R-03_report.md");
-    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
-    await fsp.writeFile(reportPath, "# R-03 Completion Report\n", "utf8");
-
     harness.store.recordWorkerStart("R-03", "worker-thread-333", "33333333-3333-4333-8333-333333333333", [
       "dev_history/v1_round/R-03_report.md"
     ]);
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# R-03 Completion Report\n", "utf8");
 
     harness.store.recordWorkerResult("R-03", buildHubResult({
       thread_id: "worker-thread-333",

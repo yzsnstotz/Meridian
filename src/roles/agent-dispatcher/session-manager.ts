@@ -8,7 +8,11 @@ import * as fsSync from "node:fs";
 
 import type { StateStore } from "../../state-store";
 import { AppStateSchema, type AppState, type DispatchWorkerState, type DispatchThreadStateV2, type LifecycleStatus } from "../../types";
-import { LifecycleStore, hubResultContainsInlineReport } from "./lifecycle-store";
+import { LifecycleStore, hubResultContainsFailureSignal, hubResultContainsInlineReport } from "./lifecycle-store";
+import {
+  outputArtifactsContain,
+  outputsExist as outputArtifactsExist
+} from "./output-artifacts";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
 const ACTIVE_STATUS = "active";
@@ -561,14 +565,19 @@ function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
  * querying the (now dead) hub thread.
  *
  * Priority:
- * 1. Plan markdown shows ✅ or ⛔ SKIPPED → trust external evidence (merged PR, etc.)
- * 2. Expected outputs exist on disk → completed
- * 3. Hub result contains inline report → completed
- * 4. Hub result is success/completed → completed (trust the hub; thread is gone)
- * 5. Hub result is error → failed
- * 6. No hub result → abandoned
+ * 1. Fresh output report says FAILED/BLOCKED → failed
+ * 2. Plan markdown shows ✅ or ⛔ SKIPPED → trust external evidence (merged PR, etc.)
+ * 3. Expected outputs exist on disk → completed
+ * 4. Hub result contains inline report → completed
+ * 5. Hub result is success/completed → completed (trust the hub; thread is gone)
+ * 6. Hub result is error → failed
+ * 7. No hub result → abandoned
  */
 function resolveKilledWorkerStatus(worker: DispatchWorkerState, planStatus: string | null): LifecycleStatus {
+  if (outputArtifactsContainFailureSignal(worker.expected_outputs, worker.started_at)) {
+    return "failed";
+  }
+
   // The dispatch plan markdown is the authoritative record when external
   // evidence (e.g. a merged PR) has already confirmed completion. A missing
   // hub_result (due to relay timeout, etc.) must not override this.
@@ -580,7 +589,7 @@ function resolveKilledWorkerStatus(worker: DispatchWorkerState, planStatus: stri
     return "skipped";
   }
 
-  if (expectedOutputsExist(worker.expected_outputs)) {
+  if (expectedOutputsExist(worker.expected_outputs, worker.started_at)) {
     return "completed";
   }
 
@@ -662,16 +671,14 @@ function readPlanWorkerStatuses(dispatchPlanPath: string | null): Map<string, st
   return statuses;
 }
 
-function expectedOutputsExist(expectedOutputs: string[]): boolean {
-  if (expectedOutputs.length === 0) {
-    return false;
-  }
+function expectedOutputsExist(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsExist(expectedOutputs, startedAt);
+}
 
-  return expectedOutputs.every((filePath) => {
-    try {
-      return fsSync.existsSync(filePath) && fsSync.statSync(filePath).size > 0;
-    } catch {
-      return false;
-    }
-  });
+function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    expectedOutputs,
+    (content) => hubResultContainsFailureSignal({ content }),
+    startedAt
+  );
 }

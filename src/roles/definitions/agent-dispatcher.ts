@@ -4,13 +4,14 @@ import { unlink as unlinkFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { LifecycleStore } from "../agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 import { StateStore } from "../../state-store";
 import {
   AgentDispatcherConfigSchema,
   AppStateSchema,
   type AgentDispatcherConfig,
-  type AppState
+  type AppState,
+  type DispatchWorkerState
 } from "../../types";
 import { launchDispatcher, type LaunchConfig, type LaunchResult } from "../agent-dispatcher/launcher";
 import { parseNormalizedAgentDispatcherConfig } from "../agent-dispatcher/config-normalization";
@@ -25,6 +26,10 @@ import {
 } from "../agent-dispatcher/dispatch-paths";
 import { createMeridianApiClient, type MeridianApiClient } from "../agent-dispatcher/meridian-api-client";
 import { resolveDispatchModelMapFromMarkdown } from "../agent-dispatcher/model-routing";
+import {
+  outputArtifactsContain,
+  outputsExist as outputArtifactsExist
+} from "../agent-dispatcher/output-artifacts";
 import {
   readWorkersByStatus,
   SessionManager,
@@ -345,7 +350,7 @@ export class AgentDispatcherRole implements BaseRole {
         worker.status === "running"
           ? {
               ...worker,
-              status: resolveStoppedWorkerStatus(worker.expected_outputs),
+              status: resolveStoppedWorkerStatus(worker),
               last_seen_at: nowIso
             }
           : worker
@@ -411,12 +416,24 @@ function dedupeThreadIds(values: Array<string | null>): string[] {
   return [...unique];
 }
 
-function expectedOutputsExist(expectedOutputs: string[]): boolean {
-  return expectedOutputs.length > 0 && expectedOutputs.every((filePath) => fsSync.existsSync(filePath));
+function expectedOutputsExist(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsExist(expectedOutputs, startedAt);
 }
 
-function resolveStoppedWorkerStatus(expectedOutputs: string[]): "completed" | "abandoned" {
-  return expectedOutputsExist(expectedOutputs) ? "completed" : "abandoned";
+function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    expectedOutputs,
+    (content) => hubResultContainsFailureSignal({ content }),
+    startedAt
+  );
+}
+
+function resolveStoppedWorkerStatus(worker: DispatchWorkerState): "completed" | "failed" | "abandoned" {
+  if (outputArtifactsContainFailureSignal(worker.expected_outputs, worker.started_at)) {
+    return "failed";
+  }
+
+  return expectedOutputsExist(worker.expected_outputs, worker.started_at) ? "completed" : "abandoned";
 }
 
 function defaultSessionManagerFactory(threadId: string, options: SessionManagerOptions): SessionManagerLike {

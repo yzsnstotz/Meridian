@@ -12,6 +12,10 @@ import {
   type LifecycleStatus,
   type LifecycleWorkerEntry
 } from "../../types";
+import {
+  outputArtifactsContain,
+  outputsExist as outputArtifactsExist
+} from "./output-artifacts";
 
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
@@ -158,7 +162,12 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
-    const nextStatus = mapHubResultToLifecycleStatus(workerId, hubResult, worker.expected_outputs);
+    const nextStatus = mapHubResultToLifecycleStatus(
+      workerId,
+      hubResult,
+      worker.expected_outputs,
+      worker.started_at
+    );
     state.workers[workerId] = {
       ...worker,
       thread_id: hubResult.thread_id || worker.thread_id,
@@ -548,7 +557,12 @@ function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
   });
 }
 
-function mapHubResultToLifecycleStatus(workerId: string, hubResult: HubResult, expectedOutputs: string[]): LifecycleStatus {
+function mapHubResultToLifecycleStatus(
+  workerId: string,
+  hubResult: HubResult,
+  expectedOutputs: string[],
+  startedAt: string
+): LifecycleStatus {
   const deferSuccessUntilReconciled = requiresOutputVerification(expectedOutputs);
 
   if (hubResult.status === "error") {
@@ -571,6 +585,10 @@ function mapHubResultToLifecycleStatus(workerId: string, hubResult: HubResult, e
     return "failed";
   }
 
+  if (outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
+    return "failed";
+  }
+
   if (isNonCompletionContent(hubResult.content)) {
     return "running";
   }
@@ -581,8 +599,8 @@ function mapHubResultToLifecycleStatus(workerId: string, hubResult: HubResult, e
     }
 
     if (
-      expectedOutputsExist(expectedOutputs)
-      || reportedOutputsExist(hubResult, expectedOutputs)
+      expectedOutputsExist(expectedOutputs, startedAt)
+      || reportedOutputsExist(hubResult, expectedOutputs, startedAt)
       || (hubResultContainsInlineReport(hubResult) && hubResultReferencesWorker(hubResult, workerId))
     ) {
       return "completed";
@@ -766,39 +784,29 @@ function requiresOutputVerification(expectedOutputs: string[]): boolean {
   return expectedOutputs.length > 0;
 }
 
-function expectedOutputsExist(expectedOutputs: string[]): boolean {
-  if (expectedOutputs.length === 0) {
-    return false;
-  }
-
-  return expectedOutputs.every((filePath) => {
-    if (!fs.existsSync(filePath)) {
-      return false;
-    }
-
-    try {
-      return fs.statSync(filePath).size > 0;
-    } catch {
-      return false;
-    }
-  });
+function expectedOutputsExist(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsExist(expectedOutputs, startedAt);
 }
 
-function reportedOutputsExist(hubResult: HubResult, expectedOutputs: string[] = []): boolean {
+function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    expectedOutputs,
+    (content) => hubResultContainsFailureSignal({ content }),
+    startedAt
+  );
+}
+
+function reportedOutputsExist(hubResult: HubResult, expectedOutputs: string[] = [], startedAt?: string): boolean {
   return extractReportedOutputPaths(hubResult).some((filePath) => {
     if (!reportedOutputMatchesExpected(filePath, expectedOutputs)) {
       return false;
     }
 
-    if (!isCompletionArtifactPath(filePath) || !fs.existsSync(filePath)) {
+    if (!isCompletionArtifactPath(filePath)) {
       return false;
     }
 
-    try {
-      return fs.statSync(filePath).size > 0;
-    } catch {
-      return false;
-    }
+    return outputArtifactsExist([filePath], startedAt);
   });
 }
 
