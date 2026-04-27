@@ -384,6 +384,7 @@ async function setupDashboard() {
             </div>
             <dl class="meta-grid">
               <div><dt>type</dt><dd>scheduler</dd></div>
+              <div><dt>tasks</dt><dd>${escapeHtml(String(role.task_count ?? 0))}</dd></div>
             </dl>
             <div class="card-actions">
               <a class="ghost-link" href="/scheduler/${encodeURIComponent(role.thread_id)}">Open detail</a>

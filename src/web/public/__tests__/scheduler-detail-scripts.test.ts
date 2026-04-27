@@ -74,7 +74,7 @@ describe("scheduler detail public scripts", () => {
           rolesRequested = true;
           return jsonResponse([
             { thread_id: "agent-dispatcher-a", role_type: "agent-dispatcher", status: "completed", task_count: 1 },
-            { thread_id: "scheduler-a", role_type: "scheduler", status: "active_run", task_count: 0 }
+            { thread_id: "scheduler-a", role_type: "scheduler", status: "active_run", task_count: 2 }
           ]);
         }
 
@@ -117,6 +117,8 @@ describe("scheduler detail public scripts", () => {
     expect(getElementStub(elements, "schedulers-empty")).toMatchObject({ hidden: true });
     expect(getElementStub(elements, "agent-dispatchers-empty")).toMatchObject({ hidden: true });
     expect(getElementStub(elements, "roles-empty")).toMatchObject({ hidden: true });
+    const schedulerCards = getElementStub(elements, "schedulers-list").children as Array<{ innerHTML?: string }>;
+    expect(schedulerCards[0]?.innerHTML).toContain("<dt>tasks</dt><dd>2</dd>");
   });
 
   it("submits scheduler creation with dispatcher agent and model settings", async () => {
