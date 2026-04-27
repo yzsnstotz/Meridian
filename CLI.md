@@ -272,16 +272,15 @@ meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meri
 
 ### `schedule-list`
 
-List static scheduler registry entries from `roles/schedules` and validate each entry against `SchedulerConfigSchema`.
+List static scheduler registry entries from a caller-supplied directory and validate each entry against `SchedulerConfigSchema`. The registry directory holds per-routine-job schedule JSON files and is owned by the caller, not by this repo.
 
 Params:
-- `--registry-dir <path>`: optional directory containing schedule JSON files
+- `--registry-dir <path>`: required absolute path to a directory containing schedule JSON files
 
 Examples:
 
 ```bash
-meridian-roles schedule-list
-meridian-roles schedule-list --registry-dir /Users/yzliu/work/Meridian/Meridian-roles/roles/schedules
+meridian-roles schedule-list --registry-dir /abs/path/to/your/schedules
 ```
 
 ### `list-roles`
