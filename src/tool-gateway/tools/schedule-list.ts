@@ -16,12 +16,19 @@ const scheduleListTool: ToolDefinition = {
   params: {
     registry_dir: {
       type: "string",
-      required: false,
-      description: "Directory containing static schedule JSON files; defaults to roles/schedules"
+      required: true,
+      description: "Absolute path to a directory containing static schedule JSON files"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
-    const registryDir = path.resolve(params.registry_dir?.trim() || "roles/schedules");
+    const rawDir = params.registry_dir?.trim();
+    if (!rawDir) {
+      return {
+        ok: false,
+        error: "registry_dir is required: pass --registry-dir <absolute path to a schedule registry directory>"
+      };
+    }
+    const registryDir = path.resolve(rawDir);
 
     let files: string[];
     try {
