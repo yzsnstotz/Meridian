@@ -2,8 +2,8 @@
 # Rebuild and restart meridian-roles from this repo (no hard-coded paths).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LOG_DIR="$ROOT_DIR/logs"
 PID_FILE="$LOG_DIR/meridian-roles.pid"
 TMUX_SESSION_FILE="$LOG_DIR/meridian-roles.tmux-session"
@@ -83,6 +83,65 @@ kill_by_pattern() {
   fi
 }
 
+canonical_cwd() {
+  local directory="$1"
+  (cd "$directory" 2>/dev/null && pwd -P) || true
+}
+
+process_cwd() {
+  local pid="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+repo_owned_pids() {
+  local pid cwd canonical canonical_lower root_lower
+  root_lower="$(printf '%s' "$ROOT_DIR" | tr '[:upper:]' '[:lower:]')"
+  for pid in "$@"; do
+    [[ -n "$pid" ]] || continue
+    cwd="$(process_cwd "$pid")"
+    canonical="$(canonical_cwd "$cwd")"
+    canonical_lower="$(printf '%s' "$canonical" | tr '[:upper:]' '[:lower:]')"
+    if [[ -n "$canonical" && "$canonical_lower" == "$root_lower" ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+find_repo_port_listener_pids() {
+  local pids
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  pids="$(lsof -tiTCP:"${GUI_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    repo_owned_pids ${pids}
+  fi
+}
+
+kill_pids() {
+  local label="$1"
+  shift
+  local pids=("$@")
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  echo "Stopping ${label}: ${pids[*]}"
+  kill "${pids[@]}" 2>/dev/null || true
+  sleep 1
+  kill -9 "${pids[@]}" 2>/dev/null || true
+}
+
+kill_repo_port_listeners() {
+  local pids
+  pids="$(find_repo_port_listener_pids)"
+  if [[ -n "$pids" ]]; then
+    kill_pids "repo-owned meridian-roles listener(s) on port ${GUI_PORT}" ${pids}
+  fi
+}
+
 if [[ -f "$PID_FILE" ]]; then
   old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
@@ -114,6 +173,7 @@ fi
 # Only match processes that include this repo path to avoid killing unrelated services
 # (e.g., Meridian itself may run via "pnpm start" which contains "npm start" as a substring).
 kill_by_pattern "${ROOT_DIR}/src/index.ts|${ROOT_DIR}/dist/index.js|${ROOT_DIR}.*tsx src/index.ts|${ROOT_DIR}.*npm (run )?start" "meridian-roles"
+kill_repo_port_listeners
 
 echo "Cleaning stale socket: ${ROLES_SOCKET_PATH}"
 rm -f "${ROLES_SOCKET_PATH}" 2>/dev/null || true
@@ -165,8 +225,9 @@ healthy_streak=0
 HEALTH_MAX_ATTEMPTS="${HEALTH_MAX_ATTEMPTS:-90}"
 HEALTH_STREAK_REQUIRED="${HEALTH_STREAK_REQUIRED:-3}"
 for _ in $(seq 1 "${HEALTH_MAX_ATTEMPTS}"); do
+  launcher_alive="true"
   if ! service_launcher_is_alive "$new_pid" "$health_session_name"; then
-    break
+    launcher_alive="false"
   fi
 
   if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "http://127.0.0.1:${GUI_PORT}/" >/dev/null 2>&1; then
@@ -183,10 +244,19 @@ for _ in $(seq 1 "${HEALTH_MAX_ATTEMPTS}"); do
     healthy_streak=0
   fi
 
+  if [[ "$launcher_alive" == "false" ]] && [[ -z "$(find_repo_port_listener_pids)" ]]; then
+    break
+  fi
+
   sleep 1
 done
 
 if [[ "${healthy}" == "true" ]]; then
+  actual_pid="$(find_repo_port_listener_pids | head -n 1)"
+  if [[ -n "${actual_pid}" ]]; then
+    new_pid="$actual_pid"
+    printf '%s\n' "$new_pid" > "$PID_FILE"
+  fi
   echo "meridian-roles restarted successfully."
   echo "PID: $new_pid"
   echo "Log: $RUN_LOG"
@@ -198,6 +268,7 @@ if [[ "${launch_mode}" == "tmux" ]]; then
   kill_tmux_session "$TMUX_SESSION_NAME"
   rm -f "$TMUX_SESSION_FILE"
 fi
+kill_repo_port_listeners
 if [[ -f "$RUN_LOG" ]]; then
   echo "--- last 200 lines of $RUN_LOG ---" >&2
   tail -n 200 "$RUN_LOG" >&2 || true

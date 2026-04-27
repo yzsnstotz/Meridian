@@ -133,13 +133,28 @@ describe("run tool", () => {
   it("derives expected outputs from dispatch-plan notes before sendAndWait", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
-    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
-      "# Dispatch Plan",
-      "",
-      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
-      "|--------|-------|--------|------|-------|------------|-------|",
-      "| 🔄 | 4 | N-04 | Ship outputs | CODEX | N-03 | Read `input.txt`, write `final.txt`, and append a line to `audit.txt`. |"
-    ].join("\n"));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Agent Dispatch Command",
+          "",
+          "# Role Definition",
+          "Follow the embedded command text rather than the command path."
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 4 | N-04 | Ship outputs | CODEX | N-03 | Read `input.txt`, write `final.txt`, and append a line to `audit.txt`. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
     randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
 
     const result = await runTool.execute({
@@ -165,8 +180,9 @@ describe("run tool", () => {
     expect(sentContent).toContain("You are **CODEX**");
     expect(sentContent).toContain("worker **N-04**");
     expect(sentContent).toContain("**N-04**: Ship outputs");
-    expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
-    expect(sentContent).not.toContain("# command");
+    expect(sentContent).toContain("# Agent Dispatch Command");
+    expect(sentContent).toContain("# Role Definition");
+    expect(sentContent).not.toContain("/tmp/dispatch/agent_dispatch_command.md");
     expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", hubResult);
     expect(mockRun.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]
@@ -796,6 +812,10 @@ describe("run tool", () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === `${planDirectory}/agent_dispatch_command.md`) {
+        return "# Agent Dispatch Command\n";
+      }
+
       if (filePath === `${planDirectory}/dispatch_plan.md`) {
         return [
           "# Dispatch Plan",

@@ -6,7 +6,8 @@ import vm from "node:vm";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { DispatcherRole } from "../../src/roles/definitions";
+import type { LaunchResult } from "../../src/roles/agent-dispatcher/launcher";
+import { AgentDispatcherRole } from "../../src/roles/definitions/agent-dispatcher";
 import { PromptStore } from "../../src/roles/prompt-store";
 import { RoleRegistry } from "../../src/roles/role-registry";
 import { RoleRunner } from "../../src/roles/role-runner";
@@ -14,6 +15,7 @@ import { createPromptHandlers } from "../../src/server/prompt-handlers";
 import { createRoleHandlers } from "../../src/server/role-handlers";
 import { HttpServer } from "../../src/server/http-server";
 import { StateStore } from "../../src/state-store";
+import { formatDispatchPlan } from "./agent-dispatcher-harness";
 
 describe("Scenario F: Config editor and role error states", () => {
   afterEach(async () => {
@@ -24,27 +26,36 @@ describe("Scenario F: Config editor and role error states", () => {
     const harness = await startHttpHarness();
 
     try {
-      await harness.requestJson("POST", "/api/role", {
-        thread_id: "dispatcher-f",
-        tasks: [],
-        taskspec: "ship the fix"
+      await harness.requestJson("POST", "/api/agent-dispatcher/start", {
+        thread_id: "agent-dispatcher-f",
+        dispatch_plan_path: harness.dispatchPlanPath,
+        command_file_path: harness.commandFilePath,
+        dispatch_repo_root: harness.dispatchRepoRoot,
+        docs_root: harness.docsRoot,
+        user_reply_channel: {
+          channel: "web",
+          chat_id: "web:gui"
+        },
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
       });
 
       const dashboardPage = await harness.requestText("/");
       expect(dashboardPage.status).toBe(200);
-      expect(dashboardPage.body).toContain("Create Dispatcher");
+      expect(dashboardPage.body).toContain("Start Agent Dispatcher");
 
-      const rolePage = await harness.requestText(`/role/dispatcher-f`);
+      const rolePage = await harness.requestText(`/role/agent-dispatcher-f`);
       expect(rolePage.status).toBe(200);
       expect(rolePage.body).toContain('id="config-link"');
       expect(rolePage.body).toContain("Config Editor");
 
-      const promptsPage = await harness.requestText("/role/dispatcher-f/prompts");
+      const promptsPage = await harness.requestText("/role/agent-dispatcher-f/prompts");
       expect(promptsPage.status).toBe(200);
       expect(promptsPage.body).toContain('data-page="prompt-editor"');
       expect(promptsPage.body).toContain("Prompt Editor");
 
-      const configPage = await harness.requestText("/role/dispatcher-f/config");
+      const configPage = await harness.requestText("/role/agent-dispatcher-f/config");
       expect(configPage.status).toBe(200);
       expect(configPage.body).toContain('data-page="config-editor"');
       expect(configPage.body).toContain("Dispatch Plan JSON");
@@ -343,7 +354,8 @@ describe("Scenario F: Config editor and role error states", () => {
     expect(page.elements["config-feedback"].textContent).toBe("Cannot edit dispatcher config while tasks are running");
   });
 
-  it("shows agent-dispatcher launch config as read-only JSON in the browser client", async () => {
+  it("shows agent-dispatcher launch config as structured editable fields in the browser client", async () => {
+    const patchBodies: unknown[] = [];
     const page = await loadBrowserApp({
       pathname: "/role/agent-dispatcher-f/config",
       elements: {
@@ -354,44 +366,114 @@ describe("Scenario F: Config editor and role error states", () => {
         "config-status": createElement(),
         "config-feedback": createElement(),
         "config-form": createFormElement(),
+        "config-fields": createElement(),
+        "config-raw-field": createElement(),
+        "cfg-dispatch-plan-path": createInputElement(),
+        "cfg-command-file-path": createInputElement(),
+        "cfg-dispatch-repo-root": createInputElement(),
+        "cfg-docs-root": createInputElement(),
+        "cfg-agent-type": createInputElement(),
+        "cfg-model-id": createInputElement(),
+        "cfg-mode": createInputElement(),
+        "cfg-kill-policy": createInputElement(),
+        "cfg-auto-approve": createInputElement(),
+        "cfg-reply-channels": createInputElement(),
         "config-input": createInputElement(),
         "config-save-button": createButtonElement()
       },
-      fetchImpl: async () => createJsonResponse(200, {
-        thread_id: "agent-dispatcher-f",
-        status: "active",
-        can_edit: false,
-        blocked_reason: "Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.",
-        config: {
-          dispatch_plan_path: "/tmp/dispatch_plan.md",
-          command_file_path: "/tmp/agent_dispatch_command.md",
-          user_reply_channels: [
-            {
-              channel: "telegram",
-              chat_id: "telegram:ops"
+      fetchImpl: async (_url, init) => {
+        if (!init?.method || init.method === "GET") {
+          return createJsonResponse(200, {
+            thread_id: "agent-dispatcher-f",
+            status: "active",
+            can_edit: true,
+            config: {
+              dispatch_plan_path: "/tmp/dispatch_plan.md",
+              command_file_path: "/tmp/agent_dispatch_command.md",
+              dispatch_repo_root: "/tmp/repo",
+              docs_root: "/tmp/docs",
+              user_reply_channels: [
+                {
+                  channel: "telegram",
+                  chat_id: "telegram:ops"
+                }
+              ],
+              agent_type: "codex",
+              mode: "bridge",
+              kill_policy: "always",
+              auto_approve: false
             }
-          ],
-          agent_type: "codex",
-          mode: "bridge",
-          kill_policy: "always"
+          });
         }
-      })
+
+        if (init.method === "PATCH") {
+          patchBodies.push(init.body ? JSON.parse(String(init.body)) : null);
+          return createJsonResponse(200, {
+            thread_id: "agent-dispatcher-f",
+            status: "active",
+            can_edit: true,
+            config: {
+              dispatch_plan_path: "/tmp/dispatch_plan.md",
+              command_file_path: "/tmp/agent_dispatch_command.md",
+              dispatch_repo_root: "/tmp/repo",
+              docs_root: "/tmp/docs",
+              user_reply_channels: [
+                {
+                  channel: "telegram",
+                  chat_id: "telegram:ops"
+                }
+              ],
+              agent_type: "claude",
+              model_id: "claude-opus-4-7",
+              mode: "pane_bridge",
+              kill_policy: "never",
+              auto_approve: true
+            }
+          });
+        }
+
+        throw new Error(`Unexpected request: ${init.method}`);
+      }
     });
 
     await page.hooks.setupConfigEditor();
 
     expect(page.elements["config-title"].textContent).toBe("agent-dispatcher-f");
     expect(page.elements["config-detail-link"].href).toBe("/role/agent-dispatcher-f");
-    expect(page.elements["config-section-title"].textContent).toBe("Launch Config JSON");
-    expect(page.elements["config-input"].readOnly).toBe(true);
-    expect(page.elements["config-save-button"].disabled).toBe(true);
-    expect(page.elements["config-feedback"].textContent)
-      .toBe("Agent dispatcher launch config is view-only here. Start a new dispatcher to change launch settings.");
-    expect(page.elements["config-input"].value).toContain('"dispatch_plan_path": "/tmp/dispatch_plan.md"');
+    expect(page.elements["config-section-title"].textContent).toBe("Launch Config");
+    expect(page.elements["config-fields"].hidden).toBe(false);
+    expect(page.elements["config-raw-field"].hidden).toBe(true);
+    expect(page.elements["cfg-dispatch-plan-path"].value).toBe("/tmp/dispatch_plan.md");
+    expect(page.elements["cfg-agent-type"].value).toBe("codex");
+    expect(page.elements["config-save-button"].disabled).toBe(false);
+    expect(page.elements["config-feedback"].textContent).toBe("Dispatcher config loaded.");
+
+    page.elements["cfg-agent-type"].value = "claude";
+    page.elements["cfg-model-id"].value = "claude-opus-4-7";
+    page.elements["cfg-mode"].value = "pane_bridge";
+    page.elements["cfg-kill-policy"].value = "never";
+    page.elements["cfg-auto-approve"].value = "true";
+
+    await page.submit("config-form");
+
+    expect(patchBodies).toEqual([
+      {
+        agent_type: "claude",
+        model_id: "claude-opus-4-7",
+        mode: "pane_bridge",
+        kill_policy: "never",
+        auto_approve: true
+      }
+    ]);
+    expect(page.elements["config-feedback"].textContent).toBe("Dispatcher config saved.");
   });
 });
 
 interface HttpHarness {
+  commandFilePath: string;
+  dispatchPlanPath: string;
+  dispatchRepoRoot: string;
+  docsRoot: string;
   requestJson<T>(method: string, pathname: string, body?: unknown): Promise<T>;
   requestText(pathname: string): Promise<{ status: number; body: string }>;
   close(): Promise<void>;
@@ -399,12 +481,34 @@ interface HttpHarness {
 
 async function startHttpHarness(): Promise<HttpHarness> {
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-scenario-f-"));
+  const docsRoot = path.join(baseDir, "docs");
+  const dispatchRepoRoot = path.join(baseDir, "repo");
+  const dispatchPlanPath = path.join(docsRoot, "dispatch_plan.md");
+  const commandFilePath = path.join(docsRoot, "agent_dispatch_command.md");
   const stateFilePath = path.join(baseDir, "state.json");
   const port = await getFreePort();
   const stateStore = new StateStore(stateFilePath);
   const registry = new RoleRegistry();
 
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore }));
+  await fs.mkdir(docsRoot, { recursive: true });
+  await fs.mkdir(dispatchRepoRoot, { recursive: true });
+  await fs.writeFile(dispatchPlanPath, formatDispatchPlan([
+    {
+      worker: "W-GUI",
+      task: "Verify GUI routes"
+    }
+  ]), "utf8");
+  await fs.writeFile(commandFilePath, "# Agent Dispatch Command\n", "utf8");
+
+  const createAgentDispatcherRole = (threadId: string, config: unknown) => new AgentDispatcherRole(threadId, config, {
+    stateStore,
+    launchDispatcher: async (): Promise<LaunchResult> => ({
+      ok: true,
+      threadId: "dispatcher-thread-f"
+    })
+  });
+  registry.register("agent-dispatcher", createAgentDispatcherRole);
+  registry.register("dispatcher", createAgentDispatcherRole);
 
   const roleHandlers = createRoleHandlers({
     runner: new RoleRunner({
@@ -434,6 +538,10 @@ async function startHttpHarness(): Promise<HttpHarness> {
   const baseUrl = `http://127.0.0.1:${port}`;
 
   return {
+    commandFilePath,
+    dispatchPlanPath,
+    dispatchRepoRoot,
+    docsRoot,
     async requestJson(method, pathname, body) {
       const response = await fetch(`${baseUrl}${pathname}`, {
         method,

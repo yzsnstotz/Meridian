@@ -1,439 +1,76 @@
-import * as fs from "node:fs/promises";
-import net from "node:net";
-import path from "node:path";
-import { Readable } from "node:stream";
+import { describe, expect, it } from "vitest";
 
-import { describe, expect, it, vi } from "vitest";
+import { startAgentDispatcherHarness } from "./agent-dispatcher-harness";
 
-import { A2AClient } from "../../src/a2a/client";
-import { A2AServer } from "../../src/a2a/server";
-import { DispatcherRole } from "../../src/roles/definitions";
-import { PromptStore } from "../../src/roles/prompt-store";
-import { RoleRegistry } from "../../src/roles/role-registry";
-import { RoleRunner } from "../../src/roles/role-runner";
-import { createPromptHandlers, type PromptHandlers } from "../../src/server/prompt-handlers";
-import { createRoleHandlers, type RoleHandlers } from "../../src/server/role-handlers";
-import { StateStore } from "../../src/state-store";
-import { AppStateSchema, HubMessageSchema, type AgentInstance, type AppState, type HubMessage, type HubResult } from "../../src/types";
-
-const idleInstances: AgentInstance[] = [
-  {
-    thread_id: "claude_01",
-    agent_type: "claude",
-    model_id: "opus",
-    mode: "bridge",
-    socket_path: "/tmp/claude.sock",
-    working_dir: "/tmp",
-    pid: 101,
-    tmux_pane: null,
-    status: "idle",
-    created_at: "2026-03-19T00:00:00.000Z",
-    restart_safe: true,
-    auto_approve: false
-  },
-  {
-    thread_id: "codex_01",
-    agent_type: "codex",
-    model_id: "gpt-5-codex",
-    mode: "bridge",
-    socket_path: "/tmp/codex.sock",
-    working_dir: "/tmp",
-    pid: 202,
-    tmux_pane: null,
-    status: "idle",
-    created_at: "2026-03-19T00:00:00.000Z",
-    restart_safe: true,
-    auto_approve: false
-  }
-];
-
-describe("Scenario A: Explicit DAG dispatch", () => {
-  it("PASS", async () => {
-    const harness = await startHarness();
+describe("Scenario A: Agent-dispatcher startup", () => {
+  it("starts an agent-dispatcher role from a dispatch plan and exposes role detail", async () => {
+    const harness = await startAgentDispatcherHarness({
+      name: "meridian-roles-scenario-a",
+      planRows: [
+        {
+          worker: "W-01",
+          task: "Collect evidence"
+        },
+        {
+          worker: "W-02",
+          task: "Write summary",
+          dependsOn: "W-01"
+        }
+      ]
+    });
 
     try {
-      const created = await harness.requestJson<{ ok: true; thread_id: string }>("POST", "/api/role", {
-        thread_id: "dispatcher-a",
+      const started = await harness.startDispatcher({
+        thread_id: "agent-dispatcher-a",
         user_reply_channel: {
           channel: "telegram",
           chat_id: "telegram:pm"
-        },
-        tasks: [
-          {
-            task_id: "A",
-            instruction: "Draft the first output",
-            depends_on: [],
-            target_thread_id: "claude_01"
-          },
-          {
-            task_id: "B",
-            instruction: "Validate the first output",
-            depends_on: ["A"],
-            target_model_id: "gpt-5-codex"
-          },
-          {
-            task_id: "C",
-            instruction: "Summarize the first output",
-            depends_on: ["A"]
-          }
-        ]
+        }
       });
-      expect(created.thread_id).toBe("dispatcher-a");
 
-      const firstRun = await waitForHubMessage(
-        harness.hub,
-        (message) => message.intent === "run" && message.payload.content === "Draft the first output"
-      );
+      expect(started).toEqual({
+        ok: true,
+        dispatcher_id: "agent-dispatcher-a",
+        dispatcher_thread_id: "dispatcher-thread-1"
+      });
+      expect(harness.launchConfigs).toHaveLength(1);
+      expect(harness.launchConfigs[0]).toMatchObject({
+        agentType: "codex",
+        mode: "bridge",
+        dispatchPlanPath: harness.dispatchPlanPath,
+        commandFilePath: harness.commandFilePath,
+        dispatcherRoleId: "agent-dispatcher-a",
+        userReplyChannel: {
+          channel: "telegram",
+          chat_id: "telegram:pm"
+        }
+      });
+      expect(harness.launchConfigs[0]?.systemPrompt).toContain("dispatcher_role_id: agent-dispatcher-a");
 
-      let detail = await harness.requestJson<{
+      const detail = await harness.requestJson<{
+        thread_id: string;
+        role_type: string;
         status: string;
-        tasks: Array<{ task_id: string; status: string }>;
-      }>("GET", "/api/role/dispatcher-a");
+        dispatcher_thread_id: string | null;
+        continue_worker: string | null;
+        tasks: Array<{ task_id: string; status: string; depends_on: string[] }>;
+      }>("GET", "/api/role/agent-dispatcher-a");
+
+      expect(detail.thread_id).toBe("agent-dispatcher-a");
+      expect(detail.role_type).toBe("agent-dispatcher");
       expect(detail.status).toBe("active");
-      expect(detail.tasks.map((task) => ({ task_id: task.task_id, status: task.status }))).toEqual([
-        { task_id: "A", status: "running" },
-        { task_id: "B", status: "pending" },
-        { task_id: "C", status: "pending" }
+      expect(detail.dispatcher_thread_id).toBe("dispatcher-thread-1");
+      expect(detail.continue_worker).toBe("W-01");
+      expect(detail.tasks.map((task) => ({
+        task_id: task.task_id,
+        status: task.status,
+        depends_on: task.depends_on
+      }))).toEqual([
+        { task_id: "W-01", status: "pending", depends_on: [] },
+        { task_id: "W-02", status: "pending", depends_on: ["W-01"] }
       ]);
-
-      await harness.hub.sendResult(firstRun, {
-        source: "claude",
-        content: "A complete"
-      });
-
-      const secondRun = await waitForHubMessage(
-        harness.hub,
-        (message) => message.intent === "run" && message.payload.content === "Validate the first output"
-      );
-      const thirdRun = await waitForHubMessage(
-        harness.hub,
-        (message) => message.intent === "run" && message.payload.content === "Summarize the first output"
-      );
-
-      expect(secondRun.target).toBe("codex_01");
-      expect(thirdRun.target).toBe("claude_01");
-      expect(thirdRun.trace_id).not.toBe(secondRun.trace_id);
-      expect(harness.hub.messages.indexOf(secondRun)).toBeGreaterThan(harness.hub.messages.indexOf(firstRun));
-      expect(harness.hub.messages.indexOf(thirdRun)).toBeGreaterThan(harness.hub.messages.indexOf(firstRun));
-      expect(harness.hub.messages.some((message) => message.intent === "list")).toBe(true);
-
-      await Promise.all([
-        harness.hub.sendResult(secondRun, {
-          source: "codex",
-          content: "B complete"
-        }),
-        harness.hub.sendResult(thirdRun, {
-          source: "claude",
-          content: "C complete"
-        })
-      ]);
-
-      await vi.waitFor(async () => {
-        const state = await harness.readState();
-        const role = state.roles.find((entry) => entry.threadId === "dispatcher-a");
-        expect(role?.status).toBe("completed");
-      }, { timeout: 10_000 });
-
-      detail = await harness.requestJson("GET", "/api/role/dispatcher-a");
-      expect(detail.status).toBe("completed");
-      expect(detail.tasks.map((task: { task_id: string; status: string }) => ({ task_id: task.task_id, status: task.status }))).toEqual([
-        { task_id: "A", status: "done" },
-        { task_id: "B", status: "done" },
-        { task_id: "C", status: "done" }
-      ]);
-
-      const summaryMessage = await waitForHubMessage(
-        harness.hub,
-        (message) =>
-          message.intent === "reply" &&
-          message.suppress_reply === false &&
-          message.payload.content.includes("# Dispatcher Summary: dispatcher-a")
-      );
-      expect(summaryMessage.reply_channel).toMatchObject({
-        channel: "telegram",
-        chat_id: "telegram:pm"
-      });
     } finally {
       await harness.close();
     }
   });
 });
-
-interface HarnessOptions {
-  baseDir?: string;
-  cleanupDirOnClose?: boolean;
-}
-
-interface ScenarioHarness {
-  hub: FakeHub;
-  requestJson<T>(method: string, url: string, body?: unknown): Promise<T>;
-  readState(): Promise<AppState>;
-  close(): Promise<void>;
-}
-
-interface FakeHub {
-  messages: HubMessage[];
-  sendResult(message: HubMessage, overrides?: Partial<HubResult>): Promise<void>;
-  close(): Promise<void>;
-}
-
-async function startHarness(options: HarnessOptions = {}): Promise<ScenarioHarness> {
-  const baseDir = options.baseDir ?? await fs.mkdtemp("/tmp/meridian-roles-scenario-a-");
-  const cleanupDirOnClose = options.cleanupDirOnClose ?? !options.baseDir;
-  const hubSocketPath = path.join(baseDir, "hub.sock");
-  const rolesSocketPath = path.join(baseDir, "roles.sock");
-  const stateFilePath = path.join(baseDir, "state.json");
-  const log = createLogger();
-  const hub = await startFakeHub(hubSocketPath);
-  const client = new A2AClient({
-    hubSocketPath,
-    rolesSocketPath,
-    connectTimeoutMs: 500,
-    responseTimeoutMs: 2_000,
-    retryBaseDelayMs: 25,
-    maxRetryDelayMs: 100,
-    log
-  });
-  const stateStore = new StateStore(stateFilePath);
-  const registry = new RoleRegistry();
-
-  registry.register("dispatcher", (threadId, config) => new DispatcherRole(threadId, config, { stateStore, rolesSocketPath }));
-
-  const runner = new RoleRunner({
-    sendToHub: (message) => client.send(message),
-    listInstances: () => client.listInstances(),
-    log
-  });
-  const roleHandlers = createRoleHandlers({
-    runner,
-    registry,
-    stateStore,
-    log
-  });
-  const promptStore = new PromptStore({
-    stateStore,
-    resolveRole: roleHandlers.resolveRole
-  });
-  const promptHandlers = createPromptHandlers(promptStore);
-  const resultServer = new A2AServer((result) => runner.dispatch(result), {
-    socketPath: rolesSocketPath,
-    log
-  });
-
-  await resultServer.listen();
-  await client.start();
-
-  return {
-    hub,
-    requestJson: (method, url, body) => invokeJson(roleHandlers, promptHandlers, method, url, body),
-    async readState(): Promise<AppState> {
-      return readStateFile(stateFilePath);
-    },
-    async close(): Promise<void> {
-      await Promise.allSettled([
-        client.stop(),
-        resultServer.close(),
-        hub.close()
-      ]);
-
-      if (cleanupDirOnClose) {
-        await fs.rm(baseDir, { recursive: true, force: true });
-      }
-    }
-  };
-}
-
-async function startFakeHub(socketPath: string): Promise<FakeHub> {
-  const messages: HubMessage[] = [];
-  const server = net.createServer((socket) => {
-    socket.setEncoding("utf8");
-    let raw = "";
-
-    socket.on("data", (chunk: string) => {
-      raw += chunk;
-    });
-
-    socket.on("end", () => {
-      void handleMessage(socket, raw);
-    });
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, () => {
-      server.removeListener("error", reject);
-      resolve();
-    });
-  });
-
-  return {
-    messages,
-    sendResult: async (message, overrides = {}) => {
-      if (message.reply_channel.channel !== "socket" || !message.reply_channel.socket_path) {
-        throw new Error("Expected a socket reply_channel");
-      }
-
-      await sendSocketPayload(message.reply_channel.socket_path, {
-        trace_id: overrides.trace_id ?? message.trace_id,
-        thread_id: overrides.thread_id ?? message.thread_id,
-        source: overrides.source ?? inferSource(message.target),
-        status: overrides.status ?? "success",
-        content: overrides.content ?? "ok",
-        attachments: overrides.attachments ?? [],
-        timestamp: overrides.timestamp ?? new Date().toISOString()
-      });
-    },
-    async close(): Promise<void> {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-      await fs.unlink(socketPath).catch(() => undefined);
-    }
-  };
-
-  async function handleMessage(socket: net.Socket, raw: string): Promise<void> {
-    const message = HubMessageSchema.parse(JSON.parse(raw));
-    messages.push(message);
-
-    if (message.intent === "register_service") {
-      socket.end(JSON.stringify({
-        trace_id: message.trace_id,
-        thread_id: message.thread_id,
-        source: "codex",
-        status: "success",
-        content: "registered",
-        attachments: [],
-        timestamp: new Date().toISOString()
-      }));
-      return;
-    }
-
-    if (message.intent === "list") {
-      socket.end(JSON.stringify({
-        trace_id: message.trace_id,
-        thread_id: message.thread_id,
-        source: "codex",
-        status: "success",
-        content: JSON.stringify(idleInstances),
-        attachments: [],
-        timestamp: new Date().toISOString()
-      }));
-      return;
-    }
-
-    socket.end();
-  }
-}
-
-async function sendSocketPayload(socketPath: string, result: HubResult): Promise<void> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const socket = net.createConnection(socketPath, () => {
-          socket.end(JSON.stringify(result));
-        });
-
-        socket.once("close", () => resolve());
-        socket.once("error", reject);
-      });
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
-  throw lastError;
-}
-
-async function waitForHubMessage(hub: FakeHub, predicate: (message: HubMessage) => boolean): Promise<HubMessage> {
-  await vi.waitFor(() => {
-    expect(hub.messages.some(predicate)).toBe(true);
-  }, { timeout: 10_000 });
-
-  return hub.messages.find(predicate) as HubMessage;
-}
-
-async function invokeJson<T>(
-  roleHandlers: RoleHandlers,
-  promptHandlers: PromptHandlers,
-  method: string,
-  url: string,
-  body?: unknown
-): Promise<T> {
-  const payload = body === undefined ? "" : JSON.stringify(body);
-  const request = Object.assign(Readable.from(payload ? [payload] : []), {
-    method,
-    url,
-    headers: payload ? { "content-type": "application/json" } : {}
-  });
-  const response = createMockResponse();
-
-  const handledByPrompt = await promptHandlers.handle(request as never, response as never);
-  if (!handledByPrompt) {
-    const handledByRole = await roleHandlers.handle(request as never, response as never);
-    if (!handledByRole) {
-      throw new Error(`Unhandled route: ${method} ${url}`);
-    }
-  }
-
-  const text = response.body.trim();
-  const parsed = text ? JSON.parse(text) : null;
-  if (response.statusCode >= 400) {
-    throw new Error(typeof parsed?.error === "string" ? parsed.error : `HTTP ${response.statusCode}`);
-  }
-
-  return parsed as T;
-}
-
-async function readStateFile(stateFilePath: string): Promise<AppState> {
-  const raw = await fs.readFile(stateFilePath, "utf8");
-  return AppStateSchema.parse(JSON.parse(raw));
-}
-
-function createLogger() {
-  return {
-    debug: () => undefined,
-    info: () => undefined,
-    warn: () => undefined,
-    error: () => undefined
-  };
-}
-
-function inferSource(target: string): "claude" | "codex" | "gemini" | "cursor" {
-  if (target.includes("claude")) {
-    return "claude";
-  }
-  if (target.includes("gemini")) {
-    return "gemini";
-  }
-  if (target.includes("cursor")) {
-    return "cursor";
-  }
-  return "codex";
-}
-
-function createMockResponse(): {
-  body: string;
-  statusCode: number;
-  headersSent: boolean;
-  setHeader(name: string, value: string): void;
-  end(chunk?: string | Buffer): void;
-} {
-  return {
-    body: "",
-    statusCode: 200,
-    headersSent: false,
-    setHeader() {
-      this.headersSent = true;
-    },
-    end(chunk) {
-      this.headersSent = true;
-      if (chunk !== undefined) {
-        this.body += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk;
-      }
-    }
-  };
-}

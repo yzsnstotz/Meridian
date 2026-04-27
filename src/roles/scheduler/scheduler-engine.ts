@@ -14,6 +14,11 @@ import type {
 } from "../../types";
 import { buildDispatchStatusReport, type DispatchStatusWorker } from "../../tool-gateway/tools/dispatch-status";
 import type { Logger } from "../base-role";
+import {
+  isWorkerToolProcessRunning,
+  listActiveProcessCommands,
+  loadPlanRowsByWorker
+} from "../agent-dispatcher/active-tool-process";
 import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
 import { LifecycleStore, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
 import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
@@ -451,6 +456,8 @@ export class SchedulerEngine {
 
     const lifecycleStore = new LifecycleStore(this.resolveDispatchThreadsPath());
     const lifecycleState = lifecycleStore.load();
+    const planRows = loadPlanRowsByWorker(this.config.dispatch_plan_path);
+    const activeProcessCommands = listActiveProcessCommands();
     const nowIso = new Date().toISOString();
     let mutated = false;
 
@@ -468,6 +475,14 @@ export class SchedulerEngine {
 
       const content = readFileIfPresent(outputPath);
       if (content === null) {
+        continue;
+      }
+
+      if (isWorkerToolProcessRunning(planRows.get(workerId), state.current_scan_run_id, activeProcessCommands)) {
+        this.log.debug("Scheduler: skipped output recovery while worker tool process is active", {
+          schedulerThreadId: this.schedulerThreadId,
+          workerId
+        });
         continue;
       }
 

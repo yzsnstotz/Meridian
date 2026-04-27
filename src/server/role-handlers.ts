@@ -14,7 +14,11 @@ import {
   resolveConfiguredDocsRoot
 } from "../roles/agent-dispatcher/dispatch-paths";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
-import { LifecycleStore, hubResultContainsHitLimit } from "../roles/agent-dispatcher/lifecycle-store";
+import {
+  LifecycleStore,
+  hubResultContainsFailureSignal,
+  hubResultContainsHitLimit
+} from "../roles/agent-dispatcher/lifecycle-store";
 import { createMeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import {
@@ -324,6 +328,11 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     for (const liveRole of options.runner.listRoles()) {
       activeThreadIds.add(liveRole.threadId);
+      const existing = activeRoles.get(liveRole.threadId);
+      if (existing?.roleType === liveRole.roleType) {
+        continue;
+      }
+
       activeRoles.set(liveRole.threadId, {
         roleType: liveRole.roleType,
         config: liveRole.config
@@ -2229,10 +2238,11 @@ function buildDispatchWorkerDetail(
   const commandFallback = conversation.command ?? worker?.command_preamble ?? null;
   const replyContent = resolveDispatchReply(worker?.hub_result, conversation.reply);
   const appliedModel = resolveAppliedModel(dispatchPlanRow?.model ?? null, modelLegend);
+  const status = resolveDispatchWorkerDetailStatus(worker, dispatchPlanRow);
 
   return {
     worker_id: workerId,
-    status: worker?.status ?? mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow?.status) ?? "pending",
+    status,
     task: dispatchPlanRow?.task ?? null,
     model: dispatchPlanRow?.model ?? null,
     applied_model: appliedModel,
@@ -2262,6 +2272,38 @@ function buildDispatchWorkerDetail(
       : null,
     validation: buildDispatchValidationDetail(worker?.validation)
   };
+}
+
+function resolveDispatchWorkerDetailStatus(
+  worker: DispatchWorkerState | null,
+  dispatchPlanRow: DispatchPlanRow | null
+): LifecycleStatus {
+  if (worker?.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
+    return "failed";
+  }
+
+  const enrichedLifecycleStatus = normalizeLifecycleStatus(dispatchPlanRow?.lifecycle_status);
+  if (enrichedLifecycleStatus) {
+    return enrichedLifecycleStatus;
+  }
+
+  return worker?.status ?? mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow?.status) ?? "pending";
+}
+
+function normalizeLifecycleStatus(status: string | null | undefined): LifecycleStatus | null {
+  switch (status) {
+    case "pending":
+    case "running":
+    case "completed":
+    case "failed":
+    case "abandoned":
+    case "skipped":
+    case "awaiting_validation":
+    case "fix_requested":
+      return status;
+    default:
+      return null;
+  }
 }
 
 function buildDispatchValidationDetail(
