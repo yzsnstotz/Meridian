@@ -341,4 +341,83 @@ describe("dispatch-status tool", () => {
       })
     }));
   });
+
+  it("uses nonterminal tool progress instead of completed lifecycle status", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+    const manifestPath = `${directory}/W-DETAIL.remaining-managed.json`;
+    const progressPath = `${directory}/detail-fetch.progress.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        `| ✅ | 2 | W-DETAIL | clawhub-fetch detail-fetch --manifest ${manifestPath} --progress ${progressPath} | CODEX-HIGH | W-CATALOG | — | managed detail fetch |`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-27T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "W-DETAIL": {
+            thread_id: "worker-thread-456",
+            trace_id: null,
+            started_at: "2026-04-27T00:00:00.000Z",
+            last_seen_at: "2026-04-27T00:10:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await fs.writeFile(
+      progressPath,
+      JSON.stringify({
+        command: "detail-fetch",
+        scan_run_id: "daily-2026-04-27",
+        status: "failed",
+        total: 35324,
+        processed: 35294,
+        success: 35294,
+        failed: 30,
+        skipped: 0,
+        remaining: 30,
+        updated_at: "2026-04-27T13:35:12.774Z"
+      }, null, 2),
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      workers: [
+        expect.objectContaining({
+          worker_id: "W-DETAIL",
+          status: "❌",
+          lifecycle_status: "failed",
+          failure_reason: "tool progress failed: 30 remaining, 30 failed"
+        })
+      ],
+      summary: expect.objectContaining({
+        completed: 0,
+        failed: 1
+      })
+    }));
+  });
 });

@@ -34,6 +34,7 @@ export interface DispatchStatusWorker extends DispatchPlanWorkerRow {
 
 export interface DispatchWorkerProgress {
   progress_path: string;
+  source: "progress_file" | "fallback";
   command: string;
   scan_run_id: string | null;
   status: string;
@@ -130,13 +131,17 @@ export async function buildDispatchStatusReport(
   const lifecycleState = new LifecycleStore(resolveDispatchThreadsPath(planPath)).load();
   const generatedAt = new Date().toISOString();
   const scanRunId = await loadCurrentScanRunId(planPath);
+  const activeProcessCommands = listActiveProcessCommands();
   const progress = await Promise.all(rows.map((row) => loadWorkerProgress(row, scanRunId)));
   const workers = rows.map((row, index) => buildWorkerStatus(
     row,
     lifecycleState,
     staleThresholdMinutes,
     generatedAt,
-    progress[index] ?? null
+    normalizeProgressStatus(
+      progress[index] ?? null,
+      isWorkerToolProgressActive(row, progress[index] ?? null, scanRunId, activeProcessCommands)
+    )
   ));
 
   return {
@@ -211,16 +216,20 @@ function buildWorkerStatus(
 ): DispatchStatusWorker {
   const workerState = lifecycleState.workers[row.worker_id];
   const lifecycleStatus = getEffectiveLifecycleStatus(workerState);
-  const staleDurationMs = getStaleDurationMs(row.status, workerState?.last_seen_at, staleThresholdMinutes, generatedAt);
-  const hasCurrentAssignment = lifecycleStatus !== "pending";
+  const progressOverride = getProgressStatusOverride(progress);
+  const displayStatus = progressOverride?.status ?? row.status;
+  const displayLifecycleStatus = progressOverride?.lifecycleStatus ?? lifecycleStatus;
+  const staleDurationMs = getStaleDurationMs(displayStatus, workerState?.last_seen_at, staleThresholdMinutes, generatedAt);
+  const hasCurrentAssignment = displayLifecycleStatus !== "pending";
 
   return {
     ...row,
-    lifecycle_status: lifecycleStatus,
+    status: displayStatus,
+    lifecycle_status: displayLifecycleStatus,
     thread_id: hasCurrentAssignment ? workerState?.thread_id ?? null : null,
     last_seen_at: hasCurrentAssignment ? workerState?.last_seen_at ?? null : null,
     retry_count: workerState?.retry_count ?? 0,
-    failure_reason: extractFailureReason(workerState, lifecycleStatus),
+    failure_reason: progressOverride?.failureReason ?? extractFailureReason(workerState, displayLifecycleStatus),
     stale: staleDurationMs !== null,
     stale_label: staleDurationMs === null ? null : "⚠️ STALE",
     stale_duration_minutes: staleDurationMs === null ? null : Math.floor(staleDurationMs / 60_000),
@@ -290,6 +299,45 @@ function getSummaryStatus(worker: DispatchStatusWorker): string {
   return worker.lifecycle_status ?? worker.status;
 }
 
+function getProgressStatusOverride(progress: DispatchWorkerProgress | null): {
+  status: string;
+  lifecycleStatus: string;
+  failureReason: string | null;
+} | null {
+  if (!progress) {
+    return null;
+  }
+
+  if (progress.status === "running") {
+    return {
+      status: "🔄",
+      lifecycleStatus: "running",
+      failureReason: null
+    };
+  }
+
+  if (progress.status === "failed") {
+    return {
+      status: "❌",
+      lifecycleStatus: "failed",
+      failureReason: formatProgressFailureReason(progress)
+    };
+  }
+
+  return null;
+}
+
+function formatProgressFailureReason(progress: DispatchWorkerProgress): string {
+  const details = [
+    progress.remaining && progress.remaining > 0 ? `${progress.remaining} remaining` : null,
+    progress.failed && progress.failed > 0 ? `${progress.failed} failed` : null
+  ].filter((value): value is string => value !== null);
+
+  return details.length > 0
+    ? `tool progress failed: ${details.join(", ")}`
+    : "tool progress failed";
+}
+
 function extractFailureReason(
   workerState: DispatchThreadStateV2["workers"][string] | undefined,
   lifecycleStatus: string | null
@@ -339,6 +387,7 @@ async function loadWorkerProgress(row: DispatchPlanWorkerRow, scanRunId: string 
 
   return {
     progress_path: progressPath,
+    source: "progress_file",
     command: readString(parsed.command) ?? "unknown",
     scan_run_id: readString(parsed.scan_run_id),
     status: readString(parsed.status) ?? "unknown",
@@ -428,6 +477,7 @@ async function computeClawHubProgressFallback(
 
   return {
     progress_path: manifestPath,
+    source: "fallback",
     command: "detail-fetch",
     scan_run_id: readString(manifest.scan_run_id),
     status: remaining > 0 ? "running" : "completed",
@@ -445,6 +495,77 @@ async function computeClawHubProgressFallback(
     rate_limit_waits: null,
     last_skill: null
   };
+}
+
+function normalizeProgressStatus(
+  progress: DispatchWorkerProgress | null,
+  activeProcessRunning: boolean
+): DispatchWorkerProgress | null {
+  if (!progress) {
+    return null;
+  }
+
+  if (progress.source === "fallback" && progress.status === "running" && !activeProcessRunning) {
+    return {
+      ...progress,
+      status: "failed"
+    };
+  }
+
+  return progress;
+}
+
+function listActiveProcessCommands(): string[] {
+  try {
+    const output = execFileSync("ps", ["-axo", "command="], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024
+    });
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isWorkerToolProgressActive(
+  row: DispatchPlanWorkerRow,
+  progress: DispatchWorkerProgress | null,
+  scanRunId: string | null,
+  activeProcessCommands: string[]
+): boolean {
+  if (!progress || activeProcessCommands.length === 0) {
+    return false;
+  }
+
+  const effectiveScanRunId = progress.scan_run_id ?? scanRunId;
+  if (!effectiveScanRunId || !progress.command) {
+    return false;
+  }
+
+  const expandedTask = expandScanRunId(row.task, effectiveScanRunId) ?? "";
+  const executable = extractTaskExecutable(expandedTask);
+
+  return activeProcessCommands.some((commandLine) => {
+    if (!commandLine.includes(effectiveScanRunId) || !commandLine.includes(progress.command)) {
+      return false;
+    }
+
+    if (!executable) {
+      return true;
+    }
+
+    return commandLine.includes(executable) || commandLine.includes(path.basename(executable));
+  });
+}
+
+function extractTaskExecutable(task: string): string | null {
+  const codeSpanMatch = task.match(/`([^`]+)`/);
+  const command = (codeSpanMatch?.[1] ?? task).trim();
+  const firstToken = command.match(/^(?:"([^"]+)"|'([^']+)'|`([^`]+)`|(\S+))/);
+  return firstToken?.[1] ?? firstToken?.[2] ?? firstToken?.[3] ?? firstToken?.[4] ?? null;
 }
 
 async function resolveManagedDetailManifestPath(

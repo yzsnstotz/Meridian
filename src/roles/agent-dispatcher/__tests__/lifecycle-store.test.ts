@@ -428,6 +428,36 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when a tool summary reports nonzero failed items", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-DETAIL", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-DETAIL", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "# W-DETAIL Completion Report",
+        "",
+        "## JSON Summary Output",
+        "",
+        "```json",
+        "{",
+        "  \"success\": 35292,",
+        "  \"failed\": 32,",
+        "  \"skipped\": 0",
+        "}",
+        "```"
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-DETAIL"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content starts with a plain BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
