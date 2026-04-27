@@ -129,6 +129,7 @@ export async function reconcile(
       !worker.hub_result
       && (
         (observation.kind === "running" && (outputsPresent || isStale(worker.started_at, nowMs, staleTimeoutMs)))
+        || (observation.kind === "idle" && outputsPresent)
         || (!outputsPresent && observation.kind !== "running")
       );
     const recoveredHubResult =
