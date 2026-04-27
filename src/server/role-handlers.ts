@@ -72,6 +72,7 @@ import {
   HubResultSchema,
   KillPolicySchema,
   ReplyChannelSchema,
+  ValidatorConfigSchema,
   RoleTypeSchema,
   SchedulerConfigSchema,
   type AgentDispatcherEditorConfig,
@@ -121,6 +122,7 @@ const CreateRoleBodySchema = z.object({
   kill_policy: z.string().min(1).optional(),
   auto_approve: z.boolean().optional(),
   use_agent_dispatcher: z.boolean().optional(),
+  validator: ValidatorConfigSchema.optional(),
   config: z.unknown().optional()
 });
 
@@ -142,7 +144,8 @@ const AgentDispatcherConfigPatchSchema = z.object({
   model_id: z.string().min(1).optional().nullable(),
   mode: BridgeModeSchema.optional(),
   kill_policy: KillPolicySchema.optional(),
-  auto_approve: z.boolean().optional()
+  auto_approve: z.boolean().optional(),
+  validator: ValidatorConfigSchema.optional()
 }).strict();
 
 const UpdateWorkerStatusRequestSchema = z.object({
@@ -393,6 +396,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       if (patch.kill_policy !== undefined) config.kill_policy = patch.kill_policy;
       if (patch.auto_approve !== undefined) config.auto_approve = patch.auto_approve;
       if (patch.model_id !== undefined) config.model_id = patch.model_id ?? undefined;
+      if (patch.validator !== undefined) config.validator = patch.validator;
 
       // Persist to state store
       if (context.roleState) {
@@ -1240,6 +1244,7 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     mode: parsed.data.mode ?? (nestedConfig as { mode?: unknown }).mode,
     kill_policy: parsed.data.kill_policy ?? (nestedConfig as { kill_policy?: unknown }).kill_policy,
     auto_approve: parsed.data.auto_approve ?? (nestedConfig as { auto_approve?: unknown }).auto_approve,
+    validator: parsed.data.validator ?? (nestedConfig as { validator?: unknown }).validator,
     use_agent_dispatcher:
       parsed.data.use_agent_dispatcher
       ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
