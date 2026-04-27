@@ -4,6 +4,7 @@ export interface HubEntry {
   url: string;
   health_path: string;
   description?: string;
+  restart_script?: string;
 }
 
 export type HubProbeStatus = "up" | "down" | "disabled";
@@ -20,5 +21,15 @@ export interface HubRegistryResult {
   sourcePath: string | null;
   expectedPaths: string[];
   missing?: boolean;
+  error?: string;
+}
+
+export interface HubRestartResult {
+  id: string;
+  status: "ok" | "failed" | "rejected";
+  exit_code: number | null;
+  duration_ms: number;
+  stdout: string;
+  stderr: string;
   error?: string;
 }

@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createRoutineJobHubServer,
+  executeRestartScript,
   parseHubRegistry,
   probeEntry,
+  validateRestartScript,
   type RoutineJobHubServer
 } from "./server";
 
@@ -119,6 +121,176 @@ describe("routine job hub server", () => {
     ]);
 
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("renders rebuild & restart button only when restart_script is configured", async () => {
+    const child = await startChildServer(200);
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-restart-ui-"));
+    const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-"));
+    const scriptPath = path.join(allowedRoot, "rebuild-and-restart.sh");
+    await fs.writeFile(scriptPath, "#!/usr/bin/env bash\necho ok\n", { mode: 0o755 });
+    const registryPath = path.join(root, "hub.json");
+    await fs.writeFile(registryPath, JSON.stringify([
+      {
+        id: "with-script",
+        name: "With Script",
+        description: "Has a rebuild script",
+        url: child.baseUrl,
+        health_path: "/healthz",
+        restart_script: scriptPath
+      },
+      {
+        id: "without-script",
+        name: "Without Script",
+        description: "No rebuild configured",
+        url: child.baseUrl,
+        health_path: "/healthz"
+      }
+    ]), "utf8");
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      probeTimeoutMs: 500,
+      restartScriptRoots: [allowedRoot]
+    });
+    servers.add(server);
+    await server.listen();
+
+    const page = await fetchText(`${server.url()}/`);
+    expect(page.body).toContain('data-restart-id="with-script"');
+    expect(page.body).not.toContain('data-restart-id="without-script"');
+    expect(page.body).toContain("Rebuild &amp; restart");
+
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(allowedRoot, { recursive: true, force: true });
+  });
+
+  it("runs an allowlisted restart script and returns its output", async () => {
+    const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-"));
+    const scriptPath = path.join(allowedRoot, "rebuild-and-restart.sh");
+    await fs.writeFile(
+      scriptPath,
+      "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'STATUS: pulled\\nSTATUS: built\\nSTATUS: DONE\\n'\nexit 0\n",
+      { mode: 0o755 }
+    );
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-restart-run-"));
+    const registryPath = path.join(root, "hub.json");
+    await fs.writeFile(registryPath, JSON.stringify([
+      {
+        id: "github-opc-scan",
+        name: "GitHub OPC Scan",
+        url: "http://127.0.0.1:18765",
+        health_path: "/healthz",
+        restart_script: scriptPath
+      }
+    ]), "utf8");
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      probeTimeoutMs: 500,
+      restartScriptRoots: [allowedRoot]
+    });
+    servers.add(server);
+    await server.listen();
+
+    const result = await fetch(
+      `${server.url()}/api/entries/github-opc-scan/restart`,
+      { method: "POST" }
+    );
+    expect(result.status).toBe(200);
+    const body = await result.json() as {
+      id: string;
+      status: string;
+      exit_code: number | null;
+      stdout: string;
+      stderr: string;
+    };
+    expect(body.id).toBe("github-opc-scan");
+    expect(body.status).toBe("ok");
+    expect(body.exit_code).toBe(0);
+    expect(body.stdout).toContain("STATUS: pulled");
+    expect(body.stdout).toContain("STATUS: DONE");
+
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(allowedRoot, { recursive: true, force: true });
+  });
+
+  it("rejects restart requests for unknown ids and unconfigured scripts", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-restart-reject-"));
+    const registryPath = path.join(root, "hub.json");
+    await fs.writeFile(registryPath, JSON.stringify([
+      {
+        id: "no-script",
+        name: "No Script",
+        url: "http://127.0.0.1:18765",
+        health_path: "/healthz"
+      }
+    ]), "utf8");
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      probeTimeoutMs: 500
+    });
+    servers.add(server);
+    await server.listen();
+
+    const unknown = await fetch(
+      `${server.url()}/api/entries/missing/restart`,
+      { method: "POST" }
+    );
+    expect(unknown.status).toBe(400);
+    const unknownBody = await unknown.json() as { status: string; error: string };
+    expect(unknownBody.status).toBe("rejected");
+    expect(unknownBody.error).toContain("Unknown entry id");
+
+    const noScript = await fetch(
+      `${server.url()}/api/entries/no-script/restart`,
+      { method: "POST" }
+    );
+    expect(noScript.status).toBe(400);
+    const noScriptBody = await noScript.json() as { status: string; error: string };
+    expect(noScriptBody.status).toBe("rejected");
+    expect(noScriptBody.error).toContain("no restart_script configured");
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("rejects restart scripts outside the allowed roots", async () => {
+    const insideRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-"));
+    const outside = await fs.mkdtemp(path.join(tmpdir(), "tools-outside-"));
+    const malicious = path.join(outside, "evil.sh");
+    await fs.writeFile(malicious, "#!/usr/bin/env bash\necho pwned\n", { mode: 0o755 });
+
+    const validation = validateRestartScript(malicious, [insideRoot]);
+    expect("error" in validation && validation.error).toMatch(/outside the allowed roots/);
+
+    const ok = validateRestartScript(path.join(insideRoot, "x.sh"), [insideRoot]);
+    expect("error" in ok && ok.error).toBeFalsy();
+
+    const relative = validateRestartScript("./relative.sh", [insideRoot]);
+    expect("error" in relative && relative.error).toMatch(/absolute path/);
+
+    await fs.rm(insideRoot, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("kills restart scripts that exceed the timeout", async () => {
+    const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-timeout-"));
+    const scriptPath = path.join(allowedRoot, "slow.sh");
+    await fs.writeFile(
+      scriptPath,
+      "#!/usr/bin/env bash\nsleep 30\n",
+      { mode: 0o755 }
+    );
+
+    const result = await executeRestartScript("slow", scriptPath, 200);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/timed out/);
+
+    await fs.rm(allowedRoot, { recursive: true, force: true });
   });
 
   it("times out slow HEAD probes and reports the entry as down", async () => {
