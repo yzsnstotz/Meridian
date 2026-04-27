@@ -5,6 +5,11 @@ import {
   MeridianApiError,
   type MeridianApiClient
 } from "./meridian-api-client";
+import {
+  ThreadIdCollisionError,
+  createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdReserved
+} from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
 import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
 
@@ -103,11 +108,11 @@ export async function launchDispatchWorker(
       modelId: parsedModelId,
       effort: parsedEffort,
       autoApprove: config.autoApprove
-    });
+    }, (candidateThreadId) => isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId));
   } catch (error) {
     return {
       ok: false,
-      threadId: error instanceof ActiveThreadCollisionError ? error.threadId : "",
+      threadId: error instanceof ThreadIdCollisionError ? error.threadId : "",
       error: formatSpawnError(error)
     };
   }
@@ -168,7 +173,8 @@ const SPAWN_TRANSIENT_PATTERNS = [
 
 async function spawnWithRetry(
   meridianApi: MeridianApiClient,
-  request: import("./meridian-api-client").MeridianSpawnRequest
+  request: import("./meridian-api-client").MeridianSpawnRequest,
+  isPersistedThreadIdReserved: (threadId: string) => boolean = () => false
 ): Promise<string> {
   let lastError: Error | null = null;
 
@@ -176,9 +182,24 @@ async function spawnWithRetry(
     try {
       const result = await meridianApi.spawn(request);
       if (activeRunHandoffsByThreadId.has(result.threadId)) {
-        lastError = new ActiveThreadCollisionError(result.threadId);
+        lastError = new ThreadIdCollisionError(
+          result.threadId,
+          formatActiveThreadCollisionError(result.threadId)
+        );
         if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
           console.warn("worker spawn returned active thread id, retrying", {
+            attempt: attempt + 1,
+            threadId: result.threadId,
+            error: lastError.message
+          });
+          continue;
+        }
+        throw lastError;
+      }
+      if (isPersistedThreadIdReserved(result.threadId)) {
+        lastError = createLifecycleThreadIdCollisionError(result.threadId);
+        if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
+          console.warn("worker spawn returned reserved lifecycle thread id, retrying", {
             attempt: attempt + 1,
             threadId: result.threadId,
             error: lastError.message
@@ -205,13 +226,6 @@ async function spawnWithRetry(
   }
 
   throw lastError!;
-}
-
-class ActiveThreadCollisionError extends Error {
-  constructor(readonly threadId: string) {
-    super(formatActiveThreadCollisionError(threadId));
-    this.name = "ActiveThreadCollisionError";
-  }
 }
 
 function formatActiveThreadCollisionError(threadId: string): string {

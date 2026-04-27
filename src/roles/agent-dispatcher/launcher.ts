@@ -8,6 +8,11 @@ import {
   MeridianApiError,
   type MeridianApiClient
 } from "./meridian-api-client";
+import {
+  ThreadIdCollisionError,
+  createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdReserved
+} from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
 
 const DISPATCHER_WORKER_ID = "DISPATCHER";
@@ -101,11 +106,11 @@ export async function launchDispatcher(
       spawnDir,
       modelId: config.modelId?.trim() || undefined,
       autoApprove: config.autoApprove
-    });
+    }, (candidateThreadId) => isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId));
   } catch (error) {
     return {
       ok: false,
-      threadId: EMPTY_THREAD_ID,
+      threadId: error instanceof ThreadIdCollisionError ? error.threadId : EMPTY_THREAD_ID,
       error: formatSpawnError(error)
     };
   }
@@ -186,13 +191,26 @@ const SPAWN_TRANSIENT_PATTERNS = [
 
 async function spawnWithRetry(
   meridianApi: MeridianApiClient,
-  request: import("./meridian-api-client").MeridianSpawnRequest
+  request: import("./meridian-api-client").MeridianSpawnRequest,
+  isPersistedThreadIdReserved: (threadId: string) => boolean = () => false
 ): Promise<string> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
     try {
       const result = await meridianApi.spawn(request);
+      if (isPersistedThreadIdReserved(result.threadId)) {
+        lastError = createLifecycleThreadIdCollisionError(result.threadId);
+        if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
+          console.warn("dispatcher spawn returned reserved lifecycle thread id, retrying", {
+            attempt: attempt + 1,
+            threadId: result.threadId,
+            error: lastError.message
+          });
+          continue;
+        }
+        throw lastError;
+      }
       return result.threadId;
     } catch (error) {
       lastError = asError(error);
@@ -228,7 +246,10 @@ function formatSpawnError(error: unknown): string {
       ? error.message
       : `spawn failed: ${error.message}`;
   }
-  return `spawn failed: ${asError(error).message}`;
+  const message = asError(error).message;
+  return message.startsWith("spawn failed:")
+    ? message
+    : `spawn failed: ${message}`;
 }
 
 function asError(error: unknown): Error {

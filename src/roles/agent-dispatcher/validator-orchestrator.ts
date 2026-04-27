@@ -3,6 +3,10 @@ import type { ValidatorConfig } from "../../types";
 import type { LifecycleStore } from "./lifecycle-store";
 import type { MeridianApiClient } from "./meridian-api-client";
 import type { DispatchContinuationPlanRow } from "./service-continuation";
+import {
+  createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdReserved
+} from "./thread-id-reservation";
 import { buildDefaultValidatorPrompt, type ValidatorPromptContext } from "./validator-prompt-builder";
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
@@ -35,6 +39,7 @@ const VALIDATE_OFF_PATTERN = /\bvalidate\s*:\s*off\b/i;
 const VALIDATE_THRESHOLD_PATTERN = /\bvalidate\s*:\s*threshold\s*=\s*([\d.]+)/i;
 
 const EXCLUDED_MODEL_CODES = new Set(["HUMAN", "PM"]);
+const VALIDATOR_SPAWN_MAX_ATTEMPTS = 3;
 
 export function isValidationEnabledForWorker(
   config: ValidatorConfig,
@@ -129,14 +134,7 @@ export async function executeValidationCycle(
   // Spawn validator agent
   let validatorThreadId: string;
   try {
-    const spawnResult = await meridianApi.spawn({
-      agentType: validatorConfig.agent_type,
-      mode: validatorConfig.mode,
-      spawnDir: deps.spawnDir,
-      modelId: validatorConfig.model_id,
-      autoApprove: validatorConfig.auto_approve
-    });
-    validatorThreadId = spawnResult.threadId;
+    validatorThreadId = await spawnValidatorWithReservedThreadRetry(deps);
     lifecycleStore.recordValidatorStart(workerId, validatorThreadId);
     log.info("Validator spawned", {
       event: "validator_spawned",
@@ -225,6 +223,36 @@ export async function executeValidationCycle(
     cycle: validation.current_cycle,
     maxCycles: validation.max_fix_cycles
   };
+}
+
+async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestratorDeps): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < VALIDATOR_SPAWN_MAX_ATTEMPTS; attempt += 1) {
+    const spawnResult = await deps.meridianApi.spawn({
+      agentType: deps.validatorConfig.agent_type,
+      mode: deps.validatorConfig.mode,
+      spawnDir: deps.spawnDir,
+      modelId: deps.validatorConfig.model_id,
+      autoApprove: deps.validatorConfig.auto_approve
+    });
+
+    if (!isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId)) {
+      return spawnResult.threadId;
+    }
+
+    lastError = createLifecycleThreadIdCollisionError(spawnResult.threadId);
+    if (attempt < VALIDATOR_SPAWN_MAX_ATTEMPTS - 1) {
+      deps.log.warn("Validator spawn returned reserved lifecycle thread id, retrying", {
+        event: "validator_spawn_thread_id_collision_retry",
+        thread_id: spawnResult.threadId,
+        attempt: attempt + 1,
+        error: lastError.message
+      });
+    }
+  }
+
+  throw lastError ?? new Error("validator spawn failed: no attempts completed");
 }
 
 // ─── Feedback delivery ──────────────────────────────────────────────────────────
