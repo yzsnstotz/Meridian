@@ -2760,7 +2760,14 @@ describe("role config handlers", () => {
       promptStore: {}
     };
 
-    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 1 | R-01 | Active scheduler task | CODEX | — | PRD | running |",
+      "| ⬜ | 1 | R-02 | Pending scheduler task | CODEX | R-01 | PRD | pending |"
+    ].join("\n"), "utf8");
     await fs.writeFile(schedulerStatePath, `${JSON.stringify({
       status: "waiting",
       current_run_id: null,
@@ -2782,7 +2789,8 @@ describe("role config handlers", () => {
           expect.objectContaining({
             thread_id: "scheduler-list-waiting",
             role_type: "scheduler",
-            status: "waiting"
+            status: "waiting",
+            task_count: 2
           })
         ])
       );

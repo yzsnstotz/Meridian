@@ -82,7 +82,8 @@ import {
   type HubResult,
   type ReplyChannel,
   type RoleType,
-  type RoleState
+  type RoleState,
+  type SchedulerConfig
 } from "../types";
 import {
   buildEnvReplyChannelPresets,
@@ -1090,17 +1091,31 @@ async function getRole(
 async function resolveRoleTaskCount(role: RoleState, log: Logger): Promise<number> {
   const config = parseDispatcherConfig(role.config);
   const explicitTaskCount = config?.tasks.length ?? 0;
-  if (explicitTaskCount > 0 || role.roleType !== "agent-dispatcher") {
+  if (explicitTaskCount > 0) {
     return explicitTaskCount;
   }
 
-  const agentDispatcherConfig = parseAgentDispatcherConfig(role.config);
-  if (!agentDispatcherConfig) {
-    return explicitTaskCount;
+  if (role.roleType === "agent-dispatcher") {
+    const agentDispatcherConfig = parseAgentDispatcherConfig(role.config);
+    if (!agentDispatcherConfig) {
+      return explicitTaskCount;
+    }
+
+    const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, log);
+    return dispatchPlan.rows.length;
   }
 
-  const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, log);
-  return dispatchPlan.rows.length;
+  if (role.roleType === "scheduler") {
+    const schedulerConfig = parseSchedulerConfig(role.config);
+    if (!schedulerConfig) {
+      return explicitTaskCount;
+    }
+
+    const dispatchPlan = await loadDispatchPlanData(schedulerConfig.dispatch_plan_path, log);
+    return dispatchPlan.rows.length;
+  }
+
+  return explicitTaskCount;
 }
 
 function buildSyntheticDispatchTasks(rows: DispatchPlanRow[]): RoleDetailResponse["tasks"] {
@@ -1251,6 +1266,11 @@ function parseDispatcherConfig(config: unknown): DispatcherConfig | null {
 
 function parseAgentDispatcherConfig(config: unknown): AgentDispatcherConfig | null {
   const parsed = AgentDispatcherConfigSchema.safeParse(config);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseSchedulerConfig(config: unknown): SchedulerConfig | null {
+  const parsed = SchedulerConfigSchema.safeParse(config);
   return parsed.success ? parsed.data : null;
 }
 
