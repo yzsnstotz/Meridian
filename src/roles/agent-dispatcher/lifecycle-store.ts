@@ -437,6 +437,7 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
       if (
         isPlanStatusTerminalSuccess(currentPlanStatus)
         && nextPlanStatus !== currentPlanStatus
+        && nextPlanStatus !== PLAN_STATUS_SYMBOLS.running
         && !hasFailureEvidence
       ) {
         continue;

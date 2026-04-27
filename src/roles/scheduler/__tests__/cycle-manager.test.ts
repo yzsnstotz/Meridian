@@ -40,11 +40,11 @@ describe("detectCycleCompletion", () => {
     });
   });
 
-  it("derives a stable daily scan run id from the planned cron fire time", async () => {
-    const directory = await fs.mkdtemp(path.join(tmpdir(), "clawhub-skill-scan-"));
+  it("derives a stable daily scan run id from explicit scheduler config", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "routine-job-scheduler-cycle-"));
     tempDirectories.add(directory);
 
-    const planPath = path.join(directory, "clawhub-skill-scan-plan.md");
+    const planPath = path.join(directory, "dispatch_plan.md");
     await fs.writeFile(planPath, [
       "| Status | batch | worker | task | model | depends_on |",
       "|--------|-------|--------|------|-------|------------|",
@@ -56,7 +56,10 @@ describe("detectCycleCompletion", () => {
     stateStore.save(buildEmptyRunState());
     const result = startCycle(
       stateStore,
-      buildConfig(planPath),
+      buildConfig(planPath, {
+        scan_run_id_strategy: "daily-date",
+        scan_run_id_prefix: "daily"
+      } as Partial<SchedulerConfig>),
       "scheduler-1",
       "run-001",
       "2026-04-24T21:00:00.000Z"
@@ -208,7 +211,7 @@ describe("detectCycleCompletion", () => {
   });
 });
 
-function buildConfig(dispatchPlanPath: string): SchedulerConfig {
+function buildConfig(dispatchPlanPath: string, overrides: Partial<SchedulerConfig> = {}): SchedulerConfig {
   return {
     dispatch_plan_path: dispatchPlanPath,
     command_file_path: path.join(path.dirname(dispatchPlanPath), "agent_dispatch_command.md"),
@@ -224,6 +227,7 @@ function buildConfig(dispatchPlanPath: string): SchedulerConfig {
     timezone: "Asia/Tokyo",
     delay_between_cycles_seconds: 0,
     report_base_dir: path.join(path.dirname(dispatchPlanPath), "reports"),
-    catch_up_policy: "skip_missed"
+    catch_up_policy: "skip_missed",
+    ...overrides
   };
 }

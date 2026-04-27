@@ -184,6 +184,12 @@ function setupSchedulerCreation() {
     if (form.delay_between_cycles_seconds?.value) {
       config.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
     }
+    if (form.scan_run_id_strategy?.value && form.scan_run_id_strategy.value !== "none") {
+      config.scan_run_id_strategy = form.scan_run_id_strategy.value;
+      if (form.scan_run_id_prefix?.value?.trim()) {
+        config.scan_run_id_prefix = form.scan_run_id_prefix.value.trim();
+      }
+    }
     if (form.dispatch_repo_root?.value) config.dispatch_repo_root = form.dispatch_repo_root.value;
     if (form.docs_root?.value) config.docs_root = form.docs_root.value;
     if (form.agent_type?.value) config.agent_type = form.agent_type.value;

@@ -292,7 +292,7 @@
                   placeholder="/abs/path/to/taskspec/"
                 />
                 <small class="field-hint muted">
-                  Optional helper. Example: <code>/Users/yzliu/work/Docs/Projects/routine-job/clawhub-skill-scan/taskspec</code>; fills <code>clawhub-skill-scan-plan.md</code> and a sibling reports folder.
+                  Optional helper. Example: <code>/Users/yzliu/work/Docs/Projects/routine-job/example-scan/taskspec</code>; fills <code>example-scan-plan.md</code> and a sibling reports folder.
                 </small>
               </label>
               <label class="field">
@@ -401,6 +401,25 @@
                 <input id="new-scheduler-delay" name="delay_between_cycles_seconds" type="number" min="0" />
                 <small class="field-hint muted">
                   Loop mode wait after a cycle completes. Example: <code>300</code> waits 5 minutes.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>scan_run_id_strategy</span>
+                <select id="new-scheduler-scan-run-id-strategy" name="scan_run_id_strategy">
+                  <option value="none">none</option>
+                  <option value="daily-date">daily-date</option>
+                </select>
+                <small class="field-hint muted">
+                  Optional routine-job run id. Use <code>daily-date</code> to publish <code>SCAN_RUN_ID</code> as a date-based value.
+                </small>
+              </label>
+              <label class="field">
+                <span>scan_run_id_prefix</span>
+                <input id="new-scheduler-scan-run-id-prefix" name="scan_run_id_prefix" type="text" value="daily" />
+                <small class="field-hint muted">
+                  Prefix for date-based ids. Example: <code>daily</code> creates <code>daily-YYYY-MM-DD</code>.
                 </small>
               </label>
             </div>

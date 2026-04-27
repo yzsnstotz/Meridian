@@ -223,6 +223,25 @@
           </div>
           <div class="summary-grid">
             <label class="field">
+              <span>scan_run_id_strategy</span>
+              <select id="cfg-scan-run-id-strategy" name="scan_run_id_strategy">
+                <option value="none">none</option>
+                <option value="daily-date">daily-date</option>
+              </select>
+              <small class="field-hint muted">
+                Optional routine-job run id. Use <code>daily-date</code> to publish <code>SCAN_RUN_ID</code> as a date-based value.
+              </small>
+            </label>
+            <label class="field">
+              <span>scan_run_id_prefix</span>
+              <input id="cfg-scan-run-id-prefix" name="scan_run_id_prefix" type="text" placeholder="daily" />
+              <small class="field-hint muted">
+                Prefix for date-based ids. Example: <code>daily</code> creates <code>daily-YYYY-MM-DD</code>.
+              </small>
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
               <span>dispatch_repo_root</span>
               <input id="cfg-dispatch-repo-root" name="dispatch_repo_root" type="text" placeholder="/abs/path/to/repo" />
               <small class="field-hint muted">
@@ -335,6 +354,8 @@
           setVal('cfg-interval', c.interval_seconds);
           setVal('cfg-max-cycles', c.max_cycles);
           setVal('cfg-delay', c.delay_between_cycles_seconds);
+          setVal('cfg-scan-run-id-strategy', c.scan_run_id_strategy || 'none');
+          setVal('cfg-scan-run-id-prefix', c.scan_run_id_prefix || '');
           setVal('cfg-dispatch-repo-root', c.dispatch_repo_root);
           setVal('cfg-docs-root', c.docs_root);
           setVal('cfg-agent-type', c.agent_type || 'claude');
@@ -546,6 +567,8 @@
         if (form.interval_seconds.value) body.interval_seconds = parseInt(form.interval_seconds.value, 10);
         if (form.max_cycles.value) body.max_cycles = parseInt(form.max_cycles.value, 10);
         if (form.delay_between_cycles_seconds.value) body.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
+        body.scan_run_id_strategy = form.scan_run_id_strategy.value || 'none';
+        body.scan_run_id_prefix = form.scan_run_id_prefix.value.trim() || null;
         if (form.dispatch_repo_root.value) body.dispatch_repo_root = form.dispatch_repo_root.value;
         if (form.docs_root.value) body.docs_root = form.docs_root.value;
         if (form.agent_type.value) body.agent_type = form.agent_type.value;

@@ -187,6 +187,9 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     if (patch.model_map === null || patch.model_map === "") {
       delete merged.model_map;
     }
+    if (patch.scan_run_id_prefix === null || patch.scan_run_id_prefix === "") {
+      delete merged.scan_run_id_prefix;
+    }
     const validated = SchedulerConfigSchema.parse(merged);
 
     if (validated.scheduler_mode === "cron" && validated.cron_expression) {
