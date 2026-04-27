@@ -16,10 +16,17 @@ import {
 
 const tempDirectories = new Set<string>();
 const FIXED_NOW = "2026-04-03T12:30:00.000Z";
+const execFileSyncMock = vi.hoisted(() => vi.fn(() => ""));
+
+vi.mock("node:child_process", () => ({
+  execFileSync: execFileSyncMock
+}));
 
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  execFileSyncMock.mockReset();
+  execFileSyncMock.mockReturnValue("");
 
   await Promise.all(
     Array.from(tempDirectories, async (directory) => {
@@ -283,6 +290,50 @@ describe("reconcile", () => {
         trigger: "thread_missing:outputs_present"
       }
     ]);
+  });
+
+  it("keeps a missing-thread worker running when its matching tool process is still active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const scanRunId = "daily-2026-04-27";
+    const outputPath = await harness.writeOutput("reports/runs/run-001/W-DETAIL.md", [
+      "# W-DETAIL Completion Report",
+      "",
+      "## Outcome",
+      "",
+      "✅"
+    ].join("\n"));
+    await harness.writeOutput("dispatch_plan.md", [
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 2 | W-DETAIL | Run `clawhub-fetch detail-fetch --scan-run-id ${SCAN_RUN_ID} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/${SCAN_RUN_ID}/changed_skill_manifest.json` | CODEX-HIGH | W-CATALOG | |"
+    ].join("\n"));
+
+    const worker = buildRunningWorker("managed-W-DETAIL-daily-2026-04-27-71436", outputPath);
+    worker.command_preamble = [
+      "# Scheduler Cycle Context",
+      "SCHEDULER_RUN_ID: run-001",
+      `SCAN_RUN_ID: ${scanRunId}`
+    ].join("\n");
+    harness.store.save(buildState({
+      workers: {
+        "W-DETAIL": worker
+      }
+    }));
+
+    execFileSyncMock.mockReturnValue([
+      `71436 node /Users/yzliu/.local/share/fnm/aliases/default/bin/clawhub-fetch detail-fetch --scan-run-id ${scanRunId} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/${scanRunId}/W-DETAIL.remaining-managed.json`
+    ].join("\n"));
+
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["W-DETAIL"]?.status).toBe("running");
+    expect(report.changed).toEqual([]);
+    expect(report.unchanged).toEqual([DISPATCHER_ENTRY_ID, "W-DETAIL"]);
   });
 
   it("marks a running worker abandoned when the thread is missing, outputs are absent, and the stale timeout is exceeded", async () => {

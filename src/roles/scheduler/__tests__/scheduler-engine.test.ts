@@ -14,14 +14,20 @@ const executeContinueDispatcherMock = vi.hoisted(() => vi.fn(async () => ({
   ok: false,
   error: "legacy dispatcher route should not be used"
 })));
+const execFileSyncMock = vi.hoisted(() => vi.fn(() => ""));
 
 vi.mock("../../../tool-gateway/tools/continue-dispatcher", () => ({
   executeContinueDispatcher: executeContinueDispatcherMock
+}));
+vi.mock("node:child_process", () => ({
+  execFileSync: execFileSyncMock
 }));
 
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  execFileSyncMock.mockReset();
+  execFileSyncMock.mockReturnValue("");
   await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
   tempDirectories.clear();
 });
@@ -371,6 +377,109 @@ describe("SchedulerEngine", () => {
     await (engine as unknown as { checkCycleCompletion(): Promise<void> }).checkCycleCompletion();
 
     expect(lifecycleStore.load().workers["W-01"]?.status).toBe("running");
+    expect(continueWorker).not.toHaveBeenCalled();
+  });
+
+  it("does not recover a current-run report while the matching tool process is still running", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    const scanRunId = "daily-2026-04-27";
+    await fs.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends on | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      `| 🔄 | 2 | W-DETAIL | clawhub-fetch detail-fetch --scan-run-id \${SCAN_RUN_ID} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/\${SCAN_RUN_ID}/changed_skill_manifest.json | CODEX-HIGH | W-CATALOG | |`,
+      "| ⬜ | 3 | W-SSR | clawhub-fetch ssr-enrich --scan-run-id ${SCAN_RUN_ID} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/${SCAN_RUN_ID}/changed_skill_manifest.json --enrichment-path /tmp/clawhub-scan/${SCAN_RUN_ID}/enrichment.json | CODEX-HIGH | W-DETAIL | |"
+    ].join("\n"), "utf8");
+
+    const runReportDir = path.join(directory, "reports", "runs", "run-001");
+    await fs.mkdir(runReportDir, { recursive: true });
+    const reportPath = path.join(runReportDir, "W-DETAIL.md");
+    await fs.writeFile(reportPath, [
+      "# W-DETAIL Completion Report",
+      "",
+      "## Outcome",
+      "",
+      "✅",
+      "",
+      "All acceptance checks passed."
+    ].join("\n"), "utf8");
+
+    const lifecycleStore = new LifecycleStore(path.join(directory, "dispatch_threads.json"));
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      workers: {
+        "W-CATALOG": {
+          thread_id: "thread-catalog",
+          trace_id: null,
+          started_at: "2026-04-26T16:00:00.000Z",
+          last_seen_at: "2026-04-26T16:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-DETAIL": {
+          thread_id: "managed-W-DETAIL-daily-2026-04-27-71436",
+          trace_id: null,
+          started_at: "2026-04-26T17:00:00.000Z",
+          last_seen_at: "2026-04-26T17:10:00.000Z",
+          status: "running",
+          expected_outputs: [reportPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "active_run",
+      current_run_id: "run-001",
+      current_run_report_dir: null,
+      current_scan_run_id: scanRunId
+    });
+
+    execFileSyncMock.mockReturnValue([
+      `71436 node /Users/yzliu/.local/share/fnm/aliases/default/bin/clawhub-fetch detail-fetch --scan-run-id ${scanRunId} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/${scanRunId}/W-DETAIL.remaining-managed.json`
+    ].join("\n"));
+
+    const continueWorker = vi.fn(async () => ({
+      ok: true,
+      workerId: "W-SSR",
+      threadId: "thread-ssr"
+    }));
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: {
+        ...buildConfig(planPath),
+        scan_run_id_strategy: "daily-date",
+        scan_run_id_prefix: "daily"
+      },
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher: vi.fn(),
+        notifyChannels: vi.fn(),
+        continueWorker
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    await (engine as unknown as { checkCycleCompletion(): Promise<void> }).checkCycleCompletion();
+
+    expect(lifecycleStore.load().workers["W-DETAIL"]?.status).toBe("running");
     expect(continueWorker).not.toHaveBeenCalled();
   });
 

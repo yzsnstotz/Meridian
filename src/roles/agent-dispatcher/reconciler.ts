@@ -12,6 +12,12 @@ import {
   isExplicitCompletionContent,
   isNonCompletionContent
 } from "./lifecycle-store";
+import {
+  isWorkerToolProcessRunning,
+  listActiveProcessCommands,
+  loadPlanRowsByWorker,
+  resolveDispatchPlanPathFromThreadsPath
+} from "./active-tool-process";
 import { isMissingThreadEvidence } from "./missing-thread";
 
 export interface ReconciliationChange {
@@ -77,6 +83,8 @@ export async function reconcile(
     changed: [],
     unchanged: []
   };
+  const planRows = loadPlanRowsByWorker(resolveDispatchPlanPathFromThreadsPath(lifecycleStore.filePath));
+  const activeProcessCommands = listActiveProcessCommands();
 
   await reconcileDispatcher(lifecycleStore, state, hubClient, report);
 
@@ -89,13 +97,18 @@ export async function reconcile(
     }
 
     const outputsPresent = outputsExist(worker.expected_outputs);
+    const workerToolProcessRunning = isWorkerToolProcessRunning(
+      planRows.get(workerId),
+      readWorkerScanRunId(worker.command_preamble),
+      activeProcessCommands
+    );
     const recordedResultTransition = determineRecordedResultTransition(
       workerId,
       worker.hub_result,
       outputsPresent,
       worker.expected_outputs
     );
-    if (recordedResultTransition) {
+    if (recordedResultTransition && shouldApplyWorkerTransition(recordedResultTransition, workerToolProcessRunning)) {
       state.workers[workerId] = {
         ...worker,
         status: recordedResultTransition.to,
@@ -129,7 +142,7 @@ export async function reconcile(
       outputsPresent,
       worker.expected_outputs
     );
-    if (recoveredTransition) {
+    if (recoveredTransition && shouldApplyWorkerTransition(recoveredTransition, workerToolProcessRunning)) {
       const terminalTimestamp = effectiveHubResult?.timestamp ?? nowIso;
       state.workers[workerId] = {
         ...worker,
@@ -156,7 +169,8 @@ export async function reconcile(
       worker.expected_outputs,
       worker.started_at,
       nowMs,
-      staleTimeoutMs
+      staleTimeoutMs,
+      workerToolProcessRunning
     );
 
     if (!transition || transition.to === worker.status) {
@@ -308,7 +322,8 @@ function determineWorkerTransition(
   expectedOutputs: string[],
   startedAt: string,
   nowMs: number,
-  staleTimeoutMs: number
+  staleTimeoutMs: number,
+  workerToolProcessRunning: boolean
 ): Pick<ReconciliationChange, "to" | "trigger"> | null {
   const hasInlineReport = hubResult ? hubResultContainsInlineReport(hubResult) : false;
   const requiresExpectedOutput = expectedOutputs.length > 0;
@@ -334,6 +349,17 @@ function determineWorkerTransition(
   // signalled that its task cannot proceed. Do not auto-complete regardless of
   // thread observation, outputs, or inline reports.
   if (hubResult && isNonCompletionContent(hubResult.content)) {
+    return null;
+  }
+
+  if (observation.kind === "failed") {
+    return {
+      to: "failed",
+      trigger: `hub_status:${observation.rawStatus ?? "failed"}`
+    };
+  }
+
+  if (workerToolProcessRunning) {
     return null;
   }
 
@@ -377,13 +403,6 @@ function determineWorkerTransition(
     return {
       to: "completed",
       trigger: `hub_status:${observation.rawStatus ?? observation.kind}:success_result`
-    };
-  }
-
-  if (observation.kind === "failed") {
-    return {
-      to: "failed",
-      trigger: `hub_status:${observation.rawStatus ?? "failed"}`
     };
   }
 
@@ -440,6 +459,18 @@ function determineWorkerTransition(
   }
 
   return null;
+}
+
+function shouldApplyWorkerTransition(
+  transition: Pick<ReconciliationChange, "to" | "trigger">,
+  workerToolProcessRunning: boolean
+): boolean {
+  return !(workerToolProcessRunning && transition.to === "completed");
+}
+
+function readWorkerScanRunId(commandPreamble: string | null | undefined): string | null {
+  const match = commandPreamble?.match(/(?:^|\n)\s*SCAN_RUN_ID:\s*([^\s]+)/);
+  return match?.[1] ?? null;
 }
 
 function determineRecordedResultTransition(

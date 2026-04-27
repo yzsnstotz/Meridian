@@ -2172,6 +2172,82 @@ describe("role config handlers", () => {
     }
   });
 
+  it("shows failed dispatch detail status when a completed hub result contains a blocking report", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-blocked-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 0 | PRE-FLIGHT | Env health check | CODEX-HIGH | — | TaskSpec | blocks all batches |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-27T04:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "PRE-FLIGHT": buildLifecycleWorker({
+          thread_id: "codex_05",
+          status: "completed",
+          expected_outputs: [path.join(tempDir, "reports", "PRE-FLIGHT.md")],
+          hub_result: {
+            ...buildHubResult([
+              "⛔ BLOCKED — PRE-FLIGHT cannot certify the baseline.",
+              "",
+              "`npx tsc --noEmit` exits `1` because the repo root has no `tsconfig.json`."
+            ].join("\n")),
+            trace_id: "33333333-3333-4333-8333-333333333333",
+            thread_id: "codex_05"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-blocked-detail", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-blocked-detail"
+      )).resolves.toMatchObject({
+        tasks: [
+          expect.objectContaining({
+            task_id: "PRE-FLIGHT",
+            status: "failed"
+          })
+        ],
+        dispatch_details: [
+          expect.objectContaining({
+            worker_id: "PRE-FLIGHT",
+            status: "failed",
+            reply: expect.objectContaining({
+              content: expect.stringContaining("⛔ BLOCKED")
+            })
+          })
+        ],
+        dispatch_plan: {
+          rows: [
+            expect.objectContaining({
+              worker: "PRE-FLIGHT",
+              lifecycle_status: "failed"
+            })
+          ]
+        }
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("demotes dispatcher lifecycle state during detail fetch when attach reports the thread missing", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-missing-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

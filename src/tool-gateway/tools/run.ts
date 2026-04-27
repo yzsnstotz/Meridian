@@ -322,6 +322,7 @@ async function buildWorkerPreamble(
   previousWorkerState: DispatchWorkerState | null,
   expectedOutputs: string[]
 ): Promise<string> {
+  const command = await readFile(commandPath, "utf8");
   const lines: string[] = [];
 
   if (row?.model) {
@@ -375,12 +376,14 @@ async function buildWorkerPreamble(
   }
   lines.push("");
 
-  lines.push(`# Command File`);
-  lines.push(`Read the full dispatch command from disk:`);
-  lines.push("```");
-  lines.push(commandPath);
-  lines.push("```");
-  lines.push(`Open this file and follow the instructions with these overrides:`);
+  lines.push(`# Embedded Dispatch Command`);
+  lines.push(`The full dispatch command file contents are embedded below. Follow these instructions with the runtime overrides after this section.`);
+  lines.push("");
+  lines.push(command.trimEnd());
+  lines.push("");
+
+  lines.push(`# Runtime Overrides`);
+  lines.push(`Follow the embedded dispatch command with these overrides:`);
   lines.push(`- **Skip Step 4a** (mark in-progress) — already done for you.`);
   if (isDispatcherWorker(workerId)) {
     lines.push(`- Treat any local Meridian tool bootstrap failure (for example Node CLI startup, IPC socket bind, or sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
