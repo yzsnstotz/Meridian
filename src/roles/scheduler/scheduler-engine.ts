@@ -340,12 +340,12 @@ export class SchedulerEngine {
   }
 
   private async checkCycleCompletion(): Promise<void> {
-    this.recoverCurrentRunOutputEvidence();
-    await this.cleanupTerminalWorkerThreads();
-
     if (await this.hasRunningToolProgress()) {
       return;
     }
+
+    this.recoverCurrentRunOutputEvidence();
+    await this.cleanupTerminalWorkerThreads();
 
     const detection = detectCycleCompletion(this.config);
     if (!detection.complete) {

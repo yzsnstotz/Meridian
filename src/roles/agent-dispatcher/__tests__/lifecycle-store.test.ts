@@ -913,6 +913,34 @@ describe("LifecycleStore", () => {
     expect(planAfterAbandoned).not.toContain("ABANDONED");
   });
 
+  it("downgrades plan ✅ status when a completed worker is explicitly restarted", async () => {
+    const harness = await createHarness({
+      planTemplate: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ⬜ | 1 | N-01 | Test row |",
+        ""
+      ].join("\n")
+    });
+
+    harness.store.recordWorkerStart("N-01", "worker-thread-111", "trace-111", []);
+    harness.store.recordWorkerResult("N-01", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      timestamp: "2026-04-03T12:00:10.000Z"
+    }));
+
+    const planAfterComplete = fs.readFileSync(harness.dispatchPlanPath, "utf8");
+    expect(planAfterComplete).toContain("| ✅ |");
+
+    harness.store.recordWorkerStart("N-01", "worker-thread-222", "trace-222", []);
+
+    const planAfterRestart = fs.readFileSync(harness.dispatchPlanPath, "utf8");
+    expect(planAfterRestart).toContain("| 🔄 | 1 | N-01 | Test row |");
+  });
+
   it("syncs a sibling *_dispatch_plan.md file when dispatch_plan.md is not present", async () => {
     const directory = await fsp.mkdtemp(path.join(tmpdir(), "meridian-roles-lifecycle-store-custom-plan-"));
     tempDirectories.add(directory);

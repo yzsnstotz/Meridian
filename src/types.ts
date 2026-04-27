@@ -372,6 +372,9 @@ export type AppState = z.infer<typeof AppStateSchema>;
 export const SchedulerModeSchema = z.enum(["none", "cron", "interval", "loop"]);
 export type SchedulerMode = z.infer<typeof SchedulerModeSchema>;
 
+export const ScanRunIdStrategySchema = z.enum(["none", "daily-date"]);
+export type ScanRunIdStrategy = z.infer<typeof ScanRunIdStrategySchema>;
+
 export const CatchUpPolicySchema = z.enum(["skip_missed", "run_one"]);
 export type CatchUpPolicy = z.infer<typeof CatchUpPolicySchema>;
 
@@ -426,6 +429,10 @@ export const SchedulerConfigSchema = z.object({
   start_immediately: z.boolean().optional(),
   max_cycles: z.number().int().min(1).optional(),
   delay_between_cycles_seconds: z.number().int().min(0).default(0),
+
+  // Routine job run identity
+  scan_run_id_strategy: ScanRunIdStrategySchema.optional(),
+  scan_run_id_prefix: z.string().min(1).optional(),
 
   // Archival
   report_base_dir: z.string().min(1),

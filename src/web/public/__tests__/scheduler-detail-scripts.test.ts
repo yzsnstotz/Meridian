@@ -19,6 +19,8 @@ describe("scheduler detail public scripts", () => {
     expect(indexHtml).not.toContain('<option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>');
     expect(indexHtml).not.toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
     expect(indexHtml).not.toContain('id="new-scheduler-model-map"');
+    expect(indexHtml).toContain('id="new-scheduler-scan-run-id-strategy" name="scan_run_id_strategy"');
+    expect(indexHtml).toContain('id="new-scheduler-scan-run-id-prefix" name="scan_run_id_prefix"');
 
     expect(schedulerHtml).toContain('<select id="cfg-model-id" name="model_id">');
     expect(schedulerHtml).not.toContain('<input id="cfg-model-id"');
@@ -29,6 +31,8 @@ describe("scheduler detail public scripts", () => {
     expect(schedulerHtml).not.toContain('<option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>');
     expect(schedulerHtml).not.toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
     expect(schedulerHtml).not.toContain('id="cfg-model-map"');
+    expect(schedulerHtml).toContain('id="cfg-scan-run-id-strategy" name="scan_run_id_strategy"');
+    expect(schedulerHtml).toContain('id="cfg-scan-run-id-prefix" name="scan_run_id_prefix"');
   });
 
   it("submits scheduler creation with dispatcher agent and model settings", async () => {
@@ -47,6 +51,8 @@ describe("scheduler detail public scripts", () => {
       delay_between_cycles_seconds: { value: "" },
       dispatch_repo_root: { value: "/tmp/project" },
       docs_root: { value: "/tmp/docs" },
+      scan_run_id_strategy: { value: "daily-date" },
+      scan_run_id_prefix: { value: "daily" },
       agent_type: { value: "codex" },
       model_id: { value: "gpt-5.5 high" },
       mode: { value: "pane_bridge" },
@@ -96,7 +102,9 @@ describe("scheduler detail public scripts", () => {
       config: {
         agent_type: "codex",
         model_id: "gpt-5.5 high",
-        mode: "pane_bridge"
+        mode: "pane_bridge",
+        scan_run_id_strategy: "daily-date",
+        scan_run_id_prefix: "daily"
       }
     });
     expect((schedulerRequestBody as { config?: Record<string, unknown> }).config).not.toHaveProperty("model_map");
@@ -246,7 +254,9 @@ describe("scheduler detail public scripts", () => {
               scheduler_mode: "cron",
               agent_type: "codex",
               model_id: "gpt-5.5 high",
-              mode: "pane_bridge"
+              mode: "pane_bridge",
+              scan_run_id_strategy: "daily-date",
+              scan_run_id_prefix: "daily"
             },
             run_state: {
               status: "waiting",
@@ -276,6 +286,8 @@ describe("scheduler detail public scripts", () => {
     expect(getElementStub(elements, "cfg-agent-type")).toMatchObject({ value: "codex" });
     expect(getElementStub(elements, "cfg-model-id")).toMatchObject({ value: "gpt-5.5 high" });
     expect(getElementStub(elements, "cfg-agent-mode")).toMatchObject({ value: "pane_bridge" });
+    expect(getElementStub(elements, "cfg-scan-run-id-strategy")).toMatchObject({ value: "daily-date" });
+    expect(getElementStub(elements, "cfg-scan-run-id-prefix")).toMatchObject({ value: "daily" });
 
     const configForm = getElementStub(elements, "config-form");
     const cfgAgentType = getElementStub(elements, "cfg-agent-type");
@@ -297,6 +309,8 @@ describe("scheduler detail public scripts", () => {
       delay_between_cycles_seconds: { value: "" },
       dispatch_repo_root: { value: "" },
       docs_root: { value: "" },
+      scan_run_id_strategy: { value: "daily-date" },
+      scan_run_id_prefix: { value: "routine" },
       report_base_dir: { value: "/tmp/reports" },
       catch_up_policy: { value: "skip_missed" },
       agent_type: { value: "claude" },
@@ -317,7 +331,9 @@ describe("scheduler detail public scripts", () => {
     expect(patchBody).toMatchObject({
       agent_type: "claude",
       model_id: "claude-opus-4-7",
-      mode: "bridge"
+      mode: "bridge",
+      scan_run_id_strategy: "daily-date",
+      scan_run_id_prefix: "routine"
     });
     expect(patchBody).not.toHaveProperty("model_map");
   });

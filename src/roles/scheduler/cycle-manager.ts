@@ -360,22 +360,12 @@ export function cancelCycle(
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function deriveScanRunId(config: SchedulerConfig, plannedStartTime: string | null): string | null {
-  if (!isClawhubSkillScanConfig(config)) {
+  if (config.scan_run_id_strategy !== "daily-date") {
     return null;
   }
 
-  return `daily-${formatDateInTimezone(plannedStartTime ?? new Date().toISOString(), config.timezone)}`;
-}
-
-function isClawhubSkillScanConfig(config: SchedulerConfig): boolean {
-  const fields = [
-    config.dispatch_plan_path,
-    config.command_file_path,
-    config.dispatch_repo_root,
-    config.docs_root
-  ].filter((value): value is string => typeof value === "string");
-
-  return fields.some((value) => value.includes("clawhub-skill-scan"));
+  const prefix = config.scan_run_id_prefix ?? "daily";
+  return `${prefix}-${formatDateInTimezone(plannedStartTime ?? new Date().toISOString(), config.timezone)}`;
 }
 
 function formatDateInTimezone(isoTimestamp: string, timezone: string): string {
