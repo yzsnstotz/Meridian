@@ -675,18 +675,22 @@ function createSchedulerDetailContext(
 
 class FakeElement {
   getAttribute(_name: string): string | null {
+    void _name;
     return null;
   }
 
   hasAttribute(_name: string): boolean {
+    void _name;
     return false;
   }
 
   closest(_selector: string): FakeElement | null {
+    void _selector;
     return this;
   }
 
   querySelector(_selector: string): FakeElement | null {
+    void _selector;
     return null;
   }
 }

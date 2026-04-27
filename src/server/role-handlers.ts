@@ -56,7 +56,6 @@ import {
   isReconcilableAgentDispatcherRoleStatus,
   isTerminalAgentDispatcherRoleStatus,
   NEEDS_REACTIVATION_ROLE_STATUS,
-  PAUSED_ROLE_STATUS,
   StateStore
 } from "../state-store";
 import {
