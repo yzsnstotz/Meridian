@@ -59,7 +59,10 @@ describe("ReconciliationWatchdog", () => {
     );
 
     vi.spyOn(reconciliationFs, "existsSync").mockReturnValue(true);
-    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({ size: 100 } as ReturnType<typeof reconciliationFs.statSync>);
+    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({
+      size: 100,
+      mtimeMs: Date.parse(FIXED_NOW)
+    } as ReturnType<typeof reconciliationFs.statSync>);
 
     const watchdog = new ReconciliationWatchdog({
       resolveActiveDispatchPlanPaths: async () => [
@@ -866,7 +869,10 @@ describe("ReconciliationWatchdog", () => {
     const { hubClient } = createHubClient(() => buildStatusResult("w-thread-01", "completed"));
 
     vi.spyOn(reconciliationFs, "existsSync").mockReturnValue(true);
-    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({ size: 100 } as ReturnType<typeof reconciliationFs.statSync>);
+    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({
+      size: 100,
+      mtimeMs: Date.parse(FIXED_NOW)
+    } as ReturnType<typeof reconciliationFs.statSync>);
 
     const log = silentLog();
     const watchdog = new ReconciliationWatchdog({

@@ -1480,6 +1480,44 @@ describe("reconcile", () => {
     );
   });
 
+  it("does not fail a retry from a blocked report written before the current attempt started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/V-01-A.md", [
+      "# V-01-A Report",
+      "",
+      "**Worker**: V-01-A",
+      "**Result**: BLOCKED",
+      "",
+      "Previous attempt failed before delivery."
+    ].join("\n"));
+    await fsp.utimes(
+      outputPath,
+      new Date("2026-04-03T12:10:00.000Z"),
+      new Date("2026-04-03T12:10:00.000Z")
+    );
+
+    harness.store.save(buildState({
+      workers: {
+        "V-01-A": buildRunningWorker(
+          "worker-thread-v01a-retry",
+          outputPath,
+          "2026-04-03T12:20:00.000Z"
+        )
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["V-01-A"]?.status).toBe("running");
+    expect(report.changed).toEqual([]);
+    expect(report.unchanged).toContain("V-01-A");
+  });
+
   it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
