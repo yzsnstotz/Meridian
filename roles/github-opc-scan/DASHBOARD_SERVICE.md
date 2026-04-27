@@ -25,7 +25,7 @@ tail -f /tmp/github-opc-scan-dashboard.out.log
 tail -f /tmp/github-opc-scan-dashboard.err.log
 ```
 
-The sample plist binds the dashboard to `127.0.0.1:18765`.
+The sample plist runs the tool with `/Users/yzliu/work/tools/github-ai-automation-scan/.venv/bin/python -m github_ai_automation_scan` and binds the dashboard to `127.0.0.1:18765`.
 
 ## Stop
 
