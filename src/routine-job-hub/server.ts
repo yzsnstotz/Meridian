@@ -1,20 +1,39 @@
+import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import * as path from "node:path";
 
-import type { HubEntry, HubProbeStatus, HubRegistryResult, ProbedHubEntry } from "./types";
+import type {
+  HubEntry,
+  HubProbeStatus,
+  HubRegistryResult,
+  HubRestartResult,
+  ProbedHubEntry
+} from "./types";
 
-export type { HubEntry, HubProbeStatus, HubRegistryResult, ProbedHubEntry } from "./types";
+export type {
+  HubEntry,
+  HubProbeStatus,
+  HubRegistryResult,
+  HubRestartResult,
+  ProbedHubEntry
+} from "./types";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8765;
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_REGISTRY_PATH = "/Users/yzliu/work/Docs/Projects/routine-job/hub.json";
+const DEFAULT_RESTART_SCRIPT_ROOTS: readonly string[] = ["/Users/yzliu/work/tools/"];
+const DEFAULT_RESTART_TIMEOUT_MS = 180_000;
+const RESTART_OUTPUT_MAX_BYTES = 64 * 1024;
 
 export interface RoutineJobHubServerOptions {
   host?: string;
   port?: number;
   registryPath?: string;
   probeTimeoutMs?: number;
+  restartTimeoutMs?: number;
+  restartScriptRoots?: readonly string[];
   log?: Pick<Console, "error" | "info">;
 }
 
@@ -150,6 +169,8 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
   private readonly configuredPort: number;
   private readonly registryPath: string | undefined;
   private readonly probeTimeoutMs: number;
+  private readonly restartTimeoutMs: number;
+  private readonly restartScriptRoots: readonly string[];
   private readonly log: Pick<Console, "error" | "info">;
   private server: Server | null = null;
   private boundPort: number | null = null;
@@ -159,6 +180,8 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
     this.configuredPort = options.port ?? readPort(process.env.ROUTINE_JOB_HUB_PORT);
     this.registryPath = options.registryPath;
     this.probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+    this.restartTimeoutMs = options.restartTimeoutMs ?? DEFAULT_RESTART_TIMEOUT_MS;
+    this.restartScriptRoots = options.restartScriptRoots ?? DEFAULT_RESTART_SCRIPT_ROOTS;
     this.log = options.log ?? console;
   }
 
@@ -223,6 +246,15 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
         return;
       }
 
+      const restartMatch = /^\/api\/entries\/([^/]+)\/restart$/.exec(pathname);
+      if (restartMatch && method === "POST") {
+        const id = decodeURIComponent(restartMatch[1] ?? "");
+        const result = await this.runRestart(id);
+        const statusCode = result.status === "ok" ? 200 : result.status === "rejected" ? 400 : 500;
+        writeJson(response, statusCode, result);
+        return;
+      }
+
       if ((pathname === "/" || pathname === "/index.html") && (method === "GET" || method === "HEAD")) {
         const registry = await loadHubRegistry({ registryPath: this.registryPath });
         const entries = await this.probeEntries(registry.entries);
@@ -255,6 +287,182 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
   private async probeEntries(entries: HubEntry[]): Promise<ProbedHubEntry[]> {
     return await Promise.all(entries.map((entry) => probeEntry(entry, this.probeTimeoutMs)));
   }
+
+  private async runRestart(id: string): Promise<HubRestartResult> {
+    const registry = await loadHubRegistry({ registryPath: this.registryPath });
+    const entry = registry.entries.find((candidate) => candidate.id === id);
+    if (!entry) {
+      return {
+        id,
+        status: "rejected",
+        exit_code: null,
+        duration_ms: 0,
+        stdout: "",
+        stderr: "",
+        error: `Unknown entry id: ${id}`
+      };
+    }
+
+    if (!entry.restart_script) {
+      return {
+        id,
+        status: "rejected",
+        exit_code: null,
+        duration_ms: 0,
+        stdout: "",
+        stderr: "",
+        error: `Entry ${id} has no restart_script configured`
+      };
+    }
+
+    const validation = validateRestartScript(entry.restart_script, this.restartScriptRoots);
+    if (validation.error) {
+      return {
+        id,
+        status: "rejected",
+        exit_code: null,
+        duration_ms: 0,
+        stdout: "",
+        stderr: "",
+        error: validation.error
+      };
+    }
+
+    return await executeRestartScript(id, validation.scriptPath, this.restartTimeoutMs);
+  }
+}
+
+export function validateRestartScript(
+  scriptPath: string,
+  allowedRoots: readonly string[]
+): { scriptPath: string; error?: undefined } | { scriptPath: ""; error: string } {
+  if (!path.isAbsolute(scriptPath)) {
+    return { scriptPath: "", error: `restart_script must be an absolute path: ${scriptPath}` };
+  }
+
+  const resolved = path.resolve(scriptPath);
+  const allowed = allowedRoots.some((root) => {
+    const normalizedRoot = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    return resolved.startsWith(normalizedRoot);
+  });
+
+  if (!allowed) {
+    return {
+      scriptPath: "",
+      error: `restart_script ${resolved} is outside the allowed roots: ${allowedRoots.join(", ")}`
+    };
+  }
+
+  return { scriptPath: resolved };
+}
+
+export async function executeRestartScript(
+  id: string,
+  scriptPath: string,
+  timeoutMs: number
+): Promise<HubRestartResult> {
+  try {
+    await fs.access(scriptPath, fs.constants.X_OK);
+  } catch (error) {
+    return {
+      id,
+      status: "rejected",
+      exit_code: null,
+      duration_ms: 0,
+      stdout: "",
+      stderr: "",
+      error: `restart_script ${scriptPath} is not executable: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    };
+  }
+
+  return await new Promise<HubRestartResult>((resolve) => {
+    const startedAt = Date.now();
+    const child = spawn(scriptPath, [], {
+      cwd: path.dirname(scriptPath),
+      env: process.env,
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }, 2_000).unref();
+    }, timeoutMs);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < RESTART_OUTPUT_MAX_BYTES) {
+        stdout += chunk.toString("utf8");
+        if (stdout.length > RESTART_OUTPUT_MAX_BYTES) {
+          stdout = `${stdout.slice(0, RESTART_OUTPUT_MAX_BYTES)}\n…(truncated)`;
+        }
+      }
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < RESTART_OUTPUT_MAX_BYTES) {
+        stderr += chunk.toString("utf8");
+        if (stderr.length > RESTART_OUTPUT_MAX_BYTES) {
+          stderr = `${stderr.slice(0, RESTART_OUTPUT_MAX_BYTES)}\n…(truncated)`;
+        }
+      }
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({
+        id,
+        status: "failed",
+        exit_code: null,
+        duration_ms: Date.now() - startedAt,
+        stdout,
+        stderr,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      const duration = Date.now() - startedAt;
+      if (timedOut) {
+        resolve({
+          id,
+          status: "failed",
+          exit_code: null,
+          duration_ms: duration,
+          stdout,
+          stderr,
+          error: `restart_script timed out after ${timeoutMs}ms`
+        });
+        return;
+      }
+
+      const exitCode = code ?? null;
+      resolve({
+        id,
+        status: exitCode === 0 ? "ok" : "failed",
+        exit_code: exitCode,
+        duration_ms: duration,
+        stdout,
+        stderr,
+        error: exitCode === 0
+          ? undefined
+          : signal
+            ? `restart_script terminated by signal ${signal}`
+            : `restart_script exited with code ${exitCode}`
+      });
+    });
+  });
 }
 
 function buildRegistryCandidates(options: { registryPath?: string; env?: NodeJS.ProcessEnv }): string[] {
@@ -294,6 +502,10 @@ function normalizeHubEntry(value: unknown): HubEntry | null {
 
   if (typeof record.description === "string" && record.description.trim()) {
     entry.description = record.description;
+  }
+
+  if (typeof record.restart_script === "string" && record.restart_script.trim()) {
+    entry.restart_script = record.restart_script.trim();
   }
 
   return entry;
@@ -431,17 +643,47 @@ function renderHubPage(registry: HubRegistryResult, entries: ProbedHubEntry[]): 
         background: var(--disabled);
       }
       .actions {
+        align-items: center;
         display: flex;
+        flex-wrap: wrap;
         gap: 10px;
       }
-      a.button {
+      a.button, button.button {
+        background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 8px;
         color: var(--ink);
+        cursor: pointer;
         display: inline-block;
+        font: inherit;
         font-weight: 600;
         padding: 9px 12px;
         text-decoration: none;
+      }
+      button.button[disabled] {
+        cursor: progress;
+        opacity: 0.6;
+      }
+      .restart-status {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.3;
+        margin-top: 8px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .restart-status.ok { color: var(--up); }
+      .restart-status.err { color: var(--down); }
+      .restart-status pre {
+        background: #0b1020;
+        border-radius: 6px;
+        color: #e6edf3;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        margin-top: 6px;
+        max-height: 220px;
+        overflow: auto;
+        padding: 8px 10px;
       }
       footer {
         border-top: 1px solid var(--border);
@@ -465,6 +707,7 @@ function renderHubPage(registry: HubRegistryResult, entries: ProbedHubEntry[]): 
       </section>
       <footer>Registry source: ${escapeHtml(registry.sourcePath ?? registry.expectedPaths.join(", "))}</footer>
     </main>
+    ${RESTART_CLIENT_SCRIPT}
   </body>
 </html>`;
 }
@@ -483,6 +726,12 @@ function renderRegistryNotices(registry: HubRegistryResult): string {
 
 function renderCard(entry: ProbedHubEntry): string {
   const statusLabel = getStatusLabel(entry.status, entry.status_code);
+  const restartButton = entry.restart_script
+    ? `\n    <button type="button" class="button" data-restart-id="${escapeAttribute(entry.id)}">Rebuild &amp; restart</button>`
+    : "";
+  const restartStatus = entry.restart_script
+    ? `\n  <p class="restart-status" data-restart-status="${escapeAttribute(entry.id)}" hidden></p>`
+    : "";
   return `<article class="card">
   <div class="card-header">
     <h2>${escapeHtml(entry.name)}</h2>
@@ -490,10 +739,67 @@ function renderCard(entry: ProbedHubEntry): string {
   </div>
   <p class="description">${escapeHtml(entry.description ?? "")}</p>
   <div class="actions">
-    <a class="button" href="${escapeAttribute(entry.url)}">Open dashboard</a>
-  </div>
+    <a class="button" href="${escapeAttribute(entry.url)}">Open dashboard</a>${restartButton}
+  </div>${restartStatus}
 </article>`;
 }
+
+const RESTART_CLIENT_SCRIPT = `<script>
+(function () {
+  const buttons = document.querySelectorAll('button[data-restart-id]');
+  buttons.forEach((button) => {
+    button.addEventListener('click', async () => {
+      const id = button.getAttribute('data-restart-id');
+      if (!id) return;
+      const status = document.querySelector(
+        '[data-restart-status="' + CSS.escape(id) + '"]'
+      );
+      button.disabled = true;
+      const originalLabel = button.textContent;
+      button.textContent = 'Rebuilding…';
+      if (status) {
+        status.hidden = false;
+        status.classList.remove('ok', 'err');
+        status.textContent = 'Running ' + id + ' rebuild script…';
+      }
+      try {
+        const res = await fetch(
+          '/api/entries/' + encodeURIComponent(id) + '/restart',
+          { method: 'POST' }
+        );
+        const data = await res.json().catch(() => ({}));
+        const ok = res.ok && data.status === 'ok';
+        if (status) {
+          status.classList.toggle('ok', ok);
+          status.classList.toggle('err', !ok);
+          const summary = ok
+            ? 'Restart OK · ' + (data.duration_ms || 0) + 'ms'
+            : 'Restart failed: ' + (data.error || 'exit ' + data.exit_code);
+          const detail = (data.stdout || '') + (data.stderr ? '\\n' + data.stderr : '');
+          status.innerHTML = '';
+          const head = document.createElement('span');
+          head.textContent = summary;
+          status.appendChild(head);
+          if (detail.trim()) {
+            const pre = document.createElement('pre');
+            pre.textContent = detail.trim();
+            status.appendChild(pre);
+          }
+        }
+      } catch (error) {
+        if (status) {
+          status.classList.add('err');
+          status.textContent = 'Restart request failed: ' +
+            (error && error.message ? error.message : String(error));
+        }
+      } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    });
+  });
+})();
+</script>`;
 
 function getStatusLabel(status: HubProbeStatus, statusCode: number | undefined): string {
   if (status === "up") {
