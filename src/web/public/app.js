@@ -17,6 +17,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
+  if (page === "scheduler-detail") {
+    setupSchedulerDetail();
+    return;
+  }
+
   if (page === "prompt-editor") {
     void setupPromptEditor();
     return;
@@ -216,6 +221,495 @@ function setupSchedulerCreation() {
       feedback.textContent = getErrorMessage(error);
     }
   });
+}
+
+function setupSchedulerDetail() {
+  const schedulerId = window.location.pathname.split("/").filter(Boolean).pop();
+  if (!schedulerId) {
+    return;
+  }
+
+  let configFormDirty = false;
+  let configFormSaving = false;
+  let workerActionsBound = false;
+
+  const poll = async () => {
+    try {
+      const data = await fetchJson(`/api/scheduler/${encodeURIComponent(schedulerId)}`);
+      renderSchedulerDetail(data, {
+        configFormDirty,
+        configFormSaving
+      });
+    } catch (error) {
+      const feedback = document.getElementById("control-feedback");
+      if (feedback) {
+        feedback.textContent = getErrorMessage(error);
+      }
+    }
+  };
+
+  bindSchedulerControls(schedulerId);
+  bindSchedulerConfigForm(schedulerId, poll, {
+    setDirty: (dirty) => {
+      configFormDirty = dirty;
+    },
+    setSaving: (saving) => {
+      configFormSaving = saving;
+    }
+  });
+
+  if (!workerActionsBound) {
+    workerActionsBound = true;
+    bindSchedulerWorkerActions(schedulerId, poll);
+  }
+
+  void poll();
+  setInterval(poll, POLL_INTERVAL_MS);
+}
+
+function renderSchedulerDetail(data, state) {
+  if (!data || !data.ok) {
+    return;
+  }
+
+  const config = data.config || {};
+  const runState = data.run_state || {};
+  const status = runState.status || "idle";
+  const statusLabel = status.replace(/_/g, " ");
+
+  setElementText("scheduler-title", `Scheduler: ${data.scheduler_id}`);
+  setElementText("scheduler-plan-path", config.dispatch_plan_path || "---");
+  setElementText("s-id", data.scheduler_id);
+  setElementText("s-mode", config.scheduler_mode || "none");
+  setElementText("s-status", status);
+  setElementText("s-status-val", statusLabel);
+  setElementText("s-completed-cycles", runState.completed_cycles ?? 0);
+  setElementText("s-next-run-val", formatTimeShort(runState.next_run_at));
+  setElementText("s-last-outcome-val", runState.last_run_outcome || "---");
+  setElementText("s-next-run", runState.next_run_at || "---");
+  setElementText("s-active-run", runState.current_run_id || "---");
+  setElementText("s-active-run-report-dir", runState.current_run_report_dir || "---");
+  setElementText("s-dispatcher-thread", runState.current_dispatcher_thread_id || "---");
+  setElementText("s-last-report", runState.last_report_path || "---");
+
+  const badge = document.getElementById("scheduler-status-badge");
+  if (badge) {
+    badge.textContent = statusLabel;
+    badge.className = `status-badge ${statusClass(status)}`;
+  }
+
+  if (!state.configFormDirty && !state.configFormSaving) {
+    setElementValue("cfg-mode", config.scheduler_mode);
+    setElementValue("cfg-cron", config.cron_expression);
+    setElementValue("cfg-timezone", config.timezone);
+    setElementValue("cfg-interval", config.interval_seconds);
+    setElementValue("cfg-max-cycles", config.max_cycles);
+    setElementValue("cfg-delay", config.delay_between_cycles_seconds);
+    setElementValue("cfg-scan-run-id-strategy", config.scan_run_id_strategy || "none");
+    setElementValue("cfg-scan-run-id-prefix", config.scan_run_id_prefix || "");
+    setElementValue("cfg-dispatch-repo-root", config.dispatch_repo_root);
+    setElementValue("cfg-docs-root", config.docs_root);
+    setElementValue("cfg-agent-type", config.agent_type || "claude");
+    setElementValue("cfg-model-id", config.model_id || "");
+    setElementValue("cfg-agent-mode", config.mode || "pane_bridge");
+    setElementValue("cfg-report-dir", config.report_base_dir);
+    setElementValue("cfg-catchup", config.catch_up_policy);
+  }
+
+  setElementText(
+    "next-run-preview",
+    data.next_run_preview ? `Next cron preview: ${data.next_run_preview}` : ""
+  );
+
+  renderSchedulerDispatchProgress(data);
+  renderSchedulerRunHistory(runState.run_history || []);
+}
+
+function bindSchedulerControls(schedulerId) {
+  document.querySelectorAll("[data-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = button.dataset.action;
+      const feedback = document.getElementById("control-feedback");
+      if (!action || !feedback) {
+        return;
+      }
+
+      feedback.textContent = "";
+
+      try {
+        const data = await fetchJson(`/api/scheduler/${encodeURIComponent(schedulerId)}/${action}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}"
+        });
+        feedback.textContent = data?.ok ? `${action}: OK` : (data?.error || "Failed");
+      } catch (error) {
+        feedback.textContent = getErrorMessage(error);
+      }
+    });
+  });
+}
+
+function bindSchedulerConfigForm(schedulerId, poll, state) {
+  const configForm = document.getElementById("config-form");
+  if (!configForm) {
+    return;
+  }
+
+  configForm.addEventListener("input", () => {
+    state.setDirty(true);
+  });
+  configForm.addEventListener("change", () => {
+    state.setDirty(true);
+  });
+  configForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const feedback = document.getElementById("config-feedback");
+    if (feedback) {
+      feedback.textContent = "";
+    }
+
+    const form = event.target;
+    const body = {};
+    const mode = form.scheduler_mode.value;
+    body.scheduler_mode = mode;
+    if (form.cron_expression.value) body.cron_expression = form.cron_expression.value;
+    if (form.timezone.value) body.timezone = form.timezone.value;
+    if (form.interval_seconds.value) body.interval_seconds = parseInt(form.interval_seconds.value, 10);
+    if (form.max_cycles.value) body.max_cycles = parseInt(form.max_cycles.value, 10);
+    if (form.delay_between_cycles_seconds.value) {
+      body.delay_between_cycles_seconds = parseInt(form.delay_between_cycles_seconds.value, 10);
+    }
+    body.scan_run_id_strategy = form.scan_run_id_strategy.value || "none";
+    body.scan_run_id_prefix = form.scan_run_id_prefix.value.trim() || null;
+    if (form.dispatch_repo_root.value) body.dispatch_repo_root = form.dispatch_repo_root.value;
+    if (form.docs_root.value) body.docs_root = form.docs_root.value;
+    if (form.agent_type.value) body.agent_type = form.agent_type.value;
+    body.model_id = form.model_id.value.trim() || null;
+    if (form.mode.value) body.mode = form.mode.value;
+    if (form.report_base_dir.value) body.report_base_dir = form.report_base_dir.value;
+    if (form.catch_up_policy.value) body.catch_up_policy = form.catch_up_policy.value;
+
+    state.setSaving(true);
+    try {
+      const data = await fetchJson(`/api/scheduler/${encodeURIComponent(schedulerId)}/config`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (feedback) {
+        feedback.textContent = data?.ok ? "Config saved" : (data?.error || "Failed");
+      }
+      if (data?.ok) {
+        state.setDirty(false);
+        state.setSaving(false);
+        await poll();
+      }
+    } catch (error) {
+      if (feedback) {
+        feedback.textContent = getErrorMessage(error);
+      }
+    } finally {
+      state.setSaving(false);
+    }
+  });
+}
+
+function bindSchedulerWorkerActions(schedulerId, poll) {
+  const dispatchPlanBody = document.getElementById("dispatch-progress-body");
+  const dispatchPlanFeedback = document.getElementById("dispatch-progress-feedback");
+  if (!dispatchPlanBody) {
+    return;
+  }
+
+  dispatchPlanBody.addEventListener("click", async (event) => {
+    const actionTarget = event.target instanceof Element
+      ? event.target.closest("[data-continue-worker], [data-resume-action], [data-status-apply]")
+      : null;
+    if (!(actionTarget instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    const workerId = actionTarget.getAttribute("data-worker-id");
+    if (!workerId) {
+      return;
+    }
+
+    const resumeAction = actionTarget.getAttribute("data-resume-action");
+    const isContinueWorker = actionTarget.hasAttribute("data-continue-worker");
+    const isStatusApply = actionTarget.hasAttribute("data-status-apply");
+    if (!isContinueWorker && !resumeAction && !isStatusApply) {
+      return;
+    }
+
+    if (
+      resumeAction === "force-complete"
+      && !window.confirm(
+        `Force Complete will mark ${workerId} as complete and may unblock downstream workers on incomplete output. Continue?`
+      )
+    ) {
+      return;
+    }
+
+    setDispatchPlanControlsDisabled(dispatchPlanBody, true);
+
+    try {
+      if (isContinueWorker) {
+        if (dispatchPlanFeedback) {
+          dispatchPlanFeedback.textContent = `Continuing ${workerId}...`;
+        }
+
+        const continued = await fetchJson(
+          `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/continue`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}"
+          }
+        );
+
+        if (dispatchPlanFeedback) {
+          dispatchPlanFeedback.textContent = formatContinueResult(continued);
+        }
+      } else if (resumeAction) {
+        if (dispatchPlanFeedback) {
+          dispatchPlanFeedback.textContent = `${formatResumeActionLabel(resumeAction)} ${workerId}...`;
+        }
+
+        const payload = resumeAction === "force-complete"
+          ? { action: resumeAction, force: true }
+          : { action: resumeAction };
+
+        await fetchJson(
+          `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/resume`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          }
+        );
+
+        if (dispatchPlanFeedback) {
+          dispatchPlanFeedback.textContent = `${workerId} ${formatResumeActionSuccess(resumeAction)}.`;
+        }
+      } else if (isStatusApply) {
+        const rowElement = actionTarget.closest("tr");
+        const statusSelect = rowElement?.querySelector("[data-worker-status]");
+        if (!(statusSelect instanceof HTMLSelectElement)) {
+          throw new Error(`No status selector found for ${workerId}`);
+        }
+
+        if (dispatchPlanFeedback) {
+          dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusSelect.value)}...`;
+        }
+
+        await fetchJson(
+          `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/status`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: statusSelect.value
+            })
+          }
+        );
+
+        if (dispatchPlanFeedback) {
+          dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusSelect.value)}.`;
+        }
+      }
+
+      await poll();
+    } catch (error) {
+      if (dispatchPlanFeedback) {
+        dispatchPlanFeedback.textContent = getErrorMessage(error);
+      }
+    } finally {
+      setDispatchPlanControlsDisabled(dispatchPlanBody, false);
+    }
+  });
+}
+
+function renderSchedulerDispatchProgress(data) {
+  const summaryEl = document.getElementById("dispatch-progress-summary");
+  const errorEl = document.getElementById("dispatch-progress-error");
+  const emptyEl = document.getElementById("dispatch-progress-empty");
+  const table = document.getElementById("dispatch-progress-table");
+  const tbody = document.getElementById("dispatch-progress-body");
+
+  if (!summaryEl || !errorEl || !emptyEl || !table || !tbody) {
+    return;
+  }
+
+  const error = data.dispatch_status_error;
+  if (error) {
+    errorEl.hidden = false;
+    errorEl.textContent = `Dispatch status error: ${error}`;
+  } else {
+    errorEl.hidden = true;
+    errorEl.textContent = "";
+  }
+
+  const report = data.dispatch_status || {};
+  const workers = Array.isArray(report.workers) ? report.workers : [];
+  const rows = Array.isArray(data.dispatch_plan?.rows) && data.dispatch_plan.rows.length > 0
+    ? data.dispatch_plan.rows
+    : workers.map(schedulerWorkerStatusToDispatchRow);
+  const details = Array.isArray(data.dispatch_details) ? data.dispatch_details : [];
+
+  if (rows.length === 0 && details.length === 0) {
+    table.hidden = true;
+    emptyEl.hidden = false;
+    summaryEl.textContent = error ? "Unable to load dispatch plan progress." : "No dispatch rows loaded.";
+    tbody.innerHTML = "";
+    return;
+  }
+
+  table.hidden = false;
+  emptyEl.hidden = true;
+
+  const summary = report.summary || {};
+  const generated = formatTimestamp(report.generated_at);
+  summaryEl.textContent =
+    `${summary.total ?? rows.length} total, ${summary.pending ?? 0} pending, ${summary.running ?? 0} running, ` +
+    `${summary.completed ?? 0} completed, ${summary.failed ?? 0} failed, ${summary.skipped ?? 0} skipped, ` +
+    `${summary.stale ?? 0} stale. Updated ${generated}.`;
+
+  tbody.innerHTML = renderSchedulerDispatchProgressRows(rows, details, workers);
+}
+
+function renderSchedulerDispatchProgressRows(rows, dispatchDetails, workers) {
+  const detailByWorker = indexDispatchDetailsByWorker(dispatchDetails);
+  const workerStatusByWorker = indexSchedulerWorkerStatusByWorker(workers);
+  const renderedRows = [];
+
+  rows.forEach((row) => {
+    const normalizedRow = normalizeSchedulerDispatchRow(row, workerStatusByWorker);
+    const workerKey = normalizeDispatchWorkerKey(normalizedRow.worker);
+    const inlineDetail = workerKey ? detailByWorker.get(workerKey) ?? null : null;
+    if (workerKey) {
+      detailByWorker.delete(workerKey);
+    }
+    renderedRows.push(renderSchedulerDispatchProgressRow(normalizedRow, inlineDetail));
+  });
+
+  detailByWorker.forEach((detail) => {
+    const syntheticRow = normalizeSchedulerDispatchRow(buildDispatchPlanSyntheticRow(detail), workerStatusByWorker);
+    renderedRows.push(renderSchedulerDispatchProgressRow(syntheticRow, detail, true));
+  });
+
+  return renderedRows.join("");
+}
+
+function renderSchedulerDispatchProgressRow(row, detail = null, orphan = false) {
+  const issue = row.failure_reason || row.issue || row.stale_duration_human || "---";
+  const issueLabel = row.stale && !row.failure_reason ? `stale ${issue}` : issue;
+  const rowClassName = [
+    "dispatch-plan-row",
+    detail ? "dispatch-plan-row-with-detail" : "",
+    orphan ? "dispatch-plan-row-orphan" : ""
+  ].filter(Boolean).join(" ");
+
+  return `
+    <tr class="${rowClassName}">
+      <td>${renderDispatchPlanStatus(row)}</td>
+      <td><span class="status-badge ${statusClass(row.lifecycle_status || row.lifecycle || row.status)}">${escapeHtml(row.lifecycle_status || row.lifecycle || row.status || "---")}</span></td>
+      <td>${escapeHtml(row.batch || "---")}</td>
+      <td><code>${escapeHtml(row.worker || "---")}</code></td>
+      <td>${escapeHtml(row.task || "---")}</td>
+      <td>${formatToolProgress(row.progress)}</td>
+      <td>${escapeHtml(row.model || "---")}</td>
+      <td>${escapeHtml(formatDepends(row.depends_on))}</td>
+      <td>${row.thread_id ? `<code>${escapeHtml(row.thread_id)}</code>` : "---"}</td>
+      <td>${escapeHtml(issueLabel)}</td>
+      <td>${renderDispatchPlanActions(row)}</td>
+    </tr>
+    ${detail ? renderDispatchPlanDetailRow(detail, 11) : ""}
+  `;
+}
+
+function indexSchedulerWorkerStatusByWorker(workers) {
+  const byWorker = new Map();
+  workers.forEach((worker) => {
+    const workerKey = normalizeDispatchWorkerKey(worker?.worker_id || worker?.worker);
+    if (workerKey && !byWorker.has(workerKey)) {
+      byWorker.set(workerKey, worker);
+    }
+  });
+  return byWorker;
+}
+
+function normalizeSchedulerDispatchRow(row, workerStatusByWorker) {
+  const workerId = row?.worker || row?.worker_id || "";
+  const workerStatus = workerStatusByWorker.get(normalizeDispatchWorkerKey(workerId)) || {};
+  return {
+    ...workerStatus,
+    ...row,
+    worker: workerId,
+    status: row?.status || workerStatus.status || "pending",
+    lifecycle_status: row?.lifecycle_status || workerStatus.lifecycle_status || workerStatus.lifecycle || row?.status || "pending",
+    batch: row?.batch || workerStatus.batch || "---",
+    task: row?.task || workerStatus.task || "---",
+    progress: row?.progress || workerStatus.progress || null,
+    model: row?.model || workerStatus.model || "---",
+    depends_on: row?.depends_on ?? workerStatus.depends_on,
+    thread_id: row?.thread_id || row?.worker_thread_id || workerStatus.thread_id || workerStatus.worker_thread_id || "",
+    failure_reason: row?.failure_reason || workerStatus.failure_reason || "",
+    stale: Boolean(row?.stale || workerStatus.stale),
+    stale_duration_human: row?.stale_duration_human || workerStatus.stale_duration_human || "",
+    show_status_editor: true
+  };
+}
+
+function schedulerWorkerStatusToDispatchRow(worker) {
+  return {
+    status: worker?.status || "pending",
+    lifecycle_status: worker?.lifecycle_status || worker?.lifecycle || worker?.status || "pending",
+    batch: worker?.batch || "---",
+    worker: worker?.worker || worker?.worker_id || "",
+    task: worker?.task || "---",
+    progress: worker?.progress || null,
+    model: worker?.model || "---",
+    depends_on: worker?.depends_on,
+    thread_id: worker?.thread_id || worker?.worker_thread_id || "",
+    failure_reason: worker?.failure_reason || "",
+    stale: Boolean(worker?.stale),
+    stale_duration_human: worker?.stale_duration_human || "",
+    show_status_editor: true
+  };
+}
+
+function renderSchedulerRunHistory(runHistory) {
+  const runs = Array.isArray(runHistory) ? runHistory.slice().reverse() : [];
+  const tbody = document.getElementById("run-history-body");
+  const table = document.getElementById("run-history-table");
+  const empty = document.getElementById("run-history-empty");
+  if (!tbody || !table || !empty) {
+    return;
+  }
+
+  if (runs.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    tbody.innerHTML = "";
+    return;
+  }
+
+  table.hidden = false;
+  empty.hidden = true;
+  tbody.innerHTML = runs.map((run) => {
+    const outcome = run.terminal_outcome || "";
+    const outcomeClass = outcome.includes("completed") ? "outcome-completed"
+      : outcome.includes("failed") ? "outcome-failed"
+        : "outcome-cancelled";
+    return `<tr>
+      <td title="${escapeHtml(run.run_id || "")}"><code>${escapeHtml((run.run_id || "").slice(0, 8))}</code></td>
+      <td>${escapeHtml(formatTimestamp(run.actual_start_time))}</td>
+      <td>${escapeHtml(formatTimestamp(run.completed_time))}</td>
+      <td>${run.duration_seconds != null ? `${escapeHtml(run.duration_seconds)}s` : "---"}</td>
+      <td class="${outcomeClass}">${escapeHtml(outcome || "---")}</td>
+    </tr>`;
+  }).join("");
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1687,10 +2181,10 @@ function renderDispatchPlanOrphanDetailRow(detail) {
   `;
 }
 
-function renderDispatchPlanDetailRow(detail) {
+function renderDispatchPlanDetailRow(detail, colspan = 7) {
   return `
     <tr class="dispatch-plan-detail-row">
-      <td colspan="7">
+      <td colspan="${colspan}">
         <div class="dispatch-plan-inline-detail">
           ${renderDispatchDetailCard(detail)}
         </div>
@@ -1744,7 +2238,7 @@ function renderDispatchPlanActions(row) {
   const workerId = escapeHtml(row.worker || "");
   const currentStatus = normalizeDispatchPlanStatus(row?.status);
   const canContinue = canContinueDispatchRow(row);
-  const statusEditor = currentStatus === "running"
+  const statusEditor = currentStatus === "running" && !row?.show_status_editor
     ? ""
     : renderDispatchPlanStatusEditor(workerId, currentStatus);
 
@@ -1772,6 +2266,7 @@ function renderDispatchPlanActions(row) {
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
           <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
         </div>
+        ${statusEditor}
       </div>
     `;
   }
@@ -2398,6 +2893,88 @@ function formatDispatchStatusSuccess(status) {
     default:
       return "reset to pending";
   }
+}
+
+function formatTimeShort(value) {
+  if (!value) {
+    return "---";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(parsed);
+}
+
+function setElementText(id, value) {
+  const element = document.getElementById(id);
+  if (!element) {
+    return;
+  }
+  element.textContent = String(value);
+}
+
+function setElementValue(id, value) {
+  const element = document.getElementById(id);
+  if (!element || value === undefined || value === null) {
+    return;
+  }
+  element.value = String(value);
+}
+
+function formatDepends(dependsOn) {
+  return Array.isArray(dependsOn) && dependsOn.length > 0 ? dependsOn.join(", ") : (dependsOn || "---");
+}
+
+function formatToolProgress(progress) {
+  if (!progress) {
+    return "---";
+  }
+
+  const command = progress.command || "tool";
+  const processed = formatCount(progress.processed);
+  const total = formatCount(progress.total);
+  const remaining = formatCount(progress.remaining);
+  const success = formatCount(progress.success);
+  const failed = formatCount(progress.failed);
+  const skipped = formatCount(progress.skipped);
+  const updated = formatTimestamp(progress.updated_at);
+  const lastSkill = progress.last_skill
+    ? `${progress.last_skill.owner}/${progress.last_skill.slug}`
+    : null;
+
+  return [
+    '<div class="tool-progress">',
+    `<div><span class="status-badge ${statusClass(progress.status)}">${escapeHtml(progress.status || "unknown")}</span> <strong>${escapeHtml(command)}</strong></div>`,
+    `<div class="tool-progress-main">${processed} / ${total} processed</div>`,
+    `<div class="tool-progress-muted">${remaining} remaining; ${success} success, ${failed} failed, ${skipped} skipped</div>`,
+    `<div class="tool-progress-muted">Updated ${escapeHtml(updated)}</div>`,
+    lastSkill ? `<div class="tool-progress-muted">${escapeHtml(lastSkill)}</div>` : "",
+    "</div>"
+  ].join("");
+}
+
+function formatCount(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue.toLocaleString() : "---";
+}
+
+function statusClass(status) {
+  const normalized = String(status || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (status === "⬜") return "pending";
+  if (status === "🔄") return "running";
+  if (status === "✅") return "completed";
+  if (status === "⛔ SKIPPED") return "skipped";
+  return normalized || "idle";
 }
 
 function setDispatchPlanControlsDisabled(dispatchPlanBody, disabled) {
