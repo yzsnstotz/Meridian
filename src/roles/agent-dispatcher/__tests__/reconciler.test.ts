@@ -1002,6 +1002,56 @@ describe("reconcile", () => {
     );
   });
 
+  it("recovers a lost final reply from Hub history when an idle thread has produced expected outputs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/N-02.md", "# N-02 Report\n\nComplete.\n");
+    harness.store.save(buildState({
+      workers: {
+        "N-02": buildRunningWorker(
+          "worker-thread-n02",
+          outputPath,
+          "2026-04-03T12:20:00.000Z"
+        )
+      }
+    }));
+
+    const { hubClient, sendRequest } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return buildHistoryResult(message.thread_id, [
+          {
+            event_kind: "final_reply",
+            source: "codex",
+            content: "N-02 completed and wrote its report.",
+            raw_content: "N-02 completed and wrote its report.",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            timestamp: "2026-04-03T12:25:00.000Z"
+          }
+        ]);
+      }
+
+      return buildStatusResult(message.thread_id, "idle");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+    const nextWorker = harness.store.load().workers["N-02"];
+
+    expect(nextWorker?.status).toBe("completed");
+    expect(nextWorker?.hub_result?.content).toBe("N-02 completed and wrote its report.");
+    expect(nextWorker?.last_seen_at).toBe("2026-04-03T12:25:00.000Z");
+    expect(sendRequest.mock.calls.map(([message]) => (message as HubMessage).intent)).toEqual(["status", "history"]);
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "N-02",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:outputs_present"
+      })
+    );
+  });
+
   it("recovers a failed final reply from Hub history when a sibling report artifact already exists", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
