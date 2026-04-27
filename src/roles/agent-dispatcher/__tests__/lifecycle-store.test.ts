@@ -400,6 +400,30 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("marks a success HubResult failed when verification progress text precedes a concatenated BLOCKED marker", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
+      "reports/PRE-FLIGHT.md"
+    ]);
+
+    harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "The worker file still allows expected-missing criteria when an authoring worker exists.",
+        "I am using verification-before-completion for the closeout check because I need evidence from the file existence check.",
+        "BLOCKED — PRE-FLIGHT: python3 is still Python 3.9.6."
+      ].join(""),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+      status: "failed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when a report-only worker finished as BLOCKED", async () => {
     const harness = await createHarness();
     const reportPath = path.join(harness.directory, "reports", "run", "run-001", "PRE-FLIGHT.md");
