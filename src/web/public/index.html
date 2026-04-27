@@ -147,8 +147,8 @@
               <label class="field">
                 <span>mode</span>
                 <select id="agent-dispatcher-mode" name="mode">
-                  <option value="pane_bridge">pane_bridge</option>
                   <option value="bridge">bridge</option>
+                  <option value="pane_bridge">pane_bridge</option>
                 </select>
               </label>
               <label class="field">
@@ -165,6 +165,7 @@
                   id="agent-dispatcher-auto-approve"
                   name="auto_approve"
                   type="checkbox"
+                  checked
                 />
                 <small class="field-hint muted">
                   Neutral approval policy only. Meridian maps provider-specific launch flags.
@@ -345,11 +346,23 @@
               <label class="field">
                 <span>mode</span>
                 <select id="new-scheduler-agent-mode" name="mode">
-                  <option value="pane_bridge">pane_bridge</option>
                   <option value="bridge">bridge</option>
+                  <option value="pane_bridge">pane_bridge</option>
                 </select>
                 <small class="field-hint muted">
                   Launch mode for the scheduler-owned child dispatcher.
+                </small>
+              </label>
+              <label class="field">
+                <span>auto_approve</span>
+                <input
+                  id="new-scheduler-auto-approve"
+                  name="auto_approve"
+                  type="checkbox"
+                  checked
+                />
+                <small class="field-hint muted">
+                  Neutral approval policy only. Meridian maps provider-specific launch flags.
                 </small>
               </label>
             </div>
