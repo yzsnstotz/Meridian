@@ -32,6 +32,7 @@ export interface SchedulerRoleOptions {
   stateStore?: PersistableStateStore;
   meridianApi?: MeridianApiClient;
   launchDispatcher?: (config: LaunchConfig) => Promise<{ ok: boolean; threadId: string; error?: string }>;
+  continueWorker?: SchedulerEngineCallbacks["continueWorker"];
 }
 
 export class SchedulerRole implements BaseRole {
@@ -42,6 +43,7 @@ export class SchedulerRole implements BaseRole {
   private readonly stateStore: PersistableStateStore;
   private readonly meridianApi: MeridianApiClient;
   private readonly launch: (config: LaunchConfig) => Promise<{ ok: boolean; threadId: string; error?: string }>;
+  private readonly continueWorkerCallback: SchedulerEngineCallbacks["continueWorker"] | undefined;
 
   private ctx: RoleContext | null = null;
   private engine: SchedulerEngine | null = null;
@@ -53,6 +55,7 @@ export class SchedulerRole implements BaseRole {
     this.stateStore = options.stateStore ?? new StateStore();
     this.meridianApi = options.meridianApi ?? createMeridianApiClient();
     this.launch = options.launchDispatcher ?? launchDispatcher;
+    this.continueWorkerCallback = options.continueWorker;
   }
 
   async onActivate(ctx: RoleContext): Promise<void> {
@@ -62,7 +65,8 @@ export class SchedulerRole implements BaseRole {
     const callbacks: SchedulerEngineCallbacks = {
       launchDispatcher: (config) => this.launchChildDispatcher(config),
       killDispatcher: async (threadId) => { await this.meridianApi.kill(threadId); },
-      notifyChannels: (config, message) => this.notifyChannels(config, message)
+      notifyChannels: (config, message) => this.notifyChannels(config, message),
+      continueWorker: this.continueWorkerCallback
     };
 
     this.engine = new SchedulerEngine({
