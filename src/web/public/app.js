@@ -199,7 +199,8 @@ function setupSchedulerCreation() {
     if (form.docs_root?.value) config.docs_root = form.docs_root.value;
     if (form.agent_type?.value) config.agent_type = form.agent_type.value;
     if (form.model_id?.value?.trim()) config.model_id = form.model_id.value.trim();
-    if (form.mode?.value) config.mode = form.mode.value;
+    config.mode = form.mode?.value || "bridge";
+    config.auto_approve = form.auto_approve?.checked === true;
 
     config.report_base_dir = reportBaseDir;
     if (form.catch_up_policy?.value) config.catch_up_policy = form.catch_up_policy.value;
@@ -311,7 +312,7 @@ function renderSchedulerDetail(data, state) {
     setElementValue("cfg-docs-root", config.docs_root);
     setElementValue("cfg-agent-type", config.agent_type || "claude");
     setElementValue("cfg-model-id", config.model_id || "");
-    setElementValue("cfg-agent-mode", config.mode || "pane_bridge");
+    setElementValue("cfg-agent-mode", config.mode || "bridge");
     setElementValue("cfg-report-dir", config.report_base_dir);
     setElementValue("cfg-catchup", config.catch_up_policy);
   }
@@ -1100,7 +1101,7 @@ async function setupDashboard() {
       docs_root: normalizeText(docsRootInput.value) || undefined,
       agent_type: normalizeText(agentTypeSelect.value) || "claude",
       model_id: normalizeText(agentModelInput.value) || undefined,
-      mode: normalizeText(modeSelect.value) || "pane_bridge",
+      mode: normalizeText(modeSelect.value) || "bridge",
       kill_policy: normalizeText(killPolicySelect.value) || "always",
       auto_approve: autoApproveInput.checked
     };
@@ -1156,7 +1157,7 @@ async function setupDashboard() {
       user_reply_channels: replyChannels,
       agent_type: normalizeText(formData.get("agent_type")) || "claude",
       model_id: normalizeText(formData.get("model_id")),
-      mode: normalizeText(formData.get("mode")) || "pane_bridge",
+      mode: normalizeText(formData.get("mode")) || "bridge",
       kill_policy: normalizeText(formData.get("kill_policy")) || "always",
       auto_approve: Boolean(formData.get("auto_approve")),
       system_prompt: normalizeText(agentDispatcherPromptInput.value)
