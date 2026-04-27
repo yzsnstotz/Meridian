@@ -165,7 +165,7 @@ async function startChildServer(statusCode: number): Promise<{ baseUrl: string }
 }
 
 async function startHangingChildServer(): Promise<{ baseUrl: string }> {
-  const server = http.createServer((_request, _response) => {
+  const server = http.createServer(() => {
     // Intentionally leave the response open to exercise the probe timeout path.
   });
   childServers.add(server);

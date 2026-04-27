@@ -40,6 +40,17 @@ describe("service continuation", () => {
     ], createLifecycleState())).toBe("PR-REVIEW");
   });
 
+  it("resolves numeric batch dependency groups such as All Batch 1-3", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "1", worker: "R-01", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "1", worker: "R-02", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "2", worker: "N-06", model: "CODEX-XHIGH", depends_on: "R-01" },
+      { status: "✅", batch: "3", worker: "N-10", model: "CODEX-HIGH", depends_on: "R-01, R-02" },
+      { status: "⬜", batch: "4", worker: "BATCH-4-GATE", model: "CODEX-HIGH", depends_on: "All Batch 1–3" }
+    ], createLifecycleState())).toBe("BATCH-4-GATE");
+  });
+
   it("does not auto-continue rows whose notes explicitly mark them blocked", () => {
     expect(resolveServiceContinueWorker([
       {

@@ -340,6 +340,16 @@ function resolveBatchScopedDependencyRows(
   clause: string,
   rows: DispatchContinuationPlanRow[]
 ): DispatchContinuationPlanRow[] {
+  const numericBatchRanges = resolveNumericBatchRanges(clause);
+  if (numericBatchRanges.length > 0) {
+    return rows.filter((row) => {
+      const batchNumber = parseNumericBatchIdentifier(row.batch);
+      return batchNumber !== null && numericBatchRanges.some(([start, end]) => {
+        return batchNumber >= start && batchNumber <= end;
+      });
+    });
+  }
+
   const batchTokens = Array.from(clause.matchAll(/(?:Ω|OMEGA)(?:\+\d+)?/g), (match) => normalizeBatchIdentifier(match[0]));
   if (batchTokens.length === 0 || !clause.includes("WORKER")) {
     return [];
@@ -349,6 +359,32 @@ function resolveBatchScopedDependencyRows(
     const batch = normalizeBatchIdentifier(row.batch);
     return batchTokens.some((token) => batch.startsWith(token));
   });
+}
+
+function resolveNumericBatchRanges(clause: string): Array<[number, number]> {
+  const normalizedClause = normalizeDependencyText(clause)
+    .toUpperCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\.\./g, "-")
+    .replace(/\bTO\b/g, "-");
+  const selectorMatch = normalizedClause.match(/\bBATCH(?:ES)?\s+(\d+(?:\s*-\s*\d+)?(?:\s*\/\s*\d+(?:\s*-\s*\d+)?)*)\b/);
+  if (!selectorMatch?.[1]) {
+    return [];
+  }
+
+  return selectorMatch[1]
+    .split("/")
+    .map((selector): [number, number] | null => {
+      const parts = selector.split("-").map((part) => Number.parseInt(part.trim(), 10));
+      const start = parts[0];
+      const end = parts[1] ?? start;
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        return null;
+      }
+
+      return [Math.min(start, end), Math.max(start, end)];
+    })
+    .filter((range): range is [number, number] => range !== null);
 }
 
 function resolveRangeDependencyRows(
@@ -485,6 +521,16 @@ function normalizeBatchIdentifier(value: string | null | undefined): string {
     .replace(/^OMEGA/, "Ω")
     .replace(/\s+/g, "")
     .replace(/=\d+$/g, "");
+}
+
+function parseNumericBatchIdentifier(value: string | null | undefined): number | null {
+  const normalized = normalizeBatchIdentifier(value);
+  if (!/^\d+$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function escapeRegExp(value: string): string {
