@@ -10,6 +10,7 @@ import {
   type LaunchConfig,
   type LaunchDispatcherDeps
 } from "../launcher";
+import { LifecycleStore } from "../lifecycle-store";
 import { MeridianApiError, type MeridianApiClient } from "../meridian-api-client";
 import {
   MERIDIAN_TOOL_DISPLAY_COMMAND,
@@ -141,6 +142,93 @@ describe("launchDispatcher", () => {
       threadId: "dispatcher-thread-123",
       workerId: "DISPATCHER"
     }) as DispatcherRunHandoffRequest);
+  });
+
+  it("retries when Meridian returns a thread id already recorded in lifecycle state", async () => {
+    const harness = await createHarness();
+    const dispatchPlanPath = path.join(harness.planDirectory, "dispatch_plan.md");
+    const lifecycleStore = new LifecycleStore(path.join(harness.planDirectory, "dispatch_threads.json"), {
+      dispatchPlanPath
+    });
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-old",
+        started_at: "2026-04-27T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-03": {
+          thread_id: "worker-thread-existing",
+          trace_id: null,
+          started_at: "2026-04-27T00:00:00.000Z",
+          last_seen_at: "2026-04-27T00:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "worker-thread-existing" })
+      .mockResolvedValueOnce({ threadId: "dispatcher-thread-fresh" });
+
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
+
+    expect(result).toEqual({
+      ok: true,
+      threadId: "dispatcher-thread-fresh"
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
+      threadId: "dispatcher-thread-fresh",
+      commandFilePath: harness.expectedCommandPath,
+      workerId: "DISPATCHER"
+    });
+  });
+
+  it("returns the reserved thread id without double-prefixing the error after retry exhaustion", async () => {
+    const harness = await createHarness();
+    const dispatchPlanPath = path.join(harness.planDirectory, "dispatch_plan.md");
+    const lifecycleStore = new LifecycleStore(path.join(harness.planDirectory, "dispatch_threads.json"), {
+      dispatchPlanPath
+    });
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-old",
+        started_at: "2026-04-27T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-03": {
+          thread_id: "worker-thread-existing",
+          trace_id: null,
+          started_at: "2026-04-27T00:00:00.000Z",
+          last_seen_at: "2026-04-27T00:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    harness.spawn.mockResolvedValue({ threadId: "worker-thread-existing" });
+
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      threadId: "worker-thread-existing",
+      error: "spawn failed: Meridian returned reserved thread id worker-thread-existing already recorded in lifecycle state"
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(3);
+    expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
   it("fails before /api/spawn when the dispatch repo root cannot be resolved", async () => {

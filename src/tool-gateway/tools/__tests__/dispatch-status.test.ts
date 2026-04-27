@@ -231,6 +231,62 @@ describe("dispatch-status tool", () => {
     }));
   });
 
+  it("does not report an old thread id as the current assignment after manual retry resets a worker to pending", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ⬜ | 2.5 | BATCH-2-GATE | Integration gate | CODEX-HIGH | N-03, R-04 | TaskSpec | redone |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-27T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "BATCH-2-GATE": {
+            thread_id: "worker-thread-old",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            started_at: "2026-04-27T00:00:00.000Z",
+            last_seen_at: "2026-04-27T00:10:00.000Z",
+            status: "pending",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      workers: [
+        expect.objectContaining({
+          worker_id: "BATCH-2-GATE",
+          lifecycle_status: "pending",
+          thread_id: null,
+          last_seen_at: null
+        })
+      ]
+    }));
+  });
+
   it("includes ClawHub tool progress from an explicit progress file", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
     tempDirectories.add(directory);

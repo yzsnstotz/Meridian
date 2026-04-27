@@ -11,6 +11,7 @@ import {
   type LaunchDispatchWorkerConfig,
   type LaunchDispatchWorkerDeps
 } from "../worker-launcher";
+import { LifecycleStore } from "../lifecycle-store";
 import { MeridianApiError, type MeridianApiClient } from "../meridian-api-client";
 
 const tempDirectories = new Set<string>();
@@ -277,6 +278,71 @@ describe("launchDispatchWorker", () => {
       threadId: "worker-thread-fresh",
       commandFilePath: harness.commandFilePath,
       workerId: "N-02",
+      killPolicy: "always"
+    });
+  });
+
+  it("retries spawn when Meridian returns a thread id already recorded in lifecycle state", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true
+    });
+    const lifecycleStore = new LifecycleStore(path.join(path.dirname(harness.dispatchPlanPath), "dispatch_threads.json"), {
+      dispatchPlanPath: harness.dispatchPlanPath
+    });
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-27T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-04": {
+          thread_id: "worker-thread-existing",
+          trace_id: null,
+          started_at: "2026-04-27T00:00:00.000Z",
+          last_seen_at: "2026-04-27T00:10:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: "validator-thread-existing",
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      },
+      last_reconciled_at: null
+    });
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "validator-thread-existing" })
+      .mockResolvedValueOnce({ threadId: "worker-thread-existing" })
+      .mockResolvedValueOnce({ threadId: "worker-thread-fresh" });
+
+    const result = await launchDispatchWorker(
+      {
+        ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+        workerId: "BATCH-2-GATE"
+      },
+      harness.deps
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      threadId: "worker-thread-fresh"
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(3);
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
+      threadId: "worker-thread-fresh",
+      commandFilePath: harness.commandFilePath,
+      workerId: "BATCH-2-GATE",
       killPolicy: "always"
     });
   });

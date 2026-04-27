@@ -212,12 +212,13 @@ function buildWorkerStatus(
   const workerState = lifecycleState.workers[row.worker_id];
   const lifecycleStatus = getEffectiveLifecycleStatus(workerState);
   const staleDurationMs = getStaleDurationMs(row.status, workerState?.last_seen_at, staleThresholdMinutes, generatedAt);
+  const hasCurrentAssignment = lifecycleStatus !== "pending";
 
   return {
     ...row,
     lifecycle_status: lifecycleStatus,
-    thread_id: workerState?.thread_id ?? null,
-    last_seen_at: workerState?.last_seen_at ?? null,
+    thread_id: hasCurrentAssignment ? workerState?.thread_id ?? null : null,
+    last_seen_at: hasCurrentAssignment ? workerState?.last_seen_at ?? null : null,
     retry_count: workerState?.retry_count ?? 0,
     failure_reason: extractFailureReason(workerState, lifecycleStatus),
     stale: staleDurationMs !== null,
