@@ -56,7 +56,7 @@ Runtime workers claim routine-job rows only through the scheduler lifecycle stor
 
 ## Discovery Partitions
 
-`query_partitions.yaml` declares a deterministic 28-partition Phase 0 discovery matrix: 7 OPC topic clusters by 4 stars/activity buckets. Each partition has a target of 50 unique repos per cycle, for a total planned ceiling of 1400, below the Phase 0 daily ceiling of 1500.
+§B.A8 discovery coverage invariant: `query_partitions.yaml` declares a deterministic 30-partition Phase 0 discovery matrix: 8 OPC topic clusters across 30 stars/activity partitions, adding the `aigc_china` cluster to the original seven-cluster matrix. Each partition has a target of 50 unique repos per cycle, for a total planned ceiling of 1500, matching the Phase 0 daily ceiling.
 
 The tool reads the file through `--query-partitions-config` or the built-in default path `/Users/yzliu/work/Meridian/Meridian-roles/roles/github-opc-scan/query_partitions.yaml`.
 
