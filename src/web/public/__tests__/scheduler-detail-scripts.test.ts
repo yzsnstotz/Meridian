@@ -9,6 +9,7 @@ describe("scheduler detail public scripts", () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const indexHtml = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
     const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
+    const styleCss = await fs.readFile(path.join(publicDir, "style.css"), "utf8");
 
     expect(indexHtml).toContain('<select id="new-scheduler-model-id" name="model_id">');
     expect(indexHtml).not.toContain('<input id="new-scheduler-model-id"');
@@ -33,6 +34,89 @@ describe("scheduler detail public scripts", () => {
     expect(schedulerHtml).not.toContain('id="cfg-model-map"');
     expect(schedulerHtml).toContain('id="cfg-scan-run-id-strategy" name="scan_run_id_strategy"');
     expect(schedulerHtml).toContain('id="cfg-scan-run-id-prefix" name="scan_run_id_prefix"');
+    expect(styleCss).toContain("[hidden]");
+    expect(styleCss).toContain("display: none !important");
+  });
+
+  it("renders dashboard role counts without waiting for reply channel loading", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const elements = new Map<string, Record<string, unknown>>();
+    let rolesRequested = false;
+    let channelsRequested = false;
+
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "dashboard" } },
+        addEventListener: () => undefined,
+        createElement: () => createElementStub(),
+        getElementById: (id: string) => getElementStub(elements, id),
+        querySelector: (selector: string) => {
+          if (selector === '[data-action="refresh-roles"]') {
+            return getElementStub(elements, "refresh-roles-button");
+          }
+          return null;
+        },
+        querySelectorAll: () => []
+      },
+      fetch: async (url: string) => {
+        if (url === "/api/channels") {
+          channelsRequested = true;
+          return new Promise(() => undefined);
+        }
+
+        if (url === "/api/agent-dispatcher/prompt-preview") {
+          return jsonResponse({ system_prompt: "prompt" });
+        }
+
+        if (url === "/api/roles") {
+          rolesRequested = true;
+          return jsonResponse([
+            { thread_id: "agent-dispatcher-a", role_type: "agent-dispatcher", status: "completed", task_count: 1 },
+            { thread_id: "scheduler-a", role_type: "scheduler", status: "active_run", task_count: 0 }
+          ]);
+        }
+
+        if (url === "/api/role/agent-dispatcher-a") {
+          return jsonResponse({
+            thread_id: "agent-dispatcher-a",
+            status: "completed",
+            dispatcher_thread_id: "codex_01",
+            current_worker: null,
+            agent_type: "codex",
+            model_id: "gpt-5.5 high",
+            auto_approve: false,
+            last_log_line: "done"
+          });
+        }
+
+        return jsonResponse({});
+      },
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        setInterval: () => undefined,
+        location: {
+          pathname: "/",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    vm.runInContext("setupDashboard()", context);
+    await flushAsync();
+    await flushAsync();
+
+    expect(channelsRequested).toBe(true);
+    expect(rolesRequested).toBe(true);
+    expect(getElementStub(elements, "nav-dispatcher-count")).toMatchObject({ textContent: "1", hidden: false });
+    expect(getElementStub(elements, "nav-scheduler-count")).toMatchObject({ textContent: "1", hidden: false });
+    expect(getElementStub(elements, "nav-role-count")).toMatchObject({ textContent: "2", hidden: false });
+    expect(getElementStub(elements, "schedulers-empty")).toMatchObject({ hidden: true });
+    expect(getElementStub(elements, "agent-dispatchers-empty")).toMatchObject({ hidden: true });
+    expect(getElementStub(elements, "roles-empty")).toMatchObject({ hidden: true });
   });
 
   it("submits scheduler creation with dispatcher agent and model settings", async () => {
@@ -345,10 +429,25 @@ function extractInlineScripts(html: string): string[] {
 
 function createElementStub(): Record<string, unknown> {
   const handlers: Record<string, (event: Record<string, unknown>) => unknown> = {};
+  const children: unknown[] = [];
   return {
     __handlers: handlers,
+    children,
     addEventListener: (event: string, handler: (event: Record<string, unknown>) => unknown) => {
       handlers[event] = handler;
+    },
+    appendChild: (child: unknown) => {
+      children.push(child);
+      return child;
+    },
+    replaceChildren: (...nextChildren: unknown[]) => {
+      children.splice(0, children.length, ...nextChildren);
+    },
+    querySelector: () => createElementStub(),
+    querySelectorAll: () => [],
+    classList: {
+      add: () => undefined,
+      remove: () => undefined
     },
     className: "",
     dataset: {},

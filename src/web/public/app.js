@@ -752,19 +752,22 @@ async function setupDashboard() {
     });
   });
 
-  try {
-    await loadAgentDispatcherReplyOptions();
-    await refreshAgentDispatcherPromptPreview({ force: true });
-    await refreshRoles();
-  } catch (error) {
-    agentDispatcherFeedback.textContent = getErrorMessage(error);
-  }
-
   window.setInterval(() => {
     void refreshRoles().catch((error) => {
       agentDispatcherFeedback.textContent = getErrorMessage(error);
     });
   }, POLL_INTERVAL_MS);
+
+  void refreshRoles().catch((error) => {
+    agentDispatcherFeedback.textContent = getErrorMessage(error);
+  });
+
+  void Promise.all([
+    loadAgentDispatcherReplyOptions(),
+    refreshAgentDispatcherPromptPreview({ force: true })
+  ]).catch((error) => {
+    agentDispatcherFeedback.textContent = getErrorMessage(error);
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════
