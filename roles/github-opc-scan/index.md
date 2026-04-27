@@ -25,6 +25,8 @@ The runtime dispatch command for this role must not reuse the build-time TaskSpe
 - **Branching**: none for daily runtime rows
 - **PR delivery**: none for daily runtime rows
 
+Runtime workers claim routine-job rows only through the scheduler lifecycle store. They do not create git branches, edit this directory, open PRs, or reuse any `M-*` / `T-*` build-time worker identity rules from the TaskSpec round that authored this role.
+
 ## Phase 0 Dispatch Table
 
 | Order | Runtime worker | CLI subcommand | Depends on | Primary handoff |
@@ -57,6 +59,8 @@ The runtime dispatch command for this role must not reuse the build-time TaskSpe
 `query_partitions.yaml` declares a deterministic 28-partition Phase 0 discovery matrix: 7 OPC topic clusters by 4 stars/activity buckets. Each partition has a target of 50 unique repos per cycle, for a total planned ceiling of 1400, below the Phase 0 daily ceiling of 1500.
 
 The tool reads the file through `--query-partitions-config` or the built-in default path `/Users/yzliu/work/Meridian/Meridian-roles/roles/github-opc-scan/query_partitions.yaml`.
+
+The partition file is the runtime source of truth. Workers must pass the file to `W-DISCOVERY`; they must not derive, rewrite, or expand the partition matrix at runtime.
 
 ## Scheduler Validator Placeholder
 

@@ -1,4 +1,7 @@
 version: 1
+# Phase 0 runtime source of truth for W-DISCOVERY.
+# Matrix: 7 OPC clusters x 4 stars/activity buckets = 28 partitions.
+# Daily target: 28 x 50 = 1400 unique repos, below the 1500 Phase 0 ceiling.
 partitions:
   - id: "agentic_cli__stars_50_500__age_0_180d"
     cluster: "agentic_cli"
