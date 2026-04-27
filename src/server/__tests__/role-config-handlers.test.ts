@@ -1098,6 +1098,96 @@ describe("role config handlers", () => {
     }
   });
 
+  it("does not process validation while another worker is running during continue", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-validation-blocked-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | N-02 | Build Complete | CODEX | — | TaskSpec | awaiting validation |",
+      "| 🔄 | 2 | R-04 | Runtime Followup | CODEX | N-02 | TaskSpec | still running |",
+      "| ⬜ | 3 | R-05 | Later Work | CODEX | R-04 | TaskSpec | blocked |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-02": buildLifecycleWorker({
+          thread_id: "worker-thread-n02",
+          status: "awaiting_validation",
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }),
+        "R-04": buildLifecycleWorker({
+          thread_id: "worker-thread-r04",
+          status: "running"
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("validation should not run while another worker is active");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    try {
+      const harness = createHarness();
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-continue-validation-blocked",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          pass_threshold: 0.7,
+          max_fix_cycles: 3,
+          base_branch: "main"
+        }
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-validation-blocked/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "still_blocked",
+        message: "still blocked: running worker(s): R-04",
+        running_workers: ["R-04"]
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("blocks continuation when a worker reply reported hit limit", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-hit-limit-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

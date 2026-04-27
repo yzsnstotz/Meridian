@@ -624,6 +624,24 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
     const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
     let lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    let effectiveWorkerId = workerId
+      ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
+    const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
+
+    const preValidationRunningWorkers = findBlockingRunningNonHumanWorkers(
+      dispatchPlanData.rows,
+      lifecycleState,
+      effectiveWorkerId
+    );
+    if (preValidationRunningWorkers.length > 0) {
+      return {
+        ok: true,
+        status: "still_blocked",
+        message: `still blocked: running worker(s): ${preValidationRunningWorkers.join(", ")}`,
+        ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {}),
+        running_workers: preValidationRunningWorkers
+      };
+    }
 
     // ─── Validation processing ────────────────────────────────────────────
     const validatorConfig = context.effectiveConfig.validator;
@@ -639,6 +657,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       }
       // Reload lifecycle state after validation may have mutated it
       lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+      effectiveWorkerId = workerId
+        ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     }
 
     const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
@@ -654,12 +674,11 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       };
     }
 
-    const effectiveWorkerId = workerId
-      ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
-    const shouldResumeAfterContinue = context.status === PAUSED_ROLE_STATUS;
-    const runningWorkers = findRunningNonHumanWorkers(dispatchPlanData.rows)
-      .filter((candidate) => candidate !== effectiveWorkerId)
-      .filter((candidate) => !isLifecycleTerminal(lifecycleState, candidate));
+    const runningWorkers = findBlockingRunningNonHumanWorkers(
+      dispatchPlanData.rows,
+      lifecycleState,
+      effectiveWorkerId
+    );
     if (runningWorkers.length > 0) {
       return {
         ok: true,
@@ -1779,6 +1798,16 @@ function findRunningNonHumanWorkers(rows: DispatchPlanRow[]): string[] {
     .filter((row) => row.status === "🔄" && !isHumanDispatchRow(row))
     .map((row) => row.worker)
     .filter((worker) => worker.trim().length > 0);
+}
+
+function findBlockingRunningNonHumanWorkers(
+  rows: DispatchPlanRow[],
+  lifecycleState: DispatchThreadStateV2,
+  effectiveWorkerId: string | null | undefined
+): string[] {
+  return findRunningNonHumanWorkers(rows)
+    .filter((candidate) => candidate !== effectiveWorkerId)
+    .filter((candidate) => !isLifecycleTerminal(lifecycleState, candidate));
 }
 
 function isLifecycleTerminal(lifecycleState: DispatchThreadStateV2, workerId: string): boolean {
