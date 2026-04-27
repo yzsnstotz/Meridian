@@ -49,7 +49,8 @@ export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): 
     ...(config.model_id ? { model_id: config.model_id } : {}),
     mode: config.mode,
     kill_policy: config.kill_policy,
-    auto_approve: config.auto_approve
+    auto_approve: config.auto_approve,
+    ...(config.validator ? { validator: { ...config.validator } } : {})
   };
 }
 

@@ -323,6 +323,120 @@ describe("role config handlers", () => {
     });
   });
 
+  it("persists validator config when starting an agent-dispatcher", async () => {
+    const harness = createHarness();
+
+    await createRole(harness.roleHandlers, {
+      thread_id: "agent-dispatcher-validator-start",
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: [
+        {
+          channel: "telegram",
+          chat_id: "telegram:ops"
+        }
+      ],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always",
+      validator: {
+        enabled: true,
+        agent_type: "codex",
+        pass_threshold: 0.85,
+        max_fix_cycles: 2,
+        base_branch: "main"
+      }
+    });
+
+    await expect(harness.roleHandlers.getConfig("agent-dispatcher-validator-start")).resolves.toMatchObject({
+      config: {
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "pane_bridge",
+          auto_approve: false,
+          pass_threshold: 0.85,
+          max_fix_cycles: 2,
+          base_branch: "main"
+        }
+      }
+    });
+
+    const state = await harness.stateStore.load();
+    expect(state?.roles.find((role) => role.threadId === "agent-dispatcher-validator-start")?.config)
+      .toMatchObject({
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          pass_threshold: 0.85,
+          max_fix_cycles: 2,
+          base_branch: "main"
+        }
+      });
+  });
+
+  it("persists validator config patches for an agent-dispatcher", async () => {
+    const harness = createHarness({
+      roles: [
+        {
+          threadId: "agent-dispatcher-validator-patch",
+          roleType: "agent-dispatcher",
+          config: {
+            tasks: [],
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          },
+          status: "active"
+        }
+      ],
+      promptStore: {}
+    });
+
+    await expect(harness.roleHandlers.patchConfig("agent-dispatcher-validator-patch", {
+      validator: {
+        enabled: true,
+        agent_type: "codex",
+        pass_threshold: 0.9,
+        max_fix_cycles: 1,
+        base_branch: "main"
+      }
+    })).resolves.toMatchObject({
+      config: {
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "pane_bridge",
+          auto_approve: false,
+          pass_threshold: 0.9,
+          max_fix_cycles: 1,
+          base_branch: "main"
+        }
+      }
+    });
+
+    const state = await harness.stateStore.load();
+    expect(state?.roles.find((role) => role.threadId === "agent-dispatcher-validator-patch")?.config)
+      .toMatchObject({
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          pass_threshold: 0.9,
+          max_fix_cycles: 1,
+          base_branch: "main"
+        }
+      });
+  });
+
   it("uses the default agent-dispatcher prompt and restores it when the override is cleared", async () => {
     const harness = createHarness();
     const promptStore = new PromptStore({
