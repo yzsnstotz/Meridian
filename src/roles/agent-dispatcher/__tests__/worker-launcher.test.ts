@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   launchDispatchWorker,
+  resetActiveRunHandoffsForTest,
   type DispatchRunHandoffRequest,
   type LaunchDispatchWorkerConfig,
   type LaunchDispatchWorkerDeps
@@ -16,6 +17,7 @@ const tempDirectories = new Set<string>();
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  resetActiveRunHandoffsForTest();
 
   await Promise.all(
     Array.from(tempDirectories, async (directory) => {
@@ -236,6 +238,47 @@ describe("launchDispatchWorker", () => {
       error: "spawn failed: Meridian returned active thread id worker-thread-collision for another in-flight worker"
     });
     expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries spawn when Meridian returns a thread id that already has an active handoff", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true,
+      runHandoffMode: "pending"
+    });
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "worker-thread-collision" })
+      .mockResolvedValueOnce({ threadId: "worker-thread-collision" })
+      .mockResolvedValueOnce({ threadId: "worker-thread-fresh" });
+
+    const first = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+    const second = await launchDispatchWorker(
+      {
+        ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+        workerId: "N-02"
+      },
+      harness.deps
+    );
+
+    expect(first).toEqual({
+      ok: true,
+      threadId: "worker-thread-collision"
+    });
+    expect(second).toEqual({
+      ok: true,
+      threadId: "worker-thread-fresh"
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(3);
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(2);
+    expect(harness.dispatchRunHandoff).toHaveBeenLastCalledWith({
+      threadId: "worker-thread-fresh",
+      commandFilePath: harness.commandFilePath,
+      workerId: "N-02",
+      killPolicy: "always"
+    });
   });
 });
 

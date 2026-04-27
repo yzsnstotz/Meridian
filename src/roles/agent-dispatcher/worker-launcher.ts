@@ -52,6 +52,10 @@ export interface LaunchDispatchWorkerDeps {
 
 const activeRunHandoffsByThreadId = new Map<string, DispatchRunHandoffRequest>();
 
+export function resetActiveRunHandoffsForTest(): void {
+  activeRunHandoffsByThreadId.clear();
+}
+
 export function createDefaultLaunchDispatchWorkerDeps(): LaunchDispatchWorkerDeps {
   const meridianApi = createMeridianApiClient();
   return {
@@ -103,7 +107,7 @@ export async function launchDispatchWorker(
   } catch (error) {
     return {
       ok: false,
-      threadId: "",
+      threadId: error instanceof ActiveThreadCollisionError ? error.threadId : "",
       error: formatSpawnError(error)
     };
   }
@@ -171,6 +175,18 @@ async function spawnWithRetry(
   for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
     try {
       const result = await meridianApi.spawn(request);
+      if (activeRunHandoffsByThreadId.has(result.threadId)) {
+        lastError = new ActiveThreadCollisionError(result.threadId);
+        if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
+          console.warn("worker spawn returned active thread id, retrying", {
+            attempt: attempt + 1,
+            threadId: result.threadId,
+            error: lastError.message
+          });
+          continue;
+        }
+        throw lastError;
+      }
       return result.threadId;
     } catch (error) {
       lastError = asError(error);
@@ -191,6 +207,17 @@ async function spawnWithRetry(
   throw lastError!;
 }
 
+class ActiveThreadCollisionError extends Error {
+  constructor(readonly threadId: string) {
+    super(formatActiveThreadCollisionError(threadId));
+    this.name = "ActiveThreadCollisionError";
+  }
+}
+
+function formatActiveThreadCollisionError(threadId: string): string {
+  return `spawn failed: Meridian returned active thread id ${threadId} for another in-flight worker`;
+}
+
 function isSpawnTransientError(error: Error): boolean {
   return SPAWN_TRANSIENT_PATTERNS.some((pattern) => pattern.test(error.message));
 }
@@ -207,7 +234,10 @@ function formatSpawnError(error: unknown): string {
       ? error.message
       : `spawn failed: ${error.message}`;
   }
-  return `spawn failed: ${asError(error).message}`;
+  const message = asError(error).message;
+  return message.startsWith("spawn failed:")
+    ? message
+    : `spawn failed: ${message}`;
 }
 
 function asError(error: unknown): Error {
