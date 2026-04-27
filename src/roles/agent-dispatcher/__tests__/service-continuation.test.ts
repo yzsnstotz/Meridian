@@ -51,6 +51,23 @@ describe("service continuation", () => {
     ], createLifecycleState())).toBe("BATCH-4-GATE");
   });
 
+  it("resolves all above dependencies against rows before the current worker", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "4", worker: "V-12-B", model: "HUMAN", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "4", worker: "R-13", model: "CODEX-HIGH", depends_on: "V-12-B" },
+      { status: "⬜", batch: "Ω", worker: "SUMMARY-GATE", model: "CODEX-XHIGH", depends_on: "All above" }
+    ], createLifecycleState())).toBe("SUMMARY-GATE");
+  });
+
+  it("does not resolve all above when any earlier row is non-terminal", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "⬜", batch: "4", worker: "V-12-B", model: "HUMAN", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "Ω", worker: "SUMMARY-GATE", model: "CODEX-XHIGH", depends_on: "All above" }
+    ], createLifecycleState())).toBeNull();
+  });
+
   it("does not auto-continue rows whose notes explicitly mark them blocked", () => {
     expect(resolveServiceContinueWorker([
       {

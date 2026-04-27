@@ -237,6 +237,11 @@ function resolveDependencyRows(
   rows: DispatchContinuationPlanRow[],
   rowsByWorker: Map<string, DispatchContinuationPlanRow>
 ): DispatchContinuationPlanRow[] {
+  const allAboveRows = resolveAllAboveDependencyRows(dependencyClause, currentRow, rows);
+  if (allAboveRows) {
+    return allAboveRows;
+  }
+
   const explicitRows = resolveExplicitDependencyRows(dependencyClause, rows, rowsByWorker);
   if (explicitRows.length > 0) {
     return explicitRows.filter((row) => row !== currentRow);
@@ -244,6 +249,24 @@ function resolveDependencyRows(
 
   return resolveAllDependencyRows(dependencyClause, rows)
     .filter((row) => row !== currentRow);
+}
+
+function resolveAllAboveDependencyRows(
+  dependencyClause: string,
+  currentRow: DispatchContinuationPlanRow,
+  rows: DispatchContinuationPlanRow[]
+): DispatchContinuationPlanRow[] | null {
+  const normalizedClause = normalizeDependencyText(dependencyClause).toUpperCase();
+  if (normalizedClause !== "ALL ABOVE") {
+    return null;
+  }
+
+  const currentIndex = rows.indexOf(currentRow);
+  if (currentIndex <= 0) {
+    return [];
+  }
+
+  return rows.slice(0, currentIndex);
 }
 
 function resolveExplicitDependencyRows(
