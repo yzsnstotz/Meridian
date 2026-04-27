@@ -619,7 +619,7 @@ const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
 
 const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
   /⛔\s*BLOCKED\b/i,
-  /^BLOCKED\s*[—–-]/i,
+  /(?:^|[.!?]\s*)BLOCKED\s*[—–-]/i,
   /\bdid\s+not\s+complete\b/i,
   /\b(?:failed|fails|failure|error|errored|crashed|terminated|stopped|aborted)\b[^\n.]{0,80}\bexit\s+code\s*:?\s*`?[1-9]\d*`?/i,
   /\b(?:command|process|script|tool|test|build|check|run)\s+(?:failed|exited|finished|ended|terminated)\s+(?:with\s+)?(?:exit\s+)?code\s*:?\s*`?[1-9]\d*`?/i,
