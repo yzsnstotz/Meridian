@@ -165,6 +165,95 @@ describe("scheduler config updates", () => {
       })
     });
   });
+
+  it("returns dispatcher-style plan rows and worker reply details", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-detail-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const sidecarPath = path.join(directory, "dispatch_threads.json");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | R-01 | Build scheduler GUI controls | CODEX | — | PRD | done |",
+      "| ⬜ | 1 | R-02 | Add browser tests | CODEX | R-01 | PRD | ready |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-scheduler",
+        started_at: "2026-04-27T01:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-01": {
+          thread_id: "worker-thread-r01",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-27T01:01:00.000Z",
+          last_seen_at: "2026-04-27T01:03:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-r01",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Agent completed R-01.",
+            details_text: [
+              "Your message:",
+              "Run R-01.",
+              "",
+              "Agent reply:",
+              "Agent completed R-01."
+            ].join("\n"),
+            attachments: [],
+            timestamp: "2026-04-27T01:03:00.000Z"
+          },
+          command_preamble: "Run R-01.",
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    const handlers = createHarness();
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-detail-data",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    const detail = await invokeJson<{
+      dispatch_plan?: { rows?: Array<Record<string, unknown>> };
+      dispatch_details?: Array<Record<string, unknown>>;
+      continue_worker?: string | null;
+      current_worker?: string | null;
+    }>(handlers, "GET", "/api/scheduler/scheduler-detail-data");
+
+    expect(detail.dispatch_plan?.rows).toEqual([
+      expect.objectContaining({
+        worker: "R-01",
+        lifecycle_status: "completed",
+        thread_id: "worker-thread-r01"
+      }),
+      expect.objectContaining({
+        worker: "R-02",
+        lifecycle_status: null
+      })
+    ]);
+    expect(detail.dispatch_details).toEqual([
+      expect.objectContaining({
+        worker_id: "R-01",
+        status: "completed",
+        command: expect.objectContaining({ content: "Run R-01." }),
+        reply: expect.objectContaining({ content: "Agent completed R-01." })
+      })
+    ]);
+    expect(detail.continue_worker).toBe("R-02");
+    expect(detail.current_worker).toBeNull();
+  });
 });
 
 function buildConfig(dispatchPlanPath = path.join("/tmp", "dispatch_plan.md")): SchedulerConfig {

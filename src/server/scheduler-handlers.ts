@@ -16,7 +16,15 @@ import {
   type SchedulerRunState
 } from "../types";
 import { parseCronExpression, nextCronFire } from "../roles/scheduler/cron-parser";
+import { resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-continuation";
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
+import {
+  buildDispatchWorkerDetails,
+  enrichDispatchPlanRows,
+  loadDispatchLifecycleState,
+  loadDispatchPlanData,
+  resolveCurrentWorker
+} from "./role-handlers";
 
 type PersistableStateStore = Pick<StateStore, "load" | "save">;
 
@@ -147,8 +155,13 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     const config = engine?.getConfig() ?? role.config;
 
     const nextRunPreview = computeSchedulerNextRunPreview(config, runState);
-
     const dispatchStatusResult = await loadSchedulerDispatchStatus(config.dispatch_plan_path);
+    const dispatchPlanData = await loadDispatchPlanData(config.dispatch_plan_path, log);
+    const lifecycleState = await loadDispatchLifecycleState(config.dispatch_plan_path, log);
+    const dispatchPlanRows = await enrichDispatchPlanRows(config.dispatch_plan_path, dispatchPlanData.rows, log);
+    const dispatcherThreadId = runState?.current_dispatcher_thread_id
+      ?? lifecycleState.dispatcher.thread_id
+      ?? null;
 
     return {
       ok: true,
@@ -157,7 +170,22 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
       run_state: runState,
       next_run_preview: nextRunPreview,
       dispatch_status: dispatchStatusResult.dispatchStatus,
-      dispatch_status_error: dispatchStatusResult.error
+      dispatch_status_error: dispatchStatusResult.error,
+      continue_worker: resolveServiceContinueWorker(dispatchPlanRows, lifecycleState),
+      current_worker: resolveCurrentWorker(dispatchPlanRows, lifecycleState),
+      dispatch_details: buildDispatchWorkerDetails(
+        lifecycleState,
+        dispatchPlanRows,
+        dispatchPlanData.modelLegend,
+        {
+          roleId: threadId,
+          dispatcherThreadId,
+          dispatcherAgentType: config.agent_type
+        }
+      ),
+      dispatch_plan: {
+        rows: dispatchPlanRows
+      }
     };
   }
 
