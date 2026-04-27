@@ -6,16 +6,19 @@
   <string>com.yzsnstotz.github-opc-scan-dashboard</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>github-ai-automation-scan</string>
+    <string>/Users/yzliu/work/tools/github-ai-automation-scan/.venv/bin/python</string>
+    <string>-m</string>
+    <string>github_ai_automation_scan</string>
     <string>dashboard</string>
     <string>--db</string>
     <string>/Volumes/Elements/github-ai-automation-solutions/github-ai-automation-solutions.db</string>
+    <string>--work-dir</string>
+    <string>/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/output/dashboard-work</string>
     <string>--output-dir</string>
     <string>/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/output</string>
-    <string>--host</string>
+    <string>--dashboard-host</string>
     <string>127.0.0.1</string>
-    <string>--port</string>
+    <string>--dashboard-port</string>
     <string>18765</string>
   </array>
   <key>WorkingDirectory</key>
