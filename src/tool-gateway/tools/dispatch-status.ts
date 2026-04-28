@@ -5,6 +5,12 @@ import path from "node:path";
 import { LifecycleStore, hubResultContainsFailureSignal } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { DispatchThreadStateV2 } from "../../types";
 import type { ToolDefinition, ToolResult } from "../registry";
+import {
+  fetchProgressFromSource,
+  loadProgressRegistryForPlan,
+  resolveProgressSource,
+  type ProgressRegistry
+} from "./progress-registry";
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 30;
 
@@ -51,6 +57,7 @@ export interface DispatchWorkerProgress {
   pid: number | null;
   rate_limit_waits: number | null;
   last_skill: { owner: string; slug: string } | null;
+  extra?: Record<string, unknown> | null;
 }
 
 export interface DispatchStatusReport extends Record<string, unknown> {
@@ -132,7 +139,8 @@ export async function buildDispatchStatusReport(
   const generatedAt = new Date().toISOString();
   const scanRunId = await loadCurrentScanRunId(planPath);
   const activeProcessCommands = listActiveProcessCommands();
-  const progress = await Promise.all(rows.map((row) => loadWorkerProgress(row, scanRunId)));
+  const registry = await loadProgressRegistryForPlan(planPath);
+  const progress = await Promise.all(rows.map((row) => loadWorkerProgress(row, scanRunId, registry, planPath)));
   const workers = rows.map((row, index) => buildWorkerStatus(
     row,
     lifecycleState,
@@ -367,7 +375,30 @@ function extractFailureReason(
   return content.length > MAX_REASON_LENGTH ? `${content.slice(0, MAX_REASON_LENGTH)}…` : content;
 }
 
-async function loadWorkerProgress(row: DispatchPlanWorkerRow, scanRunId: string | null): Promise<DispatchWorkerProgress | null> {
+async function loadWorkerProgressFromRegistry(
+  row: DispatchPlanWorkerRow,
+  scanRunId: string | null,
+  registry: ProgressRegistry | null,
+  planPath: string
+): Promise<DispatchWorkerProgress | null> {
+  const resolved = resolveProgressSource(registry, planPath, row.worker_id);
+  if (!resolved) {
+    return null;
+  }
+  return fetchProgressFromSource(resolved, row.worker_id, scanRunId);
+}
+
+async function loadWorkerProgress(
+  row: DispatchPlanWorkerRow,
+  scanRunId: string | null,
+  registry: ProgressRegistry | null,
+  planPath: string
+): Promise<DispatchWorkerProgress | null> {
+  const fromRegistry = await loadWorkerProgressFromRegistry(row, scanRunId, registry, planPath);
+  if (fromRegistry) {
+    return fromRegistry;
+  }
+
   const expandedTask = expandScanRunId(row.task, scanRunId);
   const progressPath = resolveProgressPath(expandedTask);
   if (!progressPath) {

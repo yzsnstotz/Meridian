@@ -2948,6 +2948,7 @@ function formatToolProgress(progress) {
   const lastSkill = progress.last_skill
     ? `${progress.last_skill.owner}/${progress.last_skill.slug}`
     : null;
+  const extraLines = formatToolProgressExtra(progress.extra);
 
   return [
     '<div class="tool-progress">',
@@ -2956,8 +2957,27 @@ function formatToolProgress(progress) {
     `<div class="tool-progress-muted">${remaining} remaining; ${success} success, ${failed} failed, ${skipped} skipped</div>`,
     `<div class="tool-progress-muted">Updated ${escapeHtml(updated)}</div>`,
     lastSkill ? `<div class="tool-progress-muted">${escapeHtml(lastSkill)}</div>` : "",
+    extraLines,
     "</div>"
   ].join("");
+}
+
+function formatToolProgressExtra(extra) {
+  if (!extra || typeof extra !== "object") {
+    return "";
+  }
+  const entries = Object.entries(extra);
+  if (entries.length === 0) {
+    return "";
+  }
+  return entries.map(([key, value]) => {
+    const display = value === null || value === undefined
+      ? "—"
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
+    return `<div class="tool-progress-muted">${escapeHtml(key)}: ${escapeHtml(display)}</div>`;
+  }).join("");
 }
 
 function formatCount(value) {

@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -419,5 +420,74 @@ describe("dispatch-status tool", () => {
         failed: 1
       })
     }));
+  });
+
+  it("loads worker progress from a routine-job registry file source", async () => {
+    const root = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-registry-");
+    tempDirectories.add(root);
+
+    const jobRoot = path.join(root, "github-opc-solution-scan");
+    const planDir = path.join(jobRoot, "v1");
+    await fs.mkdir(planDir, { recursive: true });
+
+    const planPath = path.join(planDir, "dispatch_plan.md");
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On |",
+        "|--------|-------|--------|------|-------|------------|",
+        "| 🔄 | 3 | T-REPO-FETCH | repo-fetch metadata + cache | CODEX-XHIGH | — |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const progressPath = path.join(planDir, "T-REPO-FETCH.progress.json");
+    await fs.writeFile(progressPath, JSON.stringify({
+      command: "repo-fetch",
+      status: "running",
+      total: 200,
+      processed: 47,
+      success: 40,
+      failed: 2,
+      skipped: 5,
+      remaining: 153,
+      started_at: "2026-04-28T00:00:00.000Z",
+      updated_at: "2026-04-28T00:01:00.000Z",
+      extra: { current_repo: "octocat/Hello-World" }
+    }), "utf8");
+
+    await fs.writeFile(
+      path.join(root, "progress_registry.json"),
+      JSON.stringify({
+        version: 1,
+        routine_jobs: [
+          {
+            name: "github-opc-solution-scan",
+            plan_path_prefix: jobRoot,
+            workers: {
+              "T-REPO-FETCH": {
+                kind: "file",
+                path: progressPath
+              }
+            }
+          }
+        ]
+      }),
+      "utf8"
+    );
+
+    const report = await buildDispatchStatusReport(planPath);
+    expect(report.workers[0]).toMatchObject({
+      worker_id: "T-REPO-FETCH",
+      status: "🔄",
+      progress: {
+        command: "repo-fetch",
+        status: "running",
+        processed: 47,
+        remaining: 153,
+        extra: { current_repo: "octocat/Hello-World" }
+      }
+    });
   });
 });
