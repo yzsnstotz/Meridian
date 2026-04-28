@@ -16,14 +16,18 @@ Runs the `github-ai-automation-scan prefilter` subcommand to reject or down-rank
 - **Output**: `/tmp/github-opc-scan/${SCAN_RUN_ID}/prefiltered_candidates.json`
 - **Work dir**: `/tmp/github-opc-scan/${SCAN_RUN_ID}/`
 - **Output dir**: `/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/output/${SCAN_RUN_ID}`
+- **Operator config**: `/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/config/prefilter.json`
 - **Rate limit**: not applicable; uses local DB/artifacts
 - **JSON summary**: top-level `status`, `subcommand`, `scan_run_id`, `result`; result includes `repos_evaluated`, `accepted`, `rejected`, `by_reason`
+
+The prefilter config is operator-tunable and must be passed at runtime. It carries rule severities, `next_eval_at` coefficients, and additive carve-outs for agent-callable CLI and local-API surfaces. Local-API carve-outs cover service-shaped repositories such as FastAPI, Flask, Express, gRPC, JSON-RPC, OpenAPI/Swagger, and MCP servers; they prevent the `library_only` rule from rejecting agent-callable tools that do not use a CLI-shaped entry point.
 
 #### Sub-tasks
 
 **W-PREFILTER.1 - Determine SCAN_RUN_ID**
 - Use the scheduler-provided `SCAN_RUN_ID`. For manual dry runs only, default to `daily-YYYY-MM-DD` using the scheduler timezone.
 - Verify W-REPO-FETCH completed for the same run.
+- Verify the operator config file exists at `/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/config/prefilter.json`.
 - **Acceptance**: Repository rows exist for the current run.
 
 **W-PREFILTER.2 - Execute prefilter**
@@ -34,6 +38,7 @@ Runs the `github-ai-automation-scan prefilter` subcommand to reject or down-rank
     --db /Volumes/Elements/github-ai-automation-solutions/github-ai-automation-solutions.db \
     --work-dir "/tmp/github-opc-scan/${SCAN_RUN_ID}/" \
     --output-dir "/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/output/${SCAN_RUN_ID}" \
+    --prefilter-config /Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/config/prefilter.json \
     --format json
   ```
 - **Acceptance**: Exit code 0 and `prefiltered_candidates.json` exists.
@@ -51,12 +56,15 @@ SCAN_RUN_ID="${SCAN_RUN_ID:-daily-$(TZ=Asia/Tokyo date +%Y-%m-%d)}"
 WORK_DIR="/tmp/github-opc-scan/${SCAN_RUN_ID}"
 OUTPUT_DIR="/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/output/${SCAN_RUN_ID}"
 DB="/Volumes/Elements/github-ai-automation-solutions/github-ai-automation-solutions.db"
+PREFILTER_CONFIG="/Users/yzliu/work/Docs/Projects/routine-job/github-opc-solution-scan/config/prefilter.json"
+test -f "${PREFILTER_CONFIG}"
 
 github-ai-automation-scan prefilter \
   --scan-run-id "${SCAN_RUN_ID}" \
   --db "${DB}" \
   --work-dir "${WORK_DIR}/" \
   --output-dir "${OUTPUT_DIR}" \
+  --prefilter-config "${PREFILTER_CONFIG}" \
   --format json > "${WORK_DIR}/prefilter.summary.json"
 
 python3 - <<'PY' "${WORK_DIR}/prefilter.summary.json" "${WORK_DIR}/prefiltered_candidates.json" "${SCAN_RUN_ID}"

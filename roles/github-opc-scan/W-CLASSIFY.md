@@ -20,6 +20,16 @@ Runs the `github-ai-automation-scan classify` subcommand to score accepted candi
 - **Rate limit**: Codex calls and audit logging are handled inside the CLI tool
 - **JSON summary**: top-level `status`, `subcommand`, `scan_run_id`, `result`; result includes classification counts and reclassification rate
 
+#### Interface Lane Taxonomy
+
+Classification must use the three-lane interface model from PRD Appendix B.A15:
+
+- `automation_readiness` is the CLI lane: command entry points, command schemas, manifests, structured stdout/stderr, and batch-safe execution.
+- `agent_local_api_readiness` is the local-API lane: localhost REST, JSON-RPC, gRPC, FastAPI, Flask, Express, OpenAPI/Swagger, or MCP server surfaces intended for programmatic agent callers. MCP is a sub-signal of this lane, not the whole category.
+- `user_readiness` is the GUI lane: browser or desktop interfaces intended for non-technical operators.
+
+The classifier's `automation_readiness_score` measures the strength of the agent-callable surface, whether it is CLI-shaped or local-API-shaped. Do not penalize local-API tools for lacking a CLI when they expose documented endpoints, service entry points, OpenAPI/Swagger specs, JSON-RPC/gRPC APIs, or MCP manifests. Runtime output must populate `interface_lane` as one of `cli`, `local_api`, `gui`, or `mixed` according to the strongest observed surface.
+
 #### Sub-tasks
 
 **W-CLASSIFY.1 - Determine SCAN_RUN_ID**
@@ -43,6 +53,11 @@ Runs the `github-ai-automation-scan classify` subcommand to score accepted candi
 - Parse stdout as JSON.
 - Require `status == "ok"`, `subcommand == "classify"`, matching `scan_run_id`, and result keys `candidates_classified`, `reclassify_calls`, `reclassification_rate`.
 - **Acceptance**: JSON summary is valid and classification output is present.
+
+**W-CLASSIFY.4 - Validate interface lane persistence**
+- Inspect classified rows for this scan via `candidate_lifecycle.last_scan_run_id` and require populated `interface_lane` values to be in `cli`, `local_api`, `gui`, or `mixed`.
+- If local-API signals were present in fetched artifacts, verify they were eligible for `interface_lane="local_api"` or `interface_lane="mixed"` rather than being forced into the CLI lane.
+- **Acceptance**: No classified candidate has an invalid `interface_lane`; local-API evidence is preserved in classification output.
 
 #### AI Auto-Tests
 
@@ -73,11 +88,33 @@ summary = json.load(open(sys.argv[2], encoding="utf-8"))
 assert summary["scan_run_id"] == sys.argv[3]
 print("OK: classify summary valid")
 PY
+
+python3 - <<'PY' "${DB}" "${SCAN_RUN_ID}"
+import sqlite3, sys
+
+db_path, scan_run_id = sys.argv[1:3]
+allowed = {"cli", "local_api", "gui", "mixed"}
+conn = sqlite3.connect(db_path)
+rows = conn.execute(
+    """
+    SELECT cc.interface_lane, COUNT(*)
+    FROM candidate_current cc
+    JOIN candidate_lifecycle cl ON cl.candidate_id = cc.candidate_id
+    WHERE cl.last_scan_run_id = ?
+      AND cc.interface_lane IS NOT NULL
+    GROUP BY cc.interface_lane
+    """,
+    (scan_run_id,),
+).fetchall()
+invalid = sorted(lane for lane, _ in rows if lane not in allowed)
+assert not invalid, f"invalid interface_lane values: {invalid}"
+print("OK: interface_lane values valid", dict(rows))
+PY
 ```
 
 #### Completion Protocol
 
 After successful execution:
-1. Report the JSON summary path, exit code, classified count, grey-zone reclassify calls, and output summary path.
+1. Report the JSON summary path, exit code, classified count, grey-zone reclassify calls, interface lane counts, and output summary path.
 2. Mark the runtime dispatch row complete according to the routine-job lifecycle store.
 3. Stop session immediately.
