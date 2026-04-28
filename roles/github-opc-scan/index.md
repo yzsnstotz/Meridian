@@ -70,6 +70,12 @@ Phase 0 scheduler config intentionally omits the `validator` field entirely. `M-
 
 Phase 0.5 worker `T-SCHEDULER-VALIDATOR` will add a validator configuration such as `validator: { agent_type: "validator", ... }` and route validation through `/Users/yzliu/work/Meridian/Meridian-roles/src/roles/agent-dispatcher/validator-orchestrator.ts` using artifact-mediated inputs and outputs.
 
+## Scheduler Registry
+
+The static scheduler entry is `roles/schedules/github-opc-scan.json`. Its `config` object uses the current `SchedulerConfigSchema` field names: `scheduler_mode` for cron mode, `user_reply_channels` for notifications, and no Phase 0 `validator` block.
+
+`reasoning_effort=high` and `sandbox_mode=workspace-write` remain runtime dispatch expectations for Codex workers; they are not persisted in the scheduler config because they are not fields in `SchedulerConfigSchema`.
+
 ## Layout Note
 
 This repo did not have an existing `roles/clawhub-skill-scan/` directory at authoring time. The runtime worker file structure mirrors the referenced ClawHub TaskSpec worker files (`W-CATALOG.md`, `W-DETAIL.md`, `W-PERSIST.md`, `W-ANALYTICS.md`) instead.
