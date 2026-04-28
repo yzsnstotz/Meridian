@@ -209,6 +209,74 @@ describe("detectCycleCompletion", () => {
 
     expect(detectCycleCompletion(buildConfig(planPath))).toEqual({ complete: true, outcome: "completed" });
   });
+
+  it("keeps scheduler cycles completed when detail-fetch reports tolerated item failures", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "clawhub-skill-scan-plan.md");
+    await fs.writeFile(planPath, [
+      "| Status | batch | worker | task | model | depends_on |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ✅ | 1 | W-DETAIL | Detail Fetch | CODEX-HIGH | W-CATALOG |",
+      ""
+    ].join("\n"), "utf8");
+
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: { thread_id: "dispatcher-thread", started_at: null, status: "completed" },
+      workers: {
+        "W-DETAIL": {
+          thread_id: "worker-thread",
+          trace_id: null,
+          started_at: "2026-04-28T12:27:00.000Z",
+          last_seen_at: "2026-04-28T12:56:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: {
+            thread_id: "worker-thread",
+            trace_id: null,
+            status: "success",
+            run_state: "completed",
+            content: [
+              "# W-DETAIL Completion Report",
+              "",
+              "- Worker ID: W-DETAIL",
+              "- Exit code: 0",
+              "",
+              "## JSON Summary Output",
+              "",
+              "```json",
+              "{",
+              "  \"success\": 865,",
+              "  \"failed\": 21,",
+              "  \"skipped\": 12650,",
+              "  \"skipped_existing\": 12650",
+              "}",
+              "```",
+              "",
+              "## AI Auto-Test Results",
+              "",
+              "- Detail fetch command completed with exit code 0: PASS",
+              "- Processed count validation: PASS (`865 + 21 + 12650 = 13536`)",
+              "",
+              "## Notes",
+              "",
+              "- `clawhub-fetch` reported 21 per-skill failures and continued to successful command completion."
+            ].join("\n"),
+            summary_text: null,
+            details_text: null,
+            attachments: [],
+            timestamp: "2026-04-28T12:56:00.000Z"
+          },
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    expect(detectCycleCompletion(buildConfig(planPath))).toEqual({ complete: true, outcome: "completed" });
+  });
 });
 
 function buildConfig(dispatchPlanPath: string, overrides: Partial<SchedulerConfig> = {}): SchedulerConfig {

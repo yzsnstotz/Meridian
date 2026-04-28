@@ -654,9 +654,10 @@ const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|[.!?]\s*)BLOCKED\s*[—–-]\s*[\w-]+\s*:/i,
   /"result"\s*:\s*"(?:failed|blocked|error)"/i,
   /"exit_code"\s*:\s*[1-9]\d*/i,
-  /"failed"\s*:\s*[1-9]\d*/i,
   /(?:^|\n)\s*FAIL:\s+/i
 ];
+
+const NONZERO_FAILED_COUNT_PATTERN = /"failed"\s*:\s*[1-9]\d*/i;
 
 const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
   /⛔\s*BLOCKED\b/i,
@@ -719,6 +720,13 @@ export function hubResultContainsFailureSignal(
     return true;
   }
 
+  if (
+    NONZERO_FAILED_COUNT_PATTERN.test(combinedContent)
+    && !isToleratedItemFailureSummary(combinedContent)
+  ) {
+    return true;
+  }
+
   return combinedContent
     .split(/\r?\n/)
     .some((line) => {
@@ -727,6 +735,44 @@ export function hubResultContainsFailureSignal(
         && !isBenignFailureContextLine(normalized)
         && CONTEXTUAL_FAILURE_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized));
     });
+}
+
+function isToleratedItemFailureSummary(content: string): boolean {
+  return hasZeroExitEvidence(content)
+    && hasPassingAutoTestEvidence(content)
+    && hasItemFailureToleranceEvidence(content);
+}
+
+function hasZeroExitEvidence(content: string): boolean {
+  return /(?:^|\n)\s*(?:[-*]\s*)?(?:Exit\s+code|Exit\s+Code)\s*:?\s*`?0`?\b/i.test(content)
+    || /\bcompleted\s+with\s+exit\s+code\s+0\b/i.test(content);
+}
+
+function hasPassingAutoTestEvidence(content: string): boolean {
+  const section = extractMarkdownSection(content, "AI Auto-Test Results");
+  if (!section) {
+    return false;
+  }
+
+  return /\bPASS\b/.test(section) && !/(?:^|\n)\s*(?:[-*]\s*)?.*\bFAIL\b/.test(section);
+}
+
+function hasItemFailureToleranceEvidence(content: string): boolean {
+  return /\b(?:per-skill|per-item|item-level)\s+failures?\b/i.test(content)
+    && /\bcontinued\s+to\s+(?:successful\s+command\s+)?completion\b/i.test(content);
+}
+
+function extractMarkdownSection(content: string, heading: string): string | null {
+  const headingPattern = new RegExp(`(^|\\n)#{1,6}\\s+${escapeRegExp(heading)}\\s*\\n`, "i");
+  const match = headingPattern.exec(content);
+  if (!match || typeof match.index !== "number") {
+    return null;
+  }
+
+  const sectionStart = match.index + match[0].length;
+  const remaining = content.slice(sectionStart);
+  const nextHeading = remaining.search(/\n#{1,6}\s+\S/);
+  return nextHeading === -1 ? remaining : remaining.slice(0, nextHeading);
 }
 
 function hubResultContainsPattern(

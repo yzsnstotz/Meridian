@@ -458,6 +458,49 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("keeps successful detail-fetch reports completed when failed count is item-level", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-DETAIL", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-DETAIL", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "# W-DETAIL Completion Report",
+        "",
+        "- Worker ID: W-DETAIL",
+        "- Exit code: 0",
+        "",
+        "## JSON Summary Output",
+        "",
+        "```json",
+        "{",
+        "  \"success\": 865,",
+        "  \"failed\": 21,",
+        "  \"skipped\": 12650,",
+        "  \"skipped_existing\": 12650",
+        "}",
+        "```",
+        "",
+        "## AI Auto-Test Results",
+        "",
+        "- Detail fetch command completed with exit code 0: PASS",
+        "- Processed count validation: PASS (`865 + 21 + 12650 = 13536`)",
+        "",
+        "## Notes",
+        "",
+        "- `clawhub-fetch` reported 21 per-skill failures and continued to successful command completion."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-DETAIL"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content starts with a plain BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [

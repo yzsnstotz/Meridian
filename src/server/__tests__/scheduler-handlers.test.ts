@@ -365,6 +365,108 @@ describe("scheduler config updates", () => {
     });
     await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ✅ | 1 | R-01 |");
   });
+
+  it("resolves a completed human gate into the archived scheduler result", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-gate-"));
+    tempDirectories.add(directory);
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const schedulerStatePath = path.join(directory, "scheduler_state.json");
+    const runDir = path.join(directory, "reports", "runs", "run-gate-1");
+    const reportPath = path.join(runDir, "report.md");
+    const reportJsonPath = path.join(runDir, "report.json");
+    await fs.mkdir(runDir, { recursive: true });
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 1 | P0-INTEGRATION-GATE | Human gate | HUMAN | P0-COVERAGE-PROBE | TaskSpec | pending |"
+    ].join("\n"), "utf8");
+    const runSummary = {
+      run_id: "run-gate-1",
+      scheduler_mode: "cron",
+      planned_start_time: null,
+      actual_start_time: "2026-04-27T22:00:00.000Z",
+      completed_time: "2026-04-28T01:00:00.000Z",
+      duration_seconds: 10800,
+      dispatcher_thread_id: "codex_84",
+      terminal_outcome: "manual_intervention_required",
+      workers: [
+        {
+          worker_id: "P0-INTEGRATION-GATE",
+          status: "⬜",
+          retry_count: 0,
+          report_path: path.join(runDir, "worker_outputs", "P0-INTEGRATION-GATE.md")
+        }
+      ]
+    };
+    await fs.writeFile(reportJsonPath, `${JSON.stringify(runSummary, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      reportPath,
+      "# Scheduler Run Report\n\n| Terminal Outcome | manual_intervention_required |\n| P0-INTEGRATION-GATE | ⬜ |\n",
+      "utf8"
+    );
+    await fs.writeFile(schedulerStatePath, `${JSON.stringify({
+      ...buildEmptyRunState(),
+      status: "manual_intervention_required",
+      completed_cycles: 1,
+      last_run_outcome: "manual_intervention_required",
+      last_run_completed_at: "2026-04-28T01:00:00.000Z",
+      last_report_path: reportPath,
+      run_history: [runSummary]
+    }, null, 2)}\n`, "utf8");
+
+    const handlers = createHarness();
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-gate-actions",
+      config: {
+        ...buildConfig(dispatchPlanPath),
+        report_base_dir: path.join(directory, "reports"),
+        max_cycles: 1
+      }
+    });
+
+    await expect(invokeJson(
+      handlers,
+      "POST",
+      "/api/scheduler/scheduler-gate-actions/manual-gate/complete",
+      {
+        worker_id: "P0-INTEGRATION-GATE",
+        status: "completed",
+        note: "operator reviewed all P0 evidence",
+        checklist: [
+          {
+            id: "scheduler-owned-run",
+            label: "Scheduler-owned run",
+            status: "passed",
+            note: "run report matches dashboard",
+            evidence: "/tmp/run/report.md"
+          }
+        ]
+      }
+    )).resolves.toMatchObject({
+      ok: true,
+      scheduler_id: "scheduler-gate-actions",
+      status: "completed_max_cycles",
+      last_run_outcome: "completed",
+      worker: "P0-INTEGRATION-GATE"
+    });
+
+    const state = JSON.parse(await fs.readFile(schedulerStatePath, "utf8"));
+    expect(state.status).toBe("completed_max_cycles");
+    expect(state.last_run_outcome).toBe("completed");
+    expect(state.run_history[0].terminal_outcome).toBe("completed");
+    expect(state.run_history[0].workers[0].status).toBe("completed");
+    const reportJson = JSON.parse(await fs.readFile(reportJsonPath, "utf8"));
+    expect(reportJson.terminal_outcome).toBe("completed");
+    await expect(fs.readFile(reportPath, "utf8")).resolves.toContain("| Terminal Outcome | completed |");
+    const workerReport = await fs.readFile(
+      path.join(runDir, "worker_outputs", "P0-INTEGRATION-GATE.md"),
+      "utf8"
+    );
+    expect(workerReport).toContain("scheduler-owned-run");
+    expect(workerReport).toContain("run report matches dashboard");
+  });
 });
 
 function buildConfig(dispatchPlanPath = path.join("/tmp", "dispatch_plan.md")): SchedulerConfig {

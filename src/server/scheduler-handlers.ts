@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
 
 import { z } from "zod";
 
@@ -13,6 +15,7 @@ import {
   SchedulerConfigSchema,
   type AppState,
   type SchedulerConfig,
+  type SchedulerRunSummary,
   type SchedulerRunState
 } from "../types";
 import { parseCronExpression, nextCronFire } from "../roles/scheduler/cron-parser";
@@ -49,6 +52,7 @@ type SchedulerRouteMatch =
   | { kind: "continue-worker"; threadId: string; workerId: string }
   | { kind: "resume-worker"; threadId: string; workerId: string }
   | { kind: "update-worker-status"; threadId: string; workerId: string }
+  | { kind: "complete-manual-gate"; threadId: string }
   | { kind: "delete-scheduler"; threadId: string };
 
 const CreateSchedulerBodySchema = z.object({
@@ -63,6 +67,22 @@ const RunNowBodySchema = z.object({
 const UpdateWorkerStatusRequestSchema = z.object({
   status: z.string().min(1),
   thread_id: z.string().min(1).optional()
+});
+
+const ManualGateChecklistItemSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  status: z.string().min(1),
+  note: z.string().optional(),
+  evidence: z.string().optional()
+});
+type ManualGateChecklistItem = z.infer<typeof ManualGateChecklistItemSchema>;
+
+const CompleteManualGateRequestSchema = z.object({
+  worker_id: z.string().min(1).default("P0-INTEGRATION-GATE"),
+  status: z.literal("completed").default("completed"),
+  note: z.string().optional(),
+  checklist: z.array(ManualGateChecklistItemSchema).default([])
 });
 
 const NEXT_RUN_PREVIEW_STATUSES = new Set(["idle", "waiting"]);
@@ -129,6 +149,9 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
             return true;
           case "update-worker-status":
             writeJson(response, 200, await updateSchedulerWorkerStatus(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
+          case "complete-manual-gate":
+            writeJson(response, 200, await completeManualGate(route.threadId, await readJsonBody(request)));
             return true;
           case "delete-scheduler":
             writeJson(response, 200, await deleteScheduler(route.threadId));
@@ -397,6 +420,72 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     }
   }
 
+  async function completeManualGate(threadId: string, body: unknown) {
+    const role = resolveSchedulerRole(threadId);
+    const config = role.getEngine()?.getConfig() ?? role.config;
+    const stateStore = role.getSchedulerStateStore();
+    if (!stateStore) {
+      throw createHttpError(500, "Scheduler state store not initialized");
+    }
+    const parsed = CompleteManualGateRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid manual gate payload");
+    }
+
+    await executeUpdateWorkerStatusAction({
+      planPath: config.dispatch_plan_path,
+      workerId: parsed.data.worker_id,
+      status: parsed.data.status
+    });
+
+    const state = stateStore.load();
+    const latestIndex = state.run_history.length - 1;
+    if (latestIndex < 0) {
+      throw createHttpError(409, "No archived run exists to resolve");
+    }
+
+    const latestRun = {
+      ...state.run_history[latestIndex]!,
+      terminal_outcome: "completed",
+      workers: state.run_history[latestIndex]!.workers.map((worker) => (
+        worker.worker_id === parsed.data.worker_id
+          ? { ...worker, status: "completed" }
+          : worker
+      ))
+    } satisfies SchedulerRunSummary;
+
+    const gateWorker = latestRun.workers.find((worker) => worker.worker_id === parsed.data.worker_id);
+    if (!gateWorker) {
+      throw createHttpError(404, `Worker not found in latest run: ${parsed.data.worker_id}`);
+    }
+
+    state.run_history[latestIndex] = latestRun;
+    state.last_run_outcome = "completed";
+    state.status = config.max_cycles && state.completed_cycles >= config.max_cycles
+      ? "completed_max_cycles"
+      : "idle";
+    state.next_run_at = null;
+    stateStore.save(state);
+
+    updateArchivedRunReports(
+      state,
+      config,
+      latestRun,
+      parsed.data.worker_id,
+      parsed.data.note,
+      parsed.data.checklist
+    );
+
+    return {
+      ok: true,
+      scheduler_id: threadId,
+      status: state.status,
+      last_run_outcome: state.last_run_outcome,
+      worker: parsed.data.worker_id,
+      report_path: state.last_report_path
+    };
+  }
+
   async function deleteScheduler(threadId: string) {
     await runner.deactivate(threadId);
     return { ok: true, scheduler_id: threadId, action: "deleted" };
@@ -542,6 +631,17 @@ function matchSchedulerRoute(request: IncomingMessage): SchedulerRouteMatch | nu
     return { kind: "update-worker-status", threadId: parts[2]!, workerId: parts[4]! };
   }
 
+  if (
+    method === "POST"
+    && parts.length === 5
+    && parts[0] === "api"
+    && parts[1] === "scheduler"
+    && parts[3] === "manual-gate"
+    && parts[4] === "complete"
+  ) {
+    return { kind: "complete-manual-gate", threadId: parts[2]! };
+  }
+
   // DELETE /api/scheduler/:threadId
   if (method === "DELETE" && parts.length === 3 && parts[0] === "api" && parts[1] === "scheduler") {
     return { kind: "delete-scheduler", threadId: parts[2]! };
@@ -551,6 +651,110 @@ function matchSchedulerRoute(request: IncomingMessage): SchedulerRouteMatch | nu
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+function updateArchivedRunReports(
+  state: SchedulerRunState,
+  config: SchedulerConfig,
+  summary: SchedulerRunSummary,
+  workerId: string,
+  note: string | undefined,
+  checklist: ManualGateChecklistItem[]
+): void {
+  const reportPath = state.last_report_path;
+  if (!reportPath) {
+    return;
+  }
+  const reportDir = path.dirname(reportPath);
+  const reportJsonPath = path.join(reportDir, "report.json");
+  fs.mkdirSync(reportDir, { recursive: true });
+  fs.writeFileSync(reportJsonPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    reportPath,
+    buildResolvedGateMarkdownReport(summary, config, state.completed_cycles),
+    "utf8"
+  );
+
+  const worker = summary.workers.find((entry) => entry.worker_id === workerId);
+  if (worker?.report_path) {
+    fs.mkdirSync(path.dirname(worker.report_path), { recursive: true });
+    fs.writeFileSync(worker.report_path, [
+      `# ${workerId} Completion Report`,
+      "",
+      "## Outcome",
+      "",
+      "✅ COMPLETED",
+      "",
+      "Completed by operator action from the GitHub OPC scan dashboard.",
+      note ? `\nNote: ${note}` : "",
+      buildManualGateChecklistMarkdown(checklist),
+      ""
+    ].join("\n"), "utf8");
+  }
+}
+
+function buildManualGateChecklistMarkdown(checklist: ManualGateChecklistItem[]): string {
+  if (checklist.length === 0) {
+    return "";
+  }
+  const lines = [
+    "",
+    "## Dashboard Review Checklist",
+    "",
+    "| ID | Label | Status | Evidence | Note |",
+    "|----|-------|--------|----------|------|"
+  ];
+  for (const item of checklist) {
+    lines.push(
+      `| ${formatManualGateCell(item.id)} | ${formatManualGateCell(item.label)} | ${formatManualGateCell(item.status)} | ${formatManualGateCell(item.evidence)} | ${formatManualGateCell(item.note)} |`
+    );
+  }
+  return lines.join("\n");
+}
+
+function formatManualGateCell(value: string | undefined): string {
+  const text = (value ?? "").trim();
+  if (!text) {
+    return "—";
+  }
+  return text.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+
+function buildResolvedGateMarkdownReport(
+  summary: SchedulerRunSummary,
+  config: SchedulerConfig,
+  completedCycles: number
+): string {
+  const lines = [
+    "# Scheduler Run Report",
+    "",
+    "| Field | Value |",
+    "|-------|-------|",
+    `| Run ID | ${summary.run_id} |`,
+    `| Mode | ${summary.scheduler_mode} |`,
+    `| Terminal Outcome | ${summary.terminal_outcome ?? "unknown"} |`,
+    `| Planned Start | ${summary.planned_start_time ?? "—"} |`,
+    `| Actual Start | ${summary.actual_start_time} |`,
+    `| Completed | ${summary.completed_time ?? "—"} |`,
+    `| Duration | ${summary.duration_seconds !== null ? `${summary.duration_seconds}s` : "—"} |`,
+    `| Dispatcher Thread | ${summary.dispatcher_thread_id ?? "—"} |`,
+    `| Completed Cycles | ${completedCycles} |`,
+    `| Dispatch Plan | ${config.dispatch_plan_path} |`,
+    "",
+    "## Workers",
+    "",
+    "| Worker | Status | Thread | Retries | Report |",
+    "|--------|--------|--------|---------|--------|"
+  ];
+
+  for (const worker of summary.workers) {
+    lines.push(
+      `| ${worker.worker_id} | ${worker.status} | ${worker.thread_id ?? "—"} | ${worker.retry_count} | ${worker.report_path ?? "—"} |`
+    );
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
