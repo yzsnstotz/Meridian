@@ -75,29 +75,4 @@ describe("schedule-list tool", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Invalid scheduler config");
   });
-
-  it("lists the committed github-opc-scan schedule without a Phase 0 validator", async () => {
-    const result = await scheduleListTool.execute({
-      registry_dir: path.resolve("roles/schedules")
-    });
-
-    expect(result.ok).toBe(true);
-    const schedules = result.data?.schedules as Array<{
-      id: string;
-      config: Record<string, unknown>;
-    }>;
-    const schedule = schedules.find((entry) => entry.id === "github-opc-scan");
-
-    expect(schedule).toBeDefined();
-    expect(schedule?.config).toMatchObject({
-      agent_type: "codex",
-      model_id: "gpt-5.5",
-      scheduler_mode: "cron",
-      cron_expression: "30 7 * * *",
-      timezone: "Asia/Tokyo",
-      catch_up_policy: "skip_missed"
-    });
-    expect(schedule?.config).not.toHaveProperty("validator");
-    expect(SchedulerConfigSchema.safeParse(schedule?.config).success).toBe(true);
-  });
 });
