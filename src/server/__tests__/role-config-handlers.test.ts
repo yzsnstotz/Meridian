@@ -354,7 +354,7 @@ describe("role config handlers", () => {
         validator: {
           enabled: true,
           agent_type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           auto_approve: false,
           pass_threshold: 0.85,
           max_fix_cycles: 2,
@@ -415,7 +415,7 @@ describe("role config handlers", () => {
         validator: {
           enabled: true,
           agent_type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           auto_approve: false,
           pass_threshold: 0.9,
           max_fix_cycles: 1,

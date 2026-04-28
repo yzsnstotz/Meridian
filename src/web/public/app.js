@@ -1917,7 +1917,7 @@ async function setupConfigEditor() {
     if (cfgDocsRoot) cfgDocsRoot.value = config.docs_root || "";
     if (cfgAgentType) cfgAgentType.value = config.agent_type || "claude";
     if (cfgModelId) cfgModelId.value = config.model_id || "";
-    if (cfgMode) cfgMode.value = config.mode || "pane_bridge";
+    if (cfgMode) cfgMode.value = config.mode || "bridge";
     if (cfgKillPolicy) cfgKillPolicy.value = config.kill_policy || "always";
     if (cfgAutoApprove) cfgAutoApprove.value = String(config.auto_approve === true);
     if (cfgReplyChannels) cfgReplyChannels.value = JSON.stringify(config.user_reply_channels || [], null, 2);

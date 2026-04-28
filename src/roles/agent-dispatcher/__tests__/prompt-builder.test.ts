@@ -13,7 +13,7 @@ describe("buildSystemPrompt", () => {
       docs_root: "/tmp/Docs",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"123\"}]",
       default_agent_type: "codex",
-      default_mode: "pane_bridge",
+      default_mode: "bridge",
       kill_policy: "always",
       auto_approve: true,
       resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}"
@@ -33,7 +33,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("docs_root: /tmp/Docs");
     expect(prompt).toContain('user_reply_channels: [{"channel":"telegram","chat_id":"123"},{"channel":"web","chat_id":"web:ops"}]');
     expect(prompt).toContain("default_agent_type: codex");
-    expect(prompt).toContain("default_mode: pane_bridge");
+    expect(prompt).toContain("default_mode: bridge");
     expect(prompt).toContain("kill_policy: always");
     expect(prompt).toContain("auto_approve: true");
     expect(prompt).toContain('resolved_model_map_json: {"CODEX":{"provider":"codex","model_id":"gpt-5.4"}}');
