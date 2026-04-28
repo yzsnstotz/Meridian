@@ -255,6 +255,103 @@ describe("scheduler config updates", () => {
     expect(detail.current_worker).toBeNull();
   });
 
+  it("promotes abandoned plan rows when tool progress is still running", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-progress-"));
+    tempDirectories.add(directory);
+
+    const manifestPath = path.join(directory, "changed_skill_manifest.json");
+    const progressPath = path.join(directory, "ssr-enrich.progress.json");
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const sidecarPath = path.join(directory, "dispatch_threads.json");
+    await fs.writeFile(manifestPath, `${JSON.stringify({
+      scan_run_id: "daily-2026-04-28",
+      skills: [
+        {
+          owner: "nengnengz",
+          slug: "baoyu-slide-deck-2",
+          latest_version: "0.1.0",
+          updated_at: "2026-04-28T07:01:56.533Z",
+          change_type: "updated"
+        }
+      ]
+    }, null, 2)}\n`, "utf8");
+    await fs.writeFile(progressPath, `${JSON.stringify({
+      schema_version: 1,
+      command: "ssr-enrich",
+      scan_run_id: "daily-2026-04-28",
+      status: "running",
+      manifest_path: manifestPath,
+      output_path: path.join(directory, "enrichment.json"),
+      total: 13536,
+      processed: 1813,
+      success: 1813,
+      failed: 0,
+      skipped: 0,
+      remaining: 11723,
+      started_at: "2026-04-28T14:04:45.900Z",
+      updated_at: "2026-04-28T14:41:38.000Z",
+      pid: process.pid,
+      last_skill: {
+        owner: "nengnengz",
+        slug: "baoyu-slide-deck-2"
+      }
+    }, null, 2)}\n`, "utf8");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      `| ⚠️ ABANDONED | 3 | W-SSR | Run \`clawhub-fetch ssr-enrich --scan-run-id daily-2026-04-28 --db ${path.join(directory, "clawhub.db")} --manifest ${manifestPath} --enrichment-path ${path.join(directory, "enrichment.json")}\` | CODEX | W-DETAIL | PRD | stale lifecycle row |`
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-scheduler",
+        started_at: "2026-04-28T14:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "W-SSR": {
+          thread_id: "worker-thread-ssr",
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: "2026-04-28T14:04:09.956Z",
+          last_seen_at: "2026-04-28T14:35:06.175Z",
+          status: "abandoned",
+          expected_outputs: [],
+          hub_result: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: "2026-04-28T14:45:07.322Z"
+    }, null, 2)}\n`, "utf8");
+
+    const handlers = createHarness();
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-progress-test",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    const detail = await invokeJson<{
+      dispatch_plan?: { rows?: Array<Record<string, unknown>> };
+    }>(handlers, "GET", "/api/scheduler/scheduler-progress-test");
+
+    expect(detail.dispatch_plan?.rows?.[0]).toMatchObject({
+      worker: "W-SSR",
+      status: "🔄",
+      lifecycle_status: "running",
+      progress: expect.objectContaining({
+        command: "ssr-enrich",
+        status: "running",
+        processed: 1813,
+        remaining: 11723,
+        last_skill: {
+          owner: "nengnengz",
+          slug: "baoyu-slide-deck-2"
+        }
+      })
+    });
+  });
+
   it("continues a scheduler worker through the scheduler-scoped endpoint", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-continue-"));
     tempDirectories.add(directory);
