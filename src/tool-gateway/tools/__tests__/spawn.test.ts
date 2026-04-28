@@ -23,7 +23,7 @@ describe("spawn tool", () => {
 
     expect(mockSpawn).toHaveBeenCalledWith({
       agentType: "claude",
-      mode: "pane_bridge",
+      mode: "bridge",
       spawnDir: process.cwd(),
       modelId: undefined,
       effort: undefined,
@@ -34,7 +34,7 @@ describe("spawn tool", () => {
       data: {
         thread_id: "thread-123",
         agent_type: "claude",
-        mode: "pane_bridge",
+        mode: "bridge",
         model_id: undefined
       }
     });
@@ -123,7 +123,7 @@ describe("spawn tool", () => {
       data: {
         thread_id: "thread-xh",
         agent_type: "codex",
-        mode: "pane_bridge",
+        mode: "bridge",
         model_id: "gpt-5.4"
       }
     });

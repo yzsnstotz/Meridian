@@ -108,7 +108,7 @@ export function parseModelIdWithEffort(rawModelId: string | undefined): {
 }
 
 function parseBridgeMode(mode: string | undefined): BridgeMode {
-  return mode?.trim() === "bridge" ? "bridge" : "pane_bridge";
+  return mode?.trim() === "pane_bridge" ? "pane_bridge" : "bridge";
 }
 
 function readOptionalString(value: string | undefined): string | undefined {

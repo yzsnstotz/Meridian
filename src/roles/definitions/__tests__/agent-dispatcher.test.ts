@@ -33,7 +33,7 @@ describe("AgentDispatcherRole", () => {
       chat_id: "telegram:pm"
     });
     expect(role.config.agent_type).toBe("codex");
-    expect(role.config.mode).toBe("pane_bridge");
+    expect(role.config.mode).toBe("bridge");
     expect(role.config.kill_policy).toBe("always");
   });
 
@@ -64,7 +64,7 @@ describe("AgentDispatcherRole", () => {
       docs_root: "/tmp/Docs",
       user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
       default_agent_type: "codex",
-      default_mode: "pane_bridge",
+      default_mode: "bridge",
       kill_policy: "always",
       auto_approve: false,
       resolved_model_map_json: "{}"
@@ -73,7 +73,7 @@ describe("AgentDispatcherRole", () => {
     expect(harness.launchDispatcher).toHaveBeenCalledWith({
       agentType: "codex",
       modelId: undefined,
-      mode: "pane_bridge",
+      mode: "bridge",
       autoApprove: false,
       systemPrompt: "dispatcher prompt",
       dispatchRepoRoot: "/tmp",

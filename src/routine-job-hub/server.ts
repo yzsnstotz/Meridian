@@ -382,7 +382,7 @@ export async function executeRestartScript(
     const child = spawn(scriptPath, [], {
       cwd: path.dirname(scriptPath),
       env: process.env,
-      detached: false,
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
 
@@ -392,10 +392,10 @@ export async function executeRestartScript(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killRestartProcess(child.pid, "SIGTERM", () => child.kill("SIGTERM"));
       setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
+          killRestartProcess(child.pid, "SIGKILL", () => child.kill("SIGKILL"));
         }
       }, 2_000).unref();
     }, timeoutMs);
@@ -463,6 +463,19 @@ export async function executeRestartScript(
       });
     });
   });
+}
+
+function killRestartProcess(pid: number | undefined, signal: NodeJS.Signals, fallback: () => boolean): void {
+  if (pid === undefined) {
+    fallback();
+    return;
+  }
+
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    fallback();
+  }
 }
 
 function buildRegistryCandidates(options: { registryPath?: string; env?: NodeJS.ProcessEnv }): string[] {
