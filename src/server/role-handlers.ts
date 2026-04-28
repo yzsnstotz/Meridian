@@ -41,7 +41,7 @@ import {
   type ValidatorOrchestratorDeps
 } from "../roles/agent-dispatcher/validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
-import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
+import { buildDispatchStatusReport, type DispatchWorkerProgress } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
 import { executeUpdateWorkerStatusAction } from "../tool-gateway/tools/update-status";
 import {
@@ -218,6 +218,7 @@ export interface DispatchPlanRow {
   stale_label?: string | null;
   stale_duration_minutes?: number | null;
   stale_duration_human?: string | null;
+  progress?: DispatchWorkerProgress | null;
 }
 
 export interface DispatchMessageDetail {
@@ -2059,13 +2060,15 @@ export async function enrichDispatchPlanRows(
 
       return {
         ...row,
+        status: workerStatus.status,
         lifecycle_status: workerStatus.lifecycle_status,
         thread_id: workerStatus.thread_id,
         last_seen_at: workerStatus.last_seen_at,
         stale: workerStatus.stale,
         stale_label: workerStatus.stale_label,
         stale_duration_minutes: workerStatus.stale_duration_minutes,
-        stale_duration_human: workerStatus.stale_duration_human
+        stale_duration_human: workerStatus.stale_duration_human,
+        progress: workerStatus.progress
       };
     });
   } catch (error) {
