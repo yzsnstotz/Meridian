@@ -908,6 +908,90 @@ test("sendTerminalInput forwards raw terminal text to tmux pane", async () => {
   await manager.kill(threadId);
 });
 
+test("interrupt sends Escape to pane_bridge tmux pane without unregistering thread", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 2301,
+    tmux_pane: "agent_codex_01",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+  const execCalls: string[] = [];
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: ((command: string) => {
+      execCalls.push(command);
+      return Buffer.from("");
+    }) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2301) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const message = await manager.interrupt("codex_01");
+
+  assert.equal(message, "Sent interrupt to codex_01.");
+  assert.equal(registry.has("codex_01"), true);
+  assert.equal(execCalls.length, 1);
+  assert.match(execCalls[0] ?? "", /tmux send-keys -t 'agent_codex_01' 'Escape'/);
+});
+
+test("interrupt sends raw Escape through AgentAPI for bridge threads without unregistering thread", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 2302,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+  const rawInputs: string[] = [];
+  const connected: string[] = [];
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    execSyncFn: (() => Buffer.from("")) as never,
+    spawnFn: ((command: string, args: string[]) => {
+      void command;
+      void args;
+      return new FakeChildProcess(2302) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async (endpoint: string) => {
+        connected.push(endpoint);
+      },
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "running" }),
+      sendRawInput: async (content: string) => {
+        rawInputs.push(content);
+        return { ok: true };
+      }
+    })
+  });
+
+  const message = await manager.interrupt("codex_01");
+
+  assert.equal(message, "Sent interrupt to codex_01.");
+  assert.equal(registry.has("codex_01"), true);
+  assert.deepEqual(connected, ["/tmp/agentapi-codex_01.sock"]);
+  assert.deepEqual(rawInputs, ["\u001b"]);
+});
+
 test("sendTerminalInput rejects bridge threads", async () => {
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {

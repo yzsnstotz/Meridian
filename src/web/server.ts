@@ -643,6 +643,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/interrupt" && request.method === "POST") {
+      await this.handleThreadActionRequest(request, response, "interrupt");
+      return;
+    }
+
     if (requestUrl.pathname === "/api/reboot" && request.method === "POST") {
       await this.handleThreadActionRequest(request, response, "reboot");
       return;
@@ -893,7 +898,7 @@ export class WebInterfaceServer {
   private async handleThreadActionRequest(
     request: http.IncomingMessage,
     response: http.ServerResponse,
-    intent: "kill" | "reboot" | "detach"
+    intent: "kill" | "interrupt" | "reboot" | "detach"
   ): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = threadActionBodySchema.parse(await this.readJsonBody(request));

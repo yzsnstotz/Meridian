@@ -650,10 +650,22 @@
       background: rgba(239, 68, 68, 0.12);
       color: #fecaca;
     }
+    .card-interrupt-btn {
+      grid-column: 1 / -1;
+      justify-content: center;
+      border: 1px solid rgba(251, 191, 36, 0.28);
+      background: rgba(251, 191, 36, 0.12);
+      color: #fde68a;
+    }
+    .card-interrupt-btn:hover {
+      background: rgba(251, 191, 36, 0.2);
+      transform: none;
+    }
     .card-kill-btn:hover {
       background: rgba(239, 68, 68, 0.2);
       transform: none;
     }
+    .card-interrupt-btn:disabled,
     .card-kill-btn:disabled {
       opacity: 0.6;
       cursor: wait;
@@ -1289,6 +1301,45 @@
         window.location.href = "terminal.html" + q;
       }
 
+      function interruptInstance(inst, triggerEl) {
+        if (!inst || !inst.thread_id) return;
+        if (!window.MeridianWeb.ensureToken()) return;
+        var threadId = String(inst.thread_id).trim();
+        if (!threadId) return;
+        if (triggerEl) {
+          triggerEl.disabled = true;
+          triggerEl.textContent = "Interrupting...";
+        }
+        window.MeridianWeb.fetchWithAuth("/api/interrupt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId })
+        })
+          .then(function (res) {
+            return res.json().catch(function () {
+              return {};
+            }).then(function (body) {
+              if (!res.ok) {
+                throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+              }
+              if (!body || body.status !== "success") {
+                throw new Error(body && body.content ? body.content : "Interrupt failed");
+              }
+              return body;
+            });
+          })
+          .then(function () {
+            fetchList();
+          })
+          .catch(function (err) {
+            if (triggerEl) {
+              triggerEl.disabled = false;
+              triggerEl.textContent = "Interrupt run";
+            }
+            alert("Interrupt failed: " + (err && err.message ? err.message : "unknown error"));
+          });
+      }
+
       function killInstance(inst, triggerEl) {
         if (!inst || !inst.thread_id) return;
         if (!window.MeridianWeb.ensureToken()) return;
@@ -1401,6 +1452,7 @@
                   <span class="detail-label">Last interaction</span>
                   <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
                 </div>
+                <button type="button" class="btn card-interrupt-btn">Interrupt run</button>
                 <button type="button" class="btn card-kill-btn">Kill agent</button>
                 <a class="role-link" href="${rolesBase}/" target="_blank" rel="noopener noreferrer">meridian-roles →</a>
               </div>
@@ -1409,6 +1461,7 @@
           
           var detailsEl = card.querySelector("details.card-secondary");
           var roleLinkEl = card.querySelector(".role-link");
+          var interruptButtonEl = card.querySelector(".card-interrupt-btn");
           var killButtonEl = card.querySelector(".card-kill-btn");
           if (detailsEl) {
             detailsEl.addEventListener("click", function (e) { e.stopPropagation(); });
@@ -1416,6 +1469,12 @@
           if (roleLinkEl) {
             roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
             roleLinkEl.title = "Open meridian-roles. Hub thread IDs are not the same as meridian-roles role IDs.";
+          }
+          if (interruptButtonEl) {
+            interruptButtonEl.addEventListener("click", function (e) {
+              e.stopPropagation();
+              interruptInstance(inst, interruptButtonEl);
+            });
           }
           if (killButtonEl) {
             killButtonEl.addEventListener("click", function (e) {

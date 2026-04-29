@@ -338,6 +338,42 @@ test("Web Interface Server forwards terminal approval actions through terminal_i
   assert.equal((seenMessages[0]?.payload as { content?: string })?.content, "allow");
 });
 
+test("Web Interface Server forwards interrupt requests through interrupt intent", async () => {
+  const seenMessages: Array<Record<string, unknown>> = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/interrupt?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        thread_id: "codex_01"
+      })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { status: string; content: string };
+    assert.equal(payload.status, "success");
+    assert.match(payload.content, /interrupted/i);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenMessages.push(message as unknown as Record<string, unknown>);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_01",
+        source: "codex",
+        status: "success",
+        content: "Agent instance codex_01 interrupted",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "interrupt");
+  assert.equal(seenMessages[0]?.thread_id, "codex_01");
+  assert.equal(seenMessages[0]?.target, "codex_01");
+});
+
 test("Web Interface Server returns persisted thread history", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/history?thread_id=codex_01&token=secret-token`);

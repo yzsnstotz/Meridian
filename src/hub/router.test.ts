@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { test } from "node:test";
 
 process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
@@ -52,6 +52,27 @@ function createClosedProcess(exitCode = 0, stderrChunks: string[] = []) {
     process.emit("close", exitCode, null);
   });
 
+  return process;
+}
+
+function createInterruptibleProcess(stdout: PassThrough) {
+  const process = new EventEmitter() as EventEmitter & {
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    stderr: Readable;
+    kill: (signal?: NodeJS.Signals) => boolean;
+  };
+  process.exitCode = null;
+  process.signalCode = null;
+  process.stderr = Readable.from([]);
+  process.kill = (signal?: NodeJS.Signals) => {
+    process.signalCode = signal ?? "SIGTERM";
+    stdout.end();
+    queueMicrotask(() => {
+      process.emit("close", null, process.signalCode);
+    });
+    return true;
+  };
   return process;
 }
 
@@ -155,6 +176,83 @@ test("HubRouter run skips summary protocol injection when instance supports stre
   assert.equal(spawnPrompt, "ship it");
   assert.doesNotMatch(spawnPrompt, /MERIDIAN_SUMMARY_/);
   assert.equal(connectCount, 0);
+});
+
+test("HubRouter interrupt stops the active stream run without unregistering the thread", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_stream_interrupt_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_stream_interrupt_01.sock",
+    pid: 118,
+    tmux_pane: null,
+    status: "idle",
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+
+  const stdout = new PassThrough();
+  const process = createInterruptibleProcess(stdout);
+  let spawnAttempts = 0;
+  const fallbackInterrupts: string[] = [];
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    spawnStreamAgent: () => {
+      spawnAttempts += 1;
+      return { stdout, process };
+    },
+    interrupt: async (threadId: string) => {
+      fallbackInterrupts.push(threadId);
+      return `Sent interrupt to ${threadId}.`;
+    }
+  };
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const runPromise = router.route(
+    baseMessage({
+      trace_id: "aaaaaaaa-1111-4111-8111-111111111111",
+      thread_id: "codex_stream_interrupt_01",
+      target: "codex_stream_interrupt_01"
+    })
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const interruptResult = await router.route(
+    baseMessage({
+      intent: "interrupt",
+      trace_id: "bbbbbbbb-2222-4222-8222-222222222222",
+      thread_id: "codex_stream_interrupt_01",
+      target: "codex_stream_interrupt_01",
+      payload: { content: "", attachments: [] }
+    })
+  );
+  const runResult = await runPromise;
+
+  assert.equal(interruptResult.status, "success");
+  assert.match(interruptResult.content, /interrupted/i);
+  assert.equal(runResult.status, "success");
+  assert.match(runResult.content, /interrupted/i);
+  assert.equal(process.signalCode, "SIGINT");
+  assert.equal(spawnAttempts, 1);
+  assert.deepEqual(fallbackInterrupts, []);
+  assert.equal(registry.has("codex_stream_interrupt_01"), true);
 });
 
 test("HubRouter run still injects summary protocol when streaming is disabled or unavailable", async () => {

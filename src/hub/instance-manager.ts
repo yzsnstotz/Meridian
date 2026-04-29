@@ -39,6 +39,7 @@ interface StatusClient {
   disconnect: () => void;
   getStatus: () => Promise<Record<string, unknown>>;
   getMessages?: () => Promise<Record<string, unknown>[]>;
+  sendRawInput?: (content: string) => Promise<Record<string, unknown>>;
 }
 
 export interface InstanceStatus {
@@ -100,6 +101,7 @@ const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
 /** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
 const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
 const CODEX_PANE_READINESS_MAX_ATTEMPTS = 12;
+const INTERRUPT_ESCAPE_SEQUENCE = "\u001b";
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
 type AgentEndpointBinding = {
   endpoint: string;
@@ -244,6 +246,43 @@ export class InstanceManager {
 
   async kill(threadId: string): Promise<void> {
     await this.killInternal(threadId, false);
+  }
+
+  async interrupt(threadId: string): Promise<string> {
+    const instance = this.registry.get(threadId);
+    if (!instance) {
+      throw new Error(`Cannot interrupt; thread_id=${threadId} is not registered`);
+    }
+
+    if (instance.mode === "pane_bridge" && instance.tmux_pane) {
+      this.sendTmuxKeys(instance.tmux_pane, ["Escape"]);
+    } else {
+      const client = this.clientFactory(threadId);
+      await client.connect(instance.socket_path);
+      try {
+        if (!client.sendRawInput) {
+          throw new Error("AgentAPI client does not support raw terminal input");
+        }
+        await client.sendRawInput(INTERRUPT_ESCAPE_SEQUENCE);
+      } finally {
+        client.disconnect();
+      }
+    }
+
+    this.log.info(
+      {
+        operation: "interrupt",
+        thread_id: threadId,
+        mode: instance.mode,
+        tmux_pane: instance.tmux_pane,
+        socket_path: instance.socket_path,
+        pid: instance.pid,
+        status: instance.status
+      },
+      "Sent interrupt to agent instance"
+    );
+
+    return `Sent interrupt to ${threadId}.`;
   }
 
   attach(threadId: string, session: string): SessionBinding {

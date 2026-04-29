@@ -92,6 +92,7 @@ const IMMEDIATE_INTENTS = new Set([
   "detail",
   "gui",
   "history",
+  "interrupt",
   "list",
   "list_models",
   "monitor_manual_update",
