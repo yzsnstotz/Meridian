@@ -135,6 +135,42 @@ test("connect + sendMessage + getStatus over unix socket", async () => {
   }
 });
 
+test("sendRawInput posts raw terminal keystrokes without logging a user message", async () => {
+  const seenMessages: Array<{ content: string; type: string }> = [];
+
+  const server = await createAgentApiServer((request, body, response) => {
+    if (request.method === "GET" && request.url === "/status") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "running", thread_id: "codex_01" }));
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/message") {
+      seenMessages.push(JSON.parse(body) as { content: string; type: string });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+
+  try {
+    const client = new AgentAPIClient({ threadId: "codex_01" });
+    await client.connect(server.socketPath);
+
+    const result = await client.sendRawInput("\u001b");
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(seenMessages, [{ content: "\u001b", type: "raw" }]);
+
+    client.disconnect();
+  } finally {
+    await server.close();
+  }
+});
+
 test("subscribeEvents retries with exponential backoff and logs reconnect attempts", async () => {
   const server = await createAgentApiServer((request, _, response) => {
     if (request.method === "GET" && request.url === "/status") {

@@ -174,6 +174,60 @@ test("runCli models lists selectable models for a provider without socket transp
   });
 });
 
+test("runCli interrupt posts to non-destructive interrupt endpoint", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: buildCliHubResult({
+        content: "Agent instance codex_01 interrupted"
+      })
+    };
+  };
+
+  const exitCode = await runCli(["interrupt", "codex_01"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/interrupt",
+      body: { thread_id: "codex_01" }
+    }
+  ]);
+  assert.deepEqual(JSON.parse(harness.stdout()), { ok: true });
+});
+
+test("runCli stop is an alias for interrupt", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: buildCliHubResult({
+        content: "Agent instance codex_01 interrupted"
+      })
+    };
+  };
+
+  const exitCode = await runCli(["stop", "codex_01"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/interrupt",
+      body: { thread_id: "codex_01" }
+    }
+  ]);
+  assert.deepEqual(JSON.parse(harness.stdout()), { ok: true });
+});
+
 test("runCli status formats active agents from /api/instances", async () => {
   const { runCli } = await meridianCliModulePromise;
   const harness = createCliDeps();

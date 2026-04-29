@@ -24,6 +24,8 @@ const COMMANDS: Record<string, string> = {
   spawn: "Launch an agent instance",
   models: "List selectable models for a provider",
   kill: "Terminate an agent thread",
+  interrupt: "Interrupt the active run without terminating the thread",
+  stop: "Alias for interrupt",
   status: "List running agent instances",
   send: "Send a message to an agent thread",
   logs: "Retrieve agent output logs",
@@ -119,6 +121,12 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       return;
     case "kill":
       hint(deps, "Usage: meridian kill <thread-id>");
+      return;
+    case "interrupt":
+      hint(deps, "Usage: meridian interrupt <thread-id>");
+      return;
+    case "stop":
+      hint(deps, "Usage: meridian stop <thread-id>");
       return;
     case "status":
       hint(deps, "Usage: meridian status");
@@ -505,6 +513,17 @@ async function handleKill(args: string[], deps: CliDependencies): Promise<void> 
   jsonOut(deps, { ok: true });
 }
 
+async function handleInterrupt(args: string[], deps: CliDependencies): Promise<void> {
+  const threadId = args[0]?.trim();
+  if (!threadId || args.length !== 1) {
+    throw new CliError(EXIT_INVALID_ARGS, "interrupt requires exactly one thread id");
+  }
+
+  await requestHubResult(deps, "POST", "/api/interrupt", { thread_id: threadId });
+
+  jsonOut(deps, { ok: true });
+}
+
 async function handleStatus(deps: CliDependencies): Promise<void> {
   const instances = await listInstances(deps);
   const now = deps.now();
@@ -666,6 +685,10 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
       return EXIT_SUCCESS;
     case "kill":
       await handleKill(commandArgs, deps);
+      return EXIT_SUCCESS;
+    case "interrupt":
+    case "stop":
+      await handleInterrupt(commandArgs, deps);
       return EXIT_SUCCESS;
     case "status":
       await handleStatus(deps);

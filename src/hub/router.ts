@@ -131,6 +131,8 @@ export interface ConversationHistoryEntry {
 
 interface ActiveRunState {
   traceId: string;
+  streamProcess?: ChildProcess | null;
+  interrupted?: boolean;
 }
 
 interface CompletedRunRecord {
@@ -179,6 +181,13 @@ export interface HubRouterOptions {
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
+
+class RunInterruptedError extends Error {
+  constructor(readonly threadId: string) {
+    super(`Agent run interrupted for thread_id=${threadId}`);
+    this.name = "RunInterruptedError";
+  }
+}
 
 function resolveSourceFromTarget(target: string): AgentType {
   const candidate = AgentTypeSchema.safeParse(target);
@@ -529,6 +538,8 @@ export class HubRouter {
           return await this.handleRestart(message);
         case "kill":
           return await this.handleKill(message);
+        case "interrupt":
+          return await this.handleInterrupt(message);
         case "attach":
           return this.handleAttach(message);
         case "detach":
@@ -674,6 +685,18 @@ export class HubRouter {
       );
       this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
       return result;
+    } catch (error) {
+      if (error instanceof RunInterruptedError) {
+        return this.buildResult(
+          message,
+          "success",
+          instance.agent_type,
+          "Agent run interrupted.",
+          instance.thread_id,
+          { runState: "completed" }
+        );
+      }
+      throw error;
     } finally {
       const activeRun = this.activeRunsByThread.get(instance.thread_id);
       if (activeRun?.traceId === message.trace_id) {
@@ -694,6 +717,9 @@ export class HubRouter {
       try {
         return await this.runStreamAttempt(message, threadId);
       } catch (error) {
+        if (error instanceof RunInterruptedError) {
+          throw error;
+        }
         const summary = error instanceof Error ? error.message : String(error);
         this.log.warn(
           {
@@ -759,6 +785,10 @@ export class HubRouter {
         message.trace_id
       );
       process = spawnedAgent.process;
+      const activeRun = this.activeRunsByThread.get(threadId);
+      if (activeRun?.traceId === message.trace_id) {
+        activeRun.streamProcess = process;
+      }
       const stderrSummary = this.captureProcessStderr(spawnedAgent.process);
 
       for await (const delta of streamFromSpawn(spawnedAgent.stdout, parser)) {
@@ -778,6 +808,9 @@ export class HubRouter {
       }
 
       const { exitCode, signal } = await this.awaitChildExit(process);
+      if (this.isRunInterrupted(threadId, message.trace_id)) {
+        throw new RunInterruptedError(threadId);
+      }
       if (finalDelta && this.isRecoverableStreamError(finalDelta)) {
         throw new Error(finalDelta.text ?? "Stream transport error");
       }
@@ -799,6 +832,11 @@ export class HubRouter {
         content: explicitResultText ?? (streamedText || "Task completed."),
         attachmentResults
       };
+    } catch (error) {
+      if (this.isRunInterrupted(threadId, message.trace_id)) {
+        throw new RunInterruptedError(threadId);
+      }
+      throw error;
     } finally {
       if (process && process.exitCode === null && process.signalCode === null) {
         process.kill();
@@ -1067,6 +1105,32 @@ export class HubRouter {
       "success",
       instance.agent_type,
       content,
+      threadId
+    );
+  }
+
+  private async handleInterrupt(message: HubMessage): Promise<HubResult> {
+    const threadId = this.resolveThreadId(message);
+    const instance = this.resolveInstance(threadId);
+    const activeRun = this.activeRunsByThread.get(threadId);
+
+    if (activeRun) {
+      activeRun.interrupted = true;
+      const streamProcess = activeRun.streamProcess;
+      if (streamProcess && streamProcess.exitCode === null && streamProcess.signalCode === null) {
+        streamProcess.kill("SIGINT");
+      } else {
+        await this.instanceManager.interrupt(threadId);
+      }
+    } else {
+      await this.instanceManager.interrupt(threadId);
+    }
+
+    return this.buildResult(
+      message,
+      "success",
+      instance.agent_type,
+      `Agent instance ${threadId} interrupted`,
       threadId
     );
   }
@@ -1595,6 +1659,11 @@ export class HubRouter {
 
   isRunActiveForThread(threadId: string): boolean {
     return this.activeRunsByThread.has(threadId);
+  }
+
+  private isRunInterrupted(threadId: string, traceId: string): boolean {
+    const activeRun = this.activeRunsByThread.get(threadId);
+    return activeRun?.traceId === traceId && activeRun.interrupted === true;
   }
 
   getRegistryInstance(threadId: string): { auto_approve?: boolean } | undefined {
@@ -2773,6 +2842,10 @@ export class HubRouter {
     let lastKnownRunActivity: "active" | "inactive" | "unknown" = "unknown";
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (runLogContext && this.isRunInterrupted(runLogContext.thread_id, traceId)) {
+        throw new RunInterruptedError(runLogContext.thread_id);
+      }
+
       try {
         const messages = await client.getMessages();
         const summaryCandidate = this.extractLatestCompletedSummaryForTrace(messages, traceId);

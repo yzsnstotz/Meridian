@@ -10,6 +10,7 @@ export const BUILT_IN_INTENTS = [
   "restart",
   "reboot",
   "kill",
+  "interrupt",
   "status",
   "attach",
   "detach",

@@ -300,6 +300,19 @@ export class AgentAPIClient {
     }
   }
 
+  async sendRawInput(content: string): Promise<AgentMessageResponse> {
+    const response = await this.requestJson("/message", "POST", {
+      content,
+      type: "raw"
+    });
+
+    if (response && typeof response === "object") {
+      return response as AgentMessageResponse;
+    }
+
+    throw this.withContext("POST /message raw returned invalid payload", new Error("response is not a JSON object"));
+  }
+
   async getStatus(): Promise<AgentStatus> {
     const response = await this.requestJson("/status", "GET");
 
