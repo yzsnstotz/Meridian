@@ -73,6 +73,46 @@ describe("SchedulerEngine", () => {
     });
   });
 
+  it("resumes a manual-intervention active run so recovery polling can continue", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, "", "utf8");
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "manual_intervention_required",
+      current_run_id: "run-001",
+      last_run_outcome: "manual_intervention_required"
+    });
+
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: buildConfig(planPath),
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher: vi.fn(),
+        notifyChannels: vi.fn()
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    engine.resume();
+
+    expect(stateStore.load()).toMatchObject({
+      status: "active_run",
+      current_run_id: "run-001"
+    });
+  });
+
   it("reschedules a max-cycle scheduler when config now allows more cycles", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
     tempDirectories.add(directory);
