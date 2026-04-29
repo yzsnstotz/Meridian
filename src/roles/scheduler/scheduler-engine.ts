@@ -501,7 +501,7 @@ export class SchedulerEngine {
     let mutated = false;
 
     for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
-      if (worker.status !== "running") {
+      if (!isRecoverableOutputStatus(worker)) {
         continue;
       }
 
@@ -540,7 +540,7 @@ export class SchedulerEngine {
           timestamp: nowIso
         })
       };
-      lifecycleStore.logTransition(workerId, "running", status, "scheduler_current_run_output");
+      lifecycleStore.logTransition(workerId, worker.status, status, "scheduler_current_run_output");
       mutated = true;
     }
 
@@ -715,6 +715,10 @@ function classifyRecoveredOutputStatus(content: string): Extract<LifecycleStatus
   }
 
   return "completed";
+}
+
+function isRecoverableOutputStatus(worker: DispatchWorkerState): boolean {
+  return worker.status === "running" || (worker.status === "failed" && worker.hub_result === null);
 }
 
 function buildRecoveredOutputHubResult(options: {

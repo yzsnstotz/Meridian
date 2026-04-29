@@ -287,6 +287,131 @@ describe("SchedulerEngine", () => {
     }), "W-02");
   });
 
+  it("recovers a failed worker without a hub result from its current-run completion report before continuing", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends on | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| ✅ | 1 | W-CATALOG | Catalog sweep | CODEX-HIGH | — | |",
+      "| ❌ | 2 | W-DETAIL | clawhub-fetch detail-fetch --scan-run-id ${SCAN_RUN_ID} | CODEX-HIGH | W-CATALOG | |",
+      "| ⬜ | 3 | W-SSR | SSR enrich | CODEX-HIGH | W-DETAIL | |"
+    ].join("\n"), "utf8");
+
+    const runReportDir = path.join(directory, "reports", "runs", "run-001");
+    await fs.mkdir(runReportDir, { recursive: true });
+    const reportPath = path.join(runReportDir, "W-DETAIL.md");
+    await fs.writeFile(reportPath, [
+      "# W-DETAIL Completion Report",
+      "",
+      "- Worker ID: W-DETAIL",
+      "- Status: completed",
+      "",
+      "## Exit Code",
+      "",
+      "- AI Auto-Test/reconciliation exit code: 0",
+      "",
+      "## JSON Summary Output",
+      "",
+      "```json",
+      "{",
+      "  \"success\": 865,",
+      "  \"failed\": 21,",
+      "  \"skipped\": 476,",
+      "  \"skipped_existing\": 476",
+      "}",
+      "```",
+      "",
+      "## AI Auto-Test Results",
+      "",
+      "```text",
+      "PASS: manifest exists",
+      "PASS: clawhub-fetch detail-fetch exited 0",
+      "PASS: progress status is completed",
+      "PASS: processed count equals total count: 1362 == 1362",
+      "PASS: remaining count is 0",
+      "INFO: 21 package/version/file payloads were unavailable from the upstream API and were recorded by the CLI during the run.",
+      "```"
+    ].join("\n"), "utf8");
+
+    const lifecycleStore = new LifecycleStore(path.join(directory, "dispatch_threads.json"));
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      workers: {
+        "W-CATALOG": {
+          thread_id: "thread-catalog",
+          trace_id: null,
+          started_at: "2026-04-28T20:00:00.000Z",
+          last_seen_at: "2026-04-28T20:05:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-DETAIL": {
+          thread_id: "thread-detail",
+          trace_id: null,
+          started_at: "2026-04-28T21:00:00.000Z",
+          last_seen_at: "2026-04-28T21:30:00.000Z",
+          status: "failed",
+          expected_outputs: [reportPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 2
+        }
+      }
+    });
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "active_run",
+      current_run_id: "run-001",
+      current_run_report_dir: null,
+      current_scan_run_id: "daily-2026-04-29"
+    });
+
+    const continueWorker = vi.fn(async () => ({
+      ok: true,
+      workerId: "W-SSR",
+      threadId: "thread-ssr"
+    }));
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: buildConfig(planPath),
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher: vi.fn(),
+        notifyChannels: vi.fn(),
+        continueWorker
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    await (engine as unknown as { checkCycleCompletion(): Promise<void> }).checkCycleCompletion();
+
+    expect(lifecycleStore.load().workers["W-DETAIL"]).toMatchObject({
+      status: "completed",
+      hub_result: expect.objectContaining({
+        status: "success"
+      })
+    });
+    expect(continueWorker).toHaveBeenCalledWith(expect.objectContaining({
+      dispatch_plan_path: planPath
+    }), "W-SSR");
+  });
+
   it("does not recover a completion report while tool progress is still running", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
     tempDirectories.add(directory);

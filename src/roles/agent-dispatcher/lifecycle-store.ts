@@ -745,6 +745,7 @@ function isToleratedItemFailureSummary(content: string): boolean {
 
 function hasZeroExitEvidence(content: string): boolean {
   return /(?:^|\n)\s*(?:[-*]\s*)?(?:Exit\s+code|Exit\s+Code)\s*:?\s*`?0`?\b/i.test(content)
+    || /(?:^|\n)\s*(?:[-*]\s*)?.*\bexit\s+code\s*:?\s*`?0`?\b/i.test(content)
     || /\bcompleted\s+with\s+exit\s+code\s+0\b/i.test(content);
 }
 
@@ -758,8 +759,13 @@ function hasPassingAutoTestEvidence(content: string): boolean {
 }
 
 function hasItemFailureToleranceEvidence(content: string): boolean {
-  return /\b(?:per-skill|per-item|item-level)\s+failures?\b/i.test(content)
-    && /\bcontinued\s+to\s+(?:successful\s+command\s+)?completion\b/i.test(content);
+  return (
+    /\b(?:per-skill|per-item|item-level)\s+failures?\b/i.test(content)
+    && /\bcontinued\s+to\s+(?:successful\s+command\s+)?completion\b/i.test(content)
+  ) || (
+    /\bpackage\/version\/file\s+payloads?\s+were\s+unavailable\s+from\s+the\s+upstream\s+API\b/i.test(content)
+    && /\brecorded\s+by\s+the\s+CLI\b/i.test(content)
+  );
 }
 
 function extractMarkdownSection(content: string, heading: string): string | null {

@@ -501,6 +501,55 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("keeps successful detail-fetch reports completed when upstream item payloads are unavailable", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-DETAIL", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-DETAIL", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "# W-DETAIL Completion Report",
+        "",
+        "- Worker ID: W-DETAIL",
+        "- Status: completed",
+        "",
+        "## Exit Code",
+        "",
+        "- AI Auto-Test/reconciliation exit code: 0",
+        "",
+        "## JSON Summary Output",
+        "",
+        "```json",
+        "{",
+        "  \"success\": 865,",
+        "  \"failed\": 21,",
+        "  \"skipped\": 476,",
+        "  \"skipped_existing\": 476",
+        "}",
+        "```",
+        "",
+        "## AI Auto-Test Results",
+        "",
+        "```text",
+        "PASS: manifest exists",
+        "PASS: clawhub-fetch detail-fetch exited 0",
+        "PASS: progress status is completed",
+        "PASS: processed count equals total count: 1362 == 1362",
+        "PASS: remaining count is 0",
+        "INFO: 21 package/version/file payloads were unavailable from the upstream API and were recorded by the CLI during the run.",
+        "```"
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-DETAIL"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content starts with a plain BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
