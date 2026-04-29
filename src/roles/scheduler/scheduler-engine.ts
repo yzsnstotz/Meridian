@@ -152,6 +152,11 @@ export class SchedulerEngine {
       state.status = "idle";
       this.stateStore.save(state);
       this.scheduleNextCycle();
+    } else if (state.status === "manual_intervention_required" && state.current_run_id) {
+      state.status = "active_run";
+      state.next_run_at = null;
+      this.stateStore.save(state);
+      this.startCompletionPolling();
     } else if (state.status === "active_run") {
       // Resume polling for completion
       this.startCompletionPolling();
