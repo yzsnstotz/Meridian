@@ -166,6 +166,116 @@ describe("scheduler config updates", () => {
     });
   });
 
+  it("resumes a manual-intervention scheduler run that still has an active run id", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-resume-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const schedulerStatePath = path.join(directory, "scheduler_state.json");
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await fs.writeFile(schedulerStatePath, `${JSON.stringify({
+      ...buildEmptyRunState(),
+      status: "manual_intervention_required",
+      current_run_id: "run-needs-recovery",
+      last_run_outcome: "manual_intervention_required"
+    }, null, 2)}\n`, "utf8");
+
+    const handlers = createHarness();
+    await invokeJson(handlers, "POST", "/api/scheduler", {
+      thread_id: "scheduler-resume-manual-run",
+      config: buildConfig(dispatchPlanPath)
+    });
+
+    await expect(invokeJson(handlers, "POST", "/api/scheduler/scheduler-resume-manual-run/resume")).resolves.toMatchObject({
+      ok: true,
+      scheduler_id: "scheduler-resume-manual-run",
+      action: "resumed"
+    });
+
+    await expect(invokeJson(handlers, "GET", "/api/scheduler/scheduler-resume-manual-run")).resolves.toMatchObject({
+      ok: true,
+      run_state: expect.objectContaining({
+        status: "active_run",
+        current_run_id: "run-needs-recovery"
+      })
+    });
+  });
+
+  it("resumes the scheduler engine directly when runner status update is a no-op", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-direct-resume-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const schedulerStatePath = path.join(directory, "scheduler_state.json");
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await fs.writeFile(schedulerStatePath, `${JSON.stringify({
+      ...buildEmptyRunState(),
+      status: "manual_intervention_required",
+      current_run_id: "run-direct-resume",
+      last_run_outcome: "manual_intervention_required"
+    }, null, 2)}\n`, "utf8");
+
+    const stateStore = new MemoryStateStore();
+    const role = new SchedulerRole("scheduler-direct-resume", buildConfig(dispatchPlanPath), {
+      stateStore,
+      launchDispatcher: async () => ({
+        ok: true,
+        threadId: "dispatcher-thread-test"
+      }),
+      meridianApi: {
+        spawn: async () => ({ threadId: "spawn-thread-test" }),
+        run: async (request) => ({
+          threadId: request.threadId,
+          status: "success",
+          raw: {}
+        }),
+        kill: async (threadId) => ({
+          threadId,
+          status: "killed",
+          raw: {}
+        })
+      }
+    });
+    await role.onActivate({
+      sendToHub: async () => undefined,
+      listInstances: () => [],
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    const runner = {
+      getRole: (threadId: string) => threadId === role.threadId ? role : null,
+      resumeRole: vi.fn(async () => false)
+    } as unknown as RoleRunner;
+    const handlers = createSchedulerHandlers({
+      runner,
+      registry: new RoleRegistry(),
+      stateStore,
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    await expect(invokeJson(handlers, "POST", "/api/scheduler/scheduler-direct-resume/resume")).resolves.toMatchObject({
+      ok: true,
+      scheduler_id: "scheduler-direct-resume",
+      action: "resumed"
+    });
+
+    expect(JSON.parse(await fs.readFile(schedulerStatePath, "utf8"))).toMatchObject({
+      status: "active_run",
+      current_run_id: "run-direct-resume"
+    });
+    expect(runner.resumeRole).toHaveBeenCalledWith("scheduler-direct-resume");
+  });
+
   it("returns dispatcher-style plan rows and worker reply details", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-detail-"));
     tempDirectories.add(directory);

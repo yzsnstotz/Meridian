@@ -314,6 +314,11 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
   }
 
   async function resumeSchedule(threadId: string) {
+    const role = resolveSchedulerRole(threadId);
+    const engine = role.getEngine();
+    if (!engine) throw createHttpError(500, "Scheduler engine not initialized");
+
+    engine.resume();
     await runner.resumeRole(threadId);
     return { ok: true, scheduler_id: threadId, action: "resumed" };
   }
