@@ -470,6 +470,8 @@ export const SchedulerRunStateSchema = z.object({
   current_run_report_dir: z.string().nullable().default(null),
   current_scan_run_id: z.string().nullable().default(null),
   current_dispatcher_thread_id: z.string().nullable().default(null),
+  current_run_planned_start_time: z.string().datetime().nullable().default(null),
+  current_run_actual_start_time: z.string().datetime().nullable().default(null),
   completed_cycles: z.number().int().min(0).default(0),
   next_run_at: z.string().nullable().default(null),
   last_run_completed_at: z.string().nullable().default(null),

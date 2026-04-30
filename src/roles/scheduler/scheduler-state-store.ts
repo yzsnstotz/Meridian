@@ -61,6 +61,8 @@ export function buildEmptyRunState(): SchedulerRunState {
     current_run_report_dir: null,
     current_scan_run_id: null,
     current_dispatcher_thread_id: null,
+    current_run_planned_start_time: null,
+    current_run_actual_start_time: null,
     completed_cycles: 0,
     next_run_at: null,
     last_run_completed_at: null,
