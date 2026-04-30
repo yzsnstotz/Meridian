@@ -91,6 +91,9 @@ export function startCycle(
   state.current_run_report_dir = path.join(config.report_base_dir, "runs", runId);
   state.current_scan_run_id = deriveScanRunId(config, plannedStartTime);
   state.current_dispatcher_thread_id = null;
+  state.current_run_planned_start_time = plannedStartTime;
+  state.current_run_actual_start_time = new Date().toISOString();
+  state.next_run_at = null;
   stateStore.save(state);
 
   return { ok: true, run_id: runId };
@@ -230,7 +233,8 @@ export function completeCycle(
 
   const runId = state.current_run_id;
   const dispatcherThreadId = state.current_dispatcher_thread_id;
-  const plannedStartTime = state.next_run_at;
+  const plannedStartTime = state.current_run_planned_start_time;
+  const actualStartTime = state.current_run_actual_start_time ?? state.last_run_completed_at ?? new Date().toISOString();
 
   if (!runId) {
     return {
@@ -258,7 +262,7 @@ export function completeCycle(
     archive = archiveRun({
       runId,
       config,
-      actualStartTime: state.last_run_completed_at ?? now, // best effort
+      actualStartTime,
       completedTime: now,
       dispatcherThreadId,
       terminalOutcome: outcome,
@@ -298,7 +302,7 @@ export function completeCycle(
     run_id: runId,
     scheduler_mode: config.scheduler_mode,
     planned_start_time: plannedStartTime,
-    actual_start_time: state.last_run_completed_at ?? now,
+    actual_start_time: actualStartTime,
     completed_time: now,
     duration_seconds: null,
     dispatcher_thread_id: dispatcherThreadId,
@@ -310,6 +314,9 @@ export function completeCycle(
   state.current_run_report_dir = null;
   state.current_scan_run_id = null;
   state.current_dispatcher_thread_id = null;
+  state.current_run_planned_start_time = null;
+  state.current_run_actual_start_time = null;
+  state.next_run_at = null;
 
   // Determine next action
   const shouldContinue = AUTO_CONTINUE_OUTCOMES.has(outcome);
@@ -349,6 +356,9 @@ export function cancelCycle(
   state.current_run_report_dir = null;
   state.current_scan_run_id = null;
   state.current_dispatcher_thread_id = null;
+  state.current_run_planned_start_time = null;
+  state.current_run_actual_start_time = null;
+  state.next_run_at = null;
   state.last_run_completed_at = now;
   state.last_run_outcome = "cancelled";
 
