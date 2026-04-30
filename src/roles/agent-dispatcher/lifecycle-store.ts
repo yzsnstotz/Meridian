@@ -761,7 +761,10 @@ function hasPassingAutoTestEvidence(content: string): boolean {
 function hasItemFailureToleranceEvidence(content: string): boolean {
   return (
     /\b(?:per-skill|per-item|item-level)\s+failures?\b/i.test(content)
-    && /\bcontinued\s+to\s+(?:successful\s+command\s+)?completion\b/i.test(content)
+    && (
+      /\bcontinued\s+to\s+(?:successful\s+command\s+)?completion\b/i.test(content)
+      || /\bauthoritative\s+worker-level\s+exit\s+status\b/i.test(content)
+    )
   ) || (
     /\bpackage\/version\/file\s+payloads?\s+were\s+unavailable\s+from\s+the\s+upstream\s+API\b/i.test(content)
     && /\brecorded\s+by\s+the\s+CLI\b/i.test(content)
