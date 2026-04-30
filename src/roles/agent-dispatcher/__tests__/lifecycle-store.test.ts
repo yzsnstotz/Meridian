@@ -550,6 +550,51 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("keeps successful detail-fetch reports completed when item failures are not worker-level failures", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-DETAIL", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-DETAIL", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "# W-DETAIL Completion Report",
+        "",
+        "- Worker ID: W-DETAIL",
+        "- Exit code: 0",
+        "",
+        "## JSON Summary Output",
+        "",
+        "```json",
+        "{",
+        "  \"success\": 2013,",
+        "  \"failed\": 24,",
+        "  \"skipped\": 10925,",
+        "  \"skipped_existing\": 10925",
+        "}",
+        "```",
+        "",
+        "## AI Auto-Test Results",
+        "",
+        "- Manifest check: PASS.",
+        "- Detail fetch execution: PASS. Command exited with code 0.",
+        "- Output validation: PASS. CLI emitted valid JSON summary with `success: 2013`, `failed: 24`, `skipped: 10925`, and `skipped_existing: 10925`.",
+        "- Progress validation: PASS. `/tmp/clawhub-scan/daily-2026-04-30/detail-fetch.progress.json` reports `status: completed` and `processed: 12962/12962`.",
+        "",
+        "## Notes",
+        "",
+        "- CLI reported 24 per-skill failures internally, but the worker command exited 0 as the authoritative worker-level exit status."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-DETAIL"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content starts with a plain BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
