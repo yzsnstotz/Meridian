@@ -1309,6 +1309,171 @@ describe("role config handlers", () => {
     }
   });
 
+  it("delivers validator feedback after a below-threshold validation finishes in the background", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-validation-feedback-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | N-03 | Findings B | CODEX-XHIGH | N-01 | TaskSpec | needs validator check |",
+      "| ⬜ | 1 | N-04 | Findings C | CODEX-HIGH | N-01 | TaskSpec | must not skip N-03 fix cycle |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-03": buildLifecycleWorker({
+          thread_id: "worker-thread-n03",
+          status: "awaiting_validation",
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    const runRequests: Array<{ thread_id: string; content: string }> = [];
+    const fetchSpy = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      const url = input instanceof Request
+        ? input.url
+        : input instanceof URL
+          ? input.href
+          : input.toString();
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/spawn") {
+        return new Response(JSON.stringify({
+          ok: true,
+          thread_id: "validator-thread-n03"
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      if (pathname === "/api/run") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { thread_id: string; content: string };
+        runRequests.push(body);
+        if (body.thread_id === "validator-thread-n03") {
+          return new Response(JSON.stringify({
+            ok: true,
+            thread_id: "validator-thread-n03",
+            status: "success",
+            run_state: "completed",
+            content: JSON.stringify({
+              score: 0.68,
+              feedback: "Add the missing protocol symbol map before moving on."
+            })
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+
+        if (body.thread_id === "worker-thread-n03") {
+          return new Response(JSON.stringify({
+            ok: true,
+            thread_id: "worker-thread-n03",
+            status: "success",
+            run_state: "running",
+            content: "feedback accepted"
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+      }
+
+      if (pathname === "/api/kill") {
+        return new Response(JSON.stringify({
+          ok: true,
+          thread_id: "validator-thread-n03",
+          status: "killed"
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      throw new Error(`unexpected Meridian API request: ${pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    try {
+      const harness = createHarness();
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-continue-validation-feedback",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          pass_threshold: 0.85,
+          max_fix_cycles: 3,
+          base_branch: "main"
+        }
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-validation-feedback/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "validation_in_progress",
+        message: "validation started for N-03",
+        worker: "N-03",
+        validation_outcome: "started"
+      });
+
+      await waitForExpect(() => {
+        expect(runRequests.some((request) => {
+          return request.thread_id === "worker-thread-n03"
+            && request.content.includes("[VALIDATOR FEEDBACK]")
+            && request.content.includes("Score: 0.68")
+            && request.content.includes("missing protocol symbol map");
+        })).toBe(true);
+      });
+
+      expect(lifecycleStore.load().workers["N-03"]).toMatchObject({
+        status: "running",
+        validation: {
+          current_cycle: 1,
+          last_score: 0.68,
+          last_feedback: "Add the missing protocol symbol map before moving on."
+        }
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("blocks continuation when a worker reply reported hit limit", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-hit-limit-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -3536,6 +3701,21 @@ async function invokeJson<T = unknown>(roleHandlers: RoleHandlers, method: strin
 
   expect(handled).toBe(true);
   return JSON.parse(response.body) as T;
+}
+
+async function waitForExpect(assertion: () => void, timeoutMs = 250): Promise<void> {
+  const started = Date.now();
+
+  while (Date.now() - started < timeoutMs) {
+    try {
+      assertion();
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  assertion();
 }
 
 function buildHubResult(content: string): HubResult {
