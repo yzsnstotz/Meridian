@@ -23,7 +23,7 @@ export interface ParsedSlashCommand {
 
 const HELP_MESSAGE = [
   "Available commands:",
-  "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge> [dir=<absolute_path>]",
+  "/spawn type=<claude|codex|gemini|cursor> mode=<bridge|pane_bridge|stateless_call> [dir=<absolute_path>]",
   "/restart Rebuild/restart Meridian, meridian-roles, or ADS (inline menu)",
   "/browse",
   "/kill thread=<thread_id>",
@@ -98,10 +98,10 @@ function parseMode(rawMode: string | undefined): BridgeMode {
   if (!rawMode) {
     return "pane_bridge";
   }
-  if (rawMode === "bridge" || rawMode === "pane_bridge") {
+  if (rawMode === "bridge" || rawMode === "pane_bridge" || rawMode === "stateless_call") {
     return rawMode;
   }
-  throw new Error("mode must be bridge or pane_bridge");
+  throw new Error("mode must be bridge, pane_bridge, or stateless_call");
 }
 
 function requireThreadId(args: Record<string, string>, commandName: string): string {

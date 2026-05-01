@@ -29,6 +29,7 @@ help - Show command usage
 
 ```text
 /spawn type=codex mode=pane_bridge dir=/absolute/path/to/repo
+/spawn type=codex mode=stateless_call dir=/absolute/path/to/repo
 ```
 
 `/detach`, `/reboot`, and `/gui` support thread-oriented control flows:

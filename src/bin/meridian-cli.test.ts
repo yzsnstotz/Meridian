@@ -150,6 +150,38 @@ test("runCli spawn forwards provider, model, effort, workdir, mode, and auto-app
   assert.equal(harness.stderr(), "");
 });
 
+test("runCli spawn forwards stateless_call mode via HTTP", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: buildCliHubResult({
+        thread_id: "codex_01",
+        source: "codex"
+      })
+    };
+  };
+
+  const exitCode = await runCli(["spawn", "codex", "--mode", "stateless_call"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/spawn",
+      body: {
+        type: "codex",
+        provider: "codex",
+        mode: "stateless_call",
+        auto_approve: true
+      }
+    }
+  ]);
+});
+
 test("runCli models lists selectable models for a provider without socket transport", async () => {
   const { runCli } = await meridianCliModulePromise;
   const harness = createCliDeps();

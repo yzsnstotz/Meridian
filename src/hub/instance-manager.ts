@@ -18,14 +18,15 @@ import {
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { ProviderModelCatalog } from "../shared/model-catalog";
 import { normalizeVisibleText } from "../shared/terminal-text";
-import type {
-  AgentInstance,
-  AgentInstanceStatus,
-  AgentType,
-  BridgeMode,
-  ProviderModelCatalog as ProviderModelCatalogPayload,
-  ReasoningEffort,
-  SandboxMode
+import {
+  AgentTypeSchema,
+  type AgentInstance,
+  type AgentInstanceStatus,
+  type AgentType,
+  type BridgeMode,
+  type ProviderModelCatalog as ProviderModelCatalogPayload,
+  type ReasoningEffort,
+  type SandboxMode
 } from "../types";
 import { InstanceRegistry } from "./registry";
 import { buildPersistedHubState, type PersistedHubState } from "./state-store";
@@ -102,6 +103,7 @@ const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
 const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
 const CODEX_PANE_READINESS_MAX_ATTEMPTS = 12;
 const INTERRUPT_ESCAPE_SEQUENCE = "\u001b";
+const STATELESS_SOCKET_PREFIX = "stateless:";
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
 type AgentEndpointBinding = {
   endpoint: string;
@@ -140,6 +142,7 @@ export class InstanceManager {
   private readonly agentLogFdByThread = new Map<string, number>();
   private readonly paneCaptureByThread = new Map<string, PaneCaptureState>();
   private readonly sessionThreadBySession = new Map<string, string>();
+  private readonly allocatedThreadMaxIndexByType = new Map<AgentType, number>();
   private readonly startupAttempts = 180;
   private readonly startupDelayMs = 250;
   private readonly spawnAttempts = 3;
@@ -252,6 +255,20 @@ export class InstanceManager {
     const instance = this.registry.get(threadId);
     if (!instance) {
       throw new Error(`Cannot interrupt; thread_id=${threadId} is not registered`);
+    }
+
+    if (instance.mode === "stateless_call") {
+      this.log.info(
+        {
+          operation: "interrupt",
+          thread_id: threadId,
+          mode: instance.mode,
+          pid: instance.pid,
+          status: instance.status
+        },
+        "No active AgentAPI process exists for stateless instance interrupt"
+      );
+      return `No active stateless run to interrupt for ${threadId}.`;
     }
 
     if (instance.mode === "pane_bridge" && instance.tmux_pane) {
@@ -541,6 +558,7 @@ export class InstanceManager {
   }
 
   async rehydrateFromState(state: PersistedHubState): Promise<RehydrationResult> {
+    this.rememberPersistedThreadIds(state);
     this.registry.clear();
     this.children.clear();
     for (const threadId of this.paneCaptureByThread.keys()) {
@@ -632,6 +650,18 @@ export class InstanceManager {
       throw new Error(`Cannot fetch status; thread_id=${threadId} is not registered`);
     }
 
+    if (instance.mode === "stateless_call") {
+      return {
+        instance,
+        agent_status: {
+          status: instance.status,
+          mode: "stateless_call",
+          stateless: true,
+          current_model_id: instance.model_id ?? null
+        }
+      };
+    }
+
     const client = this.clientFactory(threadId);
     await client.connect(instance.socket_path);
 
@@ -680,13 +710,15 @@ export class InstanceManager {
     sandboxMode?: SandboxMode
   ): Promise<string> {
     let lastError: unknown;
+    const reservedThreadId = threadIdOverride ?? this.nextThreadId(type);
+    this.rememberAllocatedThreadId(reservedThreadId, type);
 
     for (let attempt = 1; attempt <= this.spawnAttempts; attempt += 1) {
       try {
         return await this.spawnInternal(
           type,
           mode,
-          threadIdOverride,
+          reservedThreadId,
           workingDirectory,
           modelId,
           autoApprove,
@@ -705,7 +737,7 @@ export class InstanceManager {
           {
             operation: "spawn_retry",
             trace_id: spawnTraceId ?? null,
-            thread_id: threadIdOverride ?? null,
+            thread_id: reservedThreadId,
             agent_type: type,
             mode,
             attempt,
@@ -752,6 +784,18 @@ export class InstanceManager {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const traceId = spawnTraceId ?? null;
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
+    if (mode === "stateless_call") {
+      return this.spawnStatelessInstance(
+        type,
+        threadId,
+        spawnWorkdir,
+        modelId,
+        reasoningEffort,
+        traceId,
+        integrationProfile,
+        sandboxMode
+      );
+    }
     if (sandboxMode === "read-only" && type !== "codex" && type !== "claude") {
       throw new Error("Agent type does not support read-only sandbox mode");
     }
@@ -945,6 +989,60 @@ export class InstanceManager {
         next_status: "idle"
       },
       "Agent instance spawned"
+    );
+
+    return threadId;
+  }
+
+  private spawnStatelessInstance(
+    type: AgentType,
+    threadId: string,
+    spawnWorkdir: string,
+    modelId?: string,
+    reasoningEffort?: ReasoningEffort,
+    spawnTraceId?: string | null,
+    integrationProfile?: string,
+    sandboxMode?: SandboxMode
+  ): string {
+    if (type !== "codex") {
+      throw new Error("stateless_call mode is only supported for codex");
+    }
+    if (sandboxMode && sandboxMode !== "read-only") {
+      throw new Error("stateless_call mode requires read-only sandbox mode");
+    }
+
+    const instance: AgentInstance = {
+      thread_id: threadId,
+      agent_type: type,
+      model_id: modelId,
+      reasoning_effort: reasoningEffort,
+      integration_profile: integrationProfile,
+      sandbox_mode: "read-only",
+      auto_approve: false,
+      supportsStream: true,
+      mode: "stateless_call",
+      socket_path: `${STATELESS_SOCKET_PREFIX}${threadId}`,
+      working_dir: spawnWorkdir,
+      pid: 0,
+      tmux_pane: null,
+      status: "idle",
+      created_at: this.now().toISOString(),
+      restart_safe: true,
+      spawn_trace_id: spawnTraceId ?? null
+    };
+
+    this.registry.register(instance);
+    this.log.info(
+      {
+        operation: "spawn",
+        trace_id: spawnTraceId ?? null,
+        mode: "stateless_call",
+        thread_id: threadId,
+        working_directory: spawnWorkdir,
+        prev_status: null,
+        next_status: "idle"
+      },
+      "Stateless Codex instance registered"
     );
 
     return threadId;
@@ -1321,6 +1419,22 @@ export class InstanceManager {
   }
 
   private async rehydrateInstance(instance: AgentInstance): Promise<AgentInstance | null> {
+    if (instance.mode === "stateless_call") {
+      return {
+        ...instance,
+        status: instance.status === "running" ? "idle" : instance.status,
+        pid: 0,
+        socket_path: instance.socket_path.startsWith(STATELESS_SOCKET_PREFIX)
+          ? instance.socket_path
+          : `${STATELESS_SOCKET_PREFIX}${instance.thread_id}`,
+        tmux_pane: null,
+        supportsStream: true,
+        sandbox_mode: "read-only",
+        auto_approve: false,
+        codexSessionId: undefined
+      };
+    }
+
     const client = this.clientFactory(instance.thread_id);
     try {
       await client.connect(instance.socket_path);
@@ -1354,6 +1468,28 @@ export class InstanceManager {
     const instance = this.registry.get(threadId);
     if (!instance) {
       throw new Error(`Cannot kill; thread_id=${threadId} is not registered`);
+    }
+
+    if (instance.mode === "stateless_call") {
+      this.registry.unregister(threadId);
+
+      if (!preserveBindings) {
+        this.clearSessionBindingsForThread(threadId);
+      }
+
+      this.log.info(
+        {
+          operation: "kill",
+          trace_id: instance.spawn_trace_id ?? null,
+          thread_id: threadId,
+          pid: instance.pid,
+          socket_path: instance.socket_path,
+          prev_status: instance.status,
+          next_status: "stopped"
+        },
+        "Stateless agent instance removed"
+      );
+      return;
     }
 
     if (instance.tmux_pane) {
@@ -1515,20 +1651,68 @@ export class InstanceManager {
     });
   }
 
+  private rememberPersistedThreadIds(state: PersistedHubState): void {
+    for (const persistedInstance of state.instances ?? []) {
+      this.rememberAllocatedThreadId(persistedInstance.thread_id, persistedInstance.agent_type);
+    }
+
+    for (const threadId of Object.values(state.session_bindings ?? {})) {
+      this.rememberAllocatedThreadId(threadId);
+    }
+
+    for (const threadId of Object.keys(state.push_subscriptions ?? {})) {
+      this.rememberAllocatedThreadId(threadId);
+    }
+
+    for (const threadId of Object.keys(state.conversation_history ?? {})) {
+      this.rememberAllocatedThreadId(threadId);
+    }
+  }
+
+  private rememberAllocatedThreadId(threadId: string, fallbackType?: AgentType): void {
+    const index = this.extractThreadIndex(threadId);
+    if (index === null) {
+      return;
+    }
+
+    const type = fallbackType ?? this.inferAgentTypeFromThreadId(threadId);
+    if (!type) {
+      return;
+    }
+
+    const currentIndex = this.allocatedThreadMaxIndexByType.get(type) ?? 0;
+    if (index > currentIndex) {
+      this.allocatedThreadMaxIndexByType.set(type, index);
+    }
+  }
+
+  private inferAgentTypeFromThreadId(threadId: string): AgentType | null {
+    const match = /^(.+)_(\d+)$/.exec(threadId);
+    const parsed = match ? AgentTypeSchema.safeParse(match[1]) : null;
+    return parsed?.success ? parsed.data : null;
+  }
+
+  private extractThreadIndex(threadId: string): number | null {
+    const match = /^.+_(\d+)$/.exec(threadId);
+    const index = match ? Number(match[1]) : 0;
+    return Number.isSafeInteger(index) && index > 0 ? index : null;
+  }
+
   private nextThreadId(type: AgentType): string {
-    let maxIndex = 0;
+    let maxIndex = this.allocatedThreadMaxIndexByType.get(type) ?? 0;
     for (const instance of this.registry.list()) {
       if (instance.agent_type !== type) {
         continue;
       }
 
-      const match = /^.+_(\d+)$/.exec(instance.thread_id);
-      const index = match ? Number(match[1]) : 0;
-      if (Number.isInteger(index) && index > maxIndex) {
+      const index = this.extractThreadIndex(instance.thread_id);
+      if (index !== null && index > maxIndex) {
         maxIndex = index;
       }
     }
-    return `${type}_${String(maxIndex + 1).padStart(2, "0")}`;
+    const nextIndex = maxIndex + 1;
+    this.allocatedThreadMaxIndexByType.set(type, nextIndex);
+    return `${type}_${String(nextIndex).padStart(2, "0")}`;
   }
 
   private supportsStreaming(type: AgentType): boolean {

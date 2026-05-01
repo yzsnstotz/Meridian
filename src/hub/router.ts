@@ -712,11 +712,13 @@ export class HubRouter {
 
   private async tryHandleStreamRun(message: HubMessage, threadId: string): Promise<StreamRunResult | null> {
     const maxAttempts = 3;
+    let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         return await this.runStreamAttempt(message, threadId);
       } catch (error) {
+        lastError = error;
         if (error instanceof RunInterruptedError) {
           throw error;
         }
@@ -732,6 +734,10 @@ export class HubRouter {
           "Direct stream run attempt failed"
         );
       }
+    }
+
+    if (this.resolveInstance(threadId).mode === "stateless_call") {
+      throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "stateless stream run failed"));
     }
 
     this.registry.setSupportsStream(threadId, false);
@@ -841,6 +847,9 @@ export class HubRouter {
       if (process && process.exitCode === null && process.signalCode === null) {
         process.kill();
       }
+      if (instance.mode === "stateless_call" && this.registry.get(threadId)?.status === "running") {
+        this.registry.setStatus(threadId, "idle");
+      }
       await cleanupStagedAttachments(transformedAttachments.cleanupPaths);
     }
   }
@@ -856,7 +865,7 @@ export class HubRouter {
       return buildGeminiStreamArgs(instance.model_id);
     }
     if (instance.agent_type === "codex") {
-      return instance.codexSessionId
+      return instance.mode !== "stateless_call" && instance.codexSessionId
         ? buildCodexResumeArgs(
             instance.codexSessionId,
             instance.model_id,
@@ -886,7 +895,7 @@ export class HubRouter {
       const parser = createCodexStreamParser();
       return (event: unknown) => {
         const codexThreadId = extractThreadId(event);
-        if (codexThreadId) {
+        if (codexThreadId && instance.mode !== "stateless_call") {
           this.registry.setCodexSessionId(instance.thread_id, codexThreadId);
         }
         return parser(event);

@@ -113,7 +113,7 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       hint(deps, "  --workdir <path>                          Agent working directory");
       hint(deps, "  --auto-approve                            Enable auto-approve (default)");
       hint(deps, "  --no-auto-approve                         Disable auto-approve");
-      hint(deps, "  --mode <bridge|pane_bridge|a2a|agentapi>  Spawn transport mode");
+      hint(deps, "  --mode <bridge|pane_bridge|stateless_call|a2a|agentapi>  Spawn transport mode");
       return;
     case "models":
       hint(deps, "Usage: meridian models <provider>");
@@ -235,6 +235,10 @@ function parseMode(raw: string | undefined): BridgeMode {
     case "pane_bridge":
     case "pane-bridge":
       return "pane_bridge";
+    case "stateless_call":
+    case "stateless-call":
+    case "stateless":
+      return "stateless_call";
     default:
       throw new CliError(EXIT_INVALID_ARGS, `Unsupported mode: ${raw}`);
   }

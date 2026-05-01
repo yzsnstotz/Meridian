@@ -480,6 +480,115 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   ]);
 });
 
+test("HubRouter runs stateless_call Codex threads without resuming prior exec sessions", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_stateless_01",
+    agent_type: "codex",
+    reasoning_effort: "xhigh",
+    sandbox_mode: "read-only",
+    mode: "stateless_call",
+    socket_path: "stateless:codex_stateless_01",
+    pid: 0,
+    tmux_pane: null,
+    status: "idle",
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+
+  const spawnCalls: Array<{ args: string[]; prompt: string }> = [];
+  let connectCount = 0;
+  const payloads = [
+    [
+      '{"type":"thread.started","thread_id":"codex-session-a"}',
+      '{"type":"item.completed","thread_id":"codex-session-a","item":{"id":"msg-a","type":"agent_message","text":"first stateless"}}',
+      '{"type":"turn.completed","thread_id":"codex-session-a","usage":{"total_tokens":10}}'
+    ].join("\n") + "\n",
+    [
+      '{"type":"thread.started","thread_id":"codex-session-b"}',
+      '{"type":"item.completed","thread_id":"codex-session-b","item":{"id":"msg-b","type":"agent_message","text":"second stateless"}}',
+      '{"type":"turn.completed","thread_id":"codex-session-b","usage":{"total_tokens":11}}'
+    ].join("\n") + "\n"
+  ];
+  let spawnIndex = 0;
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    spawnStreamAgent: (_threadId: string, _agentType: string, args: string[], prompt: string) => {
+      spawnCalls.push({ args, prompt });
+      const stdout = Readable.from([payloads[spawnIndex] ?? ""]);
+      spawnIndex += 1;
+      return {
+        stdout,
+        process: createClosedProcess()
+      };
+    }
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    clientFactory: () => ({
+      connect: async () => {
+        connectCount += 1;
+      },
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const first = await router.route(
+    baseMessage({
+      trace_id: "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      thread_id: "codex_stateless_01",
+      target: "codex_stateless_01",
+      payload: {
+        content: "classify A",
+        attachments: []
+      },
+      mode: "stateless_call"
+    })
+  );
+  const second = await router.route(
+    baseMessage({
+      trace_id: "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      thread_id: "codex_stateless_01",
+      target: "codex_stateless_01",
+      payload: {
+        content: "classify B",
+        attachments: []
+      },
+      mode: "stateless_call"
+    })
+  );
+
+  assert.equal(first.status, "success");
+  assert.equal(first.content, "first stateless");
+  assert.equal(second.status, "success");
+  assert.equal(second.content, "second stateless");
+  assert.equal(connectCount, 0);
+  assert.deepEqual(spawnCalls, [
+    {
+      args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"', "--sandbox", "read-only"],
+      prompt: "classify A"
+    },
+    {
+      args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"', "--sandbox", "read-only"],
+      prompt: "classify B"
+    }
+  ]);
+  assert.equal(registry.get("codex_stateless_01")?.codexSessionId, undefined);
+  assert.equal(registry.get("codex_stateless_01")?.status, "idle");
+});
+
 test("HubRouter falls back to agentapi bridge after three stream failures", async () => {
   const registry = new InstanceRegistry();
   registry.register({

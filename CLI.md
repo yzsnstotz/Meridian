@@ -63,7 +63,9 @@ Options:
 - `--workdir <path>`: absolute working directory under `AGENT_WORKDIR`
 - `--auto-approve`: enable auto-approve
 - `--no-auto-approve`: disable auto-approve
-- `--mode <bridge|agentapi|pane_bridge>`: transport / execution mode
+- `--mode <bridge|agentapi|pane_bridge|stateless_call>`: transport / execution mode.
+  `stateless_call` is Codex-only and runs each request as a fresh `codex exec --json`
+  call with read-only sandboxing.
 
 Examples:
 
@@ -71,6 +73,7 @@ Examples:
 meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
 meridian spawn claude --model claude-opus-4-6 --workdir /Users/yzliu/work/project --no-auto-approve
 meridian spawn gemini --mode bridge --workdir /Users/yzliu/work/sandbox
+meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
 ```
 
 ### `meridian kill <thread-id>`
@@ -142,6 +145,13 @@ Start a worker with explicit provider + model:
 
 ```bash
 meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
+```
+
+Run a fresh, non-resuming Codex call lane:
+
+```bash
+meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
+meridian send codex_01 "Summarize the public API surface."
 ```
 
 Check live threads, send follow-up input, then inspect logs:

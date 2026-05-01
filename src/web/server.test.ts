@@ -1143,6 +1143,40 @@ test("Web Interface Server spawn forwards provider alias, model_id, effort, and 
   });
 });
 
+test("Web Interface Server accepts stateless_call spawn mode", async () => {
+  const hubMessages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "codex",
+        mode: "stateless_call",
+        model_id: "gpt-5.4"
+      })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(hubMessages.length, 1);
+    assert.equal(hubMessages[0]?.intent, "spawn");
+    assert.equal(hubMessages[0]?.target, "codex");
+    assert.equal(hubMessages[0]?.mode, "stateless_call");
+    assert.equal(hubMessages[0]?.payload.model_id, "gpt-5.4");
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_stateless",
+        source: "codex",
+        status: "success",
+        content: "{}",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+});
+
 test("Web Interface Server enforces ADS profile spawn safety defaults", async () => {
   const hubMessages: HubMessage[] = [];
   await withServer(async ({ baseUrl }) => {
