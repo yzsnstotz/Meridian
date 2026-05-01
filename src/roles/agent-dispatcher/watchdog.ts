@@ -8,13 +8,19 @@ import type { AutoResolveConfig, DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { autoResolve } from "./auto-resolver";
 import { LifecycleStore } from "./lifecycle-store";
-import { queryHubThreadObservation, reconcile, type ReconciliationReport } from "./reconciler";
+import {
+  DEFAULT_RECONCILE_STALE_TIMEOUT_MS,
+  queryHubThreadObservation,
+  reconcile,
+  type ReconciliationReport
+} from "./reconciler";
 import {
   countEligiblePendingServiceContinueWorkersFromWorkerRows,
   resolveServiceContinueWorkerFromWorkerRows
 } from "./service-continuation";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 
 export interface DispatcherStallInfo {
   dispatchPlanPath: string;
@@ -219,10 +225,14 @@ export class ReconciliationWatchdog {
       try {
         const observation = await queryHubThreadObservation(this.hubClient, state.dispatcher.thread_id);
         if (observation.kind === "running") {
-          return;
-        }
+          if (!isStaleSyntheticDispatcherWorker(state, Date.now())) {
+            return;
+          }
 
-        dispatcherStatus = observation.rawStatus ?? observation.kind;
+          dispatcherStatus = "running_stale";
+        } else {
+          dispatcherStatus = observation.rawStatus ?? observation.kind;
+        }
       } catch (error) {
         this.log.warn("Watchdog failed to probe running dispatcher before stall recovery", {
           dispatchPlanPath,
@@ -265,9 +275,32 @@ function resolveBlockingRunningWorkers(
   continueWorkerId: string | null
 ): string[] {
   return Object.entries(state.workers)
+    .filter(([workerId]) => workerId !== DISPATCHER_WORKER_ID)
     .filter(([, worker]) => worker.status === "running")
     .filter(([workerId, worker]) => workerId !== continueWorkerId || worker.thread_id.trim().length > 0)
     .map(([workerId]) => workerId);
+}
+
+function isStaleSyntheticDispatcherWorker(state: DispatchThreadStateV2, nowMs: number): boolean {
+  const dispatcherWorker = state.workers[DISPATCHER_WORKER_ID];
+  if (!dispatcherWorker || dispatcherWorker.status !== "running") {
+    return false;
+  }
+
+  return isStaleTimestamp(
+    dispatcherWorker.last_seen_at || dispatcherWorker.started_at,
+    nowMs,
+    DEFAULT_RECONCILE_STALE_TIMEOUT_MS
+  );
+}
+
+function isStaleTimestamp(value: string, nowMs: number, staleTimeoutMs: number): boolean {
+  const valueMs = Date.parse(value);
+  if (Number.isNaN(valueMs)) {
+    return false;
+  }
+
+  return nowMs - valueMs >= staleTimeoutMs;
 }
 
 async function resolveRecoverableWorkerState(
