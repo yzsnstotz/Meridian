@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
-import type { HubMessage, HubResult, LifecycleStatus } from "../../types";
+import type { DispatchWorkerState, HubMessage, HubResult, LifecycleStatus } from "../../types";
 import {
   LifecycleStore,
   hubResultContainsFailureSignal,
@@ -108,13 +108,15 @@ export async function reconcile(
       readWorkerScanRunId(worker.command_preamble),
       activeProcessCommands
     );
-    const recordedResultTransition = determineRecordedResultTransition(
-      workerId,
-      worker.hub_result,
-      outputsPresent,
-      worker.expected_outputs,
-      worker.started_at
-    );
+    const recordedResultTransition = isValidationReworkAwaitingFreshResult(worker, worker.hub_result)
+      ? null
+      : determineRecordedResultTransition(
+        workerId,
+        worker.hub_result,
+        outputsPresent,
+        worker.expected_outputs,
+        worker.started_at
+      );
     if (recordedResultTransition && shouldApplyWorkerTransition(recordedResultTransition, workerToolProcessRunning)) {
       state.workers[workerId] = {
         ...worker,
@@ -144,13 +146,15 @@ export async function reconcile(
         ? await recoverHubResultFromHistory(hubClient, worker.thread_id, worker.trace_id, worker.started_at)
         : null;
     const effectiveHubResult = recoveredHubResult ?? worker.hub_result;
-    const recoveredTransition = determineRecordedResultTransition(
-      workerId,
-      effectiveHubResult,
-      outputsPresent,
-      worker.expected_outputs,
-      worker.started_at
-    );
+    const recoveredTransition = isValidationReworkAwaitingFreshResult(worker, effectiveHubResult)
+      ? null
+      : determineRecordedResultTransition(
+        workerId,
+        effectiveHubResult,
+        outputsPresent,
+        worker.expected_outputs,
+        worker.started_at
+      );
     if (recoveredTransition && shouldApplyWorkerTransition(recoveredTransition, workerToolProcessRunning)) {
       const terminalTimestamp = effectiveHubResult?.timestamp ?? nowIso;
       state.workers[workerId] = {
@@ -182,7 +186,11 @@ export async function reconcile(
       workerToolProcessRunning
     );
 
-    if (!transition || transition.to === worker.status) {
+    if (
+      !transition
+      || transition.to === worker.status
+      || shouldDeferValidationReworkTransition(worker, effectiveHubResult, transition)
+    ) {
       report.unchanged.push(workerId);
       continue;
     }
@@ -482,6 +490,35 @@ function shouldApplyWorkerTransition(
   workerToolProcessRunning: boolean
 ): boolean {
   return !(workerToolProcessRunning && transition.to === "completed");
+}
+
+function shouldDeferValidationReworkTransition(
+  worker: DispatchWorkerState,
+  hubResult: HubResult | null,
+  transition: Pick<ReconciliationChange, "to" | "trigger">
+): boolean {
+  return transition.to === "completed" && isValidationReworkAwaitingFreshResult(worker, hubResult);
+}
+
+function isValidationReworkAwaitingFreshResult(
+  worker: DispatchWorkerState,
+  hubResult: HubResult | null
+): boolean {
+  if (!worker.validation || worker.status !== "running") {
+    return false;
+  }
+
+  if (!hubResult?.timestamp) {
+    return true;
+  }
+
+  const resultMs = Date.parse(hubResult.timestamp);
+  const lastSeenMs = Date.parse(worker.last_seen_at);
+  if (!Number.isFinite(resultMs) || !Number.isFinite(lastSeenMs)) {
+    return true;
+  }
+
+  return resultMs < lastSeenMs;
 }
 
 function readWorkerScanRunId(commandPreamble: string | null | undefined): string | null {
