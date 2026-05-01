@@ -271,9 +271,54 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("follow normally (read specs, implement, test, git commit, push)");
+    expect(sentContent).toContain("follow the embedded dispatch command for implementation, validation, and delivery");
+    expect(sentContent).toContain("Do not infer extra git operations from this runtime override");
     expect(sentContent).not.toContain("this is a report-only worker");
-    expect(sentContent).not.toContain("Do NOT create git commits, branches, pushes, or PRs");
+    expect(sentContent).not.toContain("preserve the command file's NO-GIT delivery mode");
+  });
+
+  it("does not inject git delivery instructions into NO-GIT dispatch commands", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return [
+          "# Dispatch Command",
+          "",
+          "Mode: NO-GIT",
+          "",
+          "Workers MUST NOT run `git init`, `git add`, `git commit`, `git push`, or `gh pr create`.",
+          "Workers write markdown deliverables directly to confirmed paths.",
+          "",
+          "Write completion report to:",
+          "```",
+          "/tmp/dispatch/reports/<WORKER_ID>.md",
+          "```"
+        ].join("\n");
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------|",
+          "| 🔄 | 1 | N-01 | Extract app artifacts | CODEX | — | Foundation output. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-no-git-implementation",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-01"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("preserve the command file's NO-GIT delivery mode");
+    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
   });
 
   it("keeps report-only delivery suppression when the worker row is explicit", async () => {
