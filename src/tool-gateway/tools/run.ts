@@ -323,6 +323,7 @@ async function buildWorkerPreamble(
   expectedOutputs: string[]
 ): Promise<string> {
   const command = await readFile(commandPath, "utf8");
+  const commandForbidsGit = commandForbidsGitOperations(command);
   const lines: string[] = [];
 
   if (row?.model) {
@@ -401,12 +402,22 @@ async function buildWorkerPreamble(
     }
     if (isReportOnlyWorker(workerId, row, expectedOutputs)) {
       lines.push(`- **Steps 5c–5d**: this is a report-only worker. Do NOT create git commits, branches, pushes, or PRs for the report artifact; return the report result and stop.`);
+    } else if (commandForbidsGit) {
+      lines.push(`- **Steps 4b–4f, 5c–5d**: follow the embedded dispatch command for implementation, validation, and delivery; preserve the command file's NO-GIT delivery mode. Do NOT create git commits, branches, pushes, or PRs unless the embedded dispatch command explicitly allows it.`);
     } else {
-      lines.push(`- **Steps 4b–4f, 5c–5d**: follow normally (read specs, implement, test, git commit, push).`);
+      lines.push(`- **Steps 4b–4f, 5c–5d**: follow the embedded dispatch command for implementation, validation, and delivery. Do not infer extra git operations from this runtime override.`);
     }
   }
 
   return lines.join("\n");
+}
+
+function commandForbidsGitOperations(command: string): boolean {
+  return /\bNO[-\s]?GIT\b/i.test(command)
+    || /\bno\s+git\s+operations\b/i.test(command)
+    || /\bmust\s+not\s+(?:run\s+)?`?git\b/i.test(command)
+    || /\bdo\s+not\s+(?:run\s+)?`?git\b/i.test(command)
+    || /\bdo\s+not\s+create\s+git\s+(?:commits?|branches|pushes)\b/i.test(command);
 }
 
 function findSchedulerRunReportOutput(expectedOutputs: string[], workerId: string): string | null {
