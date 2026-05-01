@@ -411,6 +411,38 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("keeps a success HubResult running when content says the command has not completed", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-SSR", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.recordWorkerResult("W-SSR", buildHubResult({
+      thread_id: "worker-thread-111",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "W-SSR is still running, not complete.",
+        "",
+        "Current CLI status from `clawhub-fetch ssr-enrich`:",
+        "",
+        "```text",
+        "4700/61149 processed",
+        "4684 success",
+        "16 failed",
+        "0 skipped",
+        "56449 remaining",
+        "```",
+        "",
+        "No completion report has been written yet because the CLI has not exited, so there is no final exit code or validation result."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["W-SSR"]).toMatchObject({
+      status: "running",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult failed when content reports BLOCKED", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
