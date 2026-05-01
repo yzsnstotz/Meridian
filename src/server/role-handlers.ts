@@ -35,6 +35,8 @@ import {
   type DispatchContinuationPlanRow
 } from "../roles/agent-dispatcher/service-continuation";
 import {
+  isValidationEnabledForWorker,
+  resolveThresholdForWorker,
   interceptCompletionForValidation,
   executeValidationCycle,
   deliverValidatorFeedback,
@@ -84,7 +86,8 @@ import {
   type ReplyChannel,
   type RoleType,
   type RoleState,
-  type SchedulerConfig
+  type SchedulerConfig,
+  type ValidatorConfig
 } from "../types";
 import {
   buildEnvReplyChannelPresets,
@@ -651,7 +654,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         context.effectiveConfig,
         dispatchPlanData.rows as DispatchContinuationPlanRow[],
         lifecycleState,
-        log
+        log,
+        attachToThread
       );
       if (validatorResult) {
         return validatorResult;
@@ -1871,7 +1875,8 @@ async function processValidationQueue(
   config: AgentDispatcherConfig,
   rows: DispatchContinuationPlanRow[],
   lifecycleState: DispatchThreadStateV2,
-  log: Logger
+  log: Logger,
+  attachToThread?: (threadId: string) => Promise<void>
 ): Promise<ContinueDispatcherResponse | null> {
   const validatorConfig = config.validator;
   if (!validatorConfig?.enabled) {
@@ -1884,14 +1889,24 @@ async function processValidationQueue(
     { dispatchPlanPath, log }
   );
 
-  // Phase 1: Intercept newly completed workers → awaiting_validation
+  // Phase 1: Intercept completed workers that still require validation.
   for (const row of rows) {
     const workerId = row.worker.trim();
     if (!workerId) continue;
 
     const worker = lifecycleState.workers[workerId];
-    if (worker?.status === "completed" && !worker.validation) {
+    const disposition = resolveCompletedWorkerValidationDisposition(validatorConfig, row, worker);
+    if (disposition === "awaiting_validation") {
       interceptCompletionForValidation(lifecycleStore, validatorConfig, workerId, row);
+    } else if (disposition === "failed") {
+      lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted_after_rework");
+      return {
+        ok: true,
+        status: "manual_intervention_required",
+        message: `manual intervention required: ${workerId} validator score remained below threshold after max cycles`,
+        worker: workerId,
+        ...(worker?.validation?.last_feedback ? { error: worker.validation.last_feedback } : {})
+      };
     }
   }
 
@@ -1903,14 +1918,25 @@ async function processValidationQueue(
     const worker = lifecycleStore.load().workers[workerId];
     if (worker?.status !== "awaiting_validation") continue;
 
-    if (worker.validation?.validator_thread_id) {
-      return {
-        ok: true,
-        status: "validation_in_progress",
-        message: `validation already running for ${workerId}`,
-        worker: workerId,
-        validation_outcome: "running"
-      };
+    const validatorThreadId = worker.validation?.validator_thread_id?.trim();
+    if (validatorThreadId) {
+      const validatorStillActive = await isRecordedValidatorThreadActive(
+        workerId,
+        validatorThreadId,
+        attachToThread,
+        log
+      );
+      if (validatorStillActive) {
+        return {
+          ok: true,
+          status: "validation_in_progress",
+          message: `validation already running for ${workerId}`,
+          worker: workerId,
+          validation_outcome: "running"
+        };
+      }
+
+      lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
     }
 
     const spawnDir = resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath);
@@ -1927,24 +1953,7 @@ async function processValidationQueue(
       log
     };
 
-    void executeValidationCycle(deps, workerId, row)
-      .then(async (outcome) => {
-        if (outcome.status === "fix_requested") {
-          const delivered = await deliverValidatorFeedback(deps, workerId);
-          if (!delivered) {
-            log.warn("Validator feedback was not delivered after fix request", {
-              event: "validator_feedback_not_delivered",
-              worker_id: workerId
-            });
-          }
-        }
-
-        log.info("Validator cycle finished", {
-          event: "validator_cycle_finished",
-          worker_id: workerId,
-          status: outcome.status
-        });
-      })
+    void runValidationCycleWithFeedbackLoop(deps, workerId, row, log)
       .catch((error) => {
         log.warn("Validator cycle failed unexpectedly", {
           event: "validator_cycle_unhandled_error",
@@ -1981,7 +1990,19 @@ async function processValidationQueue(
       log
     };
 
-    await deliverValidatorFeedback(deps, workerId);
+    const delivered = await deliverValidatorFeedback(deps, workerId);
+    if (delivered) {
+      const latestWorker = lifecycleStore.load().workers[workerId];
+      if (latestWorker?.status === "awaiting_validation" && !latestWorker.validation?.validator_thread_id) {
+        void runValidationCycleWithFeedbackLoop(deps, workerId, row, log).catch((error) => {
+          log.warn("Validator cycle failed unexpectedly", {
+            event: "validator_cycle_unhandled_error",
+            worker_id: workerId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
+    }
 
     return {
       ok: true,
@@ -1992,6 +2013,104 @@ async function processValidationQueue(
   }
 
   return null;
+}
+
+function resolveCompletedWorkerValidationDisposition(
+  validatorConfig: ValidatorConfig,
+  row: DispatchContinuationPlanRow,
+  worker: DispatchWorkerState | undefined
+): "awaiting_validation" | "failed" | null {
+  if (!worker || worker.status !== "completed" || !isValidationEnabledForWorker(validatorConfig, row)) {
+    return null;
+  }
+
+  if (!worker.validation) {
+    return "awaiting_validation";
+  }
+
+  const lastScore = worker.validation.last_score;
+  if (typeof lastScore !== "number") {
+    return "awaiting_validation";
+  }
+
+  const threshold = resolveThresholdForWorker(validatorConfig, row);
+  if (lastScore >= threshold) {
+    return null;
+  }
+
+  return worker.validation.current_cycle >= worker.validation.max_fix_cycles
+    ? "failed"
+    : "awaiting_validation";
+}
+
+async function isRecordedValidatorThreadActive(
+  workerId: string,
+  validatorThreadId: string,
+  attachToThread: ((threadId: string) => Promise<void>) | undefined,
+  log: Logger
+): Promise<boolean> {
+  if (!attachToThread) {
+    return true;
+  }
+
+  try {
+    await attachToThread(validatorThreadId);
+    return true;
+  } catch (error) {
+    const message = getErrorMessage(error);
+    if (isMissingThreadEvidence(message)) {
+      log.warn("Clearing stale validator thread id before continue", {
+        event: "validator_thread_missing",
+        worker_id: workerId,
+        validator_thread_id: validatorThreadId,
+        error: message
+      });
+      return false;
+    }
+
+    log.warn("Failed to verify validator thread before continue", {
+      event: "validator_thread_attach_error",
+      worker_id: workerId,
+      validator_thread_id: validatorThreadId,
+      error: message
+    });
+    return true;
+  }
+}
+
+async function runValidationCycleWithFeedbackLoop(
+  deps: ValidatorOrchestratorDeps,
+  workerId: string,
+  row: DispatchContinuationPlanRow,
+  log: Logger
+): Promise<void> {
+  const maxIterations = Math.max(1, deps.validatorConfig.max_fix_cycles + 1);
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const outcome = await executeValidationCycle(deps, workerId, row);
+    log.info("Validator cycle finished", {
+      event: "validator_cycle_finished",
+      worker_id: workerId,
+      status: outcome.status
+    });
+
+    if (outcome.status !== "fix_requested") {
+      return;
+    }
+
+    const delivered = await deliverValidatorFeedback(deps, workerId);
+    if (!delivered) {
+      log.warn("Validator feedback was not delivered after fix request", {
+        event: "validator_feedback_not_delivered",
+        worker_id: workerId
+      });
+      return;
+    }
+
+    const latestWorker = deps.lifecycleStore.load().workers[workerId];
+    if (latestWorker?.status !== "awaiting_validation" || latestWorker.validation?.validator_thread_id) {
+      return;
+    }
+  }
 }
 
 function resolveTaskspecPath(config: AgentDispatcherConfig): string | null {

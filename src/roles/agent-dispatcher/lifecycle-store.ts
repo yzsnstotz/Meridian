@@ -162,12 +162,17 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
-    const nextStatus = mapHubResultToLifecycleStatus(
+    const mappedStatus = mapHubResultToLifecycleStatus(
       workerId,
       hubResult,
       worker.expected_outputs,
       worker.started_at
     );
+    const nextStatus = mappedStatus === "completed"
+      && worker.validation
+      && (worker.status === "running" || worker.status === "fix_requested")
+      ? "awaiting_validation"
+      : mappedStatus;
     state.workers[workerId] = {
       ...worker,
       thread_id: hubResult.thread_id || worker.thread_id,
@@ -461,10 +466,13 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
       const hasFailureEvidence =
         workerState.status === "failed" ||
         (workerState.hub_result ? hubResultContainsFailureSignal(workerState.hub_result) : false);
+      const isValidationOwnedStatus =
+        workerState.status === "awaiting_validation" || workerState.status === "fix_requested";
       if (
         isPlanStatusTerminalSuccess(currentPlanStatus)
         && nextPlanStatus !== currentPlanStatus
         && nextPlanStatus !== PLAN_STATUS_SYMBOLS.running
+        && !isValidationOwnedStatus
         && !hasFailureEvidence
       ) {
         continue;

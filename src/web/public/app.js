@@ -2348,11 +2348,10 @@ function renderDispatchMessage(label, detail, emptyMessage) {
 function renderDispatchValidationMessage(validation) {
   const history = Array.isArray(validation?.history) ? validation.history : [];
   const latest = history.length > 0 ? history[history.length - 1] : null;
-  const score = typeof validation?.last_score === "number"
+  const latestScore = typeof validation?.last_score === "number"
     ? validation.last_score
     : (typeof latest?.score === "number" ? latest.score : null);
-  const feedback = normalizeText(validation?.last_feedback) || normalizeText(latest?.feedback);
-  const cycle = typeof latest?.cycle === "number"
+  const latestCycle = typeof latest?.cycle === "number"
     ? latest.cycle
     : (typeof validation?.current_cycle === "number" ? validation.current_cycle : null);
   const maxCycles = typeof validation?.max_fix_cycles === "number" ? validation.max_fix_cycles : null;
@@ -2364,18 +2363,45 @@ function renderDispatchValidationMessage(validation) {
     return renderDispatchMessage("Validator Reply", null, "No validator reply captured yet.");
   }
 
-  const contentParts = [];
-  if (score !== null) {
-    contentParts.push(`Score: ${formatValidatorScore(score)}`);
-  }
-  if (cycle !== null || maxCycles !== null) {
-    contentParts.push(`Cycle: ${cycle ?? "---"}/${maxCycles ?? "---"}`);
-  }
-  if (feedback) {
-    if (contentParts.length > 0) {
-      contentParts.push("");
+  const contentParts = history.length > 0
+    ? history.flatMap((entry, index) => {
+      const entryParts = [];
+      const entryScore = typeof entry?.score === "number" ? entry.score : null;
+      const entryCycle = typeof entry?.cycle === "number" ? entry.cycle : null;
+      const entryThreadId = normalizeText(entry?.validator_thread_id) || "validator";
+      entryParts.push(`Cycle: ${entryCycle ?? "---"}/${maxCycles ?? "---"}`);
+      entryParts.push(`Score: ${formatValidatorScore(entryScore)}`);
+      entryParts.push(`Validator: ${entryThreadId}`);
+      const entryFeedback = normalizeText(entry?.feedback);
+      if (entryFeedback) {
+        entryParts.push("");
+        entryParts.push(entryFeedback);
+      }
+      if (index < history.length - 1) {
+        entryParts.push("");
+        entryParts.push("---");
+        entryParts.push("");
+      }
+      return entryParts;
+    })
+    : [];
+  if (contentParts.length === 0) {
+    const feedback = normalizeText(validation?.last_feedback) || normalizeText(latest?.feedback);
+    if (latestScore !== null) {
+      contentParts.push(`Score: ${formatValidatorScore(latestScore)}`);
     }
-    contentParts.push(feedback);
+    if (latestCycle !== null || maxCycles !== null) {
+      contentParts.push(`Cycle: ${latestCycle ?? "---"}/${maxCycles ?? "---"}`);
+    }
+    if (validatorThreadId) {
+      contentParts.push(`Validator: ${validatorThreadId}`);
+    }
+    if (feedback) {
+      if (contentParts.length > 0) {
+        contentParts.push("");
+      }
+      contentParts.push(feedback);
+    }
   }
 
   return renderDispatchMessage(
@@ -2384,7 +2410,7 @@ function renderDispatchValidationMessage(validation) {
       trace_id: null,
       sender_name: validatorThreadId,
       sender_agent_type: "validator",
-      sender_model: score === null ? null : `score ${formatValidatorScore(score)}`,
+      sender_model: latestScore === null ? null : `score ${formatValidatorScore(latestScore)}`,
       sender_thread_id: validatorThreadId,
       timestamp: latest?.timestamp || null,
       content: contentParts.join("\n")
