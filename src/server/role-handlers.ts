@@ -193,6 +193,7 @@ export interface RoleHandlersOptions {
 export interface RoleHandlers {
   getConfig(threadId: string): Promise<RoleConfigResponse>;
   patchConfig(threadId: string, body: unknown): Promise<RoleConfigResponse>;
+  continueDispatcher(threadId: string, workerId?: string): Promise<ContinueDispatcherResponse>;
   handle(request: IncomingMessage, response: ServerResponse): Promise<boolean>;
   resolveRole(threadId: string): PromptStoreRoleBinding | null;
 }
@@ -376,6 +377,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   }
 
   const handlers: RoleHandlers = {
+    continueDispatcher: continueDispatcherForRole,
+
     async getConfig(threadId: string): Promise<RoleConfigResponse> {
       const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
       return {

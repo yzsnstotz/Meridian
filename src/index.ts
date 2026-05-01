@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
-import { continueDispatchWorker } from "./roles/agent-dispatcher/continue-worker";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
@@ -18,7 +16,7 @@ import { RoleRegistry } from "./roles/role-registry";
 import { RoleRunner, type RehydrationContext } from "./roles/role-runner";
 import { createPromptHandlers } from "./server/prompt-handlers";
 import { HttpServer } from "./server/http-server";
-import { createRoleHandlers } from "./server/role-handlers";
+import { createRoleHandlers, type ContinueDispatcherResponse } from "./server/role-handlers";
 import { createSchedulerHandlers } from "./server/scheduler-handlers";
 import {
   ACTIVE_ROLE_STATUS,
@@ -38,7 +36,6 @@ import {
   type RoleState,
   type SchedulerConfig
 } from "./types";
-import { parseDispatchPlanRows } from "./tool-gateway/tools/dispatch-status";
 
 export * from "./types";
 export * from "./config";
@@ -124,16 +121,19 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
         return;
       }
 
-      const continuedWorkerId = await tryContinueDispatchWorker(
+      const directRecovery = await tryContinueDispatchWorker(
         stateStore,
         info.dispatchPlanPath,
         info.continueWorkerId,
+        roleHandlers.continueDispatcher,
         log
       );
-      if (continuedWorkerId) {
-        log.info("Watchdog stall: continued worker through service-owned recovery", {
+      if (directRecovery) {
+        log.info("Watchdog stall: handled recovery through dispatcher continuation", {
           threadId,
-          workerId: continuedWorkerId
+          workerId: directRecovery.workerId,
+          status: directRecovery.status,
+          message: directRecovery.message
         });
         return;
       }
@@ -595,12 +595,24 @@ async function resolveThreadIdForDispatchPlanPath(
   return null;
 }
 
-async function tryContinueDispatchWorker(
+export type WatchdogContinueDispatcher = (
+  threadId: string,
+  workerId?: string
+) => Promise<ContinueDispatcherResponse>;
+
+export interface WatchdogContinueResult {
+  status: ContinueDispatcherResponse["status"];
+  workerId: string | null;
+  message: string;
+}
+
+export async function tryContinueDispatchWorker(
   stateStore: StateStore,
   dispatchPlanPath: string,
   workerId: string | null,
+  continueDispatcher: WatchdogContinueDispatcher,
   log: typeof console
-): Promise<string | null> {
+): Promise<WatchdogContinueResult | null> {
   if (!workerId) {
     return null;
   }
@@ -626,40 +638,31 @@ async function tryContinueDispatchWorker(
     return null;
   }
 
-  let markdown: string;
   try {
-    markdown = await fs.readFile(dispatchPlanPath, "utf8");
+    const continued = await continueDispatcher(roleState.threadId, workerId);
+    if (isActiveContinuationStatus(continued.status)) {
+      await persistAgentDispatcherRoleStatus(stateStore, roleState.threadId, ACTIVE_ROLE_STATUS, log);
+    }
+
+    return {
+      status: continued.status,
+      workerId: continued.worker ?? workerId,
+      message: continued.message
+    };
   } catch (error) {
-    log.warn("Watchdog failed to read dispatch plan for direct continue", {
+    log.warn("Watchdog dispatcher continuation failed", {
       dispatchPlanPath,
+      workerId,
       error: asError(error).message
     });
     return null;
   }
+}
 
-  const rows = parseDispatchPlanRows(markdown);
-  const row = rows.find((candidate) => candidate.worker_id === workerId) ?? null;
-  if (!row || isHumanModel(row.model)) {
-    return null;
-  }
-
-  const continued = await continueDispatchWorker(config, rows.map((candidate) => ({
-    status: candidate.status,
-    worker: candidate.worker_id,
-    model: candidate.model ?? ""
-  })), workerId);
-  if (!continued.ok) {
-    log.warn("Watchdog direct continue failed", {
-      dispatchPlanPath,
-      workerId,
-      error: continued.error ?? "unknown"
-    });
-    return null;
-  }
-
-  await persistAgentDispatcherRoleStatus(stateStore, roleState.threadId, ACTIVE_ROLE_STATUS, log);
-
-  return workerId;
+function isActiveContinuationStatus(status: ContinueDispatcherResponse["status"]): boolean {
+  return status === "continued"
+    || status === "validation_in_progress"
+    || status === "validation_feedback_delivered";
 }
 
 async function persistAgentDispatcherRoleStatus(
@@ -684,11 +687,6 @@ async function persistAgentDispatcherRoleStatus(
       error: asError(error).message
     });
   }
-}
-
-function isHumanModel(model: string | null | undefined): boolean {
-  const normalized = typeof model === "string" ? model.trim().toUpperCase() : "";
-  return normalized === "HUMAN" || normalized === "PM";
 }
 
 export async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
