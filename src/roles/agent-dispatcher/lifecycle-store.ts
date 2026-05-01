@@ -633,7 +633,12 @@ const NON_COMPLETION_PATTERNS = [
   /⏸\s*PAUSE/,
   /⛔\s*BLOCKED/,
   /PAUSE\s*[—–-]/,
-  /BLOCKED\s*[—–-]/
+  /BLOCKED\s*[—–-]/,
+  /\bstill\s+running\b/i,
+  /\bnot\s+complete\b/i,
+  /\bhas\s+not\s+exited\b/i,
+  /\bno\s+completion\s+report\b/i,
+  /\bno\s+final\s+exit\s+code\b/i
 ];
 
 const HIT_LIMIT_PATTERNS = [
