@@ -122,9 +122,7 @@ function buildToolProcessSignature(command: string, fallbackScanRunId: string | 
     .slice(executableIndex + 1)
     .find((token) => token.length > 0 && !token.startsWith("-"));
   const optionScanRunId = readOptionValue(tokens, "scan-run-id");
-  const scanRunId = optionScanRunId ?? (
-    fallbackScanRunId && tokens.includes(fallbackScanRunId) ? fallbackScanRunId : null
-  );
+  const scanRunId = (optionScanRunId ?? fallbackScanRunId?.trim()) || null;
   const toolName = path.basename(executable);
 
   if (!toolName || !subcommand || !scanRunId) {
