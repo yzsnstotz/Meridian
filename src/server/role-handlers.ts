@@ -1928,7 +1928,17 @@ async function processValidationQueue(
     };
 
     void executeValidationCycle(deps, workerId, row)
-      .then((outcome) => {
+      .then(async (outcome) => {
+        if (outcome.status === "fix_requested") {
+          const delivered = await deliverValidatorFeedback(deps, workerId);
+          if (!delivered) {
+            log.warn("Validator feedback was not delivered after fix request", {
+              event: "validator_feedback_not_delivered",
+              worker_id: workerId
+            });
+          }
+        }
+
         log.info("Validator cycle finished", {
           event: "validator_cycle_finished",
           worker_id: workerId,
