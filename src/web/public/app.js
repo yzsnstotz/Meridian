@@ -2157,6 +2157,7 @@ function renderDispatchPlanRow(row, detail = null) {
       <td>${escapeHtml(row.batch)}</td>
       <td><code>${escapeHtml(row.worker)}</code></td>
       <td>${escapeHtml(row.task)}</td>
+      <td>${formatToolProgress(row.progress)}</td>
       <td>${escapeHtml(row.model)}</td>
       <td>${escapeHtml(row.depends_on || "---")}</td>
       <td>${renderDispatchPlanActions(row)}</td>
@@ -2174,6 +2175,7 @@ function renderDispatchPlanOrphanDetailRow(detail) {
       <td>---</td>
       <td><code>${escapeHtml(syntheticRow.worker || "---")}</code></td>
       <td>${escapeHtml(syntheticRow.task || "---")}</td>
+      <td>${formatToolProgress(syntheticRow.progress)}</td>
       <td>${escapeHtml(syntheticRow.model || "---")}</td>
       <td>---</td>
       <td>${renderDispatchPlanActions(syntheticRow)}</td>
@@ -2182,7 +2184,7 @@ function renderDispatchPlanOrphanDetailRow(detail) {
   `;
 }
 
-function renderDispatchPlanDetailRow(detail, colspan = 7) {
+function renderDispatchPlanDetailRow(detail, colspan = 8) {
   return `
     <tr class="dispatch-plan-detail-row">
       <td colspan="${colspan}">

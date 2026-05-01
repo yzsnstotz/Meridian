@@ -99,6 +99,65 @@ describe("scheduler detail public scripts", () => {
     expect(html).toContain("validator-thread-2");
   });
 
+  it("renders agent dispatcher role plan progress when progress data is available", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const roleHtml = await fs.readFile(path.join(publicDir, "role.html"), "utf8");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const html = vm.runInContext(`renderDispatchPlanRow({
+      status: "🔄",
+      batch: "4",
+      worker: "W-DETAIL",
+      task: "Fetch detail rows",
+      model: "CODEX-HIGH",
+      depends_on: "W-CATALOG",
+      progress: {
+        progress_path: "/tmp/detail-fetch.progress.json",
+        source: "progress_file",
+        command: "detail-fetch",
+        scan_run_id: "daily-2026-05-02",
+        status: "running",
+        total: 100,
+        processed: 40,
+        success: 39,
+        failed: 1,
+        skipped: 0,
+        skipped_existing: 0,
+        remaining: 60,
+        started_at: "2026-05-02T00:00:00.000Z",
+        updated_at: "2026-05-02T00:10:00.000Z",
+        completed_at: null,
+        pid: 123,
+        rate_limit_waits: 0,
+        last_skill: null
+      }
+    })`, context) as string;
+
+    expect(roleHtml).toContain("<th>Progress</th>");
+    expect(html).toContain("detail-fetch");
+    expect(html).toContain("40 / 100 processed");
+    expect(html).toContain("60 remaining; 39 success, 1 failed, 0 skipped");
+  });
+
   it("renders dashboard role counts without waiting for reply channel loading", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
