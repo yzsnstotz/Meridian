@@ -1,5 +1,8 @@
 import type { DispatchThreadStateV2 } from "../../types";
-import { hubResultContainsHitLimit } from "./lifecycle-store";
+import {
+  hubResultContainsFailureSignal,
+  hubResultContainsHitLimit
+} from "./lifecycle-store";
 
 const MAX_AUTOMATIC_RECOVERY_RETRIES = 2;
 
@@ -39,7 +42,7 @@ export function resolveManualInterventionWorker(
     }
 
     const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
-    if (!workerState?.hub_result || !hubResultContainsHitLimit(workerState.hub_result)) {
+    if (!workerState?.hub_result || !hubResultRequiresManualIntervention(workerState.hub_result)) {
       continue;
     }
 
@@ -130,6 +133,10 @@ function resolveImplicitContinueWorker(
     return null;
   }
 
+  if (worker?.hub_result && hubResultRequiresManualIntervention(worker.hub_result)) {
+    return null;
+  }
+
   const normalizedWorkerId = row.worker.trim();
   return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
 }
@@ -164,9 +171,9 @@ function isEligibleServiceContinueRow(
   const trimmedStatus = row.status.trim();
   switch (trimmedStatus) {
     case "⚠️ ABANDONED":
-      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
+      return isRetryableTerminalWorker(lifecycleState, row.worker);
     case "❌":
-      return (resolveLifecycleWorkerState(lifecycleState, row.worker)?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
+      return isRetryableTerminalWorker(lifecycleState, row.worker);
     case "⬜":
       return areDispatchDependenciesSatisfied(row, rows, rowsByWorker);
     default:
@@ -176,6 +183,21 @@ function isEligibleServiceContinueRow(
       }
       return false;
   }
+}
+
+function isRetryableTerminalWorker(lifecycleState: DispatchThreadStateV2, workerId: string): boolean {
+  const workerState = resolveLifecycleWorkerState(lifecycleState, workerId);
+  if (workerState?.hub_result && hubResultRequiresManualIntervention(workerState.hub_result)) {
+    return false;
+  }
+
+  return (workerState?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
+}
+
+function hubResultRequiresManualIntervention(
+  hubResult: NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]>
+): boolean {
+  return hubResultContainsHitLimit(hubResult) || hubResultContainsFailureSignal(hubResult);
 }
 
 function areDispatchDependenciesSatisfied(

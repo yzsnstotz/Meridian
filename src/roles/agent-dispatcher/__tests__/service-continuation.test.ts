@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveServiceContinueWorker } from "../service-continuation";
+import {
+  resolveManualInterventionWorker,
+  resolveServiceContinueWorker
+} from "../service-continuation";
 import type { DispatchThreadStateV2 } from "../../../types";
 
 describe("service continuation", () => {
@@ -148,7 +151,36 @@ describe("service continuation", () => {
       }
     }))).toBeNull();
   });
+
+  it("pauses instead of auto-retrying failed rows with blocking hub results", () => {
+    const rows = [
+      { status: "❌", batch: "0", worker: "N-01", model: "CODEX-HIGH", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-01": {
+        status: "failed",
+        retry_count: 0,
+        hub_result: createHubResult("Status: BLOCKED - required @phoenix namespace is absent from the extracted asar tree.")
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-01");
+  });
 });
+
+function createHubResult(content: string): NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]> {
+  return {
+    trace_id: "trace-n-01",
+    thread_id: "n-01-thread",
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content,
+    attachments: [],
+    timestamp: "2026-04-03T12:01:00.000Z"
+  };
+}
 
 function createLifecycleState(
   workerOverrides: Record<string, Partial<DispatchThreadStateV2["workers"][string]>> = {}

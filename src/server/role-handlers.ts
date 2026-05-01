@@ -665,13 +665,17 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (manualInterventionWorkerId) {
       const manualInterventionWorker = lifecycleState.workers[manualInterventionWorkerId];
-      const limitSummary = summarizeHitLimitResult(manualInterventionWorker?.hub_result ?? null);
+      const hubResult = manualInterventionWorker?.hub_result ?? null;
+      const interventionSummary = summarizeManualInterventionResult(hubResult);
+      const interventionReason = hubResult && hubResultContainsHitLimit(hubResult)
+        ? "reported hit limit"
+        : "reported a blocking failure";
       return {
         ok: true,
         status: "manual_intervention_required",
-        message: `manual intervention required: ${manualInterventionWorkerId} reported hit limit`,
+        message: `manual intervention required: ${manualInterventionWorkerId} ${interventionReason}`,
         worker: manualInterventionWorkerId,
-        ...(limitSummary ? { error: limitSummary } : {})
+        ...(interventionSummary ? { error: interventionSummary } : {})
       };
     }
 
@@ -1781,8 +1785,11 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
-function summarizeHitLimitResult(hubResult: HubResult | null): string | null {
-  if (!hubResult || !hubResultContainsHitLimit(hubResult)) {
+function summarizeManualInterventionResult(hubResult: HubResult | null): string | null {
+  if (
+    !hubResult
+    || (!hubResultContainsHitLimit(hubResult) && !hubResultContainsFailureSignal(hubResult))
+  ) {
     return null;
   }
 
@@ -1791,7 +1798,9 @@ function summarizeHitLimitResult(hubResult: HubResult | null): string | null {
     || hubResult.details_text?.trim()
     || "";
   if (rawSummary.length === 0) {
-    return "worker reported hit limit";
+    return hubResultContainsHitLimit(hubResult)
+      ? "worker reported hit limit"
+      : "worker reported a blocking failure";
   }
 
   const normalized = rawSummary.replace(/\s+/g, " ");

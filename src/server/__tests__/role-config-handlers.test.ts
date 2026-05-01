@@ -1363,6 +1363,61 @@ describe("role config handlers", () => {
     }
   });
 
+  it("blocks continuation when a failed worker reported a blocking result", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-blocked-result-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 0 | N-01 | Extract app artifacts | CODEX-HIGH | — | Reverse PRD | foundation gate |",
+      "| ⬜ | 1 | N-02 | Findings | CODEX-XHIGH | N-01 | Reverse PRD | waits on extraction |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-01": buildLifecycleWorker({
+          thread_id: "worker-thread-n01",
+          status: "failed",
+          retry_count: 0,
+          hub_result: {
+            ...buildHubResult("Status: BLOCKED - required @phoenix namespace is absent from the extracted asar tree."),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-n01"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-blocked-result", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-blocked-result/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "manual_intervention_required",
+        message: "manual intervention required: N-01 reported a blocking failure",
+        worker: "N-01",
+        error: "Status: BLOCKED - required @phoenix namespace is absent from the extracted asar tree."
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("continues the sole pre-marked running worker when no worker thread was ever recorded", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pre-marked-worker-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
