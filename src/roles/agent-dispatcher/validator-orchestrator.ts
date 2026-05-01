@@ -1,7 +1,7 @@
 import type { Logger } from "../base-role";
 import type { ValidatorConfig } from "../../types";
 import type { LifecycleStore } from "./lifecycle-store";
-import type { MeridianApiClient } from "./meridian-api-client";
+import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client";
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
   createLifecycleThreadIdCollisionError,
@@ -116,6 +116,7 @@ export async function executeValidationCycle(
   const threshold = resolveThresholdForWorker(validatorConfig, planRow);
   const baseBranch = validatorConfig.base_branch;
   const taskBranch = resolveTaskBranch(workerId);
+  const cycle = validation.current_cycle + 1;
 
   const promptContext: ValidatorPromptContext = {
     workerId,
@@ -123,7 +124,7 @@ export async function executeValidationCycle(
     baseBranch,
     taskspecPath: deps.taskspecPath,
     dispatchPlanPath: deps.dispatchPlanPath,
-    cycle: validation.current_cycle,
+    cycle,
     maxFixCycles: validation.max_fix_cycles,
     previousFeedback: validation.last_feedback
   };
@@ -140,7 +141,7 @@ export async function executeValidationCycle(
       event: "validator_spawned",
       worker_id: workerId,
       validator_thread_id: validatorThreadId,
-      cycle: validation.current_cycle
+      cycle
     });
   } catch (error) {
     const reason = `failed to spawn validator: ${asErrorMessage(error)}`;
@@ -184,7 +185,7 @@ export async function executeValidationCycle(
     worker_id: workerId,
     score: parsed.score,
     threshold,
-    cycle: validation.current_cycle
+    cycle
   });
 
   // Decision gate
@@ -197,7 +198,7 @@ export async function executeValidationCycle(
     return { status: "passed", score: parsed.score };
   }
 
-  if (validation.current_cycle >= validation.max_fix_cycles) {
+  if (cycle >= validation.max_fix_cycles) {
     lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted", {
       score: parsed.score,
       feedback: parsed.feedback,
@@ -220,7 +221,7 @@ export async function executeValidationCycle(
   return {
     status: "fix_requested",
     score: parsed.score,
-    cycle: validation.current_cycle,
+    cycle,
     maxCycles: validation.max_fix_cycles
   };
 }
@@ -282,8 +283,11 @@ export async function deliverValidatorFeedback(
     "Please address the above feedback and re-submit your work. When you are done, signal completion as you normally would."
   ].join("\n");
 
+  let markedRunning = false;
   try {
-    await meridianApi.run({
+    lifecycleStore.setWorkerStatus(workerId, "running", "validator_feedback_delivered");
+    markedRunning = true;
+    const runResult = await meridianApi.run({
       threadId: worker.thread_id,
       content: feedbackMessage
     });
@@ -293,7 +297,20 @@ export async function deliverValidatorFeedback(
       worker_thread_id: worker.thread_id,
       cycle: validation.current_cycle
     });
+    if (isCompletedRunResult(runResult)) {
+      lifecycleStore.setWorkerStatus(workerId, "awaiting_validation", "validator_rework_completed");
+    }
   } catch (error) {
+    if (markedRunning) {
+      try {
+        const latestWorker = lifecycleStore.load().workers[workerId];
+        if (latestWorker?.status === "running") {
+          lifecycleStore.setWorkerStatus(workerId, "fix_requested", "validator_feedback_error");
+        }
+      } catch {
+        // Leave the original delivery error as the observable failure.
+      }
+    }
     log.warn("Validator feedback delivery failed", {
       event: "validator_feedback_error",
       worker_id: workerId,
@@ -302,8 +319,6 @@ export async function deliverValidatorFeedback(
     return false;
   }
 
-  // Transition worker back to running for the fix attempt
-  lifecycleStore.setWorkerStatus(workerId, "running", "validator_feedback_delivered");
   return true;
 }
 
@@ -357,6 +372,12 @@ function tryParseJson(raw: string): ParsedValidatorOutput | null {
 function resolveTaskBranch(workerId: string): string {
   // Convention: worker branches use the worker ID as the branch name suffix
   return `task/${workerId.toLowerCase()}`;
+}
+
+function isCompletedRunResult(runResult: MeridianRunResult): boolean {
+  const status = runResult.status.trim().toLowerCase();
+  const runState = runResult.runState?.trim().toLowerCase();
+  return status === "success" && (!runState || runState === "completed");
 }
 
 async function safeKill(

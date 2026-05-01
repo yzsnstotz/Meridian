@@ -42,6 +42,63 @@ describe("scheduler detail public scripts", () => {
     expect(styleCss).toContain("display: none !important");
   });
 
+  it("renders every validator cycle in dispatcher detail validation output", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const html = vm.runInContext(`renderDispatchValidationMessage({
+      current_cycle: 2,
+      max_fix_cycles: 3,
+      validator_thread_id: null,
+      last_score: 0.92,
+      last_feedback: "Cycle two passed.",
+      history: [
+        {
+          cycle: 1,
+          score: 0.68,
+          feedback: "Cycle one needs a symbol map.",
+          validator_thread_id: "validator-thread-1",
+          timestamp: "2026-04-08T00:30:00.000Z"
+        },
+        {
+          cycle: 2,
+          score: 0.92,
+          feedback: "Cycle two passed.",
+          validator_thread_id: "validator-thread-2",
+          timestamp: "2026-04-08T00:40:00.000Z"
+        }
+      ]
+    })`, context) as string;
+
+    expect(html).toContain("Cycle: 1/3");
+    expect(html).toContain("Score: 0.68");
+    expect(html).toContain("Cycle one needs a symbol map.");
+    expect(html).toContain("validator-thread-1");
+    expect(html).toContain("Cycle: 2/3");
+    expect(html).toContain("Score: 0.92");
+    expect(html).toContain("Cycle two passed.");
+    expect(html).toContain("validator-thread-2");
+  });
+
   it("renders dashboard role counts without waiting for reply channel loading", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");

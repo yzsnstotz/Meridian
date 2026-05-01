@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LifecycleStore } from "../lifecycle-store";
 import {
+  deliverValidatorFeedback,
   executeValidationCycle,
   type ValidatorOrchestratorDeps
 } from "../validator-orchestrator";
@@ -46,6 +47,99 @@ describe("executeValidationCycle", () => {
     const worker = harness.lifecycleStore.load().workers["N-02"];
     expect(worker?.status).toBe("completed");
     expect(worker?.validation?.history[0]?.validator_thread_id).toBe("validator-thread-fresh");
+  });
+
+  it("fails when a below-threshold result reaches the max validation cycle", async () => {
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-02"]!.validation = {
+      current_cycle: 2,
+      max_fix_cycles: 3,
+      validator_thread_id: null,
+      last_score: 0.62,
+      last_feedback: "Previous cycle feedback",
+      history: [
+        {
+          cycle: 1,
+          score: 0.66,
+          feedback: "Cycle 1 feedback",
+          validator_thread_id: "validator-thread-1",
+          timestamp: "2026-04-27T00:11:00.000Z"
+        },
+        {
+          cycle: 2,
+          score: 0.62,
+          feedback: "Previous cycle feedback",
+          validator_thread_id: "validator-thread-2",
+          timestamp: "2026-04-27T00:12:00.000Z"
+        }
+      ]
+    };
+    harness.lifecycleStore.save(state);
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-3" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-3",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.65,"feedback":"Still below threshold."}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "failed",
+      score: 0.65,
+      reason: "max validation cycles exhausted (3)"
+    });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("failed");
+    expect(worker?.validation?.current_cycle).toBe(3);
+    expect(worker?.validation?.history[2]).toMatchObject({
+      cycle: 3,
+      score: 0.65,
+      feedback: "Still below threshold.",
+      validator_thread_id: "validator-thread-3"
+    });
+  });
+
+  it("returns completed rework to awaiting validation after feedback delivery", async () => {
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-02"]!.status = "fix_requested";
+    state.workers["N-02"]!.validation = {
+      current_cycle: 1,
+      max_fix_cycles: 3,
+      validator_thread_id: null,
+      last_score: 0.62,
+      last_feedback: "Fix the missing symbol map.",
+      history: [
+        {
+          cycle: 1,
+          score: 0.62,
+          feedback: "Fix the missing symbol map.",
+          validator_thread_id: "validator-thread-1",
+          timestamp: "2026-04-27T00:11:00.000Z"
+        }
+      ]
+    };
+    harness.lifecycleStore.save(state);
+    harness.run.mockResolvedValueOnce({
+      threadId: "worker-thread-n02",
+      status: "success",
+      runState: "completed",
+      content: "Rework complete.",
+      raw: {}
+    });
+
+    await expect(deliverValidatorFeedback(harness.deps, "N-02")).resolves.toBe(true);
+
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("awaiting_validation");
+    expect(harness.run).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "worker-thread-n02",
+      content: expect.stringContaining("Fix the missing symbol map.")
+    }));
   });
 });
 
