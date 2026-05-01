@@ -34,7 +34,7 @@ export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
 export const IntentSchema = z.union([BuiltInIntentSchema, z.string().min(1)]);
 export type Intent = z.infer<typeof IntentSchema>;
 
-export const BridgeModeSchema = z.enum(["bridge", "pane_bridge"]);
+export const BridgeModeSchema = z.enum(["bridge", "pane_bridge", "stateless_call"]);
 export type BridgeMode = z.infer<typeof BridgeModeSchema>;
 
 export const AgentTypeSchema = z.enum(["claude", "codex", "gemini", "cursor"]);

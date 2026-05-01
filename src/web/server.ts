@@ -60,7 +60,7 @@ const threadActionBodySchema = z.object({
 const spawnRequestBodySchema = z.object({
   type: AgentTypeSchema.default("codex"),
   provider: AgentTypeSchema.optional(),
-  mode: z.enum(["bridge", "pane_bridge"]).default("pane_bridge"),
+  mode: z.enum(["bridge", "pane_bridge", "stateless_call"]).default("pane_bridge"),
   model_id: z.string().min(1).optional(),
   effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().default(true),
@@ -1715,7 +1715,7 @@ export class WebInterfaceServer {
     target: string;
     content: string;
     attachments?: FileAttachment[];
-    mode?: "bridge" | "pane_bridge";
+    mode?: "bridge" | "pane_bridge" | "stateless_call";
     autoApprove?: boolean;
     guiHostPortOverride?: string;
     /** Passed through to Hub `payload.spawn_dir` (agent working directory). */

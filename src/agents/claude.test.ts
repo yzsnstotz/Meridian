@@ -8,11 +8,10 @@ import {
   DEFAULT_CLAUDE_ALLOWED_TOOLS
 } from "./claude";
 
-test("buildClaudeCliArgs omits print-only flags by default", () => {
+test("buildClaudeCliArgs includes skip-permissions by default", () => {
   const args = buildClaudeCliArgs();
 
-  assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" ")]);
-  assert.equal(args.includes("--dangerously-skip-permissions"), false);
+  assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "), "--dangerously-skip-permissions"]);
   assert.equal(args.includes("--output-format"), false);
   assert.equal(args.includes("--include-partial-messages"), false);
 });
@@ -41,7 +40,7 @@ test("buildClaudeSpawnArgs threads auto-approve to the provider CLI", () => {
 });
 
 test("buildClaudeStreamArgs enables stream-json print mode without affecting bridge args", () => {
-  const args = buildClaudeStreamArgs("claude-3", true);
+  const args = buildClaudeStreamArgs("claude-3");
 
   assert.deepEqual(args, [
     "claude",

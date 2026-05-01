@@ -12,6 +12,14 @@ test("parseSlashCommand parses /spawn normally", () => {
   assert.equal(parsed.picker, null);
 });
 
+test("parseSlashCommand parses /spawn stateless_call mode", () => {
+  const parsed = parseSlashCommand("/spawn type=codex mode=stateless_call");
+  assert.equal(parsed.intent, "spawn");
+  assert.equal(parsed.target, "codex");
+  assert.equal(parsed.mode, "stateless_call");
+  assert.equal(parsed.picker, null);
+});
+
 test("parseSlashCommand parses /spawn with explicit dir", () => {
   const parsed = parseSlashCommand("/spawn type=codex mode=pane_bridge dir=/Users/yzliu/work/project-a");
   assert.equal(parsed.intent, "spawn");

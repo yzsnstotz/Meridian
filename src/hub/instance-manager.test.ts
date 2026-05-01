@@ -78,6 +78,102 @@ test("spawn registers instance and uses bridge args", async () => {
   await manager.kill(threadId);
 });
 
+test("spawn registers stateless_call codex instance without launching AgentAPI", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_command: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1150) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "stateless_call", undefined, "gpt-5.4", true, "xhigh");
+  const instance = registry.get(threadId);
+  const status = await manager.status(threadId);
+
+  assert.equal(threadId, "codex_01");
+  assert.equal(spawnCalls.length, 0);
+  assert.equal(instance?.mode, "stateless_call");
+  assert.equal(instance?.socket_path, "stateless:codex_01");
+  assert.equal(instance?.pid, 0);
+  assert.equal(instance?.supportsStream, true);
+  assert.equal(instance?.auto_approve, false);
+  assert.equal(instance?.sandbox_mode, "read-only");
+  assert.equal(instance?.model_id, "gpt-5.4");
+  assert.equal(instance?.reasoning_effort, "xhigh");
+  assert.deepEqual(status.agent_status, {
+    status: "idle",
+    mode: "stateless_call",
+    stateless: true,
+    current_model_id: "gpt-5.4"
+  });
+
+  await manager.kill(threadId);
+  assert.equal(registry.get(threadId), undefined);
+});
+
+test("spawn rejects stateless_call for non-Codex providers", async () => {
+  const registry = new InstanceRegistry();
+  let spawnCalls = 0;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    spawnFn: (() => {
+      spawnCalls += 1;
+      return new FakeChildProcess(1160) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  await assert.rejects(
+    async () => await manager.spawn("claude", "stateless_call"),
+    /stateless_call mode is only supported for codex/
+  );
+  assert.equal(spawnCalls, 0);
+});
+
+test("spawn does not reuse a thread id after a graceful kill", async () => {
+  const registry = new InstanceRegistry();
+  let nextPid = 1200;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => {
+      nextPid += 1;
+      return new FakeChildProcess(nextPid) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const firstThreadId = await manager.spawn("codex", "bridge");
+  await manager.kill(firstThreadId);
+
+  const secondThreadId = await manager.spawn("codex", "bridge");
+
+  assert.equal(firstThreadId, "codex_01");
+  assert.equal(secondThreadId, "codex_02");
+
+  await manager.kill(secondThreadId);
+});
+
 test("spawn stores spawn_trace_id on instance and registry when provided", async () => {
   const registry = new InstanceRegistry();
   const traceId = "11111111-1111-4111-8111-111111111111";
@@ -303,7 +399,8 @@ test("spawn claude bridge includes --allowedTools args", async () => {
     "--",
     "claude",
     "--allowedTools",
-    "Bash Edit Replace"
+    "Bash Edit Replace",
+    "--dangerously-skip-permissions"
   ]);
 
   await manager.kill(threadId);
@@ -392,7 +489,8 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
     "--",
     "claude",
     "--allowedTools",
-    "Bash Edit Replace"
+    "Bash Edit Replace",
+    "--dangerously-skip-permissions"
   ]);
 
   await manager.kill(threadId);
@@ -1339,6 +1437,52 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   assert.equal(registry.get("codex_01")?.status, "waiting");
   assert.equal(manager.getAttachedThread("777:chat-a"), "codex_01");
   assert.equal(manager.getAttachedThread("777:chat-b"), null);
+});
+
+test("rehydrateFromState seeds thread allocation from persisted conversation history", async () => {
+  const registry = new InstanceRegistry();
+  const nowIso = new Date().toISOString();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(6601) as never) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  await manager.rehydrateFromState({
+    version: 2,
+    updated_at: nowIso,
+    instances: [],
+    session_bindings: {},
+    push_subscriptions: {},
+    conversation_history: {
+      codex_14: [
+        {
+          id: "history-1",
+          sequence: 1,
+          event_kind: "final_reply",
+          source: "codex",
+          content: "done",
+          details_text: "",
+          raw_content: "done",
+          trace_id: null,
+          timestamp: nowIso,
+          replace_key: null
+        }
+      ]
+    }
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+
+  assert.equal(threadId, "codex_15");
+
+  await manager.kill(threadId);
 });
 
 test("switchModel keeps thread id and updates selected model", async () => {

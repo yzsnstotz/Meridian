@@ -97,7 +97,7 @@
     }
     .spawn-row-top {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) auto;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr) auto;
       gap: 0.75rem 0.875rem;
       align-items: stretch;
       width: 100%;
@@ -840,6 +840,11 @@
                 <option value="gemini">Provider: Gemini</option>
                 <option value="cursor">Provider: Cursor</option>
               </select>
+              <select id="spawn-mode" class="select" aria-label="Spawn mode">
+                <option value="pane_bridge">Mode: pane bridge</option>
+                <option value="bridge">Mode: bridge</option>
+                <option value="stateless_call">Mode: stateless call</option>
+              </select>
               <button type="button" id="btn-spawn-workspace" class="btn-workspace" aria-haspopup="dialog" aria-controls="spawn-workspace-dialog">
                 Workspace: default
               </button>
@@ -959,9 +964,11 @@
       var logViewBannerEl = document.getElementById("log-view-banner");
       var logViewCloseEl = document.getElementById("log-view-close");
       var providerEl = document.getElementById("spawn-provider");
+      var spawnModeEl = document.getElementById("spawn-mode");
       var spawnModelEl = document.getElementById("spawn-model");
       var autoApproveEl = document.getElementById("spawn-auto-approve");
       var SPAWN_PROVIDER_STORAGE_KEY = "meridian_spawn_provider";
+      var SPAWN_MODE_STORAGE_KEY = "meridian_spawn_mode";
       var SPAWN_MODEL_STORAGE_KEY = "meridian_spawn_model_by_provider";
       var SPAWN_AUTO_APPROVE_STORAGE_KEY = "meridian_spawn_auto_approve";
       var SPAWN_REPO_STORAGE_KEY = "meridian_spawn_repo";
@@ -1023,6 +1030,12 @@
       function normalizeSpawnProvider(value) {
         var provider = value == null ? "" : String(value).trim().toLowerCase();
         return provider || "codex";
+      }
+
+      function normalizeSpawnMode(value) {
+        var mode = value == null ? "" : String(value).trim().toLowerCase();
+        if (mode === "bridge" || mode === "pane_bridge" || mode === "stateless_call") return mode;
+        return "pane_bridge";
       }
 
       function readSavedSpawnModel(provider) {
@@ -1126,6 +1139,10 @@
               providerEl.value = savedProvider;
             }
           }
+          if (spawnModeEl) {
+            var savedMode = normalizeSpawnMode(localStorage.getItem(SPAWN_MODE_STORAGE_KEY));
+            spawnModeEl.value = savedMode;
+          }
           if (spawnModelEl) {
             var savedModelRaw = localStorage.getItem(SPAWN_MODEL_STORAGE_KEY);
             if (savedModelRaw) {
@@ -1150,6 +1167,7 @@
       function saveSpawnPreferences() {
         try {
           if (providerEl) localStorage.setItem(SPAWN_PROVIDER_STORAGE_KEY, providerEl.value || "codex");
+          if (spawnModeEl) localStorage.setItem(SPAWN_MODE_STORAGE_KEY, normalizeSpawnMode(spawnModeEl.value));
           if (spawnModelEl) writeSavedSpawnModel(providerEl && providerEl.value, spawnModelEl.value || "");
           localStorage.setItem(SPAWN_MODEL_STORAGE_KEY, JSON.stringify(spawnModelByProvider));
           if (autoApproveEl) localStorage.setItem(SPAWN_AUTO_APPROVE_STORAGE_KEY, autoApproveEl.checked ? "true" : "false");
@@ -1683,7 +1701,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign({
             type: providerEl && providerEl.value ? providerEl.value : "codex",
-            mode: "pane_bridge",
+            mode: spawnModeEl && spawnModeEl.value ? spawnModeEl.value : "pane_bridge",
             auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
           }, repoPayload, modelPayload))
         })
@@ -1712,6 +1730,7 @@
           void loadSpawnModelOptions(true);
         });
       }
+      if (spawnModeEl) spawnModeEl.addEventListener("change", saveSpawnPreferences);
       if (spawnModelEl) spawnModelEl.addEventListener("change", saveSpawnPreferences);
       if (autoApproveEl) autoApproveEl.addEventListener("change", saveSpawnPreferences);
 

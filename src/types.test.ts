@@ -65,6 +65,12 @@ test("HubMessageSchema preserves backward compatibility and applies priority def
   assert.equal(parsed.parent_span_id, undefined);
 });
 
+test("HubMessageSchema accepts stateless_call mode", () => {
+  const parsed = HubMessageSchema.parse(buildHubMessage({ mode: "stateless_call" }));
+
+  assert.equal(parsed.mode, "stateless_call");
+});
+
 test("HubMessageSchema parses new idempotency and tracing fields", () => {
   const spanId = randomUUID();
   const parentSpanId = randomUUID();
@@ -205,6 +211,24 @@ test("AgentInstanceSchema accepts optional integration_profile and sandbox_mode"
 
   assert.equal(parsed.integration_profile, "ads_public");
   assert.equal(parsed.sandbox_mode, "read-only");
+});
+
+test("AgentInstanceSchema accepts stateless_call mode", () => {
+  const parsed = AgentInstanceSchema.parse({
+    thread_id: "codex_04",
+    agent_type: "codex",
+    mode: "stateless_call",
+    socket_path: "stateless:codex_04",
+    pid: 0,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString(),
+    supportsStream: true,
+    sandbox_mode: "read-only"
+  });
+
+  assert.equal(parsed.mode, "stateless_call");
+  assert.equal(parsed.socket_path, "stateless:codex_04");
 });
 
 test("ProviderCapabilitySchema parses ADS capability metadata", () => {

@@ -479,15 +479,19 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
 
   assert.match(indexHtml, /id="spawn-provider"/);
+  assert.match(indexHtml, /id="spawn-mode"/);
+  assert.match(indexHtml, /value="stateless_call"/);
   assert.match(indexHtml, /id="spawn-model"/);
   assert.match(indexHtml, /id="btn-spawn-workspace"/);
   assert.match(indexHtml, /\/api\/models\?provider=/);
   assert.match(indexHtml, /\/api\/spawn_repos\/browse/);
   assert.match(indexHtml, /SPAWN_PROVIDER_STORAGE_KEY/);
+  assert.match(indexHtml, /SPAWN_MODE_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_MODEL_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_AUTO_APPROVE_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_REPO_STORAGE_KEY/);
   assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
+  assert.match(indexHtml, /mode:\s*spawnModeEl && spawnModeEl\.value \? spawnModeEl\.value : "pane_bridge"/);
   assert.match(indexHtml, /modelPayload\.model_id/);
   assert.match(indexHtml, /localStorage\.getItem\(SPAWN_AUTO_APPROVE_STORAGE_KEY\)\s*!==\s*"false"/);
 });

@@ -21,14 +21,13 @@ export function buildClaudeCliArgs(
   modelId?: string,
   autoApprove?: boolean
 ): string[] {
+  void autoApprove;
   // agentapi launches Claude in interactive mode, so omit --print-only streaming flags here.
   const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
   if (modelId) {
     args.push("--model", modelId);
   }
-  if (autoApprove === true) {
-    args.push("--dangerously-skip-permissions");
-  }
+  args.push("--dangerously-skip-permissions");
   return args;
 }
 
@@ -47,6 +46,7 @@ export function buildClaudeSpawnArgs(
 }
 
 export function buildClaudeStreamArgs(modelId?: string, autoApprove?: boolean): string[] {
+  void autoApprove;
   const args = [
     claudeAgentConfig.command,
     "--print",
@@ -60,8 +60,6 @@ export function buildClaudeStreamArgs(modelId?: string, autoApprove?: boolean): 
   if (modelId) {
     args.push("--model", modelId);
   }
-  if (autoApprove === true) {
-    args.push("--dangerously-skip-permissions");
-  }
+  args.push("--dangerously-skip-permissions");
   return args;
 }

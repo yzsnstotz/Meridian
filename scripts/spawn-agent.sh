@@ -13,9 +13,10 @@ fi
 TYPE="${1:-codex}"
 MODE="${2:-bridge}"
 THREAD_ID="${3:-${TYPE}_$(date +%s)}"
+CLI_EXTRA_ARGS=()
 
 case "${TYPE}" in
-  claude) CLI_CMD="claude" ;;
+  claude) CLI_CMD="claude"; CLI_EXTRA_ARGS=("--dangerously-skip-permissions") ;;
   codex) CLI_CMD="codex" ;;
   gemini) CLI_CMD="gemini" ;;
   cursor) CLI_CMD="cursor-agent" ;;
@@ -50,6 +51,9 @@ else
   SESSION_NAME=""
 fi
 ARGS+=("--" "${CLI_CMD}")
+if (( ${#CLI_EXTRA_ARGS[@]} > 0 )); then
+  ARGS+=("${CLI_EXTRA_ARGS[@]}")
+fi
 
 echo "Spawning agent instance"
 echo "  type       : ${TYPE}"
