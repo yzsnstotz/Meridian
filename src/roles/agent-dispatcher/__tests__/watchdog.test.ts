@@ -579,6 +579,95 @@ describe("ReconciliationWatchdog", () => {
     );
   });
 
+  it("continues when only the stale synthetic dispatcher worker is still marked running", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ✅ | 1 | W-01 | Finished worker | CODEX | — | Done. |",
+        "| ⬜ | 2 | W-02 | Next eligible worker | CODEX | W-01 | Ready to continue. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        DISPATCHER: {
+          thread_id: "d-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-02": {
+          thread_id: "placeholder",
+          trace_id: null,
+          started_at: "2026-04-03T12:10:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "pending",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient((message) => {
+      if (message.thread_id === "d-01") {
+        return buildStatusResult(message.thread_id, "running");
+      }
+
+      return buildStatusResult(message.thread_id, "running");
+    });
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "running_stale",
+        pendingWorkerCount: 1,
+        continueWorkerId: "W-02"
+      })
+    );
+  });
+
   it("does not invoke onDispatcherStalled when no pending workers remain", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
