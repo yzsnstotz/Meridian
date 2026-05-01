@@ -165,6 +165,53 @@ describe("reconcile", () => {
     });
   });
 
+  it("keeps validator rework running when the stored HubResult predates feedback delivery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/N-03.md");
+    const staleHubResult = {
+      ...buildTerminalSuccessResult("worker-thread-n03"),
+      timestamp: "2026-04-03T12:21:00.000Z"
+    };
+    harness.store.save(buildState({
+      workers: {
+        "N-03": {
+          ...buildRunningWorker("worker-thread-n03", outputPath, "2026-04-03T12:20:00.000Z"),
+          last_seen_at: "2026-04-03T12:25:00.000Z",
+          hub_result: staleHubResult,
+          validation: {
+            current_cycle: 1,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: 0.68,
+            last_feedback: "Add the missing protocol symbol map.",
+            history: [
+              {
+                cycle: 1,
+                score: 0.68,
+                feedback: "Add the missing protocol symbol map.",
+                validator_thread_id: "validator-thread-n03-cycle-1",
+                timestamp: "2026-04-03T12:22:00.000Z"
+              }
+            ]
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-03"]?.status).toBe("running");
+    expect(report).toEqual({
+      changed: [],
+      unchanged: [DISPATCHER_ENTRY_ID, "N-03"]
+    });
+  });
+
   it("keeps a worker running when its stored HubResult reports another worker's output", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
