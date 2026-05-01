@@ -658,7 +658,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         dispatchPlanData.rows as DispatchContinuationPlanRow[],
         lifecycleState,
         log,
-        attachToThread
+        attachToThread,
+        effectiveWorkerId
       );
       if (validatorResult) {
         return validatorResult;
@@ -1879,7 +1880,8 @@ async function processValidationQueue(
   rows: DispatchContinuationPlanRow[],
   lifecycleState: DispatchThreadStateV2,
   log: Logger,
-  attachToThread?: (threadId: string) => Promise<void>
+  attachToThread?: (threadId: string) => Promise<void>,
+  preferredWorkerId?: string | null
 ): Promise<ContinueDispatcherResponse | null> {
   const validatorConfig = config.validator;
   if (!validatorConfig?.enabled) {
@@ -1913,6 +1915,15 @@ async function processValidationQueue(
     }
   }
 
+  const preferredFixWorkerId = preferredWorkerId?.trim();
+  if (preferredFixWorkerId) {
+    const preferredWorker = lifecycleStore.load().workers[preferredFixWorkerId];
+    if (preferredWorker?.status === "fix_requested") {
+      const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
+      return await buildValidatorFeedbackDeliveryResponse(deps, preferredFixWorkerId);
+    }
+  }
+
   // Phase 2: Process awaiting_validation workers
   for (const row of rows) {
     const workerId = row.worker.trim();
@@ -1942,19 +1953,7 @@ async function processValidationQueue(
       lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
     }
 
-    const spawnDir = resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath);
-    const taskspecPath = resolveTaskspecPath(config);
-    const meridianApi = createMeridianApiClient();
-
-    const deps: ValidatorOrchestratorDeps = {
-      lifecycleStore,
-      validatorConfig,
-      meridianApi,
-      spawnDir,
-      dispatchPlanPath,
-      taskspecPath,
-      log
-    };
+    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
 
     void runValidationCycleWithFeedbackLoop(deps, workerId, row, log)
       .catch((error) => {
@@ -1982,19 +1981,10 @@ async function processValidationQueue(
     const worker = lifecycleStore.load().workers[workerId];
     if (worker?.status !== "fix_requested") continue;
 
-    const meridianApi = createMeridianApiClient();
-    const deps: ValidatorOrchestratorDeps = {
-      lifecycleStore,
-      validatorConfig,
-      meridianApi,
-      spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),
-      dispatchPlanPath,
-      taskspecPath: resolveTaskspecPath(config),
-      log
-    };
+    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
 
-    const delivered = await deliverValidatorFeedback(deps, workerId);
-    if (delivered) {
+    const response = await buildValidatorFeedbackDeliveryResponse(deps, workerId);
+    if (response.status === "validation_feedback_delivered") {
       const latestWorker = lifecycleStore.load().workers[workerId];
       if (latestWorker?.status === "awaiting_validation" && !latestWorker.validation?.validator_thread_id) {
         void runValidationCycleWithFeedbackLoop(deps, workerId, row, log).catch((error) => {
@@ -2007,15 +1997,50 @@ async function processValidationQueue(
       }
     }
 
+    return response;
+  }
+
+  return null;
+}
+
+async function buildValidatorFeedbackDeliveryResponse(
+  deps: ValidatorOrchestratorDeps,
+  workerId: string
+): Promise<ContinueDispatcherResponse> {
+  const delivered = await deliverValidatorFeedback(deps, workerId);
+  if (!delivered) {
     return {
       ok: true,
-      status: "validation_feedback_delivered",
-      message: `validator feedback delivered to ${workerId}`,
+      status: "manual_intervention_required",
+      message: `manual intervention required: ${workerId} validator feedback could not be delivered`,
       worker: workerId
     };
   }
 
-  return null;
+  return {
+    ok: true,
+    status: "validation_feedback_delivered",
+    message: `validator feedback delivered to ${workerId}`,
+    worker: workerId
+  };
+}
+
+function buildValidatorDeps(
+  config: AgentDispatcherConfig,
+  lifecycleStore: LifecycleStore,
+  validatorConfig: ValidatorConfig,
+  dispatchPlanPath: string,
+  log: Logger
+): ValidatorOrchestratorDeps {
+  return {
+    lifecycleStore,
+    validatorConfig,
+    meridianApi: createMeridianApiClient(),
+    spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),
+    dispatchPlanPath,
+    taskspecPath: resolveTaskspecPath(config),
+    log
+  };
 }
 
 function resolveCompletedWorkerValidationDisposition(
