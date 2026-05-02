@@ -1273,6 +1273,48 @@ describe("LifecycleStore", () => {
     expect(markdown).toContain("| ⚠️ ABANDONED | 1 | N-05 | Abandoned row |");
   });
 
+  it("keeps blocked plan display when the blocked report also contains failure evidence", async () => {
+    const harness = await createHarness();
+    harness.store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      workers: {
+        "N-07": {
+          thread_id: "worker-thread-n07",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:01:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: buildHubResult({
+            thread_id: "worker-thread-n07",
+            status: "success",
+            content: [
+              "Status: BLOCKED",
+              "",
+              "The apply command failed with exit code 1 because credentials are missing."
+            ].join("\n"),
+            timestamp: "2026-04-03T12:01:00.000Z"
+          }),
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    const markdown = harness.store.toPlanMarkdown([
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task |",
+      "|--------|-------|--------|------|",
+      "| ⬜ | 2 | N-07 | Migration 035 |",
+      ""
+    ].join("\n"));
+
+    expect(markdown).toContain("| ⛔ BLOCKED | 2 | N-07 | Migration 035 |");
+    expect(markdown).not.toContain("| ❌ | 2 | N-07 | Migration 035 |");
+  });
+
   it("does not downgrade plan ✅ status when lifecycle state regresses to abandoned", async () => {
     const harness = await createHarness({
       planTemplate: [

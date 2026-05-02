@@ -306,7 +306,12 @@ function getEffectiveLifecycleStatus(workerState: DispatchThreadStateV2["workers
     return "blocked";
   }
 
-  if (workerState.status !== "failed" && workerHubResult && hubResultContainsFailureSignal(workerHubResult)) {
+  if (
+    workerState.status !== "failed"
+    && workerState.status !== "blocked"
+    && workerHubResult
+    && hubResultContainsFailureSignal(workerHubResult)
+  ) {
     return "failed";
   }
 

@@ -17,6 +17,7 @@ import {
 import {
   countEligiblePendingServiceContinueWorkersFromWorkerRows,
   isHumanDispatchRow,
+  resolveManualInterventionWorkerFromWorkerRows,
   resolveServiceContinueWorkerFromWorkerRows
 } from "./service-continuation";
 
@@ -312,7 +313,8 @@ async function resolveRecoverableWorkerState(
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
     const rows = parseDispatchPlanRows(markdown);
     const continueWorkerId = resolveServiceContinueWorkerFromWorkerRows(rows, state)
-      ?? resolveValidationContinueWorkerFromWorkerRows(rows, state);
+      ?? resolveValidationContinueWorkerFromWorkerRows(rows, state)
+      ?? resolveManualInterventionWorkerFromWorkerRows(rows, state);
     return {
       pendingWorkerCount: countEligiblePendingServiceContinueWorkersFromWorkerRows(rows, state),
       continueWorkerId

@@ -1313,7 +1313,12 @@ function resolveDisplayStatus(worker: DispatchWorkerState): string {
     return PLAN_STATUS_SYMBOLS.blocked;
   }
 
-  if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
+  if (
+    worker.status !== "failed"
+    && worker.status !== "blocked"
+    && worker.hub_result
+    && hubResultContainsFailureSignal(worker.hub_result)
+  ) {
     return PLAN_STATUS_SYMBOLS.failed;
   }
 
