@@ -745,6 +745,66 @@ describe("ReconciliationWatchdog", () => {
     );
   });
 
+  it("invokes onDispatcherStalled when a blocked worker needs PM handoff and no pending rows remain", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ⛔ BLOCKED | 1 | W-01 | Blocked worker | CODEX | — | Needs PM resolution. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: null, started_at: null, status: "abandoned" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("t", "running"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "abandoned",
+        pendingWorkerCount: 0,
+        continueWorkerId: "W-01"
+      })
+    );
+  });
+
   it("does not invoke onDispatcherStalled when no pending workers remain", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

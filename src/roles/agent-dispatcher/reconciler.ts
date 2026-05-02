@@ -22,6 +22,7 @@ import {
 import { isMissingThreadEvidence } from "./missing-thread";
 import {
   computeBasenameVariants,
+  findExistingOutputArtifactPaths,
   outputArtifactsContain,
   outputsExist as outputArtifactsExist
 } from "./output-artifacts";
@@ -196,12 +197,18 @@ export async function reconcile(
       continue;
     }
 
+    const transitionHubResult = effectiveHubResult ?? synthesizeOutputArtifactHubResult(
+      workerId,
+      worker,
+      transition,
+      nowIso
+    );
     state.workers[workerId] = {
       ...worker,
-      trace_id: effectiveHubResult?.trace_id || worker.trace_id,
+      trace_id: transitionHubResult?.trace_id || worker.trace_id,
       status: transition.to,
-      last_seen_at: effectiveHubResult?.timestamp ?? nowIso,
-      hub_result: effectiveHubResult
+      last_seen_at: transitionHubResult?.timestamp ?? nowIso,
+      hub_result: transitionHubResult
     };
     lifecycleStore.logTransition(workerId, worker.status, transition.to, transition.trigger);
     report.changed.push({
@@ -243,6 +250,42 @@ export async function reconcile(
         from: "completed",
         to: "completed",
         trigger: "hub_result_recovery:completed_without_result"
+      });
+    }
+  }
+
+  for (const [workerId, worker] of Object.entries(state.workers)) {
+    if (
+      (worker.status !== "blocked" && worker.status !== "failed")
+      || worker.hub_result !== null
+      || justReconciledWorkerIds.has(workerId)
+    ) {
+      continue;
+    }
+
+    const recoveredHubResult = synthesizeOutputArtifactHubResult(
+      workerId,
+      worker,
+      {
+        to: worker.status,
+        trigger: worker.status === "blocked"
+          ? "output_artifact:block_signal"
+          : "output_artifact:failure_signal"
+      },
+      nowIso
+    );
+    if (recoveredHubResult) {
+      state.workers[workerId] = {
+        ...worker,
+        hub_result: recoveredHubResult,
+        trace_id: recoveredHubResult.trace_id || worker.trace_id,
+        last_seen_at: recoveredHubResult.timestamp ?? worker.last_seen_at
+      };
+      report.changed.push({
+        workerId,
+        from: worker.status,
+        to: worker.status,
+        trigger: `hub_result_recovery:${worker.status}_without_result`
       });
     }
   }
@@ -495,6 +538,72 @@ function determineWorkerTransition(
       to: "abandoned",
       trigger: "hub_idle:no_result:stale_timeout"
     };
+  }
+
+  return null;
+}
+
+function synthesizeOutputArtifactHubResult(
+  workerId: string,
+  worker: DispatchWorkerState,
+  transition: Pick<ReconciliationChange, "to" | "trigger">,
+  nowIso: string
+): HubResult | null {
+  if (transition.trigger !== "output_artifact:block_signal" && transition.trigger !== "output_artifact:failure_signal") {
+    return null;
+  }
+
+  const artifact = readFirstOutputArtifact(worker.expected_outputs, worker.started_at);
+  if (!artifact) {
+    return null;
+  }
+  const hasExpectedSignal = transition.trigger === "output_artifact:block_signal"
+    ? hubResultContainsBlockSignal({ content: artifact.content })
+    : hubResultContainsFailureSignal({ content: artifact.content });
+  if (!hasExpectedSignal) {
+    return null;
+  }
+
+  return {
+    trace_id: worker.trace_id ?? randomUUID(),
+    thread_id: worker.thread_id,
+    source: "output_artifact",
+    status: transition.to === "failed" ? "error" : "success",
+    run_state: "completed",
+    content: [
+      `Recovered ${workerId} result from output artifact: ${artifact.path}`,
+      "",
+      artifact.content
+    ].join("\n"),
+    attachments: [
+      {
+        path: artifact.path,
+        filename: path.basename(artifact.path),
+        mime_type: "text/markdown"
+      }
+    ],
+    timestamp: nowIso
+  };
+}
+
+function readFirstOutputArtifact(
+  expectedOutputs: string[],
+  startedAt: string
+): { path: string; content: string } | null {
+  for (const outputPath of expectedOutputs) {
+    const artifactPath = findExistingOutputArtifactPaths(outputPath, startedAt, reconciliationFs)[0];
+    if (!artifactPath) {
+      continue;
+    }
+
+    try {
+      return {
+        path: artifactPath,
+        content: reconciliationFs.readFileSync(artifactPath, "utf8")
+      };
+    } catch {
+      continue;
+    }
   }
 
   return null;

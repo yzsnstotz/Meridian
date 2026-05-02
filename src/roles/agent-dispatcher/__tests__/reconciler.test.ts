@@ -1516,7 +1516,22 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["V-01-A"]?.status).toBe("blocked");
+    const blockedWorker = harness.store.load().workers["V-01-A"];
+    expect(blockedWorker?.status).toBe("blocked");
+    expect(blockedWorker?.hub_result).toMatchObject({
+      thread_id: "worker-thread-v01a",
+      source: "output_artifact",
+      status: "success",
+      run_state: "completed",
+      content: expect.stringContaining("**Result**: BLOCKED"),
+      attachments: [
+        expect.objectContaining({
+          path: outputPath,
+          filename: "V-01-A.md",
+          mime_type: "text/markdown"
+        })
+      ]
+    });
     expect(report.changed).toContainEqual(
       expect.objectContaining({
         workerId: "V-01-A",
@@ -1563,6 +1578,49 @@ describe("reconcile", () => {
     expect(harness.store.load().workers["V-01-A"]?.status).toBe("running");
     expect(report.changed).toEqual([]);
     expect(report.unchanged).toContain("V-01-A");
+  });
+
+  it("recovers a missing hub_result for an already-blocked worker from its output report", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/N-07.md", [
+      "# N-07 Report",
+      "",
+      "Status: BLOCKED",
+      "",
+      "Remote migration apply cannot proceed without a SQL execution credential."
+    ].join("\n"));
+    harness.store.save(buildState({
+      workers: {
+        "N-07": {
+          ...buildRunningWorker("worker-thread-n07", outputPath),
+          status: "blocked",
+          hub_result: null
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    const worker = harness.store.load().workers["N-07"];
+    expect(worker?.status).toBe("blocked");
+    expect(worker?.hub_result).toMatchObject({
+      thread_id: "worker-thread-n07",
+      source: "output_artifact",
+      content: expect.stringContaining("Status: BLOCKED")
+    });
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "N-07",
+        from: "blocked",
+        to: "blocked",
+        trigger: "hub_result_recovery:blocked_without_result"
+      })
+    );
   });
 
   it("does not auto-complete a worker whose hub_result contains a PAUSE marker", async () => {

@@ -232,6 +232,76 @@ describe("dispatch-status tool", () => {
     }));
   });
 
+  it("keeps blocked lifecycle status when blocked report text also contains failure evidence", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-blocked-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ⛔ BLOCKED | 2 | N-07 | Migration 035 | CODEX-HIGH | BATCH-1-GATE | N-07.md | blocked |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-05T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "N-07": {
+            thread_id: "worker-thread-n07",
+            trace_id: null,
+            started_at: "2026-04-05T00:00:00.000Z",
+            last_seen_at: "2026-04-05T00:10:00.000Z",
+            status: "blocked",
+            expected_outputs: [],
+            hub_result: {
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              thread_id: "worker-thread-n07",
+              source: "output_artifact",
+              status: "success",
+              run_state: "completed",
+              content: [
+                "Status: BLOCKED",
+                "",
+                "Remote apply failed with exit code 1 because credentials are missing."
+              ].join("\n"),
+              attachments: [],
+              timestamp: "2026-04-05T00:10:00.000Z"
+            }
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      summary: expect.objectContaining({
+        failed: 1
+      }),
+      workers: [
+        expect.objectContaining({
+          worker_id: "N-07",
+          status: "⛔ BLOCKED",
+          lifecycle_status: "blocked",
+          failure_reason: expect.stringContaining("Status: BLOCKED")
+        })
+      ]
+    }));
+  });
+
   it("reports recovered PM resolver replies separately from worker status", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-pm-");
     tempDirectories.add(directory);

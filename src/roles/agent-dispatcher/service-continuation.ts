@@ -67,6 +67,23 @@ export function resolveManualInterventionWorker(
   return null;
 }
 
+export function resolveManualInterventionWorkerFromWorkerRows(
+  rows: DispatchContinuationWorkerRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null {
+  return resolveManualInterventionWorker(
+    rows.map((row) => ({
+      status: row.status,
+      batch: row.batch ?? null,
+      worker: row.worker_id,
+      model: row.model,
+      depends_on: row.depends_on,
+      notes: row.notes ?? null
+    })),
+    lifecycleState
+  );
+}
+
 export function isHumanDispatchRow(row: Pick<DispatchContinuationPlanRow, "model">): boolean {
   const model = row.model?.trim().toUpperCase() ?? "";
   return model === "HUMAN" || model === "PM";
