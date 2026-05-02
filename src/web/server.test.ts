@@ -1193,7 +1193,7 @@ test("Web Interface Server enforces ADS profile spawn safety defaults", async ()
     });
     assert.equal(response.status, 200);
     assert.equal(hubMessages.length, 1);
-    assert.equal(hubMessages[0]?.mode, "bridge");
+    assert.equal(hubMessages[0]?.mode, "stateless_call");
     assert.equal(hubMessages[0]?.payload.auto_approve, false);
     assert.equal(hubMessages[0]?.payload.integration_profile, "ads_public");
     assert.equal(hubMessages[0]?.payload.sandbox_mode, "read-only");
@@ -1209,6 +1209,28 @@ test("Web Interface Server enforces ADS profile spawn safety defaults", async ()
         attachments: [],
         timestamp: new Date().toISOString()
       };
+    }
+  });
+});
+
+test("Web Interface Server rejects ADS public stateless spawns for non-Codex providers", async () => {
+  const hubMessages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "claude",
+        integration_profile: "ads_public"
+      })
+    });
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /ads_public.*codex/i);
+    assert.equal(hubMessages.length, 0);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      hubMessages.push(message);
+      throw new Error("requestHub should not be called");
     }
   });
 });
