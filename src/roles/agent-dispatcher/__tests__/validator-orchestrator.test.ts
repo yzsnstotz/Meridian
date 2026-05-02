@@ -8,10 +8,12 @@ import { LifecycleStore } from "../lifecycle-store";
 import {
   deliverValidatorFeedback,
   executeValidationCycle,
+  parseValidatorOutput,
   type ValidatorOrchestratorDeps
 } from "../validator-orchestrator";
 import type { MeridianApiClient } from "../meridian-api-client";
 import type { DispatchContinuationPlanRow } from "../service-continuation";
+import type { ValidatorConfig } from "../../../types";
 
 const tempDirectories = new Set<string>();
 
@@ -27,6 +29,63 @@ afterEach(async () => {
 });
 
 describe("executeValidationCycle", () => {
+  it("passes binary validation when the validator reports a positive verdict", async () => {
+    const harness = await createHarness({
+      validatorConfig: {
+        threshold_type: "binary",
+        pass_threshold: 1
+      }
+    });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-binary-pass" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-binary-pass",
+      status: "success",
+      runState: "completed",
+      content: '{"positive":true,"feedback":"implementation is accepted"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "passed",
+      score: 1
+    });
+    expect(harness.lifecycleStore.load().workers["N-02"]?.validation?.history[0]).toMatchObject({
+      score: 1,
+      feedback: "implementation is accepted"
+    });
+  });
+
+  it("requests fixes for binary validation when the validator is not positive", async () => {
+    const harness = await createHarness({
+      validatorConfig: {
+        threshold_type: "binary"
+      }
+    });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-binary-fail" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-binary-fail",
+      status: "success",
+      runState: "completed",
+      content: '{"positive":false,"feedback":"tests are missing"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "fix_requested",
+      score: 0,
+      cycle: 1,
+      maxCycles: 3
+    });
+    expect(harness.lifecycleStore.load().workers["N-02"]?.validation?.history[0]).toMatchObject({
+      score: 0,
+      feedback: "tests are missing"
+    });
+  });
+
   it("retries validator spawn when Meridian returns a thread id already recorded in lifecycle state", async () => {
     const harness = await createHarness();
     harness.spawn
@@ -166,7 +225,20 @@ describe("executeValidationCycle", () => {
   });
 });
 
-async function createHarness(options: { killPolicy?: "always" | "on_success" | "never" } = {}): Promise<{
+describe("parseValidatorOutput", () => {
+  it("parses binary positive verdicts from validator JSON", () => {
+    expect(parseValidatorOutput('```json\n{"positive":true,"feedback":"accepted"}\n```')).toEqual({
+      score: 1,
+      feedback: "accepted",
+      positive: true
+    });
+  });
+});
+
+async function createHarness(options: {
+  killPolicy?: "always" | "on_success" | "never";
+  validatorConfig?: Partial<ValidatorConfig>;
+} = {}): Promise<{
   lifecycleStore: LifecycleStore;
   deps: ValidatorOrchestratorDeps;
   spawn: ReturnType<typeof vi.fn>;
@@ -247,7 +319,9 @@ async function createHarness(options: { killPolicy?: "always" | "on_success" | "
         auto_approve: false,
         pass_threshold: 0.7,
         max_fix_cycles: 3,
-        base_branch: "main"
+        base_branch: "main",
+        ...options.validatorConfig,
+        threshold_type: options.validatorConfig?.threshold_type ?? "score"
       },
       meridianApi,
       killPolicy: options.killPolicy ?? "never",

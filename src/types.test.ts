@@ -28,6 +28,12 @@ describe("role config mode defaults", () => {
     expect(validator.mode).toBe("bridge");
   });
 
+  it("defaults validator threshold_type to score", () => {
+    const validator = ValidatorConfigSchema.parse({});
+
+    expect(validator.threshold_type).toBe("score");
+  });
+
   it("preserves explicit pane_bridge mode for settable role configs", () => {
     const agentDispatcher = AgentDispatcherConfigSchema.parse({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
@@ -47,5 +53,11 @@ describe("role config mode defaults", () => {
     expect(agentDispatcher.mode).toBe("pane_bridge");
     expect(scheduler.mode).toBe("pane_bridge");
     expect(validator.mode).toBe("pane_bridge");
+  });
+
+  it("preserves explicit binary validator threshold_type", () => {
+    const validator = ValidatorConfigSchema.parse({ threshold_type: "binary" });
+
+    expect(validator.threshold_type).toBe("binary");
   });
 });

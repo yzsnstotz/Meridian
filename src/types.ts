@@ -279,12 +279,16 @@ export type DispatchModelOverride = z.infer<typeof DispatchModelOverrideSchema>;
 export const DispatchModelMapSchema = z.record(z.string().min(1), DispatchModelOverrideSchema);
 export type DispatchModelMap = z.infer<typeof DispatchModelMapSchema>;
 
+export const ValidatorThresholdTypeSchema = z.enum(["score", "binary"]);
+export type ValidatorThresholdType = z.infer<typeof ValidatorThresholdTypeSchema>;
+
 export const ValidatorConfigSchema = z.object({
   enabled: z.boolean().default(false),
   agent_type: AgentTypeSchema.default("claude"),
   model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema.default("bridge"),
   auto_approve: z.boolean().default(false),
+  threshold_type: ValidatorThresholdTypeSchema.default("score"),
   pass_threshold: z.number().min(0).max(1).default(0.7),
   max_fix_cycles: z.number().int().min(0).max(10).default(3),
   base_branch: z.string().min(1).default("main")

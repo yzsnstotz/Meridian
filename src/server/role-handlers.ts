@@ -36,7 +36,7 @@ import {
 } from "../roles/agent-dispatcher/service-continuation";
 import {
   isValidationEnabledForWorker,
-  resolveThresholdForWorker,
+  isValidatorResultPassing,
   interceptCompletionForValidation,
   executeValidationCycle,
   deliverValidatorFeedback,
@@ -1509,7 +1509,7 @@ function isCompletedWorkerValidationSatisfied(
     return false;
   }
 
-  return score >= resolveThresholdForWorker(validatorConfig, row);
+  return isValidatorResultPassing(validatorConfig, row, score);
 }
 
 async function persistAgentDispatcherRoleStatus(
@@ -1951,7 +1951,7 @@ async function processValidationQueue(
       return {
         ok: true,
         status: "manual_intervention_required",
-        message: `manual intervention required: ${workerId} validator score remained below threshold after max cycles`,
+        message: `manual intervention required: ${workerId} ${describeValidationMaxCycleFailure(validatorConfig)} after max cycles`,
         worker: workerId,
         ...(worker?.validation?.last_feedback ? { error: worker.validation.last_feedback } : {})
       };
@@ -2105,14 +2105,19 @@ function resolveCompletedWorkerValidationDisposition(
     return "awaiting_validation";
   }
 
-  const threshold = resolveThresholdForWorker(validatorConfig, row);
-  if (lastScore >= threshold) {
+  if (isValidatorResultPassing(validatorConfig, row, lastScore)) {
     return null;
   }
 
   return worker.validation.current_cycle >= worker.validation.max_fix_cycles
     ? "failed"
     : "awaiting_validation";
+}
+
+function describeValidationMaxCycleFailure(validatorConfig: ValidatorConfig): string {
+  return (validatorConfig.threshold_type ?? "score") === "binary"
+    ? "validator returned a failing verdict"
+    : "validator score remained below threshold";
 }
 
 async function isRecordedValidatorThreadActive(

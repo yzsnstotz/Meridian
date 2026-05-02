@@ -343,6 +343,7 @@ describe("role config handlers", () => {
       validator: {
         enabled: true,
         agent_type: "codex",
+        threshold_type: "binary",
         pass_threshold: 0.85,
         max_fix_cycles: 2,
         base_branch: "main"
@@ -356,6 +357,7 @@ describe("role config handlers", () => {
           agent_type: "codex",
           mode: "bridge",
           auto_approve: false,
+          threshold_type: "binary",
           pass_threshold: 0.85,
           max_fix_cycles: 2,
           base_branch: "main"
@@ -369,6 +371,7 @@ describe("role config handlers", () => {
         validator: {
           enabled: true,
           agent_type: "codex",
+          threshold_type: "binary",
           pass_threshold: 0.85,
           max_fix_cycles: 2,
           base_branch: "main"
@@ -406,6 +409,7 @@ describe("role config handlers", () => {
       validator: {
         enabled: true,
         agent_type: "codex",
+        threshold_type: "binary",
         pass_threshold: 0.9,
         max_fix_cycles: 1,
         base_branch: "main"
@@ -417,6 +421,7 @@ describe("role config handlers", () => {
           agent_type: "codex",
           mode: "bridge",
           auto_approve: false,
+          threshold_type: "binary",
           pass_threshold: 0.9,
           max_fix_cycles: 1,
           base_branch: "main"
@@ -430,6 +435,7 @@ describe("role config handlers", () => {
         validator: {
           enabled: true,
           agent_type: "codex",
+          threshold_type: "binary",
           pass_threshold: 0.9,
           max_fix_cycles: 1,
           base_branch: "main"
