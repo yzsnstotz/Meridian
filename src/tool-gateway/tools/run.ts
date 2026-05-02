@@ -400,10 +400,9 @@ async function buildWorkerPreamble(
   }
   lines.push("");
 
-  lines.push(`# Embedded Dispatch Command`);
-  lines.push(`The full dispatch command file contents are embedded below. Follow these instructions with the runtime overrides after this section.`);
-  lines.push("");
-  lines.push(command.trimEnd());
+  lines.push(`# Dispatch Command`);
+  lines.push(`Read and follow this file for your worker: ${commandPath}`);
+  lines.push(`Your worker file, dispatch plan, and any referenced docs are routed from there. Do not request these contents inline — read them from disk.`);
   lines.push("");
 
   lines.push(`# Runtime Overrides`);
