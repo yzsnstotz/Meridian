@@ -205,9 +205,10 @@ describe("run tool", () => {
     expect(sentContent).toContain("You are **CODEX**");
     expect(sentContent).toContain("worker **N-04**");
     expect(sentContent).toContain("**N-04**: Ship outputs");
-    expect(sentContent).toContain("# Agent Dispatch Command");
-    expect(sentContent).toContain("# Role Definition");
-    expect(sentContent).not.toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).toContain("# Dispatch Command");
+    expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).not.toContain("# Agent Dispatch Command");
+    expect(sentContent).not.toContain("# Role Definition");
     expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", hubResult);
     expect(mockRun.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]
@@ -222,6 +223,45 @@ describe("run tool", () => {
         summary: "Worker completed"
       }
     });
+  });
+
+  it("emits a slim preamble that references the command file path instead of inlining its body", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 4 | N-04 | Ship outputs | CODEX | N-03 | No non-report outputs required. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-slim",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+
+    // Slim contract assertions:
+    expect(sentContent).toContain("# Dispatch Command");
+    expect(sentContent).toContain("# Runtime Notes");
+    expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).not.toContain("# Embedded Dispatch Command");
+    expect(sentContent).not.toContain("# Runtime Overrides");
+    expect(sentContent).not.toContain("# Role Definition");
+    expect(sentContent).not.toContain("# Agent Dispatch Command");
+
+    // Body-content negative anchor: mockCommandAndPlanReads stubs the command
+    // file body as `"# command\n"`. Under the slim, the preamble must not inline
+    // that body, so its lowercase `# command` header must not appear in the
+    // sent content (the preamble uses `# Dispatch Command`, capital C).
+    expect(sentContent).not.toContain("# command");
+
+    // Sanity: preamble length is bounded. The legacy preamble inlined the
+    // command file body; the slim preamble for this fixture is well under 2 kB.
+    expect(sentContent.length).toBeLessThan(2000);
   });
 
   it("derives worker-specific report outputs from dispatch-plan notes with angle-bracket placeholders", async () => {
@@ -296,8 +336,8 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("follow the embedded dispatch command for implementation, validation, and delivery");
-    expect(sentContent).toContain("Do not infer extra git operations from this runtime override");
+    expect(sentContent).not.toContain("Steps 4b–4f, 5c–5d");
+    expect(sentContent).toContain("# Dispatch Command");
     expect(sentContent).not.toContain("this is a report-only worker");
     expect(sentContent).not.toContain("preserve the command file's NO-GIT delivery mode");
   });

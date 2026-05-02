@@ -394,42 +394,39 @@ async function buildWorkerPreamble(
   if (isDispatcherWorker(workerId)) {
     lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes, write completion reports, or make git commit/push decisions from this wrapper prompt.`);
   } else if (isPlanModifyingWorker(workerId)) {
-    lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). You are a special node that **may add, remove, or modify rows** in the dispatch plan as part of your task. The lifecycle store will reconcile your own row's final status from the Hub result, but you are free to write new rows or update the plan structure.`);
+    lines.push(`Your row is pre-marked 🔄. You **may add, remove, or modify rows** in the dispatch plan as part of your task — the lifecycle store reconciles your own row's final status.`);
   } else {
-    lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). The lifecycle store manages all plan status updates automatically — you do not need to write to the dispatch plan yourself.`);
+    lines.push(`Your row is pre-marked 🔄. The lifecycle store manages all plan status updates — you do not need to write to the dispatch plan yourself.`);
   }
   lines.push("");
 
-  lines.push(`# Embedded Dispatch Command`);
-  lines.push(`The full dispatch command file contents are embedded below. Follow these instructions with the runtime overrides after this section.`);
-  lines.push("");
-  lines.push(command.trimEnd());
+  lines.push(`# Dispatch Command`);
+  lines.push(`Read and follow this file for your worker: ${commandPath}`);
+  lines.push(`Your worker file, dispatch plan, and any referenced docs are routed from there. Do not request these contents inline — read them from disk.`);
   lines.push("");
 
-  lines.push(`# Runtime Overrides`);
-  lines.push(`Follow the embedded dispatch command with these overrides:`);
-  lines.push(`- **Skip Step 4a** (mark in-progress) — already done for you.`);
+  lines.push(`# Runtime Notes`);
   if (isDispatcherWorker(workerId)) {
-    lines.push(`- Treat any local Meridian tool bootstrap failure (for example Node CLI startup, IPC socket bind, or sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
+    lines.push(`- Skip Step 4a (mark in-progress) — handled for you.`);
+    lines.push(`- Treat any local Meridian tool bootstrap failure (Node CLI startup, IPC socket bind, sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
     lines.push(`- Do NOT write Step 5b completion reports, create extra repo artifacts, or reason about git commit/push from this run. Send the required notify once, leave the plan untouched, and stop when the dispatcher prompt says to pause.`);
   } else if (isPlanModifyingWorker(workerId)) {
+    lines.push(`- Skip Step 4a (mark in-progress) — handled for you.`);
     lines.push(`- **Step 5a** (dispatch plan updates): you **must** write your findings and any corrective tasks directly into the dispatch plan. Add new worker rows, update statuses, or restructure as needed — this is your primary output.`);
+    lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead.`);
   } else {
-    lines.push(`- **Skip Step 5a** (mark complete in dispatch plan) — the lifecycle store handles this from the Hub result.`);
-  }
-  if (!isDispatcherWorker(workerId)) {
+    lines.push(`- Skip Step 4a (mark in-progress) and Step 5a (mark complete) — handled for you.`);
+    lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead.`);
     const schedulerRunReportOutput = findSchedulerRunReportOutput(expectedOutputs, workerId);
-    lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead. Do NOT get stuck retrying writes to paths you cannot access.`);
     if (schedulerRunReportOutput) {
       lines.push(`- **Scheduler report path override**: write the completion report to \`${schedulerRunReportOutput}\`. Create the parent directory if needed. This supersedes any report path in the command file.`);
     }
     if (isReportOnlyWorker(workerId, row, expectedOutputs)) {
       lines.push(`- **Steps 5c–5d**: this is a report-only worker. Do NOT create git commits, branches, pushes, or PRs for the report artifact; return the report result and stop.`);
     } else if (commandForbidsGit) {
-      lines.push(`- **Steps 4b–4f, 5c–5d**: follow the embedded dispatch command for implementation, validation, and delivery; preserve the command file's NO-GIT delivery mode. Do NOT create git commits, branches, pushes, or PRs unless the embedded dispatch command explicitly allows it.`);
-    } else {
-      lines.push(`- **Steps 4b–4f, 5c–5d**: follow the embedded dispatch command for implementation, validation, and delivery. Do not infer extra git operations from this runtime override.`);
+      lines.push(`- **Steps 4b–4f, 5c–5d**: follow the command file for implementation, validation, and delivery; preserve the command file's NO-GIT delivery mode. Do NOT create git commits, branches, pushes, or PRs unless the command file explicitly allows it.`);
     }
+    // Implicit else: no extra bullet. Default git behavior is whatever the command file says.
   }
 
   return lines.join("\n");
