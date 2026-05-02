@@ -762,7 +762,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       // is complete — return a distinct status so the dispatcher AI can send
       // the final completion notify and stop, instead of relaunching the hub
       // session in an infinite loop.
-      if (isDispatchPlanComplete(dispatchPlanData.rows, lifecycleState)) {
+      if (isDispatchPlanComplete(dispatchPlanData.rows, lifecycleState, validatorConfig)) {
         return {
           ok: true,
           status: "plan_complete",
@@ -1028,7 +1028,12 @@ async function getRole(
 
   const dispatchPlan = await loadDispatchPlanData(agentDispatcherConfig.dispatch_plan_path, options.log);
   let lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
-  let effectiveRoleStatus = deriveAgentDispatcherRoleStatus(role.status, lifecycleState, dispatchPlan.rows);
+  let effectiveRoleStatus = deriveAgentDispatcherRoleStatus(
+    role.status,
+    lifecycleState,
+    dispatchPlan.rows,
+    agentDispatcherConfig.validator
+  );
   if (effectiveRoleStatus !== role.status) {
     await persistAgentDispatcherRoleStatus(stateStore, role.threadId, effectiveRoleStatus);
   }
@@ -1066,7 +1071,12 @@ async function getRole(
   let sessionLog = sessionLogResult.lines;
   if (sessionLogResult.dispatcherMissing) {
     lifecycleState = await loadDispatchLifecycleState(agentDispatcherConfig.dispatch_plan_path, options.log);
-    effectiveRoleStatus = deriveAgentDispatcherRoleStatus(effectiveRoleStatus, lifecycleState, dispatchPlan.rows);
+    effectiveRoleStatus = deriveAgentDispatcherRoleStatus(
+      effectiveRoleStatus,
+      lifecycleState,
+      dispatchPlan.rows,
+      agentDispatcherConfig.validator
+    );
     dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
     dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
     continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
@@ -1389,7 +1399,7 @@ async function resolvePresentedRoleStatus(role: RoleState, log: Logger): Promise
 
   const lifecycleState = await loadDispatchLifecycleState(config.dispatch_plan_path, log);
   const dispatchPlan = await loadDispatchPlanData(config.dispatch_plan_path, log);
-  return deriveAgentDispatcherRoleStatus(role.status, lifecycleState, dispatchPlan.rows);
+  return deriveAgentDispatcherRoleStatus(role.status, lifecycleState, dispatchPlan.rows, config.validator);
 }
 
 function resolvePresentedSchedulerRoleStatus(role: RoleState, log: Logger): string {
@@ -1412,9 +1422,10 @@ function resolvePresentedSchedulerRoleStatus(role: RoleState, log: Logger): stri
 function deriveAgentDispatcherRoleStatus(
   roleStatus: string,
   lifecycleState: DispatchThreadStateV2,
-  rows: DispatchPlanRow[] = []
+  rows: DispatchPlanRow[] = [],
+  validatorConfig?: ValidatorConfig
 ): string {
-  const terminalStatus = resolveDispatchPlanTerminalRoleStatus(rows, lifecycleState);
+  const terminalStatus = resolveDispatchPlanTerminalRoleStatus(rows, lifecycleState, validatorConfig);
   if (terminalStatus) {
     return terminalStatus;
   }
@@ -1436,14 +1447,15 @@ function deriveAgentDispatcherRoleStatus(
 
 function resolveDispatchPlanTerminalRoleStatus(
   rows: DispatchPlanRow[],
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  validatorConfig?: ValidatorConfig
 ): "completed" | "failed" | null {
   const nonHumanRows = rows.filter((row) => !isHumanDispatchRow(row) && row.worker.trim().length > 0);
   if (nonHumanRows.length === 0) {
     return null;
   }
 
-  const statuses = nonHumanRows.map((row) => resolveDispatchRowTerminalStatus(row, lifecycleState));
+  const statuses = nonHumanRows.map((row) => resolveDispatchRowTerminalStatus(row, lifecycleState, validatorConfig));
   if (statuses.some((status) => status === null)) {
     return null;
   }
@@ -1453,25 +1465,51 @@ function resolveDispatchPlanTerminalRoleStatus(
 
 function resolveDispatchRowTerminalStatus(
   row: DispatchPlanRow,
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  validatorConfig?: ValidatorConfig
 ): "completed" | "failed" | null {
   const planStatus = row.status.trim();
   const lifecycleStatus = lifecycleState.workers[row.worker]?.status;
 
-  if (planStatus === "✅" || planStatus === "⛔ SKIPPED") {
-    return "completed";
+  if (lifecycleStatus === "failed" || lifecycleStatus === "abandoned") {
+    return "failed";
   }
   if (planStatus === "❌" || planStatus === "⚠️ ABANDONED") {
     return "failed";
   }
-  if (lifecycleStatus === "completed" || lifecycleStatus === "skipped") {
+  if (planStatus === "⛔ SKIPPED" || lifecycleStatus === "skipped") {
     return "completed";
   }
-  if (lifecycleStatus === "failed" || lifecycleStatus === "abandoned") {
-    return "failed";
+  if (
+    (planStatus === "✅" || lifecycleStatus === "completed")
+    && isCompletedWorkerValidationSatisfied(row, lifecycleState, validatorConfig)
+  ) {
+    return "completed";
   }
 
   return null;
+}
+
+function isCompletedWorkerValidationSatisfied(
+  row: DispatchPlanRow,
+  lifecycleState: DispatchThreadStateV2,
+  validatorConfig?: ValidatorConfig
+): boolean {
+  if (!validatorConfig?.enabled || !isValidationEnabledForWorker(validatorConfig, row)) {
+    return true;
+  }
+
+  const worker = lifecycleState.workers[row.worker];
+  if (!worker || worker.status !== "completed") {
+    return false;
+  }
+
+  const score = worker.validation?.last_score;
+  if (typeof score !== "number") {
+    return false;
+  }
+
+  return score >= resolveThresholdForWorker(validatorConfig, row);
 }
 
 async function persistAgentDispatcherRoleStatus(
@@ -1847,7 +1885,11 @@ function isLifecycleTerminal(lifecycleState: DispatchThreadStateV2, workerId: st
  * the lifecycle store. This detects the "all done" condition so the dispatcher
  * can stop instead of infinitely relaunching its hub session.
  */
-function isDispatchPlanComplete(rows: DispatchPlanRow[], lifecycleState: DispatchThreadStateV2): boolean {
+function isDispatchPlanComplete(
+  rows: DispatchPlanRow[],
+  lifecycleState: DispatchThreadStateV2,
+  validatorConfig?: ValidatorConfig
+): boolean {
   const nonHumanRows = rows.filter((row) => !isHumanDispatchRow(row) && row.worker.trim().length > 0);
   if (nonHumanRows.length === 0) {
     return false;
@@ -1856,7 +1898,8 @@ function isDispatchPlanComplete(rows: DispatchPlanRow[], lifecycleState: Dispatc
   return nonHumanRows.every((row) => {
     const planStatus = row.status.trim();
     if (planStatus === "✅" || planStatus === "⛔ SKIPPED") {
-      return true;
+      return planStatus === "⛔ SKIPPED"
+        || isCompletedWorkerValidationSatisfied(row, lifecycleState, validatorConfig);
     }
 
     // Plan markdown may be stale. Cross-reference lifecycle store.
