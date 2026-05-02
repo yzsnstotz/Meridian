@@ -3656,6 +3656,96 @@ describe("role config handlers", () => {
     }
   });
 
+  it("does not project completed while a finished worker still needs validation", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-validation-pending-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-validation-pending",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true,
+            validator: {
+              enabled: true,
+              agent_type: "codex",
+              mode: "bridge",
+              pass_threshold: 0.85,
+              max_fix_cycles: 3,
+              base_branch: "main"
+            }
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 2 | N-06 | Synthesize final report | CODEX-XHIGH | N-02, N-03 | TaskSpec | terminal gate |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-07T14:15:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-06": buildLifecycleWorker({
+          thread_id: "worker-thread-n06",
+          status: "completed",
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        })
+      },
+      last_reconciled_at: "2026-04-07T14:15:00.000Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(persistedState);
+
+      await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            thread_id: "agent-dispatcher-validation-pending",
+            status: "active",
+            task_count: 1
+          })
+        ])
+      );
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-validation-pending")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-validation-pending",
+        status: "active"
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("clears sticky terminal agent-dispatcher status when the plan is no longer terminal", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-retry-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
