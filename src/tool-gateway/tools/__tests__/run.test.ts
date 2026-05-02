@@ -224,6 +224,12 @@ describe("run tool", () => {
     });
   });
 
+  it.skip("emits a slim preamble that references the command file path instead of inlining its body", async () => {
+    // This test is activated in Task 6 of the worker-preamble-slim plan once the slim is implemented.
+    // It captures the post-slim contract: the preamble points at the command file
+    // and does NOT inline body section headers from the file.
+  });
+
   it("derives worker-specific report outputs from dispatch-plan notes with angle-bracket placeholders", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
