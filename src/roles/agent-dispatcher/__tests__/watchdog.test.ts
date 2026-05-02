@@ -336,6 +336,83 @@ describe("ReconciliationWatchdog", () => {
     );
   });
 
+  it("invokes onDispatcherStalled when a worker is waiting for validation without a validator thread", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 🔍 | 2 | W-06 | Validate final synthesis | CODEX-XHIGH | W-01 | Report written. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "dispatcher-thread", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-06": {
+          thread_id: "worker-thread-06",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111106",
+            thread_id: "worker-thread-06",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Worker completed and wrote its report.",
+            attachments: [],
+            timestamp: "2026-04-03T12:10:00.000Z"
+          },
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("dispatcher-thread", "completed"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "completed",
+        pendingWorkerCount: 0,
+        continueWorkerId: "W-06"
+      })
+    );
+  });
+
   it("invokes onDispatcherStalled when pending markdown rows were appended after lifecycle state was written", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
