@@ -5,11 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  hasPmResolverHandledCurrentWorkerIssue,
   tryContinueDispatchWorker,
   type WatchdogContinueDispatcher
 } from "../index";
 import { StateStore } from "../state-store";
-import type { AppState } from "../types";
+import type { AppState, DispatchThreadStateV2 } from "../types";
 
 describe("watchdog direct dispatcher recovery", () => {
   let tempDirs: string[] = [];
@@ -84,6 +85,81 @@ describe("watchdog direct dispatcher recovery", () => {
     expect(continueDispatcher).toHaveBeenCalledWith("agent-dispatcher-validation-recovery", "N-05");
   });
 });
+
+describe("watchdog PM resolver repeat guard", () => {
+  it("treats a non-failed PM resolver after the current worker start as handled", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-02T17:52:24.552Z",
+      pmStartedAt: "2026-05-02T17:58:29.599Z",
+      pmStatus: "completed"
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(true);
+  });
+
+  it("allows a new PM resolver after the worker is retried", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-02T19:00:00.000Z",
+      pmStartedAt: "2026-05-02T17:58:29.599Z",
+      pmStatus: "completed"
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(false);
+  });
+
+  it("does not count failed PM resolver attempts as handled", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-02T17:52:24.552Z",
+      pmStartedAt: "2026-05-02T17:58:29.599Z",
+      pmStatus: "failed"
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(false);
+  });
+});
+
+function buildPmResolverGuardState(options: {
+  workerStartedAt: string;
+  pmStartedAt: string;
+  pmStatus: "running" | "completed" | "failed";
+}): Pick<DispatchThreadStateV2, "workers" | "pm_resolvers"> {
+  return {
+    workers: {
+      "N-07": {
+        thread_id: "codex_44",
+        trace_id: null,
+        started_at: options.workerStartedAt,
+        last_seen_at: "2026-05-02T18:17:50.512Z",
+        status: "blocked",
+        expected_outputs: [],
+        hub_result: null,
+        command_preamble: null,
+        retry_count: 0
+      }
+    },
+    pm_resolvers: [
+      {
+        thread_id: "codex_45",
+        status: options.pmStatus,
+        started_at: options.pmStartedAt,
+        last_seen_at: "2026-05-02T18:00:49.572Z",
+        agent_type: "codex",
+        model_id: null,
+        mode: "bridge",
+        auto_approve: true,
+        issue: {
+          status: "manual_intervention_required",
+          worker_id: "N-07",
+          message: "manual intervention required: N-07 is blocked",
+          error: null,
+          source: "watchdog"
+        },
+        result: null,
+        error: null
+      }
+    ]
+  };
+}
 
 function silentLog(): typeof console {
   return {
