@@ -216,6 +216,60 @@ describe("detectCycleCompletion", () => {
     expect(detectCycleCompletion(buildConfig(planPath))).toEqual({ complete: false });
   });
 
+  it("ignores an abandoned synthetic dispatcher lifecycle row when plan workers completed", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "github-opc-scan-plan.md");
+    await fs.writeFile(planPath, [
+      "| Status | batch | worker | task | model | depends_on |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ✅ | 0 | PRE-FLIGHT | Environment Health Check | CODEX-HIGH | — |",
+      "| ✅ | 1 | W-ANALYTICS | Write metrics and dashboard data | CODEX-HIGH | PRE-FLIGHT |",
+      ""
+    ].join("\n"), "utf8");
+
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: { thread_id: "dispatcher-thread", started_at: null, status: "abandoned" },
+      workers: {
+        DISPATCHER: {
+          thread_id: "dispatcher-thread",
+          trace_id: null,
+          started_at: "2026-05-02T01:00:00.000Z",
+          last_seen_at: "2026-05-02T01:01:00.000Z",
+          status: "abandoned",
+          expected_outputs: [],
+          hub_result: null,
+          retry_count: 0
+        },
+        "PRE-FLIGHT": {
+          thread_id: "worker-thread-preflight",
+          trace_id: null,
+          started_at: "2026-05-02T01:02:00.000Z",
+          last_seen_at: "2026-05-02T01:03:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          retry_count: 0
+        },
+        "W-ANALYTICS": {
+          thread_id: "worker-thread-analytics",
+          trace_id: null,
+          started_at: "2026-05-02T01:04:00.000Z",
+          last_seen_at: "2026-05-02T01:05:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    expect(detectCycleCompletion(buildConfig(planPath))).toEqual({ complete: true, outcome: "completed" });
+  });
+
   it("treats completed lifecycle rows with failed worker reports as failed", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-cycle-"));
     tempDirectories.add(directory);

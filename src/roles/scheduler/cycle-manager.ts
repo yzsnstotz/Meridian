@@ -13,6 +13,7 @@ import { archiveRun, type ArchiveResult } from "./archiver";
 import { hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 
 // Terminal statuses for non-human workers
 const TERMINAL_STATUSES = new Set(["completed", "failed", "abandoned", "skipped"]);
@@ -184,6 +185,9 @@ export function detectCycleCompletion(
 
     for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
       if (planWorkers.has(workerId)) {
+        continue;
+      }
+      if (workerId === DISPATCHER_WORKER_ID) {
         continue;
       }
 
