@@ -141,7 +141,7 @@ describe("LifecycleStore", () => {
     });
   });
 
-  it("marks a success HubResult failed when a fresh expected output report is blocked", async () => {
+  it("marks a success HubResult blocked when a fresh expected output report is blocked", async () => {
     const harness = await createHarness();
     const outputPath = path.join(harness.directory, "reports", "V-01-A.md");
     await fsp.mkdir(path.dirname(outputPath), { recursive: true });
@@ -169,7 +169,7 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["V-01-A"]).toMatchObject({
-      status: "failed",
+      status: "blocked",
       hub_result: expect.objectContaining({
         content: "Report written."
       })
@@ -443,7 +443,7 @@ describe("LifecycleStore", () => {
     });
   });
 
-  it("marks a success HubResult failed when content reports BLOCKED", async () => {
+  it("marks a success HubResult blocked when content reports BLOCKED", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
 
@@ -455,7 +455,7 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["N-01"]).toMatchObject({
-      status: "failed",
+      status: "blocked",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });
@@ -627,7 +627,7 @@ describe("LifecycleStore", () => {
     });
   });
 
-  it("marks a success HubResult failed when content starts with a plain BLOCKED marker", async () => {
+  it("marks a success HubResult blocked when content starts with a plain BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
       "reports/PRE-FLIGHT.md"
@@ -642,12 +642,12 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
-      status: "failed",
+      status: "blocked",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });
 
-  it("marks a success HubResult failed when final progress text is concatenated before a BLOCKED marker", async () => {
+  it("marks a success HubResult blocked when final progress text is concatenated before a BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
       "reports/PRE-FLIGHT.md"
@@ -665,12 +665,12 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
-      status: "failed",
+      status: "blocked",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });
 
-  it("marks a success HubResult failed when verification progress text precedes a concatenated BLOCKED marker", async () => {
+  it("marks a success HubResult blocked when verification progress text precedes a concatenated BLOCKED marker", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", [
       "reports/PRE-FLIGHT.md"
@@ -689,12 +689,12 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
-      status: "failed",
+      status: "blocked",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });
 
-  it("marks a success HubResult failed when a report-only worker finished as BLOCKED", async () => {
+  it("marks a success HubResult blocked when a report-only worker finished as BLOCKED", async () => {
     const harness = await createHarness();
     const reportPath = path.join(harness.directory, "reports", "run", "run-001", "PRE-FLIGHT.md");
     await fsp.mkdir(path.dirname(reportPath), { recursive: true });
@@ -718,7 +718,7 @@ describe("LifecycleStore", () => {
     }));
 
     expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
-      status: "failed",
+      status: "blocked",
       last_seen_at: "2026-04-03T12:00:00.000Z"
     });
   });

@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-import { LifecycleStore, hubResultContainsFailureSignal } from "../../roles/agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { DispatchThreadStateV2 } from "../../types";
 import type { ToolDefinition, ToolResult } from "../registry";
 import {
@@ -225,8 +225,8 @@ function buildWorkerStatus(
   const workerState = lifecycleState.workers[row.worker_id];
   const lifecycleStatus = getEffectiveLifecycleStatus(workerState);
   const progressOverride = getProgressStatusOverride(progress);
-  const displayStatus = progressOverride?.status ?? row.status;
   const displayLifecycleStatus = progressOverride?.lifecycleStatus ?? lifecycleStatus;
+  const displayStatus = progressOverride?.status ?? getLifecycleStatusSymbol(displayLifecycleStatus) ?? row.status;
   const staleDurationMs = getStaleDurationMs(displayStatus, workerState?.last_seen_at, staleThresholdMinutes, generatedAt);
   const hasCurrentAssignment = displayLifecycleStatus !== "pending";
 
@@ -246,9 +246,36 @@ function buildWorkerStatus(
   };
 }
 
+function getLifecycleStatusSymbol(lifecycleStatus: string | null): string | null {
+  switch (lifecycleStatus) {
+    case "pending":
+      return "⬜";
+    case "running":
+      return "🔄";
+    case "completed":
+      return "✅";
+    case "failed":
+      return "❌";
+    case "blocked":
+      return "⛔ BLOCKED";
+    case "abandoned":
+      return "⚠️ ABANDONED";
+    case "skipped":
+      return "⛔ SKIPPED";
+    case "awaiting_validation":
+      return "🔍";
+    default:
+      return null;
+  }
+}
+
 function getEffectiveLifecycleStatus(workerState: DispatchThreadStateV2["workers"][string] | undefined): string | null {
   if (!workerState) {
     return null;
+  }
+
+  if (workerState.status !== "blocked" && workerState.hub_result && hubResultContainsBlockSignal(workerState.hub_result)) {
+    return "blocked";
   }
 
   if (workerState.status !== "failed" && workerState.hub_result && hubResultContainsFailureSignal(workerState.hub_result)) {
@@ -351,7 +378,7 @@ function extractFailureReason(
   workerState: DispatchThreadStateV2["workers"][string] | undefined,
   lifecycleStatus: string | null
 ): string | null {
-  if (!workerState || lifecycleStatus !== "failed") {
+  if (!workerState || (lifecycleStatus !== "failed" && lifecycleStatus !== "blocked")) {
     return null;
   }
 
@@ -726,6 +753,10 @@ function categorizeStatus(status: string): "pending" | "running" | "completed" |
 
   if (status === "✅" || status === "completed") {
     return "completed";
+  }
+
+  if (status === "⛔ BLOCKED" || status === "blocked") {
+    return "failed";
   }
 
   if (status === "⛔ SKIPPED" || status === "skipped") {

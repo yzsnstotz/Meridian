@@ -118,7 +118,7 @@ export const HubResultSchema = z.object({
 export type HubResult = z.infer<typeof HubResultSchema>;
 
 export const LifecycleStatusSchema = z.enum([
-  "pending", "running", "completed", "failed", "abandoned", "skipped",
+  "pending", "running", "completed", "failed", "blocked", "abandoned", "skipped",
   "awaiting_validation", "fix_requested"
 ]);
 export type LifecycleStatus = z.infer<typeof LifecycleStatusSchema>;
@@ -222,7 +222,7 @@ export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher", "scheduler"]);
 export type RoleType = z.infer<typeof RoleTypeSchema>;
 
-export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed"]);
+export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed", "blocked"]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
 export const DispatchTaskSchema = z.object({

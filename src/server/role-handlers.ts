@@ -16,6 +16,7 @@ import {
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import {
   LifecycleStore,
+  hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
   hubResultContainsHitLimit
 } from "../roles/agent-dispatcher/lifecycle-store";
@@ -635,6 +636,11 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldActivateAfterContinue = context.status !== ACTIVE_ROLE_STATUS;
 
+    const initialManualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
+    if (initialManualInterventionWorkerId) {
+      return buildManualInterventionResponse(initialManualInterventionWorkerId, lifecycleState);
+    }
+
     const preValidationRunningWorkers = findBlockingRunningNonHumanWorkers(
       dispatchPlanData.rows,
       lifecycleState,
@@ -672,19 +678,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (manualInterventionWorkerId) {
-      const manualInterventionWorker = lifecycleState.workers[manualInterventionWorkerId];
-      const hubResult = manualInterventionWorker?.hub_result ?? null;
-      const interventionSummary = summarizeManualInterventionResult(hubResult);
-      const interventionReason = hubResult && hubResultContainsHitLimit(hubResult)
-        ? "reported hit limit"
-        : "reported a blocking failure";
-      return {
-        ok: true,
-        status: "manual_intervention_required",
-        message: `manual intervention required: ${manualInterventionWorkerId} ${interventionReason}`,
-        worker: manualInterventionWorkerId,
-        ...(interventionSummary ? { error: interventionSummary } : {})
-      };
+      return buildManualInterventionResponse(manualInterventionWorkerId, lifecycleState);
     }
 
     const runningWorkers = findBlockingRunningNonHumanWorkers(
@@ -1186,6 +1180,9 @@ function toSyntheticTaskStatus(status: string | null | undefined): string {
     case "failed":
     case "❌":
       return "failed";
+    case "blocked":
+    case "⛔ BLOCKED":
+      return "blocked";
     case "abandoned":
     case "⚠️ ABANDONED":
       return "failed";
@@ -1471,10 +1468,10 @@ function resolveDispatchRowTerminalStatus(
   const planStatus = row.status.trim();
   const lifecycleStatus = lifecycleState.workers[row.worker]?.status;
 
-  if (lifecycleStatus === "failed" || lifecycleStatus === "abandoned") {
+  if (lifecycleStatus === "failed" || lifecycleStatus === "blocked" || lifecycleStatus === "abandoned") {
     return "failed";
   }
-  if (planStatus === "❌" || planStatus === "⚠️ ABANDONED") {
+  if (planStatus === "❌" || planStatus === "⛔ BLOCKED" || planStatus === "⚠️ ABANDONED") {
     return "failed";
   }
   if (planStatus === "⛔ SKIPPED" || lifecycleStatus === "skipped") {
@@ -1831,10 +1828,32 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
+function buildManualInterventionResponse(
+  workerId: string,
+  lifecycleState: DispatchThreadStateV2
+): ContinueDispatcherResponse {
+  const manualInterventionWorker = lifecycleState.workers[workerId];
+  const hubResult = manualInterventionWorker?.hub_result ?? null;
+  const interventionSummary = summarizeManualInterventionResult(hubResult);
+  const interventionReason = hubResult && hubResultContainsHitLimit(hubResult)
+    ? "reported hit limit"
+    : hubResult
+      ? "reported a blocking failure"
+      : "is blocked";
+
+  return {
+    ok: true,
+    status: "manual_intervention_required",
+    message: `manual intervention required: ${workerId} ${interventionReason}`,
+    worker: workerId,
+    ...(interventionSummary ? { error: interventionSummary } : {})
+  };
+}
+
 function summarizeManualInterventionResult(hubResult: HubResult | null): string | null {
   if (
     !hubResult
-    || (!hubResultContainsHitLimit(hubResult) && !hubResultContainsFailureSignal(hubResult))
+    || (!hubResultContainsHitLimit(hubResult) && !hubResultContainsBlockSignal(hubResult) && !hubResultContainsFailureSignal(hubResult))
   ) {
     return null;
   }
@@ -1876,7 +1895,7 @@ function isLifecycleTerminal(lifecycleState: DispatchThreadStateV2, workerId: st
     return false;
   }
 
-  return worker.status === "completed" || worker.status === "skipped" || worker.status === "failed";
+  return worker.status === "completed" || worker.status === "skipped" || worker.status === "failed" || worker.status === "blocked";
 }
 
 /**
@@ -2578,6 +2597,10 @@ function resolveDispatchWorkerDetailStatus(
   worker: DispatchWorkerState | null,
   dispatchPlanRow: DispatchPlanRow | null
 ): LifecycleStatus {
+  if (worker?.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
+    return "blocked";
+  }
+
   if (worker?.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
     return "failed";
   }
@@ -2596,6 +2619,7 @@ function normalizeLifecycleStatus(status: string | null | undefined): LifecycleS
     case "running":
     case "completed":
     case "failed":
+    case "blocked":
     case "abandoned":
     case "skipped":
     case "awaiting_validation":
@@ -2637,6 +2661,8 @@ function mapDispatchPlanStatusToLifecycleStatus(status: string | null | undefine
       return "completed";
     case "❌":
       return "failed";
+    case "⛔ BLOCKED":
+      return "blocked";
     case "⚠️ ABANDONED":
       return "abandoned";
     case "⛔ SKIPPED":

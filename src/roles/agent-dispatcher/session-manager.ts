@@ -8,7 +8,7 @@ import * as fsSync from "node:fs";
 
 import type { StateStore } from "../../state-store";
 import { AppStateSchema, type AppState, type DispatchWorkerState, type DispatchThreadStateV2, type LifecycleStatus } from "../../types";
-import { LifecycleStore, hubResultContainsFailureSignal, hubResultContainsInlineReport } from "./lifecycle-store";
+import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal, hubResultContainsInlineReport } from "./lifecycle-store";
 import {
   outputArtifactsContain,
   outputsExist as outputArtifactsExist
@@ -565,7 +565,8 @@ function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
  * querying the (now dead) hub thread.
  *
  * Priority:
- * 1. Fresh output report says FAILED/BLOCKED → failed
+ * 1. Fresh output report says BLOCKED → blocked
+ * 2. Fresh output report says FAILED → failed
  * 2. Plan markdown shows ✅ or ⛔ SKIPPED → trust external evidence (merged PR, etc.)
  * 3. Expected outputs exist on disk → completed
  * 4. Hub result contains inline report → completed
@@ -575,6 +576,10 @@ function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
  */
 function resolveKilledWorkerStatus(worker: DispatchWorkerState, planStatus: string | null): LifecycleStatus {
   if (outputArtifactsContainFailureSignal(worker.expected_outputs, worker.started_at)) {
+    if (outputArtifactsContainBlockSignal(worker.expected_outputs, worker.started_at)) {
+      return "blocked";
+    }
+
     return "failed";
   }
 
@@ -679,6 +684,14 @@ function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedA
   return outputArtifactsContain(
     expectedOutputs,
     (content) => hubResultContainsFailureSignal({ content }),
+    startedAt
+  );
+}
+
+function outputArtifactsContainBlockSignal(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    expectedOutputs,
+    (content) => hubResultContainsBlockSignal({ content }),
     startedAt
   );
 }

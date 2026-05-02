@@ -8,7 +8,7 @@ import type {
   TerminalOutcome,
   DispatchThreadStateV2
 } from "../../types";
-import { LifecycleStore, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "../../tool-gateway/tools/dispatch-status";
 
 const DISPATCHER_WORKER_ID = "DISPATCHER";
@@ -223,6 +223,10 @@ function getWorkerArchiveStatus(
   planRow: DispatchPlanWorkerRow | null
 ): string {
   if (worker) {
+    if (worker.status !== "blocked" && worker.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
+      return "blocked";
+    }
+
     if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
       return "failed";
     }

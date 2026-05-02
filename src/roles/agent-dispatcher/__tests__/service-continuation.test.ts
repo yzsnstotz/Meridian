@@ -167,6 +167,42 @@ describe("service continuation", () => {
     expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
     expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-01");
   });
+
+  it("does not retry or route around a blocked PRE-FLIGHT worker", () => {
+    const rows = [
+      { status: "❌", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-XHIGH", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "PRE-FLIGHT": {
+        status: "blocked",
+        retry_count: 0,
+        hub_result: createHubResult("PRE-FLIGHT is still **BLOCKED**.")
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("PRE-FLIGHT");
+  });
+
+  it("does not resume a stale downstream running row while PRE-FLIGHT is blocked", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "N-01", model: "CODEX-XHIGH", depends_on: "—" }
+    ];
+
+    expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBeNull();
+    expect(resolveManualInterventionWorker(rows, createLifecycleState())).toBe("PRE-FLIGHT");
+  });
+
+  it("can resume PRE-FLIGHT itself when its plan row is stale running", () => {
+    const rows = [
+      { status: "🔄", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-XHIGH", depends_on: "—" }
+    ];
+
+    expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBe("PRE-FLIGHT");
+  });
 });
 
 function createHubResult(content: string): NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]> {

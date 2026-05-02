@@ -1,5 +1,6 @@
 import type { DispatchThreadStateV2 } from "../../types";
 import {
+  hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
   hubResultContainsHitLimit
 } from "./lifecycle-store";
@@ -28,6 +29,11 @@ export function resolveServiceContinueWorker(
   rows: DispatchContinuationPlanRow[],
   lifecycleState: DispatchThreadStateV2
 ): string | null {
+  const preflightGateWorker = resolvePreflightGateWorker(rows, lifecycleState);
+  if (preflightGateWorker !== undefined) {
+    return preflightGateWorker;
+  }
+
   return resolveImplicitContinueWorker(rows, lifecycleState)
     ?? resolveFirstEligibleContinueWorker(rows, lifecycleState);
 }
@@ -41,15 +47,21 @@ export function resolveManualInterventionWorker(
       continue;
     }
 
-    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
-    if (!workerState?.hub_result || !hubResultRequiresManualIntervention(workerState.hub_result)) {
+    const normalizedWorkerId = row.worker.trim();
+    if (normalizedWorkerId.length === 0) {
       continue;
     }
 
-    const normalizedWorkerId = row.worker.trim();
-    if (normalizedWorkerId.length > 0) {
+    if (isBlockedDispatchStatus(row.status)) {
       return normalizedWorkerId;
     }
+
+    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
+    if (workerState?.status !== "blocked" && (!workerState?.hub_result || !hubResultRequiresManualIntervention(workerState.hub_result))) {
+      continue;
+    }
+
+    return normalizedWorkerId;
   }
 
   return null;
@@ -110,13 +122,22 @@ function resolveImplicitContinueWorker(
     return null;
   }
 
+  return isImplicitContinueRow(row, lifecycleState)
+    ? row.worker.trim()
+    : null;
+}
+
+function isImplicitContinueRow(
+  row: DispatchContinuationPlanRow,
+  lifecycleState: DispatchThreadStateV2
+): boolean {
   if (hasAutomaticDispatchBlocker(row)) {
-    return null;
+    return false;
   }
 
   const worker = resolveLifecycleWorkerState(lifecycleState, row.worker);
   if (worker?.status === "running" && worker.thread_id.trim().length > 0) {
-    return null;
+    return false;
   }
 
   // Don't re-dispatch workers that already reached a terminal success state.
@@ -124,21 +145,57 @@ function resolveImplicitContinueWorker(
   // store is authoritative. Re-dispatching a completed/skipped worker would
   // reset it to pending and cause an infinite re-dispatch loop.
   if (worker?.status === "completed" || worker?.status === "skipped") {
-    return null;
+    return false;
+  }
+
+  if (worker?.status === "blocked") {
+    return false;
   }
 
   // Validation-owned workers are not eligible for implicit continuation.
   // The validator orchestrator manages their lifecycle.
   if (worker?.status === "awaiting_validation" || worker?.status === "fix_requested") {
-    return null;
+    return false;
   }
 
   if (worker?.hub_result && hubResultRequiresManualIntervention(worker.hub_result)) {
-    return null;
+    return false;
   }
 
   const normalizedWorkerId = row.worker.trim();
-  return normalizedWorkerId.length > 0 ? normalizedWorkerId : null;
+  return normalizedWorkerId.length > 0;
+}
+
+function resolvePreflightGateWorker(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string | null | undefined {
+  const preflightRow = rows.find((row) => normalizeWorkerIdentifier(row.worker) === "PRE-FLIGHT" && !isHumanDispatchRow(row));
+  if (!preflightRow) {
+    return undefined;
+  }
+
+  const preflightState = resolveLifecycleWorkerState(lifecycleState, preflightRow.worker);
+  if (preflightRow.status.trim() === "✅" || preflightState?.status === "completed") {
+    return undefined;
+  }
+
+  if (
+    isBlockedDispatchStatus(preflightRow.status)
+    || preflightState?.status === "blocked"
+    || (preflightState?.hub_result && hubResultRequiresManualIntervention(preflightState.hub_result))
+  ) {
+    return null;
+  }
+
+  const rowsByWorker = indexRowsByWorker(rows);
+  if (isEligibleServiceContinueRow(preflightRow, rows, rowsByWorker, lifecycleState)) {
+    return preflightRow.worker.trim();
+  }
+
+  return preflightRow.status.trim() === "🔄" && isImplicitContinueRow(preflightRow, lifecycleState)
+    ? preflightRow.worker.trim()
+    : null;
 }
 
 function resolveFirstEligibleContinueWorker(
@@ -174,6 +231,8 @@ function isEligibleServiceContinueRow(
       return isRetryableTerminalWorker(lifecycleState, row.worker);
     case "❌":
       return isRetryableTerminalWorker(lifecycleState, row.worker);
+    case "⛔ BLOCKED":
+      return false;
     case "⬜":
       return areDispatchDependenciesSatisfied(row, rows, rowsByWorker);
     default:
@@ -187,6 +246,10 @@ function isEligibleServiceContinueRow(
 
 function isRetryableTerminalWorker(lifecycleState: DispatchThreadStateV2, workerId: string): boolean {
   const workerState = resolveLifecycleWorkerState(lifecycleState, workerId);
+  if (workerState?.status === "blocked") {
+    return false;
+  }
+
   if (workerState?.hub_result && hubResultRequiresManualIntervention(workerState.hub_result)) {
     return false;
   }
@@ -197,7 +260,7 @@ function isRetryableTerminalWorker(lifecycleState: DispatchThreadStateV2, worker
 function hubResultRequiresManualIntervention(
   hubResult: NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]>
 ): boolean {
-  return hubResultContainsHitLimit(hubResult) || hubResultContainsFailureSignal(hubResult);
+  return hubResultContainsHitLimit(hubResult) || hubResultContainsBlockSignal(hubResult) || hubResultContainsFailureSignal(hubResult);
 }
 
 function areDispatchDependenciesSatisfied(
@@ -585,4 +648,8 @@ function escapeRegExp(value: string): string {
 function isDispatchDependencyTerminal(status: string | undefined): boolean {
   const normalized = status?.trim();
   return normalized === "✅" || normalized === "⛔ SKIPPED";
+}
+
+function isBlockedDispatchStatus(status: string | undefined): boolean {
+  return /\bBLOCKED\b/i.test(status?.trim() ?? "");
 }
