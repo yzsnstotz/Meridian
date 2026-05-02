@@ -205,9 +205,10 @@ describe("run tool", () => {
     expect(sentContent).toContain("You are **CODEX**");
     expect(sentContent).toContain("worker **N-04**");
     expect(sentContent).toContain("**N-04**: Ship outputs");
-    expect(sentContent).toContain("# Agent Dispatch Command");
-    expect(sentContent).toContain("# Role Definition");
-    expect(sentContent).not.toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).toContain("# Dispatch Command");
+    expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).not.toContain("# Agent Dispatch Command");
+    expect(sentContent).not.toContain("# Role Definition");
     expect(lifecycleStore.recordWorkerResult).toHaveBeenCalledWith("N-04", hubResult);
     expect(mockRun.mock.invocationCallOrder[0]).toBeLessThan(
       lifecycleStore.recordWorkerResult.mock.invocationCallOrder[0]
@@ -302,8 +303,8 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("follow the embedded dispatch command for implementation, validation, and delivery");
-    expect(sentContent).toContain("Do not infer extra git operations from this runtime override");
+    expect(sentContent).not.toContain("Steps 4b–4f, 5c–5d");
+    expect(sentContent).toContain("# Dispatch Command");
     expect(sentContent).not.toContain("this is a report-only worker");
     expect(sentContent).not.toContain("preserve the command file's NO-GIT delivery mode");
   });
