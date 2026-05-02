@@ -680,34 +680,36 @@ function renderSchedulerDispatchProgress(data) {
 }
 
 function renderSchedulerDispatchProgressRows(rows, dispatchDetails, workers) {
-  const detailByWorker = indexDispatchDetailsByWorker(dispatchDetails);
+  const detailByWorker = groupDispatchDetailsByWorker(dispatchDetails);
   const workerStatusByWorker = indexSchedulerWorkerStatusByWorker(workers);
   const renderedRows = [];
 
   rows.forEach((row) => {
     const normalizedRow = normalizeSchedulerDispatchRow(row, workerStatusByWorker);
     const workerKey = normalizeDispatchWorkerKey(normalizedRow.worker);
-    const inlineDetail = workerKey ? detailByWorker.get(workerKey) ?? null : null;
+    const inlineDetails = workerKey ? detailByWorker.get(workerKey) ?? [] : [];
     if (workerKey) {
       detailByWorker.delete(workerKey);
     }
-    renderedRows.push(renderSchedulerDispatchProgressRow(normalizedRow, inlineDetail));
+    renderedRows.push(renderSchedulerDispatchProgressRow(normalizedRow, inlineDetails));
   });
 
-  detailByWorker.forEach((detail) => {
-    const syntheticRow = normalizeSchedulerDispatchRow(buildDispatchPlanSyntheticRow(detail), workerStatusByWorker);
-    renderedRows.push(renderSchedulerDispatchProgressRow(syntheticRow, detail, true));
+  detailByWorker.forEach((details) => {
+    const primaryDetail = getPrimaryDispatchDetail(details);
+    const syntheticRow = normalizeSchedulerDispatchRow(buildDispatchPlanSyntheticRow(primaryDetail), workerStatusByWorker);
+    renderedRows.push(renderSchedulerDispatchProgressRow(syntheticRow, details, true));
   });
 
   return renderedRows.join("");
 }
 
-function renderSchedulerDispatchProgressRow(row, detail = null, orphan = false) {
+function renderSchedulerDispatchProgressRow(row, details = [], orphan = false) {
+  const inlineDetails = normalizeDispatchDetailList(details);
   const issue = row.failure_reason || row.issue || row.stale_duration_human || "---";
   const issueLabel = row.stale && !row.failure_reason ? `stale ${issue}` : issue;
   const rowClassName = [
     "dispatch-plan-row",
-    detail ? "dispatch-plan-row-with-detail" : "",
+    inlineDetails.length > 0 ? "dispatch-plan-row-with-detail" : "",
     orphan ? "dispatch-plan-row-orphan" : ""
   ].filter(Boolean).join(" ");
 
@@ -725,7 +727,7 @@ function renderSchedulerDispatchProgressRow(row, detail = null, orphan = false) 
       <td>${escapeHtml(issueLabel)}</td>
       <td>${renderDispatchPlanActions(row)}</td>
     </tr>
-    ${detail ? renderDispatchPlanDetailRow(detail, 11) : ""}
+    ${inlineDetails.length > 0 ? renderDispatchPlanDetailRow(inlineDetails, 11) : ""}
   `;
 }
 
@@ -2298,52 +2300,57 @@ function renderPmResolverSummaryItem(detail) {
     return `<div><dt>pm_resolver</dt><dd>idle</dd></div>`;
   }
 
+  const pmDetails = resolvePmResolverDetails(detail);
   const status = normalizeText(pmDetail.status) || "running";
   const worker = normalizeText(pmDetail.worker_id).replace(/^PM:/i, "") || "issue";
   const thread = normalizeText(pmDetail.worker_thread_id) || "pending";
+  const countLabel = pmDetails.length > 1 ? ` / ${pmDetails.length} total` : "";
   return `
     <div>
       <dt>pm_resolver</dt>
       <dd>
         <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(status)}</span>
-        <code>${escapeHtml(thread)}</code> / ${escapeHtml(worker)}
+        <code>${escapeHtml(thread)}</code> / ${escapeHtml(worker)}${escapeHtml(countLabel)}
       </dd>
     </div>
   `;
 }
 
 function resolveLatestPmResolverDetail(detail) {
-  const dispatchDetails = Array.isArray(detail?.dispatch_details) ? detail.dispatch_details : [];
-  const pmDetails = dispatchDetails.filter((entry) => entry?.detail_kind === "pm_resolver");
-  if (pmDetails.length === 0) {
-    return null;
-  }
+  const pmDetails = resolvePmResolverDetails(detail);
+  const runningDetail = [...pmDetails].reverse()
+    .find((entry) => normalizeText(entry?.status) === "running");
+  return runningDetail ?? pmDetails[pmDetails.length - 1] ?? null;
+}
 
-  return pmDetails[pmDetails.length - 1];
+function resolvePmResolverDetails(detail) {
+  const dispatchDetails = Array.isArray(detail?.dispatch_details) ? detail.dispatch_details : [];
+  return dispatchDetails.filter((entry) => entry?.detail_kind === "pm_resolver");
 }
 
 function renderDispatchPlanRows(rows, dispatchDetails) {
-  const detailByWorker = indexDispatchDetailsByWorker(dispatchDetails);
+  const detailByWorker = groupDispatchDetailsByWorker(dispatchDetails);
   const renderedRows = [];
 
   rows.forEach((row) => {
     const workerKey = normalizeDispatchWorkerKey(row?.worker);
-    const inlineDetail = workerKey ? detailByWorker.get(workerKey) ?? null : null;
+    const inlineDetails = workerKey ? detailByWorker.get(workerKey) ?? [] : [];
     if (workerKey) {
       detailByWorker.delete(workerKey);
     }
-    renderedRows.push(renderDispatchPlanRow(row, inlineDetail));
+    renderedRows.push(renderDispatchPlanRow(row, inlineDetails));
   });
 
-  detailByWorker.forEach((detail) => {
-    renderedRows.push(renderDispatchPlanOrphanDetailRow(detail));
+  detailByWorker.forEach((details) => {
+    renderedRows.push(renderDispatchPlanOrphanDetailRow(details));
   });
 
   return renderedRows.join("");
 }
 
-function renderDispatchPlanRow(row, detail = null) {
-  const rowClassName = detail ? "dispatch-plan-row dispatch-plan-row-with-detail" : "dispatch-plan-row";
+function renderDispatchPlanRow(row, details = []) {
+  const inlineDetails = normalizeDispatchDetailList(details);
+  const rowClassName = inlineDetails.length > 0 ? "dispatch-plan-row dispatch-plan-row-with-detail" : "dispatch-plan-row";
 
   return `
     <tr class="${rowClassName}">
@@ -2356,12 +2363,13 @@ function renderDispatchPlanRow(row, detail = null) {
       <td>${escapeHtml(row.depends_on || "---")}</td>
       <td>${renderDispatchPlanActions(row)}</td>
     </tr>
-    ${detail ? renderDispatchPlanDetailRow(detail) : ""}
+    ${inlineDetails.length > 0 ? renderDispatchPlanDetailRow(inlineDetails) : ""}
   `;
 }
 
-function renderDispatchPlanOrphanDetailRow(detail) {
-  const syntheticRow = buildDispatchPlanSyntheticRow(detail);
+function renderDispatchPlanOrphanDetailRow(details) {
+  const inlineDetails = normalizeDispatchDetailList(details);
+  const syntheticRow = buildDispatchPlanSyntheticRow(getPrimaryDispatchDetail(inlineDetails));
 
   return `
     <tr class="dispatch-plan-row dispatch-plan-row-with-detail dispatch-plan-row-orphan">
@@ -2374,20 +2382,38 @@ function renderDispatchPlanOrphanDetailRow(detail) {
       <td>---</td>
       <td>${renderDispatchPlanActions(syntheticRow)}</td>
     </tr>
-    ${renderDispatchPlanDetailRow(detail)}
+    ${renderDispatchPlanDetailRow(inlineDetails)}
   `;
 }
 
-function renderDispatchPlanDetailRow(detail, colspan = 8) {
+function renderDispatchPlanDetailRow(details, colspan = 8) {
+  const inlineDetails = normalizeDispatchDetailList(details);
   return `
     <tr class="dispatch-plan-detail-row">
       <td colspan="${colspan}">
         <div class="dispatch-plan-inline-detail">
-          ${renderDispatchDetailCard(detail)}
+          ${inlineDetails.map((detail) => renderDispatchDetailCard(detail)).join("")}
         </div>
       </td>
     </tr>
   `;
+}
+
+function groupDispatchDetailsByWorker(dispatchDetails) {
+  const detailByWorker = new Map();
+
+  dispatchDetails.forEach((detail) => {
+    const workerKey = normalizeDispatchDetailWorkerKey(detail);
+    if (!workerKey) {
+      return;
+    }
+
+    const details = detailByWorker.get(workerKey) ?? [];
+    details.push(detail);
+    detailByWorker.set(workerKey, details);
+  });
+
+  return detailByWorker;
 }
 
 function indexDispatchDetailsByWorker(dispatchDetails) {
@@ -2403,6 +2429,29 @@ function indexDispatchDetailsByWorker(dispatchDetails) {
   });
 
   return detailByWorker;
+}
+
+function normalizeDispatchDetailWorkerKey(detail) {
+  const workerId = normalizeText(detail?.worker_id);
+  const baseWorkerId = detail?.detail_kind === "pm_resolver"
+    ? workerId.replace(/^PM:/i, "")
+    : workerId;
+  return normalizeDispatchWorkerKey(baseWorkerId);
+}
+
+function normalizeDispatchDetailList(details) {
+  if (Array.isArray(details)) {
+    return details.filter(Boolean);
+  }
+
+  return details ? [details] : [];
+}
+
+function getPrimaryDispatchDetail(details) {
+  const detailList = normalizeDispatchDetailList(details);
+  return detailList.find((detail) => detail?.detail_kind !== "pm_resolver")
+    ?? detailList[0]
+    ?? null;
 }
 
 function normalizeDispatchWorkerKey(workerId) {

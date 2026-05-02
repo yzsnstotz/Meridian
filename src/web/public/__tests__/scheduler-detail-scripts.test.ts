@@ -155,6 +155,124 @@ describe("scheduler detail public scripts", () => {
     expect(html).toContain("PM is resolving the blocker.");
   });
 
+  it("renders PM resolver replies under the associated dispatch plan row", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const html = vm.runInContext(`renderDispatchPlanRows([
+      {
+        status: "⛔ BLOCKED",
+        batch: "2",
+        worker: "N-07",
+        task: "Migration 035",
+        model: "CODEX-HIGH",
+        depends_on: "BATCH-1-GATE"
+      }
+    ], [
+      {
+        worker_id: "N-07",
+        status: "blocked",
+        task: "Migration 035",
+        model: "CODEX-HIGH",
+        worker_thread_id: "codex_44",
+        command: { content: "Run N-07." },
+        reply: { content: "Recovered blocked worker report." }
+      },
+      {
+        detail_kind: "pm_resolver",
+        worker_id: "PM:N-07",
+        status: "running",
+        task: "Resolve N-07",
+        model: "PM",
+        worker_thread_id: "codex_45",
+        command: { content: "Issue status: manual_intervention_required" },
+        reply: { content: "PM is working on N-07." }
+      },
+      {
+        detail_kind: "pm_resolver",
+        worker_id: "PM:N-07",
+        status: "completed",
+        task: "Resolve N-07 follow-up",
+        model: "PM",
+        worker_thread_id: "codex_46",
+        command: { content: "Issue status: manual_intervention_required" },
+        reply: { content: "PM verified the blocker." }
+      }
+    ])`, context) as string;
+
+    expect(html).toContain("Agent Reply");
+    expect(html).toContain("Recovered blocked worker report.");
+    expect(html.match(/PM Resolve Reply/g)).toHaveLength(2);
+    expect(html).toContain("PM is working on N-07.");
+    expect(html).toContain("PM verified the blocker.");
+    expect(html).not.toContain("dispatch-plan-row-orphan");
+  });
+
+  it("prefers a running PM resolver in the agent dispatcher summary", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const html = vm.runInContext(`renderPmResolverSummaryItem({
+      dispatch_details: [
+        {
+          detail_kind: "pm_resolver",
+          worker_id: "PM:N-06",
+          status: "completed",
+          worker_thread_id: "codex_40"
+        },
+        {
+          detail_kind: "pm_resolver",
+          worker_id: "PM:N-07",
+          status: "running",
+          worker_thread_id: "codex_45"
+        }
+      ]
+    })`, context) as string;
+
+    expect(html).toContain("running");
+    expect(html).toContain("codex_45");
+    expect(html).toContain("N-07");
+    expect(html).toContain("2 total");
+  });
+
   it("enables role detail continuation for workers waiting on validation", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
