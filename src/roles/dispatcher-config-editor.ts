@@ -50,7 +50,11 @@ export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): 
     mode: config.mode,
     kill_policy: config.kill_policy,
     auto_approve: config.auto_approve,
-    ...(config.validator ? { validator: { ...config.validator } } : {})
+    ...(config.validator ? { validator: { ...config.validator } } : {}),
+    pm_resolver: {
+      ...config.pm_resolver,
+      user_reply_channels: config.pm_resolver.user_reply_channels?.map((replyChannel) => ({ ...replyChannel }))
+    }
   };
 }
 

@@ -2,8 +2,13 @@ import * as fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal } from "../../roles/agent-dispatcher/lifecycle-store";
-import type { DispatchThreadStateV2 } from "../../types";
+import {
+  LifecycleStore,
+  hubResultContainsBlockSignal,
+  hubResultContainsFailureSignal,
+  isPmResolverHubResult
+} from "../../roles/agent-dispatcher/lifecycle-store";
+import type { DispatchThreadStateV2, DispatchWorkerState, HubResult, PmResolverLifecycleState } from "../../types";
 import type { ToolDefinition, ToolResult } from "../registry";
 import {
   fetchProgressFromSource,
@@ -60,12 +65,31 @@ export interface DispatchWorkerProgress {
   extra?: Record<string, unknown> | null;
 }
 
+export interface DispatchStatusPmResolver {
+  worker_id: string | null;
+  thread_id: string;
+  status: PmResolverLifecycleState["status"];
+  started_at: string;
+  last_seen_at: string;
+  agent_type: string | null;
+  model_id: string | null;
+  mode: string | null;
+  auto_approve: boolean | null;
+  issue_status: string;
+  issue_source: string;
+  issue_message: string | null;
+  issue_error: string | null;
+  reply: string | null;
+  error: string | null;
+}
+
 export interface DispatchStatusReport extends Record<string, unknown> {
   plan: string;
   dispatch_threads: string;
   generated_at: string;
   stale_threshold_minutes: number;
   workers: DispatchStatusWorker[];
+  pm_resolvers: DispatchStatusPmResolver[];
   summary: {
     total: number;
     pending: number;
@@ -151,6 +175,7 @@ export async function buildDispatchStatusReport(
       isWorkerToolProgressActive(row, progress[index] ?? null, scanRunId, activeProcessCommands)
     )
   ));
+  const pmResolvers = buildDispatchStatusPmResolvers(lifecycleState);
 
   return {
     plan: planPath,
@@ -158,6 +183,7 @@ export async function buildDispatchStatusReport(
     generated_at: generatedAt,
     stale_threshold_minutes: staleThresholdMinutes,
     workers,
+    pm_resolvers: pmResolvers,
     summary: summarizeWorkers(workers)
   };
 }
@@ -274,11 +300,13 @@ function getEffectiveLifecycleStatus(workerState: DispatchThreadStateV2["workers
     return null;
   }
 
-  if (workerState.status !== "blocked" && workerState.hub_result && hubResultContainsBlockSignal(workerState.hub_result)) {
+  const workerHubResult = getWorkerOwnedHubResult(workerState);
+
+  if (workerState.status !== "blocked" && workerHubResult && hubResultContainsBlockSignal(workerHubResult)) {
     return "blocked";
   }
 
-  if (workerState.status !== "failed" && workerState.hub_result && hubResultContainsFailureSignal(workerState.hub_result)) {
+  if (workerState.status !== "failed" && workerHubResult && hubResultContainsFailureSignal(workerHubResult)) {
     return "failed";
   }
 
@@ -382,7 +410,7 @@ function extractFailureReason(
     return null;
   }
 
-  const hubResult = workerState.hub_result;
+  const hubResult = getWorkerOwnedHubResult(workerState);
   if (!hubResult) {
     return null;
   }
@@ -401,6 +429,118 @@ function extractFailureReason(
   // Truncate raw content to a useful summary
   const MAX_REASON_LENGTH = 200;
   return content.length > MAX_REASON_LENGTH ? `${content.slice(0, MAX_REASON_LENGTH)}…` : content;
+}
+
+function getWorkerOwnedHubResult(workerState: DispatchWorkerState | undefined): HubResult | null {
+  if (!workerState?.hub_result || isPmResolverHubResult(workerState.hub_result)) {
+    return null;
+  }
+
+  return workerState.hub_result;
+}
+
+function buildDispatchStatusPmResolvers(lifecycleState: DispatchThreadStateV2): DispatchStatusPmResolver[] {
+  const explicitEntries = [...(lifecycleState.pm_resolvers ?? [])];
+  const explicitWorkerIds = new Set(explicitEntries
+    .map((entry) => entry.issue.worker_id)
+    .filter((workerId): workerId is string => Boolean(workerId)));
+  const recoveredEntries = Object.entries(lifecycleState.workers)
+    .filter(([workerId, worker]) => {
+      return !explicitWorkerIds.has(workerId) && isPmResolverHubResult(worker.hub_result);
+    })
+    .map(([workerId, worker]) => buildRecoveredPmResolverEntry(workerId, worker));
+
+  return [...explicitEntries, ...recoveredEntries]
+    .sort((left, right) => Date.parse(left.started_at) - Date.parse(right.started_at))
+    .map((entry) => ({
+      worker_id: entry.issue.worker_id,
+      thread_id: entry.thread_id,
+      status: entry.status,
+      started_at: entry.started_at,
+      last_seen_at: entry.last_seen_at,
+      agent_type: entry.agent_type,
+      model_id: entry.model_id,
+      mode: entry.mode,
+      auto_approve: entry.auto_approve,
+      issue_status: entry.issue.status,
+      issue_source: entry.issue.source,
+      issue_message: entry.issue.message,
+      issue_error: entry.issue.error,
+      reply: extractPmResolverReply(entry),
+      error: entry.error
+    }));
+}
+
+function buildRecoveredPmResolverEntry(
+  workerId: string,
+  worker: DispatchWorkerState
+): PmResolverLifecycleState {
+  const hubResult = worker.hub_result;
+  if (!hubResult) {
+    throw new Error(`Cannot recover PM resolver entry without hub result for worker ${workerId}`);
+  }
+
+  return {
+    thread_id: hubResult.thread_id || worker.thread_id,
+    status: worker.status === "failed" || worker.status === "blocked" || worker.status === "abandoned"
+      ? "failed"
+      : "completed",
+    started_at: worker.started_at,
+    last_seen_at: hubResult.timestamp ?? worker.last_seen_at,
+    agent_type: hubResult.source ?? "pm-resolver",
+    model_id: null,
+    mode: null,
+    auto_approve: null,
+    issue: {
+      status: "recovered_pm_resolution",
+      worker_id: workerId,
+      message: "Recovered from worker result recorded before PM resolver history was available.",
+      error: null,
+      source: "worker_result"
+    },
+    result: {
+      status: hubResult.status,
+      run_state: hubResult.run_state ?? null,
+      content: hubResult.content,
+      summary_text: hubResult.summary_text ?? null,
+      details_text: hubResult.details_text ?? null,
+      trace_id: hubResult.trace_id,
+      timestamp: hubResult.timestamp
+    },
+    error: null
+  };
+}
+
+function extractPmResolverReply(entry: PmResolverLifecycleState): string | null {
+  return parseDispatchConversationReply(entry.result?.details_text)
+    ?? normalizeStatusText(entry.result?.summary_text)
+    ?? normalizeStatusText(entry.result?.content)
+    ?? normalizeStatusText(entry.error)
+    ?? (entry.status === "running" ? "PM resolver is running; waiting for its reply." : null);
+}
+
+function parseDispatchConversationReply(detailsText: string | null | undefined): string | null {
+  const normalized = normalizeStatusText(detailsText);
+  if (!normalized) {
+    return null;
+  }
+
+  const conversationMatch = normalized.match(/^Your message:\n([\s\S]*?)(?:\n{2,}Agent reply:\n([\s\S]*))?$/);
+  if (conversationMatch) {
+    return normalizeStatusText(conversationMatch[2]);
+  }
+
+  const replyMatch = normalized.match(/(?:^|\n)Agent reply:\n([\s\S]*)$/);
+  return normalizeStatusText(replyMatch?.[1]);
+}
+
+function normalizeStatusText(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 async function loadWorkerProgressFromRegistry(

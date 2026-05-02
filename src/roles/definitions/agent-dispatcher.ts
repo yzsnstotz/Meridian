@@ -191,7 +191,8 @@ export class AgentDispatcherRole implements BaseRole {
       default_mode: this.config.mode,
       kill_policy: this.config.kill_policy,
       auto_approve: this.config.auto_approve,
-      resolved_model_map_json: JSON.stringify(this.resolveDispatchModelMap())
+      resolved_model_map_json: JSON.stringify(this.resolveDispatchModelMap()),
+      pm_resolver_config_json: JSON.stringify(this.config.pm_resolver)
     });
     return configuredSystemPrompt && configuredSystemPrompt.length > 0
       ? materializeDispatcherSystemPrompt(configuredSystemPrompt, this.threadId)

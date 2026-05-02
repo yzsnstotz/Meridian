@@ -18,7 +18,8 @@ import {
   LifecycleStore,
   hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
-  hubResultContainsHitLimit
+  hubResultContainsHitLimit,
+  isPmResolverHubResult
 } from "../roles/agent-dispatcher/lifecycle-store";
 import { createMeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
@@ -27,6 +28,11 @@ import {
   buildSystemPrompt,
   materializeDispatcherSystemPrompt
 } from "../roles/agent-dispatcher/prompt-builder";
+import {
+  startPmResolver as startPmResolverDefault,
+  type PmResolverRequest,
+  type PmResolverResult
+} from "../roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import { SchedulerStateStore } from "../roles/scheduler/scheduler-state-store";
 import {
@@ -74,6 +80,7 @@ import {
   HubMessageSchema,
   HubResultSchema,
   KillPolicySchema,
+  PmResolverConfigSchema,
   ReplyChannelSchema,
   ValidatorConfigSchema,
   RoleTypeSchema,
@@ -84,6 +91,7 @@ import {
   type DispatcherConfig,
   type HubMessage,
   type HubResult,
+  type PmResolverLifecycleState,
   type ReplyChannel,
   type RoleType,
   type RoleState,
@@ -127,6 +135,7 @@ const CreateRoleBodySchema = z.object({
   auto_approve: z.boolean().optional(),
   use_agent_dispatcher: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional(),
+  pm_resolver: PmResolverConfigSchema.optional(),
   config: z.unknown().optional()
 });
 
@@ -140,7 +149,8 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
   agent_type: AgentTypeSchema.optional(),
   mode: StatefulBridgeModeSchema.optional(),
   kill_policy: KillPolicySchema.optional(),
-  auto_approve: z.boolean().optional()
+  auto_approve: z.boolean().optional(),
+  pm_resolver: PmResolverConfigSchema.optional()
 });
 
 const AgentDispatcherConfigPatchSchema = z.object({
@@ -149,12 +159,22 @@ const AgentDispatcherConfigPatchSchema = z.object({
   mode: StatefulBridgeModeSchema.optional(),
   kill_policy: KillPolicySchema.optional(),
   auto_approve: z.boolean().optional(),
-  validator: ValidatorConfigSchema.optional()
+  validator: ValidatorConfigSchema.optional(),
+  pm_resolver: PmResolverConfigSchema.optional()
 }).strict();
 
 const UpdateWorkerStatusRequestSchema = z.object({
   status: z.string().min(1),
   thread_id: z.string().min(1).optional()
+});
+
+const PmResolveRequestSchema = z.object({
+  status: z.string().min(1),
+  worker_id: z.string().min(1).optional(),
+  worker: z.string().min(1).optional(),
+  message: z.string().min(1).optional(),
+  error: z.string().min(1).optional(),
+  source: z.string().min(1).optional()
 });
 
 type RoleRouteMatch =
@@ -168,6 +188,7 @@ type RoleRouteMatch =
   | { kind: "pause-dispatcher"; threadId: string }
   | { kind: "resume-dispatcher"; threadId: string }
   | { kind: "continue-dispatcher"; threadId: string }
+  | { kind: "pm-resolve"; threadId: string }
   | { kind: "start-dispatcher-hub"; threadId: string }
   | { kind: "resume-worker"; threadId: string; workerId: string }
   | { kind: "continue-worker"; threadId: string; workerId: string }
@@ -188,6 +209,7 @@ export interface RoleHandlersOptions {
   attachToThread?: (threadId: string) => Promise<void>;
   sendHubRequest?: (message: HubMessage) => Promise<HubResult>;
   launchDispatchWorker?: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>;
+  startPmResolver?: (request: PmResolverRequest) => Promise<PmResolverResult>;
   log?: Logger;
 }
 
@@ -237,6 +259,7 @@ export interface DispatchMessageDetail {
 }
 
 export interface DispatchWorkerDetail {
+  detail_kind?: "worker" | "pm_resolver";
   worker_id: string;
   status: string;
   task: string | null;
@@ -331,6 +354,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const attachToThread = options.attachToThread ?? defaultAttachToThread;
   const sendHubRequestImpl = options.sendHubRequest ?? sendHubRequest;
   const launchDispatchWorkerImpl = options.launchDispatchWorker ?? launchDispatchWorker;
+  const startPmResolverImpl = options.startPmResolver ?? startPmResolverDefault;
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   function syncActiveRolesFromRunner(): void {
@@ -405,6 +429,13 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       if (patch.auto_approve !== undefined) config.auto_approve = patch.auto_approve;
       if (patch.model_id !== undefined) config.model_id = patch.model_id ?? undefined;
       if (patch.validator !== undefined) config.validator = patch.validator;
+      if (patch.pm_resolver !== undefined) {
+        config.pm_resolver = {
+          ...patch.pm_resolver,
+          user_reply_channels: patch.pm_resolver.user_reply_channels
+            ?? config.user_reply_channels.map((replyChannel) => ({ ...replyChannel }))
+        };
+      }
 
       // Persist to state store
       if (context.roleState) {
@@ -469,6 +500,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "continue-dispatcher":
             writeJson(response, 200, await continueDispatcherForRole(route.threadId));
+            return true;
+          case "pm-resolve":
+            writeJson(response, 200, await startPmResolverForRole(route.threadId, await readJsonBody(request)));
             return true;
           case "start-dispatcher-hub":
             writeJson(response, 200, await startAgentDispatcherHubSession(route.threadId));
@@ -792,6 +826,30 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     }
   }
 
+  async function startPmResolverForRole(threadId: string, body: unknown): Promise<PmResolverResult> {
+    const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
+    if (context.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const parsed = PmResolveRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid PM resolver payload");
+    }
+
+    return startPmResolverImpl({
+      dispatcherId: threadId,
+      config: context.effectiveConfig,
+      issue: {
+        status: parsed.data.status,
+        workerId: parsed.data.worker_id ?? parsed.data.worker,
+        message: parsed.data.message,
+        error: parsed.data.error,
+        source: parsed.data.source ?? "dispatcher"
+      }
+    });
+  }
+
   async function updateWorkerStatusForRole(
     threadId: string,
     workerId: string,
@@ -1094,6 +1152,22 @@ async function getRole(
     });
   }
 
+  const workerDetails = buildDispatchWorkerDetails(
+    lifecycleState,
+    dispatchPlanRows,
+    dispatchPlan.modelLegend,
+    {
+      roleId: role.threadId,
+      dispatcherThreadId,
+      dispatcherAgentType: agentDispatcherConfig.agent_type
+    }
+  );
+  const pmResolverDetails = await buildPmResolverDetails(lifecycleState, {
+    roleId: role.threadId,
+    getThreadDetail: options.getThreadDetail,
+    log: options.log
+  });
+
   return {
     ...response,
     status: effectiveRoleStatus,
@@ -1112,16 +1186,10 @@ async function getRole(
     kill_policy: agentDispatcherConfig.kill_policy,
     auto_approve: agentDispatcherConfig.auto_approve,
     session_log: sessionLog,
-    dispatch_details: buildDispatchWorkerDetails(
-      lifecycleState,
-      dispatchPlanRows,
-      dispatchPlan.modelLegend,
-      {
-        roleId: role.threadId,
-        dispatcherThreadId,
-        dispatcherAgentType: agentDispatcherConfig.agent_type
-      }
-    ),
+    dispatch_details: [
+      ...workerDetails,
+      ...pmResolverDetails
+    ],
     dispatch_plan: {
       rows: dispatchPlanRows
     }
@@ -1284,6 +1352,7 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     kill_policy: parsed.data.kill_policy ?? (nestedConfig as { kill_policy?: unknown }).kill_policy,
     auto_approve: parsed.data.auto_approve ?? (nestedConfig as { auto_approve?: unknown }).auto_approve,
     validator: parsed.data.validator ?? (nestedConfig as { validator?: unknown }).validator,
+    pm_resolver: parsed.data.pm_resolver ?? (nestedConfig as { pm_resolver?: unknown }).pm_resolver,
     use_agent_dispatcher:
       parsed.data.use_agent_dispatcher
       ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
@@ -1708,6 +1777,16 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     && parts.length === 4
     && parts[0] === "api"
     && parts[1] === "agent-dispatcher"
+    && parts[3] === "pm-resolve"
+  ) {
+    return { kind: "pm-resolve", threadId: parts[2] };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 4
+    && parts[0] === "api"
+    && parts[1] === "agent-dispatcher"
     && parts[3] === "start-hub"
   ) {
     return { kind: "start-dispatcher-hub", threadId: parts[2] };
@@ -1771,6 +1850,13 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       channel: "web" as const,
       chat_id: "web:ops"
     }]);
+  const previewPmResolver = (() => {
+    const pmResolver = PmResolverConfigSchema.parse(parsed.data.pm_resolver ?? {});
+    return {
+      ...pmResolver,
+      user_reply_channels: pmResolver.user_reply_channels ?? userReplyChannels
+    };
+  })();
 
   return {
     system_prompt: buildSystemPrompt({
@@ -1792,7 +1878,8 @@ function buildAgentDispatcherPromptPreview(body: unknown): { system_prompt: stri
       default_agent_type: parsed.data.agent_type ?? "claude",
       default_mode: parsed.data.mode ?? "bridge",
       kill_policy: parsed.data.kill_policy ?? "always",
-      auto_approve: parsed.data.auto_approve ?? false
+      auto_approve: parsed.data.auto_approve ?? false,
+      pm_resolver_config_json: JSON.stringify(previewPmResolver)
     })
   };
 }
@@ -2253,6 +2340,7 @@ export async function loadDispatchLifecycleState(dispatchPlanPath: string, log: 
         status: "pending"
       },
       workers: {},
+      pm_resolvers: [],
       last_reconciled_at: null
     };
   }
@@ -2531,6 +2619,178 @@ export function buildDispatchWorkerDetails(
   return [...details, ...orphanDetails];
 }
 
+async function buildPmResolverDetails(
+  lifecycleState: DispatchThreadStateV2,
+  context: {
+    roleId: string;
+    getThreadDetail?: (threadId: string) => Promise<string>;
+    log: Logger;
+  }
+): Promise<DispatchWorkerDetail[]> {
+  const pmResolvers = [...(lifecycleState.pm_resolvers ?? [])]
+    .sort((left, right) => Date.parse(left.started_at) - Date.parse(right.started_at));
+  const pmResolverWorkerIds = new Set(pmResolvers
+    .map((entry) => entry.issue.worker_id)
+    .filter((workerId): workerId is string => Boolean(workerId)));
+
+  const explicitDetails = await Promise.all(pmResolvers.map(async (entry) => {
+    const liveDetail = await loadPmResolverLiveDetail(entry, context);
+    return buildPmResolverDetail(entry, {
+      roleId: context.roleId,
+      liveDetail
+    });
+  }));
+  const recoveredDetails = buildRecoveredPmResolverDetails(lifecycleState, {
+    roleId: context.roleId,
+    skipWorkerIds: pmResolverWorkerIds
+  });
+
+  return [
+    ...explicitDetails,
+    ...recoveredDetails
+  ];
+}
+
+async function loadPmResolverLiveDetail(
+  entry: PmResolverLifecycleState,
+  context: {
+    getThreadDetail?: (threadId: string) => Promise<string>;
+    log: Logger;
+  }
+): Promise<string | null> {
+  if (!context.getThreadDetail) {
+    return null;
+  }
+
+  try {
+    const detail = await context.getThreadDetail(entry.thread_id);
+    const lines = splitLogLines(detail);
+    return isEmptyCachedDetailResponse(lines) ? null : detail;
+  } catch (error) {
+    context.log.warn("Failed to fetch PM resolver detail", {
+      thread_id: entry.thread_id,
+      error: getErrorMessage(error)
+    });
+    return null;
+  }
+}
+
+function buildPmResolverDetail(
+  entry: PmResolverLifecycleState,
+  context: {
+    roleId: string;
+    liveDetail: string | null;
+  }
+): DispatchWorkerDetail {
+  const liveConversation = parseDispatchConversation(context.liveDetail ?? undefined);
+  const resultConversation = parseDispatchConversation(entry.result?.details_text ?? undefined);
+  const replyContent =
+    liveConversation.reply
+    ?? resultConversation.reply
+    ?? normalizeConversationSection(entry.result?.summary_text ?? undefined)
+    ?? normalizeConversationSection(entry.result?.content ?? undefined)
+    ?? normalizeConversationSection(entry.error ?? undefined)
+    ?? (entry.status === "running" ? "PM resolver is running; waiting for its reply." : null);
+  const commandContent =
+    liveConversation.command
+    ?? resultConversation.command
+    ?? formatPmResolverIssueContext(entry);
+  const workerId = entry.issue.worker_id ?? entry.thread_id;
+  const timestamp = entry.result?.timestamp ?? entry.last_seen_at;
+
+  return {
+    detail_kind: "pm_resolver",
+    worker_id: `PM:${workerId}`,
+    status: entry.status,
+    task: `Resolve ${workerId}: ${entry.issue.status}`,
+    model: "PM",
+    applied_model: entry.model_id ?? entry.agent_type ?? "PM",
+    worker_thread_id: entry.thread_id,
+    trace_id: entry.result?.trace_id ?? null,
+    command: commandContent
+      ? {
+          trace_id: null,
+          sender_name: context.roleId,
+          sender_agent_type: "dispatcher",
+          sender_model: null,
+          sender_thread_id: context.roleId,
+          timestamp: entry.started_at,
+          content: commandContent
+        }
+      : null,
+    reply: replyContent
+      ? {
+          trace_id: entry.result?.trace_id ?? null,
+          sender_name: entry.thread_id,
+          sender_agent_type: entry.agent_type ?? "pm",
+          sender_model: entry.model_id ?? entry.mode,
+          sender_thread_id: entry.thread_id,
+          timestamp,
+          content: replyContent
+        }
+      : null,
+    validation: null
+  };
+}
+
+function buildRecoveredPmResolverDetails(
+  lifecycleState: DispatchThreadStateV2,
+  context: {
+    roleId: string;
+    skipWorkerIds: Set<string>;
+  }
+): DispatchWorkerDetail[] {
+  return Object.entries(lifecycleState.workers)
+    .filter(([workerId, worker]) => {
+      return !context.skipWorkerIds.has(workerId) && isPmResolverHubResult(worker.hub_result);
+    })
+    .sort((left, right) => Date.parse(left[1].last_seen_at) - Date.parse(right[1].last_seen_at))
+    .map(([workerId, worker]) => buildPmResolverDetail({
+      thread_id: worker.hub_result?.thread_id ?? worker.thread_id,
+      status: worker.status === "failed" || worker.status === "blocked" || worker.status === "abandoned"
+        ? "failed"
+        : "completed",
+      started_at: worker.started_at,
+      last_seen_at: worker.hub_result?.timestamp ?? worker.last_seen_at,
+      agent_type: worker.hub_result?.source ?? "pm-resolver",
+      model_id: null,
+      mode: null,
+      auto_approve: null,
+      issue: {
+        status: "recovered_pm_resolution",
+        worker_id: workerId,
+        message: "Recovered from worker result recorded before PM resolver history was available.",
+        error: null,
+        source: "worker_result"
+      },
+      result: worker.hub_result
+        ? {
+            status: worker.hub_result.status,
+            run_state: worker.hub_result.run_state ?? null,
+            content: worker.hub_result.content,
+            summary_text: worker.hub_result.summary_text ?? null,
+            details_text: worker.hub_result.details_text ?? null,
+            trace_id: worker.hub_result.trace_id,
+            timestamp: worker.hub_result.timestamp
+          }
+        : null,
+      error: null
+    }, {
+      roleId: context.roleId,
+      liveDetail: null
+    }));
+}
+
+function formatPmResolverIssueContext(entry: PmResolverLifecycleState): string {
+  return [
+    `Issue status: ${entry.issue.status}`,
+    entry.issue.worker_id ? `Worker: ${entry.issue.worker_id}` : null,
+    `Source: ${entry.issue.source}`,
+    entry.issue.message ? `Message: ${entry.issue.message}` : null,
+    entry.issue.error ? `Error: ${entry.issue.error}` : null
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
 function shouldIncludeDispatchWorkerDetail(
   dispatchPlanRow: DispatchPlanRow,
   worker: DispatchWorkerState | undefined
@@ -2553,9 +2813,10 @@ function buildDispatchWorkerDetail(
     dispatcherAgentType: string;
   }
 ): DispatchWorkerDetail {
-  const conversation = parseDispatchConversation(worker?.hub_result?.details_text);
+  const workerHubResult = getWorkerOwnedHubResult(worker);
+  const conversation = parseDispatchConversation(workerHubResult?.details_text);
   const commandFallback = conversation.command ?? worker?.command_preamble ?? null;
-  const replyContent = resolveDispatchReply(worker?.hub_result, conversation.reply);
+  const replyContent = resolveDispatchReply(workerHubResult, conversation.reply);
   const appliedModel = resolveAppliedModel(dispatchPlanRow?.model ?? null, modelLegend);
   const status = resolveDispatchWorkerDetailStatus(worker, dispatchPlanRow);
 
@@ -2566,7 +2827,7 @@ function buildDispatchWorkerDetail(
     model: dispatchPlanRow?.model ?? null,
     applied_model: appliedModel,
     worker_thread_id: worker?.thread_id ?? dispatchPlanRow?.thread_id ?? "",
-    trace_id: worker?.hub_result?.trace_id ?? worker?.trace_id ?? null,
+    trace_id: workerHubResult?.trace_id ?? worker?.trace_id ?? null,
     command: commandFallback
       ? {
           trace_id: worker?.trace_id ?? null,
@@ -2580,12 +2841,12 @@ function buildDispatchWorkerDetail(
       : null,
     reply: replyContent
       ? {
-          trace_id: worker?.hub_result?.trace_id ?? worker?.trace_id ?? null,
-          sender_name: worker?.hub_result?.thread_id ?? worker?.thread_id ?? workerId,
-          sender_agent_type: worker?.hub_result?.source ?? null,
+          trace_id: workerHubResult?.trace_id ?? worker?.trace_id ?? null,
+          sender_name: workerHubResult?.thread_id ?? worker?.thread_id ?? workerId,
+          sender_agent_type: workerHubResult?.source ?? null,
           sender_model: appliedModel,
-          sender_thread_id: worker?.hub_result?.thread_id ?? worker?.thread_id ?? null,
-          timestamp: worker?.hub_result?.timestamp ?? worker?.last_seen_at ?? null,
+          sender_thread_id: workerHubResult?.thread_id ?? worker?.thread_id ?? null,
+          timestamp: workerHubResult?.timestamp ?? worker?.last_seen_at ?? null,
           content: replyContent
         }
       : null,
@@ -2597,11 +2858,13 @@ function resolveDispatchWorkerDetailStatus(
   worker: DispatchWorkerState | null,
   dispatchPlanRow: DispatchPlanRow | null
 ): LifecycleStatus {
-  if (worker?.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
+  const workerHubResult = getWorkerOwnedHubResult(worker);
+
+  if (workerHubResult && hubResultContainsBlockSignal(workerHubResult)) {
     return "blocked";
   }
 
-  if (worker?.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
+  if (workerHubResult && hubResultContainsFailureSignal(workerHubResult)) {
     return "failed";
   }
 
@@ -2611,6 +2874,14 @@ function resolveDispatchWorkerDetailStatus(
   }
 
   return worker?.status ?? mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow?.status) ?? "pending";
+}
+
+function getWorkerOwnedHubResult(worker: DispatchWorkerState | null | undefined): HubResult | null {
+  if (!worker?.hub_result || isPmResolverHubResult(worker.hub_result)) {
+    return null;
+  }
+
+  return worker.hub_result;
 }
 
 function normalizeLifecycleStatus(status: string | null | undefined): LifecycleStatus | null {

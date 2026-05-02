@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AgentDispatcherConfigSchema,
+  PmResolverConfigSchema,
   SchedulerConfigSchema,
   ValidatorConfigSchema
 } from "./types";
@@ -76,5 +77,48 @@ describe("role config mode defaults", () => {
     const validator = ValidatorConfigSchema.parse({ threshold_type: "binary" });
 
     expect(validator.threshold_type).toBe("binary");
+  });
+
+  it("defaults PM resolver on for dispatcher and scheduler configs", () => {
+    const agentDispatcher = AgentDispatcherConfigSchema.parse({
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: replyChannels
+    });
+    const scheduler = SchedulerConfigSchema.parse({
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: replyChannels,
+      report_base_dir: "/tmp/reports"
+    });
+
+    expect(agentDispatcher.pm_resolver).toEqual({
+      enabled: true,
+      agent_type: "codex",
+      mode: "bridge",
+      auto_approve: false,
+      user_reply_channels: replyChannels
+    });
+    expect(scheduler.pm_resolver).toEqual(agentDispatcher.pm_resolver);
+  });
+
+  it("allows PM resolver to choose its own model and informing channels", () => {
+    const pmResolver = PmResolverConfigSchema.parse({
+      enabled: true,
+      agent_type: "claude",
+      model_id: "claude-opus-4-7",
+      mode: "pane_bridge",
+      auto_approve: true,
+      user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
+    });
+
+    expect(pmResolver).toEqual({
+      enabled: true,
+      agent_type: "claude",
+      model_id: "claude-opus-4-7",
+      mode: "pane_bridge",
+      auto_approve: true,
+      user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
+    });
   });
 });

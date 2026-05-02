@@ -1,6 +1,13 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
+import { z } from "zod";
+
+import {
+  PmResolverConfigSchema,
+  ReplyChannelSchema,
+  type PmResolverConfig
+} from "../../types";
 import {
   buildServiceErrorData,
   patchRolesServiceJson,
@@ -82,6 +89,36 @@ const dispatchScheduleSetTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Existing scheduler ID to update (creates new if omitted)"
+    },
+    pm_enabled: {
+      type: "string",
+      required: false,
+      description: "Enable PM resolver for abnormal scheduler/dispatcher states (default: true)"
+    },
+    pm_agent_type: {
+      type: "string",
+      required: false,
+      description: "Agent type for PM resolver"
+    },
+    pm_model_id: {
+      type: "string",
+      required: false,
+      description: "Model id for PM resolver"
+    },
+    pm_mode: {
+      type: "string",
+      required: false,
+      description: "Bridge mode for PM resolver"
+    },
+    pm_auto_approve: {
+      type: "string",
+      required: false,
+      description: "Whether PM resolver should use neutral auto-approve"
+    },
+    pm_reply_channels: {
+      type: "string",
+      required: false,
+      description: "JSON array of reply channels for PM resolver"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -121,6 +158,14 @@ const dispatchScheduleSetTool: ToolDefinition = {
       }
       if (params.start_immediately) config.start_immediately = params.start_immediately === "true";
       if (params.catch_up_policy) config.catch_up_policy = params.catch_up_policy;
+      config.pm_resolver = parsePmResolverConfig({
+        enabled: params.pm_enabled,
+        agentType: params.pm_agent_type,
+        modelId: params.pm_model_id,
+        mode: params.pm_mode,
+        autoApprove: params.pm_auto_approve,
+        replyChannels: params.pm_reply_channels
+      });
 
       // If updating existing scheduler
       if (params.scheduler_id) {
@@ -170,6 +215,52 @@ async function resolveReplyChannels(): Promise<unknown[]> {
     // fall through
   }
   return [DEFAULT_FALLBACK_REPLY_CHANNEL];
+}
+
+function parsePmResolverConfig(args: {
+  enabled?: string;
+  agentType?: string;
+  modelId?: string;
+  mode?: string;
+  autoApprove?: string;
+  replyChannels?: string;
+}): PmResolverConfig {
+  const raw: Record<string, unknown> = {
+    enabled: parseOptionalBoolean(args.enabled) ?? true
+  };
+  if (requireParam(args.agentType)) raw.agent_type = requireParam(args.agentType);
+  if (requireParam(args.modelId)) raw.model_id = requireParam(args.modelId);
+  if (requireParam(args.mode)) raw.mode = requireParam(args.mode);
+  const autoApprove = parseOptionalBoolean(args.autoApprove);
+  if (autoApprove !== undefined) raw.auto_approve = autoApprove;
+  const replyChannels = requireParam(args.replyChannels);
+  if (replyChannels) {
+    raw.user_reply_channels = parseReplyChannelsJson(replyChannels);
+  }
+
+  return PmResolverConfigSchema.parse(raw);
+}
+
+function parseReplyChannelsJson(value: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error(`Invalid pm_reply_channels JSON: ${asError(error).message}`);
+  }
+
+  return z.array(ReplyChannelSchema).parse(parsed);
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`Invalid boolean value: ${value}`);
 }
 
 function requireParam(value: string | undefined): string | null {

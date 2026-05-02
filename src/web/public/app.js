@@ -136,6 +136,73 @@ function normalizeValidatorMode(agentType, mode) {
   return normalizedMode;
 }
 
+function setupPmResolverToggle(toggleId, fieldsId) {
+  const toggle = document.getElementById(toggleId);
+  const fields = document.getElementById(fieldsId);
+  if (!toggle || !fields) return;
+
+  const apply = () => {
+    fields.hidden = !readBooleanControl(toggle, true);
+  };
+  toggle.addEventListener("change", apply);
+  apply();
+}
+
+function collectPmResolverConfig(prefix) {
+  const enabledControl = document.getElementById(`${prefix}-enabled`);
+  const autoApproveControl = document.getElementById(`${prefix}-auto-approve`);
+  const config = {
+    enabled: readBooleanControl(enabledControl, true),
+    agent_type: document.getElementById(`${prefix}-agent-type`)?.value || "codex",
+    mode: document.getElementById(`${prefix}-mode`)?.value || "bridge",
+    model_id: document.getElementById(`${prefix}-model-id`)?.value?.trim() || undefined,
+    auto_approve: readBooleanControl(autoApproveControl, false)
+  };
+  const replyChannels = parseReplyChannelsTextarea(`${prefix}-reply-channels`);
+  if (replyChannels) {
+    config.user_reply_channels = replyChannels;
+  }
+  return config;
+}
+
+function collectPmResolverElements(prefix) {
+  return [
+    `${prefix}-enabled`,
+    `${prefix}-agent-type`,
+    `${prefix}-mode`,
+    `${prefix}-model-id`,
+    `${prefix}-auto-approve`,
+    `${prefix}-reply-channels`
+  ].map((id) => document.getElementById(id)).filter(Boolean);
+}
+
+function readBooleanControl(control, defaultValue) {
+  if (!control) return defaultValue;
+  if (typeof control.checked === "boolean" && control.type === "checkbox") {
+    return control.checked;
+  }
+  if (typeof control.value === "string") {
+    return control.value === "true";
+  }
+  return defaultValue;
+}
+
+function parseReplyChannelsTextarea(id) {
+  const value = document.getElementById(id)?.value?.trim();
+  if (!value) return undefined;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("pm user_reply_channels must be a JSON array.");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("pm user_reply_channels must be a JSON array.");
+  }
+  return parsed;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Scheduler Creation (taskspec-compatible)
    ═══════════════════════════════════════════════════════════════ */
@@ -213,6 +280,12 @@ function setupSchedulerCreation() {
     if (form.model_id?.value?.trim()) config.model_id = form.model_id.value.trim();
     config.mode = form.mode?.value || "bridge";
     config.auto_approve = form.auto_approve?.checked === true;
+    try {
+      config.pm_resolver = collectPmResolverConfig("new-scheduler-pm");
+    } catch (error) {
+      feedback.textContent = getErrorMessage(error);
+      return;
+    }
 
     config.report_base_dir = reportBaseDir;
     if (form.catch_up_policy?.value) config.catch_up_policy = form.catch_up_policy.value;
@@ -327,6 +400,13 @@ function renderSchedulerDetail(data, state) {
     setElementValue("cfg-agent-mode", config.mode || "bridge");
     setElementValue("cfg-report-dir", config.report_base_dir);
     setElementValue("cfg-catchup", config.catch_up_policy);
+    const pm = config.pm_resolver || {};
+    setElementValue("cfg-pm-enabled", String(pm.enabled !== false));
+    setElementValue("cfg-pm-agent-type", pm.agent_type || "codex");
+    setElementValue("cfg-pm-mode", pm.mode || "bridge");
+    setElementValue("cfg-pm-model-id", pm.model_id || "");
+    setElementValue("cfg-pm-auto-approve", String(pm.auto_approve === true));
+    setElementValue("cfg-pm-reply-channels", pm.user_reply_channels ? JSON.stringify(pm.user_reply_channels, null, 2) : "");
   }
 
   setElementText(
@@ -402,6 +482,14 @@ function bindSchedulerConfigForm(schedulerId, poll, state) {
     if (form.mode.value) body.mode = form.mode.value;
     if (form.report_base_dir.value) body.report_base_dir = form.report_base_dir.value;
     if (form.catch_up_policy.value) body.catch_up_policy = form.catch_up_policy.value;
+    try {
+      body.pm_resolver = collectPmResolverConfig("cfg-pm");
+    } catch (error) {
+      if (feedback) {
+        feedback.textContent = getErrorMessage(error);
+      }
+      return;
+    }
 
     state.setSaving(true);
     try {
@@ -732,6 +820,8 @@ function renderSchedulerRunHistory(runHistory) {
 async function setupDashboard() {
   setupTabNavigation();
   setupValidatorToggle();
+  setupPmResolverToggle("agent-dispatcher-pm-enabled", "agent-dispatcher-pm-fields");
+  setupPmResolverToggle("new-scheduler-pm-enabled", "new-scheduler-pm-fields");
   setupSchedulerCreation();
 
   const list = document.getElementById("roles-list");
@@ -1126,6 +1216,7 @@ async function setupDashboard() {
     if (validatorConfig) {
       payload.validator = validatorConfig;
     }
+    payload.pm_resolver = collectPmResolverConfig("agent-dispatcher-pm");
 
     const response = await fetchJson("/api/agent-dispatcher/prompt-preview", {
       method: "POST",
@@ -1179,6 +1270,12 @@ async function setupDashboard() {
     if (validatorConfig) {
       payload.validator = validatorConfig;
     }
+    try {
+      payload.pm_resolver = collectPmResolverConfig("agent-dispatcher-pm");
+    } catch (error) {
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
+      return;
+    }
 
     Object.keys(payload).forEach((key) => {
       if (payload[key] === "") {
@@ -1201,6 +1298,10 @@ async function setupDashboard() {
       const validatorFields = document.getElementById("agent-dispatcher-validator-fields");
       if (validatorToggle) validatorToggle.checked = false;
       if (validatorFields) validatorFields.hidden = true;
+      const pmToggle = document.getElementById("agent-dispatcher-pm-enabled");
+      const pmFields = document.getElementById("agent-dispatcher-pm-fields");
+      if (pmToggle) pmToggle.checked = true;
+      if (pmFields) pmFields.hidden = false;
       await loadAgentDispatcherReplyOptions();
       agentDispatcherPromptDirty = false;
       await refreshAgentDispatcherPromptPreview({ force: true });
@@ -1229,6 +1330,16 @@ async function setupDashboard() {
     });
 
   [manualChannelSelect, manualChatIdInput, manualBotSelect, manualTelegramUserSelect].forEach((element) => {
+    ["input", "change"].forEach((eventName) => {
+      element.addEventListener(eventName, () => {
+        void refreshAgentDispatcherPromptPreview().catch((error) => {
+          agentDispatcherFeedback.textContent = getErrorMessage(error);
+        });
+      });
+    });
+  });
+
+  collectPmResolverElements("agent-dispatcher-pm").forEach((element) => {
     ["input", "change"].forEach((eventName) => {
       element.addEventListener(eventName, () => {
         void refreshAgentDispatcherPromptPreview().catch((error) => {
@@ -1355,6 +1466,7 @@ async function setupRoleDetail() {
         <div><dt>status</dt><dd><span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span></dd></div>
         <div><dt>dispatcher_thread_id</dt><dd><code>${escapeHtml(detail.dispatcher_thread_id || "pending")}</code></dd></div>
         <div><dt>current_worker</dt><dd>${escapeHtml(detail.current_worker || "idle")}</dd></div>
+        ${renderPmResolverSummaryItem(detail)}
         <div><dt>agent_type</dt><dd>${escapeHtml(detail.agent_type || "---")}</dd></div>
         <div><dt>model_id</dt><dd>${escapeHtml(detail.model_id || "provider default")}</dd></div>
         <div><dt>mode</dt><dd>${escapeHtml(detail.mode || "---")}</dd></div>
@@ -1915,6 +2027,12 @@ async function setupConfigEditor() {
   const cfgValidatorPassThreshold = document.getElementById("cfg-validator-pass-threshold");
   const cfgValidatorMaxFixCycles = document.getElementById("cfg-validator-max-fix-cycles");
   const cfgValidatorBaseBranch = document.getElementById("cfg-validator-base-branch");
+  const cfgPmEnabled = document.getElementById("cfg-pm-enabled");
+  const cfgPmAgentType = document.getElementById("cfg-pm-agent-type");
+  const cfgPmMode = document.getElementById("cfg-pm-mode");
+  const cfgPmModelId = document.getElementById("cfg-pm-model-id");
+  const cfgPmAutoApprove = document.getElementById("cfg-pm-auto-approve");
+  const cfgPmReplyChannels = document.getElementById("cfg-pm-reply-channels");
 
   if (!title || !detailLink || !status || !feedback || !form || !input || !saveButton) {
     return;
@@ -1946,6 +2064,14 @@ async function setupConfigEditor() {
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.value = v.pass_threshold ?? 0.7;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.value = v.max_fix_cycles ?? 3;
     if (cfgValidatorBaseBranch) cfgValidatorBaseBranch.value = v.base_branch || "main";
+
+    const pm = config.pm_resolver || {};
+    if (cfgPmEnabled) cfgPmEnabled.value = String(pm.enabled !== false);
+    if (cfgPmAgentType) cfgPmAgentType.value = pm.agent_type || "codex";
+    if (cfgPmMode) cfgPmMode.value = pm.mode || "bridge";
+    if (cfgPmModelId) cfgPmModelId.value = pm.model_id || "";
+    if (cfgPmAutoApprove) cfgPmAutoApprove.value = String(pm.auto_approve === true);
+    if (cfgPmReplyChannels) cfgPmReplyChannels.value = pm.user_reply_channels ? JSON.stringify(pm.user_reply_channels, null, 2) : "";
   };
 
   const setStructuredFieldsDisabled = (disabled) => {
@@ -1962,6 +2088,12 @@ async function setupConfigEditor() {
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.readOnly = disabled;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.readOnly = disabled;
     if (cfgValidatorBaseBranch) cfgValidatorBaseBranch.readOnly = disabled;
+    if (cfgPmEnabled) cfgPmEnabled.disabled = disabled;
+    if (cfgPmAgentType) cfgPmAgentType.disabled = disabled;
+    if (cfgPmMode) cfgPmMode.disabled = disabled;
+    if (cfgPmModelId) cfgPmModelId.readOnly = disabled;
+    if (cfgPmAutoApprove) cfgPmAutoApprove.disabled = disabled;
+    if (cfgPmReplyChannels) cfgPmReplyChannels.readOnly = disabled;
   };
 
   const collectStructuredPatch = () => {
@@ -1986,6 +2118,7 @@ async function setupConfigEditor() {
         base_branch: cfgValidatorBaseBranch?.value?.trim() || "main"
       };
     }
+    patch.pm_resolver = collectPmResolverConfig("cfg-pm");
 
     return patch;
   };
@@ -2016,7 +2149,7 @@ async function setupConfigEditor() {
     }
     status.textContent = response.can_edit
       ? (isAgentDispatcherConfig
-        ? "Editable fields: agent_type, model_id, mode, kill_policy, auto_approve. Changes apply to subsequent worker launches."
+        ? "Editable fields: agent_type, model_id, mode, kill_policy, auto_approve, validator, pm_resolver. Changes apply to subsequent launches."
         : "Only tasks and taskspec are editable here. Runtime task fields are reset on save.")
       : response.blocked_reason || "Editing is temporarily unavailable.";
   };
@@ -2034,7 +2167,12 @@ async function setupConfigEditor() {
 
     let payload;
     if (useStructuredFields) {
-      payload = collectStructuredPatch();
+      try {
+        payload = collectStructuredPatch();
+      } catch (error) {
+        feedback.textContent = getErrorMessage(error);
+        return;
+      }
     } else {
       try {
         payload = JSON.parse(input.value);
@@ -2122,6 +2260,10 @@ function renderRoleDetailError(elements, message) {
 function renderDispatchDetailCard(detail) {
   const taskLabel = detail.task ? `${detail.worker_id}: ${detail.task}` : detail.worker_id;
   const subtitleParts = [detail.model, detail.applied_model, detail.worker_thread_id].filter(Boolean);
+  const isPmResolver = detail.detail_kind === "pm_resolver";
+  const commandLabel = isPmResolver ? "PM Resolver Context" : "Dispatch Command";
+  const replyLabel = isPmResolver ? "PM Resolve Reply" : "Agent Reply";
+  const emptyReply = isPmResolver ? "No PM resolver reply captured yet." : "No agent reply captured yet.";
 
   return `
     <details class="dispatch-detail-card">
@@ -2141,13 +2283,43 @@ function renderDispatchDetailCard(detail) {
           <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "---")}</code></dd></div>
         </dl>
         <div class="dispatch-detail-messages">
-          ${renderDispatchMessage("Dispatch Command", detail.command, "No dispatch command captured yet.")}
-          ${renderDispatchMessage("Agent Reply", detail.reply, "No agent reply captured yet.")}
-          ${renderDispatchValidationMessage(detail.validation)}
+          ${renderDispatchMessage(commandLabel, detail.command, "No dispatch command captured yet.")}
+          ${renderDispatchMessage(replyLabel, detail.reply, emptyReply)}
+          ${isPmResolver ? "" : renderDispatchValidationMessage(detail.validation)}
         </div>
       </div>
     </details>
   `;
+}
+
+function renderPmResolverSummaryItem(detail) {
+  const pmDetail = resolveLatestPmResolverDetail(detail);
+  if (!pmDetail) {
+    return `<div><dt>pm_resolver</dt><dd>idle</dd></div>`;
+  }
+
+  const status = normalizeText(pmDetail.status) || "running";
+  const worker = normalizeText(pmDetail.worker_id).replace(/^PM:/i, "") || "issue";
+  const thread = normalizeText(pmDetail.worker_thread_id) || "pending";
+  return `
+    <div>
+      <dt>pm_resolver</dt>
+      <dd>
+        <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(status)}</span>
+        <code>${escapeHtml(thread)}</code> / ${escapeHtml(worker)}
+      </dd>
+    </div>
+  `;
+}
+
+function resolveLatestPmResolverDetail(detail) {
+  const dispatchDetails = Array.isArray(detail?.dispatch_details) ? detail.dispatch_details : [];
+  const pmDetails = dispatchDetails.filter((entry) => entry?.detail_kind === "pm_resolver");
+  if (pmDetails.length === 0) {
+    return null;
+  }
+
+  return pmDetails[pmDetails.length - 1];
 }
 
 function renderDispatchPlanRows(rows, dispatchDetails) {
@@ -2244,7 +2416,9 @@ function buildDispatchPlanSyntheticRow(detail) {
     task: detail?.task || "",
     model: detail?.model || detail?.applied_model || "",
     depends_on: "---",
-    thread_id: detail?.worker_thread_id || ""
+    thread_id: detail?.worker_thread_id || "",
+    detail_kind: detail?.detail_kind || "",
+    read_only: detail?.detail_kind === "pm_resolver"
   };
 }
 
@@ -2260,6 +2434,10 @@ function renderDispatchPlanStatus(row) {
 }
 
 function renderDispatchPlanActions(row) {
+  if (row?.read_only || isHumanDispatchModel(row?.model)) {
+    return `<span class="muted">---</span>`;
+  }
+
   const workerId = escapeHtml(row.worker || "");
   const currentStatus = normalizeDispatchPlanStatus(row?.status);
   const canContinue = canContinueDispatchRow(row);

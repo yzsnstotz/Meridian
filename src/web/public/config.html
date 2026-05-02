@@ -154,6 +154,51 @@
                 </label>
               </div>
             </fieldset>
+            <fieldset class="field-group">
+              <legend>PM Resolver</legend>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>enabled</span>
+                  <select id="cfg-pm-enabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>agent_type</span>
+                  <select id="cfg-pm-agent-type">
+                    <option value="codex">codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>mode</span>
+                  <select id="cfg-pm-mode">
+                    <option value="bridge">bridge</option>
+                    <option value="pane_bridge">pane_bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>model_id</span>
+                  <input id="cfg-pm-model-id" type="text" placeholder="(default)" />
+                </label>
+              </div>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>auto_approve</span>
+                  <select id="cfg-pm-auto-approve">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field field-wide">
+                  <span>user_reply_channels</span>
+                  <textarea id="cfg-pm-reply-channels" class="editor-textarea" rows="3" placeholder="Blank inherits dispatcher channels"></textarea>
+                </label>
+              </div>
+            </fieldset>
           </div>
           <!-- Fallback raw JSON textarea for non-agent-dispatcher configs -->
           <label class="field" id="config-raw-field">

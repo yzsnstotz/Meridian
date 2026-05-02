@@ -16,7 +16,8 @@ describe("buildSystemPrompt", () => {
       default_mode: "bridge",
       kill_policy: "always",
       auto_approve: true,
-      resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}"
+      resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}",
+      pm_resolver_config_json: "{\"enabled\":true,\"agent_type\":\"codex\",\"mode\":\"bridge\",\"auto_approve\":false}"
     };
   }
 
@@ -37,6 +38,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("kill_policy: always");
     expect(prompt).toContain("auto_approve: true");
     expect(prompt).toContain('resolved_model_map_json: {"CODEX":{"provider":"codex","model_id":"gpt-5.4"}}');
+    expect(prompt).toContain('pm_resolver_config_json: {"enabled":true,"agent_type":"codex","mode":"bridge","auto_approve":false}');
   });
 
   it("does not leave template markers in the output", () => {
@@ -55,6 +57,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("kill --thread-id <id>");
     expect(prompt).toContain("resume-worker --plan <dispatch_plan_path> --worker <worker_id>");
     expect(prompt).toContain("notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']");
+    expect(prompt).toContain("pm-resolve --dispatcher agent-dispatcher-r03");
     expect(prompt).toContain("Approval policy crosses the Meridian boundary as neutral `auto_approve`");
     expect(prompt).toContain("executable lives in the Meridian-roles repo");
     expect(prompt).toContain("run inside the worker sandbox rooted at `dispatch_repo_root`");
@@ -76,6 +79,8 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("status: \"still_blocked\"");
     expect(prompt).toContain("status: \"manual_intervention_required\"");
     expect(prompt).toContain("status: \"local_tool_bootstrap_failed\"");
+    expect(prompt).toContain("call `pm-resolve --dispatcher <dispatcher_role_id>`");
+    expect(prompt).toContain("PM resolver is disabled");
     expect(prompt).toContain("If a worker reply says `:hit limit`");
     expect(prompt).toContain("Hit limit: `[Dispatcher] ⛔ worker hit limit");
     expect(prompt).toContain("If any non-human row is already `🔄`");

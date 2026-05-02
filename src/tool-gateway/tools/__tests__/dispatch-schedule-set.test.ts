@@ -59,7 +59,8 @@ describe("dispatch-schedule-set tool", () => {
       cron: "0 9 * * *",
       report_dir: harness.reportDir,
       repo_root: harness.dispatchRepoRoot,
-      docs_root: harness.docsRoot
+      docs_root: harness.docsRoot,
+      pm_enabled: "false"
     });
 
     expect(result).toEqual({
@@ -90,7 +91,13 @@ describe("dispatch-schedule-set tool", () => {
           report_base_dir: harness.reportDir,
           dispatch_repo_root: harness.dispatchRepoRoot,
           docs_root: harness.docsRoot,
-          cron_expression: "0 9 * * *"
+          cron_expression: "0 9 * * *",
+          pm_resolver: {
+            enabled: false,
+            agent_type: "codex",
+            mode: "bridge",
+            auto_approve: false
+          }
         }
       })
     }));
@@ -155,6 +162,12 @@ describe("dispatch-schedule-set tool", () => {
           report_base_dir: harness.reportDir,
           dispatch_repo_root: harness.dispatchRepoRoot,
           docs_root: harness.docsRoot,
+          pm_resolver: {
+            enabled: true,
+            agent_type: "codex",
+            mode: "bridge",
+            auto_approve: false
+          },
           delay_between_cycles_seconds: 60
         }
       }

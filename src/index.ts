@@ -5,6 +5,7 @@ import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
+import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
@@ -59,6 +60,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log
   });
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });
+  const watchdogPmResolverIssueKeys = new Set<string>();
 
   registry.register("dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
   registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
@@ -135,6 +137,13 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
           status: directRecovery.status,
           message: directRecovery.message
         });
+        await maybeStartPmResolverForWatchdogRecovery(
+          stateStore,
+          threadId,
+          directRecovery,
+          watchdogPmResolverIssueKeys,
+          log
+        );
         return;
       }
 
@@ -604,6 +613,84 @@ export interface WatchdogContinueResult {
   status: ContinueDispatcherResponse["status"];
   workerId: string | null;
   message: string;
+}
+
+const PM_RESOLVER_WATCHDOG_STATUSES = new Set<ContinueDispatcherResponse["status"]>([
+  "manual_intervention_required",
+  "local_tool_bootstrap_failed"
+]);
+
+async function maybeStartPmResolverForWatchdogRecovery(
+  stateStore: StateStore,
+  threadId: string,
+  recovery: WatchdogContinueResult,
+  seenIssueKeys: Set<string>,
+  log: typeof console
+): Promise<void> {
+  if (!PM_RESOLVER_WATCHDOG_STATUSES.has(recovery.status)) {
+    return;
+  }
+
+  const issueKey = [
+    threadId,
+    recovery.status,
+    recovery.workerId ?? "",
+    recovery.message
+  ].join("\u0000");
+  if (seenIssueKeys.has(issueKey)) {
+    log.info("Watchdog stall: PM resolver already requested for this issue", {
+      threadId,
+      workerId: recovery.workerId,
+      status: recovery.status
+    });
+    return;
+  }
+
+  const state = await loadAppState(stateStore);
+  const roleState = state.roles.find((role) => role.threadId === threadId);
+  if (!roleState) {
+    log.warn("Watchdog stall: cannot start PM resolver because dispatcher state is missing", { threadId });
+    return;
+  }
+
+  const config = parseAgentDispatcherConfig(roleState);
+  if (!config) {
+    log.warn("Watchdog stall: cannot start PM resolver because dispatcher config is invalid", { threadId });
+    return;
+  }
+
+  seenIssueKeys.add(issueKey);
+  try {
+    const result = await startPmResolver({
+      dispatcherId: threadId,
+      config,
+      issue: {
+        status: recovery.status,
+        workerId: recovery.workerId ?? undefined,
+        message: recovery.message,
+        source: "watchdog"
+      }
+    });
+    log.info("Watchdog stall: PM resolver handoff completed", {
+      threadId,
+      workerId: recovery.workerId,
+      status: recovery.status,
+      pmResolverStatus: result.status,
+      pmResolverThreadId: result.status === "pm_resolver_started" ? result.thread_id : undefined,
+      message: result.message
+    });
+    if (result.status !== "pm_resolver_started") {
+      seenIssueKeys.delete(issueKey);
+    }
+  } catch (error) {
+    seenIssueKeys.delete(issueKey);
+    log.warn("Watchdog stall: PM resolver handoff failed", {
+      threadId,
+      workerId: recovery.workerId,
+      status: recovery.status,
+      error: asError(error).message
+    });
+  }
 }
 
 export async function tryContinueDispatchWorker(

@@ -99,6 +99,62 @@ describe("scheduler detail public scripts", () => {
     expect(html).toContain("validator-thread-2");
   });
 
+  it("renders PM resolver dispatch details with PM-specific labels", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const html = vm.runInContext(`renderDispatchDetailCard({
+      detail_kind: "pm_resolver",
+      worker_id: "PM:BATCH-1-GATE",
+      status: "running",
+      task: "Resolve BATCH-1-GATE: manual_intervention_required",
+      model: "PM",
+      applied_model: "gpt-5.5",
+      worker_thread_id: "codex_42",
+      trace_id: "44444444-4444-4444-8444-444444444444",
+      command: {
+        sender_name: "agent-dispatcher-a9a66025",
+        sender_agent_type: "dispatcher",
+        sender_model: null,
+        sender_thread_id: "agent-dispatcher-a9a66025",
+        timestamp: "2026-05-03T00:01:00.000Z",
+        content: "Issue status: manual_intervention_required"
+      },
+      reply: {
+        sender_name: "codex_42",
+        sender_agent_type: "codex",
+        sender_model: "gpt-5.5",
+        sender_thread_id: "codex_42",
+        timestamp: "2026-05-03T00:05:00.000Z",
+        content: "PM is resolving the blocker."
+      }
+    })`, context) as string;
+
+    expect(html).toContain("PM:BATCH-1-GATE");
+    expect(html).toContain("PM Resolver Context");
+    expect(html).toContain("PM Resolve Reply");
+    expect(html).toContain("PM is resolving the blocker.");
+  });
+
   it("enables role detail continuation for workers waiting on validation", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
@@ -169,6 +225,21 @@ describe("scheduler detail public scripts", () => {
     expect(appScript).toContain("threshold_type:");
     expect(appScript).toContain("agent-dispatcher-validator-threshold-type");
     expect(appScript).toContain("cfg-validator-threshold-type");
+  });
+
+  it("exposes default-on PM resolver controls in dispatcher and scheduler creation", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const indexHtml = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
+    const configHtml = await fs.readFile(path.join(publicDir, "config.html"), "utf8");
+    const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+
+    expect(indexHtml).toMatch(/id="agent-dispatcher-pm-enabled"[^>]*checked/);
+    expect(indexHtml).toMatch(/id="new-scheduler-pm-enabled"[^>]*checked/);
+    expect(configHtml).toContain('id="cfg-pm-enabled"');
+    expect(schedulerHtml).toContain('id="cfg-pm-enabled"');
+    expect(appScript).toContain("collectPmResolverConfig");
+    expect(appScript).toContain("pm_resolver");
   });
 
   it("renders agent dispatcher role plan progress when progress data is available", async () => {

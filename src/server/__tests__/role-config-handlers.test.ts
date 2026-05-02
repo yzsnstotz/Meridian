@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import type { LaunchConfig, LaunchResult } from "../../roles/agent-dispatcher/launcher";
+import type { PmResolverRequest, PmResolverResult } from "../../roles/agent-dispatcher/pm-resolver";
 import type { LaunchDispatchWorkerConfig, LaunchDispatchWorkerResult } from "../../roles/agent-dispatcher/worker-launcher";
 import { PromptStore } from "../../roles/prompt-store";
 import { RoleRegistry } from "../../roles/role-registry";
@@ -318,7 +319,97 @@ describe("role config handlers", () => {
         agent_type: "codex",
         mode: "bridge",
         kill_policy: "always",
-        auto_approve: false
+        auto_approve: false,
+        pm_resolver: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:ops"
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  it("starts the configured PM resolver for an abnormal dispatcher state", async () => {
+    const startPmResolver = vi.fn(async (): Promise<PmResolverResult> => ({
+      ok: true,
+      status: "pm_resolver_started",
+      thread_id: "pm-thread-123",
+      message: "PM resolver started"
+    }));
+    const harness = createHarness(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      startPmResolver
+    );
+
+    await createRole(harness.roleHandlers, {
+      thread_id: "agent-dispatcher-pm",
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: [
+        {
+          channel: "telegram",
+          chat_id: "telegram:ops"
+        }
+      ],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always"
+    });
+
+    await expect(invokeJson<PmResolverResult>(
+      harness.roleHandlers,
+      "POST",
+      "/api/agent-dispatcher/agent-dispatcher-pm/pm-resolve",
+      {
+        status: "manual_intervention_required",
+        worker_id: "W-02",
+        message: "Worker is blocked",
+        error: "Missing credentials"
+      }
+    )).resolves.toEqual({
+      ok: true,
+      status: "pm_resolver_started",
+      thread_id: "pm-thread-123",
+      message: "PM resolver started"
+    });
+
+    expect(startPmResolver).toHaveBeenCalledWith({
+      dispatcherId: "agent-dispatcher-pm",
+      config: expect.objectContaining({
+        pm_resolver: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:ops"
+            }
+          ]
+        }
+      }),
+      issue: {
+        status: "manual_intervention_required",
+        workerId: "W-02",
+        message: "Worker is blocked",
+        error: "Missing credentials",
+        source: "dispatcher"
       }
     });
   });
@@ -3295,6 +3386,181 @@ describe("role config handlers", () => {
     }
   });
 
+  it("returns PM resolver status and reply as dispatcher details", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-pm-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⛔ BLOCKED | 1 | BATCH-1-GATE | Gate Batch 2 | CODEX-XHIGH | — | TaskSpec | blocked |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-03T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      pm_resolvers: [
+        {
+          thread_id: "codex_42",
+          status: "completed",
+          started_at: "2026-05-03T00:01:00.000Z",
+          last_seen_at: "2026-05-03T00:05:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "BATCH-1-GATE",
+            source: "watchdog",
+            message: "Gate worker blocked"
+          },
+          result: {
+            status: "success",
+            run_state: "completed",
+            content: "PM merged PR #204 and continued the dispatcher.",
+            summary_text: "PM resolved BATCH-1-GATE.",
+            details_text: [
+              "Your message:",
+              "Resolve BATCH-1-GATE",
+              "",
+              "Agent reply:",
+              "PM merged PR #204 and continued the dispatcher."
+            ].join("\n"),
+            trace_id: "44444444-4444-4444-8444-444444444444",
+            timestamp: "2026-05-03T00:05:00.000Z"
+          },
+          error: null
+        }
+      ],
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-pm-detail", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-pm-detail"
+      )).resolves.toMatchObject({
+        dispatch_details: expect.arrayContaining([
+          expect.objectContaining({
+            detail_kind: "pm_resolver",
+            worker_id: "PM:BATCH-1-GATE",
+            status: "completed",
+            task: "Resolve BATCH-1-GATE: manual_intervention_required",
+            model: "PM",
+            applied_model: "gpt-5.5",
+            worker_thread_id: "codex_42",
+            trace_id: "44444444-4444-4444-8444-444444444444",
+            reply: expect.objectContaining({
+              sender_name: "codex_42",
+              sender_agent_type: "codex",
+              sender_model: "gpt-5.5",
+              content: "PM merged PR #204 and continued the dispatcher."
+            })
+          })
+        ])
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers PM resolver details from worker results written before PM history existed", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-pm-legacy-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | BATCH-1-GATE | Gate Batch 2 | CODEX-HIGH | N-01 | BATCH-1-GATE.md | PM resolved |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-03T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "BATCH-1-GATE": buildLifecycleWorker({
+          thread_id: "codex_40",
+          trace_id: "55555555-5555-4555-8555-555555555555",
+          started_at: "2026-05-03T00:01:00.000Z",
+          last_seen_at: "2026-05-03T00:05:00.000Z",
+          status: "completed",
+          hub_result: {
+            trace_id: "55555555-5555-4555-8555-555555555555",
+            thread_id: "codex_40",
+            source: "pm-resolver",
+            status: "success",
+            run_state: "completed",
+            content: "PM resolution complete for BATCH-1-GATE. PR #204 merged and Batch 2 unblocked.",
+            attachments: [],
+            timestamp: "2026-05-03T00:05:00.000Z"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-pm-legacy-detail", dispatchPlanPath);
+
+      const response = await invokeJson<{
+        dispatch_details: Array<{
+          worker_id: string;
+          detail_kind?: string;
+          reply: { content: string } | null;
+        }>;
+      }>(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-pm-legacy-detail"
+      );
+
+      expect(response).toMatchObject({
+        dispatch_details: expect.arrayContaining([
+          expect.objectContaining({
+            detail_kind: "pm_resolver",
+            worker_id: "PM:BATCH-1-GATE",
+            status: "completed",
+            task: "Resolve BATCH-1-GATE: recovered_pm_resolution",
+            model: "PM",
+            applied_model: "pm-resolver",
+            worker_thread_id: "codex_40",
+            reply: expect.objectContaining({
+              sender_name: "codex_40",
+              sender_agent_type: "pm-resolver",
+              content: expect.stringContaining("PM resolution complete for BATCH-1-GATE")
+            })
+          })
+        ])
+      });
+
+      expect(response.dispatch_details).toContainEqual(expect.objectContaining({
+        worker_id: "BATCH-1-GATE",
+        reply: null
+      }));
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("demotes dispatcher lifecycle state during detail fetch when attach reports the thread missing", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-missing-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -4153,7 +4419,8 @@ function createHarness(
   attachToThread: ((threadId: string) => Promise<void>) | Error | null = null,
   sendHubRequest: ((message: HubMessage) => Promise<HubResult>) | Error | null = null,
   launchDispatcher: ((config: LaunchConfig) => Promise<LaunchResult>) | null = null,
-  launchDispatchWorker: ((config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>) | null = null
+  launchDispatchWorker: ((config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>) | null = null,
+  startPmResolver: ((request: PmResolverRequest) => Promise<PmResolverResult>) | null = null
 ) {
   const log = createLogger();
   const registry = new RoleRegistry();
@@ -4250,6 +4517,7 @@ function createHarness(
         ok: true,
         threadId: "worker-thread-continued"
       })),
+      ...(startPmResolver ? { startPmResolver } : {}),
       log
     })
   };

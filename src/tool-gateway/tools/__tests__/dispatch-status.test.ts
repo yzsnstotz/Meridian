@@ -232,6 +232,81 @@ describe("dispatch-status tool", () => {
     }));
   });
 
+  it("reports recovered PM resolver replies separately from worker status", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-pm-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 1 | BATCH-1-GATE | Gate Batch 2 | CODEX-HIGH | N-01 | BATCH-1-GATE.md | PM resolved |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-05-03T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "BATCH-1-GATE": {
+            thread_id: "codex_40",
+            trace_id: "55555555-5555-4555-8555-555555555555",
+            started_at: "2026-05-03T00:01:00.000Z",
+            last_seen_at: "2026-05-03T00:05:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: {
+              trace_id: "55555555-5555-4555-8555-555555555555",
+              thread_id: "codex_40",
+              source: "pm-resolver",
+              status: "success",
+              run_state: "completed",
+              content: "PM resolution complete for BATCH-1-GATE. Dispatcher continued to N-07.",
+              attachments: [],
+              timestamp: "2026-05-03T00:05:00.000Z"
+            },
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      workers: [
+        expect.objectContaining({
+          worker_id: "BATCH-1-GATE",
+          status: "✅",
+          lifecycle_status: "completed",
+          failure_reason: null
+        })
+      ],
+      pm_resolvers: [
+        expect.objectContaining({
+          worker_id: "BATCH-1-GATE",
+          thread_id: "codex_40",
+          status: "completed",
+          issue_status: "recovered_pm_resolution",
+          issue_source: "worker_result",
+          reply: "PM resolution complete for BATCH-1-GATE. Dispatcher continued to N-07."
+        })
+      ]
+    }));
+  });
+
   it("does not report an old thread id as the current assignment after manual retry resets a worker to pending", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
     tempDirectories.add(directory);
