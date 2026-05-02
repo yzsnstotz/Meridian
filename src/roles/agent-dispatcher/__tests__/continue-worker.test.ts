@@ -183,6 +183,7 @@ describe("continueDispatchWorker", () => {
           agent_type: "codex",
           mode: "bridge",
           auto_approve: false,
+          threshold_type: "score",
           pass_threshold: 0.8,
           max_fix_cycles: 4,
           base_branch: "main"
@@ -225,6 +226,7 @@ describe("continueDispatchWorker", () => {
           agent_type: "codex",
           mode: "bridge",
           auto_approve: false,
+          threshold_type: "score",
           pass_threshold: 0.8,
           max_fix_cycles: 4,
           base_branch: "main"

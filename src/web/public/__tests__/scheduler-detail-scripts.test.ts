@@ -99,6 +99,21 @@ describe("scheduler detail public scripts", () => {
     expect(html).toContain("validator-thread-2");
   });
 
+  it("exposes validator threshold_type controls in dispatcher creation and config editing", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const indexHtml = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
+    const configHtml = await fs.readFile(path.join(publicDir, "config.html"), "utf8");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+
+    expect(indexHtml).toContain('id="agent-dispatcher-validator-threshold-type"');
+    expect(indexHtml).toContain('<option value="score">score</option>');
+    expect(indexHtml).toContain('<option value="binary">binary</option>');
+    expect(configHtml).toContain('id="cfg-validator-threshold-type"');
+    expect(appScript).toContain("threshold_type:");
+    expect(appScript).toContain("agent-dispatcher-validator-threshold-type");
+    expect(appScript).toContain("cfg-validator-threshold-type");
+  });
+
   it("renders agent dispatcher role plan progress when progress data is available", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const roleHtml = await fs.readFile(path.join(publicDir, "role.html"), "utf8");

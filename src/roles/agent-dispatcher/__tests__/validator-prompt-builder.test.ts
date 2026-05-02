@@ -21,4 +21,22 @@ describe("buildDefaultValidatorPrompt", () => {
     expect(prompt).toContain("Do not fail an otherwise valid deliverable solely because");
     expect(prompt).toContain("dispatch plan row still shows");
   });
+
+  it("instructs binary validators to return a positive verdict instead of a score", () => {
+    const prompt = buildDefaultValidatorPrompt({
+      workerId: "N-06",
+      taskBranch: "task/n-06",
+      baseBranch: "main",
+      taskspecPath: "/tmp/taskspec.md",
+      dispatchPlanPath: "/tmp/dispatch_plan.md",
+      cycle: 1,
+      maxFixCycles: 3,
+      previousFeedback: null,
+      thresholdType: "binary"
+    });
+
+    expect(prompt).toContain("binary pass/fail verdict");
+    expect(prompt).toContain('"positive": <true or false>');
+    expect(prompt).not.toContain('"score": <number between 0.0 and 1.0>');
+  });
 });

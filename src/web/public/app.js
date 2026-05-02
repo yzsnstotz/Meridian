@@ -118,6 +118,7 @@ function collectValidatorConfig() {
     enabled: true,
     agent_type: document.getElementById("agent-dispatcher-validator-agent-type")?.value || "claude",
     model_id: document.getElementById("agent-dispatcher-validator-model-id")?.value?.trim() || undefined,
+    threshold_type: document.getElementById("agent-dispatcher-validator-threshold-type")?.value || "score",
     pass_threshold: parseFloat(document.getElementById("agent-dispatcher-validator-pass-threshold")?.value) || 0.7,
     max_fix_cycles: parseInt(document.getElementById("agent-dispatcher-validator-max-fix-cycles")?.value, 10) || 3,
     base_branch: document.getElementById("agent-dispatcher-validator-base-branch")?.value?.trim() || "main"
@@ -1898,6 +1899,7 @@ async function setupConfigEditor() {
   const cfgValidatorEnabled = document.getElementById("cfg-validator-enabled");
   const cfgValidatorAgentType = document.getElementById("cfg-validator-agent-type");
   const cfgValidatorModelId = document.getElementById("cfg-validator-model-id");
+  const cfgValidatorThresholdType = document.getElementById("cfg-validator-threshold-type");
   const cfgValidatorPassThreshold = document.getElementById("cfg-validator-pass-threshold");
   const cfgValidatorMaxFixCycles = document.getElementById("cfg-validator-max-fix-cycles");
   const cfgValidatorBaseBranch = document.getElementById("cfg-validator-base-branch");
@@ -1927,6 +1929,7 @@ async function setupConfigEditor() {
     if (cfgValidatorEnabled) cfgValidatorEnabled.value = String(v.enabled === true);
     if (cfgValidatorAgentType) cfgValidatorAgentType.value = v.agent_type || "claude";
     if (cfgValidatorModelId) cfgValidatorModelId.value = v.model_id || "";
+    if (cfgValidatorThresholdType) cfgValidatorThresholdType.value = v.threshold_type || "score";
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.value = v.pass_threshold ?? 0.7;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.value = v.max_fix_cycles ?? 3;
     if (cfgValidatorBaseBranch) cfgValidatorBaseBranch.value = v.base_branch || "main";
@@ -1941,6 +1944,7 @@ async function setupConfigEditor() {
     if (cfgValidatorEnabled) cfgValidatorEnabled.disabled = disabled;
     if (cfgValidatorAgentType) cfgValidatorAgentType.disabled = disabled;
     if (cfgValidatorModelId) cfgValidatorModelId.readOnly = disabled;
+    if (cfgValidatorThresholdType) cfgValidatorThresholdType.disabled = disabled;
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.readOnly = disabled;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.readOnly = disabled;
     if (cfgValidatorBaseBranch) cfgValidatorBaseBranch.readOnly = disabled;
@@ -1959,6 +1963,7 @@ async function setupConfigEditor() {
         enabled: cfgValidatorEnabled.value === "true",
         agent_type: cfgValidatorAgentType?.value || "claude",
         model_id: cfgValidatorModelId?.value?.trim() || undefined,
+        threshold_type: cfgValidatorThresholdType?.value || "score",
         pass_threshold: parseFloat(cfgValidatorPassThreshold?.value) || 0.7,
         max_fix_cycles: parseInt(cfgValidatorMaxFixCycles?.value, 10) || 3,
         base_branch: cfgValidatorBaseBranch?.value?.trim() || "main"

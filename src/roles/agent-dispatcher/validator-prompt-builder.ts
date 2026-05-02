@@ -1,3 +1,5 @@
+import type { ValidatorThresholdType } from "../../types";
+
 export interface ValidatorPromptContext {
   workerId: string;
   taskBranch: string;
@@ -7,6 +9,7 @@ export interface ValidatorPromptContext {
   cycle: number;
   maxFixCycles: number;
   previousFeedback: string | null;
+  thresholdType?: ValidatorThresholdType;
 }
 
 export function buildDefaultValidatorPrompt(context: ValidatorPromptContext): string {
@@ -18,7 +21,8 @@ export function buildDefaultValidatorPrompt(context: ValidatorPromptContext): st
     dispatchPlanPath,
     cycle,
     maxFixCycles,
-    previousFeedback
+    previousFeedback,
+    thresholdType = "score"
   } = context;
 
   const previousFeedbackSection = previousFeedback
@@ -33,9 +37,42 @@ ${previousFeedback}
   const previousFeedbackCheck = previousFeedback
     ? "   - Previous feedback: Were all previously flagged issues resolved?"
     : "";
+  const isBinaryThreshold = thresholdType === "binary";
+  const roleAssessment = isBinaryThreshold
+    ? "a binary pass/fail verdict"
+    : "a structured quality assessment with a confidence score";
+  const noGitPassingInstruction = isBinaryThreshold
+    ? "return a positive verdict and mention the metadata observation as non-blocking feedback."
+    : "assign a passing score and mention the metadata observation as non-blocking feedback.";
+  const evaluationGuidelines = isBinaryThreshold
+    ? `# Binary Verdict Guidelines
+- **positive true**: All task requirements and acceptance checks are satisfied, with no blocking correctness, completeness, quality, test, or branch-delivery issue.
+- **positive false**: Any blocking issue remains, including unmet requirements, incorrect behavior, missing required tests, broken acceptance checks, or unresolved previous feedback.
+
+# Output Format
+You MUST end your response with exactly one JSON block in the following format:
+\`\`\`json
+{"positive": <true or false>, "feedback": "<concise actionable feedback describing what passed and what needs fixing>"}
+\`\`\`
+
+If positive is false, the feedback will be sent directly to the worker for remediation. Make it specific and actionable — reference file names, function names, and line numbers where possible.`
+    : `# Scoring Guidelines
+- **0.9 – 1.0**: Perfect or near-perfect — all requirements met, clean code, tests present
+- **0.7 – 0.8**: Minor issues — small gaps in tests or style, but functionally complete
+- **0.5 – 0.6**: Moderate issues — missing edge cases, incomplete tests, or partial implementation
+- **0.3 – 0.4**: Significant gaps — major requirements unmet or bugs present
+- **0.0 – 0.2**: Fundamentally incomplete or wrong approach
+
+# Output Format
+You MUST end your response with exactly one JSON block in the following format:
+\`\`\`json
+{"score": <number between 0.0 and 1.0>, "feedback": "<concise actionable feedback describing what passed and what needs fixing>"}
+\`\`\`
+
+If the score is below the pass threshold, the feedback will be sent directly to the worker for remediation. Make it specific and actionable — reference file names, function names, and line numbers where possible.`;
 
   return `# Role
-Code Validator. You review a worker's implementation against the task specification and dispatch plan, then provide a structured quality assessment with a confidence score.
+Code Validator. You review a worker's implementation against the task specification and dispatch plan, then provide ${roleAssessment}.
 
 # Context
 - Worker: ${workerId}
@@ -60,22 +97,9 @@ ${previousFeedbackCheck}
 # NO-GIT and Lifecycle Metadata Rules
 - If the dispatch command says the lifecycle store manages plan status updates, treat dispatch-plan status symbols as service metadata. Review the sibling \`dispatch_threads.json\` when present.
 - Do not fail an otherwise valid deliverable solely because the dispatch plan row still shows a lifecycle-managed transient symbol such as \`🔍\`, \`🔁\`, or \`🔄\`, or because branch/diff evidence is unavailable in a documented NO-GIT round.
-- If deliverables, reports, and acceptance checks satisfy the worker instructions and the only remaining concern is NO-GIT branch absence or lifecycle-managed plan-row status drift, assign a passing score and mention the metadata observation as non-blocking feedback.
+- If deliverables, reports, and acceptance checks satisfy the worker instructions and the only remaining concern is NO-GIT branch absence or lifecycle-managed plan-row status drift, ${noGitPassingInstruction}
 
-# Scoring Guidelines
-- **0.9 – 1.0**: Perfect or near-perfect — all requirements met, clean code, tests present
-- **0.7 – 0.8**: Minor issues — small gaps in tests or style, but functionally complete
-- **0.5 – 0.6**: Moderate issues — missing edge cases, incomplete tests, or partial implementation
-- **0.3 – 0.4**: Significant gaps — major requirements unmet or bugs present
-- **0.0 – 0.2**: Fundamentally incomplete or wrong approach
-
-# Output Format
-You MUST end your response with exactly one JSON block in the following format:
-\`\`\`json
-{"score": <number between 0.0 and 1.0>, "feedback": "<concise actionable feedback describing what passed and what needs fixing>"}
-\`\`\`
-
-If the score is below the pass threshold, the feedback will be sent directly to the worker for remediation. Make it specific and actionable — reference file names, function names, and line numbers where possible.
+${evaluationGuidelines}
 
 # Constraints
 - You are in READ-ONLY mode. Do NOT modify any files or make any commits.

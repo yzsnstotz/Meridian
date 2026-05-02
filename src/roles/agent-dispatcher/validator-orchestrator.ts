@@ -32,6 +32,7 @@ export interface ValidatorOrchestratorDeps {
 export interface ParsedValidatorOutput {
   score: number;
   feedback: string;
+  positive?: boolean;
 }
 
 // ─── Per-task override parsing ──────────────────────────────────────────────────
@@ -114,7 +115,10 @@ export async function executeValidationCycle(
     return { status: "error", reason: `worker ${workerId} has no validation state` };
   }
 
-  const threshold = resolveThresholdForWorker(validatorConfig, planRow);
+  const thresholdType = validatorConfig.threshold_type ?? "score";
+  const threshold = thresholdType === "score"
+    ? resolveThresholdForWorker(validatorConfig, planRow)
+    : null;
   const baseBranch = validatorConfig.base_branch;
   const taskBranch = resolveTaskBranch(workerId);
   const cycle = validation.current_cycle + 1;
@@ -127,7 +131,8 @@ export async function executeValidationCycle(
     dispatchPlanPath: deps.dispatchPlanPath,
     cycle,
     maxFixCycles: validation.max_fix_cycles,
-    previousFeedback: validation.last_feedback
+    previousFeedback: validation.last_feedback,
+    thresholdType
   };
 
   const promptBuilder = deps.buildPrompt ?? buildDefaultValidatorPrompt;
@@ -185,12 +190,14 @@ export async function executeValidationCycle(
     event: "validator_scored",
     worker_id: workerId,
     score: parsed.score,
-    threshold,
+    threshold_type: thresholdType,
+    ...(threshold === null ? {} : { threshold }),
+    positive: parsed.positive,
     cycle
   });
 
   // Decision gate
-  if (parsed.score >= threshold) {
+  if (isValidatorResultPassing(validatorConfig, planRow, parsed)) {
     lifecycleStore.transitionToValidated(workerId, {
       score: parsed.score,
       feedback: parsed.feedback,
@@ -279,7 +286,7 @@ export async function deliverValidatorFeedback(
   }
 
   const feedbackMessage = [
-    `[VALIDATOR FEEDBACK] Cycle ${validation.current_cycle}/${validation.max_fix_cycles} | Score: ${validation.last_score}`,
+    `[VALIDATOR FEEDBACK] Cycle ${validation.current_cycle}/${validation.max_fix_cycles} | ${formatValidatorFeedbackResult(deps.validatorConfig, validation.last_score)}`,
     "",
     validation.last_feedback,
     "",
@@ -338,7 +345,7 @@ export function parseValidatorOutput(content: string): ParsedValidatorOutput | n
   }
 
   // Fallback: find last JSON object in content
-  const jsonMatches = [...content.matchAll(/\{[^{}]*"score"\s*:\s*[\d.]+[^{}]*\}/g)];
+  const jsonMatches = [...content.matchAll(/\{[^{}]*(?:"score"\s*:|"positive"\s*:|"verdict"\s*:|"result"\s*:)[^{}]*\}/g)];
   if (jsonMatches.length > 0) {
     const lastMatch = jsonMatches[jsonMatches.length - 1]![0];
     const result = tryParseJson(lastMatch);
@@ -350,16 +357,49 @@ export function parseValidatorOutput(content: string): ParsedValidatorOutput | n
   return null;
 }
 
+export function isValidatorResultPassing(
+  config: ValidatorConfig,
+  planRow: DispatchContinuationPlanRow,
+  result: ParsedValidatorOutput | number
+): boolean {
+  if ((config.threshold_type ?? "score") === "binary") {
+    if (typeof result === "number") {
+      return result === 1;
+    }
+
+    return result.positive === true;
+  }
+
+  const score = typeof result === "number" ? result : result.score;
+  return score >= resolveThresholdForWorker(config, planRow);
+}
+
 function tryParseJson(raw: string): ParsedValidatorOutput | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (
-      typeof parsed === "object" && parsed !== null
-      && "score" in parsed && typeof (parsed as Record<string, unknown>).score === "number"
-      && "feedback" in parsed && typeof (parsed as Record<string, unknown>).feedback === "string"
-    ) {
-      const score = (parsed as { score: number }).score;
-      const feedback = (parsed as { feedback: string }).feedback;
+    if (typeof parsed === "object" && parsed !== null) {
+      const record = parsed as Record<string, unknown>;
+      if (typeof record.feedback !== "string") {
+        return null;
+      }
+
+      const feedback = record.feedback;
+      const positive = parseBinaryPositive(record.positive)
+        ?? parseBinaryPositive(record.verdict)
+        ?? parseBinaryPositive(record.result);
+      if (positive !== null) {
+        return {
+          score: positive ? 1 : 0,
+          feedback,
+          positive
+        };
+      }
+
+      if (typeof record.score !== "number") {
+        return null;
+      }
+
+      const score = record.score;
       if (score >= 0 && score <= 1) {
         return { score, feedback };
       }
@@ -368,6 +408,34 @@ function tryParseJson(raw: string): ParsedValidatorOutput | null {
     // ignore parse errors
   }
   return null;
+}
+
+function parseBinaryPositive(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["positive", "pass", "passed", "true", "ok", "accepted"].includes(normalized)) {
+    return true;
+  }
+  if (["negative", "fail", "failed", "false", "blocked", "rejected"].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+function formatValidatorFeedbackResult(config: ValidatorConfig, score: number): string {
+  if ((config.threshold_type ?? "score") === "binary") {
+    return `Result: ${score === 1 ? "positive" : "negative"}`;
+  }
+
+  return `Score: ${score}`;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
