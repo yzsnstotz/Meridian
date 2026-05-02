@@ -246,8 +246,10 @@ describe("run tool", () => {
 
     // Slim contract assertions:
     expect(sentContent).toContain("# Dispatch Command");
+    expect(sentContent).toContain("# Runtime Notes");
     expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
     expect(sentContent).not.toContain("# Embedded Dispatch Command");
+    expect(sentContent).not.toContain("# Runtime Overrides");
     expect(sentContent).not.toContain("# Role Definition");
     expect(sentContent).not.toContain("# Agent Dispatch Command");
 
