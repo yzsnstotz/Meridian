@@ -16,6 +16,7 @@ import {
 } from "./reconciler";
 import {
   countEligiblePendingServiceContinueWorkersFromWorkerRows,
+  isHumanDispatchRow,
   resolveServiceContinueWorkerFromWorkerRows
 } from "./service-continuation";
 
@@ -310,9 +311,11 @@ async function resolveRecoverableWorkerState(
   try {
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
     const rows = parseDispatchPlanRows(markdown);
+    const continueWorkerId = resolveServiceContinueWorkerFromWorkerRows(rows, state)
+      ?? resolveValidationContinueWorkerFromWorkerRows(rows, state);
     return {
       pendingWorkerCount: countEligiblePendingServiceContinueWorkersFromWorkerRows(rows, state),
-      continueWorkerId: resolveServiceContinueWorkerFromWorkerRows(rows, state)
+      continueWorkerId
     };
   } catch {
     return {
@@ -320,6 +323,33 @@ async function resolveRecoverableWorkerState(
       continueWorkerId: null
     };
   }
+}
+
+function resolveValidationContinueWorkerFromWorkerRows(
+  rows: ReturnType<typeof parseDispatchPlanRows>,
+  state: DispatchThreadStateV2
+): string | null {
+  for (const row of rows) {
+    const workerId = row.worker_id.trim();
+    if (!workerId || isHumanDispatchRow(row)) {
+      continue;
+    }
+
+    const worker = state.workers[workerId];
+    if (!worker) {
+      continue;
+    }
+
+    if (worker.status === "fix_requested") {
+      return workerId;
+    }
+
+    if (worker.status === "awaiting_validation" && !worker.validation?.validator_thread_id?.trim()) {
+      return workerId;
+    }
+  }
+
+  return null;
 }
 
 function resolveDispatchThreadPath(dispatchPlanPath: string): string {

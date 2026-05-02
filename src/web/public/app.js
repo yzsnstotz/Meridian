@@ -2588,6 +2588,7 @@ function resolveDispatcherCardControl(detail) {
   const hasLiveThread = hasLiveDispatcherThread(detail);
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
+  const validationWorker = resolveValidationContinueWorker(detail);
 
   if (isTerminalDispatcherStatus(status)) {
     return { action: "continue", label: formatTerminalDispatcherStatus(status), disabled: true };
@@ -2595,6 +2596,10 @@ function resolveDispatcherCardControl(detail) {
 
   if (liveWorker) {
     return { action: "continue", label: "Working", disabled: true };
+  }
+
+  if (validationWorker) {
+    return { action: "continue", label: "Continue", disabled: false };
   }
 
   if (recoverableWorker) {
@@ -2617,6 +2622,7 @@ function resolveDispatcherDetailControls(detail) {
   const hasLiveThread = hasLiveDispatcherThread(detail);
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
+  const validationWorker = resolveValidationContinueWorker(detail);
 
   if (isTerminalDispatcherStatus(status)) {
     return {
@@ -2637,6 +2643,17 @@ function resolveDispatcherDetailControls(detail) {
       showLifecycle: hasLiveThread,
       lifecycleAction: hasLiveThread ? (status === "paused" ? "resume" : "pause") : null,
       lifecycleLabel: hasLiveThread ? (status === "paused" ? "Resume" : "Pause") : ""
+    };
+  }
+
+  if (validationWorker) {
+    return {
+      showContinue: true,
+      continueLabel: "Continue",
+      continueDisabled: false,
+      showLifecycle: false,
+      lifecycleAction: null,
+      lifecycleLabel: ""
     };
   }
 
@@ -2772,8 +2789,38 @@ function resolveLiveRunningWorker(detail) {
   return normalizeText(liveDispatchPlanRow?.worker);
 }
 
+function resolveValidationContinueWorker(detail) {
+  const validationDetail = Array.isArray(detail?.dispatch_details)
+    ? detail.dispatch_details.find((worker) => {
+      const status = normalizeDispatchPlanStatus(worker?.status);
+      return (status === "awaiting_validation" || status === "fix_requested")
+        && normalizeText(worker?.worker_id).length > 0
+        && !isHumanDispatchModel(worker?.model);
+    })
+    : null;
+  if (validationDetail) {
+    return normalizeText(validationDetail.worker_id);
+  }
+
+  const validationRow = Array.isArray(detail?.dispatch_plan?.rows)
+    ? detail.dispatch_plan.rows.find((row) => {
+      const status = normalizeDispatchPlanStatus(row?.status);
+      return (status === "awaiting_validation" || status === "fix_requested")
+        && normalizeText(row?.worker).length > 0
+        && !isHumanDispatchModel(row?.model);
+    })
+    : null;
+
+  return normalizeText(validationRow?.worker);
+}
+
 function canContinueDispatchRow(row) {
-  return normalizeDispatchPlanStatus(row?.status) === "running"
+  const status = normalizeDispatchPlanStatus(row?.status);
+  if (status === "awaiting_validation" || status === "fix_requested") {
+    return !isHumanDispatchModel(row?.model);
+  }
+
+  return status === "running"
     && normalizeText(row?.thread_id).length === 0
     && !isHumanDispatchModel(row?.model);
 }
@@ -2853,6 +2900,20 @@ function formatContinueResult(result) {
 
 function normalizeDispatchPlanStatus(status) {
   switch (status) {
+    case "⬜":
+      return "pending";
+    case "🔄":
+      return "running";
+    case "✅":
+      return "completed";
+    case "❌":
+      return "failed";
+    case "⚠️ ABANDONED":
+      return "abandoned";
+    case "⛔ SKIPPED":
+      return "skipped";
+    case "🔍":
+      return "awaiting_validation";
     case "running":
       return "running";
     case "completed":
@@ -2867,6 +2928,9 @@ function normalizeDispatchPlanStatus(status) {
       return "awaiting_validation";
     case "pending":
     default:
+      if (typeof status === "string" && status.startsWith("🔁")) {
+        return "fix_requested";
+      }
       if (typeof status === "string" && status.startsWith("fix")) {
         return "fix_requested";
       }

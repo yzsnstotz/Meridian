@@ -99,6 +99,63 @@ describe("scheduler detail public scripts", () => {
     expect(html).toContain("validator-thread-2");
   });
 
+  it("enables role detail continuation for workers waiting on validation", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const controls = vm.runInContext(`resolveDispatcherDetailControls({
+      status: "active",
+      dispatcher_thread_id: "dispatcher-thread",
+      dispatch_details: [
+        {
+          worker_id: "N-06",
+          status: "awaiting_validation",
+          worker_thread_id: "codex_139",
+          model: "CODEX-XHIGH"
+        }
+      ],
+      dispatch_plan: {
+        rows: [
+          {
+            worker: "N-06",
+            status: "🔍",
+            thread_id: "codex_139",
+            model: "CODEX-XHIGH"
+          }
+        ]
+      }
+    })`, context) as {
+      showContinue: boolean;
+      continueDisabled: boolean;
+      showLifecycle: boolean;
+    };
+
+    expect(controls).toMatchObject({
+      showContinue: true,
+      continueDisabled: false,
+      showLifecycle: false
+    });
+  });
+
   it("exposes validator threshold_type controls in dispatcher creation and config editing", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const indexHtml = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
