@@ -394,9 +394,9 @@ async function buildWorkerPreamble(
   if (isDispatcherWorker(workerId)) {
     lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes, write completion reports, or make git commit/push decisions from this wrapper prompt.`);
   } else if (isPlanModifyingWorker(workerId)) {
-    lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). You are a special node that **may add, remove, or modify rows** in the dispatch plan as part of your task. The lifecycle store will reconcile your own row's final status from the Hub result, but you are free to write new rows or update the plan structure.`);
+    lines.push(`Your row is pre-marked 🔄. You **may add, remove, or modify rows** in the dispatch plan as part of your task — the lifecycle store reconciles your own row's final status.`);
   } else {
-    lines.push(`Your row in the dispatch plan has been pre-marked 🔄 (in progress). The lifecycle store manages all plan status updates automatically — you do not need to write to the dispatch plan yourself.`);
+    lines.push(`Your row is pre-marked 🔄. The lifecycle store manages all plan status updates — you do not need to write to the dispatch plan yourself.`);
   }
   lines.push("");
 
