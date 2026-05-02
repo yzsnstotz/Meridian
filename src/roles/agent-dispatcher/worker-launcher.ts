@@ -23,6 +23,7 @@ export interface LaunchDispatchWorkerConfig {
   dispatchRepoRoot: string;
   workerId: string;
   modelId?: string;
+  validationMaxFixCycles?: number;
 }
 
 export interface LaunchDispatchWorkerResult {
@@ -36,6 +37,7 @@ export interface DispatchRunHandoffRequest {
   commandFilePath: string;
   workerId: string;
   killPolicy?: KillPolicy;
+  validationMaxFixCycles?: number;
 }
 
 export interface LaunchDispatchWorkerDeps {
@@ -73,6 +75,9 @@ export function createDefaultLaunchDispatchWorkerDeps(): LaunchDispatchWorkerDep
       };
       if (request.killPolicy) {
         params.kill_policy = request.killPolicy;
+      }
+      if (request.validationMaxFixCycles !== undefined) {
+        params.validator_max_fix_cycles = String(request.validationMaxFixCycles);
       }
 
       const result = await runTool.execute(params);
@@ -124,7 +129,8 @@ export async function launchDispatchWorker(
     threadId,
     commandFilePath: config.commandFilePath,
     workerId: config.workerId,
-    killPolicy: config.killPolicy
+    killPolicy: config.killPolicy,
+    validationMaxFixCycles: config.validationMaxFixCycles
   };
 
   if (activeRunHandoffsByThreadId.has(threadId)) {

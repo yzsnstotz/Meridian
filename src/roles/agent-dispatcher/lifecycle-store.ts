@@ -125,7 +125,8 @@ export class LifecycleStore {
     threadId: string,
     traceId: string,
     expectedOutputs: string[],
-    commandPreamble?: string | null
+    commandPreamble?: string | null,
+    options: { validationMaxFixCycles?: number } = {}
   ): void {
     const state = this.load();
     const nowIso = this.now();
@@ -148,7 +149,27 @@ export class LifecycleStore {
       expected_outputs: [...expectedOutputs],
       hub_result: null,
       command_preamble: commandPreamble ?? null,
-      retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount
+      retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount,
+      ...(options.validationMaxFixCycles !== undefined
+        ? {
+            validation: {
+              current_cycle: previousStatus === "fix_requested"
+                ? state.workers[workerId]?.validation?.current_cycle ?? 0
+                : 0,
+              max_fix_cycles: options.validationMaxFixCycles,
+              validator_thread_id: null,
+              last_score: previousStatus === "fix_requested"
+                ? state.workers[workerId]?.validation?.last_score ?? null
+                : null,
+              last_feedback: previousStatus === "fix_requested"
+                ? state.workers[workerId]?.validation?.last_feedback ?? null
+                : null,
+              history: previousStatus === "fix_requested"
+                ? state.workers[workerId]?.validation?.history ?? []
+                : []
+            }
+          }
+        : {})
     };
 
     this.logTransition(workerId, previousStatus, "running", "run_tool_start");

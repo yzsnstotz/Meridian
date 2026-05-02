@@ -49,8 +49,29 @@ describe("executeValidationCycle", () => {
     expect(worker?.validation?.history[0]?.validator_thread_id).toBe("validator-thread-fresh");
   });
 
+  it("kills the retained worker thread after validation passes when kill policy allows success cleanup", async () => {
+    const harness = await createHarness({ killPolicy: "on_success" });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-pass" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-pass",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.91,"feedback":"accepted"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "passed",
+      score: 0.91
+    });
+    expect(harness.kill).toHaveBeenCalledWith("validator-thread-pass");
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
+  });
+
   it("fails when a below-threshold result reaches the max validation cycle", async () => {
-    const harness = await createHarness();
+    const harness = await createHarness({ killPolicy: "always" });
     const state = harness.lifecycleStore.load();
     state.workers["N-02"]!.validation = {
       current_cycle: 2,
@@ -101,6 +122,8 @@ describe("executeValidationCycle", () => {
       feedback: "Still below threshold.",
       validator_thread_id: "validator-thread-3"
     });
+    expect(harness.kill).toHaveBeenCalledWith("validator-thread-3");
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
   });
 
   it("returns completed rework to awaiting validation after feedback delivery", async () => {
@@ -143,11 +166,12 @@ describe("executeValidationCycle", () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options: { killPolicy?: "always" | "on_success" | "never" } = {}): Promise<{
   lifecycleStore: LifecycleStore;
   deps: ValidatorOrchestratorDeps;
   spawn: ReturnType<typeof vi.fn>;
   run: ReturnType<typeof vi.fn>;
+  kill: ReturnType<typeof vi.fn>;
 }> {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-validator-"));
   tempDirectories.add(directory);
@@ -201,14 +225,15 @@ async function createHarness(): Promise<{
     content: '{"score":0.9,"feedback":"looks good"}',
     raw: {}
   });
+  const kill = vi.fn().mockResolvedValue({
+    threadId: "validator-thread-fresh",
+    status: "killed",
+    raw: {}
+  });
   const meridianApi: MeridianApiClient = {
     spawn,
     run,
-    kill: vi.fn().mockResolvedValue({
-      threadId: "validator-thread-fresh",
-      status: "killed",
-      raw: {}
-    })
+    kill
   };
 
   return {
@@ -225,6 +250,7 @@ async function createHarness(): Promise<{
         base_branch: "main"
       },
       meridianApi,
+      killPolicy: options.killPolicy ?? "never",
       spawnDir: directory,
       dispatchPlanPath,
       taskspecPath: null,
@@ -234,7 +260,8 @@ async function createHarness(): Promise<{
       }
     },
     spawn,
-    run
+    run,
+    kill
   };
 }
 

@@ -2036,6 +2036,7 @@ function buildValidatorDeps(
     lifecycleStore,
     validatorConfig,
     meridianApi: createMeridianApiClient(),
+    killPolicy: config.kill_policy,
     spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),
     dispatchPlanPath,
     taskspecPath: resolveTaskspecPath(config),

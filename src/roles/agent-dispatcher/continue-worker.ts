@@ -6,6 +6,7 @@ import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
 import { LifecycleStore } from "./lifecycle-store";
 import { resolveDispatchModelMapFromMarkdown, resolveImplicitDispatchModelOverride } from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
+import { isValidationEnabledForWorker } from "./validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
 import { executeResumeWorkerAction } from "../../tool-gateway/tools/resume-worker";
 import killTool from "../../tool-gateway/tools/kill";
@@ -24,6 +25,7 @@ type ContinueWorkerConfig = Pick<
   | "auto_approve"
   | "model_map"
   | "dispatch_repo_root"
+  | "validator"
 >;
 
 export interface ContinueDispatchPlanRow {
@@ -168,8 +170,29 @@ async function launchWorkerFromDispatchPlan(
     dispatchPlanPath: config.dispatch_plan_path,
     dispatchRepoRoot: workerSpawnDir,
     workerId: dispatchPlanRow.worker,
-    modelId: resolvedModel?.model_id?.trim() || undefined
+    modelId: resolvedModel?.model_id?.trim() || undefined,
+    validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow)
   });
+}
+
+function resolveValidationMaxFixCycles(
+  config: ContinueWorkerConfig,
+  dispatchPlanRow: ContinueDispatchPlanRow
+): number | undefined {
+  const validatorConfig = config.validator;
+  if (!validatorConfig?.enabled) {
+    return undefined;
+  }
+
+  return isValidationEnabledForWorker(validatorConfig, {
+    status: dispatchPlanRow.status,
+    worker: dispatchPlanRow.worker,
+    model: dispatchPlanRow.model,
+    depends_on: [],
+    notes: dispatchPlanRow.notes ?? null
+  })
+    ? validatorConfig.max_fix_cycles
+    : undefined;
 }
 
 function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
