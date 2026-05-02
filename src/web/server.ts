@@ -938,17 +938,24 @@ export class WebInterfaceServer {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = spawnRequestBodySchema.parse(await this.readJsonBody(request));
     const isAdsPublicProfile = body.integration_profile === "ads_public";
-    const mode = isAdsPublicProfile ? "bridge" : body.mode;
+    const target = body.provider ?? body.type;
+    if (isAdsPublicProfile && target !== "codex") {
+      this.respondJson(response, 400, { error: "ads_public integration_profile requires codex provider" });
+      return;
+    }
+    const mode = isAdsPublicProfile ? "stateless_call" : body.mode;
     const autoApprove = isAdsPublicProfile ? false : body.auto_approve;
     const sandboxMode = isAdsPublicProfile ? "read-only" : body.sandbox_mode;
     const hostHeader = request.headers.host;
     let spawnDir: string | undefined;
-    try {
-      spawnDir = await this.resolveSpawnDirectoryForSpawnRequest(body);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.respondJson(response, 400, { error: message });
-      return;
+    if (!isAdsPublicProfile) {
+      try {
+        spawnDir = await this.resolveSpawnDirectoryForSpawnRequest(body);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.respondJson(response, 400, { error: message });
+        return;
+      }
     }
     const result = HubResultSchema.parse(
       await this.requestHub(
@@ -956,7 +963,7 @@ export class WebInterfaceServer {
           sessionId,
           intent: "spawn",
           thread_id: "pending",
-          target: body.provider ?? body.type,
+          target,
           content: "",
           mode,
           autoApprove,
