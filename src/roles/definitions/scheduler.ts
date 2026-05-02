@@ -132,7 +132,8 @@ export class SchedulerRole implements BaseRole {
       default_mode: config.mode,
       kill_policy: config.kill_policy,
       auto_approve: config.auto_approve,
-      resolved_model_map_json: JSON.stringify(config.model_map ?? {})
+      resolved_model_map_json: JSON.stringify(config.model_map ?? {}),
+      pm_resolver_config_json: JSON.stringify(config.pm_resolver)
     } as PromptVars);
 
     const result = await this.launch({

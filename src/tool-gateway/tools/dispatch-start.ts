@@ -5,9 +5,11 @@ import { z } from "zod";
 
 import {
   DispatchModelMapSchema,
+  PmResolverConfigSchema,
   ReplyChannelSchema,
   type DispatchModelMap,
-  type DispatchModelOverride
+  type DispatchModelOverride,
+  type PmResolverConfig
 } from "../../types";
 import {
   resolveConfiguredDispatchRepoRoot,
@@ -102,6 +104,36 @@ const dispatchStartTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Whether Meridian should enable neutral auto-approve for dispatcher launches"
+    },
+    pm_enabled: {
+      type: "string",
+      required: false,
+      description: "Enable PM resolver for abnormal dispatcher states (default: true)"
+    },
+    pm_agent_type: {
+      type: "string",
+      required: false,
+      description: "Agent type for PM resolver"
+    },
+    pm_model_id: {
+      type: "string",
+      required: false,
+      description: "Model id for PM resolver"
+    },
+    pm_mode: {
+      type: "string",
+      required: false,
+      description: "Bridge mode for PM resolver"
+    },
+    pm_auto_approve: {
+      type: "string",
+      required: false,
+      description: "Whether PM resolver should use neutral auto-approve"
+    },
+    pm_reply_channels: {
+      type: "string",
+      required: false,
+      description: "JSON array of reply channels for PM resolver"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -120,7 +152,13 @@ const dispatchStartTool: ToolDefinition = {
         modelMapFile: params.model_map_file,
         dispatchRepoRoot: params.repo_root,
         docsRoot: params.docs_root,
-        autoApprove: parseOptionalBoolean(params.auto_approve)
+        autoApprove: parseOptionalBoolean(params.auto_approve),
+        pmEnabled: params.pm_enabled,
+        pmAgentType: params.pm_agent_type,
+        pmModelId: params.pm_model_id,
+        pmMode: params.pm_mode,
+        pmAutoApprove: params.pm_auto_approve,
+        pmReplyChannels: params.pm_reply_channels
       });
     } catch (error) {
       return {
@@ -140,6 +178,12 @@ export async function executeDispatchStart(args: {
   dispatchRepoRoot?: string;
   docsRoot?: string;
   autoApprove?: boolean;
+  pmEnabled?: string;
+  pmAgentType?: string;
+  pmModelId?: string;
+  pmMode?: string;
+  pmAutoApprove?: string;
+  pmReplyChannels?: string;
 }): Promise<ToolResult> {
   const planMarkdown = await fs.readFile(args.planPath, "utf8");
   const modelLegend = parseDispatchPlanModelLegend(planMarkdown);
@@ -165,6 +209,14 @@ export async function executeDispatchStart(args: {
   if (!replyChannels.ok) {
     return replyChannels;
   }
+  const pmResolver = parsePmResolverConfig({
+    enabled: args.pmEnabled,
+    agentType: args.pmAgentType,
+    modelId: args.pmModelId,
+    mode: args.pmMode,
+    autoApprove: args.pmAutoApprove,
+    replyChannels: args.pmReplyChannels
+  });
 
   const response = await postRolesServiceJson<unknown>("/api/agent-dispatcher/start", {
     dispatch_plan_path: args.planPath,
@@ -174,6 +226,7 @@ export async function executeDispatchStart(args: {
     user_reply_channels: replyChannels.channels,
     auto_approve: args.autoApprove ?? false,
     config: {
+      pm_resolver: pmResolver,
       model_map: parsedModelMap
     }
   });
@@ -204,6 +257,7 @@ export async function executeDispatchStart(args: {
       reply_channel_source: replyChannels.source,
       model_map: parsedModelMap,
       auto_approve: args.autoApprove ?? false,
+      pm_resolver: pmResolver,
       warnings: warnings.warnings,
       dispatch_status: await buildDispatchStatusReport(args.planPath)
     }
@@ -231,6 +285,41 @@ async function resolveModelMap(args: {
   }
 
   return {};
+}
+
+function parsePmResolverConfig(args: {
+  enabled?: string;
+  agentType?: string;
+  modelId?: string;
+  mode?: string;
+  autoApprove?: string;
+  replyChannels?: string;
+}): PmResolverConfig {
+  const raw: Record<string, unknown> = {
+    enabled: parseOptionalBoolean(args.enabled) ?? true
+  };
+  if (requireParam(args.agentType)) raw.agent_type = requireParam(args.agentType);
+  if (requireParam(args.modelId)) raw.model_id = requireParam(args.modelId);
+  if (requireParam(args.mode)) raw.mode = requireParam(args.mode);
+  const autoApprove = parseOptionalBoolean(args.autoApprove);
+  if (autoApprove !== undefined) raw.auto_approve = autoApprove;
+  const replyChannels = requireParam(args.replyChannels);
+  if (replyChannels) {
+    raw.user_reply_channels = parseReplyChannelsJson(replyChannels);
+  }
+
+  return PmResolverConfigSchema.parse(raw);
+}
+
+function parseReplyChannelsJson(value: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error(`Invalid pm_reply_channels JSON: ${asError(error).message}`);
+  }
+
+  return z.array(ReplyChannelSchema).parse(parsed);
 }
 
 export function parseInlineModelMap(

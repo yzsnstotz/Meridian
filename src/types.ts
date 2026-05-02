@@ -106,7 +106,7 @@ export type HubMessage = z.input<typeof HubMessageSchema>;
 export const HubResultSchema = z.object({
   trace_id: z.string().uuid(),
   thread_id: z.string().min(1),
-  source: AgentTypeSchema,
+  source: z.string().min(1),
   status: HubResultStatusSchema,
   run_state: HubRunStateSchema.optional(),
   content: z.string(),
@@ -116,6 +116,44 @@ export const HubResultSchema = z.object({
   timestamp: z.string().datetime()
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
+
+export const PmResolverIssueStateSchema = z.object({
+  status: z.string().min(1),
+  worker_id: z.string().min(1).nullable().default(null),
+  message: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  source: z.string().min(1).default("dispatcher")
+});
+export type PmResolverIssueState = z.infer<typeof PmResolverIssueStateSchema>;
+
+export const PmResolverResultStateSchema = z.object({
+  status: z.string().min(1),
+  run_state: z.string().nullable().default(null),
+  content: z.string().nullable().default(null),
+  summary_text: z.string().nullable().default(null),
+  details_text: z.string().nullable().default(null),
+  trace_id: z.string().nullable().default(null),
+  timestamp: z.string().datetime().nullable().default(null)
+});
+export type PmResolverResultState = z.infer<typeof PmResolverResultStateSchema>;
+
+export const PmResolverLifecycleStatusSchema = z.enum(["running", "completed", "failed"]);
+export type PmResolverLifecycleStatus = z.infer<typeof PmResolverLifecycleStatusSchema>;
+
+export const PmResolverLifecycleStateSchema = z.object({
+  thread_id: z.string().min(1),
+  status: PmResolverLifecycleStatusSchema,
+  started_at: z.string().datetime(),
+  last_seen_at: z.string().datetime(),
+  agent_type: z.string().min(1).nullable().default(null),
+  model_id: z.string().min(1).nullable().default(null),
+  mode: z.string().min(1).nullable().default(null),
+  auto_approve: z.boolean().nullable().default(null),
+  issue: PmResolverIssueStateSchema,
+  result: PmResolverResultStateSchema.nullable().default(null),
+  error: z.string().nullable().default(null)
+});
+export type PmResolverLifecycleState = z.infer<typeof PmResolverLifecycleStateSchema>;
 
 export const LifecycleStatusSchema = z.enum([
   "pending", "running", "completed", "failed", "blocked", "abandoned", "skipped",
@@ -171,6 +209,7 @@ export const DispatchThreadStateV2Schema = z.object({
     status: "pending"
   }),
   workers: z.record(z.string(), DispatchWorkerStateSchema).default({}),
+  pm_resolvers: z.array(PmResolverLifecycleStateSchema).optional(),
   last_reconciled_at: z.string().datetime().nullable().default(null)
 });
 export type DispatchThreadStateV2 = z.infer<typeof DispatchThreadStateV2Schema>;
@@ -316,6 +355,16 @@ function defaultValidatorModeForAgent(agentType: AgentType): BridgeMode {
   return agentType === "codex" ? "stateless_call" : "bridge";
 }
 
+export const PmResolverConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  agent_type: AgentTypeSchema.default("codex"),
+  model_id: z.string().min(1).optional(),
+  mode: StatefulBridgeModeSchema.default("bridge"),
+  auto_approve: z.boolean().default(false),
+  user_reply_channels: z.array(ReplyChannelSchema).min(1).optional()
+});
+export type PmResolverConfig = z.infer<typeof PmResolverConfigSchema>;
+
 export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   dispatch_plan_path: z.string().min(1),
   command_file_path: z.string().min(1),
@@ -329,7 +378,8 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   auto_approve: z.boolean().default(false),
   model_map: DispatchModelMapSchema.optional(),
   use_agent_dispatcher: z.boolean().optional(),
-  validator: ValidatorConfigSchema.optional()
+  validator: ValidatorConfigSchema.optional(),
+  pm_resolver: PmResolverConfigSchema.optional()
 })
   .superRefine((value, ctx) => {
     const hasReplyChannels = Array.isArray(value.user_reply_channels) && value.user_reply_channels.length > 0;
@@ -345,12 +395,14 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
     const userReplyChannels = value.user_reply_channels?.map(cloneReplyChannel)
       ?? (value.user_reply_channel ? [cloneReplyChannel(value.user_reply_channel)] : []);
     const primaryReplyChannel = userReplyChannels[0];
+    const pmResolver = normalizePmResolverConfig(value.pm_resolver, userReplyChannels);
 
     return {
       ...value,
       user_reply_channel: primaryReplyChannel ? cloneReplyChannel(primaryReplyChannel) : undefined,
       user_reply_channels: userReplyChannels,
-      use_agent_dispatcher: value.use_agent_dispatcher ?? true
+      use_agent_dispatcher: value.use_agent_dispatcher ?? true,
+      pm_resolver: pmResolver
     };
 });
 export type AgentDispatcherConfig = z.infer<typeof AgentDispatcherConfigSchema>;
@@ -366,7 +418,8 @@ export const AgentDispatcherEditorConfigSchema = z.object({
   mode: StatefulBridgeModeSchema,
   kill_policy: KillPolicySchema,
   auto_approve: z.boolean().default(false),
-  validator: ValidatorConfigSchema.optional()
+  validator: ValidatorConfigSchema.optional(),
+  pm_resolver: PmResolverConfigSchema
 }).strict();
 export type AgentDispatcherEditorConfig = z.infer<typeof AgentDispatcherEditorConfigSchema>;
 
@@ -439,6 +492,7 @@ export const SchedulerConfigSchema = z.object({
   auto_approve: z.boolean().default(false),
   model_map: DispatchModelMapSchema.optional(),
   validator: ValidatorConfigSchema.optional(),
+  pm_resolver: PmResolverConfigSchema.optional(),
 
   // ── Schedule config ──
   scheduler_mode: SchedulerModeSchema.default("none"),
@@ -464,8 +518,15 @@ export const SchedulerConfigSchema = z.object({
 
   // Recovery
   catch_up_policy: CatchUpPolicySchema.default("skip_missed")
-});
-export type SchedulerConfig = z.infer<typeof SchedulerConfigSchema>;
+})
+  .transform((value) => ({
+    ...value,
+    user_reply_channels: value.user_reply_channels.map(cloneReplyChannel),
+    pm_resolver: normalizePmResolverConfig(value.pm_resolver, value.user_reply_channels)
+  }));
+export type SchedulerConfig = Omit<z.infer<typeof SchedulerConfigSchema>, "pm_resolver"> & {
+  pm_resolver?: PmResolverConfig;
+};
 
 export const SchedulerRunWorkerSummarySchema = z.object({
   worker_id: z.string().min(1),
@@ -509,4 +570,18 @@ export type SchedulerRunState = z.infer<typeof SchedulerRunStateSchema>;
 
 function cloneReplyChannel(replyChannel: ReplyChannel): ReplyChannel {
   return { ...replyChannel };
+}
+
+function normalizePmResolverConfig(
+  value: PmResolverConfig | undefined,
+  inheritedReplyChannels: ReplyChannel[]
+): PmResolverConfig {
+  const parsed = PmResolverConfigSchema.parse(value ?? {});
+  const replyChannels = parsed.user_reply_channels?.map(cloneReplyChannel)
+    ?? inheritedReplyChannels.map(cloneReplyChannel);
+
+  return {
+    ...parsed,
+    user_reply_channels: replyChannels
+  };
 }

@@ -249,6 +249,44 @@
               </div>
             </fieldset>
 
+            <fieldset class="field-group" id="agent-dispatcher-pm-group">
+              <legend>PM Resolver</legend>
+              <div class="validator-toggle-row">
+                <input type="checkbox" id="agent-dispatcher-pm-enabled" name="pm_enabled" checked />
+                <label for="agent-dispatcher-pm-enabled">Enable PM resolver for this dispatcher</label>
+              </div>
+              <div id="agent-dispatcher-pm-fields" class="validator-fields">
+                <label class="field">
+                  <span>pm agent_type</span>
+                  <select id="agent-dispatcher-pm-agent-type" name="pm_agent_type">
+                    <option value="codex" selected>codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm mode</span>
+                  <select id="agent-dispatcher-pm-mode" name="pm_mode">
+                    <option value="bridge" selected>bridge</option>
+                    <option value="pane_bridge">pane_bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm model_id</span>
+                  <input id="agent-dispatcher-pm-model-id" name="pm_model_id" type="text" placeholder="(default)" />
+                </label>
+                <label class="field">
+                  <span>pm auto_approve</span>
+                  <input id="agent-dispatcher-pm-auto-approve" name="pm_auto_approve" type="checkbox" />
+                </label>
+                <label class="field field-wide">
+                  <span>pm user_reply_channels</span>
+                  <textarea id="agent-dispatcher-pm-reply-channels" name="pm_reply_channels" rows="3" placeholder="Blank inherits dispatcher channels"></textarea>
+                </label>
+              </div>
+            </fieldset>
+
             <!-- System Prompt -->
             <label class="field">
               <span>system_prompt</span>
@@ -384,6 +422,43 @@
                 </small>
               </label>
             </div>
+            <fieldset class="field-group" id="new-scheduler-pm-group">
+              <legend>PM Resolver</legend>
+              <div class="validator-toggle-row">
+                <input type="checkbox" id="new-scheduler-pm-enabled" name="pm_enabled" checked />
+                <label for="new-scheduler-pm-enabled">Enable PM resolver for this scheduler</label>
+              </div>
+              <div id="new-scheduler-pm-fields" class="validator-fields">
+                <label class="field">
+                  <span>pm agent_type</span>
+                  <select id="new-scheduler-pm-agent-type" name="pm_agent_type">
+                    <option value="codex" selected>codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm mode</span>
+                  <select id="new-scheduler-pm-mode" name="pm_mode">
+                    <option value="bridge" selected>bridge</option>
+                    <option value="pane_bridge">pane_bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm model_id</span>
+                  <input id="new-scheduler-pm-model-id" name="pm_model_id" type="text" placeholder="(default)" />
+                </label>
+                <label class="field">
+                  <span>pm auto_approve</span>
+                  <input id="new-scheduler-pm-auto-approve" name="pm_auto_approve" type="checkbox" />
+                </label>
+                <label class="field field-wide">
+                  <span>pm user_reply_channels</span>
+                  <textarea id="new-scheduler-pm-reply-channels" name="pm_reply_channels" rows="3" placeholder="Blank inherits scheduler channels"></textarea>
+                </label>
+              </div>
+            </fieldset>
             <div class="summary-grid">
               <label class="field">
                 <span>scheduler_mode</span>

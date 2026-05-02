@@ -221,6 +221,12 @@ Params:
 - `--model-map-file <path>`: optional JSON file containing `{ "CODE": { "provider": "...", "model_id": "..." } }`
 - `--repo-root <path>`: optional dispatcher sandbox root override
 - `--docs-root <path>`: optional detached docs root override
+- `--pm-enabled <true|false>`: optional PM resolver toggle; defaults to `true`
+- `--pm-agent-type <codex|claude|...>`: optional PM resolver agent type; defaults to `codex`
+- `--pm-model-id <model>`: optional PM resolver model id
+- `--pm-mode <mode>`: optional PM resolver run mode; defaults to `bridge`
+- `--pm-auto-approve <true|false>`: optional PM resolver approval policy; defaults to `false`
+- `--pm-reply-channels <json>`: optional PM resolver reply channels JSON; inherits role reply channels when omitted
 
 Rules:
 - Pass either `--model-map` or `--model-map-file`, not both.
@@ -233,6 +239,7 @@ Examples:
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map 'CODEX=codex:gpt-5.4,OPUS=claude:claude-opus-4-6'
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map-file /tmp/model-map.json
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
+meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --pm-agent-type claude --pm-model-id claude-opus-4-7 --pm-reply-channels '[{"channel":"telegram","chat_id":"telegram:ops"}]'
 ```
 
 Success payload includes:
@@ -243,6 +250,7 @@ Success payload includes:
 - `model_map`
 - `warnings`
 - `dispatch_status`
+- `pm_resolver`
 
 ### `dispatch-schedule-set`
 
@@ -262,12 +270,35 @@ Params:
 - `--start-immediately <true|false>`: optional first-run behavior
 - `--catch-up-policy <skip_missed|run_one>`: optional cron catch-up policy
 - `--scheduler-id <thread-id>`: optional existing scheduler to patch instead of creating a new one
+- `--pm-enabled <true|false>`: optional PM resolver toggle for launched dispatchers; defaults to `true`
+- `--pm-agent-type <codex|claude|...>`: optional PM resolver agent type; defaults to `codex`
+- `--pm-model-id <model>`: optional PM resolver model id
+- `--pm-mode <mode>`: optional PM resolver run mode; defaults to `bridge`
+- `--pm-auto-approve <true|false>`: optional PM resolver approval policy; defaults to `false`
+- `--pm-reply-channels <json>`: optional PM resolver reply channels JSON; inherits role reply channels when omitted
 
 Examples:
 
 ```bash
 meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode cron --cron '0 9 * * *' --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
 meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode loop --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --delay-between-cycles-seconds 300 --scheduler-id scheduler-abcd1234
+```
+
+### `pm-resolve`
+
+Start the configured PM resolver for an abnormal `agent-dispatcher` orchestration state. Dispatcher prompts call this when worker orchestration is blocked, failed, or requires human-level intervention.
+
+Params:
+- `--dispatcher <thread-id>`: required agent-dispatcher role thread id
+- `--status <status>`: required abnormal status or condition
+- `--worker <worker-id>`: optional worker id related to the issue
+- `--message <text>`: optional short issue summary
+- `--error <text>`: optional detailed error text
+
+Example:
+
+```bash
+meridian-roles pm-resolve --dispatcher agent-dispatcher-1234 --status manual_intervention_required --worker W-02 --message "Worker is blocked on missing credentials"
 ```
 
 ### `schedule-list`

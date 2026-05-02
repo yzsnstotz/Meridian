@@ -200,6 +200,51 @@
               </small>
             </label>
           </div>
+          <fieldset class="field-group">
+            <legend>PM Resolver</legend>
+            <div class="summary-grid">
+              <label class="field">
+                <span>enabled</span>
+                <select id="cfg-pm-enabled" name="pm_enabled">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>agent_type</span>
+                <select id="cfg-pm-agent-type" name="pm_agent_type">
+                  <option value="codex">codex</option>
+                  <option value="claude">claude</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cursor">cursor</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="cfg-pm-mode" name="pm_mode">
+                  <option value="bridge">bridge</option>
+                  <option value="pane_bridge">pane_bridge</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <input id="cfg-pm-model-id" name="pm_model_id" type="text" placeholder="(default)" />
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>auto_approve</span>
+                <select id="cfg-pm-auto-approve" name="pm_auto_approve">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span>user_reply_channels</span>
+                <textarea id="cfg-pm-reply-channels" name="pm_reply_channels" rows="3" placeholder="Blank inherits scheduler channels"></textarea>
+              </label>
+            </div>
+          </fieldset>
           <div class="summary-grid">
             <label class="field" id="cfg-interval-wrap">
               <span>interval_seconds</span>

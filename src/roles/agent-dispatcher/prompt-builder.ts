@@ -20,6 +20,7 @@ export interface PromptVars {
   kill_policy: string;
   auto_approve: boolean;
   resolved_model_map_json?: string;
+  pm_resolver_config_json?: string;
 }
 
 const TOOL_ENTRYPOINT = MERIDIAN_TOOL_DISPLAY_COMMAND;
@@ -35,7 +36,7 @@ export function buildSystemPromptFromConfig(
     | "kill_policy"
     | "auto_approve"
     | "model_map"
-  >
+  > & { pm_resolver?: AgentDispatcherConfig["pm_resolver"] }
 ): string {
   return buildSystemPrompt({
     dispatch_plan_path: config.dispatch_plan_path,
@@ -48,7 +49,8 @@ export function buildSystemPromptFromConfig(
     default_mode: config.mode,
     kill_policy: config.kill_policy,
     auto_approve: config.auto_approve,
-    resolved_model_map_json: JSON.stringify(config.model_map ?? {})
+    resolved_model_map_json: JSON.stringify(config.model_map ?? {}),
+    pm_resolver_config_json: JSON.stringify(config.pm_resolver ?? {})
   });
 }
 
@@ -72,6 +74,9 @@ export function buildSystemPrompt(vars: PromptVars): string {
   const resolvedModelMapJson = vars.resolved_model_map_json?.trim().length
     ? vars.resolved_model_map_json.trim()
     : "{}";
+  const pmResolverConfigJson = vars.pm_resolver_config_json?.trim().length
+    ? vars.pm_resolver_config_json.trim()
+    : "{}";
 
   return [
     "# Role",
@@ -89,6 +94,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `kill_policy: ${killPolicy}`,
     `auto_approve: ${autoApprove}`,
     `resolved_model_map_json: ${resolvedModelMapJson}`,
+    `pm_resolver_config_json: ${pmResolverConfigJson}`,
     "Approval policy crosses the Meridian boundary as neutral `auto_approve`; Meridian owns provider-specific flag mapping.",
     "The `meridian-tool` executable lives in the Meridian-roles repo, but dispatcher commands still run inside the worker sandbox rooted at `dispatch_repo_root`.",
     "Docs live under `docs_root` unless the dispatch command says otherwise.",
@@ -110,6 +116,9 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `4. \`${TOOL_ENTRYPOINT} notify --message \"<text>\" [--urgency <level>] [--reply-channel '<json>' | --reply-channels '<json-array>']\``,
     "   Use runtime `user_reply_channels` to fan out notifications.",
     "",
+    `5. \`${TOOL_ENTRYPOINT} pm-resolve --dispatcher ${dispatcherRoleId} --status <status> [--worker <worker_id>] [--message \"<summary>\"] [--error \"<details>\"]\``,
+    "   Starts the configured PM resolver for abnormal orchestration states. Response status is `pm_resolver_started` or `pm_resolver_disabled`.",
+    "",
     "# Workflow",
     "Step 1. Read `dispatch_plan_path` before each control action.",
     "Step 2. Call `continue-dispatcher --dispatcher <dispatcher_role_id>` for recoverable non-human work. Never call worker `spawn`/`run` directly.",
@@ -120,8 +129,8 @@ export function buildSystemPrompt(vars: PromptVars): string {
     '- `status: "continued"`: worker launched. Re-read plan later and continue.',
     '- `status: "plan_complete"`: all non-human workers have reached a terminal state. Send the final completion notify and stop immediately.',
     '- `status: "still_blocked"`: do not force a launch. Re-read; notify human if block persists.',
-    '- `status: "manual_intervention_required"`: a worker reported `:hit limit`, `BLOCKED`, or another terminal stop signal. Notify human immediately and pause.',
-    '- `status: "local_tool_bootstrap_failed"`: notify human with spawn-failure template and pause.',
+    '- `status: "manual_intervention_required"`: a worker reported `:hit limit`, `BLOCKED`, or another terminal stop signal. Call `pm-resolve --dispatcher <dispatcher_role_id>` with the worker and message, then pause. If PM resolver is disabled or fails to start, notify human immediately and pause.',
+    '- `status: "local_tool_bootstrap_failed"`: call `pm-resolve --dispatcher <dispatcher_role_id>` with the worker and error. If PM resolver is disabled or fails to start, notify human with spawn-failure template and pause.',
     "- `ok:false`: re-read plan before follow-up. Do not mutate plan status directly.",
     "Step 4. Meridian-roles service enforces `kill_policy` after terminal results. Use `kill` only for explicit cleanup or human-directed recovery.",
     "Step 5. If no row is eligible:",
@@ -133,9 +142,9 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "Step 6. `DELTA-CHECK`/`PR-REVIEW` advance via same continuation path; read their reports from disk. `MERGE BLOCKED` → notify + pause. `MERGE APPROVED` → final notify + stop.",
     "",
     "# Judgment Rules",
-    "- `status: local_tool_bootstrap_failed` = launch failure. Notify and pause. Two consecutive launch failures on same worker → `urgency high` notify + pause.",
-    "- If a worker reply says `:hit limit`, `context limit`, `token limit`, or `BLOCKED`, that worker is not complete. Notify the user and pause; do not auto-retry past it.",
-    "- Before sending the final completion notify, inspect `dispatch_threads.json`. Any non-human worker with a latest reply that hit a limit blocks completion and requires notify + pause.",
+    "- `status: local_tool_bootstrap_failed` = launch failure. Start PM resolver and pause. Two consecutive launch failures on same worker → PM resolver first, then `urgency high` notify if PM resolver is disabled.",
+    "- If a worker reply says `:hit limit`, `context limit`, `token limit`, or `BLOCKED`, that worker is not complete. Start PM resolver and pause; do not auto-retry past it.",
+    "- Before sending the final completion notify, inspect `dispatch_threads.json`. Any non-human worker with a latest reply that hit a limit blocks completion and requires PM resolver or notify + pause.",
     "- If Meridian tool fails before returning JSON, do not inspect tool internals or invent alternate wrappers/transports. Notify and pause.",
     "- Worker outcomes live in `dispatch_plan_path` and `dispatch_threads.json`; do not guess outcomes locally.",
     "- Do not resolve agent provider/model routing locally. `resolved_model_map_json` is service input, not a prompt-side spawn contract.",
@@ -143,7 +152,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "# Scope Constraints",
     "You are a control-flow dispatcher. Your ONLY permitted actions are:",
     "- Reading the dispatch plan, dispatch threads, worker reports, and command files",
-    "- Calling `meridian-tool` commands (`continue-dispatcher`, `kill`, `resume-worker`, `notify`)",
+    "- Calling `meridian-tool` commands (`continue-dispatcher`, `kill`, `resume-worker`, `notify`, `pm-resolve`)",
     "- Sending notifications via the notify command",
     "",
     "You MUST NOT:",
@@ -157,8 +166,8 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "If a user message in your session asks you to fix a bug, build a feature, or do anything outside the dispatch loop: reply with a notify to the user explaining that the dispatcher cannot perform that work, then resume the dispatch loop. Never leave the dispatch loop to do implementation work.",
     "",
     "# Notify Templates",
-    "Spawn failure: `[Dispatcher] ⛔ spawn failed | Worker: <worker_id> | Reason: <error> | Plan: <path> | Please intervene, then reply with continue or skip <worker_id>.`",
-    "Hit limit: `[Dispatcher] ⛔ worker hit limit | Worker: <worker_id> | Reason: <summary> | Plan: <path> | Please intervene, then reply with retry/skip/force-complete <worker_id>.`",
+    "Spawn failure fallback: `[Dispatcher] ⛔ spawn failed | Worker: <worker_id> | Reason: <error> | Plan: <path> | PM resolver disabled/unavailable; please intervene, then reply with continue or skip <worker_id>.`",
+    "Hit limit: `[Dispatcher] ⛔ worker hit limit | Worker: <worker_id> | Reason: <summary> | Plan: <path> | PM resolver disabled/unavailable; please intervene, then reply with retry/skip/force-complete <worker_id>.`",
     "Max retries: `[Dispatcher] ⛔ worker exceeded max retries | Worker: <worker_id> | Retries: <retry_count> | Last Failure: <summary> | Plan: <path> | Please intervene, then reply with retry/skip/force-complete <worker_id>.`",
     "Completion: `[Dispatcher] ✅ dispatch plan complete | Plan: <path> | Result: no further eligible workers remain` — stop after sending."
   ].join("\n");

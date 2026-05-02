@@ -79,6 +79,7 @@ describe("LifecycleStore", () => {
           retry_count: 0
         }
       },
+      pm_resolvers: [],
       last_reconciled_at: null
     });
 

@@ -58,7 +58,12 @@ describe("dispatch-start tool", () => {
     const result = await dispatchStartTool.execute({
       plan: harness.planPath,
       model_map: "CODEX=codex:o3-mini,UNKNOWN=claude:claude-sonnet-4-6",
-      auto_approve: "true"
+      auto_approve: "true",
+      pm_agent_type: "claude",
+      pm_model_id: "claude-opus-4-7",
+      pm_mode: "pane_bridge",
+      pm_auto_approve: "true",
+      pm_reply_channels: JSON.stringify([{ channel: "web", chat_id: "web:pm" }])
     });
 
     expect(result).toEqual({
@@ -72,6 +77,14 @@ describe("dispatch-start tool", () => {
         dispatcher_thread_id: "hub-thread-5678",
         reply_channel_source: "service",
         auto_approve: true,
+        pm_resolver: {
+          enabled: true,
+          agent_type: "claude",
+          model_id: "claude-opus-4-7",
+          mode: "pane_bridge",
+          auto_approve: true,
+          user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
+        },
         model_map: {
           CODEX: {
             provider: "codex",
@@ -108,6 +121,14 @@ describe("dispatch-start tool", () => {
         ],
         auto_approve: true,
         config: {
+          pm_resolver: {
+            enabled: true,
+            agent_type: "claude",
+            model_id: "claude-opus-4-7",
+            mode: "pane_bridge",
+            auto_approve: true,
+            user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
+          },
           model_map: {
             CODEX: {
               provider: "codex",

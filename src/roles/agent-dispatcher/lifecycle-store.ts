@@ -10,7 +10,11 @@ import {
   type DispatchWorkerState,
   type HubResult,
   type LifecycleStatus,
-  type LifecycleWorkerEntry
+  type LifecycleWorkerEntry,
+  type PmResolverIssueState,
+  type PmResolverLifecycleState,
+  type PmResolverLifecycleStatus,
+  type PmResolverResultState
 } from "../../types";
 import {
   outputArtifactsContain,
@@ -412,6 +416,85 @@ export class LifecycleStore {
       this.logTransition(workerId, prevStatus, "failed", reason ?? "validation_max_cycles_exhausted");
     });
   }
+
+  // ─── PM resolver lifecycle ───────────────────────────────────────────────
+
+  recordPmResolverStart(
+    threadId: string,
+    issue: {
+      status: string;
+      workerId?: string;
+      message?: string;
+      error?: string;
+      source?: string;
+    },
+    options: {
+      agentType?: string;
+      modelId?: string;
+      mode?: string;
+      autoApprove?: boolean;
+    } = {}
+  ): void {
+    this.mutate((state) => {
+      const nowIso = this.now();
+      const pmResolvers = ensurePmResolverEntries(state);
+      const existing = pmResolvers.find((entry) => entry.thread_id === threadId);
+      const entry: PmResolverLifecycleState = {
+        thread_id: threadId,
+        status: "running",
+        started_at: existing?.started_at ?? nowIso,
+        last_seen_at: nowIso,
+        agent_type: options.agentType ?? existing?.agent_type ?? null,
+        model_id: options.modelId ?? existing?.model_id ?? null,
+        mode: options.mode ?? existing?.mode ?? null,
+        auto_approve: options.autoApprove ?? existing?.auto_approve ?? null,
+        issue: normalizePmResolverIssue(issue),
+        result: existing?.result ?? null,
+        error: null
+      };
+
+      if (existing) {
+        Object.assign(existing, entry);
+      } else {
+        pmResolvers.push(entry);
+      }
+    });
+  }
+
+  recordPmResolverResult(
+    threadId: string,
+    result: {
+      status: string;
+      runState?: string;
+      content?: string;
+      raw?: Record<string, unknown>;
+    }
+  ): void {
+    this.mutate((state) => {
+      const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
+      if (!entry) {
+        return;
+      }
+
+      entry.status = mapPmResolverRunStatus(result);
+      entry.last_seen_at = this.now();
+      entry.result = normalizePmResolverResult(result);
+      entry.error = null;
+    });
+  }
+
+  recordPmResolverFailure(threadId: string, error: string): void {
+    this.mutate((state) => {
+      const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
+      if (!entry) {
+        return;
+      }
+
+      entry.status = "failed";
+      entry.last_seen_at = this.now();
+      entry.error = error;
+    });
+  }
 }
 
 interface ValidationTransitionResult {
@@ -525,6 +608,7 @@ export function buildEmptyDispatchThreadStateV2(): DispatchThreadStateV2 {
       status: "pending"
     },
     workers: {},
+    pm_resolvers: [],
     last_reconciled_at: null
   };
 }
@@ -584,8 +668,74 @@ function migrateLegacyState(value: unknown): DispatchThreadStateV2 {
           status: "pending"
         },
     workers,
+    pm_resolvers: [],
     last_reconciled_at: null
   });
+}
+
+function ensurePmResolverEntries(state: DispatchThreadStateV2): PmResolverLifecycleState[] {
+  state.pm_resolvers ??= [];
+  return state.pm_resolvers;
+}
+
+function normalizePmResolverIssue(issue: {
+  status: string;
+  workerId?: string;
+  message?: string;
+  error?: string;
+  source?: string;
+}): PmResolverIssueState {
+  return {
+    status: issue.status,
+    worker_id: issue.workerId ?? null,
+    message: issue.message ?? null,
+    error: issue.error ?? null,
+    source: issue.source ?? "dispatcher"
+  };
+}
+
+function mapPmResolverRunStatus(result: {
+  status: string;
+  runState?: string;
+}): PmResolverLifecycleStatus {
+  const status = result.status.trim().toLowerCase();
+  const runState = result.runState?.trim().toLowerCase() ?? "";
+  if (status === "error" || status === "failed" || runState === "error" || runState === "failed" || runState === "timeout") {
+    return "failed";
+  }
+
+  return "completed";
+}
+
+function normalizePmResolverResult(result: {
+  status: string;
+  runState?: string;
+  content?: string;
+  raw?: Record<string, unknown>;
+}): PmResolverResultState {
+  return {
+    status: result.status,
+    run_state: result.runState ?? readStringField(result.raw, "run_state") ?? null,
+    content: result.content ?? readStringField(result.raw, "content") ?? null,
+    summary_text: readStringField(result.raw, "summary_text"),
+    details_text: readStringField(result.raw, "details_text"),
+    trace_id: readStringField(result.raw, "trace_id"),
+    timestamp: readDatetimeField(result.raw, "timestamp")
+  };
+}
+
+function readStringField(raw: Record<string, unknown> | undefined, field: string): string | null {
+  const value = raw?.[field];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readDatetimeField(raw: Record<string, unknown> | undefined, field: string): string | null {
+  const value = readStringField(raw, field);
+  if (!value) {
+    return null;
+  }
+
+  return Number.isNaN(Date.parse(value)) ? null : value;
 }
 
 function mapHubResultToLifecycleStatus(
@@ -822,6 +972,18 @@ export function hubResultContainsBlockSignal(
           || /\b`?[\w-]+`?\s+is\s+blocked\b/i.test(normalized)
         );
     });
+}
+
+export function isPmResolverHubResult(
+  hubResult: Pick<HubResult, "source" | "content" | "summary_text" | "details_text"> | null | undefined
+): boolean {
+  if (!hubResult) {
+    return false;
+  }
+
+  const source = hubResult.source.trim().toLowerCase();
+  const content = `${hubResult.summary_text ?? ""}\n${hubResult.content ?? ""}\n${hubResult.details_text ?? ""}`;
+  return source === "pm-resolver" || /\bPM (?:resolver|resolution|resolved)\b/i.test(content);
 }
 
 function isToleratedItemFailureSummary(content: string): boolean {
