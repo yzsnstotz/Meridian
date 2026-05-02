@@ -32,6 +32,7 @@ import {
   SchedulerConfigSchema,
   type AgentDispatcherConfig,
   type AppState,
+  type DispatchThreadStateV2,
   type HubMessage,
   type HubResult,
   type RoleState,
@@ -634,8 +635,7 @@ async function maybeStartPmResolverForWatchdogRecovery(
   const issueKey = [
     threadId,
     recovery.status,
-    recovery.workerId ?? "",
-    recovery.message
+    recovery.workerId ?? ""
   ].join("\u0000");
   if (seenIssueKeys.has(issueKey)) {
     log.info("Watchdog stall: PM resolver already requested for this issue", {
@@ -656,6 +656,27 @@ async function maybeStartPmResolverForWatchdogRecovery(
   const config = parseAgentDispatcherConfig(roleState);
   if (!config) {
     log.warn("Watchdog stall: cannot start PM resolver because dispatcher config is invalid", { threadId });
+    return;
+  }
+
+  let lifecycleState: DispatchThreadStateV2 | null = null;
+  try {
+    lifecycleState = new LifecycleStore(resolveDispatchThreadPath(config.dispatch_plan_path)).load();
+  } catch (error) {
+    log.warn("Watchdog stall: cannot inspect PM resolver lifecycle state", {
+      threadId,
+      workerId: recovery.workerId,
+      error: asError(error).message
+    });
+  }
+
+  if (lifecycleState && hasPmResolverHandledCurrentWorkerIssue(lifecycleState, recovery.workerId)) {
+    seenIssueKeys.add(issueKey);
+    log.info("Watchdog stall: PM resolver already handled current worker issue", {
+      threadId,
+      workerId: recovery.workerId,
+      status: recovery.status
+    });
     return;
   }
 
@@ -691,6 +712,40 @@ async function maybeStartPmResolverForWatchdogRecovery(
       error: asError(error).message
     });
   }
+}
+
+export function hasPmResolverHandledCurrentWorkerIssue(
+  state: Pick<DispatchThreadStateV2, "workers" | "pm_resolvers">,
+  workerId: string | null | undefined
+): boolean {
+  const normalizedWorkerId = workerId?.trim();
+  if (!normalizedWorkerId) {
+    return false;
+  }
+
+  const workerStartedAt = state.workers[normalizedWorkerId]?.started_at;
+  const workerStartedAtMs = workerStartedAt ? Date.parse(workerStartedAt) : NaN;
+
+  return (state.pm_resolvers ?? []).some((entry) => {
+    if (entry.status === "failed") {
+      return false;
+    }
+
+    if ((entry.issue.worker_id ?? "").trim() !== normalizedWorkerId) {
+      return false;
+    }
+
+    if (Number.isNaN(workerStartedAtMs)) {
+      return true;
+    }
+
+    const entryStartedAtMs = Date.parse(entry.started_at);
+    const entryLastSeenAtMs = Date.parse(entry.last_seen_at);
+    return (
+      (!Number.isNaN(entryStartedAtMs) && entryStartedAtMs >= workerStartedAtMs)
+      || (!Number.isNaN(entryLastSeenAtMs) && entryLastSeenAtMs >= workerStartedAtMs)
+    );
+  });
 }
 
 export async function tryContinueDispatchWorker(
