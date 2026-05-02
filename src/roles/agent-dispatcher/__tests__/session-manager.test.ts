@@ -268,7 +268,7 @@ describe("SessionManager", () => {
     expect(lifecycle.getState().workers["N-03"]?.status).toBe("abandoned");
   });
 
-  it("marks a killed running worker failed when its fresh output report is blocked", async () => {
+  it("marks a killed running worker blocked when its fresh output report is blocked", async () => {
     const harness = await createHarness();
     const outputPath = path.join(harness.directory, "reports", "V-01-A.md");
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -315,7 +315,7 @@ describe("SessionManager", () => {
       staleWorkersKilled: ["V-01-A"],
       dispatcherRestarted: true
     });
-    expect(lifecycle.getState().workers["V-01-A"]?.status).toBe("failed");
+    expect(lifecycle.getState().workers["V-01-A"]?.status).toBe("blocked");
   });
 
   it("respects plan ✅ status during restart reconciliation even when hub_result is missing", async () => {

@@ -164,7 +164,7 @@ export async function executeResumeWorkerAction(
   const autoIncrementRetryCount = args.action === "retry" && args.incrementRetryCountOnRetry === true;
   const clearFailureResult = args.action === "retry"
     && worker.hub_result !== null
-    && (worker.status === "failed" || hubResultContainsFailureSignal(worker.hub_result));
+    && (worker.status === "failed" || worker.status === "blocked" || hubResultContainsFailureSignal(worker.hub_result));
   lifecycleStore.setWorkerStatus(
     args.workerId,
     nextStatus,
@@ -302,7 +302,7 @@ function normalizeHeaderCell(cell: string): string {
 function extractPriorFailureReason(
   worker: { status: string; hub_result: { content?: string; status?: string } | null }
 ): string | undefined {
-  if (worker.status !== "failed" || !worker.hub_result) {
+  if ((worker.status !== "failed" && worker.status !== "blocked") || !worker.hub_result) {
     return undefined;
   }
 

@@ -2310,6 +2310,7 @@ function renderDispatchPlanStatusEditor(workerId, currentStatus) {
   const options = [
     "pending",
     "completed",
+    "blocked",
     "failed",
     "abandoned",
     "skipped"
@@ -2925,6 +2926,8 @@ function normalizeDispatchPlanStatus(status) {
       return "completed";
     case "❌":
       return "failed";
+    case "⛔ BLOCKED":
+      return "blocked";
     case "⚠️ ABANDONED":
       return "abandoned";
     case "⛔ SKIPPED":
@@ -2937,6 +2940,8 @@ function normalizeDispatchPlanStatus(status) {
       return "completed";
     case "failed":
       return "failed";
+    case "blocked":
+      return "blocked";
     case "abandoned":
       return "abandoned";
     case "skipped":
@@ -2963,6 +2968,8 @@ function toDispatchPlanStatus(status) {
       return "completed";
     case "failed":
       return "failed";
+    case "blocked":
+      return "blocked";
     case "abandoned":
       return "abandoned";
     case "skipped":
@@ -2982,6 +2989,8 @@ function formatDispatchStatusLabel(status) {
       return "Completed";
     case "failed":
       return "Failed";
+    case "blocked":
+      return "Blocked";
     case "abandoned":
       return "Abandoned";
     case "skipped":
@@ -3001,6 +3010,8 @@ function formatDispatchStatusSuccess(status) {
       return "marked complete";
     case "failed":
       return "marked failed";
+    case "blocked":
+      return "marked blocked";
     case "abandoned":
       return "marked abandoned";
     case "skipped":
@@ -3108,6 +3119,7 @@ function statusClass(status) {
   if (status === "⬜") return "pending";
   if (status === "🔄") return "running";
   if (status === "✅") return "completed";
+  if (status === "⛔ BLOCKED") return "blocked";
   if (status === "⛔ SKIPPED") return "skipped";
   return normalized || "idle";
 }

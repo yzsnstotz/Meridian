@@ -10,13 +10,13 @@ import type {
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { acquirePlanLock, releasePlanLock } from "./plan-lock";
 import { archiveRun, type ArchiveResult } from "./archiver";
-import { hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
+import { hubResultContainsBlockSignal, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 
 // Terminal statuses for non-human workers
-const TERMINAL_STATUSES = new Set(["completed", "failed", "abandoned", "skipped"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "blocked", "abandoned", "skipped"]);
 
 // Statuses that represent human-safe completion (auto-continue)
 const AUTO_CONTINUE_OUTCOMES = new Set<TerminalOutcome>(["completed", "completed_with_skips"]);
@@ -147,7 +147,7 @@ export function detectCycleCompletion(
         return { complete: false };
       }
 
-      if (workerStatus === "failed" || workerStatus === "abandoned") {
+      if (workerStatus === "failed" || workerStatus === "blocked" || workerStatus === "abandoned") {
         hasFailure = true;
       }
       if (workerStatus === "skipped") {
@@ -175,7 +175,7 @@ export function detectCycleCompletion(
         continue;
       }
 
-      if (workerStatus === "failed" || workerStatus === "abandoned") {
+      if (workerStatus === "failed" || workerStatus === "blocked" || workerStatus === "abandoned") {
         hasFailure = true;
       }
       if (workerStatus === "skipped") {
@@ -195,7 +195,7 @@ export function detectCycleCompletion(
       if (!TERMINAL_STATUSES.has(workerStatus)) {
         return { complete: false };
       }
-      if (workerStatus === "failed" || workerStatus === "abandoned") {
+      if (workerStatus === "failed" || workerStatus === "blocked" || workerStatus === "abandoned") {
         hasFailure = true;
       }
       if (workerStatus === "skipped") {
@@ -219,6 +219,10 @@ export function detectCycleCompletion(
 function getEffectiveWorkerStatus(worker: DispatchThreadStateV2["workers"][string] | undefined): string {
   if (!worker) {
     return "pending";
+  }
+
+  if (worker.status !== "blocked" && worker.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
+    return "blocked";
   }
 
   if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {

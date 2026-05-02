@@ -592,7 +592,7 @@ textarea[readonly], button:disabled {
   border-color: rgba(56, 217, 137, 0.15);
 }
 
-.status-error, .status-failed, .status-manual_intervention_required {
+.status-error, .status-failed, .status-blocked, .status-manual_intervention_required {
   color: var(--signal-red);
   background: var(--signal-red-muted);
   border-color: rgba(224, 85, 85, 0.15);
@@ -916,6 +916,7 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 .status-badge.running { background: var(--signal-blue-muted); color: var(--signal-blue); }
 .status-badge.completed { background: var(--signal-green-muted); color: var(--signal-green); }
 .status-badge.failed,
+.status-badge.blocked,
 .status-badge.abandoned { background: var(--signal-red-muted); color: var(--signal-red); }
 .status-badge.skipped { background: var(--signal-amber-muted); color: var(--signal-amber); }
 

@@ -1099,7 +1099,7 @@ describe("reconcile", () => {
     );
   });
 
-  it("recovers a failed final reply from Hub history when a sibling report artifact already exists", async () => {
+  it("recovers a blocked final reply from Hub history when a sibling report artifact already exists", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -1153,7 +1153,7 @@ describe("reconcile", () => {
     const report = await reconcile(harness.store, hubClient);
     const nextWorker = harness.store.load().workers["W-ANALYTICS"];
 
-    expect(nextWorker?.status).toBe("failed");
+    expect(nextWorker?.status).toBe("blocked");
     expect(nextWorker?.trace_id).toBe("99999999-9999-4999-8999-999999999999");
     expect(nextWorker?.hub_result?.content).toContain("analytics command exited `1`");
     expect(nextWorker?.last_seen_at).toBe("2026-04-03T12:25:00.000Z");
@@ -1162,8 +1162,8 @@ describe("reconcile", () => {
       expect.objectContaining({
         workerId: "W-ANALYTICS",
         from: "running",
-        to: "failed",
-        trigger: "output_artifact:failure_signal"
+        to: "blocked",
+        trigger: "output_artifact:block_signal"
       })
     );
   });
@@ -1362,7 +1362,7 @@ describe("reconcile", () => {
     expect(harness.store.load().workers["N-02"]?.status).toBe("abandoned");
   });
 
-  it("marks a worker failed when its hub_result contains a BLOCKED marker", async () => {
+  it("marks a worker blocked when its hub_result contains a BLOCKED marker", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -1390,18 +1390,18 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("failed");
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("blocked");
     expect(report.changed).toContainEqual(
       expect.objectContaining({
         workerId: "PRE-FLIGHT",
         from: "running",
-        to: "failed",
-        trigger: "hub_result:failure_signal"
+        to: "blocked",
+        trigger: "hub_result:block_signal"
       })
     );
   });
 
-  it("marks a worker failed when a report-only hub_result says it finished as BLOCKED", async () => {
+  it("marks a worker blocked when a report-only hub_result says it finished as BLOCKED", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -1435,13 +1435,13 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("failed");
+    expect(harness.store.load().workers["PRE-FLIGHT"]?.status).toBe("blocked");
     expect(report.changed).toContainEqual(
       expect.objectContaining({
         workerId: "PRE-FLIGHT",
         from: "running",
-        to: "failed",
-        trigger: "hub_result:failure_signal"
+        to: "blocked",
+        trigger: "hub_result:block_signal"
       })
     );
   });
@@ -1493,7 +1493,7 @@ describe("reconcile", () => {
     );
   });
 
-  it("marks a running worker failed when its output report has a bold Markdown blocked result", async () => {
+  it("marks a running worker blocked when its output report has a bold Markdown blocked result", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -1516,13 +1516,13 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["V-01-A"]?.status).toBe("failed");
+    expect(harness.store.load().workers["V-01-A"]?.status).toBe("blocked");
     expect(report.changed).toContainEqual(
       expect.objectContaining({
         workerId: "V-01-A",
         from: "running",
-        to: "failed",
-        trigger: "output_artifact:failure_signal"
+        to: "blocked",
+        trigger: "output_artifact:block_signal"
       })
     );
   });

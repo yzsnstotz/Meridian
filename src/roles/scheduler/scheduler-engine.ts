@@ -20,7 +20,7 @@ import {
   loadPlanRowsByWorker
 } from "../agent-dispatcher/active-tool-process";
 import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
-import { LifecycleStore, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
 import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { nextCronFire } from "./cron-parser";
@@ -714,7 +714,11 @@ function readFileIfPresent(candidatePath: string): string | null {
   }
 }
 
-function classifyRecoveredOutputStatus(content: string): Extract<LifecycleStatus, "completed" | "failed"> {
+function classifyRecoveredOutputStatus(content: string): Extract<LifecycleStatus, "completed" | "failed" | "blocked"> {
+  if (hubResultContainsBlockSignal({ content })) {
+    return "blocked";
+  }
+
   if (hubResultContainsFailureSignal({ content }) || isNonCompletionContent(content)) {
     return "failed";
   }
@@ -732,14 +736,14 @@ function buildRecoveredOutputHubResult(options: {
   source: AgentType;
   threadId: string;
   traceId: string | null;
-  status: Extract<LifecycleStatus, "completed" | "failed">;
+  status: Extract<LifecycleStatus, "completed" | "failed" | "blocked">;
   timestamp: string;
 }): HubResult {
   return {
     trace_id: isUuid(options.traceId) ? options.traceId : randomUUID(),
     thread_id: options.threadId,
     source: options.source,
-    status: options.status === "failed" ? "error" : "success",
+    status: options.status === "completed" ? "success" : "error",
     run_state: "completed",
     content: options.content,
     attachments: [{
@@ -771,7 +775,7 @@ function shouldCleanupTerminalWorker(worker: DispatchWorkerState, killPolicy: Ki
     return killPolicy === "always" || killPolicy === "on_success";
   }
 
-  if (worker.status === "failed" || worker.status === "abandoned" || worker.status === "skipped") {
+  if (worker.status === "failed" || worker.status === "blocked" || worker.status === "abandoned" || worker.status === "skipped") {
     return killPolicy === "always";
   }
 
@@ -792,7 +796,7 @@ function isMissingThreadCleanupError(message: string): boolean {
 }
 
 function isManualInterventionBlocker(worker: DispatchStatusWorker): boolean {
-  return worker.status === "❌" || worker.lifecycle_status === "failed" || worker.progress?.status === "failed";
+  return worker.status === "❌" || worker.status === "⛔ BLOCKED" || worker.lifecycle_status === "failed" || worker.lifecycle_status === "blocked" || worker.progress?.status === "failed";
 }
 
 function sanitizePathSegment(value: string): string {

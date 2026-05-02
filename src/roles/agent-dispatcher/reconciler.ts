@@ -6,6 +6,7 @@ import type { A2AClient } from "../../a2a/client";
 import type { DispatchWorkerState, HubMessage, HubResult, LifecycleStatus } from "../../types";
 import {
   LifecycleStore,
+  hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
   hubResultContainsHitLimit,
   hubResultContainsInlineReport,
@@ -356,6 +357,13 @@ function determineWorkerTransition(
   const trustIdleAsTerminal = hubResult !== null;
 
   if (hubResult && hubResultContainsFailureSignal(hubResult)) {
+    if (hubResultContainsBlockSignal(hubResult)) {
+      return {
+        to: "blocked",
+        trigger: "hub_result:block_signal"
+      };
+    }
+
     return {
       to: "failed",
       trigger: "hub_result:failure_signal"
@@ -378,6 +386,13 @@ function determineWorkerTransition(
 
   if (workerToolProcessRunning) {
     return null;
+  }
+
+  if (outputsPresent && outputArtifactsContainBlockSignal(expectedOutputs, startedAt)) {
+    return {
+      to: "blocked",
+      trigger: "output_artifact:block_signal"
+    };
   }
 
   if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
@@ -537,6 +552,13 @@ function determineRecordedResultTransition(
     return null;
   }
 
+  if (outputsPresent && outputArtifactsContainBlockSignal(expectedOutputs, startedAt)) {
+    return {
+      to: "blocked",
+      trigger: "output_artifact:block_signal"
+    };
+  }
+
   if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
     return {
       to: "failed",
@@ -566,6 +588,13 @@ function determineRecordedResultTransition(
     return {
       to: "failed",
       trigger: "hub_result:hit_limit"
+    };
+  }
+
+  if (hubResultContainsBlockSignal(hubResult)) {
+    return {
+      to: "blocked",
+      trigger: "hub_result:block_signal"
     };
   }
 
@@ -1047,6 +1076,15 @@ function outputArtifactsContainFailureSignal(paths: string[], startedAt?: string
   return outputArtifactsContain(
     paths,
     (content) => hubResultContainsFailureSignal({ content }),
+    startedAt,
+    reconciliationFs
+  );
+}
+
+function outputArtifactsContainBlockSignal(paths: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    paths,
+    (content) => hubResultContainsBlockSignal({ content }),
     startedAt,
     reconciliationFs
   );

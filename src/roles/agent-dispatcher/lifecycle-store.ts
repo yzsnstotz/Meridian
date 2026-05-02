@@ -38,6 +38,7 @@ const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
   running: "🔄",
   completed: "✅",
   failed: "❌",
+  blocked: "⛔ BLOCKED",
   abandoned: "⚠️ ABANDONED",
   skipped: "⛔ SKIPPED",
   awaiting_validation: "🔍",
@@ -138,7 +139,7 @@ export class LifecycleStore {
     // is triggered by the AI dispatcher rather than the service-continuation
     // path (which increments via setWorkerStatus). Restarts from "pending"
     // have already been incremented by setWorkerStatus, so skip those.
-    const shouldIncrementRetry = previousStatus === "failed" || previousStatus === "abandoned";
+    const shouldIncrementRetry = previousStatus === "failed" || previousStatus === "blocked" || previousStatus === "abandoned";
 
     state.workers[workerId] = {
       thread_id: threadId,
@@ -480,12 +481,13 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
       }
 
       // Never downgrade a confirmed-terminal plan status unless the worker
-      // output itself contains failure evidence. A stale ✅ must not hide a
-      // failed acceptance report.
+      // output itself contains stop evidence. A stale ✅ must not hide a
+      // failed or blocked acceptance report.
       const currentPlanStatus = rowCells[statusColumn].trim();
       const nextPlanStatus = resolveDisplayStatus(workerState);
-      const hasFailureEvidence =
+      const hasStopEvidence =
         workerState.status === "failed" ||
+        workerState.status === "blocked" ||
         (workerState.hub_result ? hubResultContainsFailureSignal(workerState.hub_result) : false);
       const isValidationOwnedStatus =
         workerState.status === "awaiting_validation" || workerState.status === "fix_requested";
@@ -494,7 +496,7 @@ function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string):
         && nextPlanStatus !== currentPlanStatus
         && nextPlanStatus !== PLAN_STATUS_SYMBOLS.running
         && !isValidationOwnedStatus
-        && !hasFailureEvidence
+        && !hasStopEvidence
       ) {
         continue;
       }
@@ -610,8 +612,16 @@ function mapHubResultToLifecycleStatus(
     return "failed";
   }
 
+  if (hubResultContainsBlockSignal(hubResult)) {
+    return "blocked";
+  }
+
   if (hubResultContainsFailureSignal(hubResult)) {
     return "failed";
+  }
+
+  if (outputArtifactsContainBlockSignal(expectedOutputs, startedAt)) {
+    return "blocked";
   }
 
   if (outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
@@ -691,6 +701,21 @@ const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*FAIL:\s+/i
 ];
 
+const STRUCTURED_BLOCK_SIGNAL_PATTERNS = [
+  /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*|__)?(?:Outcome|Status|Result)(?:\*\*|__)?\s*:?\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
+  /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:Outcome|Status|Result)(?:\*\*|__)?\s*\n+\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
+  /(?:^|\n)\s*(?:#{1,6}\s*)?Outcome\s*\n+\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
+  /(?:^|\n)\s*(?:-\s*)?Outcome\s*:?\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
+  /(?:^|\n)\s*(?:-\s*)?Status\s*:?\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
+  /(?:^|\n)\s*-\s*Result:\s*`?\s*⛔\s*BLOCKED\b/i,
+  /(?:^|\n)\s*Result:\s*`?\s*⛔\s*BLOCKED\b/i,
+  /(?:^|\n)\s*⛔\s*BLOCKED\b/i,
+  /(?:^|[.!?]\s*)BLOCKED\s*[—–-]\s*[\w-]+\s*:/i,
+  /"result"\s*:\s*"blocked"/i,
+  /\b(?:finished|ended|completed|stopped)\s+as\s+`?BLOCKED`?\b/i,
+  /\bBlocking issue:\b/i
+];
+
 const NONZERO_FAILED_COUNT_PATTERN = /"failed"\s*:\s*[1-9]\d*/i;
 
 const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
@@ -768,6 +793,34 @@ export function hubResultContainsFailureSignal(
       return normalized.length > 0
         && !isBenignFailureContextLine(normalized)
         && CONTEXTUAL_FAILURE_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized));
+    });
+}
+
+export function hubResultContainsBlockSignal(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): boolean {
+  const combinedContent = combineHubResultSignalText(hubResult);
+  if (combinedContent.length === 0) {
+    return false;
+  }
+
+  if (STRUCTURED_BLOCK_SIGNAL_PATTERNS.some((pattern) => pattern.test(combinedContent))) {
+    return true;
+  }
+
+  return combinedContent
+    .split(/\r?\n/)
+    .some((line) => {
+      const normalized = line.trim();
+      return normalized.length > 0
+        && !isBenignFailureContextLine(normalized)
+        && (
+          /(?:^|[.!?]\s*)BLOCKED\b/i.test(normalized)
+          || /\b(?:is|still|remains|remain|was|were)\b[^\n.]{0,80}\bBLOCKED\b/i.test(normalized)
+          || /\bblocked by\b/i.test(normalized)
+          || /\bWorker\s+`?[\w-]+`?\s+is\s+blocked\b/i.test(normalized)
+          || /\b`?[\w-]+`?\s+is\s+blocked\b/i.test(normalized)
+        );
     });
 }
 
@@ -882,6 +935,14 @@ function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedA
   return outputArtifactsContain(
     expectedOutputs,
     (content) => hubResultContainsFailureSignal({ content }),
+    startedAt
+  );
+}
+
+function outputArtifactsContainBlockSignal(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    expectedOutputs,
+    (content) => hubResultContainsBlockSignal({ content }),
     startedAt
   );
 }
@@ -1086,6 +1147,10 @@ function formatTableRow(cells: string[]): string {
 }
 
 function resolveDisplayStatus(worker: DispatchWorkerState): string {
+  if (worker.status !== "blocked" && worker.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
+    return PLAN_STATUS_SYMBOLS.blocked;
+  }
+
   if (worker.status !== "failed" && worker.hub_result && hubResultContainsFailureSignal(worker.hub_result)) {
     return PLAN_STATUS_SYMBOLS.failed;
   }

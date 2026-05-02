@@ -4,7 +4,7 @@ import { unlink as unlinkFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { LifecycleStore, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
+import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 import { StateStore } from "../../state-store";
 import {
   AgentDispatcherConfigSchema,
@@ -428,8 +428,20 @@ function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedA
   );
 }
 
-function resolveStoppedWorkerStatus(worker: DispatchWorkerState): "completed" | "failed" | "abandoned" {
+function outputArtifactsContainBlockSignal(expectedOutputs: string[], startedAt?: string): boolean {
+  return outputArtifactsContain(
+    expectedOutputs,
+    (content) => hubResultContainsBlockSignal({ content }),
+    startedAt
+  );
+}
+
+function resolveStoppedWorkerStatus(worker: DispatchWorkerState): "completed" | "failed" | "blocked" | "abandoned" {
   if (outputArtifactsContainFailureSignal(worker.expected_outputs, worker.started_at)) {
+    if (outputArtifactsContainBlockSignal(worker.expected_outputs, worker.started_at)) {
+      return "blocked";
+    }
+
     return "failed";
   }
 

@@ -180,7 +180,7 @@ export async function autoResolve(
   // replies are terminal for status reporting, but still eligible for an
   // auto-generated FIX task.
   for (const [workerId, worker] of Object.entries(state.workers)) {
-    if (worker.status !== "running" && worker.status !== "failed") continue;
+    if (worker.status !== "running" && worker.status !== "failed" && worker.status !== "blocked") continue;
     if (!worker.hub_result?.content) continue;
     if (!isNonCompletionContent(worker.hub_result.content)) continue;
 
@@ -224,7 +224,7 @@ export async function autoResolve(
           worker_id: workerId,
           fix_worker_id: fixWorkerId
         });
-      } else if (fixStatus === "failed" || fixStatus === "abandoned") {
+      } else if (fixStatus === "failed" || fixStatus === "blocked" || fixStatus === "abandoned") {
         resolvedDeps.log.warn("FIX worker ended in terminal failure state", {
           worker_id: workerId,
           fix_worker_id: fixWorkerId,

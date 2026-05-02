@@ -1976,6 +1976,114 @@ describe("role config handlers", () => {
     }
   });
 
+  it("does not continue implementation workers when PRE-FLIGHT is blocked", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-preflight-blocked-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-continued"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⛔ BLOCKED | 0 | PRE-FLIGHT | Env health check | CODEX-HIGH | — | TaskSpec | missing Supabase auth |",
+      "| ⬜ | 1 | N-01 | Workspace scaffold | CODEX-XHIGH | — | TaskSpec | should not run before PRE-FLIGHT |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-02T07:28:23.855Z",
+        status: "running"
+      },
+      workers: {
+        "PRE-FLIGHT": buildLifecycleWorker({
+          thread_id: "codex_02",
+          status: "blocked",
+          retry_count: 1,
+          hub_result: {
+            ...buildHubResult("PRE-FLIGHT is still **BLOCKED**. Supabase CLI auth is missing."),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "codex_02"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-preflight-blocked", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-preflight-blocked/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "manual_intervention_required",
+        message: "manual intervention required: PRE-FLIGHT reported a blocking failure",
+        worker: "PRE-FLIGHT",
+        error: "PRE-FLIGHT is still **BLOCKED**. Supabase CLI auth is missing."
+      });
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not continue a stale running implementation worker when PRE-FLIGHT plan status is blocked", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-preflight-plan-blocked-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-continued"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⛔ BLOCKED | 0 | PRE-FLIGHT | Env health check | CODEX-HIGH | — | TaskSpec | missing Supabase auth |",
+      "| 🔄 | 1 | N-01 | Workspace scaffold | CODEX-XHIGH | — | TaskSpec | stale running mark |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-02T07:28:23.855Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-preflight-plan-blocked", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-preflight-plan-blocked/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "manual_intervention_required",
+        message: "manual intervention required: PRE-FLIGHT is blocked",
+        worker: "PRE-FLIGHT"
+      });
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("continues the sole pre-marked running worker when no worker thread was ever recorded", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pre-marked-worker-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -3110,7 +3218,7 @@ describe("role config handlers", () => {
     }
   });
 
-  it("shows failed dispatch detail status when a completed hub result contains a blocking report", async () => {
+  it("shows blocked dispatch detail status when a completed hub result contains a blocking report", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-blocked-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -3160,13 +3268,13 @@ describe("role config handlers", () => {
         tasks: [
           expect.objectContaining({
             task_id: "PRE-FLIGHT",
-            status: "failed"
+            status: "blocked"
           })
         ],
         dispatch_details: [
           expect.objectContaining({
             worker_id: "PRE-FLIGHT",
-            status: "failed",
+            status: "blocked",
             reply: expect.objectContaining({
               content: expect.stringContaining("⛔ BLOCKED")
             })
@@ -3176,7 +3284,8 @@ describe("role config handlers", () => {
           rows: [
             expect.objectContaining({
               worker: "PRE-FLIGHT",
-              lifecycle_status: "failed"
+              status: "⛔ BLOCKED",
+              lifecycle_status: "blocked"
             })
           ]
         }
