@@ -355,7 +355,7 @@ describe("role config handlers", () => {
         validator: {
           enabled: true,
           agent_type: "codex",
-          mode: "bridge",
+          mode: "stateless_call",
           auto_approve: false,
           threshold_type: "binary",
           pass_threshold: 0.85,
@@ -419,7 +419,7 @@ describe("role config handlers", () => {
         validator: {
           enabled: true,
           agent_type: "codex",
-          mode: "bridge",
+          mode: "stateless_call",
           auto_approve: false,
           threshold_type: "binary",
           pass_threshold: 0.9,

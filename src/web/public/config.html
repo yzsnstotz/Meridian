@@ -113,10 +113,18 @@
                 <label class="field">
                   <span>agent_type</span>
                   <select id="cfg-validator-agent-type">
-                    <option value="claude">claude</option>
                     <option value="codex">codex</option>
+                    <option value="claude">claude</option>
                     <option value="gemini">gemini</option>
                     <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>mode</span>
+                  <select id="cfg-validator-mode">
+                    <option value="stateless_call">stateless_call</option>
+                    <option value="bridge">bridge</option>
+                    <option value="pane_bridge">pane_bridge</option>
                   </select>
                 </label>
                 <label class="field">

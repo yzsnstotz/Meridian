@@ -245,7 +245,8 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
       mode: deps.validatorConfig.mode,
       spawnDir: deps.spawnDir,
       modelId: deps.validatorConfig.model_id,
-      autoApprove: deps.validatorConfig.auto_approve
+      autoApprove: deps.validatorConfig.mode === "stateless_call" ? false : deps.validatorConfig.auto_approve,
+      sandboxMode: deps.validatorConfig.mode === "stateless_call" ? "read-only" : undefined
     });
 
     if (!isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId)) {

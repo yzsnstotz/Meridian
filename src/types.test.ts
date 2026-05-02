@@ -9,7 +9,7 @@ import {
 const replyChannels = [{ channel: "web" as const, chat_id: "web:ops" }];
 
 describe("role config mode defaults", () => {
-  it("defaults all role modes to bridge when mode is omitted", () => {
+  it("defaults dispatcher and scheduler modes to bridge when mode is omitted", () => {
     const agentDispatcher = AgentDispatcherConfigSchema.parse({
       dispatch_plan_path: "/tmp/dispatch_plan.md",
       command_file_path: "/tmp/agent_dispatch_command.md",
@@ -21,11 +21,28 @@ describe("role config mode defaults", () => {
       user_reply_channels: replyChannels,
       report_base_dir: "/tmp/reports"
     });
-    const validator = ValidatorConfigSchema.parse({});
 
     expect(agentDispatcher.mode).toBe("bridge");
     expect(scheduler.mode).toBe("bridge");
+  });
+
+  it("defaults validator calls to codex stateless_call when mode is omitted", () => {
+    const validator = ValidatorConfigSchema.parse({});
+
+    expect(validator.agent_type).toBe("codex");
+    expect(validator.mode).toBe("stateless_call");
+  });
+
+  it("defaults non-codex validator calls to bridge when mode is omitted", () => {
+    const validator = ValidatorConfigSchema.parse({ agent_type: "claude" });
+
+    expect(validator.agent_type).toBe("claude");
     expect(validator.mode).toBe("bridge");
+  });
+
+  it("rejects stateless_call validator mode for non-codex agents", () => {
+    expect(() => ValidatorConfigSchema.parse({ agent_type: "claude", mode: "stateless_call" }))
+      .toThrow(/stateless_call validator mode is only supported for codex/);
   });
 
   it("defaults validator threshold_type to score", () => {

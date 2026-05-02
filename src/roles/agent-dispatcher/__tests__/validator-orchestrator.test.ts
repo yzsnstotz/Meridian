@@ -108,6 +108,36 @@ describe("executeValidationCycle", () => {
     expect(worker?.validation?.history[0]?.validator_thread_id).toBe("validator-thread-fresh");
   });
 
+  it("spawns stateless codex validator calls in read-only mode", async () => {
+    const harness = await createHarness({
+      validatorConfig: {
+        agent_type: "codex",
+        mode: "stateless_call"
+      }
+    });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-stateless" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-stateless",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.91,"feedback":"accepted"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "passed",
+      score: 0.91
+    });
+    expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "codex",
+      mode: "stateless_call",
+      sandboxMode: "read-only",
+      autoApprove: false
+    }));
+  });
+
   it("kills the retained worker thread after validation passes when kill policy allows success cleanup", async () => {
     const harness = await createHarness({ killPolicy: "on_success" });
     harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-pass" });

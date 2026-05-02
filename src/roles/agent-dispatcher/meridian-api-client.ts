@@ -15,8 +15,8 @@ export type MeridianAgentType = "codex" | "claude" | "cursor" | "gemini";
 export interface MeridianSpawnRequest {
   /** Provider type forwarded to /api/spawn (codex, claude, cursor, gemini). */
   agentType: string;
-  /** "bridge" for the dispatcher Hub session, "pane_bridge" for workers. */
-  mode: "bridge" | "pane_bridge";
+  /** "bridge" for stateful Hub sessions, "pane_bridge" for visible workers, "stateless_call" for read-only Codex calls. */
+  mode: "bridge" | "pane_bridge" | "stateless_call";
   /** Absolute working directory for the spawned thread. Validated under AGENT_WORKDIR by Meridian. */
   spawnDir: string;
   /** Optional model identifier forwarded to the provider adapter. */
@@ -25,6 +25,8 @@ export interface MeridianSpawnRequest {
   effort?: string;
   /** Approval policy. Meridian maps this to provider-specific flags. */
   autoApprove?: boolean;
+  /** Optional sandbox mode. Stateless Codex validator calls use read-only. */
+  sandboxMode?: "read-only" | "workspace-write";
 }
 
 export interface MeridianSpawnResult {
@@ -200,6 +202,9 @@ function buildSpawnRequestBody(request: MeridianSpawnRequest): Record<string, un
   }
   if (request.effort?.trim()) {
     body.effort = request.effort.trim();
+  }
+  if (request.sandboxMode?.trim()) {
+    body.sandbox_mode = request.sandboxMode.trim();
   }
 
   return body;
