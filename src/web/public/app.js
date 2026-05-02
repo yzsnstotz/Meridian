@@ -113,16 +113,27 @@ function setupValidatorToggle() {
 function collectValidatorConfig() {
   const toggle = document.getElementById("agent-dispatcher-validator-enabled");
   if (!toggle || !toggle.checked) return undefined;
+  const agentType = document.getElementById("agent-dispatcher-validator-agent-type")?.value || "codex";
+  const requestedMode = document.getElementById("agent-dispatcher-validator-mode")?.value;
 
   return {
     enabled: true,
-    agent_type: document.getElementById("agent-dispatcher-validator-agent-type")?.value || "claude",
+    agent_type: agentType,
+    mode: normalizeValidatorMode(agentType, requestedMode),
     model_id: document.getElementById("agent-dispatcher-validator-model-id")?.value?.trim() || undefined,
     threshold_type: document.getElementById("agent-dispatcher-validator-threshold-type")?.value || "score",
     pass_threshold: parseFloat(document.getElementById("agent-dispatcher-validator-pass-threshold")?.value) || 0.7,
     max_fix_cycles: parseInt(document.getElementById("agent-dispatcher-validator-max-fix-cycles")?.value, 10) || 3,
     base_branch: document.getElementById("agent-dispatcher-validator-base-branch")?.value?.trim() || "main"
   };
+}
+
+function normalizeValidatorMode(agentType, mode) {
+  const normalizedMode = mode || (agentType === "codex" ? "stateless_call" : "bridge");
+  if (normalizedMode === "stateless_call" && agentType !== "codex") {
+    return "bridge";
+  }
+  return normalizedMode;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1898,6 +1909,7 @@ async function setupConfigEditor() {
   // Validator config fields
   const cfgValidatorEnabled = document.getElementById("cfg-validator-enabled");
   const cfgValidatorAgentType = document.getElementById("cfg-validator-agent-type");
+  const cfgValidatorMode = document.getElementById("cfg-validator-mode");
   const cfgValidatorModelId = document.getElementById("cfg-validator-model-id");
   const cfgValidatorThresholdType = document.getElementById("cfg-validator-threshold-type");
   const cfgValidatorPassThreshold = document.getElementById("cfg-validator-pass-threshold");
@@ -1927,7 +1939,8 @@ async function setupConfigEditor() {
     // Validator fields
     const v = config.validator || {};
     if (cfgValidatorEnabled) cfgValidatorEnabled.value = String(v.enabled === true);
-    if (cfgValidatorAgentType) cfgValidatorAgentType.value = v.agent_type || "claude";
+    if (cfgValidatorAgentType) cfgValidatorAgentType.value = v.agent_type || "codex";
+    if (cfgValidatorMode) cfgValidatorMode.value = v.mode || normalizeValidatorMode(v.agent_type || "codex");
     if (cfgValidatorModelId) cfgValidatorModelId.value = v.model_id || "";
     if (cfgValidatorThresholdType) cfgValidatorThresholdType.value = v.threshold_type || "score";
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.value = v.pass_threshold ?? 0.7;
@@ -1943,6 +1956,7 @@ async function setupConfigEditor() {
     if (cfgAutoApprove) cfgAutoApprove.disabled = disabled;
     if (cfgValidatorEnabled) cfgValidatorEnabled.disabled = disabled;
     if (cfgValidatorAgentType) cfgValidatorAgentType.disabled = disabled;
+    if (cfgValidatorMode) cfgValidatorMode.disabled = disabled;
     if (cfgValidatorModelId) cfgValidatorModelId.readOnly = disabled;
     if (cfgValidatorThresholdType) cfgValidatorThresholdType.disabled = disabled;
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.readOnly = disabled;
@@ -1959,9 +1973,12 @@ async function setupConfigEditor() {
     if (cfgAutoApprove) patch.auto_approve = cfgAutoApprove.value === "true";
 
     if (cfgValidatorEnabled) {
+      const validatorAgentType = cfgValidatorAgentType?.value || "codex";
+      const validatorMode = normalizeValidatorMode(validatorAgentType, cfgValidatorMode?.value);
       patch.validator = {
         enabled: cfgValidatorEnabled.value === "true",
-        agent_type: cfgValidatorAgentType?.value || "claude",
+        agent_type: validatorAgentType,
+        mode: validatorMode,
         model_id: cfgValidatorModelId?.value?.trim() || undefined,
         threshold_type: cfgValidatorThresholdType?.value || "score",
         pass_threshold: parseFloat(cfgValidatorPassThreshold?.value) || 0.7,

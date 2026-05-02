@@ -73,6 +73,32 @@ describe("spawn tool", () => {
     });
   });
 
+  it("forwards stateless_call mode to the Meridian API", async () => {
+    mockSpawn.mockResolvedValue({
+      threadId: "thread-stateless",
+      source: "codex"
+    });
+
+    const result = await spawnTool.execute({
+      agent_type: "codex",
+      mode: "stateless_call"
+    });
+
+    expect(mockSpawn).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "codex",
+      mode: "stateless_call"
+    }));
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        thread_id: "thread-stateless",
+        agent_type: "codex",
+        mode: "stateless_call",
+        model_id: undefined
+      }
+    });
+  });
+
   it("maps the API timeout to the worker contract", async () => {
     mockSpawn.mockRejectedValue(new Error("spawn failed: Meridian API unreachable at http://127.0.0.1:3000/: timed out"));
 

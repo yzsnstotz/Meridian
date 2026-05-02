@@ -18,7 +18,10 @@ export type HubRunState = z.infer<typeof HubRunStateSchema>;
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
-export const BridgeModeSchema = z.enum(["bridge", "pane_bridge"]);
+export const StatefulBridgeModeSchema = z.enum(["bridge", "pane_bridge"]);
+export type StatefulBridgeMode = z.infer<typeof StatefulBridgeModeSchema>;
+
+export const BridgeModeSchema = z.enum(["bridge", "pane_bridge", "stateless_call"]);
 export type BridgeMode = z.infer<typeof BridgeModeSchema>;
 
 export const IntentSchema = z.union([
@@ -284,16 +287,34 @@ export type ValidatorThresholdType = z.infer<typeof ValidatorThresholdTypeSchema
 
 export const ValidatorConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  agent_type: AgentTypeSchema.default("claude"),
+  agent_type: AgentTypeSchema.default("codex"),
   model_id: z.string().min(1).optional(),
-  mode: BridgeModeSchema.default("bridge"),
+  mode: BridgeModeSchema.optional(),
   auto_approve: z.boolean().default(false),
   threshold_type: ValidatorThresholdTypeSchema.default("score"),
   pass_threshold: z.number().min(0).max(1).default(0.7),
   max_fix_cycles: z.number().int().min(0).max(10).default(3),
   base_branch: z.string().min(1).default("main")
-});
+})
+  .superRefine((value, ctx) => {
+    const resolvedMode = value.mode ?? defaultValidatorModeForAgent(value.agent_type);
+    if (resolvedMode === "stateless_call" && value.agent_type !== "codex") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mode"],
+        message: "stateless_call validator mode is only supported for codex"
+      });
+    }
+  })
+  .transform((value) => ({
+    ...value,
+    mode: value.mode ?? defaultValidatorModeForAgent(value.agent_type)
+  }));
 export type ValidatorConfig = z.infer<typeof ValidatorConfigSchema>;
+
+function defaultValidatorModeForAgent(agentType: AgentType): BridgeMode {
+  return agentType === "codex" ? "stateless_call" : "bridge";
+}
 
 export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   dispatch_plan_path: z.string().min(1),
@@ -303,7 +324,7 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.default("claude"),
   model_id: z.string().min(1).optional(),
-  mode: BridgeModeSchema.default("bridge"),
+  mode: StatefulBridgeModeSchema.default("bridge"),
   kill_policy: KillPolicySchema.default("always"),
   auto_approve: z.boolean().default(false),
   model_map: DispatchModelMapSchema.optional(),
@@ -342,7 +363,7 @@ export const AgentDispatcherEditorConfigSchema = z.object({
   user_reply_channels: z.array(ReplyChannelSchema).min(1),
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
-  mode: BridgeModeSchema,
+  mode: StatefulBridgeModeSchema,
   kill_policy: KillPolicySchema,
   auto_approve: z.boolean().default(false),
   validator: ValidatorConfigSchema.optional()
@@ -413,7 +434,7 @@ export const SchedulerConfigSchema = z.object({
   // ── Dispatcher agent settings (pass-through to child dispatcher) ──
   agent_type: AgentTypeSchema.default("claude"),
   model_id: z.string().min(1).optional(),
-  mode: BridgeModeSchema.default("bridge"),
+  mode: StatefulBridgeModeSchema.default("bridge"),
   kill_policy: KillPolicySchema.default("always"),
   auto_approve: z.boolean().default(false),
   model_map: DispatchModelMapSchema.optional(),

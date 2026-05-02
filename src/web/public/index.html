@@ -184,10 +184,18 @@
                 <label class="field">
                   <span>validator agent_type</span>
                   <select id="agent-dispatcher-validator-agent-type" name="validator_agent_type">
+                    <option value="codex" selected>codex</option>
                     <option value="claude">claude</option>
-                    <option value="codex">codex</option>
                     <option value="gemini">gemini</option>
                     <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>validator mode</span>
+                  <select id="agent-dispatcher-validator-mode" name="validator_mode">
+                    <option value="stateless_call" selected>stateless_call</option>
+                    <option value="bridge">bridge</option>
+                    <option value="pane_bridge">pane_bridge</option>
                   </select>
                 </label>
                 <label class="field">

@@ -64,7 +64,7 @@ import {
   AgentDispatcherConfigSchema,
   AgentTypeSchema,
   AppStateSchema,
-  BridgeModeSchema,
+  StatefulBridgeModeSchema,
   type DispatchThreadStateV2,
   type DispatchWorkerState,
   type LifecycleStatus,
@@ -137,7 +137,7 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
   user_reply_channel: ReplyChannelSchema.optional(),
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.optional(),
-  mode: BridgeModeSchema.optional(),
+  mode: StatefulBridgeModeSchema.optional(),
   kill_policy: KillPolicySchema.optional(),
   auto_approve: z.boolean().optional()
 });
@@ -145,7 +145,7 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
 const AgentDispatcherConfigPatchSchema = z.object({
   agent_type: AgentTypeSchema.optional(),
   model_id: z.string().min(1).optional().nullable(),
-  mode: BridgeModeSchema.optional(),
+  mode: StatefulBridgeModeSchema.optional(),
   kill_policy: KillPolicySchema.optional(),
   auto_approve: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional()
