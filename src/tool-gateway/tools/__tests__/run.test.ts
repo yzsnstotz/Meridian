@@ -225,10 +225,41 @@ describe("run tool", () => {
     });
   });
 
-  it.skip("emits a slim preamble that references the command file path instead of inlining its body", async () => {
-    // This test is activated in Task 6 of the worker-preamble-slim plan once the slim is implemented.
-    // It captures the post-slim contract: the preamble points at the command file
-    // and does NOT inline body section headers from the file.
+  it("emits a slim preamble that references the command file path instead of inlining its body", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 4 | N-04 | Ship outputs | CODEX | N-03 | No non-report outputs required. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-slim",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+
+    // Slim contract assertions:
+    expect(sentContent).toContain("# Dispatch Command");
+    expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
+    expect(sentContent).not.toContain("# Embedded Dispatch Command");
+    expect(sentContent).not.toContain("# Role Definition");
+    expect(sentContent).not.toContain("# Agent Dispatch Command");
+
+    // Body-content negative anchor: mockCommandAndPlanReads stubs the command
+    // file body as `"# command\n"`. Under the slim, the preamble must not inline
+    // that body, so its lowercase `# command` header must not appear in the
+    // sent content (the preamble uses `# Dispatch Command`, capital C).
+    expect(sentContent).not.toContain("# command");
+
+    // Sanity: preamble length is bounded. The legacy preamble inlined the
+    // command file body; the slim preamble for this fixture is well under 2 kB.
+    expect(sentContent.length).toBeLessThan(2000);
   });
 
   it("derives worker-specific report outputs from dispatch-plan notes with angle-bracket placeholders", async () => {
