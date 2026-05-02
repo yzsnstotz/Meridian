@@ -11,6 +11,8 @@ import type {
 import { LifecycleStore, hubResultContainsFailureSignal } from "../agent-dispatcher/lifecycle-store";
 import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "../../tool-gateway/tools/dispatch-status";
 
+const DISPATCHER_WORKER_ID = "DISPATCHER";
+
 export interface ArchiveContext {
   runId: string;
   config: SchedulerConfig;
@@ -204,6 +206,9 @@ function buildArchiveWorkerEntries(
 
   if (lifecycleState?.workers) {
     for (const workerId of Object.keys(lifecycleState.workers)) {
+      if (workerId === DISPATCHER_WORKER_ID) {
+        continue;
+      }
       if (!entries.has(workerId)) {
         entries.set(workerId, { workerId, planRow: null });
       }
