@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
   reconcileMock: vi.fn().mockResolvedValue({
@@ -10,7 +10,14 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
 
     return {
       filePath,
-      recordWorkerStart: vi.fn((workerId: string, threadId: string, traceId: string, expectedOutputs: string[]) => {
+      recordWorkerStart: vi.fn((
+        workerId: string,
+        threadId: string,
+        traceId: string,
+        expectedOutputs: string[],
+        _commandPreamble?: string | null,
+        options?: { validationMaxFixCycles?: number }
+      ) => {
         const previousRetryCount = typeof workers[workerId]?.retry_count === "number"
           ? workers[workerId].retry_count as number
           : 0;
@@ -20,7 +27,19 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
           status: "running",
           expected_outputs: [...expectedOutputs],
           hub_result: null,
-          retry_count: previousRetryCount
+          retry_count: previousRetryCount,
+          ...(options?.validationMaxFixCycles
+            ? {
+                validation: {
+                  current_cycle: 0,
+                  max_fix_cycles: options.validationMaxFixCycles,
+                  validator_thread_id: null,
+                  last_score: null,
+                  last_feedback: null,
+                  history: []
+                }
+              }
+            : {})
         };
       }),
       recordWorkerResult: vi.fn((workerId: string, hubResult: { status: string; run_state?: string }) => {
@@ -33,14 +52,17 @@ const { lifecycleStoreConstructor, reconcileMock } = vi.hoisted(() => ({
           ? worker.expected_outputs as string[]
           : [];
         const requiresOutputVerification = expectedOutputs.some((filePath) => !filePath.includes("/dev_history/"));
+        const completed = hubResult.status === "success"
+          && (!hubResult.run_state || hubResult.run_state === "completed")
+          && !requiresOutputVerification;
         workers[workerId] = {
           ...worker,
           status: hubResult.status === "error"
             ? "failed"
-            : hubResult.status === "success"
-              && (!hubResult.run_state || hubResult.run_state === "completed")
-              && !requiresOutputVerification
-              ? "completed"
+            : completed
+              ? worker.validation
+                ? "awaiting_validation"
+                : "completed"
               : "running",
           hub_result: hubResult
         };
@@ -123,10 +145,13 @@ type MockLifecycleStore = {
 const randomUUIDMock = vi.mocked(randomUUID);
 const readFileMock = vi.mocked(readFile);
 
+beforeEach(() => {
+  randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
+});
+
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
-  randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
 });
 
 describe("run tool", () => {
@@ -1298,6 +1323,53 @@ describe("run tool", () => {
     });
     expect(mockRun).toHaveBeenCalledTimes(1);
     expect(mockKill).toHaveBeenCalledWith("thread-222b");
+  });
+
+  it("retains successful workers for validation even when kill_policy is always", async () => {
+    mockRun.mockResolvedValueOnce(toApiResult(buildHubResult("Worker completed", "success")));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-validator-retained",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04",
+      kill_policy: "always",
+      validator_max_fix_cycles: "3"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "N-04",
+        thread_id: "thread-validator-retained",
+        status: "done",
+        run_state: "completed",
+        summary: "Worker completed"
+      }
+    });
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "N-04",
+      "thread-validator-retained",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/dev_history/N-04_report.md"],
+      expect.any(String),
+      { validationMaxFixCycles: 3 }
+    );
+    expect(lifecycleStore.load().workers["N-04"]).toMatchObject({
+      status: "awaiting_validation",
+      validation: {
+        current_cycle: 0,
+        max_fix_cycles: 3,
+        validator_thread_id: null,
+        last_score: null,
+        last_feedback: null,
+        history: []
+      }
+    });
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(mockKill).not.toHaveBeenCalled();
   });
 
   it("falls through to the existing kill policy when lifecycle status is unavailable", async () => {

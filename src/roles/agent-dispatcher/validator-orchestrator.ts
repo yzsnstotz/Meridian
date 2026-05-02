@@ -1,5 +1,5 @@
 import type { Logger } from "../base-role";
-import type { ValidatorConfig } from "../../types";
+import type { KillPolicy, ValidatorConfig } from "../../types";
 import type { LifecycleStore } from "./lifecycle-store";
 import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client";
 import type { DispatchContinuationPlanRow } from "./service-continuation";
@@ -21,6 +21,7 @@ export interface ValidatorOrchestratorDeps {
   lifecycleStore: LifecycleStore;
   validatorConfig: ValidatorConfig;
   meridianApi: MeridianApiClient;
+  killPolicy?: KillPolicy;
   spawnDir: string;
   dispatchPlanPath: string;
   taskspecPath: string | null;
@@ -195,6 +196,7 @@ export async function executeValidationCycle(
       feedback: parsed.feedback,
       validatorThreadId
     });
+    await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "passed");
     return { status: "passed", score: parsed.score };
   }
 
@@ -204,6 +206,7 @@ export async function executeValidationCycle(
       feedback: parsed.feedback,
       validatorThreadId
     });
+    await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "failed");
     return {
       status: "failed",
       score: parsed.score,
@@ -394,6 +397,31 @@ async function safeKill(
       error: asErrorMessage(error)
     });
   }
+}
+
+async function safeKillRetainedWorkerAfterValidation(
+  deps: ValidatorOrchestratorDeps,
+  workerThreadId: string,
+  outcome: "passed" | "failed"
+): Promise<void> {
+  const killPolicy = deps.killPolicy ?? "never";
+  if (!shouldKillRetainedWorkerAfterValidation(killPolicy, outcome)) {
+    return;
+  }
+
+  await safeKill(deps.meridianApi, workerThreadId, deps.log);
+}
+
+function shouldKillRetainedWorkerAfterValidation(killPolicy: KillPolicy, outcome: "passed" | "failed"): boolean {
+  if (killPolicy === "never") {
+    return false;
+  }
+
+  if (outcome === "failed") {
+    return killPolicy === "always";
+  }
+
+  return killPolicy === "always" || killPolicy === "on_success";
 }
 
 function asErrorMessage(error: unknown): string {

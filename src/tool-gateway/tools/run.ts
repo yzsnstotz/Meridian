@@ -60,6 +60,11 @@ const runTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Optional cleanup policy for terminal worker threads: always, on_success, or never"
+    },
+    validator_max_fix_cycles: {
+      type: "string",
+      required: false,
+      description: "When set, retain successful worker threads for validation until approval or max cycles"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -83,6 +88,13 @@ const runTool: ToolDefinition = {
       return {
         ok: false,
         error: `Unsupported kill_policy: ${params.kill_policy}`
+      };
+    }
+    const validationMaxFixCycles = parseValidationMaxFixCycles(params.validator_max_fix_cycles);
+    if (validationMaxFixCycles === null) {
+      return {
+        ok: false,
+        error: `Unsupported validator_max_fix_cycles: ${params.validator_max_fix_cycles}`
       };
     }
 
@@ -127,7 +139,18 @@ const runTool: ToolDefinition = {
         previousWorkerState ?? null,
         expectedOutputs
       );
-      lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
+      if (validationMaxFixCycles !== undefined) {
+        lifecycleStore.recordWorkerStart(
+          worker,
+          threadId,
+          traceId,
+          expectedOutputs,
+          preamble,
+          { validationMaxFixCycles }
+        );
+      } else {
+        lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
+      }
 
       // Enforce max retry cap to prevent infinite retry loops. The AI dispatcher
       // can re-dispatch failed workers without going through the service-continuation
@@ -1201,6 +1224,20 @@ function parseKillPolicy(value: string | undefined): KillPolicy | null {
 
   const parsed = KillPolicySchema.safeParse(normalized);
   return parsed.success ? parsed.data : null;
+}
+
+function parseValidationMaxFixCycles(value: string | undefined): number | undefined | null {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (!/^\d+$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 10 ? parsed : null;
 }
 
 function shouldKillAfterResult(result: HubResult, killPolicy: KillPolicy): boolean {

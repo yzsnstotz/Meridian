@@ -2,9 +2,13 @@ import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { extractRepoFieldFromWorkerFile, resolveWorkerSpawnDir } from "../continue-worker";
+import {
+  continueDispatchWorker,
+  extractRepoFieldFromWorkerFile,
+  resolveWorkerSpawnDir
+} from "../continue-worker";
 
 const tempDirectories = new Set<string>();
 
@@ -138,5 +142,102 @@ describe("resolveWorkerSpawnDir", () => {
     });
 
     expect(resolveWorkerSpawnDir(planPath, "PRE-FLIGHT")).toBeNull();
+  });
+});
+
+describe("continueDispatchWorker", () => {
+  async function createTempDispatchPlan(): Promise<{ dir: string; planPath: string; commandPath: string }> {
+    const dir = await fsPromises.mkdtemp(path.join(tmpdir(), "continue-worker-test-"));
+    tempDirectories.add(dir);
+    const planPath = path.join(dir, "dispatch_plan.md");
+    const commandPath = path.join(dir, "agent_dispatch_command.md");
+    await fsPromises.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| ⬜ | 1 | N-04 | Findings C | CODEX-HIGH | N-01 | Single module |"
+    ].join("\n"), "utf8");
+    await fsPromises.writeFile(commandPath, "# command\n", "utf8");
+    return { dir, planPath, commandPath };
+  }
+
+  it("passes validator max cycles to launchable workers when role validation is enabled", async () => {
+    const { dir, planPath, commandPath } = await createTempDispatchPlan();
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "worker-thread-n04"
+    });
+
+    const result = await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: dir,
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          pass_threshold: 0.8,
+          max_fix_cycles: 4,
+          base_branch: "main"
+        }
+      },
+      [{ status: "⬜", worker: "N-04", model: "CODEX-HIGH", notes: "Single module" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      workerId: "N-04",
+      threadId: "worker-thread-n04"
+    });
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: "N-04",
+      validationMaxFixCycles: 4
+    }));
+  });
+
+  it("does not pass validator max cycles when a worker opts out of validation", async () => {
+    const { dir, planPath, commandPath } = await createTempDispatchPlan();
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "worker-thread-n04"
+    });
+
+    await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: dir,
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          pass_threshold: 0.8,
+          max_fix_cycles: 4,
+          base_branch: "main"
+        }
+      },
+      [{ status: "⬜", worker: "N-04", model: "CODEX-HIGH", notes: "validate: off" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: "N-04",
+      validationMaxFixCycles: undefined
+    }));
   });
 });
