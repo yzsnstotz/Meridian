@@ -365,7 +365,7 @@ describe("scheduler config updates", () => {
     expect(detail.current_worker).toBeNull();
   });
 
-  it("promotes abandoned plan rows when tool progress is still running", async () => {
+  it("promotes abandoned plan rows when pidless tool progress is still running", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-progress-"));
     tempDirectories.add(directory);
 
@@ -400,7 +400,6 @@ describe("scheduler config updates", () => {
       remaining: 11723,
       started_at: "2026-04-28T14:04:45.900Z",
       updated_at: "2026-04-28T14:41:38.000Z",
-      pid: process.pid,
       last_skill: {
         owner: "nengnengz",
         slug: "baoyu-slide-deck-2"

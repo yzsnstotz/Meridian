@@ -337,6 +337,7 @@ function getProgressStatusOverride(progress: DispatchWorkerProgress | null): {
 
 function formatProgressFailureReason(progress: DispatchWorkerProgress): string {
   const details = [
+    isInactiveProgressProcess(progress) ? "process not running" : null,
     progress.remaining && progress.remaining > 0 ? `${progress.remaining} remaining` : null,
     progress.failed && progress.failed > 0 ? `${progress.failed} failed` : null
   ].filter((value): value is string => value !== null);
@@ -536,10 +537,14 @@ function normalizeProgressStatus(
     return null;
   }
 
-  if (progress.source === "fallback" && progress.status === "running" && !activeProcessRunning) {
+  if (progress.status === "running" && !activeProcessRunning && (progress.source === "fallback" || progress.pid !== null)) {
     return {
       ...progress,
-      status: "failed"
+      status: "failed",
+      extra: {
+        ...(isRecord(progress.extra) ? progress.extra : {}),
+        inactive_process: true
+      }
     };
   }
 
@@ -548,7 +553,7 @@ function normalizeProgressStatus(
 
 function listActiveProcessCommands(): string[] {
   try {
-    const output = execFileSync("ps", ["-axo", "command="], {
+    const output = execFileSync("ps", ["-axo", "pid=,command="], {
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024
     });
@@ -580,6 +585,10 @@ function isWorkerToolProgressActive(
   const executable = extractTaskExecutable(expandedTask);
 
   return activeProcessCommands.some((commandLine) => {
+    if (progress.pid !== null && !commandLine.trimStart().startsWith(`${progress.pid} `)) {
+      return false;
+    }
+
     if (!commandLine.includes(effectiveScanRunId) || !commandLine.includes(progress.command)) {
       return false;
     }
@@ -590,6 +599,10 @@ function isWorkerToolProgressActive(
 
     return commandLine.includes(executable) || commandLine.includes(path.basename(executable));
   });
+}
+
+function isInactiveProgressProcess(progress: DispatchWorkerProgress): boolean {
+  return isRecord(progress.extra) && progress.extra.inactive_process === true;
 }
 
 function extractTaskExecutable(task: string): string | null {

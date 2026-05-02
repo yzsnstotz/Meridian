@@ -312,17 +312,18 @@ describe("dispatch-status tool", () => {
         schema_version: 1,
         command: "detail-fetch",
         scan_run_id: "daily-2026-04-27",
-        status: "running",
+        status: "completed",
         manifest_path: manifestPath,
         total: 35324,
-        processed: 7326,
-        success: 7326,
+        processed: 35324,
+        success: 35324,
         failed: 0,
         skipped: 0,
         skipped_existing: 0,
-        remaining: 27998,
+        remaining: 0,
         started_at: "2026-04-27T00:00:00.000Z",
         updated_at: "2026-04-27T06:00:00.000Z",
+        completed_at: "2026-04-27T06:00:00.000Z",
         pid: 71436
       }, null, 2),
       "utf8"
@@ -334,10 +335,10 @@ describe("dispatch-status tool", () => {
       worker_id: "W-DETAIL",
       progress: expect.objectContaining({
         command: "detail-fetch",
-        status: "running",
+        status: "completed",
         total: 35324,
-        processed: 7326,
-        remaining: 27998,
+        processed: 35324,
+        remaining: 0,
         progress_path: progressPath
       })
     }));
@@ -417,6 +418,93 @@ describe("dispatch-status tool", () => {
       ],
       summary: expect.objectContaining({
         completed: 0,
+        failed: 1
+      })
+    }));
+  });
+
+  it("marks running progress files failed when no matching tool process exists", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+    const manifestPath = `${directory}/changed_skill_manifest.json`;
+    const progressPath = `${directory}/ssr-enrich.progress.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        `| 🔄 | 3 | W-SSR | clawhub-fetch ssr-enrich --scan-run-id daily-dead-progress-test --manifest ${manifestPath} --progress ${progressPath} | CODEX-HIGH | W-DETAIL | — | managed ssr enrich |`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-05-02T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "W-SSR": {
+            thread_id: "worker-thread-dead-progress",
+            trace_id: null,
+            started_at: "2026-05-02T00:00:00.000Z",
+            last_seen_at: "2026-05-02T00:10:00.000Z",
+            status: "abandoned",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 2
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await fs.writeFile(
+      progressPath,
+      JSON.stringify({
+        command: "ssr-enrich",
+        scan_run_id: "daily-dead-progress-test",
+        status: "running",
+        manifest_path: manifestPath,
+        total: 13075,
+        processed: 4699,
+        success: 0,
+        failed: 15,
+        skipped: 4684,
+        remaining: 8376,
+        updated_at: "2026-05-02T07:18:16.453Z",
+        pid: 999999
+      }, null, 2),
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      workers: [
+        expect.objectContaining({
+          worker_id: "W-SSR",
+          status: "❌",
+          lifecycle_status: "failed",
+          failure_reason: "tool progress failed: process not running, 8376 remaining, 15 failed",
+          progress: expect.objectContaining({
+            status: "failed",
+            extra: expect.objectContaining({
+              inactive_process: true
+            })
+          })
+        })
+      ],
+      summary: expect.objectContaining({
+        running: 0,
         failed: 1
       })
     }));
