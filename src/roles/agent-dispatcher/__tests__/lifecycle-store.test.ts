@@ -272,6 +272,50 @@ describe("LifecycleStore", () => {
     });
   });
 
+  it("trusts a fresh clean output report over narrative block phrases (e.g. 'smoke is blocked by … switching to …')", async () => {
+    const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "reports", "N-12.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+    harness.store.recordWorkerStart(
+      "N-12",
+      "worker-thread-n12",
+      "11111111-1111-4111-8111-111111111111",
+      [reportPath]
+    );
+
+    await fsp.writeFile(reportPath, [
+      "# N-12 Completion Report",
+      "",
+      "## Summary",
+      "",
+      "- Worker: N-12",
+      "- Result: passed",
+      "",
+      "## Validation",
+      "",
+      "All seven tables created with RLS enabled."
+    ].join("\n"), "utf8");
+
+    harness.store.recordWorkerResult("N-12", buildHubResult({
+      thread_id: "worker-thread-n12",
+      status: "success",
+      run_state: "completed",
+      content: [
+        "The worker's literal `SELECT 0 FROM table LIMIT 0` smoke is blocked by the repo's query wrapper allowlist, not by the migration.",
+        "I'm switching to the wrapper-supported `SELECT count(*) FROM <table>` smoke form so validation stays inside the approved remote contract.",
+        "",
+        "N-12 is complete and merged."
+      ].join("\n"),
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    expect(harness.store.load().workers["N-12"]).toMatchObject({
+      status: "completed",
+      last_seen_at: "2026-04-03T12:00:00.000Z"
+    });
+  });
+
   it("marks a success HubResult as failed when the worker reply hit a terminal limit", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("PRE-FLIGHT", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

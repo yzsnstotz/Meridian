@@ -813,6 +813,24 @@ function mapHubResultToLifecycleStatus(
     return "failed";
   }
 
+  // Authoritative completion gate: when the hub envelope reports
+  // success/completed AND the worker's expected output artifacts exist
+  // freshly AND those artifacts themselves do not contain block/fail
+  // signals, trust the structured evidence over narrative heuristics.
+  // Without this gate, false-positive matches in the worker's progress
+  // narrative (e.g. "smoke is blocked by the query wrapper, switching to …")
+  // override real completion and trigger PM resolution for a successful run.
+  if (
+    hubResult.status === "success"
+    && (!hubResult.run_state || hubResult.run_state === "completed")
+    && deferSuccessUntilReconciled
+    && expectedOutputsExist(expectedOutputs, startedAt)
+    && !outputArtifactsContainBlockSignal(expectedOutputs, startedAt)
+    && !outputArtifactsContainFailureSignal(expectedOutputs, startedAt)
+  ) {
+    return "completed";
+  }
+
   if (hubResultContainsBlockSignal(hubResult)) {
     return "blocked";
   }
