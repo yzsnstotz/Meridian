@@ -20,6 +20,7 @@ import {
   outputArtifactsContain,
   outputsExist as outputArtifactsExist
 } from "./output-artifacts";
+import { parseMeridianStatusMarker } from "./meridian-status-marker";
 
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
@@ -192,7 +193,8 @@ export class LifecycleStore {
       workerId,
       hubResult,
       worker.expected_outputs,
-      worker.started_at
+      worker.started_at,
+      this.log
     );
     const nextStatus = mappedStatus === "completed"
       && worker.validation
@@ -793,7 +795,8 @@ function mapHubResultToLifecycleStatus(
   workerId: string,
   hubResult: HubResult,
   expectedOutputs: string[],
-  startedAt: string
+  startedAt: string,
+  log?: Pick<Logger, "info">
 ): LifecycleStatus {
   const deferSuccessUntilReconciled = requiresOutputVerification(expectedOutputs);
 
@@ -811,6 +814,47 @@ function mapHubResultToLifecycleStatus(
 
   if (hubResultContainsHitLimit(hubResult)) {
     return "failed";
+  }
+
+  // Phase A primary signal: trust the structured MeridianStatusMarker
+  // emitted by worker agents over narrative heuristics. The marker is only
+  // honoured when role === "worker" AND its worker_id matches the launched
+  // worker; mismatches log and fall through to the heuristic chain so
+  // accidental cross-talk cannot terminate the wrong worker.
+  const marker = parseMeridianStatusMarker(combineHubResultText(hubResult));
+  if (marker) {
+    if (marker.role !== "worker") {
+      // Wrong-role marker (e.g. validator output landing in worker channel).
+      // Ignore and fall through.
+    } else if (marker.worker_id !== workerId) {
+      log?.info("Lifecycle marker mismatch", {
+        event: "marker_mismatch",
+        worker_id: workerId,
+        marker_worker_id: marker.worker_id,
+        marker_role: marker.role
+      });
+    } else {
+      switch (marker.outcome) {
+        case "complete":
+          if (
+            !deferSuccessUntilReconciled
+            || expectedOutputsExist(expectedOutputs, startedAt)
+          ) {
+            return "completed";
+          }
+          // Marker is a claim; without artifact verification we keep
+          // "running" so the reconciler retries.
+          return "running";
+        case "failed":
+          return "failed";
+        case "blocked":
+          return "blocked";
+        case "hit_limit":
+          return "failed";
+        case "needs_pm":
+          return "blocked";
+      }
+    }
   }
 
   // Authoritative completion gate: when the hub envelope reports
