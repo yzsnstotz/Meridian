@@ -62,6 +62,10 @@ const DEFAULT_SSE_RECONNECT_ATTEMPTS = 3;
 const UUID_V4_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const GRACEFUL_TERMINAL_STATUSES = new Set(["stable", "done", "completed", "waiting"]);
+
+type TerminalDisposition = "completed" | "running" | "error" | "unknown";
+
 export class MonitorManager {
   private readonly log = getMonitorLogger();
   private readonly tasks = new Map<string, MonitorTask>();
@@ -199,7 +203,7 @@ export class MonitorManager {
         },
         "Failed to start monitor task"
       );
-      await this.emitEvent(task, "agent_error", {
+      await this.emitFailureUnlessCompleted(task, "agent_error", {
         error: errorMessage,
         details: {
           reason
@@ -273,14 +277,14 @@ export class MonitorManager {
     );
 
     if (errorMessage && emitReconnectFailedEvent) {
-      await this.emitEvent(task, "sse_reconnect_failed", {
+      await this.emitFailureUnlessCompleted(task, "sse_reconnect_failed", {
         error: errorMessage,
         details: {
           reason: "sse_reconnect_exhausted"
         }
       });
     } else if (errorMessage) {
-      await this.emitEvent(task, "agent_error", {
+      await this.emitFailureUnlessCompleted(task, "agent_error", {
         error: errorMessage,
         details: {
           reason: "sse_exhausted"
@@ -383,7 +387,7 @@ export class MonitorManager {
 
       if (task.missedHeartbeats >= this.heartbeatMissedThreshold && !task.thresholdAlerted) {
         task.thresholdAlerted = true;
-        await this.emitEvent(task, "agent_error", {
+        await this.emitFailureUnlessCompleted(task, "agent_error", {
           error: `Heartbeat missed ${task.missedHeartbeats} consecutive checks`,
           missed_heartbeats: task.missedHeartbeats,
           details: {
@@ -548,6 +552,53 @@ export class MonitorManager {
     }
 
     return data?.completed === true;
+  }
+
+  private async resolveTerminalDisposition(task: MonitorTask): Promise<TerminalDisposition> {
+    try {
+      const statusResponse = await task.client.getStatus();
+      const raw = typeof statusResponse.status === "string" ? statusResponse.status.trim().toLowerCase() : "";
+      if (!raw) {
+        return "unknown";
+      }
+      if (GRACEFUL_TERMINAL_STATUSES.has(raw)) {
+        return "completed";
+      }
+      if (raw === "error") {
+        return "error";
+      }
+      return "running";
+    } catch {
+      return "unknown";
+    }
+  }
+
+  private async emitFailureUnlessCompleted(
+    task: MonitorTask,
+    failureEventType: "agent_error" | "sse_reconnect_failed",
+    failureFields: Partial<MonitorEvent>
+  ): Promise<void> {
+    const disposition = await this.resolveTerminalDisposition(task);
+    if (disposition === "completed") {
+      this.log.warn(
+        {
+          trace_id: null,
+          thread_id: task.instance.thread_id,
+          monitor_mode: task.mode,
+          intended_event: failureEventType,
+          probed_status: task.lastStatus
+        },
+        "Suppressing failure event because worker reports graceful terminal state"
+      );
+      await this.emitEvent(task, "task_completed", {
+        agent_status: task.lastStatus ?? undefined,
+        details: {
+          reason: `suppressed_${failureEventType}_after_terminal_probe`
+        }
+      });
+      return;
+    }
+    await this.emitEvent(task, failureEventType, failureFields);
   }
 
   private isPidAlive(pid: number): boolean {
