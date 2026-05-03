@@ -437,6 +437,7 @@ describe("dispatch-status tool", () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
     tempDirectories.add(directory);
     const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
     const manifestPath = `${directory}/W-DETAIL.remaining-managed.json`;
     const progressPath = `${directory}/detail-fetch.progress.json`;
 
@@ -448,6 +449,33 @@ describe("dispatch-status tool", () => {
         `| 🔄 | 2 | W-DETAIL | clawhub-fetch detail-fetch --manifest ${manifestPath} --progress ${progressPath} | CODEX-HIGH | W-CATALOG | — | managed detail fetch |`,
         ""
       ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-27T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "W-DETAIL": {
+            thread_id: "worker-thread-456",
+            trace_id: null,
+            started_at: "2026-04-27T00:00:00.000Z",
+            last_seen_at: "2026-04-27T05:00:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
       "utf8"
     );
 
@@ -675,6 +703,33 @@ describe("dispatch-status tool", () => {
       "utf8"
     );
 
+    await fs.writeFile(
+      path.join(planDir, "dispatch_threads.json"),
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-04-28T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "T-REPO-FETCH": {
+            thread_id: "worker-thread-789",
+            trace_id: null,
+            started_at: "2026-04-28T00:00:00.000Z",
+            last_seen_at: "2026-04-28T00:01:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
     const progressPath = path.join(planDir, "T-REPO-FETCH.progress.json");
     await fs.writeFile(progressPath, JSON.stringify({
       command: "repo-fetch",
@@ -722,5 +777,89 @@ describe("dispatch-status tool", () => {
         extra: { current_repo: "octocat/Hello-World" }
       }
     });
+  });
+
+  it("does not synthesize fallback progress for an undispatched ClawHub worker", async () => {
+    // Regression: scheduler-bf02b39c showed W-DETAIL as ❌ failed while it had never
+    // been dispatched. computeClawHubProgressFallback was reading the manifest written
+    // by W-CATALOG plus cumulative DB rows from prior daily runs, then
+    // normalizeProgressStatus flipped that to "failed" because no live detail-fetch
+    // process existed. That synthetic failure both poisoned the UI and tripped
+    // isManualInterventionBlocker via worker.progress.status === "failed".
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-undispatched-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+    const manifestPath = `${directory}/changed_skill_manifest.json`;
+    const dbPath = `${directory}/clawhub.db`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        `| 🔄 | 1 | W-CATALOG | clawhub-fetch catalog-sweep --manifest ${manifestPath} | CODEX-HIGH | — | — | catalog sweep |`,
+        `| ⬜ | 2 | W-DETAIL | clawhub-fetch detail-fetch --db ${dbPath} --manifest ${manifestPath} | CODEX-HIGH | W-CATALOG | — | managed detail fetch |`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    // W-CATALOG has been dispatched (running). W-DETAIL has NOT — no entry in workers.
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-abc",
+          started_at: "2026-05-02T21:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "W-CATALOG": {
+            thread_id: "codex_08",
+            trace_id: null,
+            started_at: "2026-05-03T01:03:13.149Z",
+            last_seen_at: "2026-05-03T01:03:13.149Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 1
+          }
+        },
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    // Manifest exists (written by W-CATALOG of an earlier attempt) and DB carries
+    // cumulative versions from prior cycles — the exact recipe that previously
+    // produced phantom processed > 0 + status=failed for W-DETAIL.
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({
+        scan_run_id: "daily-2026-05-03",
+        skills: [
+          { owner: "octocat", slug: "alpha", latest_version: "1.0.0" },
+          { owner: "octocat", slug: "beta", latest_version: "2.0.0" }
+        ]
+      }),
+      "utf8"
+    );
+
+    const report = await buildDispatchStatusReport(planPath);
+
+    const wDetail = report.workers.find((worker) => worker.worker_id === "W-DETAIL");
+    expect(wDetail).toBeDefined();
+    expect(wDetail).toEqual(expect.objectContaining({
+      worker_id: "W-DETAIL",
+      status: "⬜",
+      lifecycle_status: null,
+      progress: null,
+      failure_reason: null
+    }));
+    expect(report.summary.failed).toBe(0);
+    expect(report.summary.pending).toBeGreaterThanOrEqual(1);
   });
 });

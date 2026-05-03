@@ -164,7 +164,10 @@ export async function buildDispatchStatusReport(
   const scanRunId = await loadCurrentScanRunId(planPath);
   const activeProcessCommands = listActiveProcessCommands();
   const registry = await loadProgressRegistryForPlan(planPath);
-  const progress = await Promise.all(rows.map((row) => loadWorkerProgress(row, scanRunId, registry, planPath)));
+  const lifecycleStatuses = rows.map((row) => getEffectiveLifecycleStatus(lifecycleState.workers[row.worker_id]));
+  const progress = await Promise.all(rows.map((row, index) =>
+    loadWorkerProgress(row, scanRunId, registry, planPath, lifecycleStatuses[index])
+  ));
   const workers = rows.map((row, index) => buildWorkerStatus(
     row,
     lifecycleState,
@@ -565,8 +568,20 @@ async function loadWorkerProgress(
   row: DispatchPlanWorkerRow,
   scanRunId: string | null,
   registry: ProgressRegistry | null,
-  planPath: string
+  planPath: string,
+  lifecycleStatus: string | null
 ): Promise<DispatchWorkerProgress | null> {
+  // Progress signals (real progress files and the cumulative-DB fallback) are only meaningful
+  // for workers the dispatcher has actually dispatched. For undispatched workers (lifecycle
+  // null/pending) the data we'd surface is from previous runs — a stale progress file, or
+  // cumulative DB rows persisted by earlier cycles — and `normalizeProgressStatus` would then
+  // flip those to "failed" because no live process exists. That synthetic failure poisons
+  // both the UI and `isManualInterventionBlocker`, pausing the scheduler on a worker it has
+  // not yet attempted.
+  if (lifecycleStatus === null || lifecycleStatus === "pending") {
+    return null;
+  }
+
   const fromRegistry = await loadWorkerProgressFromRegistry(row, scanRunId, registry, planPath);
   if (fromRegistry) {
     return fromRegistry;
