@@ -247,6 +247,11 @@ export interface DispatchPlanRow {
   stale_duration_minutes?: number | null;
   stale_duration_human?: string | null;
   progress?: DispatchWorkerProgress | null;
+  // The currently active owner of this row — surfaced on the main task
+  // bar so operators can see whether the worker, validator, or PM
+  // resolver is actually running, plus its thread id.
+  active_owner_kind?: "worker" | "validator" | "pm_resolver" | null;
+  active_owner_thread_id?: string | null;
 }
 
 export interface DispatchMessageDetail {
@@ -2502,7 +2507,9 @@ export async function enrichDispatchPlanRows(
         stale_label: workerStatus.stale_label,
         stale_duration_minutes: workerStatus.stale_duration_minutes,
         stale_duration_human: workerStatus.stale_duration_human,
-        progress: workerStatus.progress
+        progress: workerStatus.progress,
+        active_owner_kind: workerStatus.active_owner_kind,
+        active_owner_thread_id: workerStatus.active_owner_thread_id
       };
     });
   } catch (error) {

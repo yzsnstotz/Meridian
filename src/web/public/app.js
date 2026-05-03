@@ -723,7 +723,7 @@ function renderSchedulerDispatchProgressRow(row, details = [], orphan = false) {
       <td>${formatToolProgress(row.progress)}</td>
       <td>${escapeHtml(row.model || "---")}</td>
       <td>${escapeHtml(formatDepends(row.depends_on))}</td>
-      <td>${row.thread_id ? `<code>${escapeHtml(row.thread_id)}</code>` : "---"}</td>
+      <td>${renderActiveOwner(row)}</td>
       <td>${escapeHtml(issueLabel)}</td>
       <td>${renderDispatchPlanActions(row)}</td>
     </tr>
@@ -757,6 +757,8 @@ function normalizeSchedulerDispatchRow(row, workerStatusByWorker) {
     model: row?.model || workerStatus.model || "---",
     depends_on: row?.depends_on ?? workerStatus.depends_on,
     thread_id: row?.thread_id || row?.worker_thread_id || workerStatus.thread_id || workerStatus.worker_thread_id || "",
+    active_owner_kind: row?.active_owner_kind ?? workerStatus.active_owner_kind ?? null,
+    active_owner_thread_id: row?.active_owner_thread_id ?? workerStatus.active_owner_thread_id ?? "",
     failure_reason: row?.failure_reason || workerStatus.failure_reason || "",
     stale: Boolean(row?.stale || workerStatus.stale),
     stale_duration_human: row?.stale_duration_human || workerStatus.stale_duration_human || "",
@@ -775,6 +777,8 @@ function schedulerWorkerStatusToDispatchRow(worker) {
     model: worker?.model || "---",
     depends_on: worker?.depends_on,
     thread_id: worker?.thread_id || worker?.worker_thread_id || "",
+    active_owner_kind: worker?.active_owner_kind ?? null,
+    active_owner_thread_id: worker?.active_owner_thread_id ?? "",
     failure_reason: worker?.failure_reason || "",
     stale: Boolean(worker?.stale),
     stale_duration_human: worker?.stale_duration_human || "",
@@ -2398,6 +2402,7 @@ function renderDispatchPlanRow(row, details = []) {
       <td>${formatToolProgress(row.progress)}</td>
       <td>${escapeHtml(row.model)}</td>
       <td>${escapeHtml(row.depends_on || "---")}</td>
+      <td>${renderActiveOwner(row)}</td>
       <td>${renderDispatchPlanActions(row)}</td>
     </tr>
     ${inlineDetails.length > 0 ? renderDispatchPlanDetailRow(inlineDetails) : ""}
@@ -2417,13 +2422,14 @@ function renderDispatchPlanOrphanDetailRow(details) {
       <td>${formatToolProgress(syntheticRow.progress)}</td>
       <td>${escapeHtml(syntheticRow.model || "---")}</td>
       <td>---</td>
+      <td>${renderActiveOwner(syntheticRow)}</td>
       <td>${renderDispatchPlanActions(syntheticRow)}</td>
     </tr>
-    ${renderDispatchPlanDetailRow(inlineDetails)}
+    ${renderDispatchPlanDetailRow(inlineDetails, 9)}
   `;
 }
 
-function renderDispatchPlanDetailRow(details, colspan = 8) {
+function renderDispatchPlanDetailRow(details, colspan = 9) {
   const inlineDetails = sortDispatchDetailsForDisplay(normalizeDispatchDetailList(details));
   const hasSiblingValidatorBars = inlineDetails.some((detail) => detail?.detail_kind === "validator");
   return `
@@ -2534,6 +2540,10 @@ function normalizeDispatchWorkerKey(workerId) {
 }
 
 function buildDispatchPlanSyntheticRow(detail) {
+  const detailKind = detail?.detail_kind || "";
+  const ownerKind = detailKind === "validator" || detailKind === "pm_resolver" || detailKind === "worker"
+    ? detailKind
+    : null;
   return {
     status: toDispatchPlanStatus(detail?.status),
     worker: detail?.worker_id || "",
@@ -2541,9 +2551,54 @@ function buildDispatchPlanSyntheticRow(detail) {
     model: detail?.model || detail?.applied_model || "",
     depends_on: "---",
     thread_id: detail?.worker_thread_id || "",
-    detail_kind: detail?.detail_kind || "",
-    read_only: detail?.detail_kind === "pm_resolver"
+    detail_kind: detailKind,
+    active_owner_kind: ownerKind,
+    active_owner_thread_id: detail?.worker_thread_id || "",
+    read_only: detailKind === "pm_resolver"
   };
+}
+
+function renderActiveOwner(row) {
+  const kind = row?.active_owner_kind || null;
+  const threadId = row?.active_owner_thread_id || "";
+  const fallbackThreadId = row?.thread_id || "";
+
+  if (!kind && !fallbackThreadId) {
+    return `<span class="muted">idle</span>`;
+  }
+
+  const effectiveKind = kind || (fallbackThreadId ? "worker" : null);
+  const effectiveThreadId = threadId || fallbackThreadId;
+  const label = effectiveKind ? formatOwnerKindLabel(effectiveKind) : "—";
+  const icon = effectiveKind ? formatOwnerKindIcon(effectiveKind) : "";
+  const threadDisplay = effectiveThreadId
+    ? `<code title="${escapeHtml(effectiveThreadId)}">${escapeHtml(effectiveThreadId)}</code>`
+    : `<span class="muted">pending</span>`;
+
+  return `
+    <div class="dispatch-plan-owner">
+      <span class="owner-kind">${icon ? `${icon} ` : ""}${escapeHtml(label)}</span>
+      ${threadDisplay}
+    </div>
+  `;
+}
+
+function formatOwnerKindLabel(kind) {
+  switch (kind) {
+    case "worker": return "worker";
+    case "validator": return "validator";
+    case "pm_resolver": return "pm_resolver";
+    default: return String(kind || "—");
+  }
+}
+
+function formatOwnerKindIcon(kind) {
+  switch (kind) {
+    case "worker": return "🛠";
+    case "validator": return "🔍";
+    case "pm_resolver": return "🤝";
+    default: return "";
+  }
 }
 
 function renderDispatchPlanStatus(row) {
