@@ -338,6 +338,9 @@ describe("launchDispatchWorker", () => {
       threadId: "worker-thread-fresh"
     });
     expect(harness.spawn).toHaveBeenCalledTimes(3);
+    expect(harness.kill).toHaveBeenCalledTimes(2);
+    expect(harness.kill).toHaveBeenNthCalledWith(1, "validator-thread-existing");
+    expect(harness.kill).toHaveBeenNthCalledWith(2, "worker-thread-existing");
     expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
     expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
       threadId: "worker-thread-fresh",
@@ -345,6 +348,36 @@ describe("launchDispatchWorker", () => {
       workerId: "BATCH-2-GATE",
       killPolicy: "always"
     });
+  });
+
+  it("does not kill the colliding thread when the collision is with an in-process active handoff", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true,
+      runHandoffMode: "pending"
+    });
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "worker-thread-collision" })
+      .mockResolvedValueOnce({ threadId: "worker-thread-collision" })
+      .mockResolvedValueOnce({ threadId: "worker-thread-fresh" });
+
+    const first = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+    const second = await launchDispatchWorker(
+      {
+        ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+        workerId: "N-02"
+      },
+      harness.deps
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    // Killing the colliding thread would also kill the live in-flight handoff that's still
+    // holding it, so the active-handoff retry branch must NOT kill.
+    expect(harness.kill).not.toHaveBeenCalled();
   });
 });
 
@@ -359,6 +392,7 @@ async function createHarness(overrides: {
 } = {}): Promise<{
   deps: LaunchDispatchWorkerDeps;
   spawn: ReturnType<typeof vi.fn>;
+  kill: ReturnType<typeof vi.fn>;
   dispatchRunHandoff: ReturnType<typeof vi.fn>;
   dispatchPlanPath: string;
   commandFilePath: string;
@@ -400,10 +434,11 @@ async function createHarness(overrides: {
   const spawn = overrides.spawnError
     ? vi.fn().mockRejectedValue(overrides.spawnError)
     : vi.fn().mockResolvedValue({ threadId: "worker-thread-123" });
+  const kill = vi.fn().mockResolvedValue({ threadId: "", status: "killed", raw: {} });
   const meridianApi: MeridianApiClient = {
     spawn,
     run: vi.fn(),
-    kill: vi.fn()
+    kill
   };
 
   const dispatchRunHandoff = vi.fn().mockImplementation(async () => {
@@ -422,6 +457,7 @@ async function createHarness(overrides: {
       ...(overrides.onBackgroundRunError ? { onBackgroundRunError: overrides.onBackgroundRunError } : {})
     },
     spawn,
+    kill,
     dispatchRunHandoff,
     dispatchPlanPath,
     commandFilePath,

@@ -11,7 +11,8 @@ import {
 import {
   ThreadIdCollisionError,
   createLifecycleThreadIdCollisionError,
-  isLifecycleThreadIdReserved
+  isLifecycleThreadIdReserved,
+  killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
 
@@ -200,6 +201,7 @@ async function spawnWithRetry(
     try {
       const result = await meridianApi.spawn(request);
       if (isPersistedThreadIdReserved(result.threadId)) {
+        await killCollidedSpawnedThread(meridianApi, result.threadId, "dispatcher spawn");
         lastError = createLifecycleThreadIdCollisionError(result.threadId);
         if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
           console.warn("dispatcher spawn returned reserved lifecycle thread id, retrying", {

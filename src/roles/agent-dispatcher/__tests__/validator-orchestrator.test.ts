@@ -104,6 +104,7 @@ describe("executeValidationCycle", () => {
     expect(harness.run).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "validator-thread-fresh"
     }));
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
     const worker = harness.lifecycleStore.load().workers["N-02"];
     expect(worker?.status).toBe("completed");
     expect(worker?.validation?.history[0]?.validator_thread_id).toBe("validator-thread-fresh");
