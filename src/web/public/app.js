@@ -2259,35 +2259,72 @@ function renderRoleDetailError(elements, message) {
   }
 }
 
-function renderDispatchDetailCard(detail) {
-  const taskLabel = detail.task ? `${detail.worker_id}: ${detail.task}` : detail.worker_id;
-  const subtitleParts = [detail.model, detail.applied_model, detail.worker_thread_id].filter(Boolean);
+function renderDispatchDetailCard(detail, options = {}) {
   const isPmResolver = detail.detail_kind === "pm_resolver";
-  const commandLabel = isPmResolver ? "PM Resolver Context" : "Dispatch Command";
-  const replyLabel = isPmResolver ? "PM Resolve Reply" : "Agent Reply";
-  const emptyReply = isPmResolver ? "No PM resolver reply captured yet." : "No agent reply captured yet.";
+  const isValidator = detail.detail_kind === "validator";
+
+  // Per-validation-cycle bars (one per Phase A marker cycle) live alongside
+  // the worker bar. When they're rendered as siblings the worker bar should
+  // not duplicate the per-cycle history inline.
+  const hasSiblingValidatorBars = options.hasSiblingValidatorBars === true;
+
+  let taskLabel = detail.task ? `${detail.worker_id}: ${detail.task}` : detail.worker_id;
+  let commandLabel = "Dispatch Command";
+  let replyLabel = "Agent Reply";
+  let emptyReply = "No agent reply captured yet.";
+
+  if (isPmResolver) {
+    commandLabel = "PM Resolver Context";
+    replyLabel = "PM Resolve Reply";
+    emptyReply = "No PM resolver reply captured yet.";
+  } else if (isValidator) {
+    commandLabel = "Validator Context";
+    replyLabel = "Validator Reply";
+    emptyReply = "No validator reply captured yet.";
+    if (typeof detail.validator_cycle === "number") {
+      taskLabel = `${detail.task ?? `Validate cycle ${detail.validator_cycle}`}`;
+    }
+  }
+
+  const subtitleParts = [detail.model, detail.applied_model, detail.worker_thread_id].filter(Boolean);
+  const retryBadge = !isPmResolver && !isValidator && Number(detail.retry_count) > 0
+    ? `<span class="dispatch-detail-pill dispatch-detail-retry-pill" title="Worker has been re-launched ${escapeHtml(String(detail.retry_count))} time(s); prior attempts' prompt+reply are not persisted yet.">retry ×${escapeHtml(String(detail.retry_count))}</span>`
+    : "";
+  const cycleBadge = isValidator && typeof detail.validator_cycle === "number"
+    ? `<span class="dispatch-detail-pill dispatch-detail-cycle-pill">cycle ${escapeHtml(String(detail.validator_cycle))}</span>`
+    : "";
+  const scoreBadge = isValidator && typeof detail.validator_score === "number"
+    ? `<span class="dispatch-detail-pill dispatch-detail-score-pill">score ${escapeHtml(formatValidatorScore(detail.validator_score))}</span>`
+    : "";
+
+  const showInlineValidation = !isPmResolver && !isValidator && !hasSiblingValidatorBars;
 
   return `
-    <details class="dispatch-detail-card">
+    <details class="dispatch-detail-card dispatch-detail-card-${escapeHtml(detail.detail_kind || "worker")}">
       <summary class="dispatch-detail-summary">
         <div class="dispatch-detail-header">
           <div class="dispatch-detail-title">
             <h3>${escapeHtml(taskLabel)}</h3>
             <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" / ") || "Worker detail")}</p>
           </div>
-          <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
+          <div class="dispatch-detail-pills">
+            ${cycleBadge}
+            ${scoreBadge}
+            ${retryBadge}
+            <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
+          </div>
         </div>
       </summary>
       <div class="dispatch-detail-body">
         <dl class="summary-grid">
-          <div><dt>worker</dt><dd><code>${escapeHtml(detail.worker_id || "---")}</code></dd></div>
-          <div><dt>worker_thread</dt><dd><code>${escapeHtml(detail.worker_thread_id || "---")}</code></dd></div>
+          <div><dt>${isValidator ? "validator" : "worker"}</dt><dd><code>${escapeHtml(detail.worker_id || "---")}</code></dd></div>
+          <div><dt>${isValidator ? "validator_thread" : "worker_thread"}</dt><dd><code>${escapeHtml(detail.worker_thread_id || "---")}</code></dd></div>
           <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "---")}</code></dd></div>
         </dl>
         <div class="dispatch-detail-messages">
           ${renderDispatchMessage(commandLabel, detail.command, "No dispatch command captured yet.")}
           ${renderDispatchMessage(replyLabel, detail.reply, emptyReply)}
-          ${isPmResolver ? "" : renderDispatchValidationMessage(detail.validation)}
+          ${showInlineValidation ? renderDispatchValidationMessage(detail.validation) : ""}
         </div>
       </div>
     </details>
@@ -2387,16 +2424,44 @@ function renderDispatchPlanOrphanDetailRow(details) {
 }
 
 function renderDispatchPlanDetailRow(details, colspan = 8) {
-  const inlineDetails = normalizeDispatchDetailList(details);
+  const inlineDetails = sortDispatchDetailsForDisplay(normalizeDispatchDetailList(details));
+  const hasSiblingValidatorBars = inlineDetails.some((detail) => detail?.detail_kind === "validator");
   return `
     <tr class="dispatch-plan-detail-row">
       <td colspan="${colspan}">
         <div class="dispatch-plan-inline-detail">
-          ${inlineDetails.map((detail) => renderDispatchDetailCard(detail)).join("")}
+          ${inlineDetails.map((detail) => renderDispatchDetailCard(detail, { hasSiblingValidatorBars })).join("")}
         </div>
       </td>
     </tr>
   `;
+}
+
+// Display order within a single task's bar stack: the worker (latest
+// attempt) first, then validator cycles in cycle order, then PM
+// resolvers in start order. This mirrors the on-disk lifecycle: the
+// worker emits its marker, then validators run cycles 1..N, then PM
+// resolvers (if any) handle escalations.
+function sortDispatchDetailsForDisplay(details) {
+  const kindOrder = { worker: 0, validator: 1, pm_resolver: 2 };
+
+  return [...details].sort((left, right) => {
+    const leftKind = kindOrder[left?.detail_kind] ?? 3;
+    const rightKind = kindOrder[right?.detail_kind] ?? 3;
+    if (leftKind !== rightKind) {
+      return leftKind - rightKind;
+    }
+
+    if (left?.detail_kind === "validator" && right?.detail_kind === "validator") {
+      const leftCycle = typeof left.validator_cycle === "number" ? left.validator_cycle : 0;
+      const rightCycle = typeof right.validator_cycle === "number" ? right.validator_cycle : 0;
+      return leftCycle - rightCycle;
+    }
+
+    const leftTs = left?.reply?.timestamp ?? left?.command?.timestamp ?? "";
+    const rightTs = right?.reply?.timestamp ?? right?.command?.timestamp ?? "";
+    return String(leftTs).localeCompare(String(rightTs));
+  });
 }
 
 function groupDispatchDetailsByWorker(dispatchDetails) {
@@ -2432,10 +2497,20 @@ function indexDispatchDetailsByWorker(dispatchDetails) {
 }
 
 function normalizeDispatchDetailWorkerKey(detail) {
+  // task_id is the canonical grouping key (the dispatch-plan worker that
+  // owns this bar). Older payloads without task_id fall back to deriving
+  // it from worker_id, stripping role-specific prefixes.
+  if (typeof detail?.task_id === "string" && detail.task_id.length > 0) {
+    return normalizeDispatchWorkerKey(detail.task_id);
+  }
+
   const workerId = normalizeText(detail?.worker_id);
-  const baseWorkerId = detail?.detail_kind === "pm_resolver"
-    ? workerId.replace(/^PM:/i, "")
-    : workerId;
+  let baseWorkerId = workerId;
+  if (detail?.detail_kind === "pm_resolver") {
+    baseWorkerId = workerId.replace(/^PM:/i, "");
+  } else if (detail?.detail_kind === "validator") {
+    baseWorkerId = workerId.replace(/^VALIDATOR:/i, "").replace(/:CYCLE-\d+$/i, "");
+  }
   return normalizeDispatchWorkerKey(baseWorkerId);
 }
 

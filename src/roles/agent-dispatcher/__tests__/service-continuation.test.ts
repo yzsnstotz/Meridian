@@ -203,6 +203,90 @@ describe("service continuation", () => {
 
     expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBe("PRE-FLIGHT");
   });
+
+  // Regression: a worker whose original reply emitted outcome:blocked but
+  // whose validator subsequently approved it (lifecycle status=completed)
+  // must NOT trigger manual intervention even though the plan markdown row
+  // still shows ⛔ BLOCKED. The plan can lag behind the lifecycle; the
+  // lifecycle is authoritative for terminal-success and validator-owned
+  // states. See PR #128/#129 marker protocol — BATCH-2-GATE incident.
+  it("does not flag manual intervention when lifecycle is completed despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      {
+        status: "⛔ BLOCKED",
+        batch: "2",
+        worker: "BATCH-2-GATE",
+        model: "CODEX-HIGH",
+        depends_on: "—"
+      }
+    ];
+    const lifecycleState = createLifecycleState({
+      "BATCH-2-GATE": {
+        status: "completed",
+        retry_count: 0,
+        hub_result: createHubResult(
+          "Working on the gate.\n<<<MERIDIAN-STATUS>>>\nworker_id: BATCH-2-GATE\nrole: worker\noutcome: blocked\nreport_path: /tmp/report.md\nnotes: original blocker since resolved by validator\n<<<END>>>"
+        )
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not flag manual intervention when lifecycle is awaiting_validation despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": { status: "awaiting_validation" }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not flag manual intervention when lifecycle is fix_requested despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": { status: "fix_requested" }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not flag manual intervention when lifecycle is skipped despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": { status: "skipped" }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("still flags manual intervention when lifecycle status is blocked even if plan row says ⛔ BLOCKED", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": {
+        status: "blocked",
+        hub_result: createHubResult("Status: BLOCKED — needs PM input.")
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-12");
+  });
+
+  it("still flags manual intervention when no lifecycle entry exists and plan says ⛔ BLOCKED", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+
+    expect(resolveManualInterventionWorker(rows, createLifecycleState())).toBe("N-12");
+  });
 });
 
 function createHubResult(content: string): NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]> {

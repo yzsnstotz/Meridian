@@ -52,11 +52,29 @@ export function resolveManualInterventionWorker(
       continue;
     }
 
+    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
+
+    // Lifecycle store is authoritative for terminal & validator-owned
+    // states. The plan markdown can lag behind: a worker that emitted a
+    // `blocked` marker but was later approved by the validator (or
+    // resolved by PM) keeps a stale ⛔ BLOCKED row even though the
+    // lifecycle has moved it to completed/skipped or handed it to the
+    // validator orchestrator. Asking for manual intervention in those
+    // cases would leave the dispatcher permanently stuck. Mirrors the
+    // same lifecycle-wins invariant `isImplicitContinueRow` enforces.
+    if (
+      workerState?.status === "completed"
+      || workerState?.status === "skipped"
+      || workerState?.status === "awaiting_validation"
+      || workerState?.status === "fix_requested"
+    ) {
+      continue;
+    }
+
     if (isBlockedDispatchStatus(row.status)) {
       return normalizedWorkerId;
     }
 
-    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
     if (workerState?.status !== "blocked" && (!workerState?.hub_result || !hubResultRequiresManualIntervention(workerState.hub_result))) {
       continue;
     }

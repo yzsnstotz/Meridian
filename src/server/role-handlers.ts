@@ -22,6 +22,7 @@ import {
   isPmResolverHubResult
 } from "../roles/agent-dispatcher/lifecycle-store";
 import { createMeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
+import { parseMeridianStatusMarker } from "../roles/agent-dispatcher/meridian-status-marker";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import {
   AGENT_DISPATCHER_ROLE_ID_PLACEHOLDER,
@@ -259,8 +260,15 @@ export interface DispatchMessageDetail {
 }
 
 export interface DispatchWorkerDetail {
-  detail_kind?: "worker" | "pm_resolver";
+  detail_kind?: "worker" | "pm_resolver" | "validator";
   worker_id: string;
+  // task_id identifies the dispatch-plan worker this bar belongs to.
+  // - For `worker` entries: the worker's own id.
+  // - For `pm_resolver` entries: the target worker the PM was resolving.
+  // - For `validator` entries: the worker that was being validated.
+  // The frontend groups bars by task_id so every dispatcher/scheduler/etc.
+  // task hosts its own stack of role-specific bars.
+  task_id?: string | null;
   status: string;
   task: string | null;
   model: string | null;
@@ -270,6 +278,16 @@ export interface DispatchWorkerDetail {
   command: DispatchMessageDetail | null;
   reply: DispatchMessageDetail | null;
   validation: DispatchValidationDetail | null;
+  // Number of times this worker has been re-launched. The current data
+  // model only retains the latest attempt's hub_result; prior attempts'
+  // reply text is not persisted. The frontend surfaces this as a badge
+  // on the worker bar so retried work is visible even though only the
+  // most recent attempt's prompt+reply is available.
+  retry_count?: number;
+  // Validator-only fields. Populated for entries with detail_kind === "validator".
+  validator_cycle?: number;
+  validator_score?: number | null;
+  validator_outcome?: "pass" | "fix_requested" | "fail";
 }
 
 export interface DispatchValidationDetail {
@@ -1167,6 +1185,9 @@ async function getRole(
     getThreadDetail: options.getThreadDetail,
     log: options.log
   });
+  const validatorCycleDetails = buildValidatorCycleDetails(lifecycleState, {
+    roleId: role.threadId
+  });
 
   return {
     ...response,
@@ -1188,6 +1209,7 @@ async function getRole(
     session_log: sessionLog,
     dispatch_details: [
       ...workerDetails,
+      ...validatorCycleDetails,
       ...pmResolverDetails
     ],
     dispatch_plan: {
@@ -1921,12 +1943,14 @@ function buildManualInterventionResponse(
 ): ContinueDispatcherResponse {
   const manualInterventionWorker = lifecycleState.workers[workerId];
   const hubResult = manualInterventionWorker?.hub_result ?? null;
-  const interventionSummary = summarizeManualInterventionResult(hubResult);
-  const interventionReason = hubResult && hubResultContainsHitLimit(hubResult)
-    ? "reported hit limit"
-    : hubResult
-      ? "reported a blocking failure"
-      : "is blocked";
+  const markerReason = resolveMarkerInterventionReason(hubResult, workerId);
+  const interventionSummary = summarizeManualInterventionResult(hubResult, markerReason);
+  const interventionReason = markerReason
+    ?? (hubResult && hubResultContainsHitLimit(hubResult)
+      ? "reported hit limit"
+      : hubResult
+        ? "reported a blocking failure"
+        : "is blocked");
 
   return {
     ok: true,
@@ -1937,10 +1961,56 @@ function buildManualInterventionResponse(
   };
 }
 
-function summarizeManualInterventionResult(hubResult: HubResult | null): string | null {
+// MeridianStatusMarker (Phase A) is the authoritative signal — when the
+// worker emitted one, derive the human-readable reason from its `outcome`
+// rather than re-running narrative-regex heuristics over the same content.
+// Returns null when no marker is present so callers fall back to the
+// existing heuristic strings.
+function resolveMarkerInterventionReason(
+  hubResult: HubResult | null,
+  workerId: string
+): string | null {
+  if (!hubResult) {
+    return null;
+  }
+
+  const markerSource = hubResult.content || hubResult.summary_text || hubResult.details_text || "";
+  const marker = parseMeridianStatusMarker(markerSource);
+  if (!marker || marker.role !== "worker" || marker.worker_id !== workerId) {
+    return null;
+  }
+
+  switch (marker.outcome) {
+    case "hit_limit":
+      return "reported hit limit";
+    case "blocked":
+      return "reported a blocking outcome";
+    case "needs_pm":
+      return "requested PM resolution";
+    case "failed":
+      return "reported a failed outcome";
+    case "complete":
+      // Marker-claimed success that still landed here means the lifecycle
+      // store deferred the success (e.g. expected_outputs missing). Surface
+      // that explicitly instead of pretending the worker is blocked.
+      return "claimed completion without expected outputs";
+    default:
+      return null;
+  }
+}
+
+function summarizeManualInterventionResult(
+  hubResult: HubResult | null,
+  markerReason: string | null
+): string | null {
   if (
     !hubResult
-    || (!hubResultContainsHitLimit(hubResult) && !hubResultContainsBlockSignal(hubResult) && !hubResultContainsFailureSignal(hubResult))
+    || (
+      !markerReason
+      && !hubResultContainsHitLimit(hubResult)
+      && !hubResultContainsBlockSignal(hubResult)
+      && !hubResultContainsFailureSignal(hubResult)
+    )
   ) {
     return null;
   }
@@ -1950,6 +2020,9 @@ function summarizeManualInterventionResult(hubResult: HubResult | null): string 
     || hubResult.details_text?.trim()
     || "";
   if (rawSummary.length === 0) {
+    if (markerReason) {
+      return `worker ${markerReason}`;
+    }
     return hubResultContainsHitLimit(hubResult)
       ? "worker reported hit limit"
       : "worker reported a blocking failure";
@@ -2658,6 +2731,108 @@ export function buildDispatchWorkerDetails(
   return [...details, ...orphanDetails];
 }
 
+// Emit a separate DispatchWorkerDetail for every validation cycle every
+// worker has gone through. The Phase A marker protocol stores per-cycle
+// score+feedback in `worker.validation.history`, so each cycle becomes
+// its own bar grouped under the validated worker. The validator's full
+// system prompt and reply text are NOT persisted (only the marker's
+// `feedback` field is), so the bar synthesizes a command from the
+// available context and uses the feedback as the reply.
+function buildValidatorCycleDetails(
+  lifecycleState: DispatchThreadStateV2,
+  context: { roleId: string }
+): DispatchWorkerDetail[] {
+  const cycleDetails: DispatchWorkerDetail[] = [];
+
+  for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+    if (workerId === DISPATCHER_WORKER_ID) {
+      continue;
+    }
+    const history = worker.validation?.history ?? [];
+    if (history.length === 0) {
+      continue;
+    }
+
+    const passThreshold = worker.validation?.max_fix_cycles ?? 0;
+    void passThreshold;
+
+    for (const entry of history) {
+      const isLast = entry === history[history.length - 1];
+      const inferredOutcome: "pass" | "fix_requested" | "fail" =
+        entry.score >= 1
+          ? "pass"
+          : entry.score <= 0
+            ? "fail"
+            : "fix_requested";
+      const status = inferredOutcome === "pass"
+        ? "completed"
+        : inferredOutcome === "fail"
+          ? "failed"
+          : isLast && worker.status === "fix_requested"
+            ? "fix_requested"
+            : "completed";
+
+      const commandContent = [
+        `Validate worker ${workerId} (cycle ${entry.cycle}).`,
+        worker.expected_outputs.length > 0
+          ? `Expected outputs: ${worker.expected_outputs.join(", ")}`
+          : null,
+        `Threshold: cycle accepts when score is ≥ pass_threshold; fix_requested when partial; fail otherwise.`,
+        "Note: only the validator's marker feedback is persisted; full prompt/reply text is not retained yet."
+      ].filter((line): line is string => Boolean(line)).join("\n");
+
+      const replyContent = [
+        `Outcome: ${inferredOutcome}`,
+        `Score: ${entry.score}`,
+        "",
+        entry.feedback
+      ].join("\n");
+
+      cycleDetails.push({
+        detail_kind: "validator",
+        worker_id: `VALIDATOR:${workerId}:cycle-${entry.cycle}`,
+        task_id: workerId,
+        status,
+        task: `Validate ${workerId} cycle ${entry.cycle}`,
+        model: "VALIDATOR",
+        applied_model: null,
+        worker_thread_id: entry.validator_thread_id,
+        trace_id: null,
+        command: {
+          trace_id: null,
+          sender_name: context.roleId,
+          sender_agent_type: "dispatcher",
+          sender_model: null,
+          sender_thread_id: context.roleId,
+          timestamp: worker.last_seen_at,
+          content: commandContent
+        },
+        reply: {
+          trace_id: null,
+          sender_name: entry.validator_thread_id,
+          sender_agent_type: "validator",
+          sender_model: null,
+          sender_thread_id: entry.validator_thread_id,
+          timestamp: entry.timestamp,
+          content: replyContent
+        },
+        validation: null,
+        validator_cycle: entry.cycle,
+        validator_score: entry.score,
+        validator_outcome: inferredOutcome
+      });
+    }
+  }
+
+  cycleDetails.sort((left, right) => {
+    const leftTs = left.reply?.timestamp ?? "";
+    const rightTs = right.reply?.timestamp ?? "";
+    return leftTs.localeCompare(rightTs);
+  });
+
+  return cycleDetails;
+}
+
 async function buildPmResolverDetails(
   lifecycleState: DispatchThreadStateV2,
   context: {
@@ -2740,6 +2915,7 @@ function buildPmResolverDetail(
   return {
     detail_kind: "pm_resolver",
     worker_id: `PM:${workerId}`,
+    task_id: workerId,
     status: entry.status,
     task: `Resolve ${workerId}: ${entry.issue.status}`,
     model: "PM",
@@ -2860,7 +3036,9 @@ function buildDispatchWorkerDetail(
   const status = resolveDispatchWorkerDetailStatus(worker, dispatchPlanRow);
 
   return {
+    detail_kind: "worker",
     worker_id: workerId,
+    task_id: workerId,
     status,
     task: dispatchPlanRow?.task ?? null,
     model: dispatchPlanRow?.model ?? null,
@@ -2889,7 +3067,8 @@ function buildDispatchWorkerDetail(
           content: replyContent
         }
       : null,
-    validation: buildDispatchValidationDetail(worker?.validation)
+    validation: buildDispatchValidationDetail(worker?.validation),
+    retry_count: worker?.retry_count ?? 0
   };
 }
 
