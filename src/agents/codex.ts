@@ -58,7 +58,9 @@ export function buildCodexExecArgs(
     args.push("--model", modelId);
   }
   if (sandboxMode === "read-only") {
-    args.push("--sandbox", "read-only");
+    // Read-only sandbox keeps approvals enforced, but headless exec still cannot
+    // answer the trusted-directory prompt — bypass the git-repo gate explicitly.
+    args.push("--sandbox", "read-only", "--skip-git-repo-check");
   } else {
     // codex exec --json is always headless (stdin/stdout); it cannot prompt for
     // approvals and will reject untrusted directories without this flag.
@@ -81,7 +83,9 @@ export function buildCodexResumeArgs(
     args.push("--model", modelId);
   }
   if (sandboxMode === "read-only") {
-    args.push("--sandbox", "read-only");
+    // Same gate as buildCodexExecArgs: headless resume cannot answer the
+    // trusted-directory prompt under a read-only sandbox.
+    args.push("--sandbox", "read-only", "--skip-git-repo-check");
   } else {
     // Same as buildCodexExecArgs: headless exec always needs the bypass flag.
     args.push("--dangerously-bypass-approvals-and-sandbox");

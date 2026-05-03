@@ -73,7 +73,8 @@ test("buildCodexExecArgs uses read-only sandbox when requested", () => {
     "--model",
     "gpt-5.4",
     "--sandbox",
-    "read-only"
+    "read-only",
+    "--skip-git-repo-check"
   ]);
   assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
@@ -123,7 +124,8 @@ test("buildCodexResumeArgs uses read-only sandbox when requested", () => {
     "--model",
     "gpt-5.4",
     "--sandbox",
-    "read-only"
+    "read-only",
+    "--skip-git-repo-check"
   ]);
   assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
