@@ -301,6 +301,11 @@ describe("run tool", () => {
 
     // The outcome enum line must list all five values from the worker schema.
     expect(sentContent).toContain("outcome: complete | failed | blocked | hit_limit | needs_pm");
+
+    // Per-outcome bullet block + escape note carry load-bearing semantics that
+    // A2's lifecycle reconciliation depends on the worker reading.
+    expect(sentContent).toContain("Lifecycle treats this as `failed`");
+    expect(sentContent).toContain("wrap that example in a fenced code block");
   });
 
   it("omits the Reply Protocol section from the dispatcher controller preamble", async () => {

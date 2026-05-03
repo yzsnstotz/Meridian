@@ -36,10 +36,33 @@ const MARKER_END = "<<<END>>>";
 
 const MULTILINE_STRING_FIELDS = new Set(["notes", "feedback", "error"]);
 
+// Canonical role-outcome enums. Single-sourced here so the Zod schemas below
+// and the per-role preamble emitters in `tool-gateway/tools/run.ts` (and the
+// upcoming validator / pm-resolver preambles) cannot drift in spelling.
+export const WORKER_MARKER_OUTCOMES = [
+  "complete",
+  "failed",
+  "blocked",
+  "hit_limit",
+  "needs_pm"
+] as const;
+
+export const VALIDATOR_MARKER_OUTCOMES = ["pass", "fix_requested", "fail"] as const;
+
+export const PM_RESOLVER_MARKER_OUTCOMES = ["resolved", "escalated"] as const;
+
+export const PM_RESOLVER_ACTIONS = [
+  "retry",
+  "skip",
+  "force_complete",
+  "wait",
+  "escalate_human"
+] as const;
+
 const WorkerMarkerSchema = z.object({
   role: z.literal("worker"),
   worker_id: z.string().min(1),
-  outcome: z.enum(["complete", "failed", "blocked", "hit_limit", "needs_pm"]),
+  outcome: z.enum(WORKER_MARKER_OUTCOMES),
   report_path: z.string().min(1).optional(),
   notes: z.string().optional(),
   error: z.string().optional()
@@ -48,7 +71,7 @@ const WorkerMarkerSchema = z.object({
 const ValidatorMarkerSchema = z.object({
   role: z.literal("validator"),
   worker_id: z.string().min(1),
-  outcome: z.enum(["pass", "fix_requested", "fail"]),
+  outcome: z.enum(VALIDATOR_MARKER_OUTCOMES),
   cycle: z.number().int().nonnegative().optional(),
   score: z.number().optional(),
   feedback: z.string().optional(),
@@ -58,8 +81,8 @@ const ValidatorMarkerSchema = z.object({
 const PmResolverMarkerSchema = z.object({
   role: z.literal("pm-resolver"),
   worker_id: z.string().min(1),
-  outcome: z.enum(["resolved", "escalated"]),
-  pm_action: z.enum(["retry", "skip", "force_complete", "wait", "escalate_human"]).optional(),
+  outcome: z.enum(PM_RESOLVER_MARKER_OUTCOMES),
+  pm_action: z.enum(PM_RESOLVER_ACTIONS).optional(),
   notes: z.string().optional()
 });
 

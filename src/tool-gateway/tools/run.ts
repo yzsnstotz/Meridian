@@ -8,6 +8,7 @@ import { reconcile } from "../../roles/agent-dispatcher/reconciler";
 import { createMeridianApiClient, type MeridianRunResult } from "../../roles/agent-dispatcher/meridian-api-client";
 import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubResult, type HubRunState, type KillPolicy } from "../../types";
 import { LifecycleStore, isExplicitCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
+import { WORKER_MARKER_OUTCOMES } from "../../roles/agent-dispatcher/meridian-status-marker";
 import { sendViaHttpRelay } from "../ipc-bridge";
 import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
@@ -409,7 +410,7 @@ async function buildWorkerPreamble(
     lines.push(`<<<MERIDIAN-STATUS>>>`);
     lines.push(`worker_id: ${workerId}`);
     lines.push(`role: worker`);
-    lines.push(`outcome: complete | failed | blocked | hit_limit | needs_pm`);
+    lines.push(`outcome: ${WORKER_MARKER_OUTCOMES.join(" | ")}`);
     lines.push(`report_path: <absolute path to your report; required for \`complete\`>`);
     lines.push(`notes: <one short line>`);
     lines.push(`<<<END>>>`);
