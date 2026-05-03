@@ -198,14 +198,16 @@ export async function executeValidationCycle(
         event: "validator_marker_wrong_role",
         worker_id: workerId,
         marker_role: marker.role,
-        marker_worker_id: "worker_id" in marker ? marker.worker_id : null
+        marker_worker_id: "worker_id" in marker ? marker.worker_id : null,
+        content_length: content.length
       });
     } else if (marker.worker_id !== workerId) {
       log.warn("Validator marker mismatch", {
         event: "validator_marker_mismatch",
         worker_id: workerId,
         marker_worker_id: marker.worker_id,
-        marker_role: marker.role
+        marker_role: marker.role,
+        content_length: content.length
       });
     }
   }
@@ -494,6 +496,15 @@ async function handleValidatorMarker(
   const feedback = marker.feedback ?? "";
   const cycle = validation.current_cycle + 1;
   const maxCycles = validation.max_fix_cycles;
+
+  if (marker.score === undefined) {
+    deps.log.info("Validator marker score defaulted", {
+      event: "validator_marker_score_defaulted",
+      worker_id: workerId,
+      outcome: marker.outcome,
+      default_score: score
+    });
+  }
 
   deps.log.info("Validator decided via marker", {
     event: "validator_marker_decision",

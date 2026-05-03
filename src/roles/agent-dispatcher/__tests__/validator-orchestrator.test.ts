@@ -442,21 +442,22 @@ describe("executeValidationCycle", () => {
   it("falls through to the legacy JSON parser and logs mismatch when marker worker_id mismatches", async () => {
     const harness = await createHarness();
     harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-mismatch" });
+    const mismatchContent = [
+      '{"score":0.91,"feedback":"legacy still parses"}',
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "role: validator",
+      "worker_id: N-99",
+      "outcome: pass",
+      "score: 1.0",
+      "feedback: not for us",
+      "<<<END>>>"
+    ].join("\n");
     harness.run.mockResolvedValueOnce({
       threadId: "validator-thread-mismatch",
       status: "success",
       runState: "completed",
-      content: [
-        '{"score":0.91,"feedback":"legacy still parses"}',
-        "",
-        "<<<MERIDIAN-STATUS>>>",
-        "role: validator",
-        "worker_id: N-99",
-        "outcome: pass",
-        "score: 1.0",
-        "feedback: not for us",
-        "<<<END>>>"
-      ].join("\n"),
+      content: mismatchContent,
       raw: {}
     });
 
@@ -468,7 +469,8 @@ describe("executeValidationCycle", () => {
       expect.objectContaining({
         event: "validator_marker_mismatch",
         worker_id: "N-02",
-        marker_worker_id: "N-99"
+        marker_worker_id: "N-99",
+        content_length: mismatchContent.length
       })
     );
   });
@@ -476,19 +478,20 @@ describe("executeValidationCycle", () => {
   it("falls through to the legacy JSON parser and logs wrong-role when marker role is worker", async () => {
     const harness = await createHarness();
     harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-wrong-role" });
+    const wrongRoleContent = [
+      '{"score":0.88,"feedback":"legacy fallback"}',
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "role: worker",
+      "worker_id: N-02",
+      "outcome: complete",
+      "<<<END>>>"
+    ].join("\n");
     harness.run.mockResolvedValueOnce({
       threadId: "validator-thread-wrong-role",
       status: "success",
       runState: "completed",
-      content: [
-        '{"score":0.88,"feedback":"legacy fallback"}',
-        "",
-        "<<<MERIDIAN-STATUS>>>",
-        "role: worker",
-        "worker_id: N-02",
-        "outcome: complete",
-        "<<<END>>>"
-      ].join("\n"),
+      content: wrongRoleContent,
       raw: {}
     });
 
@@ -500,7 +503,8 @@ describe("executeValidationCycle", () => {
       expect.objectContaining({
         event: "validator_marker_wrong_role",
         worker_id: "N-02",
-        marker_role: "worker"
+        marker_role: "worker",
+        content_length: wrongRoleContent.length
       })
     );
   });
@@ -527,6 +531,70 @@ describe("executeValidationCycle", () => {
     const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
 
     expect(outcome).toEqual({ status: "passed", score: 1.0 });
+  });
+
+  it("logs a score-defaulted info event when the pass marker omits score", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-defaulted-log" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-defaulted-log",
+      status: "success",
+      runState: "completed",
+      content: [
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: pass",
+        "feedback: |",
+        "  No score supplied.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 1.0 });
+    expect(harness.deps.log.info).toHaveBeenCalledWith(
+      "Validator marker score defaulted",
+      expect.objectContaining({
+        event: "validator_marker_score_defaulted",
+        worker_id: "N-02",
+        outcome: "pass",
+        default_score: 1.0
+      })
+    );
+  });
+
+  it("ignores marker.cycle and records the orchestrator-computed cycle in lifecycle history", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-cycle-ignored" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-cycle-ignored",
+      status: "success",
+      runState: "completed",
+      content: [
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: pass",
+        "cycle: 99",
+        "score: 0.95",
+        "feedback: |",
+        "  Marker cycle is informational only.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 0.95 });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.validation?.current_cycle).toBe(1);
+    expect(worker?.validation?.history).toHaveLength(1);
+    expect(worker?.validation?.history[0]?.cycle).toBe(1);
+    expect(worker?.validation?.history[0]?.cycle).not.toBe(99);
   });
 });
 
