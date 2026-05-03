@@ -63,7 +63,11 @@ function buildNodeCommand(entrypointPath: string, nodeExecutable: string): Merid
   return {
     command: nodeExecutable,
     args: [entrypointPath],
-    displayCommand: `${shellQuote(nodeExecutable)} ${shellQuote(entrypointPath)}`,
+    // displayCommand is rendered into PM/worker prompts. Keep it host-agnostic:
+    // `command` (used for actual subprocess spawning) still points at the real
+    // node binary, but the prompt-facing string must not leak the local node
+    // toolchain path (~/.hermes/node/bin/node, fnm shims, etc.).
+    displayCommand: `node ${shellQuote(entrypointPath)}`,
     entrypointPath
   };
 }
@@ -77,7 +81,7 @@ function buildTsxCommand(
     return {
       command: localTsxExecutable,
       args: [entrypointPath],
-      displayCommand: `${shellQuote(localTsxExecutable)} ${shellQuote(entrypointPath)}`,
+      displayCommand: `tsx ${shellQuote(entrypointPath)}`,
       entrypointPath
     };
   }

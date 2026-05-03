@@ -348,6 +348,21 @@ export class LifecycleStore {
     });
   }
 
+  // Clears the recorded worker thread id while keeping `validation` intact, so
+  // continueWorker's fix_requested branch falls through to launching a fresh
+  // thread. Used when feedback delivery to the retained worker thread fails
+  // (typically because the thread expired) — we relaunch the row instead of
+  // escalating to PM.
+  clearWorkerThreadForRelaunch(workerId: string, trigger: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker) return;
+      worker.thread_id = "";
+      worker.last_seen_at = this.now();
+      this.logTransition(workerId, worker.status, worker.status, trigger);
+    });
+  }
+
   transitionToFixRequested(
     workerId: string,
     score: number,
@@ -476,10 +491,11 @@ export class LifecycleStore {
         return;
       }
 
-      entry.status = mapPmResolverRunStatus(result);
+      const envelopeStatus = mapPmResolverRunStatus(result);
+      entry.status = reconcilePmStatusAgainstWorkerState(state, entry, envelopeStatus);
       entry.last_seen_at = this.now();
       entry.result = normalizePmResolverResult(result);
-      entry.error = null;
+      entry.error = entry.status === "failed" ? entry.error : null;
     });
   }
 
@@ -490,9 +506,10 @@ export class LifecycleStore {
         return;
       }
 
-      entry.status = "failed";
+      const reconciled = reconcilePmStatusAgainstWorkerState(state, entry, "failed");
+      entry.status = reconciled;
       entry.last_seen_at = this.now();
-      entry.error = error;
+      entry.error = reconciled === "failed" ? error : null;
     });
   }
 }
@@ -692,6 +709,40 @@ function normalizePmResolverIssue(issue: {
     error: issue.error ?? null,
     source: issue.source ?? "dispatcher"
   };
+}
+
+// PM-resolved worker statuses — if the target worker has reached one of these
+// since PM started, the orchestration intent was satisfied even when the run
+// envelope reports an error/timeout (e.g. token-cap stop, late hub disconnect
+// after the meridian-tool calls already succeeded).
+const PM_RESOLVED_TARGET_STATUSES = new Set<LifecycleStatus>([
+  "completed",
+  "running",
+  "awaiting_validation",
+  "fix_requested",
+  "skipped"
+]);
+
+function reconcilePmStatusAgainstWorkerState(
+  state: DispatchThreadStateV2,
+  entry: PmResolverLifecycleState,
+  envelopeStatus: PmResolverLifecycleStatus
+): PmResolverLifecycleStatus {
+  if (envelopeStatus !== "failed") {
+    return envelopeStatus;
+  }
+
+  const targetWorkerId = entry.issue?.worker_id;
+  if (!targetWorkerId) {
+    return envelopeStatus;
+  }
+
+  const target = state.workers[targetWorkerId];
+  if (!target) {
+    return envelopeStatus;
+  }
+
+  return PM_RESOLVED_TARGET_STATUSES.has(target.status) ? "completed" : "failed";
 }
 
 function mapPmResolverRunStatus(result: {

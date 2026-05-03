@@ -269,21 +269,26 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
 
 // ─── Feedback delivery ──────────────────────────────────────────────────────────
 
+export type FeedbackDeliveryOutcome =
+  | { delivered: true }
+  | { delivered: false; reason: "no-op"; detail: string }
+  | { delivered: false; reason: "delivery_error"; error: string };
+
 export async function deliverValidatorFeedback(
   deps: ValidatorOrchestratorDeps,
   workerId: string
-): Promise<boolean> {
+): Promise<FeedbackDeliveryOutcome> {
   const { lifecycleStore, meridianApi, log } = deps;
 
   const state = lifecycleStore.load();
   const worker = state.workers[workerId];
   if (!worker || worker.status !== "fix_requested") {
-    return false;
+    return { delivered: false, reason: "no-op", detail: `worker ${workerId} not in fix_requested` };
   }
 
   const validation = worker.validation;
   if (!validation?.last_feedback || validation.last_score === null || validation.last_score === undefined) {
-    return false;
+    return { delivered: false, reason: "no-op", detail: `worker ${workerId} missing validation feedback` };
   }
 
   const feedbackMessage = [
@@ -312,6 +317,7 @@ export async function deliverValidatorFeedback(
       lifecycleStore.setWorkerStatus(workerId, "awaiting_validation", "validator_rework_completed");
     }
   } catch (error) {
+    const errorMessage = asErrorMessage(error);
     if (markedRunning) {
       try {
         const latestWorker = lifecycleStore.load().workers[workerId];
@@ -325,12 +331,12 @@ export async function deliverValidatorFeedback(
     log.warn("Validator feedback delivery failed", {
       event: "validator_feedback_error",
       worker_id: workerId,
-      error: asErrorMessage(error)
+      error: errorMessage
     });
-    return false;
+    return { delivered: false, reason: "delivery_error", error: errorMessage };
   }
 
-  return true;
+  return { delivered: true };
 }
 
 // ─── Output parsing ─────────────────────────────────────────────────────────────

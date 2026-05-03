@@ -250,7 +250,10 @@ describe("run tool", () => {
 
     // Slim contract assertions:
     expect(sentContent).toContain("# Dispatch Command");
-    expect(sentContent).toContain("# Runtime Notes");
+    expect(sentContent).not.toContain("# Runtime Notes");
+    expect(sentContent).not.toContain("Step 4a");
+    expect(sentContent).not.toContain("Step 5b");
+    expect(sentContent).not.toContain("writable sandbox");
     expect(sentContent).toContain("/tmp/dispatch/agent_dispatch_command.md");
     expect(sentContent).not.toContain("# Embedded Dispatch Command");
     expect(sentContent).not.toContain("# Runtime Overrides");
@@ -346,7 +349,7 @@ describe("run tool", () => {
     expect(sentContent).not.toContain("preserve the command file's NO-GIT delivery mode");
   });
 
-  it("does not inject git delivery instructions into NO-GIT dispatch commands", async () => {
+  it("does not inject NO-GIT delivery instructions into the preamble", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
@@ -386,11 +389,15 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("preserve the command file's NO-GIT delivery mode");
-    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+    // The worker reads the command file directly (it's referenced in
+    // # Dispatch Command). NO-GIT mode lives in that file, not echoed into
+    // the preamble — the preamble must stay role-agnostic.
+    expect(sentContent).not.toContain("preserve the command file's NO-GIT delivery mode");
+    expect(sentContent).not.toContain("Steps 4b–4f, 5c–5d");
+    expect(sentContent).toContain("# Dispatch Command");
   });
 
-  it("keeps report-only delivery suppression when the worker row is explicit", async () => {
+  it("does not echo report-only suppression bullets into the preamble", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
@@ -408,12 +415,14 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("this is a report-only worker");
-    expect(sentContent).toContain("Do NOT create git commits, branches, pushes, or PRs");
-    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+    // Report-only is a command-file concern; the preamble must not echo
+    // hardcoded report-only bullets keyed off worker IDs or notes regex.
+    expect(sentContent).not.toContain("this is a report-only worker");
+    expect(sentContent).not.toContain("Steps 5c–5d");
+    expect(sentContent).toContain("# Dispatch Command");
   });
 
-  it("keeps report-only delivery suppression for PRE-FLIGHT control workers", async () => {
+  it("does not special-case PRE-FLIGHT control workers in the preamble", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
@@ -431,9 +440,9 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("this is a report-only worker");
-    expect(sentContent).toContain("Do NOT create git commits, branches, pushes, or PRs");
-    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
+    expect(sentContent).not.toContain("this is a report-only worker");
+    expect(sentContent).not.toContain("Steps 5c–5d");
+    expect(sentContent).toContain("# Dispatch Command");
   });
 
   it("keeps successful workers running until reconciliation verifies real outputs", async () => {
@@ -823,10 +832,14 @@ describe("run tool", () => {
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
     expect(sentContent).toContain("You are the dispatcher controller.");
     expect(sentContent).toContain("Treat any local Meridian tool bootstrap failure");
-    expect(sentContent).toContain("create extra repo artifacts");
+    // The preamble must not leak protocol-specific Step numbering or repo
+    // delivery bullets — the command file owns that. The dispatcher prompt
+    // is responsible for control-flow scope.
+    expect(sentContent).not.toContain("# Runtime Notes");
+    expect(sentContent).not.toContain("Step 4a");
+    expect(sentContent).not.toContain("Step 5b");
+    expect(sentContent).not.toContain("create extra repo artifacts");
     expect(sentContent).not.toContain("completion report): attempt to write the report");
-    expect(sentContent).not.toContain("follow normally (read specs, implement, test, git commit, push)");
-    expect(sentContent).not.toContain("git commit, push");
   });
 
   it("prefers the DELTA-CHECK-specific report path over the generic completion template", async () => {
@@ -1806,7 +1819,10 @@ describe("run tool", () => {
     });
   });
 
-  it("grants DELTA-CHECK workers permission to modify the dispatch plan", async () => {
+  it("does not hardcode plan-modify special-cases for clawso-specific worker IDs", async () => {
+    // The preamble must be role-agnostic. Plan-modify permissions, report-only
+    // semantics, and Step numbering belong in the command file, not in
+    // hardcoded worker-ID branches in the preamble builder.
     mockRun.mockResolvedValue(toApiResult(buildHubResult("Delta check done", "success")));
     mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
       "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
@@ -1821,9 +1837,9 @@ describe("run tool", () => {
     });
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
-    expect(sentContent).toContain("may add, remove, or modify rows");
-    expect(sentContent).toContain("**must** write your findings");
-    expect(sentContent).not.toContain("you do not need to write to the dispatch plan yourself");
+    expect(sentContent).not.toContain("may add, remove, or modify rows");
+    expect(sentContent).not.toContain("**must** write your findings");
+    expect(sentContent).toContain("The lifecycle store manages all plan status updates");
   });
 
   it("refuses to re-dispatch a worker that is already completed", async () => {

@@ -343,8 +343,6 @@ async function buildWorkerPreamble(
   previousWorkerState: DispatchWorkerState | null,
   expectedOutputs: string[]
 ): Promise<string> {
-  const command = await readFile(commandPath, "utf8");
-  const commandForbidsGit = commandForbidsGitOperations(command);
   const lines: string[] = [];
 
   lines.push(`# Worker Identity`);
@@ -377,6 +375,13 @@ async function buildWorkerPreamble(
     lines.push("");
   }
 
+  const schedulerRunReportOutput = findSchedulerRunReportOutput(expectedOutputs, workerId);
+  if (schedulerRunReportOutput) {
+    lines.push(`# Report Path Override`);
+    lines.push(`write the completion report to \`${schedulerRunReportOutput}\`. Create the parent directory if needed. This supersedes any report path in the command file.`);
+    lines.push("");
+  }
+
   const previousAttemptContext = await buildPreviousAttemptContext(previousWorkerState, expectedOutputs);
   if (previousAttemptContext) {
     lines.push(`# Previous Attempt Context`);
@@ -388,8 +393,7 @@ async function buildWorkerPreamble(
   lines.push(`# Status`);
   if (isDispatcherWorker(workerId)) {
     lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes from this wrapper prompt.`);
-  } else if (isPlanModifyingWorker(workerId)) {
-    lines.push(`Your row is pre-marked 🔄. You **may add, remove, or modify rows** in the dispatch plan as part of your task — the lifecycle store reconciles your own row's final status.`);
+    lines.push(`Treat any local Meridian tool bootstrap failure (Node CLI startup, IPC socket bind, sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
   } else {
     lines.push(`Your row is pre-marked 🔄. The lifecycle store manages all plan status updates — you do not need to write to the dispatch plan yourself.`);
   }
@@ -398,41 +402,8 @@ async function buildWorkerPreamble(
   lines.push(`# Dispatch Command`);
   lines.push(`Read and follow this file for your worker: ${commandPath}`);
   lines.push(`Your worker file, dispatch plan, and any referenced docs are routed from there. Do not request these contents inline — read them from disk.`);
-  lines.push("");
-
-  lines.push(`# Runtime Notes`);
-  if (isDispatcherWorker(workerId)) {
-    lines.push(`- Skip Step 4a (mark in-progress) — handled for you.`);
-    lines.push(`- Treat any local Meridian tool bootstrap failure (Node CLI startup, IPC socket bind, sandbox \`EPERM\` / \`ENOENT\`) as an immediate spawn failure. Do NOT inspect alternate wrappers, transports, or fallback launch methods.`);
-    lines.push(`- Do NOT write Step 5b completion reports, create extra repo artifacts, or reason about git commit/push from this run. Send the required notify once, leave the plan untouched, and stop when the dispatcher prompt says to pause.`);
-  } else if (isPlanModifyingWorker(workerId)) {
-    lines.push(`- Skip Step 4a (mark in-progress) — handled for you.`);
-    lines.push(`- **Step 5a** (dispatch plan updates): you **must** write your findings and any corrective tasks directly into the dispatch plan. Add new worker rows, update statuses, or restructure as needed — this is your primary output.`);
-    lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead.`);
-  } else {
-    lines.push(`- Skip Step 4a (mark in-progress) and Step 5a (mark complete) — handled for you.`);
-    lines.push(`- **Step 5b** (completion report): attempt to write the report. If the path is outside your writable sandbox, include the full report content in your final response instead.`);
-    const schedulerRunReportOutput = findSchedulerRunReportOutput(expectedOutputs, workerId);
-    if (schedulerRunReportOutput) {
-      lines.push(`- **Scheduler report path override**: write the completion report to \`${schedulerRunReportOutput}\`. Create the parent directory if needed. This supersedes any report path in the command file.`);
-    }
-    if (isReportOnlyWorker(workerId, row, expectedOutputs)) {
-      lines.push(`- **Steps 5c–5d**: this is a report-only worker. Do NOT create git commits, branches, pushes, or PRs for the report artifact; return the report result and stop.`);
-    } else if (commandForbidsGit) {
-      lines.push(`- **Steps 4b–4f, 5c–5d**: follow the command file for implementation, validation, and delivery; preserve the command file's NO-GIT delivery mode. Do NOT create git commits, branches, pushes, or PRs unless the command file explicitly allows it.`);
-    }
-    // Implicit else: no extra bullet. Default git behavior is whatever the command file says.
-  }
 
   return lines.join("\n");
-}
-
-function commandForbidsGitOperations(command: string): boolean {
-  return /\bNO[-\s]?GIT\b/i.test(command)
-    || /\bno\s+git\s+operations\b/i.test(command)
-    || /\bmust\s+not\s+(?:run\s+)?`?git\b/i.test(command)
-    || /\bdo\s+not\s+(?:run\s+)?`?git\b/i.test(command)
-    || /\bdo\s+not\s+create\s+git\s+(?:commits?|branches|pushes)\b/i.test(command);
 }
 
 function findSchedulerRunReportOutput(expectedOutputs: string[], workerId: string): string | null {
@@ -454,7 +425,9 @@ async function buildPreviousAttemptContext(
   }
 
   const sections: string[] = [];
-  sections.push(`- Previous worker thread: \`${previousWorkerState.thread_id}\``);
+  if (previousWorkerState.thread_id?.trim()) {
+    sections.push(`- Previous worker thread: \`${previousWorkerState.thread_id}\``);
+  }
   sections.push(`- Previous retry count: ${previousWorkerState.retry_count ?? 0}`);
   if (previousWorkerState.hub_result?.timestamp) {
     sections.push(`- Previous terminal timestamp: ${previousWorkerState.hub_result.timestamp}`);
@@ -463,6 +436,18 @@ async function buildPreviousAttemptContext(
   const reportPaths = await findExistingPreviousReportPaths(expectedOutputs);
   for (const reportPath of reportPaths) {
     sections.push(`- Previous output artifact: \`${reportPath}\` (read from disk if you need detail)`);
+  }
+
+  const validation = previousWorkerState.validation;
+  if (validation?.last_feedback && previousWorkerState.status === "fix_requested") {
+    const cycle = validation.current_cycle;
+    const max = validation.max_fix_cycles;
+    const score = validation.last_score;
+    const scoreText = score === null || score === undefined ? "" : ` | score=${score}`;
+    sections.push("");
+    sections.push(`[VALIDATOR FEEDBACK] Cycle ${cycle}/${max}${scoreText}`);
+    sections.push(validation.last_feedback);
+    sections.push("Please address the feedback above and re-submit your work.");
   }
 
   return sections.join("\n");
@@ -1008,42 +993,8 @@ function substituteWorkerId(templatePath: string, workerId: string): string {
     .trim();
 }
 
-function isReportOnlyWorker(workerId: string, row: DispatchPlanRow | null, expectedOutputs: string[]): boolean {
-  if (expectedOutputs.length === 0 || !expectedOutputs.every((candidatePath) => isReportArtifactPath(candidatePath))) {
-    return false;
-  }
-
-  return REPORT_ONLY_WORKERS.has(workerId) || hasExplicitReportOnlyIntent(row);
-}
-
-function isReportArtifactPath(candidatePath: string): boolean {
-  const normalized = candidatePath.replace(/\\/g, "/").toLowerCase();
-  const basename = path.basename(normalized);
-
-  return (
-    normalized.includes("/dev_history/")
-    && (
-      /_report\.md$/.test(basename)
-      || basename === "delta_check_report.md"
-      || basename === "pr_review_report.md"
-    )
-  ) || (normalized.includes("/reports/") && basename.endsWith(".md"));
-}
-
-const PLAN_MODIFYING_WORKERS = new Set(["DELTA-CHECK", "PR-REVIEW"]);
-const REPORT_ONLY_WORKERS = new Set(["PRE-FLIGHT", "DELTA-CHECK", "PR-REVIEW"]);
-
-function hasExplicitReportOnlyIntent(row: DispatchPlanRow | null): boolean {
-  const text = [row?.task, row?.notes].filter(Boolean).join(" ").toLowerCase();
-  return /\breport[-\s]?only\b/.test(text) || /\bno\s+non[-\s]?report\s+outputs?\s+required\b/.test(text);
-}
-
 function isDispatcherWorker(workerId: string): boolean {
   return workerId === DISPATCHER_WORKER_ID;
-}
-
-function isPlanModifyingWorker(workerId: string): boolean {
-  return PLAN_MODIFYING_WORKERS.has(workerId);
 }
 
 function resolveSpecialReportBasename(workerId: string): string | null {
