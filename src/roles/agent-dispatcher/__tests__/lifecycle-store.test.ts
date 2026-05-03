@@ -1493,9 +1493,15 @@ describe("LifecycleStore", () => {
     harness.store.recordWorkerStart("N-02", "worker-thread-222", "22222222-2222-4222-8222-222222222222", []);
     harness.store.markAbandoned("N-02", "session_manager_restart");
 
-    expect(info).toHaveBeenNthCalledWith(
-      1,
-      "Lifecycle transition",
+    // Phase A6 introduced a per-decision `lifecycle_signal_source` info log
+    // emitted from `recordWorkerResult` AFTER the worker_transition log.
+    // Verify the transition events fire by filtering on event name rather
+    // than asserting fixed call positions, which keeps the test robust
+    // against future observability additions.
+    const transitionCalls = info.mock.calls.filter(
+      ([message]) => message === "Lifecycle transition"
+    );
+    expect(transitionCalls[0]?.[1]).toEqual(
       expect.objectContaining({
         event: "worker_transition",
         worker_id: "N-01",
@@ -1504,9 +1510,7 @@ describe("LifecycleStore", () => {
         trigger: "run_tool_start"
       })
     );
-    expect(info).toHaveBeenNthCalledWith(
-      2,
-      "Lifecycle transition",
+    expect(transitionCalls[1]?.[1]).toEqual(
       expect.objectContaining({
         event: "worker_transition",
         worker_id: "N-01",
@@ -1515,9 +1519,7 @@ describe("LifecycleStore", () => {
         trigger: "hub_result"
       })
     );
-    expect(info).toHaveBeenNthCalledWith(
-      4,
-      "Lifecycle transition",
+    expect(transitionCalls[3]?.[1]).toEqual(
       expect.objectContaining({
         event: "worker_transition",
         worker_id: "N-02",
@@ -1984,12 +1986,262 @@ describe("LifecycleStore", () => {
       });
     });
   });
+
+  describe("Phase A6: heuristic fallback gate", () => {
+    it("uses block heuristic when no marker is present and the gate is ON (backwards-compat)", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: true });
+      harness.store.recordWorkerStart(
+        "A6-01",
+        "worker-thread-a6-01",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-01", buildHubResult({
+        thread_id: "worker-thread-a6-01",
+        status: "success",
+        content: "⛔ BLOCKED — sandbox denied write access to dispatch_plan.md",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["A6-01"]).toMatchObject({ status: "blocked" });
+    });
+
+    it("returns running (reconciler-retry default) when no marker is present and the gate is OFF", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      // Worker has expected outputs that have NOT been produced — trivial
+      // success branch cannot fire, so the gate-off path must default to
+      // "running" rather than running the block heuristic.
+      const reportPath = path.join(harness.directory, "reports", "A6-02-missing.md");
+      harness.store.recordWorkerStart(
+        "A6-02",
+        "worker-thread-a6-02",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      harness.store.recordWorkerResult("A6-02", buildHubResult({
+        thread_id: "worker-thread-a6-02",
+        status: "success",
+        content: "⛔ BLOCKED — sandbox denied write access to dispatch_plan.md",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      // Heuristic skipped → reconciler-eligible "running" status.
+      expect(harness.store.load().workers["A6-02"]).toMatchObject({ status: "running" });
+    });
+
+    it("still maps envelope status=error to failed even when the gate is OFF (envelope short-circuit)", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      harness.store.recordWorkerStart(
+        "A6-03",
+        "worker-thread-a6-03",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-03", buildHubResult({
+        thread_id: "worker-thread-a6-03",
+        status: "error",
+        content: "hub disconnected",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["A6-03"]).toMatchObject({ status: "failed" });
+    });
+
+    it("still maps envelope timeout to running even when the gate is OFF (envelope short-circuit)", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      harness.store.recordWorkerStart(
+        "A6-04",
+        "worker-thread-a6-04",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-04", buildHubResult({
+        thread_id: "worker-thread-a6-04",
+        status: "timeout",
+        content: "relay timed out",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["A6-04"]).toMatchObject({ status: "running" });
+    });
+
+    it("trusts the marker when the gate is OFF — marker still wins regardless of heuristic state", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      harness.store.recordWorkerStart(
+        "A6-05",
+        "worker-thread-a6-05",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-05", buildHubResult({
+        thread_id: "worker-thread-a6-05",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "All clear.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: A6-05",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["A6-05"]).toMatchObject({ status: "completed" });
+    });
+
+    it("emits lifecycle_signal_source=marker when a worker marker is honoured", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: true });
+      harness.store.recordWorkerStart(
+        "A6-06",
+        "worker-thread-a6-06",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-06", buildHubResult({
+        thread_id: "worker-thread-a6-06",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: A6-06",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(info).toHaveBeenCalledWith("Lifecycle signal source", {
+        event: "lifecycle_signal_source",
+        worker_id: "A6-06",
+        signal_source: "marker",
+        result: "completed"
+      });
+    });
+
+    it("emits lifecycle_signal_source=heuristic when no marker fires but the gate is ON", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: true });
+      harness.store.recordWorkerStart(
+        "A6-07",
+        "worker-thread-a6-07",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-07", buildHubResult({
+        thread_id: "worker-thread-a6-07",
+        status: "success",
+        content: "⛔ BLOCKED — sandbox restriction",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(info).toHaveBeenCalledWith("Lifecycle signal source", {
+        event: "lifecycle_signal_source",
+        worker_id: "A6-07",
+        signal_source: "heuristic",
+        result: "blocked"
+      });
+    });
+
+    it("emits lifecycle_signal_source=none when no marker fires and the gate is OFF", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: false });
+      const reportPath = path.join(harness.directory, "reports", "A6-08-missing.md");
+      harness.store.recordWorkerStart(
+        "A6-08",
+        "worker-thread-a6-08",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      harness.store.recordWorkerResult("A6-08", buildHubResult({
+        thread_id: "worker-thread-a6-08",
+        status: "success",
+        content: "⛔ BLOCKED — sandbox restriction",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(info).toHaveBeenCalledWith("Lifecycle signal source", {
+        event: "lifecycle_signal_source",
+        worker_id: "A6-08",
+        signal_source: "none",
+        result: "running"
+      });
+    });
+
+    it("completes a no-expected-outputs success even when fallback heuristics are disabled (envelope short-circuit)", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: false });
+      // Empty expected_outputs — light worker that emits no marker. Without
+      // this short-circuit a regression that swapped the trivial-success
+      // branch to "running" unconditionally would silently break this path.
+      harness.store.recordWorkerStart(
+        "N-A6",
+        "worker-thread-na6",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-A6", buildHubResult({
+        thread_id: "worker-thread-na6",
+        status: "success",
+        run_state: "completed",
+        content: "Done. No marker emitted.",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-A6"]).toMatchObject({ status: "completed" });
+      expect(info).toHaveBeenCalledWith("Lifecycle signal source", {
+        event: "lifecycle_signal_source",
+        worker_id: "N-A6",
+        signal_source: "envelope",
+        result: "completed"
+      });
+    });
+
+    it("emits lifecycle_signal_source=envelope when envelope status=error short-circuits", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: true });
+      harness.store.recordWorkerStart(
+        "A6-09",
+        "worker-thread-a6-09",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("A6-09", buildHubResult({
+        thread_id: "worker-thread-a6-09",
+        status: "error",
+        content: "hub disconnected",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(info).toHaveBeenCalledWith("Lifecycle signal source", {
+        event: "lifecycle_signal_source",
+        worker_id: "A6-09",
+        signal_source: "envelope",
+        result: "failed"
+      });
+    });
+  });
 });
 
 async function createHarness(options: {
   dispatchPlanPath?: string;
   log?: { info: (...args: unknown[]) => void };
   planTemplate?: string;
+  fallbackHeuristicsEnabled?: boolean;
 } = {}): Promise<{
   directory: string;
   filePath: string;
@@ -2017,7 +2269,8 @@ async function createHarness(options: {
     dispatchPlanPath,
     store: new LifecycleStore(filePath, {
       dispatchPlanPath: options.dispatchPlanPath,
-      log: options.log
+      log: options.log,
+      fallbackHeuristicsEnabled: options.fallbackHeuristicsEnabled
     })
   };
 }

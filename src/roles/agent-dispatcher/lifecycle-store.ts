@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { Logger } from "../base-role";
+import { FALLBACK_HEURISTICS_ENABLED } from "../../config";
 import {
   DispatchThreadStateV2Schema,
   type DispatchThreadStateV2,
@@ -55,6 +56,12 @@ export interface LifecycleStoreOptions {
   dispatchPlanPath?: string;
   log?: Pick<Logger, "info">;
   now?: () => string;
+  /**
+   * Phase A6 kill-switch override. Production code reads
+   * {@link FALLBACK_HEURISTICS_ENABLED} from `src/config.ts`; this option
+   * exists so tests can toggle the gate without mutating `process.env`.
+   */
+  fallbackHeuristicsEnabled?: boolean;
 }
 
 export class LifecycleStore {
@@ -64,6 +71,7 @@ export class LifecycleStore {
   private readonly dispatchPlanPath: string;
   private readonly log: Pick<Logger, "info">;
   private readonly now: () => string;
+  private readonly fallbackHeuristicsEnabled: boolean;
 
   constructor(filePath: string, options: LifecycleStoreOptions = {}) {
     this.filePath = filePath;
@@ -71,6 +79,7 @@ export class LifecycleStore {
     this.dispatchPlanPath = options.dispatchPlanPath ?? inferDispatchPlanPath(filePath);
     this.log = options.log ?? console;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.fallbackHeuristicsEnabled = options.fallbackHeuristicsEnabled ?? FALLBACK_HEURISTICS_ENABLED;
   }
 
   load(): DispatchThreadStateV2 {
@@ -189,12 +198,13 @@ export class LifecycleStore {
       throw new Error(`Worker not found in lifecycle state: ${workerId}`);
     }
 
-    const mappedStatus = mapHubResultToLifecycleStatus(
+    const { status: mappedStatus, signalSource } = mapHubResultToLifecycleStatus(
       workerId,
       hubResult,
       worker.expected_outputs,
       worker.started_at,
-      this.log
+      this.log,
+      this.fallbackHeuristicsEnabled
     );
     const nextStatus = mappedStatus === "completed"
       && worker.validation
@@ -211,6 +221,16 @@ export class LifecycleStore {
     };
 
     this.logTransition(workerId, worker.status, nextStatus, "hub_result");
+    // Phase A6 observability: emit a per-decision lifecycle signal-source log
+    // AFTER the transition so the transition event ordering is preserved for
+    // downstream consumers, while the kill-switch can be observed by greps
+    // on event=lifecycle_signal_source.
+    this.log.info("Lifecycle signal source", {
+      event: "lifecycle_signal_source",
+      worker_id: workerId,
+      signal_source: signalSource,
+      result: mappedStatus
+    });
     this.save(state);
   }
 
@@ -504,6 +524,7 @@ export class LifecycleStore {
       const targetWorkerId = entry.issue?.worker_id ?? null;
 
       let resolvedStatus: PmResolverLifecycleStatus;
+      let signalSource: "marker" | "envelope" = "envelope";
       // top-level if (marker) is intentional — keeps marker.role un-narrowed
       // so the wrong-role branch is type-safe (mirrors validator-orchestrator).
       if (marker) {
@@ -539,11 +560,19 @@ export class LifecycleStore {
           // worker landed healthy, mirroring the envelope path so an
           // escalation that succeeds in parallel doesn't show "failed".
           resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, markerStatus);
+          signalSource = "marker";
         }
       } else {
         // No marker — use envelope mapping (existing behavior).
         resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
       }
+
+      this.log.info("PM resolver signal source", {
+        event: "pm_resolver_signal_source",
+        thread_id: threadId,
+        signal_source: signalSource,
+        result: resolvedStatus
+      });
 
       entry.status = resolvedStatus;
       entry.last_seen_at = this.now();
@@ -563,6 +592,20 @@ export class LifecycleStore {
       entry.status = reconciled;
       entry.last_seen_at = this.now();
       entry.error = reconciled === "failed" ? error : null;
+
+      // Phase A6 observability: mirror the signal_source emission shape from
+      // recordPmResolverResult so the A7 soak metric (signal_source distribution
+      // per role channel) covers the thrown-run failure path. The failure
+      // outcome is structured envelope info — there's no agent reply content to
+      // parse for a marker — so signal_source is "envelope".
+      this.log.info("PM resolver signal source", {
+        event: "pm_resolver_signal_source",
+        thread_id: threadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        signal_source: "envelope",
+        result: entry.status,
+        error
+      });
     });
   }
 }
@@ -842,25 +885,35 @@ function readDatetimeField(raw: Record<string, unknown> | undefined, field: stri
   return Number.isNaN(Date.parse(value)) ? null : value;
 }
 
+type LifecycleSignalSource = "marker" | "heuristic" | "envelope" | "none";
+
+interface LifecycleStatusDecision {
+  status: LifecycleStatus;
+  signalSource: LifecycleSignalSource;
+}
+
 function mapHubResultToLifecycleStatus(
   workerId: string,
   hubResult: HubResult,
   expectedOutputs: string[],
   startedAt: string,
-  log?: Pick<Logger, "info">
-): LifecycleStatus {
+  log?: Pick<Logger, "info">,
+  fallbackHeuristicsEnabled: boolean = true
+): LifecycleStatusDecision {
   const deferSuccessUntilReconciled = requiresOutputVerification(expectedOutputs);
 
+  // Envelope-level error short-circuit (structured signal, NOT heuristic).
+  // Always fires regardless of the fallback gate so the worker channel still
+  // surfaces hard hub errors even when narrative heuristics are disabled.
   if (hubResult.status === "error") {
-    return "failed";
+    return { status: "failed", signalSource: "envelope" };
   }
 
+  // Envelope-level timeout (structured signal, NOT heuristic). The relay/hub
+  // timed out — the worker itself may still be running — so we keep
+  // "running" and let the reconciler validate the thread.
   if (hubResult.status === "timeout" || hubResult.run_state === "timeout") {
-    // A timeout marker means the relay/hub timed out, NOT that the worker
-    // itself failed. Leave the worker as "running" so the reconciler can
-    // validate the actual thread status and outputs before making a terminal
-    // judgment.
-    return "running";
+    return { status: "running", signalSource: "envelope" };
   }
 
   // Phase A primary signal: trust the structured MeridianStatusMarker
@@ -902,38 +955,87 @@ function mapHubResultToLifecycleStatus(
         worker_id: workerId,
         outcome: marker.outcome
       });
-      switch (marker.outcome) {
-        case "complete":
-          if (
-            !deferSuccessUntilReconciled
-            || expectedOutputsExist(expectedOutputs, startedAt)
-          ) {
-            return "completed";
-          }
-          // Marker is a claim; without artifact verification we keep
-          // "running" so the reconciler retries.
-          return "running";
-        case "failed":
-          return "failed";
-        case "blocked":
-          return "blocked";
-        case "hit_limit":
-          return "failed";
-        case "needs_pm":
-          return "blocked";
-        default: {
-          // Exhaustiveness guard: if WorkerStatusMarker.outcome ever gains a
-          // new value, this assertion turns the omission into a TS compile
-          // error rather than a silent fall-through to the heuristic chain.
-          const _exhaustive: never = marker;
-          throw new Error(
-            `Unhandled worker marker outcome: ${(_exhaustive as { outcome?: string }).outcome ?? "unknown"}`
-          );
-        }
-      }
+      const markerStatus = mapWorkerMarkerOutcome(
+        marker,
+        expectedOutputs,
+        startedAt,
+        deferSuccessUntilReconciled
+      );
+      return { status: markerStatus, signalSource: "marker" };
     }
   }
 
+  // No usable marker. The fallback chain below is HEURISTIC-only — gate it
+  // behind `fallbackHeuristicsEnabled`. With the gate off, return "running"
+  // so the reconciler retries (RECONCILABLE_STATUSES = {running, abandoned}).
+  // The trivial-success branch (envelope success + no expected_outputs) is
+  // kept active because it relies on the structured envelope, not narrative
+  // signal.
+  if (!fallbackHeuristicsEnabled) {
+    if (
+      hubResult.status === "success"
+      && (!hubResult.run_state || hubResult.run_state === "completed")
+      && !deferSuccessUntilReconciled
+    ) {
+      return { status: "completed", signalSource: "envelope" };
+    }
+    return { status: "running", signalSource: "none" };
+  }
+
+  const heuristicStatus = applyHeuristicFallback(
+    workerId,
+    hubResult,
+    expectedOutputs,
+    startedAt,
+    deferSuccessUntilReconciled
+  );
+  return { status: heuristicStatus, signalSource: "heuristic" };
+}
+
+function mapWorkerMarkerOutcome(
+  marker: { outcome: "complete" | "failed" | "blocked" | "hit_limit" | "needs_pm" },
+  expectedOutputs: string[],
+  startedAt: string,
+  deferSuccessUntilReconciled: boolean
+): LifecycleStatus {
+  switch (marker.outcome) {
+    case "complete":
+      if (
+        !deferSuccessUntilReconciled
+        || expectedOutputsExist(expectedOutputs, startedAt)
+      ) {
+        return "completed";
+      }
+      // Marker is a claim; without artifact verification we keep "running"
+      // so the reconciler retries.
+      return "running";
+    case "failed":
+      return "failed";
+    case "blocked":
+      return "blocked";
+    case "hit_limit":
+      return "failed";
+    case "needs_pm":
+      return "blocked";
+    default: {
+      // Exhaustiveness guard: if WorkerStatusMarker.outcome ever gains a new
+      // value, this assertion turns the omission into a TS compile error
+      // rather than a silent fall-through.
+      const _exhaustive: never = marker.outcome;
+      throw new Error(
+        `Unhandled worker marker outcome: ${(_exhaustive as unknown as string) ?? "unknown"}`
+      );
+    }
+  }
+}
+
+function applyHeuristicFallback(
+  workerId: string,
+  hubResult: HubResult,
+  expectedOutputs: string[],
+  startedAt: string,
+  deferSuccessUntilReconciled: boolean
+): LifecycleStatus {
   if (hubResultContainsHitLimit(hubResult)) {
     return "failed";
   }
@@ -1012,6 +1114,7 @@ function mapHubResultToLifecycleStatus(
   return "running";
 }
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const NON_COMPLETION_PATTERNS = [
   /⏸\s*PAUSE/,
   /⛔\s*BLOCKED/,
@@ -1024,12 +1127,14 @@ const NON_COMPLETION_PATTERNS = [
   /\bno\s+final\s+exit\s+code\b/i
 ];
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const HIT_LIMIT_PATTERNS = [
   /(?:^|[\s>])[:;=-]?\s*hit\s+limit\b/i,
   /\bcontext(?:\s+window)?\s+limit\b/i,
   /\btoken\s+limit\b/i
 ];
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*|__)?(?:Outcome|Status|Result)(?:\*\*|__)?\s*:?\s*`?\s*(?:⛔\s*)?(?:FAIL|FAILED|BLOCKED)\b/i,
   /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:Outcome|Status|Result)(?:\*\*|__)?\s*\n+\s*`?\s*(?:⛔\s*)?(?:FAIL|FAILED|BLOCKED)\b/i,
@@ -1045,6 +1150,7 @@ const STRUCTURED_FAILURE_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*FAIL:\s+/i
 ];
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const STRUCTURED_BLOCK_SIGNAL_PATTERNS = [
   /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*|__)?(?:Outcome|Status|Result)(?:\*\*|__)?\s*:?\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
   /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:Outcome|Status|Result)(?:\*\*|__)?\s*\n+\s*`?\s*(?:⛔\s*)?BLOCKED\b/i,
@@ -1060,8 +1166,10 @@ const STRUCTURED_BLOCK_SIGNAL_PATTERNS = [
   /\bBlocking issue:\b/i
 ];
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const NONZERO_FAILED_COUNT_PATTERN = /"failed"\s*:\s*[1-9]\d*/i;
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
   /⛔\s*BLOCKED\b/i,
   /(?:^|[.!?]\s*)BLOCKED\s*[—–-]/i,
@@ -1086,6 +1194,7 @@ const CONTEXTUAL_FAILURE_SIGNAL_PATTERNS = [
   /\bgrant (?:read )?access\b/i
 ];
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const BENIGN_FAILURE_CONTEXT_PATTERNS = [
   /\bno\s+blocking\s+issues?\b/i,
   /\b(?:no|zero)\b[^\n]{0,80}\b(?:failed|failures?|blocked|errors?)\b/i,
@@ -1436,6 +1545,7 @@ function isCompletionArtifactPath(filePath: string): boolean {
   ) || (normalized.includes("/reports/") && basename.endsWith(".md"));
 }
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const INLINE_REPORT_PATTERNS = [
   /completion\s+report/i,
   /#\s*.+\bvalidation\s+report\b/i,
@@ -1449,6 +1559,7 @@ const INLINE_REPORT_PATTERNS = [
   /\bStatus\b.*✅\s*(?:Pass|Complete|Validated)\b/i
 ];
 
+// FALLBACK ONLY — primary signal is parseMeridianStatusMarker. Do not extend; update the marker schema instead.
 const SPECIAL_INLINE_REPORT_PATTERNS = [
   /#\s*.+\bCompletion\s+Report\b/i,
   /#\s*Delta\s+Check\s+Report\b/i,

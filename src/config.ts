@@ -16,6 +16,17 @@ export const STATE_FILE_PATH = process.env.STATE_FILE_PATH ?? "/var/lib/meridian
 export const ROLES_SERVICE_ID = "service:meridian-roles";
 export const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 2 * 60 * 1000);
 
+// Phase A6 kill-switch — when true, narrative-regex heuristics fall back when
+// the structured MeridianStatusMarker is absent or rejected on the worker and
+// validator channels. Defaults to true for backwards-compatibility; setting
+// `MERIDIAN_FALLBACK_HEURISTICS_ENABLED=false` flips it off, in which case
+// marker-absent worker runs return "running" (reconciler-retry) and validator
+// runs return an error outcome rather than running JSON-fallback parsing.
+// Note: PM-resolver envelope mapping is structured (not heuristic) and is
+// never gated by this flag.
+export const FALLBACK_HEURISTICS_ENABLED =
+  (process.env.MERIDIAN_FALLBACK_HEURISTICS_ENABLED ?? "true").toLowerCase() !== "false";
+
 function loadEnvFiles(): void {
   const explicitEnvKeys = new Set(Object.keys(process.env));
 

@@ -1,4 +1,5 @@
 import type { Logger } from "../base-role";
+import { FALLBACK_HEURISTICS_ENABLED } from "../../config";
 import type { DispatchWorkerState, KillPolicy, ValidatorConfig } from "../../types";
 import type { LifecycleStore } from "./lifecycle-store";
 import {
@@ -31,6 +32,12 @@ export interface ValidatorOrchestratorDeps {
   taskspecPath: string | null;
   buildPrompt?: (context: ValidatorPromptContext) => string;
   log: Pick<Logger, "info" | "warn">;
+  /**
+   * Phase A6 kill-switch override. Production code reads
+   * {@link FALLBACK_HEURISTICS_ENABLED} from `src/config.ts`; this option
+   * exists so tests can toggle the gate without mutating `process.env`.
+   */
+  fallbackHeuristicsEnabled?: boolean;
 }
 
 export interface ParsedValidatorOutput {
@@ -177,11 +184,17 @@ export async function executeValidationCycle(
   // Kill validator (ephemeral)
   await safeKill(meridianApi, validatorThreadId, log);
 
-  // Parse result — marker first, JSON fallback
+  // Parse result — marker first, JSON fallback (gated)
   const content = runResult.content ?? "";
   const marker = parseMeridianStatusMarker(content);
 
   if (marker && marker.role === "validator" && marker.worker_id === workerId) {
+    log.info("Validator signal source", {
+      event: "validator_signal_source",
+      worker_id: workerId,
+      signal_source: "marker",
+      result: marker.outcome
+    });
     return await handleValidatorMarker(
       deps,
       workerId,
@@ -212,6 +225,23 @@ export async function executeValidationCycle(
     }
   }
 
+  // Phase A6 kill-switch: when fallback heuristics are disabled and no
+  // usable marker was emitted, do NOT run the JSON-fallback parser. Return
+  // an error outcome so the caller can decide how to proceed; mirror the
+  // existing parse-error cleanup path (clearValidatorStart) so the worker's
+  // validation slot is not held by an orphaned validator thread.
+  const fallbackHeuristicsEnabled = deps.fallbackHeuristicsEnabled ?? FALLBACK_HEURISTICS_ENABLED;
+  if (!fallbackHeuristicsEnabled) {
+    log.info("Validator signal source", {
+      event: "validator_signal_source",
+      worker_id: workerId,
+      signal_source: "none",
+      result: "error"
+    });
+    lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
+    return { status: "error", reason: "no marker; fallback disabled" };
+  }
+
   const parsed = parseValidatorOutputFromJson(content);
   if (!parsed) {
     log.warn("Validator output unparseable", {
@@ -219,9 +249,22 @@ export async function executeValidationCycle(
       worker_id: workerId,
       content_length: content.length
     });
+    log.info("Validator signal source", {
+      event: "validator_signal_source",
+      worker_id: workerId,
+      signal_source: "none",
+      result: "error"
+    });
     lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
     return { status: "error", reason: "could not parse validator output" };
   }
+
+  log.info("Validator signal source", {
+    event: "validator_signal_source",
+    worker_id: workerId,
+    signal_source: "heuristic",
+    result: "scored"
+  });
 
   log.info("Validator scored", {
     event: "validator_scored",
