@@ -30,6 +30,8 @@ export interface DispatchPlanWorkerRow {
   notes: string | null;
 }
 
+export type DispatchActiveOwnerKind = "worker" | "validator" | "pm_resolver";
+
 export interface DispatchStatusWorker extends DispatchPlanWorkerRow {
   lifecycle_status: string | null;
   thread_id: string | null;
@@ -41,6 +43,13 @@ export interface DispatchStatusWorker extends DispatchPlanWorkerRow {
   stale_duration_minutes: number | null;
   stale_duration_human: string | null;
   progress: DispatchWorkerProgress | null;
+  // The thread that is currently doing work for this row, plus its kind
+  // (worker / validator / pm_resolver). Lets the GUI/CLI surface "who is
+  // actually running" instead of forcing operators to guess from the
+  // worker thread alone — validators and PM resolvers run in separate
+  // threads and otherwise stay invisible on the main task bar.
+  active_owner_kind: DispatchActiveOwnerKind | null;
+  active_owner_thread_id: string | null;
 }
 
 export interface DispatchWorkerProgress {
@@ -258,6 +267,7 @@ function buildWorkerStatus(
   const displayStatus = progressOverride?.status ?? getLifecycleStatusSymbol(displayLifecycleStatus) ?? row.status;
   const staleDurationMs = getStaleDurationMs(displayStatus, workerState?.last_seen_at, staleThresholdMinutes, generatedAt);
   const hasCurrentAssignment = displayLifecycleStatus !== "pending";
+  const owner = resolveActiveOwner(row.worker_id, workerState, displayLifecycleStatus, lifecycleState);
 
   return {
     ...row,
@@ -271,8 +281,44 @@ function buildWorkerStatus(
     stale_label: staleDurationMs === null ? null : "⚠️ STALE",
     stale_duration_minutes: staleDurationMs === null ? null : Math.floor(staleDurationMs / 60_000),
     stale_duration_human: staleDurationMs === null ? null : formatDuration(staleDurationMs),
-    progress
+    progress,
+    active_owner_kind: owner.kind,
+    active_owner_thread_id: owner.thread_id
   };
+}
+
+function resolveActiveOwner(
+  workerId: string,
+  workerState: DispatchWorkerState | undefined,
+  displayLifecycleStatus: string | null,
+  lifecycleState: DispatchThreadStateV2
+): { kind: DispatchActiveOwnerKind | null; thread_id: string | null } {
+  // PM resolver wins if there is a running entry targeting this worker —
+  // PM owns the thread until it terminates regardless of lifecycle status.
+  const runningPm = (lifecycleState.pm_resolvers ?? []).find(
+    (entry) => entry.status === "running" && entry.issue?.worker_id === workerId
+  );
+  if (runningPm?.thread_id) {
+    return { kind: "pm_resolver", thread_id: runningPm.thread_id };
+  }
+
+  if (displayLifecycleStatus === "awaiting_validation") {
+    const validatorThreadId = workerState?.validation?.validator_thread_id?.trim() || null;
+    if (validatorThreadId) {
+      return { kind: "validator", thread_id: validatorThreadId };
+    }
+    return { kind: "validator", thread_id: null };
+  }
+
+  if (
+    displayLifecycleStatus === "running"
+    || displayLifecycleStatus === "fix_requested"
+  ) {
+    const workerThreadId = workerState?.thread_id?.trim() || null;
+    return { kind: "worker", thread_id: workerThreadId };
+  }
+
+  return { kind: null, thread_id: null };
 }
 
 function getLifecycleStatusSymbol(lifecycleStatus: string | null): string | null {
