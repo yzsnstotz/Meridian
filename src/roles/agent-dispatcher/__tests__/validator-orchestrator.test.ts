@@ -8,9 +8,10 @@ import { LifecycleStore } from "../lifecycle-store";
 import {
   deliverValidatorFeedback,
   executeValidationCycle,
-  parseValidatorOutput,
+  parseValidatorOutputFromJson,
   type ValidatorOrchestratorDeps
 } from "../validator-orchestrator";
+import { buildDefaultValidatorPrompt } from "../validator-prompt-builder";
 import type { MeridianApiClient } from "../meridian-api-client";
 import type { DispatchContinuationPlanRow } from "../service-continuation";
 import type { ValidatorConfig } from "../../../types";
@@ -253,11 +254,334 @@ describe("executeValidationCycle", () => {
       content: expect.stringContaining("Fix the missing symbol map.")
     }));
   });
+
+  it("transitions to validated when the validator marker outcome is pass", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-marker-pass" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-marker-pass",
+      status: "success",
+      runState: "completed",
+      content: [
+        "Looks good overall.",
+        "",
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: pass",
+        "cycle: 1",
+        "score: 0.95",
+        "feedback: |",
+        "  All requirements met.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 0.95 });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("completed");
+    expect(worker?.validation?.history[0]).toMatchObject({
+      score: 0.95,
+      feedback: "All requirements met."
+    });
+  });
+
+  it("transitions to fix_requested when the validator marker outcome is fix_requested below max cycles", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-marker-fix" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-marker-fix",
+      status: "success",
+      runState: "completed",
+      content: [
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: fix_requested",
+        "score: 0.6",
+        "feedback: |",
+        "  Add tests for the error path.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "fix_requested",
+      score: 0.6,
+      cycle: 1,
+      maxCycles: 3
+    });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("fix_requested");
+    expect(worker?.validation?.history[0]).toMatchObject({
+      score: 0.6,
+      feedback: "Add tests for the error path."
+    });
+  });
+
+  it("fails when the validator marker outcome is fix_requested at the max validation cycle", async () => {
+    const harness = await createHarness({ killPolicy: "always" });
+    const state = harness.lifecycleStore.load();
+    state.workers["N-02"]!.validation = {
+      current_cycle: 2,
+      max_fix_cycles: 3,
+      validator_thread_id: null,
+      last_score: 0.62,
+      last_feedback: "Previous cycle feedback",
+      history: [
+        {
+          cycle: 1,
+          score: 0.66,
+          feedback: "Cycle 1 feedback",
+          validator_thread_id: "validator-thread-1",
+          timestamp: "2026-04-27T00:11:00.000Z"
+        },
+        {
+          cycle: 2,
+          score: 0.62,
+          feedback: "Cycle 2 feedback",
+          validator_thread_id: "validator-thread-2",
+          timestamp: "2026-04-27T00:12:00.000Z"
+        }
+      ]
+    };
+    harness.lifecycleStore.save(state);
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-marker-max" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-marker-max",
+      status: "success",
+      runState: "completed",
+      content: [
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: fix_requested",
+        "score: 0.65",
+        "feedback: |",
+        "  Still incomplete.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "failed",
+      score: 0.65,
+      reason: "max validation cycles exhausted (3)"
+    });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("failed");
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
+  });
+
+  it("fails immediately when the validator marker outcome is fail, even at cycle 1 of N", async () => {
+    const harness = await createHarness({ killPolicy: "always" });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-marker-fail" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-marker-fail",
+      status: "success",
+      runState: "completed",
+      content: [
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: fail",
+        "score: 0.0",
+        "feedback: |",
+        "  Fundamentally wrong approach.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "failed",
+      score: 0.0,
+      reason: "validator returned fail outcome"
+    });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("failed");
+    expect(worker?.validation?.history[0]).toMatchObject({
+      score: 0,
+      feedback: "Fundamentally wrong approach."
+    });
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
+  });
+
+  it("falls through to the legacy JSON parser when no marker is emitted", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-legacy" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-legacy",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.92,"feedback":"legacy ok"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 0.92 });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.validation?.history[0]).toMatchObject({
+      score: 0.92,
+      feedback: "legacy ok"
+    });
+  });
+
+  it("falls through to the legacy JSON parser and logs mismatch when marker worker_id mismatches", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-mismatch" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-mismatch",
+      status: "success",
+      runState: "completed",
+      content: [
+        '{"score":0.91,"feedback":"legacy still parses"}',
+        "",
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-99",
+        "outcome: pass",
+        "score: 1.0",
+        "feedback: not for us",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 0.91 });
+    expect(harness.deps.log.warn).toHaveBeenCalledWith(
+      "Validator marker mismatch",
+      expect.objectContaining({
+        event: "validator_marker_mismatch",
+        worker_id: "N-02",
+        marker_worker_id: "N-99"
+      })
+    );
+  });
+
+  it("falls through to the legacy JSON parser and logs wrong-role when marker role is worker", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-wrong-role" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-wrong-role",
+      status: "success",
+      runState: "completed",
+      content: [
+        '{"score":0.88,"feedback":"legacy fallback"}',
+        "",
+        "<<<MERIDIAN-STATUS>>>",
+        "role: worker",
+        "worker_id: N-02",
+        "outcome: complete",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 0.88 });
+    expect(harness.deps.log.warn).toHaveBeenCalledWith(
+      "Validator marker wrong role",
+      expect.objectContaining({
+        event: "validator_marker_wrong_role",
+        worker_id: "N-02",
+        marker_role: "worker"
+      })
+    );
+  });
+
+  it("defaults the score to 1.0 when the marker outcome is pass without a score field", async () => {
+    const harness = await createHarness();
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-no-score" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-no-score",
+      status: "success",
+      runState: "completed",
+      content: [
+        "<<<MERIDIAN-STATUS>>>",
+        "role: validator",
+        "worker_id: N-02",
+        "outcome: pass",
+        "feedback: |",
+        "  Looks great.",
+        "<<<END>>>"
+      ].join("\n"),
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({ status: "passed", score: 1.0 });
+  });
 });
 
-describe("parseValidatorOutput", () => {
-  it("parses binary positive verdicts from validator JSON", () => {
-    expect(parseValidatorOutput('```json\n{"positive":true,"feedback":"accepted"}\n```')).toEqual({
+describe("buildDefaultValidatorPrompt", () => {
+  it("renders the marker reply protocol with role and outcome enum", () => {
+    const prompt = buildDefaultValidatorPrompt({
+      workerId: "N-02",
+      taskBranch: "task/n-02",
+      baseBranch: "main",
+      taskspecPath: null,
+      dispatchPlanPath: "/tmp/plan.md",
+      cycle: 1,
+      maxFixCycles: 3,
+      previousFeedback: null
+    });
+
+    expect(prompt).toContain("<<<MERIDIAN-STATUS>>>");
+    expect(prompt).toContain("role: validator");
+    expect(prompt).toContain("outcome: pass | fix_requested | fail");
+  });
+
+  it("does not embed a JSON output-format code-block instruction", () => {
+    const scorePrompt = buildDefaultValidatorPrompt({
+      workerId: "N-02",
+      taskBranch: "task/n-02",
+      baseBranch: "main",
+      taskspecPath: null,
+      dispatchPlanPath: "/tmp/plan.md",
+      cycle: 1,
+      maxFixCycles: 3,
+      previousFeedback: null,
+      thresholdType: "score"
+    });
+    const binaryPrompt = buildDefaultValidatorPrompt({
+      workerId: "N-02",
+      taskBranch: "task/n-02",
+      baseBranch: "main",
+      taskspecPath: null,
+      dispatchPlanPath: "/tmp/plan.md",
+      cycle: 1,
+      maxFixCycles: 3,
+      previousFeedback: null,
+      thresholdType: "binary"
+    });
+
+    for (const prompt of [scorePrompt, binaryPrompt]) {
+      expect(prompt).not.toContain("```json");
+      expect(prompt).not.toMatch(/end your response with exactly one JSON block/i);
+    }
+  });
+});
+
+describe("parseValidatorOutputFromJson", () => {
+  it("parses binary positive verdicts from validator JSON (legacy fallback)", () => {
+    expect(parseValidatorOutputFromJson('```json\n{"positive":true,"feedback":"accepted"}\n```')).toEqual({
       score: 1,
       feedback: "accepted",
       positive: true
