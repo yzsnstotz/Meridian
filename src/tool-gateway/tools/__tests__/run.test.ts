@@ -116,7 +116,8 @@ vi.mock("node:crypto", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn()
+  readFile: vi.fn(),
+  access: vi.fn()
 }));
 
 vi.mock("../../../roles/agent-dispatcher/lifecycle-store", () => ({
@@ -129,7 +130,7 @@ vi.mock("../../../roles/agent-dispatcher/reconciler", () => ({
 }));
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 
 import type { HubResult, HubResultStatus, HubRunState } from "../../../types";
 import runTool from "../run";
@@ -144,9 +145,12 @@ type MockLifecycleStore = {
 
 const randomUUIDMock = vi.mocked(randomUUID);
 const readFileMock = vi.mocked(readFile);
+const accessMock = vi.mocked(access);
 
 beforeEach(() => {
   randomUUIDMock.mockReturnValue("11111111-1111-4111-8111-111111111111");
+  // Default: every previous-attempt-context probe finds the artifact on disk.
+  accessMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -1047,7 +1051,7 @@ describe("run tool", () => {
     );
   });
 
-  it("injects prior reply and report context when a worker is redone", async () => {
+  it("injects slim prior-attempt context (paths only, no inlined bodies) when a worker is redone", async () => {
     lifecycleStoreConstructor.mockImplementationOnce((filePath: string) => {
       const workers: Record<string, Record<string, unknown>> = {
         "N-04": {
@@ -1124,10 +1128,6 @@ describe("run tool", () => {
         ].join("\n");
       }
 
-      if (filePath === "/tmp/dispatch/dev_history/v1_round/N-04_report.md") {
-        return "# Earlier Report\n- The last pass missed the default checkbox behavior.";
-      }
-
       throw new Error(`Unexpected readFile path: ${String(filePath)}`);
     });
 
@@ -1139,12 +1139,16 @@ describe("run tool", () => {
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
     expect(sentContent).toContain("# Previous Attempt Context");
-    expect(sentContent).toContain("Watch the same GUI drift again.");
-    expect(sentContent).toContain("# Earlier Report");
-    expect(sentContent).toContain("avoid repeating the same mistake");
+    expect(sentContent).toContain("Re-check current state from disk before acting");
+    expect(sentContent).toContain("- Previous worker thread: `thread-prev`");
+    expect(sentContent).toContain("- Previous output artifact: `/tmp/dispatch/dev_history/v1_round/N-04_report.md`");
+    // Slim contract: no inlined report bodies or prior agent replies.
+    expect(sentContent).not.toContain("Watch the same GUI drift again.");
+    expect(sentContent).not.toContain("# Earlier Report");
+    expect(sentContent).not.toContain("Previous agent reply:");
   });
 
-  it("injects prior reply and report context when a worker is redone with angle-bracket report templates", async () => {
+  it("injects slim prior-attempt context for angle-bracket report templates", async () => {
     lifecycleStoreConstructor.mockImplementationOnce((filePath: string) => {
       const workers: Record<string, Record<string, unknown>> = {
         "N-04": {
@@ -1221,10 +1225,6 @@ describe("run tool", () => {
         ].join("\n");
       }
 
-      if (filePath === "/tmp/dispatch/dev_history/v1_round/N-04_report.md") {
-        return "# Earlier Report\n- The last pass missed the default checkbox behavior.";
-      }
-
       throw new Error(`Unexpected readFile path: ${String(filePath)}`);
     });
 
@@ -1236,9 +1236,12 @@ describe("run tool", () => {
 
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
     expect(sentContent).toContain("# Previous Attempt Context");
-    expect(sentContent).toContain("Watch the same GUI drift again.");
-    expect(sentContent).toContain("# Earlier Report");
-    expect(sentContent).toContain("avoid repeating the same mistake");
+    expect(sentContent).toContain("Re-check current state from disk before acting");
+    expect(sentContent).toContain("- Previous worker thread: `thread-prev`");
+    expect(sentContent).toContain("- Previous output artifact: `/tmp/dispatch/dev_history/v1_round/N-04_report.md`");
+    expect(sentContent).not.toContain("Watch the same GUI drift again.");
+    expect(sentContent).not.toContain("# Earlier Report");
+    expect(sentContent).not.toContain("Previous agent reply:");
   });
 
   it("surfaces structured still_running results without flattening them to done", async () => {
