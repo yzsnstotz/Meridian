@@ -863,15 +863,18 @@ function mapHubResultToLifecycleStatus(
     return "running";
   }
 
-  if (hubResultContainsHitLimit(hubResult)) {
-    return "failed";
-  }
-
   // Phase A primary signal: trust the structured MeridianStatusMarker
   // emitted by worker agents over narrative heuristics. The marker is only
   // honoured when role === "worker" AND its worker_id matches the launched
   // worker; mismatches log and fall through to the heuristic chain so
   // accidental cross-talk cannot terminate the wrong worker.
+  //
+  // The marker parse runs BEFORE hubResultContainsHitLimit so that a worker
+  // emitting outcome: complete is not pre-empted by an incidental "hit
+  // limit"/"token limit" mention in its narrative. A worker that genuinely
+  // ran out of context emits outcome: hit_limit and is mapped to "failed"
+  // by the switch below; the heuristic only needs to fire when no marker
+  // was emitted.
   const marker = parseMeridianStatusMarker(combineHubResultText(hubResult));
   if (marker) {
     if (marker.role !== "worker") {
@@ -891,6 +894,14 @@ function mapHubResultToLifecycleStatus(
         marker_role: marker.role
       });
     } else {
+      // Symmetric positive log with validator-orchestrator and pm-resolver:
+      // emit once before the switch so any honoured outcome is observable
+      // from a single log site rather than five per-arm sites.
+      log?.info("Lifecycle decided via marker", {
+        event: "marker_decision",
+        worker_id: workerId,
+        outcome: marker.outcome
+      });
       switch (marker.outcome) {
         case "complete":
           if (
@@ -921,6 +932,10 @@ function mapHubResultToLifecycleStatus(
         }
       }
     }
+  }
+
+  if (hubResultContainsHitLimit(hubResult)) {
+    return "failed";
   }
 
   // Authoritative completion gate: when the hub envelope reports

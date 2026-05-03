@@ -1884,6 +1884,67 @@ describe("LifecycleStore", () => {
       });
     });
 
+    it("trusts a complete marker even when narrative incidentally mentions 'hit limit'", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-30.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+      harness.store.recordWorkerStart("N-30", "worker-thread-n30", "11111111-1111-4111-8111-111111111111", [reportPath]);
+      await fsp.writeFile(reportPath, "# N-30 Report\nDone.\n", "utf8");
+
+      harness.store.recordWorkerResult("N-30", buildHubResult({
+        thread_id: "worker-thread-n30",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "Carefully avoided the token limit by streaming output.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: N-30",
+          "role: worker",
+          "outcome: complete",
+          `report_path: ${reportPath}`,
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-30"]).toMatchObject({ status: "completed" });
+    });
+
+    it("emits lifecycle.marker_decision log when a worker marker is honoured", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info } });
+      harness.store.recordWorkerStart(
+        "N-31",
+        "worker-thread-n31",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-31", buildHubResult({
+        thread_id: "worker-thread-n31",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "All checks passed.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-31",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-31"]).toMatchObject({ status: "completed" });
+      expect(info).toHaveBeenCalledWith("Lifecycle decided via marker", {
+        event: "marker_decision",
+        worker_id: "N-31",
+        outcome: "complete"
+      });
+    });
+
     it("emits lifecycle.marker_wrong_role log when a validator-role marker lands in the worker channel", async () => {
       const info = vi.fn();
       const harness = await createHarness({ log: { info } });
