@@ -1979,9 +1979,15 @@ describe("role config handlers", () => {
         status: "running"
       },
       workers: {
+        // Lifecycle status reflects what determineWorkerOutcome would
+        // produce for a hub_result whose narrative contains ":hit limit"
+        // (heuristic fallback maps hit-limit content to "failed"). Asking
+        // the dispatcher to re-run that same heuristic over the lifecycle's
+        // own output would be redundant with the Phase A marker protocol;
+        // the dispatcher honors the lifecycle status instead.
         "R-07": buildLifecycleWorker({
           thread_id: "worker-thread-r07",
-          status: "completed",
+          status: "failed",
           hub_result: {
             ...buildHubResult(":hit limit"),
             trace_id: "11111111-1111-4111-8111-111111111111",
@@ -2062,6 +2068,131 @@ describe("role config handlers", () => {
         worker: "N-01",
         error: "Status: BLOCKED - required @phoenix namespace is absent from the extracted asar tree."
       });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("derives the manual-intervention reason from the MeridianStatusMarker outcome when present", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-marker-reason-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 0 | N-04 | Generate findings | CODEX-HIGH | — | TaskSpec | foundation gate |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": buildLifecycleWorker({
+          thread_id: "worker-thread-n04",
+          status: "blocked",
+          retry_count: 0,
+          hub_result: {
+            ...buildHubResult([
+              "Encountered an external blocker.",
+              "<<<MERIDIAN-STATUS>>>",
+              "worker_id: N-04",
+              "role: worker",
+              "outcome: needs_pm",
+              "report_path: /tmp/n-04-report.md",
+              "notes: PM input required to choose between option A and option B",
+              "<<<END>>>"
+            ].join("\n")),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-n04"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-marker-reason", dispatchPlanPath);
+
+      const response = await invokeJson<Record<string, unknown>>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-marker-reason/continue"
+      );
+
+      expect(response.status).toBe("manual_intervention_required");
+      expect(response.message).toBe("manual intervention required: N-04 requested PM resolution");
+      expect(response.worker).toBe("N-04");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag manual intervention when the lifecycle has resolved a worker whose plan row is still ⛔ BLOCKED", async () => {
+    // Regression: BATCH-2-GATE shipped a `blocked` marker on its first
+    // reply but a later validator approved the deliverables, moving
+    // lifecycle to completed. The plan markdown row stayed ⛔ BLOCKED
+    // (plan-vs-lifecycle drift). Continuing the dispatcher must trust
+    // the lifecycle and look beyond the stale plan row.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-stale-plan-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⛔ BLOCKED | 2 | BATCH-2-GATE | Gate batch 2 | CODEX-HIGH | — | TaskSpec | originally blocked, validator approved |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "BATCH-2-GATE": buildLifecycleWorker({
+          thread_id: "worker-thread-b2g",
+          status: "completed",
+          retry_count: 0,
+          hub_result: {
+            ...buildHubResult([
+              "Original reply emitted before validator override.",
+              "<<<MERIDIAN-STATUS>>>",
+              "worker_id: BATCH-2-GATE",
+              "role: worker",
+              "outcome: blocked",
+              "report_path: /tmp/batch-2-gate-report.md",
+              "notes: original blocker since resolved by validator",
+              "<<<END>>>"
+            ].join("\n")),
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-b2g"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-stale-plan", dispatchPlanPath);
+
+      const response = await invokeJson<Record<string, unknown>>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-stale-plan/continue"
+      );
+
+      expect(response.status).not.toBe("manual_intervention_required");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -3471,6 +3602,110 @@ describe("role config handlers", () => {
           })
         ])
       });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a separate validator dispatch detail per validation cycle in worker.validation.history", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-validator-cycles-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 2 | N-12 | Findings A | CODEX-HIGH | — | TaskSpec | validator approved |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-03T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-12": buildLifecycleWorker({
+          thread_id: "codex_40",
+          status: "completed",
+          retry_count: 1,
+          validation: {
+            current_cycle: 2,
+            max_fix_cycles: 3,
+            validator_thread_id: "validator-thread-cycle-2",
+            last_score: 1,
+            last_feedback: "Pass on cycle 2",
+            history: [
+              {
+                cycle: 1,
+                score: 0.5,
+                feedback: "Add the missing flag handler.",
+                validator_thread_id: "validator-thread-cycle-1",
+                timestamp: "2026-05-03T00:30:00.000Z"
+              },
+              {
+                cycle: 2,
+                score: 1,
+                feedback: "Pass on cycle 2",
+                validator_thread_id: "validator-thread-cycle-2",
+                timestamp: "2026-05-03T00:45:00.000Z"
+              }
+            ]
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-validator-cycles", dispatchPlanPath);
+
+      const response = await invokeJson<{
+        dispatch_details: Array<Record<string, unknown>>;
+      }>(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-validator-cycles"
+      );
+
+      // Worker bar is still present and surfaces retry_count for the badge.
+      expect(response.dispatch_details).toContainEqual(expect.objectContaining({
+        detail_kind: "worker",
+        worker_id: "N-12",
+        task_id: "N-12",
+        retry_count: 1
+      }));
+
+      // Cycle 1 — fix_requested score (partial).
+      expect(response.dispatch_details).toContainEqual(expect.objectContaining({
+        detail_kind: "validator",
+        worker_id: "VALIDATOR:N-12:cycle-1",
+        task_id: "N-12",
+        validator_cycle: 1,
+        validator_score: 0.5,
+        validator_outcome: "fix_requested",
+        worker_thread_id: "validator-thread-cycle-1",
+        reply: expect.objectContaining({
+          content: expect.stringContaining("Add the missing flag handler.")
+        })
+      }));
+
+      // Cycle 2 — pass.
+      expect(response.dispatch_details).toContainEqual(expect.objectContaining({
+        detail_kind: "validator",
+        worker_id: "VALIDATOR:N-12:cycle-2",
+        task_id: "N-12",
+        validator_cycle: 2,
+        validator_score: 1,
+        validator_outcome: "pass",
+        worker_thread_id: "validator-thread-cycle-2",
+        reply: expect.objectContaining({
+          content: expect.stringContaining("Pass on cycle 2")
+        })
+      }));
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
