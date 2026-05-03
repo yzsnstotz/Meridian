@@ -2067,9 +2067,13 @@ async function processValidationQueue(
   const preferredFixWorkerId = preferredWorkerId?.trim();
   if (preferredFixWorkerId) {
     const preferredWorker = lifecycleStore.load().workers[preferredFixWorkerId];
-    if (preferredWorker?.status === "fix_requested") {
+    if (preferredWorker?.status === "fix_requested" && preferredWorker.thread_id?.trim()) {
       const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
-      return await buildValidatorFeedbackDeliveryResponse(deps, preferredFixWorkerId);
+      const response = await buildValidatorFeedbackDeliveryResponse(deps, preferredFixWorkerId, log);
+      if (response) {
+        return response;
+      }
+      // null = thread was cleared for relaunch; fall through to launch path.
     }
   }
 
@@ -2130,9 +2134,24 @@ async function processValidationQueue(
     const worker = lifecycleStore.load().workers[workerId];
     if (worker?.status !== "fix_requested") continue;
 
+    // Worker thread was cleared (e.g. by a prior validator_feedback_undeliverable
+    // relaunch trigger). Don't try to deliver feedback to a dead thread —
+    // skip this row so processValidationQueue returns null and the standard
+    // launch path picks up the 🔁 row (service-continuation marks fix_requested
+    // rows eligible). continueWorker then falls through to launchWorker because
+    // the thread id is empty, and validation feedback surfaces to the new
+    // thread via buildPreviousAttemptContext.
+    if (!worker.thread_id?.trim()) continue;
+
     const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
 
-    const response = await buildValidatorFeedbackDeliveryResponse(deps, workerId);
+    const response = await buildValidatorFeedbackDeliveryResponse(deps, workerId, log);
+    if (response === null) {
+      // Delivery failed and the thread was cleared for relaunch. Skip this
+      // row and fall through to the launch path within this same tick.
+      continue;
+    }
+
     if (response.status === "validation_feedback_delivered") {
       const latestWorker = lifecycleStore.load().workers[workerId];
       if (latestWorker?.status === "awaiting_validation" && !latestWorker.validation?.validator_thread_id) {
@@ -2154,22 +2173,42 @@ async function processValidationQueue(
 
 async function buildValidatorFeedbackDeliveryResponse(
   deps: ValidatorOrchestratorDeps,
-  workerId: string
-): Promise<ContinueDispatcherResponse> {
-  const delivered = await deliverValidatorFeedback(deps, workerId);
-  if (!delivered) {
+  workerId: string,
+  log: Logger
+): Promise<ContinueDispatcherResponse | null> {
+  const outcome = await deliverValidatorFeedback(deps, workerId);
+  if (outcome.delivered) {
     return {
       ok: true,
-      status: "manual_intervention_required",
-      message: `manual intervention required: ${workerId} validator feedback could not be delivered`,
+      status: "validation_feedback_delivered",
+      message: `validator feedback delivered to ${workerId}`,
       worker: workerId
     };
   }
 
+  if (outcome.reason === "delivery_error") {
+    // The retained worker thread is unreachable (expired, killed, hub
+    // disconnect). Validator feedback is preserved in worker.validation;
+    // clear the dead thread id so the standard launch path relaunches the
+    // row in the same continue-dispatcher tick. continueWorker (called
+    // downstream) sees fix_requested with empty thread_id and falls through
+    // to launchWorkerFromDispatchPlan; the new thread reads the preserved
+    // feedback through buildPreviousAttemptContext. Only escalate to PM if
+    // that relaunch also fails. Return null to let processValidationQueue
+    // fall through to the launch path.
+    log.warn("Validator feedback undeliverable; relaunching worker row", {
+      event: "validator_feedback_relaunch",
+      worker_id: workerId,
+      error: outcome.error
+    });
+    deps.lifecycleStore.clearWorkerThreadForRelaunch(workerId, "validator_feedback_undeliverable");
+    return null;
+  }
+
   return {
     ok: true,
-    status: "validation_feedback_delivered",
-    message: `validator feedback delivered to ${workerId}`,
+    status: "manual_intervention_required",
+    message: `manual intervention required: ${workerId} validator feedback could not be delivered (${outcome.detail})`,
     worker: workerId
   };
 }

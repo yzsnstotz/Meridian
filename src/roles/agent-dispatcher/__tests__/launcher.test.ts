@@ -298,7 +298,7 @@ describe("dispatcherHubSystemPromptPath", () => {
     expect(command).toEqual({
       command: "/usr/local/bin/node",
       args: [path.join(repoRoot, "dist/bin/meridian-tool.js")],
-      displayCommand: `/usr/local/bin/node ${path.join(repoRoot, "dist/bin/meridian-tool.js")}`,
+      displayCommand: `node ${path.join(repoRoot, "dist/bin/meridian-tool.js")}`,
       entrypointPath: path.join(repoRoot, "dist/bin/meridian-tool.js")
     });
   });
@@ -332,9 +332,24 @@ describe("dispatcherHubSystemPromptPath", () => {
     expect(command).toEqual({
       command: "/usr/local/bin/node",
       args: [path.join(repoRoot, "dist/bin/meridian-tool.js")],
-      displayCommand: `/usr/local/bin/node ${path.join(repoRoot, "dist/bin/meridian-tool.js")}`,
+      displayCommand: `node ${path.join(repoRoot, "dist/bin/meridian-tool.js")}`,
       entrypointPath: path.join(repoRoot, "dist/bin/meridian-tool.js")
     });
+  });
+
+  it("does not leak host-specific node toolchain paths into displayCommand", () => {
+    const repoRoot = "/tmp/meridian-roles";
+    const hermesNode = "/Users/yzliu/.hermes/node/bin/node";
+    const command = resolveMeridianToolCommand({
+      repoRoot,
+      runtimeTree: "dist",
+      nodeExecutable: hermesNode,
+      existsSync: (filePath) => filePath === path.join(repoRoot, "dist/bin/meridian-tool.js")
+    });
+
+    expect(command.command).toBe(hermesNode);
+    expect(command.displayCommand).not.toContain(hermesNode);
+    expect(command.displayCommand.startsWith("node ")).toBe(true);
   });
 });
 

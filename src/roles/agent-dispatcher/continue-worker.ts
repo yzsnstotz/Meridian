@@ -83,7 +83,12 @@ export async function continueDispatchWorker(
 
     // fix_requested workers keep their existing thread alive — just return it
     // so the caller (role-handlers) can deliver validator feedback to it.
-    if (currentWorkerState?.status === "fix_requested") {
+    // Exception: if the recorded thread id has been cleared (e.g. by
+    // clearWorkerThreadForRelaunch after a failed feedback delivery), fall
+    // through to launchWorkerFromDispatchPlan so a fresh thread is launched.
+    // The lifecycle-preserved validation feedback is surfaced into the new
+    // thread via buildPreviousAttemptContext.
+    if (currentWorkerState?.status === "fix_requested" && currentWorkerState.thread_id?.trim()) {
       return {
         ok: true,
         workerId,

@@ -129,6 +129,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     '- `status: "continued"`: worker launched. Re-read plan later and continue.',
     '- `status: "plan_complete"`: all non-human workers have reached a terminal state. Send the final completion notify and stop immediately.',
     '- `status: "still_blocked"`: do not force a launch. Re-read; notify human if block persists.',
+    '- `status: "validation_in_progress"` / `"validation_feedback_delivered"`: validation cycle is live. Re-read later, do not escalate.',
     '- `status: "manual_intervention_required"`: a worker reported `:hit limit`, `BLOCKED`, or another terminal stop signal. Call `pm-resolve --dispatcher <dispatcher_role_id>` with the worker and message, then pause. If PM resolver is disabled or fails to start, notify human immediately and pause.',
     '- `status: "local_tool_bootstrap_failed"`: call `pm-resolve --dispatcher <dispatcher_role_id>` with the worker and error. If PM resolver is disabled or fails to start, notify human with spawn-failure template and pause.',
     "- `ok:false`: re-read plan before follow-up. Do not mutate plan status directly.",

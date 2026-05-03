@@ -244,7 +244,7 @@ describe("executeValidationCycle", () => {
       raw: {}
     });
 
-    await expect(deliverValidatorFeedback(harness.deps, "N-02")).resolves.toBe(true);
+    await expect(deliverValidatorFeedback(harness.deps, "N-02")).resolves.toEqual({ delivered: true });
 
     const worker = harness.lifecycleStore.load().workers["N-02"];
     expect(worker?.status).toBe("awaiting_validation");
