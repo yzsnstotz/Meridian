@@ -21,6 +21,15 @@ import { z } from "zod";
 //   feedback: |
 //     line one
 //     line two
+//
+// Parser semantics worth knowing:
+//
+// - Stray openers are skipped leniently. If a `<<<MERIDIAN-STATUS>>>` opener
+//   appears with no closer before the next opener, it is treated as a stray
+//   token (e.g. quoted illustration in narrative) and the parser keeps
+//   scanning for a genuinely paired BEGIN/END block.
+// - If the same key appears twice inside a single block, the last occurrence
+//   wins.
 
 const MARKER_BEGIN = "<<<MERIDIAN-STATUS>>>";
 const MARKER_END = "<<<END>>>";
@@ -116,11 +125,21 @@ function findMarkerBlocks(text: string): string[] {
     }
 
     const contentStart = beginIdx + MARKER_BEGIN.length;
+    const nextBeginIdx = text.indexOf(MARKER_BEGIN, contentStart);
     const endIdx = text.indexOf(MARKER_END, contentStart);
+
     if (endIdx === -1) {
-      // Malformed: opener with no closer. Stop scanning so we never emit a
-      // truncated block.
+      // Malformed: opener with no closer anywhere ahead. Stop scanning so we
+      // never emit a truncated block.
       break;
+    }
+
+    if (nextBeginIdx !== -1 && nextBeginIdx < endIdx) {
+      // Another opener appears before the next closer — the current opener
+      // is stray (e.g. quoted illustration in narrative). Skip it and keep
+      // scanning from the next opener.
+      cursor = nextBeginIdx;
+      continue;
     }
 
     blocks.push(text.slice(contentStart, endIdx));

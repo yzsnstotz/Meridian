@@ -195,4 +195,77 @@ describe("parseMeridianStatusMarker", () => {
       notes: "worker repeatedly failed validation; skipping per policy"
     });
   });
+
+  it("skips a stray opener and parses the next genuinely paired block", () => {
+    const reply = [
+      "<<<MERIDIAN-STATUS>>>",
+      "this opener has no closer",
+      "",
+      "later in narrative...",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: N-12",
+      "role: worker",
+      "outcome: complete",
+      "report_path: /tmp/N-12.md",
+      "<<<END>>>"
+    ].join("\n");
+
+    expect(parseMeridianStatusMarker(reply)).toEqual({
+      role: "worker",
+      worker_id: "N-12",
+      outcome: "complete",
+      report_path: "/tmp/N-12.md"
+    });
+  });
+
+  it("captures key-like lines inside a YAML-pipe body as part of the string", () => {
+    const reply = [
+      "<<<MERIDIAN-STATUS>>>",
+      "role: worker",
+      "worker_id: N-13",
+      "outcome: complete",
+      "notes: |",
+      "  earlier i wrote:",
+      "  role: worker",
+      "  outcome: failed",
+      "  but that was wrong",
+      "<<<END>>>"
+    ].join("\n");
+
+    expect(parseMeridianStatusMarker(reply)).toEqual({
+      role: "worker",
+      worker_id: "N-13",
+      outcome: "complete",
+      notes: "earlier i wrote:\nrole: worker\noutcome: failed\nbut that was wrong"
+    });
+  });
+
+  it("keeps the last value when a key appears twice in the same block", () => {
+    const reply = [
+      "<<<MERIDIAN-STATUS>>>",
+      "role: worker",
+      "worker_id: N-14a",
+      "worker_id: N-14b",
+      "outcome: complete",
+      "<<<END>>>"
+    ].join("\n");
+
+    expect(parseMeridianStatusMarker(reply)).toEqual({
+      role: "worker",
+      worker_id: "N-14b",
+      outcome: "complete"
+    });
+  });
+
+  it("returns null when a required field is missing (no worker_id)", () => {
+    const reply = [
+      "<<<MERIDIAN-STATUS>>>",
+      "role: worker",
+      "outcome: complete",
+      "<<<END>>>"
+    ].join("\n");
+
+    expect(parseMeridianStatusMarker(reply)).toBeNull();
+  });
 });
