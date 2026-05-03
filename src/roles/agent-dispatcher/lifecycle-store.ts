@@ -529,10 +529,14 @@ export class LifecycleStore {
           // escalation that succeeds in parallel doesn't show "failed".
           resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, markerStatus);
         }
-      } else if (marker) {
-        // Marker present but role is not pm-resolver (worker or validator
-        // marker landed in the PM channel — cross-channel leak). Fall back
-        // to envelope mapping and log the leak so operators can spot it.
+      } else if (marker && (marker.role as string) !== "pm-resolver") {
+        // Marker present but role is explicitly not pm-resolver (worker or
+        // validator marker landed in the PM channel — cross-channel leak).
+        // The explicit role check is intentional and future-proofs this
+        // branch against new roles being added to MeridianStatusMarkerSchema;
+        // the `as string` cast widens marker.role so TS does not narrow it
+        // away here based on the outer `else` arm — the runtime check still
+        // matters when a future role is added.
         this.log.info("PM resolver marker wrong role", {
           event: "pm_resolver_marker_wrong_role",
           thread_id: threadId,
