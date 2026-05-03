@@ -2502,8 +2502,8 @@ function renderDispatchPlanActions(row) {
           ${currentStatus === "running" ? `
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
-          <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
           ` : ""}
+          <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
         </div>
         ${statusEditor}
       </div>
@@ -2527,6 +2527,7 @@ function renderDispatchPlanActions(row) {
     <div class="table-action-stack">
       <div class="table-action-group">
         <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
+        <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
       </div>
       ${statusEditor}
     </div>
