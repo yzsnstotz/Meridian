@@ -504,8 +504,19 @@ export class LifecycleStore {
       const targetWorkerId = entry.issue?.worker_id ?? null;
 
       let resolvedStatus: PmResolverLifecycleStatus;
-      if (marker && marker.role === "pm-resolver") {
-        if (targetWorkerId !== null && marker.worker_id !== targetWorkerId) {
+      // top-level if (marker) is intentional — keeps marker.role un-narrowed
+      // so the wrong-role branch is type-safe (mirrors validator-orchestrator).
+      if (marker) {
+        if (marker.role !== "pm-resolver") {
+          this.log.info("PM resolver marker wrong role", {
+            event: "pm_resolver_marker_wrong_role",
+            thread_id: threadId,
+            marker_role: marker.role,
+            marker_worker_id: marker.worker_id,
+            content_length: content.length
+          });
+          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+        } else if (targetWorkerId !== null && marker.worker_id !== targetWorkerId) {
           this.log.info("PM resolver marker mismatch", {
             event: "pm_resolver_marker_mismatch",
             thread_id: threadId,
@@ -529,22 +540,6 @@ export class LifecycleStore {
           // escalation that succeeds in parallel doesn't show "failed".
           resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, markerStatus);
         }
-      } else if (marker && (marker.role as string) !== "pm-resolver") {
-        // Marker present but role is explicitly not pm-resolver (worker or
-        // validator marker landed in the PM channel — cross-channel leak).
-        // The explicit role check is intentional and future-proofs this
-        // branch against new roles being added to MeridianStatusMarkerSchema;
-        // the `as string` cast widens marker.role so TS does not narrow it
-        // away here based on the outer `else` arm — the runtime check still
-        // matters when a future role is added.
-        this.log.info("PM resolver marker wrong role", {
-          event: "pm_resolver_marker_wrong_role",
-          thread_id: threadId,
-          marker_role: marker.role,
-          marker_worker_id: marker.worker_id,
-          content_length: content.length
-        });
-        resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
       } else {
         // No marker — use envelope mapping (existing behavior).
         resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
