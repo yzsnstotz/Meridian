@@ -596,6 +596,149 @@ describe("executeValidationCycle", () => {
     expect(worker?.validation?.history[0]?.cycle).toBe(1);
     expect(worker?.validation?.history[0]?.cycle).not.toBe(99);
   });
+
+  describe("Phase A6: heuristic fallback gate", () => {
+    it("runs the legacy JSON parser when no marker is present and the gate is ON (backwards-compat)", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: true });
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-a6-on" });
+      harness.run.mockResolvedValueOnce({
+        threadId: "validator-thread-a6-on",
+        status: "success",
+        runState: "completed",
+        content: '{"score":0.85,"feedback":"looks fine"}',
+        raw: {}
+      });
+
+      const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(outcome).toEqual({ status: "passed", score: 0.85 });
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      expect(worker?.status).toBe("completed");
+    });
+
+    it("returns error status without invoking the JSON parser when no marker is present and the gate is OFF", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-a6-off" });
+      harness.run.mockResolvedValueOnce({
+        threadId: "validator-thread-a6-off",
+        status: "success",
+        runState: "completed",
+        content: '{"score":0.85,"feedback":"would have parsed"}',
+        raw: {}
+      });
+
+      const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(outcome).toEqual({
+        status: "error",
+        reason: "no marker; fallback disabled"
+      });
+      // Lifecycle cleanup must still run — validator slot must be cleared so
+      // the worker is not stuck holding an orphaned validator thread.
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      expect(worker?.validation?.validator_thread_id).toBeNull();
+    });
+
+    it("trusts the validator marker even when the gate is OFF — marker still wins", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-a6-marker" });
+      harness.run.mockResolvedValueOnce({
+        threadId: "validator-thread-a6-marker",
+        status: "success",
+        runState: "completed",
+        content: [
+          "All good.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: validator",
+          "worker_id: N-02",
+          "outcome: pass",
+          "score: 0.95",
+          "<<<END>>>"
+        ].join("\n"),
+        raw: {}
+      });
+
+      const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(outcome).toEqual({ status: "passed", score: 0.95 });
+    });
+
+    it("emits a validator_signal_source log indicating which path produced the decision", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: true });
+      const info = harness.deps.log.info as ReturnType<typeof vi.fn>;
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-a6-log-marker" });
+      harness.run.mockResolvedValueOnce({
+        threadId: "validator-thread-a6-log-marker",
+        status: "success",
+        runState: "completed",
+        content: [
+          "Reviewed.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: validator",
+          "worker_id: N-02",
+          "outcome: pass",
+          "score: 0.91",
+          "<<<END>>>"
+        ].join("\n"),
+        raw: {}
+      });
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(info).toHaveBeenCalledWith("Validator signal source", {
+        event: "validator_signal_source",
+        worker_id: "N-02",
+        signal_source: "marker",
+        result: "pass"
+      });
+    });
+
+    it("emits a validator_signal_source=heuristic log when the JSON fallback parser produces the decision", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: true });
+      const info = harness.deps.log.info as ReturnType<typeof vi.fn>;
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-a6-log-heuristic" });
+      harness.run.mockResolvedValueOnce({
+        threadId: "validator-thread-a6-log-heuristic",
+        status: "success",
+        runState: "completed",
+        content: '{"score":0.88,"feedback":"OK"}',
+        raw: {}
+      });
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(info).toHaveBeenCalledWith("Validator signal source", {
+        event: "validator_signal_source",
+        worker_id: "N-02",
+        signal_source: "heuristic",
+        result: "scored"
+      });
+    });
+
+    it("emits a validator_signal_source=none log when the gate is OFF and no marker is present", async () => {
+      const harness = await createHarness({ fallbackHeuristicsEnabled: false });
+      const info = harness.deps.log.info as ReturnType<typeof vi.fn>;
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-a6-log-none" });
+      harness.run.mockResolvedValueOnce({
+        threadId: "validator-thread-a6-log-none",
+        status: "success",
+        runState: "completed",
+        content: '{"score":0.5,"feedback":"unused"}',
+        raw: {}
+      });
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(info).toHaveBeenCalledWith("Validator signal source", {
+        event: "validator_signal_source",
+        worker_id: "N-02",
+        signal_source: "none",
+        result: "error"
+      });
+    });
+  });
 });
 
 describe("buildDefaultValidatorPrompt", () => {
@@ -660,6 +803,7 @@ describe("parseValidatorOutputFromJson", () => {
 async function createHarness(options: {
   killPolicy?: "always" | "on_success" | "never";
   validatorConfig?: Partial<ValidatorConfig>;
+  fallbackHeuristicsEnabled?: boolean;
 } = {}): Promise<{
   lifecycleStore: LifecycleStore;
   deps: ValidatorOrchestratorDeps;
@@ -750,6 +894,9 @@ async function createHarness(options: {
       spawnDir: directory,
       dispatchPlanPath,
       taskspecPath: null,
+      ...(options.fallbackHeuristicsEnabled === undefined
+        ? {}
+        : { fallbackHeuristicsEnabled: options.fallbackHeuristicsEnabled }),
       log: {
         info: vi.fn(),
         warn: vi.fn()

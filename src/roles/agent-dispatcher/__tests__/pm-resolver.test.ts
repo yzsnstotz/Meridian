@@ -370,6 +370,79 @@ describe("LifecycleStore.recordPmResolverResult — marker primary signal", () =
       await harness.cleanup();
     }
   });
+
+  describe("Phase A6: signal_source observability (no gate on PM channel)", () => {
+    it("uses envelope mapping unchanged even when fallback heuristics are disabled — PM has no narrative heuristic to gate", async () => {
+      const harness = await createPmResolverLifecycleHarness({ fallbackHeuristicsEnabled: false });
+      try {
+        seedPmResolverEntry(harness.store, PM_THREAD_ID, TARGET_WORKER_ID);
+
+        harness.store.recordPmResolverResult(PM_THREAD_ID, buildPmRunResult({
+          status: "success",
+          runState: "completed",
+          content: "PM finished without emitting a marker."
+        }));
+
+        const entry = loadPmResolverEntry(harness.store, PM_THREAD_ID);
+        // PM is structured envelope mapping, NOT heuristic — gate must not
+        // affect this path; envelope success → "completed".
+        expect(entry?.status).toBe("completed");
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("emits pm_resolver_signal_source=marker when the PM marker is honoured", async () => {
+      const harness = await createPmResolverLifecycleHarness();
+      try {
+        seedPmResolverEntry(harness.store, PM_THREAD_ID, TARGET_WORKER_ID);
+
+        harness.store.recordPmResolverResult(PM_THREAD_ID, buildPmRunResult({
+          content: [
+            "Closed the loop.",
+            "",
+            "<<<MERIDIAN-STATUS>>>",
+            `worker_id: ${TARGET_WORKER_ID}`,
+            "role: pm-resolver",
+            "outcome: resolved",
+            "pm_action: retry",
+            "<<<END>>>"
+          ].join("\n")
+        }));
+
+        expect(harness.info).toHaveBeenCalledWith("PM resolver signal source", {
+          event: "pm_resolver_signal_source",
+          thread_id: PM_THREAD_ID,
+          signal_source: "marker",
+          result: "completed"
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("emits pm_resolver_signal_source=envelope when no marker is present", async () => {
+      const harness = await createPmResolverLifecycleHarness();
+      try {
+        seedPmResolverEntry(harness.store, PM_THREAD_ID, TARGET_WORKER_ID);
+
+        harness.store.recordPmResolverResult(PM_THREAD_ID, buildPmRunResult({
+          status: "success",
+          runState: "completed",
+          content: "PM finished without emitting a marker."
+        }));
+
+        expect(harness.info).toHaveBeenCalledWith("PM resolver signal source", {
+          event: "pm_resolver_signal_source",
+          thread_id: PM_THREAD_ID,
+          signal_source: "envelope",
+          result: "completed"
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
+  });
 });
 
 interface PmResolverLifecycleHarness {
@@ -379,14 +452,17 @@ interface PmResolverLifecycleHarness {
   cleanup: () => Promise<void>;
 }
 
-async function createPmResolverLifecycleHarness(): Promise<PmResolverLifecycleHarness> {
+async function createPmResolverLifecycleHarness(
+  options: { fallbackHeuristicsEnabled?: boolean } = {}
+): Promise<PmResolverLifecycleHarness> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-marker-"));
   const filePath = path.join(directory, "dispatch_threads.json");
   const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
   const info = vi.fn();
   const store = new LifecycleStore(filePath, {
     dispatchPlanPath,
-    log: { info }
+    log: { info },
+    fallbackHeuristicsEnabled: options.fallbackHeuristicsEnabled
   });
 
   return {
