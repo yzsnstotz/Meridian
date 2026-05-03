@@ -825,7 +825,13 @@ function mapHubResultToLifecycleStatus(
   if (marker) {
     if (marker.role !== "worker") {
       // Wrong-role marker (e.g. validator output landing in worker channel).
-      // Ignore and fall through.
+      // Ignore and fall through, but log so the cross-channel leak is visible.
+      log?.info("Lifecycle marker wrong role", {
+        event: "marker_wrong_role",
+        worker_id: workerId,
+        marker_role: marker.role,
+        marker_worker_id: marker.worker_id
+      });
     } else if (marker.worker_id !== workerId) {
       log?.info("Lifecycle marker mismatch", {
         event: "marker_mismatch",
@@ -853,6 +859,15 @@ function mapHubResultToLifecycleStatus(
           return "failed";
         case "needs_pm":
           return "blocked";
+        default: {
+          // Exhaustiveness guard: if WorkerStatusMarker.outcome ever gains a
+          // new value, this assertion turns the omission into a TS compile
+          // error rather than a silent fall-through to the heuristic chain.
+          const _exhaustive: never = marker;
+          throw new Error(
+            `Unhandled worker marker outcome: ${(_exhaustive as { outcome?: string }).outcome ?? "unknown"}`
+          );
+        }
       }
     }
   }

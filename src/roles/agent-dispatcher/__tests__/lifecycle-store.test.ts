@@ -1847,15 +1847,12 @@ describe("LifecycleStore", () => {
         status: "blocked"
       });
 
-      expect(info).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          event: "marker_mismatch",
-          worker_id: "N-18",
-          marker_worker_id: "N-99",
-          marker_role: "worker"
-        })
-      );
+      expect(info).toHaveBeenCalledWith("Lifecycle marker mismatch", {
+        event: "marker_mismatch",
+        worker_id: "N-18",
+        marker_worker_id: "N-99",
+        marker_role: "worker"
+      });
     });
 
     it("ignores a marker with role validator (wrong role for worker context) and falls through to heuristics", async () => {
@@ -1884,6 +1881,45 @@ describe("LifecycleStore", () => {
 
       expect(harness.store.load().workers["N-19"]).toMatchObject({
         status: "blocked"
+      });
+    });
+
+    it("emits lifecycle.marker_wrong_role log when a validator-role marker lands in the worker channel", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info } });
+      harness.store.recordWorkerStart(
+        "N-20",
+        "worker-thread-n20",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-20", buildHubResult({
+        thread_id: "worker-thread-n20",
+        status: "success",
+        content: [
+          "⛔ BLOCKED — sandbox restriction",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: validator",
+          "worker_id: N-20",
+          "outcome: pass",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      // Heuristic chain still runs (worker stays on its inferred status), and
+      // the wrong-role event is logged exactly once with the expected payload.
+      expect(harness.store.load().workers["N-20"]).toMatchObject({
+        status: "blocked"
+      });
+
+      expect(info).toHaveBeenCalledWith("Lifecycle marker wrong role", {
+        event: "marker_wrong_role",
+        worker_id: "N-20",
+        marker_role: "validator",
+        marker_worker_id: "N-20"
       });
     });
   });
