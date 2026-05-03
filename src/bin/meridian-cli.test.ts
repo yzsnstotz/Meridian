@@ -506,14 +506,14 @@ test("runCli propagates HTTP validation failures as CLI invalid-argument errors"
     return {
       statusCode: 400,
       headers: {},
-      body: { error: "Working directory must be under AGENT_WORKDIR" }
+      body: { error: "Working directory does not exist: /tmp/outside" }
     };
   };
 
   await expectCliError(
     runCli(["spawn", "codex", "--workdir", "/tmp/outside"], harness.deps),
     2,
-    "Working directory must be under AGENT_WORKDIR"
+    "Working directory does not exist: /tmp/outside"
   );
   assert.deepEqual(harness.httpCalls, [
     {

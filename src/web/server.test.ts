@@ -1107,6 +1107,41 @@ test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selec
   }
 });
 
+test("Web Interface Server forwards absolute repo path to Hub", async () => {
+  const externalDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-absolute-repo-"));
+  const hubMessages: HubMessage[] = [];
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "codex",
+          mode: "pane_bridge",
+          repo: externalDir
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(hubMessages[0]?.payload.spawn_dir, externalDir);
+    }, {
+      requestHub: async (message: HubMessage) => {
+        hubMessages.push(message);
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_new",
+          source: "codex",
+          status: "success",
+          content: "{}",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(externalDir, { recursive: true, force: true });
+  }
+});
+
 test("Web Interface Server spawn forwards provider alias, model_id, effort, and default auto_approve", async () => {
   const hubMessages: HubMessage[] = [];
   await withServer(async ({ baseUrl }) => {
@@ -1250,17 +1285,63 @@ test("Web Interface Server rejects spawn when repo and spawn_dir are both set", 
   });
 });
 
-test("Web Interface Server rejects spawn_dir outside AGENT_WORKDIR", async () => {
-  await withServer(async ({ baseUrl }) => {
-    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        type: "codex",
-        spawn_dir: "/"
-      })
+test("Web Interface Server forwards explicit spawn_dir outside AGENT_WORKDIR", async () => {
+  const externalDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-explicit-spawn-"));
+  const hubMessages: HubMessage[] = [];
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "codex",
+          mode: "pane_bridge",
+          spawn_dir: externalDir
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(hubMessages[0]?.payload.spawn_dir, externalDir);
+    }, {
+      requestHub: async (message: HubMessage) => {
+        hubMessages.push(message);
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_new",
+          source: "codex",
+          status: "success",
+          content: "{}",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
     });
-    assert.equal(response.status, 400);
+  } finally {
+    await fs.promises.rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server browse can navigate above AGENT_WORKDIR", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const rootResponse = await fetch(`${baseUrl}/api/spawn_repos/browse?token=secret-token`);
+    assert.equal(rootResponse.status, 200);
+    const rootPayload = await rootResponse.json() as {
+      root: string;
+      parent_relative: string | null;
+    };
+    assert.equal(rootPayload.root, path.resolve(config.AGENT_WORKDIR));
+    assert.equal(rootPayload.parent_relative, path.dirname(path.resolve(config.AGENT_WORKDIR)));
+
+    const absoluteBrowsePath = path.dirname(path.resolve(config.AGENT_WORKDIR));
+    const response = await fetch(
+      `${baseUrl}/api/spawn_repos/browse?token=secret-token&relative=${encodeURIComponent(absoluteBrowsePath)}`
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json() as {
+      relative: string;
+      parent_relative: string | null;
+    };
+    assert.equal(payload.relative, absoluteBrowsePath);
+    assert.equal(payload.parent_relative, path.dirname(absoluteBrowsePath));
   });
 });
 
