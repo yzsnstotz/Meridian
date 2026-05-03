@@ -974,7 +974,7 @@
       var SPAWN_REPO_STORAGE_KEY = "meridian_spawn_repo";
       var spawnModelByProvider = {};
       var spawnModelRequestToken = 0;
-      /** Relative path under AGENT_WORKDIR (segments with /), or "" for default root. */
+      /** Relative path under AGENT_WORKDIR or an absolute path selected from the workspace picker. */
       var spawnRepoRelative = "";
       var browseRelative = "";
       var spawnWorkspaceDialogEl = document.getElementById("spawn-workspace-dialog");
@@ -1187,7 +1187,11 @@
         var root = payload && payload.root ? String(payload.root) : "";
         var rel = payload && payload.relative != null ? String(payload.relative) : "";
         browseRelative = rel;
-        spawnWorkspaceBreadcrumbEl.textContent = root + (rel ? "/" + rel.replace(/\//g, "/") : "");
+        if (rel && (rel.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(rel))) {
+          spawnWorkspaceBreadcrumbEl.textContent = rel;
+        } else {
+          spawnWorkspaceBreadcrumbEl.textContent = root + (rel ? "/" + rel.replace(/\//g, "/") : "");
+        }
         spawnWorkspaceListEl.innerHTML = "";
         var entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
         if (!entries.length) {

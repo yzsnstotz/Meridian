@@ -40,7 +40,7 @@ meridian --help
 |----------|---------|---------|
 | `MERIDIAN_SOCKET` | `/tmp/hub-core.sock` | CLI socket fallback when HTTP is unavailable |
 | `MERIDIAN_HTTP` | `http://localhost:3000` | CLI HTTP endpoint for Meridian web API |
-| `AGENT_WORKDIR` | parent of repo root | Default workdir for spawned agents |
+| `AGENT_WORKDIR` | parent of repo root | Default workdir for spawned agents and initial root for GUI repo picking |
 | `HUB_SOCKET_PATH` | `/tmp/hub-core.sock` | Meridian hub socket path used by the service |
 | `WEB_GUI_PORT` | `3000` | Web API / GUI port |
 | `WEB_GUI_HOST` | unset | Optional public GUI host |
@@ -60,7 +60,7 @@ Providers:
 Options:
 - `--provider <claude|codex|gemini|cursor>`: explicit provider alias for API payloads
 - `--model <model-id>`: override the provider default model
-- `--workdir <path>`: absolute working directory under `AGENT_WORKDIR`
+- `--workdir <path>`: absolute working directory; if omitted, Meridian defaults to `AGENT_WORKDIR`
 - `--auto-approve`: enable auto-approve
 - `--no-auto-approve`: disable auto-approve
 - `--mode <bridge|agentapi|pane_bridge|stateless_call>`: transport / execution mode.

@@ -66,10 +66,10 @@ const spawnRequestBodySchema = z.object({
   auto_approve: z.boolean().default(true),
   integration_profile: IntegrationProfileSchema.optional(),
   sandbox_mode: SandboxModeSchema.optional(),
-  /** Subdirectory name under `config.AGENT_WORKDIR` (GUI picker). */
+  /** GUI picker path or direct absolute directory override. */
   repo: z.string().optional(),
   /**
-   * Absolute working directory for the new agent (validated under AGENT_WORKDIR).
+   * Absolute working directory for the new agent. Only existence/directory checks apply.
    * External integrations may send this instead of `repo`.
    */
   spawn_dir: z.string().optional()
@@ -982,7 +982,8 @@ export class WebInterfaceServer {
 
   /**
    * Resolves optional `repo` (relative to AGENT_WORKDIR) or `spawn_dir` (absolute) to a directory
-   * that stays under AGENT_WORKDIR. Hub receives `spawn_dir` in the message payload.
+   * for the new agent. Relative `repo` values resolve from AGENT_WORKDIR; absolute `repo` and
+   * `spawn_dir` values may point anywhere on the host. Hub receives `spawn_dir` in the message payload.
    */
   private async resolveSpawnDirectoryForSpawnRequest(
     body: z.infer<typeof spawnRequestBodySchema>
@@ -994,9 +995,12 @@ export class WebInterfaceServer {
       throw new Error("Specify only one of spawn_dir or repo");
     }
     if (rawSpawnDir) {
-      return this.assertDirectoryUnderAgentRoot(path.resolve(rawSpawnDir), root);
+      return this.assertExistingDirectory(path.resolve(rawSpawnDir));
     }
     if (rawRepo) {
+      if (path.isAbsolute(rawRepo)) {
+        return this.assertExistingDirectory(path.resolve(rawRepo));
+      }
       const normalized = normalizeRelativePath(rawRepo);
       const parts = normalized.split("/").filter(Boolean);
       const resolved = path.resolve(root, ...parts);
@@ -1011,23 +1015,22 @@ export class WebInterfaceServer {
   ): Promise<void> {
     const requestUrl = this.getRequestUrl(request);
     const rawParam = requestUrl.searchParams.get("relative") ?? "";
-    let relativeNormalized = "";
+    const root = path.resolve(config.AGENT_WORKDIR);
+    const trimmedParam = rawParam.trim();
+    let browsePath = "";
+    let resolvedDir = root;
     try {
-      if (rawParam.trim()) {
-        relativeNormalized = normalizeRelativePath(rawParam);
+      if (trimmedParam) {
+        if (path.isAbsolute(trimmedParam)) {
+          browsePath = path.resolve(trimmedParam);
+          resolvedDir = browsePath;
+        } else {
+          browsePath = normalizeRelativePath(trimmedParam);
+          resolvedDir = path.resolve(root, ...browsePath.split("/").filter(Boolean));
+        }
       }
     } catch {
-      this.respondJson(response, 400, { error: "Invalid relative path" });
-      return;
-    }
-
-    const root = path.resolve(config.AGENT_WORKDIR);
-    const resolvedDir = relativeNormalized
-      ? path.resolve(root, ...relativeNormalized.split("/").filter(Boolean))
-      : root;
-
-    if (resolvedDir !== root && !resolvedDir.startsWith(`${root}${path.sep}`)) {
-      this.respondJson(response, 400, { error: "Path outside workspace" });
+      this.respondJson(response, 400, { error: "Invalid browse path" });
       return;
     }
 
@@ -1063,15 +1066,23 @@ export class WebInterfaceServer {
     const limited = entries.slice(0, 64);
 
     let parent_relative: string | null = null;
-    if (relativeNormalized) {
-      const parts = relativeNormalized.split("/").filter(Boolean);
-      parts.pop();
-      parent_relative = parts.length ? parts.join("/") : "";
+    if (browsePath) {
+      if (path.isAbsolute(browsePath)) {
+        const parent = path.dirname(browsePath);
+        parent_relative = parent === browsePath ? null : parent;
+      } else {
+        const parts = browsePath.split("/").filter(Boolean);
+        parts.pop();
+        parent_relative = parts.length ? parts.join("/") : "";
+      }
+    } else {
+      const parent = path.dirname(root);
+      parent_relative = parent === root ? null : parent;
     }
 
     this.respondJson(response, 200, {
       root,
-      relative: relativeNormalized,
+      relative: browsePath,
       parent_relative,
       entries: limited
     });
@@ -1081,6 +1092,10 @@ export class WebInterfaceServer {
     if (resolvedPath !== agentRoot && !resolvedPath.startsWith(`${agentRoot}${path.sep}`)) {
       throw new Error("Working directory must be under AGENT_WORKDIR");
     }
+    return this.assertExistingDirectory(resolvedPath);
+  }
+
+  private async assertExistingDirectory(resolvedPath: string): Promise<string> {
     let stats: fs.Stats;
     try {
       stats = await fs.promises.stat(resolvedPath);

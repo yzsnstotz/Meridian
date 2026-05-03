@@ -60,8 +60,8 @@
     - `type`: `"claude" | "codex" | "gemini" | "cursor"`（默认 `"codex"`）
     - `mode`: `"bridge" | "pane_bridge" | "stateless_call"`（默认 `"pane_bridge"`；`stateless_call` 仅支持 Codex，每次 run 都以新的只读 `codex exec --json` 调用执行）
     - `auto_approve`: boolean（默认 `false`）
-    - `repo`: string（可选；`AGENT_WORKDIR` 下的相对目录名，Web 侧用于 picker）
-    - `spawn_dir`: string（可选；绝对路径，但**必须在** `AGENT_WORKDIR` 之下；`repo` 与 `spawn_dir` 二选一）
+    - `repo`: string（可选；可传 `AGENT_WORKDIR` 下的相对目录名，或直接传绝对路径；Web picker 默认从 `AGENT_WORKDIR` 开始，但可继续浏览到其他目录）
+    - `spawn_dir`: string（可选；绝对路径，只要求目标目录存在；`repo` 与 `spawn_dir` 二选一）
   - 返回：`HubResult`（成功时会包含新 `thread_id`，并可能带 GUI 快捷按钮信息）
 
 - **进度快照**
