@@ -592,6 +592,20 @@ export class LifecycleStore {
       entry.status = reconciled;
       entry.last_seen_at = this.now();
       entry.error = reconciled === "failed" ? error : null;
+
+      // Phase A6 observability: mirror the signal_source emission shape from
+      // recordPmResolverResult so the A7 soak metric (signal_source distribution
+      // per role channel) covers the thrown-run failure path. The failure
+      // outcome is structured envelope info — there's no agent reply content to
+      // parse for a marker — so signal_source is "envelope".
+      this.log.info("PM resolver signal source", {
+        event: "pm_resolver_signal_source",
+        thread_id: threadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        signal_source: "envelope",
+        result: entry.status,
+        error
+      });
     });
   }
 }

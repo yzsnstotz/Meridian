@@ -442,6 +442,31 @@ describe("LifecycleStore.recordPmResolverResult — marker primary signal", () =
         await harness.cleanup();
       }
     });
+
+    it("emits pm_resolver_signal_source=envelope on the thrown-run failure path so the A7 soak metric covers PM failures", async () => {
+      const harness = await createPmResolverLifecycleHarness();
+      try {
+        seedPmResolverEntry(harness.store, PM_THREAD_ID, TARGET_WORKER_ID);
+
+        harness.store.recordPmResolverFailure(PM_THREAD_ID, "boom: spawn failed");
+
+        const entry = loadPmResolverEntry(harness.store, PM_THREAD_ID);
+        // No target worker is seeded as a real worker, so the reconciler has
+        // nothing to promote — the failure stays "failed".
+        expect(entry?.status).toBe("failed");
+
+        expect(harness.info).toHaveBeenCalledWith("PM resolver signal source", {
+          event: "pm_resolver_signal_source",
+          thread_id: PM_THREAD_ID,
+          worker_id: TARGET_WORKER_ID,
+          signal_source: "envelope",
+          result: "failed",
+          error: "boom: spawn failed"
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    });
   });
 });
 

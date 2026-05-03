@@ -2180,6 +2180,36 @@ describe("LifecycleStore", () => {
       });
     });
 
+    it("completes a no-expected-outputs success even when fallback heuristics are disabled (envelope short-circuit)", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: false });
+      // Empty expected_outputs — light worker that emits no marker. Without
+      // this short-circuit a regression that swapped the trivial-success
+      // branch to "running" unconditionally would silently break this path.
+      harness.store.recordWorkerStart(
+        "N-A6",
+        "worker-thread-na6",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-A6", buildHubResult({
+        thread_id: "worker-thread-na6",
+        status: "success",
+        run_state: "completed",
+        content: "Done. No marker emitted.",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-A6"]).toMatchObject({ status: "completed" });
+      expect(info).toHaveBeenCalledWith("Lifecycle signal source", {
+        event: "lifecycle_signal_source",
+        worker_id: "N-A6",
+        signal_source: "envelope",
+        result: "completed"
+      });
+    });
+
     it("emits lifecycle_signal_source=envelope when envelope status=error short-circuits", async () => {
       const info = vi.fn();
       const harness = await createHarness({ log: { info }, fallbackHeuristicsEnabled: true });
