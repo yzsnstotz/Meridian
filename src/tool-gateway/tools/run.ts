@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
@@ -19,8 +19,6 @@ const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const SCHEDULER_STATE_FILENAME = "scheduler_state.json";
 const INTERRUPTED_ERROR = "interrupted";
 const INTERRUPT_MESSAGES = new Set(["Tool Gateway interrupted by SIGINT", INTERRUPTED_ERROR]);
-const MAX_PREVIOUS_REPLY_CHARS = 6_000;
-const MAX_PREVIOUS_REPORT_CHARS = 6_000;
 const MAX_PREVIOUS_REPORT_FILES = 2;
 const MAX_WORKER_RETRIES = 3;
 const TRANSIENT_RUN_RETRY_DELAYS_MS = [5_000, 15_000];
@@ -349,12 +347,10 @@ async function buildWorkerPreamble(
   const commandForbidsGit = commandForbidsGitOperations(command);
   const lines: string[] = [];
 
+  lines.push(`# Worker Identity`);
   if (row?.model) {
-    lines.push(`# Worker Identity`);
     lines.push(`You are **${row.model}** — worker **${workerId}**.`);
-    lines.push(`Your model tier code is \`${row.model}\`. Claim tasks assigned to this code.`);
   } else {
-    lines.push(`# Worker Identity`);
     lines.push(`You are worker **${workerId}**.`);
   }
 
@@ -384,15 +380,14 @@ async function buildWorkerPreamble(
   const previousAttemptContext = await buildPreviousAttemptContext(previousWorkerState, expectedOutputs);
   if (previousAttemptContext) {
     lines.push(`# Previous Attempt Context`);
-    lines.push(`This worker has prior execution history. Use it to avoid repeating the same mistake. Re-check the current state and iterate on any new findings instead of copying the earlier conclusion.`);
-    lines.push("");
+    lines.push(`This worker has prior execution history. Re-check current state from disk before acting; do not assume the earlier conclusion still holds.`);
     lines.push(previousAttemptContext);
     lines.push("");
   }
 
   lines.push(`# Status`);
   if (isDispatcherWorker(workerId)) {
-    lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes, write completion reports, or make git commit/push decisions from this wrapper prompt.`);
+    lines.push(`You are the dispatcher controller. Stay in control-flow mode only: do not implement product changes from this wrapper prompt.`);
   } else if (isPlanModifyingWorker(workerId)) {
     lines.push(`Your row is pre-marked 🔄. You **may add, remove, or modify rows** in the dispatch plan as part of your task — the lifecycle store reconciles your own row's final status.`);
   } else {
@@ -459,79 +454,32 @@ async function buildPreviousAttemptContext(
   }
 
   const sections: string[] = [];
-  const previousReply = extractPreviousReply(previousWorkerState.hub_result);
-  const reportSnippets = await loadPreviousReportSnippets(expectedOutputs);
-
   sections.push(`- Previous worker thread: \`${previousWorkerState.thread_id}\``);
   sections.push(`- Previous retry count: ${previousWorkerState.retry_count ?? 0}`);
   if (previousWorkerState.hub_result?.timestamp) {
     sections.push(`- Previous terminal timestamp: ${previousWorkerState.hub_result.timestamp}`);
   }
 
-  if (previousReply) {
-    sections.push("");
-    sections.push("Previous agent reply:");
-    sections.push("```text");
-    sections.push(previousReply);
-    sections.push("```");
+  const reportPaths = await findExistingPreviousReportPaths(expectedOutputs);
+  for (const reportPath of reportPaths) {
+    sections.push(`- Previous output artifact: \`${reportPath}\` (read from disk if you need detail)`);
   }
 
-  if (reportSnippets.length > 0) {
-    for (const reportSnippet of reportSnippets) {
-      sections.push("");
-      sections.push(`Previous output artifact: \`${reportSnippet.path}\``);
-      sections.push("```text");
-      sections.push(reportSnippet.content);
-      sections.push("```");
-    }
-  }
-
-  return sections.length > 0 ? sections.join("\n") : null;
+  return sections.join("\n");
 }
 
-function extractPreviousReply(hubResult: HubResult | null): string | null {
-  if (!hubResult) {
-    return null;
-  }
-
-  const conversationReply = parseAgentReplyFromDetails(hubResult.details_text);
-  return truncateForPrompt(conversationReply ?? hubResult.summary_text ?? hubResult.content ?? null, MAX_PREVIOUS_REPLY_CHARS);
-}
-
-function parseAgentReplyFromDetails(detailsText: string | undefined): string | null {
-  if (typeof detailsText !== "string" || detailsText.trim().length === 0) {
-    return null;
-  }
-
-  const match = detailsText.replace(/\r\n/g, "\n").match(/(?:^|\n)Agent reply:\n([\s\S]*)$/);
-  const parsed = match?.[1]?.trim();
-  return parsed && parsed.length > 0 ? parsed : null;
-}
-
-async function loadPreviousReportSnippets(
-  expectedOutputs: string[]
-): Promise<Array<{ path: string; content: string }>> {
+async function findExistingPreviousReportPaths(expectedOutputs: string[]): Promise<string[]> {
   const candidatePaths = prioritizeRetryContextPaths(expectedOutputs);
-  const snippets: Array<{ path: string; content: string }> = [];
-
+  const existing: string[] = [];
   for (const candidatePath of candidatePaths) {
     try {
-      const raw = await readFile(candidatePath, "utf8");
-      const normalized = truncateForPrompt(raw, MAX_PREVIOUS_REPORT_CHARS);
-      if (!normalized) {
-        continue;
-      }
-
-      snippets.push({
-        path: candidatePath,
-        content: normalized
-      });
+      await access(candidatePath);
+      existing.push(candidatePath);
     } catch {
       continue;
     }
   }
-
-  return snippets;
+  return existing;
 }
 
 function prioritizeRetryContextPaths(expectedOutputs: string[]): string[] {
@@ -550,19 +498,6 @@ function isRetryContextArtifactPath(candidatePath: string): boolean {
     || normalized.endsWith(".txt")
     || normalized.endsWith(".log")
     || normalized.endsWith(".json");
-}
-
-function truncateForPrompt(value: string | null, maxChars: number): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars)}\n...[truncated]`;
 }
 
 async function resolveWorkerRow(commandPath: string, workerId: string): Promise<DispatchPlanRow | null> {
