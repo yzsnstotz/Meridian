@@ -183,6 +183,8 @@ describe("launchDispatcher", () => {
       threadId: "dispatcher-thread-fresh"
     });
     expect(harness.spawn).toHaveBeenCalledTimes(2);
+    expect(harness.kill).toHaveBeenCalledTimes(1);
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-existing");
     expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
       threadId: "dispatcher-thread-fresh",
       commandFilePath: harness.expectedCommandPath,
@@ -228,6 +230,8 @@ describe("launchDispatcher", () => {
       error: "spawn failed: Meridian returned reserved thread id worker-thread-existing already recorded in lifecycle state"
     });
     expect(harness.spawn).toHaveBeenCalledTimes(3);
+    expect(harness.kill).toHaveBeenCalledTimes(3);
+    expect(harness.kill).toHaveBeenCalledWith("worker-thread-existing");
     expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
@@ -363,6 +367,7 @@ async function createHarness(overrides: {
 } = {}): Promise<{
   deps: LaunchDispatcherDeps;
   spawn: ReturnType<typeof vi.fn>;
+  kill: ReturnType<typeof vi.fn>;
   dispatchRunHandoff: ReturnType<typeof vi.fn>;
   planDirectory: string;
   expectedCommandPath: string;
@@ -376,10 +381,11 @@ async function createHarness(overrides: {
   const spawn = overrides.spawnError
     ? vi.fn().mockRejectedValue(overrides.spawnError)
     : vi.fn().mockResolvedValue({ threadId: "dispatcher-thread-123" });
+  const kill = vi.fn().mockResolvedValue({ threadId: "", status: "killed", raw: {} });
   const meridianApi: MeridianApiClient = {
     spawn,
     run: vi.fn(),
-    kill: vi.fn()
+    kill
   };
 
   const dispatchRunHandoff = vi.fn().mockImplementation(async () => {
@@ -406,6 +412,7 @@ async function createHarness(overrides: {
       ...(overrides.onBackgroundRunError ? { onBackgroundRunError: overrides.onBackgroundRunError } : {})
     },
     spawn,
+    kill,
     dispatchRunHandoff,
     planDirectory: directory,
     expectedCommandPath

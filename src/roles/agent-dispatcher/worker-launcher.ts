@@ -8,7 +8,8 @@ import {
 import {
   ThreadIdCollisionError,
   createLifecycleThreadIdCollisionError,
-  isLifecycleThreadIdReserved
+  isLifecycleThreadIdReserved,
+  killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
 import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
@@ -203,6 +204,7 @@ async function spawnWithRetry(
         throw lastError;
       }
       if (isPersistedThreadIdReserved(result.threadId)) {
+        await killCollidedSpawnedThread(meridianApi, result.threadId, "worker spawn");
         lastError = createLifecycleThreadIdCollisionError(result.threadId);
         if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
           console.warn("worker spawn returned reserved lifecycle thread id, retrying", {

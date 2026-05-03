@@ -10,7 +10,8 @@ import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
   createLifecycleThreadIdCollisionError,
-  isLifecycleThreadIdReserved
+  isLifecycleThreadIdReserved,
+  killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import { buildDefaultValidatorPrompt, type ValidatorPromptContext } from "./validator-prompt-builder";
 
@@ -333,6 +334,7 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
       return spawnResult.threadId;
     }
 
+    await killCollidedSpawnedThread(deps.meridianApi, spawnResult.threadId, "validator spawn");
     lastError = createLifecycleThreadIdCollisionError(spawnResult.threadId);
     if (attempt < VALIDATOR_SPAWN_MAX_ATTEMPTS - 1) {
       deps.log.warn("Validator spawn returned reserved lifecycle thread id, retrying", {
