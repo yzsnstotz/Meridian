@@ -11,6 +11,10 @@ import {
   resolveConfiguredDocsRoot
 } from "./dispatch-paths";
 import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
+import {
+  PM_RESOLVER_ACTIONS,
+  PM_RESOLVER_MARKER_OUTCOMES
+} from "./meridian-status-marker";
 import { MERIDIAN_TOOL_DISPLAY_COMMAND } from "./tool-entrypoint";
 
 export interface PmResolverIssueContext {
@@ -171,6 +175,9 @@ export function buildPmResolverPrompt(request: PmResolverRequest): string {
   const config = request.config;
   const pmConfig = config.pm_resolver;
   const dispatchThreadsPath = path.join(path.dirname(config.dispatch_plan_path), "dispatch_threads.json");
+  const workerIdPlaceholder = request.issue.workerId ?? "<worker_id>";
+  const outcomeOptions = PM_RESOLVER_MARKER_OUTCOMES.join(" | ");
+  const pmActionOptions = PM_RESOLVER_ACTIONS.join(" | ");
 
   return [
     "# Role",
@@ -217,6 +224,30 @@ export function buildPmResolverPrompt(request: PmResolverRequest): string {
     "5. If you cannot resolve it without credentials, external approvals, or product decisions, use `notify` with the PM channels and leave a precise blocker summary. Do not call `continue-dispatcher` in that case.",
     "",
     "# Completion",
-    "Do not stop with only advice when a safe state transition is available. Close the loop by updating or retrying the worker and invoking dispatcher continuation. Then leave a concise summary including the commands you ran and the dispatcher result."
+    "Do not stop with only advice when a safe state transition is available. Close the loop by updating or retrying the worker and invoking dispatcher continuation. Then leave a concise summary including the commands you ran and the dispatcher result.",
+    "",
+    "# Reply Protocol",
+    "Your final reply MUST end with exactly one status block, plain text, NOT inside a code fence:",
+    "",
+    "<<<MERIDIAN-STATUS>>>",
+    `worker_id: ${workerIdPlaceholder}`,
+    "role: pm-resolver",
+    `outcome: ${outcomeOptions}`,
+    `pm_action: ${pmActionOptions}`,
+    "notes: <one line: what you decided and why>",
+    "<<<END>>>",
+    "",
+    "This block is the ONLY authoritative signal of your decision. Pick exactly one `outcome`:",
+    "- `resolved` — you took a concrete corrective action via meridian-tool (update-status, resume-worker, continue-dispatcher) and the dispatcher can resume. The lifecycle store records this PM run as completed.",
+    "- `escalated` — you reached a hard blocker (credentials, approvals, product decisions) and used `notify` to surface it. The lifecycle store records this PM run as failed-but-escalated; the dispatcher pauses pending human action.",
+    "",
+    "Pick exactly one `pm_action` describing the concrete control action you took (or recommended for the escalation case):",
+    "- `retry` — you called `resume-worker --action retry`.",
+    "- `skip` — you called `resume-worker --action skip` or otherwise advanced past the worker.",
+    "- `force_complete` — you called `update-status ... --status completed`.",
+    "- `wait` — you took no state change; the worker should remain in its current status pending external action.",
+    "- `escalate_human` — you sent a `notify` and require human input before the dispatcher can continue.",
+    "",
+    "If you must reference the marker format earlier in your reply, wrap that example in a fenced code block (```); only the unfenced block at the end of your reply is parsed."
   ].join("\n");
 }

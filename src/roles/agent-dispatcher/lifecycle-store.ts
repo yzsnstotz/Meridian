@@ -20,6 +20,7 @@ import {
   outputArtifactsContain,
   outputsExist as outputArtifactsExist
 } from "./output-artifacts";
+import { parseMeridianStatusMarker } from "./meridian-status-marker";
 
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
@@ -192,7 +193,8 @@ export class LifecycleStore {
       workerId,
       hubResult,
       worker.expected_outputs,
-      worker.started_at
+      worker.started_at,
+      this.log
     );
     const nextStatus = mappedStatus === "completed"
       && worker.validation
@@ -491,8 +493,59 @@ export class LifecycleStore {
         return;
       }
 
-      const envelopeStatus = mapPmResolverRunStatus(result);
-      entry.status = reconcilePmStatusAgainstWorkerState(state, entry, envelopeStatus);
+      // Phase A primary signal: trust the structured MeridianStatusMarker the
+      // PM resolver emits at the end of its reply over envelope status alone.
+      // The marker is only honoured when role === "pm-resolver" AND its
+      // worker_id matches the issue's target worker; mismatches log and fall
+      // through to envelope mapping so cross-talk cannot terminate the wrong
+      // PM run.
+      const content = pmResolverContentForMarkerScan(result);
+      const marker = parseMeridianStatusMarker(content);
+      const targetWorkerId = entry.issue?.worker_id ?? null;
+
+      let resolvedStatus: PmResolverLifecycleStatus;
+      // top-level if (marker) is intentional — keeps marker.role un-narrowed
+      // so the wrong-role branch is type-safe (mirrors validator-orchestrator).
+      if (marker) {
+        if (marker.role !== "pm-resolver") {
+          this.log.info("PM resolver marker wrong role", {
+            event: "pm_resolver_marker_wrong_role",
+            thread_id: threadId,
+            marker_role: marker.role,
+            marker_worker_id: marker.worker_id,
+            content_length: content.length
+          });
+          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+        } else if (targetWorkerId !== null && marker.worker_id !== targetWorkerId) {
+          this.log.info("PM resolver marker mismatch", {
+            event: "pm_resolver_marker_mismatch",
+            thread_id: threadId,
+            target_worker_id: targetWorkerId,
+            marker_worker_id: marker.worker_id,
+            marker_role: marker.role,
+            content_length: content.length
+          });
+          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+        } else {
+          this.log.info("PM resolver decided via marker", {
+            event: "pm_resolver_marker_decision",
+            thread_id: threadId,
+            worker_id: marker.worker_id,
+            outcome: marker.outcome,
+            pm_action: marker.pm_action ?? null
+          });
+          const markerStatus: PmResolverLifecycleStatus = marker.outcome === "resolved" ? "completed" : "failed";
+          // Still let reconcile promote a "failed" outcome if the target
+          // worker landed healthy, mirroring the envelope path so an
+          // escalation that succeeds in parallel doesn't show "failed".
+          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, markerStatus);
+        }
+      } else {
+        // No marker — use envelope mapping (existing behavior).
+        resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+      }
+
+      entry.status = resolvedStatus;
       entry.last_seen_at = this.now();
       entry.result = normalizePmResolverResult(result);
       entry.error = entry.status === "failed" ? entry.error : null;
@@ -793,7 +846,8 @@ function mapHubResultToLifecycleStatus(
   workerId: string,
   hubResult: HubResult,
   expectedOutputs: string[],
-  startedAt: string
+  startedAt: string,
+  log?: Pick<Logger, "info">
 ): LifecycleStatus {
   const deferSuccessUntilReconciled = requiresOutputVerification(expectedOutputs);
 
@@ -807,6 +861,77 @@ function mapHubResultToLifecycleStatus(
     // validate the actual thread status and outputs before making a terminal
     // judgment.
     return "running";
+  }
+
+  // Phase A primary signal: trust the structured MeridianStatusMarker
+  // emitted by worker agents over narrative heuristics. The marker is only
+  // honoured when role === "worker" AND its worker_id matches the launched
+  // worker; mismatches log and fall through to the heuristic chain so
+  // accidental cross-talk cannot terminate the wrong worker.
+  //
+  // The marker parse runs BEFORE hubResultContainsHitLimit so that a worker
+  // emitting outcome: complete is not pre-empted by an incidental "hit
+  // limit"/"token limit" mention in its narrative. A worker that genuinely
+  // ran out of context emits outcome: hit_limit and is mapped to "failed"
+  // by the switch below; the heuristic only needs to fire when no marker
+  // was emitted.
+  const marker = parseMeridianStatusMarker(combineHubResultText(hubResult));
+  if (marker) {
+    if (marker.role !== "worker") {
+      // Wrong-role marker (e.g. validator output landing in worker channel).
+      // Ignore and fall through, but log so the cross-channel leak is visible.
+      log?.info("Lifecycle marker wrong role", {
+        event: "marker_wrong_role",
+        worker_id: workerId,
+        marker_role: marker.role,
+        marker_worker_id: marker.worker_id
+      });
+    } else if (marker.worker_id !== workerId) {
+      log?.info("Lifecycle marker mismatch", {
+        event: "marker_mismatch",
+        worker_id: workerId,
+        marker_worker_id: marker.worker_id,
+        marker_role: marker.role
+      });
+    } else {
+      // Symmetric positive log with validator-orchestrator and pm-resolver:
+      // emit once before the switch so any honoured outcome is observable
+      // from a single log site rather than five per-arm sites.
+      log?.info("Lifecycle decided via marker", {
+        event: "marker_decision",
+        worker_id: workerId,
+        outcome: marker.outcome
+      });
+      switch (marker.outcome) {
+        case "complete":
+          if (
+            !deferSuccessUntilReconciled
+            || expectedOutputsExist(expectedOutputs, startedAt)
+          ) {
+            return "completed";
+          }
+          // Marker is a claim; without artifact verification we keep
+          // "running" so the reconciler retries.
+          return "running";
+        case "failed":
+          return "failed";
+        case "blocked":
+          return "blocked";
+        case "hit_limit":
+          return "failed";
+        case "needs_pm":
+          return "blocked";
+        default: {
+          // Exhaustiveness guard: if WorkerStatusMarker.outcome ever gains a
+          // new value, this assertion turns the omission into a TS compile
+          // error rather than a silent fall-through to the heuristic chain.
+          const _exhaustive: never = marker;
+          throw new Error(
+            `Unhandled worker marker outcome: ${(_exhaustive as { outcome?: string }).outcome ?? "unknown"}`
+          );
+        }
+      }
+    }
   }
 
   if (hubResultContainsHitLimit(hubResult)) {
@@ -1146,6 +1271,24 @@ function combineHubResultText(
     hubResult.summary_text,
     hubResult.details_text
   ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+}
+
+/**
+ * Combines all text fields from a PM resolver run result into a single string
+ * for MeridianStatusMarker scanning. PM result shape differs from HubResult:
+ * `content` is top-level on the result, while `summary_text` / `details_text`
+ * live inside `result.raw`. This mirrors the structure of
+ * `combineHubResultText` so all candidate marker locations are covered.
+ */
+function pmResolverContentForMarkerScan(result: {
+  content?: string;
+  raw?: Record<string, unknown>;
+}): string {
+  const summaryText = readStringField(result.raw, "summary_text");
+  const detailsText = readStringField(result.raw, "details_text");
+  return [result.content, summaryText, detailsText]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n\n");
 }

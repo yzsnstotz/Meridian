@@ -271,6 +271,97 @@ describe("run tool", () => {
     expect(sentContent.length).toBeLessThan(2000);
   });
 
+  it("includes the Reply Protocol section with a MeridianStatusMarker template for non-dispatcher workers", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | N-04 | Ship outputs | CODEX | N-03 | No non-report outputs required. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-protocol",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+
+    // Heading and marker boundaries must appear verbatim.
+    expect(sentContent).toContain("# Reply Protocol");
+    expect(sentContent).toContain("<<<MERIDIAN-STATUS>>>");
+    expect(sentContent).toContain("<<<END>>>");
+
+    // Worker id is substituted into the template at preamble build time.
+    expect(sentContent).toContain("worker_id: N-04");
+    expect(sentContent).toContain("role: worker");
+
+    // The outcome enum line must list all five values from the worker schema.
+    expect(sentContent).toContain("outcome: complete | failed | blocked | hit_limit | needs_pm");
+
+    // Per-outcome bullet block + escape note carry load-bearing semantics that
+    // A2's lifecycle reconciliation depends on the worker reading.
+    expect(sentContent).toContain("Lifecycle treats this as `failed`");
+    expect(sentContent).toContain("wrap that example in a fenced code block");
+  });
+
+  it("omits the Reply Protocol section from the dispatcher controller preamble", async () => {
+    const hubResult = buildHubResult("Dispatcher paused", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | Ω+2 | DISPATCHER | Drive the next eligible worker | CODEX | DELTA-CHECK | Controller row. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "dispatcher-thread-protocol",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "DISPATCHER"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+
+    // Phase A only defines a worker-role marker; the dispatcher itself has no
+    // schema, so the protocol section must be skipped for it.
+    expect(sentContent).not.toContain("# Reply Protocol");
+    expect(sentContent).not.toContain("<<<MERIDIAN-STATUS>>>");
+    expect(sentContent).not.toContain("<<<END>>>");
+  });
+
+  it("places the Reply Protocol section between # Status and # Dispatch Command", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | N-04 | Ship outputs | CODEX | N-03 | No non-report outputs required. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-protocol-order",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+
+    const statusIndex = sentContent.indexOf("# Status");
+    const protocolIndex = sentContent.indexOf("# Reply Protocol");
+    const dispatchIndex = sentContent.indexOf("# Dispatch Command");
+
+    expect(statusIndex).toBeGreaterThanOrEqual(0);
+    expect(protocolIndex).toBeGreaterThan(statusIndex);
+    expect(dispatchIndex).toBeGreaterThan(protocolIndex);
+  });
+
   it("derives worker-specific report outputs from dispatch-plan notes with angle-bracket placeholders", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));

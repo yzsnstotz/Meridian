@@ -1558,6 +1558,432 @@ describe("LifecycleStore", () => {
       }
     });
   });
+
+  // ─── MeridianStatusMarker primary-signal tests (Phase A, Task A2) ────────
+  describe("MeridianStatusMarker primary signal", () => {
+    it("marks worker completed when marker says complete and the expected report file is fresh, despite narrative block phrases", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-12.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "N-12",
+        "worker-thread-n12",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      await fsp.writeFile(reportPath, [
+        "# N-12 Completion Report",
+        "",
+        "## Summary",
+        "",
+        "- Worker: N-12",
+        "- Result: passed"
+      ].join("\n"), "utf8");
+
+      harness.store.recordWorkerResult("N-12", buildHubResult({
+        thread_id: "worker-thread-n12",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "The worker's literal SELECT smoke is blocked by the wrapper allowlist, switching to a different probe.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-12",
+          "outcome: complete",
+          `report_path: ${reportPath}`,
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-12"]).toMatchObject({
+        status: "completed",
+        last_seen_at: "2026-04-03T12:00:00.000Z"
+      });
+    });
+
+    it("keeps worker running when marker says complete but expected output file is missing", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-12.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "N-12",
+        "worker-thread-n12",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+      // Intentionally do NOT write the report file. Marker is a claim only.
+
+      harness.store.recordWorkerResult("N-12", buildHubResult({
+        thread_id: "worker-thread-n12",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "Done.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-12",
+          "outcome: complete",
+          `report_path: ${reportPath}`,
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-12"]).toMatchObject({
+        status: "running"
+      });
+    });
+
+    it("marks worker completed when marker says complete and there are no expected outputs at all", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "PRE-FLIGHT",
+        "worker-thread-pf",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("PRE-FLIGHT", buildHubResult({
+        thread_id: "worker-thread-pf",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "All checks passed.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: PRE-FLIGHT",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["PRE-FLIGHT"]).toMatchObject({
+        status: "completed"
+      });
+    });
+
+    it("marks worker blocked when marker says blocked even if hub envelope reports success and outputs look fine", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-13.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "N-13",
+        "worker-thread-n13",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      await fsp.writeFile(reportPath, [
+        "# N-13 Report",
+        "",
+        "- Result: passed"
+      ].join("\n"), "utf8");
+
+      harness.store.recordWorkerResult("N-13", buildHubResult({
+        thread_id: "worker-thread-n13",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "Wrote report. Looks fine.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-13",
+          "outcome: blocked",
+          "notes: dependency missing",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-13"]).toMatchObject({
+        status: "blocked"
+      });
+    });
+
+    it("marks worker failed when marker says failed", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "N-14",
+        "worker-thread-n14",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-14", buildHubResult({
+        thread_id: "worker-thread-n14",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-14",
+          "outcome: failed",
+          "error: assertion failed",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-14"]).toMatchObject({
+        status: "failed"
+      });
+    });
+
+    it("marks worker failed when marker says hit_limit", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "N-15",
+        "worker-thread-n15",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-15", buildHubResult({
+        thread_id: "worker-thread-n15",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-15",
+          "outcome: hit_limit",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-15"]).toMatchObject({
+        status: "failed"
+      });
+    });
+
+    it("marks worker blocked when marker says needs_pm so service-continuation routes it to PM", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "N-16",
+        "worker-thread-n16",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-16", buildHubResult({
+        thread_id: "worker-thread-n16",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-16",
+          "outcome: needs_pm",
+          "notes: cannot proceed without PM input",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-16"]).toMatchObject({
+        status: "blocked"
+      });
+    });
+
+    it("falls through to existing block heuristic when no marker is present", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "N-17",
+        "worker-thread-n17",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-17", buildHubResult({
+        thread_id: "worker-thread-n17",
+        status: "success",
+        content: "⛔ BLOCKED — Cannot write to dispatch_plan.md, sandbox restriction",
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-17"]).toMatchObject({
+        status: "blocked"
+      });
+    });
+
+    it("ignores a marker whose worker_id mismatches the launched worker, falls through to heuristics, and emits lifecycle.marker_mismatch log", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info } });
+
+      harness.store.recordWorkerStart(
+        "N-18",
+        "worker-thread-n18",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-18", buildHubResult({
+        thread_id: "worker-thread-n18",
+        status: "success",
+        content: [
+          "⛔ BLOCKED — sandbox restriction",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-99",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-18"]).toMatchObject({
+        status: "blocked"
+      });
+
+      expect(info).toHaveBeenCalledWith("Lifecycle marker mismatch", {
+        event: "marker_mismatch",
+        worker_id: "N-18",
+        marker_worker_id: "N-99",
+        marker_role: "worker"
+      });
+    });
+
+    it("ignores a marker with role validator (wrong role for worker context) and falls through to heuristics", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "N-19",
+        "worker-thread-n19",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-19", buildHubResult({
+        thread_id: "worker-thread-n19",
+        status: "success",
+        content: [
+          "⛔ BLOCKED — sandbox restriction",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: validator",
+          "worker_id: N-19",
+          "outcome: pass",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-19"]).toMatchObject({
+        status: "blocked"
+      });
+    });
+
+    it("trusts a complete marker even when narrative incidentally mentions 'hit limit'", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-30.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+      harness.store.recordWorkerStart("N-30", "worker-thread-n30", "11111111-1111-4111-8111-111111111111", [reportPath]);
+      await fsp.writeFile(reportPath, "# N-30 Report\nDone.\n", "utf8");
+
+      harness.store.recordWorkerResult("N-30", buildHubResult({
+        thread_id: "worker-thread-n30",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "Carefully avoided the token limit by streaming output.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: N-30",
+          "role: worker",
+          "outcome: complete",
+          `report_path: ${reportPath}`,
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-30"]).toMatchObject({ status: "completed" });
+    });
+
+    it("emits lifecycle.marker_decision log when a worker marker is honoured", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info } });
+      harness.store.recordWorkerStart(
+        "N-31",
+        "worker-thread-n31",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-31", buildHubResult({
+        thread_id: "worker-thread-n31",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "All checks passed.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: worker",
+          "worker_id: N-31",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-31"]).toMatchObject({ status: "completed" });
+      expect(info).toHaveBeenCalledWith("Lifecycle decided via marker", {
+        event: "marker_decision",
+        worker_id: "N-31",
+        outcome: "complete"
+      });
+    });
+
+    it("emits lifecycle.marker_wrong_role log when a validator-role marker lands in the worker channel", async () => {
+      const info = vi.fn();
+      const harness = await createHarness({ log: { info } });
+      harness.store.recordWorkerStart(
+        "N-20",
+        "worker-thread-n20",
+        "11111111-1111-4111-8111-111111111111",
+        []
+      );
+
+      harness.store.recordWorkerResult("N-20", buildHubResult({
+        thread_id: "worker-thread-n20",
+        status: "success",
+        content: [
+          "⛔ BLOCKED — sandbox restriction",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "role: validator",
+          "worker_id: N-20",
+          "outcome: pass",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      // Heuristic chain still runs (worker stays on its inferred status), and
+      // the wrong-role event is logged exactly once with the expected payload.
+      expect(harness.store.load().workers["N-20"]).toMatchObject({
+        status: "blocked"
+      });
+
+      expect(info).toHaveBeenCalledWith("Lifecycle marker wrong role", {
+        event: "marker_wrong_role",
+        worker_id: "N-20",
+        marker_role: "validator",
+        marker_worker_id: "N-20"
+      });
+    });
+  });
 });
 
 async function createHarness(options: {

@@ -22,7 +22,7 @@ describe("buildDefaultValidatorPrompt", () => {
     expect(prompt).toContain("dispatch plan row still shows");
   });
 
-  it("instructs binary validators to return a positive verdict instead of a score", () => {
+  it("uses binary verdict guidelines while still requiring the marker reply protocol", () => {
     const prompt = buildDefaultValidatorPrompt({
       workerId: "N-06",
       taskBranch: "task/n-06",
@@ -36,7 +36,10 @@ describe("buildDefaultValidatorPrompt", () => {
     });
 
     expect(prompt).toContain("binary pass/fail verdict");
-    expect(prompt).toContain('"positive": <true or false>');
+    expect(prompt).toContain("Binary Verdict Guidelines");
+    expect(prompt).toContain("<<<MERIDIAN-STATUS>>>");
+    expect(prompt).toContain("outcome: pass | fix_requested | fail");
+    expect(prompt).not.toContain('"positive": <true or false>');
     expect(prompt).not.toContain('"score": <number between 0.0 and 1.0>');
   });
 });

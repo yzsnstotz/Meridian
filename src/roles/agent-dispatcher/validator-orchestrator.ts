@@ -1,6 +1,10 @@
 import type { Logger } from "../base-role";
-import type { KillPolicy, ValidatorConfig } from "../../types";
+import type { DispatchWorkerState, KillPolicy, ValidatorConfig } from "../../types";
 import type { LifecycleStore } from "./lifecycle-store";
+import {
+  parseMeridianStatusMarker,
+  type ValidatorStatusMarker
+} from "./meridian-status-marker";
 import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client";
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
@@ -173,9 +177,42 @@ export async function executeValidationCycle(
   // Kill validator (ephemeral)
   await safeKill(meridianApi, validatorThreadId, log);
 
-  // Parse result
+  // Parse result — marker first, JSON fallback
   const content = runResult.content ?? "";
-  const parsed = parseValidatorOutput(content);
+  const marker = parseMeridianStatusMarker(content);
+
+  if (marker && marker.role === "validator" && marker.worker_id === workerId) {
+    return await handleValidatorMarker(
+      deps,
+      workerId,
+      validatorThreadId,
+      validation,
+      worker,
+      marker
+    );
+  }
+
+  if (marker) {
+    if (marker.role !== "validator") {
+      log.warn("Validator marker wrong role", {
+        event: "validator_marker_wrong_role",
+        worker_id: workerId,
+        marker_role: marker.role,
+        marker_worker_id: "worker_id" in marker ? marker.worker_id : null,
+        content_length: content.length
+      });
+    } else if (marker.worker_id !== workerId) {
+      log.warn("Validator marker mismatch", {
+        event: "validator_marker_mismatch",
+        worker_id: workerId,
+        marker_worker_id: marker.worker_id,
+        marker_role: marker.role,
+        content_length: content.length
+      });
+    }
+  }
+
+  const parsed = parseValidatorOutputFromJson(content);
   if (!parsed) {
     log.warn("Validator output unparseable", {
       event: "validator_parse_error",
@@ -341,7 +378,7 @@ export async function deliverValidatorFeedback(
 
 // ─── Output parsing ─────────────────────────────────────────────────────────────
 
-export function parseValidatorOutput(content: string): ParsedValidatorOutput | null {
+export function parseValidatorOutputFromJson(content: string): ParsedValidatorOutput | null {
   // Try to find a JSON code block first
   const codeBlockMatch = content.match(/```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/);
   if (codeBlockMatch?.[1]) {
@@ -443,6 +480,92 @@ function formatValidatorFeedbackResult(config: ValidatorConfig, score: number): 
   }
 
   return `Score: ${score}`;
+}
+
+// ─── Marker-based decision flow ─────────────────────────────────────────────────
+
+async function handleValidatorMarker(
+  deps: ValidatorOrchestratorDeps,
+  workerId: string,
+  validatorThreadId: string,
+  validation: NonNullable<DispatchWorkerState["validation"]>,
+  worker: DispatchWorkerState,
+  marker: ValidatorStatusMarker
+): Promise<ValidatorCycleOutcome> {
+  const score = marker.score ?? defaultScoreForOutcome(marker.outcome);
+  const feedback = marker.feedback ?? "";
+  const cycle = validation.current_cycle + 1;
+  const maxCycles = validation.max_fix_cycles;
+
+  if (marker.score === undefined) {
+    deps.log.info("Validator marker score defaulted", {
+      event: "validator_marker_score_defaulted",
+      worker_id: workerId,
+      outcome: marker.outcome,
+      default_score: score
+    });
+  }
+
+  deps.log.info("Validator decided via marker", {
+    event: "validator_marker_decision",
+    worker_id: workerId,
+    outcome: marker.outcome,
+    score,
+    cycle
+  });
+
+  switch (marker.outcome) {
+    case "pass": {
+      deps.lifecycleStore.transitionToValidated(workerId, {
+        score,
+        feedback,
+        validatorThreadId
+      });
+      await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "passed");
+      return { status: "passed", score };
+    }
+    case "fail": {
+      deps.lifecycleStore.transitionToValidationFailed(workerId, "validator_marker_fail", {
+        score,
+        feedback,
+        validatorThreadId
+      });
+      await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "failed");
+      return { status: "failed", score, reason: "validator returned fail outcome" };
+    }
+    case "fix_requested": {
+      if (cycle >= maxCycles) {
+        deps.lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted", {
+          score,
+          feedback,
+          validatorThreadId
+        });
+        await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "failed");
+        return {
+          status: "failed",
+          score,
+          reason: `max validation cycles exhausted (${maxCycles})`
+        };
+      }
+      deps.lifecycleStore.transitionToFixRequested(workerId, score, feedback, validatorThreadId);
+      return { status: "fix_requested", score, cycle, maxCycles };
+    }
+    default: {
+      const _exhaustive: never = marker.outcome;
+      throw new Error(`Unhandled validator marker outcome: ${_exhaustive as string}`);
+    }
+  }
+}
+
+function defaultScoreForOutcome(outcome: ValidatorStatusMarker["outcome"]): number {
+  switch (outcome) {
+    case "pass":
+      return 1.0;
+    case "fix_requested":
+      return 0.5;
+    case "fail":
+      return 0.0;
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import { reconcile } from "../../roles/agent-dispatcher/reconciler";
 import { createMeridianApiClient, type MeridianRunResult } from "../../roles/agent-dispatcher/meridian-api-client";
 import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubResult, type HubRunState, type KillPolicy } from "../../types";
 import { LifecycleStore, isExplicitCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
+import { WORKER_MARKER_OUTCOMES } from "../../roles/agent-dispatcher/meridian-status-marker";
 import { sendViaHttpRelay } from "../ipc-bridge";
 import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
@@ -398,6 +399,33 @@ async function buildWorkerPreamble(
     lines.push(`Your row is pre-marked 🔄. The lifecycle store manages all plan status updates — you do not need to write to the dispatch plan yourself.`);
   }
   lines.push("");
+
+  // Reply Protocol: Phase A only emits the `worker` role marker. The dispatcher
+  // controller is itself a worker (isDispatcherWorker), but it has no worker
+  // schema in this phase, so we skip the protocol section for it.
+  if (!isDispatcherWorker(workerId)) {
+    lines.push(`# Reply Protocol`);
+    lines.push(`Your final reply MUST end with exactly one status block, plain text, NOT inside a code fence:`);
+    lines.push("");
+    lines.push(`<<<MERIDIAN-STATUS>>>`);
+    lines.push(`worker_id: ${workerId}`);
+    lines.push(`role: worker`);
+    lines.push(`outcome: ${WORKER_MARKER_OUTCOMES.join(" | ")}`);
+    lines.push(`report_path: <absolute path to your report; required for \`complete\`>`);
+    lines.push(`notes: <one short line>`);
+    lines.push(`<<<END>>>`);
+    lines.push("");
+    lines.push(`This block is the ONLY authoritative signal of your status. Narrative progress`);
+    lines.push(`text is ignored by the lifecycle store. Pick exactly one \`outcome\`:`);
+    lines.push(`- \`complete\` — work finished and report written. Lifecycle requires a fresh report file when expected_outputs is non-empty.`);
+    lines.push(`- \`failed\` — work attempted but failed. Provide an \`error: <one line>\` field.`);
+    lines.push(`- \`blocked\` — cannot proceed without external action; describe in \`notes\`.`);
+    lines.push(`- \`hit_limit\` — token/context/time limit hit before finishing. Lifecycle treats this as \`failed\`.`);
+    lines.push(`- \`needs_pm\` — outcome is ambiguous; ask the project manager. Lifecycle treats this as \`blocked\` and routes to PM.`);
+    lines.push("");
+    lines.push("Emit exactly one block. If you must reference the format earlier in your reply (e.g. for documentation), wrap that example in a fenced code block (```` ``` ````); only the unfenced block at the end of your reply is parsed.");
+    lines.push("");
+  }
 
   lines.push(`# Dispatch Command`);
   lines.push(`Read and follow this file for your worker: ${commandPath}`);
