@@ -162,9 +162,15 @@ export async function executeResumeWorkerAction(
 
   const nextStatus = mapActionToStatus(args.action);
   const autoIncrementRetryCount = args.action === "retry" && args.incrementRetryCountOnRetry === true;
-  const clearFailureResult = args.action === "retry"
-    && worker.hub_result !== null
-    && (worker.status === "failed" || worker.status === "blocked" || hubResultContainsFailureSignal(worker.hub_result));
+  // Clear hub_result on retry of failed/blocked workers, and on force-complete
+  // of any worker. Without clearing on force-complete, the lifecycle store's
+  // syncPlanView -> resolveDisplayStatus would re-derive the plan status from
+  // the stale hub_result block/failure signal and immediately overwrite the
+  // ✅ written by forceUpdatePlanMarkdown back to ⛔ BLOCKED on the next save.
+  const clearFailureResult = (args.action === "retry"
+      && worker.hub_result !== null
+      && (worker.status === "failed" || worker.status === "blocked" || hubResultContainsFailureSignal(worker.hub_result)))
+    || (args.action === "force-complete" && worker.hub_result !== null);
   lifecycleStore.setWorkerStatus(
     args.workerId,
     nextStatus,
