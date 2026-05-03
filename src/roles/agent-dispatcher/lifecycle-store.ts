@@ -493,8 +493,60 @@ export class LifecycleStore {
         return;
       }
 
-      const envelopeStatus = mapPmResolverRunStatus(result);
-      entry.status = reconcilePmStatusAgainstWorkerState(state, entry, envelopeStatus);
+      // Phase A primary signal: trust the structured MeridianStatusMarker the
+      // PM resolver emits at the end of its reply over envelope status alone.
+      // The marker is only honoured when role === "pm-resolver" AND its
+      // worker_id matches the issue's target worker; mismatches log and fall
+      // through to envelope mapping so cross-talk cannot terminate the wrong
+      // PM run.
+      const content = pmResolverContentForMarkerScan(result);
+      const marker = parseMeridianStatusMarker(content);
+      const targetWorkerId = entry.issue?.worker_id ?? null;
+
+      let resolvedStatus: PmResolverLifecycleStatus;
+      if (marker && marker.role === "pm-resolver") {
+        if (targetWorkerId !== null && marker.worker_id !== targetWorkerId) {
+          this.log.info("PM resolver marker mismatch", {
+            event: "pm_resolver_marker_mismatch",
+            thread_id: threadId,
+            target_worker_id: targetWorkerId,
+            marker_worker_id: marker.worker_id,
+            marker_role: marker.role,
+            content_length: content.length
+          });
+          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+        } else {
+          this.log.info("PM resolver decided via marker", {
+            event: "pm_resolver_marker_decision",
+            thread_id: threadId,
+            worker_id: marker.worker_id,
+            outcome: marker.outcome,
+            pm_action: marker.pm_action ?? null
+          });
+          const markerStatus: PmResolverLifecycleStatus = marker.outcome === "resolved" ? "completed" : "failed";
+          // Still let reconcile promote a "failed" outcome if the target
+          // worker landed healthy, mirroring the envelope path so an
+          // escalation that succeeds in parallel doesn't show "failed".
+          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, markerStatus);
+        }
+      } else if (marker) {
+        // Marker present but role is not pm-resolver (worker or validator
+        // marker landed in the PM channel — cross-channel leak). Fall back
+        // to envelope mapping and log the leak so operators can spot it.
+        this.log.info("PM resolver marker wrong role", {
+          event: "pm_resolver_marker_wrong_role",
+          thread_id: threadId,
+          marker_role: marker.role,
+          marker_worker_id: marker.worker_id,
+          content_length: content.length
+        });
+        resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+      } else {
+        // No marker — use envelope mapping (existing behavior).
+        resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+      }
+
+      entry.status = resolvedStatus;
       entry.last_seen_at = this.now();
       entry.result = normalizePmResolverResult(result);
       entry.error = entry.status === "failed" ? entry.error : null;
@@ -1205,6 +1257,24 @@ function combineHubResultText(
     hubResult.summary_text,
     hubResult.details_text
   ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+}
+
+/**
+ * Combines all text fields from a PM resolver run result into a single string
+ * for MeridianStatusMarker scanning. PM result shape differs from HubResult:
+ * `content` is top-level on the result, while `summary_text` / `details_text`
+ * live inside `result.raw`. This mirrors the structure of
+ * `combineHubResultText` so all candidate marker locations are covered.
+ */
+function pmResolverContentForMarkerScan(result: {
+  content?: string;
+  raw?: Record<string, unknown>;
+}): string {
+  const summaryText = readStringField(result.raw, "summary_text");
+  const detailsText = readStringField(result.raw, "details_text");
+  return [result.content, summaryText, detailsText]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n\n");
 }
