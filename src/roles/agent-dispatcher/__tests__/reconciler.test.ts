@@ -264,7 +264,11 @@ describe("reconcile", () => {
         "## Validation",
         "",
         "- `npm run check:bff` - PASS",
-        "- Exact AI Auto-Test command passed and printed `✅ N-27`."
+        "- Exact AI Auto-Test command passed and printed `✅ N-27`.",
+        "",
+        "## Behavioral Assertions",
+        "",
+        "- Error path responses include `{ error, code }`; queued ADS failure also returns `queued: true`."
       ].join("\n")
     );
     harness.store.save(buildState({
@@ -340,6 +344,157 @@ describe("reconcile", () => {
 
     expect(harness.store.load().workers["N-27"]?.status).toBe("running");
     expect(report.changed).toEqual([]);
+  });
+
+  it("completes a stale worker from a recovered complete marker even when the narrative mentions failures", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput(
+      "reports/N-27.md",
+      [
+        "# N-27 Completion Report",
+        "",
+        "## Validation",
+        "",
+        "- `npm run check:bff` - PASS",
+        "- Exact AI Auto-Test command passed and printed `✅ N-27`."
+      ].join("\n")
+    );
+    harness.store.save(buildState({
+      workers: {
+        "N-27": {
+          ...buildRunningWorker("worker-thread-n27", outputPath, "2026-04-03T11:45:00.000Z"),
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return {
+          ...buildTerminalSuccessResult(message.thread_id),
+          content: JSON.stringify([
+            {
+              event_kind: "final_reply",
+              source: "codex",
+              content: [
+                "Earlier checks were failing before I fixed the broker contract.",
+                "",
+                "<<<MERIDIAN-STATUS>>>",
+                "worker_id: N-27",
+                "role: worker",
+                "outcome: complete",
+                `report_path: ${outputPath}`,
+                "notes: PR merged; debug-report broker delivered.",
+                "<<<END>>>"
+              ].join("\n"),
+              raw_content: [
+                "Earlier checks were failing before I fixed the broker contract.",
+                "",
+                "<<<MERIDIAN-STATUS>>>",
+                "worker_id: N-27",
+                "role: worker",
+                "outcome: complete",
+                `report_path: ${outputPath}`,
+                "notes: PR merged; debug-report broker delivered.",
+                "<<<END>>>"
+              ].join("\n"),
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              timestamp: "2026-04-03T12:05:00.000Z"
+            }
+          ])
+        };
+      }
+
+      return buildStatusResult(message.thread_id, "running");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-27"]?.status).toBe("completed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-27",
+        from: "running",
+        to: "completed",
+        trigger: "hub_result:marker_complete"
+      }
+    ]);
+  });
+
+  it("keeps failed worker markers terminal even when expected outputs exist", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput(
+      "reports/N-27.md",
+      [
+        "# N-27 Completion Report",
+        "",
+        "## Validation",
+        "",
+        "- `npm run check:bff` - PASS"
+      ].join("\n")
+    );
+    harness.store.save(buildState({
+      workers: {
+        "N-27": buildRunningWorker("worker-thread-n27", outputPath, "2026-04-03T11:45:00.000Z")
+      }
+    }));
+
+    const failedReply = [
+      "The worker could not finish.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: N-27",
+      "role: worker",
+      "outcome: failed",
+      "error: final validation failed",
+      "<<<END>>>"
+    ].join("\n");
+    const { hubClient } = createHubClient((message) => {
+      if (message.intent === "history") {
+        return {
+          ...buildTerminalSuccessResult(message.thread_id),
+          content: JSON.stringify([
+            {
+              event_kind: "final_reply",
+              source: "codex",
+              content: failedReply,
+              raw_content: failedReply,
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              timestamp: "2026-04-03T12:05:00.000Z"
+            }
+          ])
+        };
+      }
+
+      return buildStatusResult(message.thread_id, "running");
+    });
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-27"]?.status).toBe("failed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-27",
+        from: "running",
+        to: "failed",
+        trigger: "hub_result:marker_failed"
+      }
+    ]);
   });
 
   it("keeps a worker running when its stored HubResult reports another worker's output", async () => {

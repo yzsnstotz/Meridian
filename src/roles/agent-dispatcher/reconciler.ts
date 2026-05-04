@@ -20,6 +20,7 @@ import {
   resolveDispatchPlanPathFromThreadsPath
 } from "./active-tool-process";
 import { isMissingThreadEvidence } from "./missing-thread";
+import { parseMeridianStatusMarker } from "./meridian-status-marker";
 import {
   computeBasenameVariants,
   findExistingOutputArtifactPaths,
@@ -717,6 +718,17 @@ function determineRecordedResultTransition(
     };
   }
 
+  const markerTransition = determineWorkerMarkerTransition(
+    workerId,
+    hubResult,
+    outputsPresent,
+    expectedOutputs,
+    startedAt
+  );
+  if (markerTransition) {
+    return markerTransition;
+  }
+
   if (hubResultContainsHitLimit(hubResult)) {
     return {
       to: "failed",
@@ -814,6 +826,51 @@ function determineRecordedResultTransition(
   }
 
   return null;
+}
+
+function determineWorkerMarkerTransition(
+  workerId: string,
+  hubResult: HubResult,
+  outputsPresent: boolean,
+  expectedOutputs: string[],
+  startedAt: string
+): Pick<ReconciliationChange, "to" | "trigger"> | null {
+  const marker = parseMeridianStatusMarker(combineHubResultText(hubResult));
+  if (!marker || marker.role !== "worker" || marker.worker_id !== workerId) {
+    return null;
+  }
+
+  switch (marker.outcome) {
+    case "complete":
+      if (
+        outputsPresent
+        || expectedOutputs.length === 0
+        || reportedOutputsExist(hubResult, expectedOutputs, startedAt)
+        || (
+          typeof marker.report_path === "string"
+          && outputArtifactsExist([marker.report_path], startedAt, reconciliationFs)
+          && reportedOutputMatchesExpected(marker.report_path, expectedOutputs)
+        )
+      ) {
+        return {
+          to: "completed",
+          trigger: "hub_result:marker_complete"
+        };
+      }
+      return null;
+    case "failed":
+    case "hit_limit":
+      return {
+        to: "failed",
+        trigger: `hub_result:marker_${marker.outcome}`
+      };
+    case "blocked":
+    case "needs_pm":
+      return {
+        to: "blocked",
+        trigger: `hub_result:marker_${marker.outcome}`
+      };
+  }
 }
 
 export async function queryHubThreadObservation(
@@ -1362,6 +1419,18 @@ function hubResultReferencesWorker(
 
   return new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(normalizedWorkerId)}($|[^A-Za-z0-9_-])`, "i")
     .test(combinedContent);
+}
+
+function combineHubResultText(
+  hubResult: Pick<HubResult, "content" | "summary_text" | "details_text">
+): string {
+  return [
+    hubResult.content,
+    hubResult.summary_text,
+    hubResult.details_text
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
 }
 
 function escapeRegExp(value: string): string {
