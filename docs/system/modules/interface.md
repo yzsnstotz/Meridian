@@ -181,19 +181,40 @@ Free text without a slash is treated as `run` intent. When a Telegram message re
 
 **src/interface/ipc-sender.ts**
 
-### `sendHubMessage(message: HubMessage): Promise<void>`
-- **File**: `src/interface/ipc-sender.ts:8`
-- **Purpose**: Sends a one-way interface-to-hub message over the configured IPC socket.
-- **Implementation**: It forwards the message with `sendIpcMessage()` to `config.HUB_SOCKET_PATH` and emits a debug log including the trace, thread, intent, and target. The helper is used for both ordinary message forwarding and callback-driven synthetic actions.
-- **Dependencies**: `config`, `logger`, `shared/ipc`, `types`
-- **Status**: `[ADDED 2026-04-08T14:23:07+09:00]`
+### `IpcSender`
+- **File**: `src/interface/ipc-sender.ts:23`
+- **Purpose**: Stateful sender that wraps every outbound IPC `HubMessage` in the `{ auth, message }` wire envelope after a caller identity has been registered.
+- **Implementation**: The class accepts an optional `socketPath` (defaults to `config.HUB_SOCKET_PATH`), exposes `setCallerIdentity` / `clearCallerIdentity` / `hasCallerIdentity`, and refuses to `send` / `request` / `requestRun` until an identity is set (throws `caller_identity_not_set`). Each outbound payload is built via `wrapHubMessage` from `shared/caller-wire`, which both stamps the auth envelope with `caller_id` + `caller_key` and injects `message.caller = { caller_id, caller_label, caller_version? }` so receivers see the structured identity without ever seeing the secret key.
+- **Dependencies**: `config`, `logger`, `shared/caller-wire`, `shared/ipc`, `types`
+- **Status**: `[ADDED 2026-05-05]`
 
-### `requestHubMessage(message: HubMessage): Promise<HubResult>`
-- **File**: `src/interface/ipc-sender.ts:21`
-- **Purpose**: Sends a request-response IPC message to the hub and validates the returned result.
-- **Implementation**: It uses `sendIpcRequest()` against the same hub socket path and then parses the response through `HubResultSchema` before returning it. Picker flows use this helper for `/list` and `/model` lookups that need immediate data rather than fire-and-forget delivery.
-- **Dependencies**: `config`, `shared/ipc`, `types`
-- **Status**: `[ADDED 2026-04-08T14:23:07+09:00]`
+### `setCallerIdentity(args: CallerIdentitySetterArgs): void`
+- **File**: `src/interface/ipc-sender.ts:94`
+- **Purpose**: Registers the caller identity used by every subsequent send on the default singleton sender.
+- **Implementation**: Validates the trio `caller_id` / `caller_key` / `caller_label` (all required; empty strings rejected with `caller_identity_required`) plus an optional `caller_version`, and stores them on the module's default `IpcSender` instance. Subprocess entrypoints (web, CLI, telegram, monitor) call this once at boot before any send.
+- **Dependencies**: `shared/caller-wire`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `sendHubMessage(message: HubMessage): Promise<void>`
+- **File**: `src/interface/ipc-sender.ts:106`
+- **Purpose**: Sends a one-way interface-to-hub message wrapped in the wire envelope.
+- **Implementation**: Delegates to the default `IpcSender` singleton, which writes `{ auth: { caller_id, caller_key }, message }` to `config.HUB_SOCKET_PATH` and emits a debug log including the trace, thread, intent, target, and resolved `caller_id`. Throws `caller_identity_not_set` when called before `setCallerIdentity`.
+- **Dependencies**: `config`, `logger`, `shared/caller-wire`, `shared/ipc`, `types`
+- **Status**: `[UPDATED 2026-05-05]`
+
+### `requestHubMessage(message: HubMessage, timeoutMs?: number): Promise<HubResult>`
+- **File**: `src/interface/ipc-sender.ts:110`
+- **Purpose**: Sends a request-response IPC message wrapped in the wire envelope and validates the returned result.
+- **Implementation**: Delegates to the default `IpcSender` singleton, sending the wrapped envelope through `sendIpcRequest()` and parsing the response through `HubResultSchema`. Picker flows use this helper for `/list` and `/model` lookups that need immediate data rather than fire-and-forget delivery.
+- **Dependencies**: `config`, `shared/caller-wire`, `shared/ipc`, `types`
+- **Status**: `[UPDATED 2026-05-05]`
+
+### `requestHubRunMessage(message: HubMessage): Promise<HubResult>`
+- **File**: `src/interface/ipc-sender.ts:117`
+- **Purpose**: Same as `requestHubMessage` but raises the IPC timeout to `IPC_RUN_REQUEST_TIMEOUT_MS` for `/api/run`-class long calls.
+- **Implementation**: Thin wrapper over the default `IpcSender.requestRun`, which forwards the envelope-wrapped message with the long timeout.
+- **Dependencies**: `shared/caller-wire`, `shared/ipc`, `types`
+- **Status**: `[ADDED 2026-05-05]`
 
 **src/interface/parser.ts**
 

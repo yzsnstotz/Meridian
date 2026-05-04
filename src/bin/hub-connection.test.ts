@@ -2,7 +2,32 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
 
-import { connectToHub, hubHttpRequest } from "./hub-connection";
+import {
+  clearCallerIdentity,
+  connectToHub,
+  hubHttpRequest,
+  setCallerIdentity
+} from "./hub-connection";
+
+interface TestIdentity {
+  caller_id: string;
+  caller_key: string;
+  caller_label: string;
+  caller_version?: string;
+}
+
+const TEST_IDENTITY: TestIdentity = {
+  caller_id: "meridian-cli",
+  caller_key: "test-cli-key",
+  caller_label: "Meridian CLI"
+};
+
+function withCallerIdentity<T>(callback: () => Promise<T>, identity: TestIdentity = TEST_IDENTITY): Promise<T> {
+  setCallerIdentity({ ...identity });
+  return callback().finally(() => {
+    clearCallerIdentity();
+  });
+}
 
 async function withHttpServer(
   listener: (request: http.IncomingMessage, response: http.ServerResponse) => void | Promise<void>,
@@ -125,12 +150,73 @@ test("hubHttpRequest sends bearer auth from WEB_GUI_TOKEN and parses JSON", { co
         WEB_GUI_TOKEN: "secret-token"
       },
       async () => {
-        const response = await hubHttpRequest("POST", "/api/run", { content: "ship it" });
-        assert.equal(response.statusCode, 200);
-        assert.deepEqual(response.body, { ok: true, trace: "abc" });
+        await withCallerIdentity(async () => {
+          const response = await hubHttpRequest("POST", "/api/run", { content: "ship it" });
+          assert.equal(response.statusCode, 200);
+          assert.deepEqual(response.body, { ok: true, trace: "abc" });
+        });
       }
     );
   });
+});
+
+test("hubHttpRequest injects X-Meridian-Caller-Id and X-Meridian-Caller-Key headers", { concurrency: false }, async () => {
+  await withHttpServer(async (request, response) => {
+    assert.equal(request.headers["x-meridian-caller-id"], "meridian-cli");
+    assert.equal(request.headers["x-meridian-caller-key"], "test-cli-key");
+    assert.equal(request.headers["x-meridian-caller-version"], undefined);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  }, async (baseUrl) => {
+    await withEnv(
+      {
+        MERIDIAN_HTTP: baseUrl,
+        WEB_GUI_TOKEN: undefined
+      },
+      async () => {
+        await withCallerIdentity(async () => {
+          const response = await hubHttpRequest("GET", "/api/health");
+          assert.equal(response.statusCode, 200);
+        });
+      }
+    );
+  });
+});
+
+test("hubHttpRequest includes optional X-Meridian-Caller-Version header when configured", { concurrency: false }, async () => {
+  await withHttpServer(async (request, response) => {
+    assert.equal(request.headers["x-meridian-caller-id"], "meridian-cli");
+    assert.equal(request.headers["x-meridian-caller-key"], "test-cli-key");
+    assert.equal(request.headers["x-meridian-caller-version"], "9.9.9");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  }, async (baseUrl) => {
+    await withEnv(
+      {
+        MERIDIAN_HTTP: baseUrl,
+        WEB_GUI_TOKEN: undefined
+      },
+      async () => {
+        await withCallerIdentity(
+          async () => {
+            const response = await hubHttpRequest("GET", "/api/health");
+            assert.equal(response.statusCode, 200);
+          },
+          { ...TEST_IDENTITY, caller_version: "9.9.9" }
+        );
+      }
+    );
+  });
+});
+
+test("hubHttpRequest throws caller_identity_not_set before setCallerIdentity is called", { concurrency: false }, async () => {
+  clearCallerIdentity();
+  await withEnv(
+    { MERIDIAN_HTTP: "http://127.0.0.1:1", WEB_GUI_TOKEN: undefined },
+    async () => {
+      await assert.rejects(() => hubHttpRequest("GET", "/api/health"), /caller_identity_not_set/);
+    }
+  );
 });
 
 test("hubHttpRequest reuses token embedded in MERIDIAN_HTTP when WEB_GUI_TOKEN is unset", { concurrency: false }, async () => {
@@ -147,9 +233,11 @@ test("hubHttpRequest reuses token embedded in MERIDIAN_HTTP when WEB_GUI_TOKEN i
         WEB_GUI_TOKEN: ""
       },
       async () => {
-        const response = await hubHttpRequest("GET", "/api/health");
-        assert.equal(response.statusCode, 200);
-        assert.deepEqual(response.body, { ok: true });
+        await withCallerIdentity(async () => {
+          const response = await hubHttpRequest("GET", "/api/health");
+          assert.equal(response.statusCode, 200);
+          assert.deepEqual(response.body, { ok: true });
+        });
       }
     );
   });
@@ -160,6 +248,8 @@ test("connectToHub treats any HTTP response from /api/health as API reachability
     assert.equal(request.method, "GET");
     assert.equal(request.url, "/api/health");
     assert.equal(request.headers.authorization, "Bearer query-token");
+    assert.equal(request.headers["x-meridian-caller-id"], "meridian-cli");
+    assert.equal(request.headers["x-meridian-caller-key"], "test-cli-key");
     response.writeHead(401, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: "Please provide a valid access token" }));
   }, async (baseUrl) => {
@@ -169,11 +259,13 @@ test("connectToHub treats any HTTP response from /api/health as API reachability
         WEB_GUI_TOKEN: ""
       },
       async () => {
-        const connection = await connectToHub();
-        assert.deepEqual(connection, {
-          httpBase: `${baseUrl}/`,
-          authenticated: true,
-          transport: "http"
+        await withCallerIdentity(async () => {
+          const connection = await connectToHub();
+          assert.deepEqual(connection, {
+            httpBase: `${baseUrl}/`,
+            authenticated: true,
+            transport: "http"
+          });
         });
       }
     );
@@ -189,7 +281,9 @@ test("connectToHub throws when the Meridian API cannot be reached", { concurrenc
       WEB_GUI_TOKEN: undefined
     },
     async () => {
-      await assert.rejects(connectToHub(), /Cannot reach Meridian API/);
+      await withCallerIdentity(async () => {
+        await assert.rejects(connectToHub(), /Cannot reach Meridian API/);
+      });
     }
   );
 });

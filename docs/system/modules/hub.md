@@ -294,11 +294,18 @@
 **src/hub/socket-adapter.ts**
 
 ### `SocketChannelAdapter`
-- **File**: `src/hub/socket-adapter.ts:6`
+- **File**: `src/hub/socket-adapter.ts:14`
 - **Purpose**: Implements `ChannelAdapter` for IPC socket reply delivery.
-- **Implementation**: It only accepts reply channels whose `channel` is `"socket"`, requires a `socket_path`, and forwards the `HubResult` to `sendIpcMessage()`.
-- **Dependencies**: `hub/channel-adapter`, `shared/ipc`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Implementation**: It only accepts reply channels whose `channel` is `"socket"`, requires a `socket_path`, and forwards the `HubResult` to `sendIpcMessage()`. Outbound results are bare `HubResult` payloads — the auth envelope only applies to inbound `HubMessage` frames produced by `interface/ipc-sender`.
+- **Dependencies**: `hub/channel-adapter`, `shared/caller-wire`, `shared/ipc`, `types`
+- **Status**: [UPDATED 2026-05-05]
+
+### Re-exported wire-envelope helpers
+- **File**: `src/hub/socket-adapter.ts:28`
+- **Purpose**: Surface caller-wire helpers (`wrapHubMessage`, `unwrapWireFrame`, `callerEnvelopeFromHttpHeaders`, `callerVersionFromHttpHeaders`, `WireAuth`, `WireFrame`) at the canonical hub IPC seam so router/server code can import them without reaching into `shared/`.
+- **Implementation**: The module re-exports the helpers verbatim from `src/shared/caller-wire.ts`. Inbound `{ auth, message }` frames are unwrapped with `unwrapWireFrame`; the bare `HubMessage` is what gets dispatched. Auth metadata never reaches the dispatcher arguments and is never persisted.
+- **Dependencies**: `shared/caller-wire`
+- **Status**: [ADDED 2026-05-05]
 
 **src/hub/state-store.ts**
 
