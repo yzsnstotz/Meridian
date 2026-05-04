@@ -4,7 +4,11 @@ import path from "node:path";
 
 import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
 import { LifecycleStore } from "./lifecycle-store";
-import { resolveDispatchModelMapFromMarkdown, resolveImplicitDispatchModelOverride } from "./model-routing";
+import {
+  parseDispatchModelCode,
+  resolveDispatchModelMapFromMarkdown,
+  resolveImplicitDispatchModelOverride
+} from "./model-routing";
 import { isHumanDispatchRow } from "./service-continuation";
 import { isValidationEnabledForWorker } from "./validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
@@ -32,6 +36,7 @@ export interface ContinueDispatchPlanRow {
   status: string;
   worker: string;
   model: string;
+  reasoningEffort?: string;
   notes?: string | null;
 }
 
@@ -158,10 +163,14 @@ async function launchWorkerFromDispatchPlan(
 ): Promise<LaunchDispatchWorkerResult> {
   const markdown = await fs.readFile(config.dispatch_plan_path, "utf8");
   const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
-  const modelCode = dispatchPlanRow.model.trim();
+  const parsedModel = parseDispatchModelCode(dispatchPlanRow.model);
+  const modelCode = (parsedModel?.modelCode ?? dispatchPlanRow.model).trim();
   const resolvedModel = modelCode
     ? resolvedModelMap[modelCode] ?? resolveImplicitDispatchModelOverride(modelCode)
     : undefined;
+  const resolvedEffort = parsedModel?.reasoningEffort
+    ?? resolvedModel?.reasoning_effort
+    ?? dispatchPlanRow.reasoningEffort;
 
   const workerSpawnDir = resolveWorkerSpawnDir(config.dispatch_plan_path, dispatchPlanRow.worker)
     ?? resolveConfiguredDispatchRepoRoot(config);
@@ -176,6 +185,7 @@ async function launchWorkerFromDispatchPlan(
     dispatchRepoRoot: workerSpawnDir,
     workerId: dispatchPlanRow.worker,
     modelId: resolvedModel?.model_id?.trim() || undefined,
+    effort: resolvedEffort,
     validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow)
   });
 }

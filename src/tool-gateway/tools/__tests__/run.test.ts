@@ -271,6 +271,49 @@ describe("run tool", () => {
     expect(sentContent.length).toBeLessThan(2000);
   });
 
+  it("parses model::effort in dispatch rows and keeps the preamble identity clean", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 4 | N-04 | Ship outputs | CODEX::high | N-03 | Read `input.txt`, write `final.txt`. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-effort",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("You are **CODEX**");
+    expect(sentContent).not.toContain("CODEX::high");
+  });
+
+  it("accepts a reasoning_effort column in dispatch rows", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    mockCommandAndPlanReads("/tmp/dispatch/agent_dispatch_command.md", [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Reasoning Effort | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|-----------------|------------|-------|",
+      "| 🔄 | 4 | N-04 | Ship outputs | CODEX | high | N-03 | Read `input.txt`, write `final.txt`. |"
+    ].join("\n"));
+
+    await runTool.execute({
+      thread_id: "thread-effort-column",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "N-04"
+    });
+
+    const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
+    expect(sentContent).toContain("You are **CODEX**");
+  });
+
   it("includes the Reply Protocol section with a MeridianStatusMarker template for non-dispatcher workers", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
