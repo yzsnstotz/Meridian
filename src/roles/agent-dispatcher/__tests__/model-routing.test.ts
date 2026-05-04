@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveDispatchModelMapFromMarkdown } from "../model-routing";
+import {
+  normalizeReasoningEffort,
+  parseDispatchModelCode,
+  resolveDispatchModelMapFromMarkdown
+} from "../model-routing";
 
 describe("resolveDispatchModelMapFromMarkdown", () => {
   it("parses provider/model pairs from the extended Model Legend", () => {
@@ -84,5 +88,38 @@ describe("resolveDispatchModelMapFromMarkdown", () => {
         model_id: "gemini-2.5-pro"
       }
     });
+  });
+
+  it("normalizes model aliases and reads reasoning_effort from the model legend", () => {
+    const resolved = resolveDispatchModelMapFromMarkdown([
+      "| Model | Code | Provider | Model ID | Reasoning Effort | Assign When |",
+      "|-------|------|----------|----------|-----------------|-------------|",
+      "| Spark | `SPARK` | `codex` | `gpt_5_3_codex_spark` | `high` | General work |",
+      ""
+    ].join("\n"), undefined);
+
+    expect(resolved).toEqual({
+      SPARK: {
+        provider: "codex",
+        model_id: "gpt-5.3-codex-spark",
+        reasoning_effort: "high"
+      }
+    });
+  });
+
+  it("parses model::effort references with normalized effort", () => {
+    expect(parseDispatchModelCode("CODEX::high")).toEqual({
+      modelCode: "CODEX",
+      reasoningEffort: "high"
+    });
+
+    expect(parseDispatchModelCode("codex :: XHIGH")).toEqual({
+      modelCode: "codex",
+      reasoningEffort: "xhigh"
+    });
+  });
+
+  it("preserves unsupported reasoning values in resolve model parsing as null", () => {
+    expect(normalizeReasoningEffort("ultra")).toBeUndefined();
   });
 });

@@ -10,6 +10,7 @@ import { KillPolicySchema, type DispatchWorkerState, type HubMessage, type HubRe
 import { LifecycleStore, isExplicitCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
 import { WORKER_MARKER_OUTCOMES } from "../../roles/agent-dispatcher/meridian-status-marker";
 import { sendViaHttpRelay } from "../ipc-bridge";
+import { normalizeReasoningEffort, parseDispatchModelCode } from "../../roles/agent-dispatcher/model-routing";
 import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
 
@@ -332,6 +333,7 @@ export interface DispatchPlanRow {
   worker: string;
   task?: string;
   model?: string;
+  reasoningEffort?: string;
   dependsOn?: string;
   notes?: string;
   reportFile?: string;
@@ -813,6 +815,7 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
     const modelColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["model", "agent", "model_tier"]);
     const dependsOnColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["depends_on", "depends", "dependencies"]);
     const reportFileColumn = findDispatchPlanHeaderIndex(normalizedHeaders, ["report_file", "report_files", "file"]);
+    const reasoningEffortColumn = normalizedHeaders.indexOf("reasoning_effort");
     if (workerColumn === -1) {
       continue;
     }
@@ -828,11 +831,17 @@ function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
       if (!rowCells || rowCells.length !== headerCells.length) {
         break;
       }
+      const modelRaw = modelColumn === -1 ? undefined : readOptionalCell(rowCells[modelColumn]);
+      const parsedModel = modelRaw ? parseDispatchModelCode(modelRaw) : null;
+      const columnReasoningEffort = reasoningEffortColumn === -1
+        ? undefined
+        : normalizeReasoningEffort(readOptionalCell(rowCells[reasoningEffortColumn]) ?? undefined);
 
       rows.push({
         worker: rowCells[workerColumn],
         task: taskColumn === -1 ? undefined : rowCells[taskColumn],
-        model: modelColumn === -1 ? undefined : rowCells[modelColumn],
+        model: parsedModel?.modelCode,
+        reasoningEffort: parsedModel?.reasoningEffort ?? columnReasoningEffort,
         dependsOn: dependsOnColumn === -1 ? undefined : rowCells[dependsOnColumn],
         notes: notesColumn === -1 ? undefined : rowCells[notesColumn],
         reportFile: reportFileColumn === -1 ? undefined : readOptionalCell(rowCells[reportFileColumn])

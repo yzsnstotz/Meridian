@@ -3,9 +3,20 @@ import type { DispatchModelMap, DispatchModelOverride } from "../../types";
 interface DispatchPlanModelLegendEntry {
   provider: string | null;
   model_id: string | null;
+  reasoning_effort: string | null;
 }
 
-const IMPLICIT_MODEL_CODE_DEFAULTS: Record<string, DispatchModelOverride> = {
+export interface ParsedDispatchModelRef {
+  modelCode: string;
+  reasoningEffort?: string;
+}
+
+export interface ResolvedDispatchModel extends DispatchModelOverride {
+  reasoning_effort?: string;
+}
+
+const KNOWN_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+const IMPLICIT_MODEL_CODE_DEFAULTS: Record<string, ResolvedDispatchModel> = {
   CODEX: {
     provider: "codex",
     model_id: "gpt-5.4 medium"
@@ -32,12 +43,17 @@ const IMPLICIT_MODEL_CODE_DEFAULTS: Record<string, DispatchModelOverride> = {
   }
 };
 
+const CANONICAL_MODEL_ID_ALIASES: Record<string, string> = {
+  "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+  "codex-spark": "gpt-5.3-codex-spark"
+};
+
 export function resolveDispatchModelMapFromMarkdown(
   markdown: string,
   overrides: DispatchModelMap | undefined
-): DispatchModelMap {
+): Record<string, ResolvedDispatchModel> {
   const legend = parseDispatchPlanModelLegend(markdown);
-  const resolved: DispatchModelMap = {};
+  const resolved: Record<string, ResolvedDispatchModel> = {};
 
   for (const [code, entry] of Object.entries(legend)) {
     const resolvedEntry = toDispatchModelOverride(entry) ?? resolveImplicitDispatchModelOverride(code);
@@ -56,7 +72,7 @@ export function resolveDispatchModelMapFromMarkdown(
 
 export function resolveImplicitDispatchModelOverride(
   modelCode: string | null | undefined
-): DispatchModelOverride | undefined {
+): ResolvedDispatchModel | undefined {
   const normalized = normalizeModelCode(modelCode);
   if (!normalized) {
     return undefined;
@@ -64,6 +80,42 @@ export function resolveImplicitDispatchModelOverride(
 
   const implicit = IMPLICIT_MODEL_CODE_DEFAULTS[normalized];
   return implicit ? { ...implicit } : undefined;
+}
+
+export function parseDispatchModelCode(rawModel: string | undefined): ParsedDispatchModelRef | null {
+  if (!rawModel) {
+    return null;
+  }
+
+  const trimmed = rawModel.trim().replace(/^`+|`+$/g, "");
+  if (!trimmed || trimmed === "—") {
+    return null;
+  }
+
+  const separatorIndex = trimmed.indexOf("::");
+  if (separatorIndex === -1) {
+    return { modelCode: trimmed };
+  }
+
+  const modelCode = trimmed.slice(0, separatorIndex).trim();
+  if (!modelCode) {
+    return null;
+  }
+
+  const reasoningEffort = normalizeReasoningEffort(trimmed.slice(separatorIndex + 2));
+  return {
+    modelCode,
+    reasoningEffort
+  };
+}
+
+export function normalizeReasoningEffort(value: string | null | undefined): string | undefined {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!normalized || !KNOWN_REASONING_EFFORTS.has(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
 }
 
 export function parseDispatchPlanModelLegend(markdown: string): Record<string, DispatchPlanModelLegendEntry> {
@@ -99,7 +151,10 @@ export function parseDispatchPlanModelLegend(markdown: string): Record<string, D
 
       modelLegend[code] = {
         provider: columnIndex.provider === -1 ? null : readOptionalCell(rowCells[columnIndex.provider]),
-        model_id: columnIndex.model_id === -1 ? null : readOptionalCell(rowCells[columnIndex.model_id])
+        model_id: columnIndex.model_id === -1 ? null : readOptionalCell(rowCells[columnIndex.model_id]),
+        reasoning_effort: columnIndex.reasoning_effort === -1
+          ? null
+          : normalizeReasoningEffort(readOptionalCell(rowCells[columnIndex.reasoning_effort]) ?? undefined) ?? null
       };
     }
 
@@ -113,6 +168,7 @@ function indexModelLegendColumns(headerCells: string[]): {
   code: number;
   provider: number;
   model_id: number;
+  reasoning_effort: number;
 } | null {
   const normalizedHeaders = headerCells.map(normalizeTableHeader);
   const code = normalizedHeaders.indexOf("code");
@@ -124,7 +180,8 @@ function indexModelLegendColumns(headerCells: string[]): {
   return {
     code,
     provider: normalizedHeaders.indexOf("provider"),
-    model_id: normalizedHeaders.indexOf("model_id")
+    model_id: normalizedHeaders.indexOf("model_id"),
+    reasoning_effort: normalizedHeaders.indexOf("reasoning_effort")
   };
 }
 
@@ -154,15 +211,32 @@ function normalizeModelCode(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim().toUpperCase() : "";
 }
 
-function toDispatchModelOverride(entry: DispatchPlanModelLegendEntry): DispatchModelOverride | undefined {
+function toDispatchModelOverride(entry: DispatchPlanModelLegendEntry): ResolvedDispatchModel | undefined {
   if (!entry.provider || !entry.model_id) {
     return undefined;
   }
 
-  return {
+  const normalizedModelId = normalizeModelId(entry.model_id);
+  if (!normalizedModelId) {
+    return undefined;
+  }
+
+  const resolved: ResolvedDispatchModel = {
     provider: entry.provider,
-    model_id: entry.model_id
+    model_id: normalizedModelId
   };
+
+  if (entry.reasoning_effort && KNOWN_REASONING_EFFORTS.has(entry.reasoning_effort)) {
+    resolved.reasoning_effort = entry.reasoning_effort;
+  }
+
+  return resolved;
+}
+
+function normalizeModelId(modelId: string): string | null {
+  const normalizedModelId = modelId.trim();
+  const normalizedAlias = normalizedModelId.replace(/_/g, "-").toLowerCase();
+  return CANONICAL_MODEL_ID_ALIASES[normalizedAlias] ?? normalizedAlias;
 }
 
 function readOptionalCell(value: string | undefined): string | null {

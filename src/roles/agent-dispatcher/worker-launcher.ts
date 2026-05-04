@@ -24,6 +24,7 @@ export interface LaunchDispatchWorkerConfig {
   dispatchRepoRoot: string;
   workerId: string;
   modelId?: string;
+  effort?: string;
   validationMaxFixCycles?: number;
 }
 
@@ -106,13 +107,15 @@ export async function launchDispatchWorker(
 
   let threadId: string;
   try {
-    const { modelId: parsedModelId, effort: parsedEffort } = parseModelIdWithEffort(config.modelId?.trim() || undefined);
+    const parsedModel = parseModelIdWithEffort(config.modelId?.trim() || undefined);
+    const explicitEffort = config.effort?.trim().toLowerCase();
+    const resolvedEffort = explicitEffort ?? parsedModel.effort;
     threadId = await spawnWithRetry(deps.meridianApi, {
       agentType: config.agentType,
       mode: config.mode,
       spawnDir,
-      modelId: parsedModelId,
-      effort: parsedEffort,
+      modelId: parsedModel.modelId,
+      effort: resolvedEffort,
       autoApprove: config.autoApprove
     }, (candidateThreadId) => isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId));
   } catch (error) {

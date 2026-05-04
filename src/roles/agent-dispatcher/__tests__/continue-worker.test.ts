@@ -242,4 +242,50 @@ describe("continueDispatchWorker", () => {
       validationMaxFixCycles: undefined
     }));
   });
+
+  it("passes parsed model::effort as effort when launching a worker", async () => {
+    const { dir, commandPath, planPath } = await createTempDispatchPlan();
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "worker-thread-n04"
+    });
+    await fsPromises.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| ⬜ | 1 | N-04 | Findings C | CODEX::high | N-01 | Single module |"
+    ].join("\n"), "utf8");
+
+    await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: dir,
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          threshold_type: "score",
+          pass_threshold: 0.8,
+          max_fix_cycles: 4,
+          base_branch: "main"
+        }
+      },
+      [{ status: "⬜", worker: "N-04", model: "CODEX::high", notes: "Single module" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: "N-04",
+      effort: "high",
+      modelId: "gpt-5.4 medium"
+    }));
+  });
 });
