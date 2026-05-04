@@ -379,6 +379,71 @@
 - **Dependencies**: `shared/approval`, `types`
 - **Status**: [ADDED 2026-04-08T14:10:55+09:00]
 
+**src/hub/caller-registry.ts** `[ADDED 2026-05-05]`
+
+### `CallerRegistry`
+- **File**: `src/hub/caller-registry.ts:33`
+- **Purpose**: In-memory cache of `CallerRecord`s with mint/rotate/revoke/verify/ensureBuiltin/touchLastSeen, persisted through a callback supplied by the hub server.
+- **Implementation**: Constructor seeds a `Map<caller_id, CallerRecord>` from `initialRecords` and stores the persistence callback, clock, and random-bytes generator (the latter two are injectable for tests). Every mutating method (`mint`, `rotate`, `revoke`, `ensureBuiltin`, `touchLastSeen`) ends by snapshotting the map and invoking `persist`. `verify` recomputes `sha256(cleartextKey + caller_id)` and compares it with the stored `key_hash` via `crypto.timingSafeEqual` on equal-length 32-byte buffers; revoked records short-circuit to `null`. `ensureBuiltin` is idempotent on builtin records, refreshes the hash when `deriveKey()` rotates, and throws `caller_kind_collision` if the slot is held by an external caller. `mint` throws on duplicate ids so re-minting under the same id requires an explicit revoke + remint flow.
+- **Dependencies**: `node:crypto`, `hub/state-store`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `list(): CallerRecord[]`
+- **File**: `src/hub/caller-registry.ts:49`
+- **Purpose**: Returns a cloned snapshot of every caller record, including `key_hash` (the caller of the `list_callers` intent is responsible for stripping it).
+- **Implementation**: Iterates the internal map and returns shallow clones so consumers cannot mutate stored records.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `get(callerId: string): CallerRecord | null`
+- **File**: `src/hub/caller-registry.ts:53`
+- **Purpose**: Looks up a single caller by id.
+- **Implementation**: Returns a cloned `CallerRecord` when present, `null` otherwise. Includes revoked records — callers that need a "live caller" check should call `verify` instead.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `mint(args: { caller_id, caller_label, kind: "external" }): { record, cleartextKey }`
+- **File**: `src/hub/caller-registry.ts:58`
+- **Purpose**: Creates a new external caller and returns its cleartext key once.
+- **Implementation**: Throws `caller_already_exists` if the id is taken (regardless of kind), generates 32 random bytes hex as the cleartext key, stores the `sha256(key + caller_id)` hash, and persists. The cleartext key is returned to the caller and never stored.
+- **Dependencies**: `node:crypto`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `rotate(callerId: string): { record, cleartextKey }`
+- **File**: `src/hub/caller-registry.ts:77`
+- **Purpose**: Replaces a caller's key with a new cleartext value and clears any prior `revoked_at`.
+- **Implementation**: Throws `caller_unknown` if the id is missing, otherwise overwrites `key_hash` from a fresh 32-byte cleartext key and clears `revoked_at`. The previous key fails `verify` immediately.
+- **Dependencies**: `node:crypto`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `revoke(callerId: string): { revoked_at: string }`
+- **File**: `src/hub/caller-registry.ts:89`
+- **Purpose**: Marks a caller as revoked while preserving the slot.
+- **Implementation**: Throws `caller_unknown` if the id is missing, otherwise sets `revoked_at` to the current ISO timestamp. The record continues to appear in `list()` and `get()`, but `verify` returns `null`.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `verify(callerId: string, cleartextKey: string): CallerRecord | null`
+- **File**: `src/hub/caller-registry.ts:100`
+- **Purpose**: Authenticates a `(caller_id, cleartextKey)` pair in constant time.
+- **Implementation**: Returns `null` for unknown or revoked records. Otherwise hashes the input as `sha256(cleartextKey + caller_id)`, hex-decodes both candidate and stored hashes into 32-byte buffers, and compares with `crypto.timingSafeEqual`. Returns a cloned `CallerRecord` on match.
+- **Dependencies**: `node:crypto`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `ensureBuiltin(args: { caller_id, caller_label, deriveKey: () => string }): CallerRecord`
+- **File**: `src/hub/caller-registry.ts:120`
+- **Purpose**: Idempotently materializes a `caller_kind: "builtin"` record from the boot-time bootstrap key.
+- **Implementation**: When no record exists, creates one with the derived key hash. When a builtin record exists, recomputes the expected hash and updates `key_hash` / `caller_label` / clears `revoked_at` only if any of those changed (covers bootstrap-key rotation across hub restarts). Throws `caller_kind_collision` if the slot is held by an external caller.
+- **Dependencies**: `node:crypto`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `touchLastSeen(callerId: string, now?: string): void`
+- **File**: `src/hub/caller-registry.ts:163`
+- **Purpose**: Updates `last_seen_at` after a successful auth (called by hub auth middleware).
+- **Implementation**: Silently no-ops on unknown ids so middleware does not crash on race conditions; otherwise stamps the supplied or current ISO timestamp and persists.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
 ## Test Files
 
 - `src/hub/a2a-websocket-log.test.ts`
@@ -398,3 +463,4 @@
 - `src/hub/service-registry.test.ts`
 - `src/hub/socket-adapter.test.ts`
 - `src/hub/state-store.test.ts`
+- `src/hub/caller-registry.test.ts` `[ADDED 2026-05-05]`
