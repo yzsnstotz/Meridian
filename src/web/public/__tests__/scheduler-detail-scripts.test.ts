@@ -326,7 +326,99 @@ describe("scheduler detail public scripts", () => {
     expect(controls).toMatchObject({
       showContinue: true,
       continueDisabled: false,
-      showLifecycle: false
+      showLifecycle: true,
+      lifecycleAction: "pause",
+      lifecycleLabel: "Pause"
+    });
+  });
+
+  it("keeps the Pause control available while a recoverable worker is queued for continuation", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const controls = vm.runInContext(`resolveDispatcherDetailControls({
+      status: "active",
+      dispatcher_thread_id: "dispatcher-thread",
+      continue_worker: "N-12",
+      dispatch_details: [
+        {
+          worker_id: "N-12",
+          status: "pending",
+          worker_thread_id: "",
+          model: "CODEX-XHIGH"
+        }
+      ]
+    })`, context) as {
+      showContinue: boolean;
+      continueDisabled: boolean;
+      showLifecycle: boolean;
+      lifecycleAction: string;
+      lifecycleLabel: string;
+    };
+
+    expect(controls).toMatchObject({
+      showContinue: true,
+      continueDisabled: false,
+      showLifecycle: true,
+      lifecycleAction: "pause",
+      lifecycleLabel: "Pause"
+    });
+  });
+
+  it("hides the Pause control when the dispatcher has no live hub thread", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const controls = vm.runInContext(`resolveDispatcherDetailControls({
+      status: "needs_reactivation",
+      dispatcher_thread_id: "",
+      dispatch_details: []
+    })`, context) as {
+      showLifecycle: boolean;
+      lifecycleAction: string | null;
+    };
+
+    expect(controls).toMatchObject({
+      showLifecycle: false,
+      lifecycleAction: null
     });
   });
 
