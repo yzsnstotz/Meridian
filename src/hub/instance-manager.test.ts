@@ -1397,7 +1397,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   });
 
   const result = await manager.rehydrateFromState({
-    version: 2,
+    version: 3,
     updated_at: new Date().toISOString(),
     instances: [
       {
@@ -1455,7 +1455,7 @@ test("rehydrateFromState seeds thread allocation from persisted conversation his
   });
 
   await manager.rehydrateFromState({
-    version: 2,
+    version: 3,
     updated_at: nowIso,
     instances: [],
     session_bindings: {},
