@@ -3062,6 +3062,73 @@ describe("role config handlers", () => {
     }
   });
 
+  it("includes runtime model override in dispatch detail responses", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-status-route-override-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 2 | N-04 | Resume Worker Tool | CODEX | R-03 | CLI Integration PRD | retrying |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: null,
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:10:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          applied_model_id: "gpt-5.5",
+          applied_reasoning_effort: "high",
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness();
+
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-status-detail",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }]
+      });
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-status-detail")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-status-detail",
+        dispatch_details: expect.arrayContaining([
+          expect.objectContaining({
+            worker_id: "N-04",
+            model: "CODEX",
+            applied_model: "gpt-5.5",
+            status: "running"
+          })
+        ])
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   describe("GET /api/channels", () => {
     beforeEach(() => {
       vi.stubEnv("ALLOWED_USER_IDS", "");

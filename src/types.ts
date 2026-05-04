@@ -201,6 +201,8 @@ export const DispatchWorkerStateSchema = z.object({
   status: LifecycleStatusSchema,
   expected_outputs: z.array(z.string().min(1)).default([]),
   hub_result: HubResultSchema.nullable().default(null),
+  applied_model_id: z.string().min(1).optional(),
+  applied_reasoning_effort: z.string().min(1).optional(),
   command_preamble: z.string().nullable().default(null),
   retry_count: z.number().int().min(0).default(0),
   validation: ValidationStateSchema.optional()

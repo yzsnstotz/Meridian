@@ -126,6 +126,57 @@ describe("update-status tool", () => {
     expect(sidecar.workers["N-05"]?.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("stores model and reasoning effort overrides in the sidecar when updating worker status", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-update-status-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ⬜ | 2 | N-05 | Tools |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await updateStatusTool.execute({
+      plan: planPath,
+      worker: "N-05",
+      status: "in_progress",
+      thread_id: "worker-thread-456",
+      model: "gpt-5.5",
+      reasoning_effort: "high"
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        worker: "N-05",
+        status: "in_progress"
+      }
+    });
+
+    const sidecar = JSON.parse(await fs.readFile(sidecarPath, "utf8")) as {
+      version: number;
+      workers: Record<
+        string,
+        { applied_model_id?: string; applied_reasoning_effort?: string; status: string; thread_id: string }
+      >;
+    };
+
+    expect(sidecar.version).toBe(2);
+    expect(sidecar.workers["N-05"]).toMatchObject({
+      status: "running",
+      thread_id: "worker-thread-456",
+      applied_model_id: "gpt-5.5",
+      applied_reasoning_effort: "high"
+    });
+  });
+
   it("marks a worker completed in the lifecycle sidecar when the worker reaches a terminal state", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-update-status-");
     tempDirectories.add(directory);
