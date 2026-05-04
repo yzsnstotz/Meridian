@@ -501,6 +501,22 @@
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T14:28:58+09:00]`
 
+**src/shared/caller-bootstrap.ts** `[ADDED 2026-05-05]`
+
+### `deriveBuiltinCallerKey(callerId: string): string`
+- **File**: `src/shared/caller-bootstrap.ts:4`
+- **Purpose**: Derives an HMAC-SHA256 key for a built-in caller using the runtime bootstrap seed.
+- **Implementation**: Reads `MERIDIAN_INTERNAL_BOOTSTRAP_KEY` from `process.env` at call time (never cached) and returns a 64-char hex HMAC-SHA256 digest. Throws `Error("bootstrap_key_missing")` when the env var is absent — this exact message is caught by the N-03 hub boot path to surface a user-facing error.
+- **Dependencies**: `node:crypto`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `BUILTIN_CALLERS`
+- **File**: `src/shared/caller-bootstrap.ts:10`
+- **Purpose**: Canonical readonly list of the five built-in caller identities.
+- **Implementation**: `as const` tuple of `{ caller_id, caller_label }` objects for `meridian-web`, `meridian-cli`, `meridian-telegram`, `meridian-monitor`, and `meridian-admin`. Exported `as const` so downstream code gets readonly tuple inference.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
 ## Test Files
 
 - `src/shared/a2a-adapter.test.ts`
@@ -515,3 +531,4 @@
 - `src/shared/stream-parsers/codex.test.ts`
 - `src/shared/stream-parsers/gemini.test.ts`
 - `src/shared/stream-parsers/ndjson.test.ts`
+- `src/shared/caller-bootstrap.test.ts` `[ADDED 2026-05-05]`
