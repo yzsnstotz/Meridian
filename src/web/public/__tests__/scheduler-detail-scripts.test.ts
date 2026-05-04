@@ -916,6 +916,8 @@ describe("scheduler detail public scripts", () => {
     expect(html).toContain('data-resume-action="skip"');
     expect(html).toContain('data-resume-action="force-complete"');
     expect(html).toContain("data-status-apply");
+    expect(html).toContain("data-worker-model");
+    expect(html).toContain("data-worker-effort");
     expect(html).toContain("Agent Reply");
     expect(html).toContain("Agent is working on R-01.");
   });
@@ -968,6 +970,50 @@ describe("scheduler detail public scripts", () => {
       url: "/api/scheduler/scheduler-gui-actions/worker/R-01/status",
       method: "PATCH",
       body: { status: "completed" }
+    });
+  });
+
+  it("sends model and effort overrides when set in the scheduler dispatch status controls", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const elements = new Map<string, Record<string, unknown>>();
+    const handlers: { domContentLoaded?: () => void } = {};
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+
+    const context = createSchedulerDetailContext(elements, handlers, requests);
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const domContentLoaded = handlers.domContentLoaded;
+    if (!domContentLoaded) {
+      throw new Error("app.js did not register a DOMContentLoaded handler");
+    }
+    domContentLoaded();
+    await flushAsync();
+    await flushAsync();
+
+    const dispatchBody = getElementStub(elements, "dispatch-progress-body");
+    const clickHandler = getElementHandlers(dispatchBody).click;
+    if (!clickHandler) {
+      throw new Error("scheduler worker action handler was not registered");
+    }
+
+    await clickHandler({
+      target: new FakeButton({
+        workerId: "R-01",
+        statusApply: true,
+        selectedStatus: "completed",
+        selectedModel: "gpt-5.5 xhigh",
+        selectedReasoningEffort: "xhigh"
+      })
+    });
+
+    expect(requests).toContainEqual({
+      url: "/api/scheduler/scheduler-gui-actions/worker/R-01/status",
+      method: "PATCH",
+      body: {
+        status: "completed",
+        model: "gpt-5.5 xhigh",
+        reasoning_effort: "xhigh"
+      }
     });
   });
 });
@@ -1184,13 +1230,24 @@ class FakeButton extends FakeElement {
   private readonly resumeAction?: string;
   private readonly statusApply: boolean;
   private readonly selectedStatus: string;
+  private readonly selectedModel: string;
+  private readonly selectedReasoningEffort: string;
 
-  constructor(options: { workerId: string; resumeAction?: string; statusApply?: boolean; selectedStatus?: string }) {
+  constructor(options: {
+    workerId: string;
+    resumeAction?: string;
+    statusApply?: boolean;
+    selectedStatus?: string;
+    selectedModel?: string;
+    selectedReasoningEffort?: string;
+  }) {
     super();
     this.workerId = options.workerId;
     this.resumeAction = options.resumeAction;
     this.statusApply = Boolean(options.statusApply);
     this.selectedStatus = options.selectedStatus ?? "pending";
+    this.selectedModel = options.selectedModel ?? "";
+    this.selectedReasoningEffort = options.selectedReasoningEffort ?? "";
   }
 
   override getAttribute(name: string): string | null {
@@ -1211,7 +1268,7 @@ class FakeButton extends FakeElement {
     }
 
     if (selector === "tr") {
-      return new FakeTableRow(this.selectedStatus);
+      return new FakeTableRow(this.selectedStatus, this.selectedModel, this.selectedReasoningEffort);
     }
 
     return null;
@@ -1220,13 +1277,26 @@ class FakeButton extends FakeElement {
 
 class FakeTableRow extends FakeElement {
   private readonly selectedStatus: string;
+  private readonly selectedModel: string;
+  private readonly selectedReasoningEffort: string;
 
-  constructor(selectedStatus: string) {
+  constructor(selectedStatus: string, selectedModel: string, selectedReasoningEffort: string) {
     super();
     this.selectedStatus = selectedStatus;
+    this.selectedModel = selectedModel;
+    this.selectedReasoningEffort = selectedReasoningEffort;
   }
 
   override querySelector(selector: string): FakeElement | null {
-    return selector === "[data-worker-status]" ? new FakeSelect(this.selectedStatus) : null;
+    if (selector === "[data-worker-status]") {
+      return new FakeSelect(this.selectedStatus);
+    }
+    if (selector === "[data-worker-model]") {
+      return new FakeSelect(this.selectedModel);
+    }
+    if (selector === "[data-worker-effort]") {
+      return new FakeSelect(this.selectedReasoningEffort);
+    }
+    return null;
   }
 }

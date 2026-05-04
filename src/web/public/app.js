@@ -1,4 +1,23 @@
 const POLL_INTERVAL_MS = 3000;
+const WORKER_MODEL_OPTIONS = [
+  "CODEX",
+  "CODEX-HIGH",
+  "CODEX-XHIGH",
+  "OPUS",
+  "SONNET",
+  "GEMINI",
+  "gpt-5.5 medium",
+  "gpt-5.5 high",
+  "gpt-5.5 xhigh",
+  "gpt-5.4 medium",
+  "gpt-5.4 high",
+  "gpt-5.4 xhigh",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "gemini-2.5-pro"
+];
+const WORKER_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"];
 
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
@@ -593,32 +612,40 @@ function bindSchedulerWorkerActions(schedulerId, poll) {
         if (dispatchPlanFeedback) {
           dispatchPlanFeedback.textContent = `${workerId} ${formatResumeActionSuccess(resumeAction)}.`;
         }
-      } else if (isStatusApply) {
-        const rowElement = actionTarget.closest("tr");
-        const statusSelect = rowElement?.querySelector("[data-worker-status]");
-        if (!(statusSelect instanceof HTMLSelectElement)) {
-          throw new Error(`No status selector found for ${workerId}`);
-        }
+            } else if (isStatusApply) {
+              const rowElement = actionTarget.closest("tr");
+              const statusSelect = rowElement?.querySelector("[data-worker-status]");
+              const modelSelect = rowElement?.querySelector("[data-worker-model]");
+              const effortSelect = rowElement?.querySelector("[data-worker-effort]");
+              if (!(statusSelect instanceof HTMLSelectElement)) {
+                throw new Error(`No status selector found for ${workerId}`);
+              }
+              const statusValue = statusSelect.value;
+              const payload = { status: statusValue };
+              if (modelSelect instanceof HTMLSelectElement && modelSelect.value.trim()) {
+                payload.model = modelSelect.value.trim();
+              }
+              if (effortSelect instanceof HTMLSelectElement && effortSelect.value.trim()) {
+                payload.reasoning_effort = effortSelect.value.trim();
+              }
 
-        if (dispatchPlanFeedback) {
-          dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusSelect.value)}...`;
-        }
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusValue)}...`;
+              }
 
-        await fetchJson(
-          `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/status`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              status: statusSelect.value
-            })
-          }
-        );
+              await fetchJson(
+                `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/status`,
+                {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload)
+                }
+              );
 
-        if (dispatchPlanFeedback) {
-          dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusSelect.value)}.`;
-        }
-      }
+              if (dispatchPlanFeedback) {
+                dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusValue)}.`;
+              }
+            }
 
       await poll();
     } catch (error) {
@@ -1664,12 +1691,22 @@ async function setupRoleDetail() {
             } else if (isStatusApply) {
               const rowElement = actionTarget.closest("tr");
               const statusSelect = rowElement?.querySelector("[data-worker-status]");
+              const modelSelect = rowElement?.querySelector("[data-worker-model]");
+              const effortSelect = rowElement?.querySelector("[data-worker-effort]");
               if (!(statusSelect instanceof HTMLSelectElement)) {
                 throw new Error(`No status selector found for ${workerId}`);
               }
+              const statusValue = statusSelect.value;
+              const payload = { status: statusValue };
+              if (modelSelect instanceof HTMLSelectElement && modelSelect.value.trim()) {
+                payload.model = modelSelect.value.trim();
+              }
+              if (effortSelect instanceof HTMLSelectElement && effortSelect.value.trim()) {
+                payload.reasoning_effort = effortSelect.value.trim();
+              }
 
               if (dispatchPlanFeedback) {
-                dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusSelect.value)}...`;
+                dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusValue)}...`;
               }
 
               await fetchJson(
@@ -1677,14 +1714,12 @@ async function setupRoleDetail() {
                 {
                   method: "PATCH",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    status: statusSelect.value
-                  })
+                  body: JSON.stringify(payload)
                 }
               );
 
               if (dispatchPlanFeedback) {
-                dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusSelect.value)}.`;
+                dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusValue)}.`;
               }
             }
 
@@ -2290,7 +2325,12 @@ function renderDispatchDetailCard(detail, options = {}) {
     }
   }
 
-  const subtitleParts = [detail.model, detail.applied_model, detail.worker_thread_id].filter(Boolean);
+  const subtitleParts = [
+    detail.model,
+    detail.applied_model,
+    detail.applied_reasoning_effort,
+    detail.worker_thread_id
+  ].filter(Boolean);
   const retryBadge = !isPmResolver && !isValidator && Number(detail.retry_count) > 0
     ? `<span class="dispatch-detail-pill dispatch-detail-retry-pill" title="Worker has been re-launched ${escapeHtml(String(detail.retry_count))} time(s); prior attempts' prompt+reply are not persisted yet.">retry ×${escapeHtml(String(detail.retry_count))}</span>`
     : "";
@@ -2379,7 +2419,14 @@ function renderDispatchPlanRows(rows, dispatchDetails) {
     if (workerKey) {
       detailByWorker.delete(workerKey);
     }
-    renderedRows.push(renderDispatchPlanRow(row, inlineDetails));
+    const primaryDetail = getPrimaryDispatchDetail(inlineDetails);
+    const rowModel = resolveDispatchRowAppliedModel(row, primaryDetail);
+    const rowEffort = resolveDispatchRowAppliedReasoningEffort(row, primaryDetail);
+    renderedRows.push(renderDispatchPlanRow({
+      ...row,
+      applied_model: rowModel,
+      applied_reasoning_effort: rowEffort
+    }, inlineDetails));
   });
 
   detailByWorker.forEach((details) => {
@@ -2392,6 +2439,7 @@ function renderDispatchPlanRows(rows, dispatchDetails) {
 function renderDispatchPlanRow(row, details = []) {
   const inlineDetails = normalizeDispatchDetailList(details);
   const rowClassName = inlineDetails.length > 0 ? "dispatch-plan-row dispatch-plan-row-with-detail" : "dispatch-plan-row";
+  const rowModel = resolveDispatchRowModelForDisplay(row, inlineDetails);
 
   return `
     <tr class="${rowClassName}">
@@ -2400,7 +2448,7 @@ function renderDispatchPlanRow(row, details = []) {
       <td><code>${escapeHtml(row.worker)}</code></td>
       <td>${escapeHtml(row.task)}</td>
       <td>${formatToolProgress(row.progress)}</td>
-      <td>${escapeHtml(row.model)}</td>
+      <td>${escapeHtml(rowModel || "---")}</td>
       <td>${escapeHtml(row.depends_on || "---")}</td>
       <td>${renderActiveOwner(row)}</td>
       <td>${renderDispatchPlanActions(row)}</td>
@@ -2411,7 +2459,10 @@ function renderDispatchPlanRow(row, details = []) {
 
 function renderDispatchPlanOrphanDetailRow(details) {
   const inlineDetails = normalizeDispatchDetailList(details);
-  const syntheticRow = buildDispatchPlanSyntheticRow(getPrimaryDispatchDetail(inlineDetails));
+  const primaryDetail = getPrimaryDispatchDetail(inlineDetails);
+  const syntheticRow = buildDispatchPlanSyntheticRow(primaryDetail);
+  const syntheticModel = resolveDispatchWorkerAppliedModel(primaryDetail, syntheticRow.model);
+  const syntheticEffort = resolveDispatchWorkerAppliedReasoningEffort(primaryDetail);
 
   return `
     <tr class="dispatch-plan-row dispatch-plan-row-with-detail dispatch-plan-row-orphan">
@@ -2420,10 +2471,14 @@ function renderDispatchPlanOrphanDetailRow(details) {
       <td><code>${escapeHtml(syntheticRow.worker || "---")}</code></td>
       <td>${escapeHtml(syntheticRow.task || "---")}</td>
       <td>${formatToolProgress(syntheticRow.progress)}</td>
-      <td>${escapeHtml(syntheticRow.model || "---")}</td>
+      <td>${escapeHtml(syntheticModel || syntheticRow.model || "---")}</td>
       <td>---</td>
       <td>${renderActiveOwner(syntheticRow)}</td>
-      <td>${renderDispatchPlanActions(syntheticRow)}</td>
+      <td>${renderDispatchPlanActions({
+        ...syntheticRow,
+        applied_model: syntheticModel,
+        applied_reasoning_effort: syntheticEffort
+      })}</td>
     </tr>
     ${renderDispatchPlanDetailRow(inlineDetails, 9)}
   `;
@@ -2549,6 +2604,8 @@ function buildDispatchPlanSyntheticRow(detail) {
     worker: detail?.worker_id || "",
     task: detail?.task || "",
     model: detail?.model || detail?.applied_model || "",
+    applied_model: detail?.applied_model || detail?.model || "",
+    applied_reasoning_effort: detail?.applied_reasoning_effort || null,
     depends_on: "---",
     thread_id: detail?.worker_thread_id || "",
     detail_kind: detailKind,
@@ -2619,10 +2676,12 @@ function renderDispatchPlanActions(row) {
 
   const workerId = escapeHtml(row.worker || "");
   const currentStatus = normalizeDispatchPlanStatus(row?.status);
+  const currentModel = normalizeText(row?.applied_model) || normalizeText(row?.model);
+  const currentReasoningEffort = normalizeText(row?.applied_reasoning_effort);
   const canContinue = canContinueDispatchRow(row);
   const statusEditor = currentStatus === "running" && !row?.show_status_editor
     ? ""
-    : renderDispatchPlanStatusEditor(workerId, currentStatus);
+    : renderDispatchPlanStatusEditor(workerId, currentStatus, currentModel, currentReasoningEffort);
 
   if (currentStatus === "abandoned" || canContinue) {
     return `
@@ -2664,7 +2723,36 @@ function renderDispatchPlanActions(row) {
   `;
 }
 
-function renderDispatchPlanStatusEditor(workerId, currentStatus) {
+function resolveDispatchRowAppliedModel(row, primaryDetail) {
+  return normalizeText(primaryDetail?.applied_model)
+    || normalizeText(row?.applied_model)
+    || normalizeText(row?.model)
+    || "";
+}
+
+function resolveDispatchRowAppliedReasoningEffort(row, primaryDetail) {
+  return normalizeText(primaryDetail?.applied_reasoning_effort)
+    || normalizeText(row?.applied_reasoning_effort)
+    || "";
+}
+
+function resolveDispatchWorkerAppliedModel(detail, fallbackModel) {
+  return normalizeText(detail?.applied_model)
+    || normalizeText(detail?.model)
+    || normalizeText(fallbackModel)
+    || "";
+}
+
+function resolveDispatchWorkerAppliedReasoningEffort(detail) {
+  return normalizeText(detail?.applied_reasoning_effort) || "";
+}
+
+function resolveDispatchRowModelForDisplay(row, details = []) {
+  const primaryDetail = getPrimaryDispatchDetail(details);
+  return resolveDispatchRowAppliedModel(row, primaryDetail);
+}
+
+function renderDispatchPlanStatusEditor(workerId, currentStatus, currentModel, currentEffort) {
   const options = [
     "pending",
     "completed",
@@ -2676,15 +2764,73 @@ function renderDispatchPlanStatusEditor(workerId, currentStatus) {
     const selected = status === currentStatus ? " selected" : "";
     return `<option value="${status}"${selected}>${escapeHtml(formatDispatchStatusLabel(status))}</option>`;
   }).join("");
+  const modelOptions = resolveModelOptions(currentModel);
+  const effortOptions = resolveEffortOptions(currentEffort);
 
   return `
     <div class="table-status-controls">
       <select class="table-status-select" data-worker-status aria-label="Update worker status for ${workerId}">
         ${options}
       </select>
+      <select class="table-status-select" data-worker-model aria-label="Model override for ${workerId}">
+        ${modelOptions}
+      </select>
+      <select class="table-status-select" data-worker-effort aria-label="Effort override for ${workerId}">
+        ${effortOptions}
+      </select>
       <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-status-apply>Apply</button>
     </div>
   `;
+}
+
+function normalizeUnique(items) {
+  const seen = new Set();
+  return items.filter((item, index) => {
+    const normalized = normalizeText(item);
+    const key = normalized.toLowerCase();
+    if (index === 0 && item === "") {
+      seen.add(key);
+      return true;
+    }
+
+    if (!normalized || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function resolveModelOptions(currentModel) {
+  const options = normalizeUnique([
+    "",
+    currentModel,
+    "CODEX",
+    "CODEX-HIGH",
+    "CODEX-XHIGH",
+    "OPUS",
+    "SONNET",
+    "GEMINI",
+    ...WORKER_MODEL_OPTIONS
+  ]);
+
+  return options.map((model, index) => {
+    const isCurrent = model === currentModel && index > 0 ? true : false;
+    const selected = isCurrent ? " selected" : "";
+    const label = isCurrent ? `${model} (current)` : model || "keep current";
+    return `<option value="${escapeHtml(model)}"${selected}>${escapeHtml(label)}</option>`;
+  }).join("");
+}
+
+function resolveEffortOptions(currentEffort) {
+  const options = normalizeUnique(["", ...WORKER_REASONING_EFFORT_OPTIONS, currentEffort]);
+
+  return options.map((effort, index) => {
+    const isCurrent = effort === currentEffort && index > 0 ? true : false;
+    const selected = isCurrent ? " selected" : "";
+    const label = effort || "keep current";
+    return `<option value="${escapeHtml(effort)}"${selected}>${escapeHtml(label)}</option>`;
+  }).join("");
 }
 
 function formatDispatchPlanStaleLabel(row) {
