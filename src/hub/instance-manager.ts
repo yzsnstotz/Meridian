@@ -24,6 +24,7 @@ import {
   type AgentInstanceStatus,
   type AgentType,
   type BridgeMode,
+  type CallerIdentity,
   type ProviderModelCatalog as ProviderModelCatalogPayload,
   type ReasoningEffort,
   type SandboxMode
@@ -183,7 +184,8 @@ export class InstanceManager {
     reasoningEffort?: ReasoningEffort,
     spawnTraceId?: string | null,
     integrationProfile?: string,
-    sandboxMode?: SandboxMode
+    sandboxMode?: SandboxMode,
+    caller?: CallerIdentity
   ): Promise<string> {
     return await this.spawnWithRetry(
       type,
@@ -195,7 +197,8 @@ export class InstanceManager {
       reasoningEffort,
       spawnTraceId,
       integrationProfile,
-      sandboxMode
+      sandboxMode,
+      caller
     );
   }
 
@@ -707,7 +710,8 @@ export class InstanceManager {
     reasoningEffort?: ReasoningEffort,
     spawnTraceId?: string | null,
     integrationProfile?: string,
-    sandboxMode?: SandboxMode
+    sandboxMode?: SandboxMode,
+    caller?: CallerIdentity
   ): Promise<string> {
     let lastError: unknown;
     const reservedThreadId = threadIdOverride ?? this.nextThreadId(type);
@@ -725,7 +729,8 @@ export class InstanceManager {
           reasoningEffort,
           spawnTraceId,
           integrationProfile,
-          sandboxMode
+          sandboxMode,
+          caller
         );
       } catch (error) {
         lastError = error;
@@ -779,7 +784,8 @@ export class InstanceManager {
     reasoningEffort?: ReasoningEffort,
     spawnTraceId?: string | null,
     integrationProfile?: string,
-    sandboxMode?: SandboxMode
+    sandboxMode?: SandboxMode,
+    caller?: CallerIdentity
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const traceId = spawnTraceId ?? null;
@@ -793,7 +799,8 @@ export class InstanceManager {
         reasoningEffort,
         traceId,
         integrationProfile,
-        sandboxMode
+        sandboxMode,
+        caller
       );
     }
     if (sandboxMode === "read-only" && type !== "codex" && type !== "claude") {
@@ -868,7 +875,8 @@ export class InstanceManager {
         status: "idle",
         created_at: this.now().toISOString(),
         restart_safe: true,
-        spawn_trace_id: traceId
+        spawn_trace_id: traceId,
+        spawned_by: caller
       };
 
       this.registry.register(instance);
@@ -964,7 +972,8 @@ export class InstanceManager {
       status: "idle",
       created_at: this.now().toISOString(),
       restart_safe: true,
-      spawn_trace_id: traceId
+      spawn_trace_id: traceId,
+      spawned_by: caller
     };
 
     this.registry.register(instance);
@@ -1002,7 +1011,8 @@ export class InstanceManager {
     reasoningEffort?: ReasoningEffort,
     spawnTraceId?: string | null,
     integrationProfile?: string,
-    sandboxMode?: SandboxMode
+    sandboxMode?: SandboxMode,
+    caller?: CallerIdentity
   ): string {
     if (type !== "codex") {
       throw new Error("stateless_call mode is only supported for codex");
@@ -1028,7 +1038,8 @@ export class InstanceManager {
       status: "idle",
       created_at: this.now().toISOString(),
       restart_safe: true,
-      spawn_trace_id: spawnTraceId ?? null
+      spawn_trace_id: spawnTraceId ?? null,
+      spawned_by: caller
     };
 
     this.registry.register(instance);

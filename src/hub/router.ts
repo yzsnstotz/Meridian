@@ -133,6 +133,8 @@ export interface ConversationHistoryEntry {
   trace_id: string | null;
   timestamp: string;
   replace_key: string | null;
+  caller_id: string | null;
+  caller_label: string | null;
 }
 
 interface ActiveRunState {
@@ -635,8 +637,11 @@ export class HubRouter {
     const instance = this.resolveInstance(threadId);
     const client = this.clientFactory(instance.thread_id);
     let clientConnected = false;
+    if (message.caller) {
+      this.registry.setCaller(threadId, message.caller, this.now().toISOString());
+    }
     this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id });
-    this.recordUserConversationEntry(threadId, message.payload.content, message.trace_id, "user_send");
+    this.recordUserConversationEntry(threadId, message.payload.content, message.trace_id, "user_send", message.caller);
     this.persistStateSafely();
 
     try {
@@ -1031,7 +1036,10 @@ export class HubRouter {
     }
     const content = this.instanceManager.sendTerminalInput(threadId, message.payload.content);
     if (message.payload.content?.trim()) {
-      this.recordUserConversationEntry(threadId, message.payload.content.trim(), message.trace_id, "terminal_input");
+      if (message.caller) {
+        this.registry.setCaller(threadId, message.caller, this.now().toISOString());
+      }
+      this.recordUserConversationEntry(threadId, message.payload.content.trim(), message.trace_id, "terminal_input", message.caller);
       this.resolveApprovalConversationEntry(threadId);
       this.persistStateSafely();
     }
@@ -1129,7 +1137,8 @@ export class HubRouter {
       reasoningEffort,
       message.trace_id,
       integrationProfile,
-      sandboxMode
+      sandboxMode,
+      message.caller
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
@@ -2639,7 +2648,9 @@ export class HubRouter {
       raw_content: rawContent,
       trace_id: traceId,
       timestamp: this.now().toISOString(),
-      replace_key: this.buildReplaceKey(threadId, traceId, eventKind)
+      replace_key: this.buildReplaceKey(threadId, traceId, eventKind),
+      caller_id: null,
+      caller_label: null
     });
     this.persistStateSafely();
   }
@@ -2705,7 +2716,9 @@ export class HubRouter {
       raw_content: rawContent,
       trace_id: traceId,
       timestamp: this.now().toISOString(),
-      replace_key: null
+      replace_key: null,
+      caller_id: null,
+      caller_label: null
     });
   }
 
@@ -2734,7 +2747,8 @@ export class HubRouter {
     threadId: string,
     rawContent: string,
     traceId: string | null,
-    eventKind: "user_send" | "terminal_input"
+    eventKind: "user_send" | "terminal_input",
+    caller?: CallerIdentity
   ): void {
     this.recordCanonicalConversationEntry(threadId, {
       event_kind: eventKind,
@@ -2744,7 +2758,9 @@ export class HubRouter {
       raw_content: rawContent,
       trace_id: traceId,
       timestamp: this.now().toISOString(),
-      replace_key: null
+      replace_key: null,
+      caller_id: caller?.caller_id ?? null,
+      caller_label: caller?.caller_label ?? null
     });
   }
 
@@ -2813,7 +2829,9 @@ export class HubRouter {
       raw_content: entry.raw_content,
       trace_id: entry.trace_id,
       timestamp: entry.timestamp,
-      replace_key: entry.replace_key
+      replace_key: entry.replace_key,
+      caller_id: entry.caller_id,
+      caller_label: entry.caller_label
     });
     this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
   }
@@ -2949,7 +2967,9 @@ export class HubRouter {
           raw_content: entry.raw_content ?? entry.details_text ?? entry.content,
           trace_id: entry.trace_id ?? null,
           timestamp: entry.timestamp,
-          replace_key: entry.replace_key ?? null
+          replace_key: entry.replace_key ?? null,
+          caller_id: entry.caller_id ?? null,
+          caller_label: entry.caller_label ?? null
         })).sort((left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp))
       );
     }
@@ -2980,7 +3000,9 @@ export class HubRouter {
         raw_content: entry.raw_content,
         trace_id: entry.trace_id,
         timestamp: entry.timestamp,
-        replace_key: entry.replace_key
+        replace_key: entry.replace_key,
+        caller_id: entry.caller_id,
+        caller_label: entry.caller_label
       }));
     }
     return snapshot;
