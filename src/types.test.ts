@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   AgentInstanceSchema,
   BuiltInIntentSchema,
+  CallerIdentitySchema,
   HubMessageSchema,
   HubResultSchema,
   IntentSchema,
@@ -384,4 +385,99 @@ test("ServiceEndpointSchema parses static service registrations", () => {
   assert.equal(parsed.socket_path, "/tmp/coordinator.sock");
   assert.deepEqual(parsed.intents, ["delegate", "plan"]);
   assert.deepEqual(parsed.metadata, { owner: "hub" });
+});
+
+test("CallerIdentitySchema accepts valid caller_id without caller_label (wire-optionality)", () => {
+  const parsed = CallerIdentitySchema.parse({ caller_id: "meridian-roles" });
+
+  assert.equal(parsed.caller_id, "meridian-roles");
+  assert.equal(parsed.caller_label, undefined);
+  assert.equal(parsed.caller_version, undefined);
+});
+
+test("CallerIdentitySchema accepts full optional fields", () => {
+  const parsed = CallerIdentitySchema.parse({
+    caller_id: "my-service",
+    caller_label: "My Service",
+    caller_version: "1.0.0"
+  });
+
+  assert.equal(parsed.caller_id, "my-service");
+  assert.equal(parsed.caller_label, "My Service");
+  assert.equal(parsed.caller_version, "1.0.0");
+});
+
+test("CallerIdentitySchema rejects uppercase caller_id", () => {
+  assert.throws(() => CallerIdentitySchema.parse({ caller_id: "MyService" }));
+});
+
+test("CallerIdentitySchema rejects caller_id starting with digit", () => {
+  assert.throws(() => CallerIdentitySchema.parse({ caller_id: "1service" }));
+});
+
+test("CallerIdentitySchema rejects caller_id with dot or slash", () => {
+  assert.throws(() => CallerIdentitySchema.parse({ caller_id: "my.service" }));
+  assert.throws(() => CallerIdentitySchema.parse({ caller_id: "my/service" }));
+});
+
+test("BUILT_IN_INTENTS includes the four admin caller intents", () => {
+  assert.equal(BuiltInIntentSchema.parse("register_caller"), "register_caller");
+  assert.equal(BuiltInIntentSchema.parse("unregister_caller"), "unregister_caller");
+  assert.equal(BuiltInIntentSchema.parse("rotate_caller_key"), "rotate_caller_key");
+  assert.equal(BuiltInIntentSchema.parse("list_callers"), "list_callers");
+});
+
+test("HubMessageSchema parses without caller field (backward compat)", () => {
+  const parsed = HubMessageSchema.parse(buildHubMessage());
+
+  assert.equal(parsed.caller, undefined);
+});
+
+test("HubMessageSchema accepts optional caller field", () => {
+  const parsed = HubMessageSchema.parse(
+    buildHubMessage({
+      caller: { caller_id: "my-service", caller_label: "My Service" }
+    })
+  );
+
+  assert.equal(parsed.caller?.caller_id, "my-service");
+  assert.equal(parsed.caller?.caller_label, "My Service");
+});
+
+test("AgentInstanceSchema parses without caller tracking fields (backward compat)", () => {
+  const parsed = AgentInstanceSchema.parse({
+    thread_id: "claude_05",
+    agent_type: "claude",
+    mode: "bridge",
+    socket_path: "/tmp/claude.sock",
+    pid: 9999,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  assert.equal(parsed.spawned_by, undefined);
+  assert.equal(parsed.last_caller, undefined);
+  assert.equal(parsed.last_caller_at, undefined);
+});
+
+test("AgentInstanceSchema accepts optional caller tracking fields", () => {
+  const now = new Date().toISOString();
+  const parsed = AgentInstanceSchema.parse({
+    thread_id: "claude_06",
+    agent_type: "claude",
+    mode: "bridge",
+    socket_path: "/tmp/claude-06.sock",
+    pid: 8888,
+    tmux_pane: null,
+    status: "running",
+    created_at: now,
+    spawned_by: { caller_id: "web-gui" },
+    last_caller: { caller_id: "my-service", caller_label: "My Service" },
+    last_caller_at: now
+  });
+
+  assert.equal(parsed.spawned_by?.caller_id, "web-gui");
+  assert.equal(parsed.last_caller?.caller_id, "my-service");
+  assert.equal(parsed.last_caller_at, now);
 });
