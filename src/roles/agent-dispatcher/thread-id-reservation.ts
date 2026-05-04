@@ -1,8 +1,25 @@
 import path from "node:path";
 
-import type { DispatchThreadStateV2 } from "../../types";
+import type { DispatchThreadStateV2, LifecycleStatus } from "../../types";
 import { LifecycleStore } from "./lifecycle-store";
 import type { MeridianApiClient } from "./meridian-api-client";
+
+// A lifecycle status reserves its associated Meridian thread_id only while the
+// underlying agent is plausibly still alive in the hub. Terminal statuses
+// (completed, failed, abandoned, skipped) leave only an audit record in
+// dispatch_threads.json — their thread_ids are free for Meridian's allocator
+// to recycle. Pending workers haven't spawned yet, so any persisted thread_id
+// at that status is stale or test-fixture data and must not block new spawns.
+const ACTIVE_THREAD_RESERVATION_STATUSES: ReadonlySet<LifecycleStatus> = new Set([
+  "running",
+  "blocked",
+  "awaiting_validation",
+  "fix_requested"
+]);
+
+export function isActiveThreadReservationStatus(status: LifecycleStatus): boolean {
+  return ACTIVE_THREAD_RESERVATION_STATUSES.has(status);
+}
 
 export class ThreadIdCollisionError extends Error {
   constructor(readonly threadId: string, message: string) {
@@ -41,11 +58,17 @@ export function isThreadIdReservedInLifecycleState(
     return false;
   }
 
-  if (state.dispatcher.thread_id === normalizedCandidate) {
+  if (
+    state.dispatcher.thread_id === normalizedCandidate
+    && isActiveThreadReservationStatus(state.dispatcher.status)
+  ) {
     return true;
   }
 
   return Object.values(state.workers).some((worker) => {
+    if (!isActiveThreadReservationStatus(worker.status)) {
+      return false;
+    }
     return worker.thread_id === normalizedCandidate
       || worker.validation?.validator_thread_id === normalizedCandidate;
   });
