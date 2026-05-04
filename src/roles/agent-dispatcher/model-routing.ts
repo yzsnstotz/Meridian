@@ -45,6 +45,7 @@ const IMPLICIT_MODEL_CODE_DEFAULTS: Record<string, ResolvedDispatchModel> = {
 
 const CANONICAL_MODEL_ID_ALIASES: Record<string, string> = {
   "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+  "gpt-5-3-codex-spark": "gpt-5.3-codex-spark",
   "codex-spark": "gpt-5.3-codex-spark"
 };
 

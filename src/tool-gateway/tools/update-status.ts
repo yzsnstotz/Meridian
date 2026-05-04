@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
-import type { LifecycleStatus } from "../../types";
+import type { DispatchWorkerState, LifecycleStatus } from "../../types";
 import {
   parseDispatchModelCode,
   resolveDispatchModelMapFromMarkdown,
@@ -205,7 +205,7 @@ function resolveUpdateStatusModelOverride(
   appliedModelId?: string;
   appliedReasoningEffort?: string;
 } {
-  const modelInput = requireParam(rawModel);
+  const modelInput = requireParam(rawModel ?? undefined);
   const parsedReasoningEffort = normalizeReasoningEffort(rawReasoningEffort ?? undefined);
   if (!modelInput && !parsedReasoningEffort) {
     return {};
@@ -219,7 +219,7 @@ function resolveUpdateStatusModelOverride(
   let resolvedEffort: string | undefined;
 
   if (modelCode) {
-    const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown);
+    const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, undefined);
     const resolvedModel = resolvedModelMap[modelCode] ?? resolveImplicitDispatchModelOverride(modelCode);
     resolvedModelId = resolvedModel?.model_id?.trim();
     resolvedEffort = resolvedModel?.reasoning_effort;
@@ -337,7 +337,7 @@ async function syncWorkerLifecycleState(
     dispatchPlanPath: planPath
   });
   const state = lifecycleStore.load();
-  const workerState = state.workers[worker];
+  const workerState = (state.workers as Record<string, DispatchWorkerState | undefined>)[worker];
   const nowIso = new Date().toISOString();
 
   if (status === "running") {
@@ -356,14 +356,14 @@ async function syncWorkerLifecycleState(
 
     state.workers[worker] = {
       thread_id: effectiveThreadId,
-      trace_id: workerState?.trace_id ?? null,
-      started_at: workerState?.started_at ?? nowIso,
+      trace_id: null,
+      started_at: nowIso,
       last_seen_at: nowIso,
       status: "running",
-      expected_outputs: [...(workerState?.expected_outputs ?? [])],
+      expected_outputs: [],
       hub_result: null,
-      command_preamble: workerState?.command_preamble ?? null,
-      retry_count: workerState?.retry_count ?? 0,
+      command_preamble: null,
+      retry_count: 0,
       ...(typeof appliedModelId !== "undefined" ? { applied_model_id: appliedModelId } : {}),
       ...(typeof appliedReasoningEffort !== "undefined" ? { applied_reasoning_effort: appliedReasoningEffort } : {})
     };

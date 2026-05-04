@@ -2848,6 +2848,7 @@ function buildValidatorCycleDetails(
         task: `Validate ${workerId} cycle ${entry.cycle}`,
         model: "VALIDATOR",
         applied_model: null,
+        applied_reasoning_effort: null,
         worker_thread_id: entry.validator_thread_id,
         trace_id: null,
         command: {
@@ -2972,6 +2973,7 @@ function buildPmResolverDetail(
     task: `Resolve ${workerId}: ${entry.issue.status}`,
     model: "PM",
     applied_model: entry.model_id ?? entry.agent_type ?? "PM",
+    applied_reasoning_effort: null,
     worker_thread_id: entry.thread_id,
     trace_id: entry.result?.trace_id ?? null,
     command: commandContent
