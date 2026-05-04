@@ -27,6 +27,37 @@ const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 
+// Validator spawn/run failure backoff. After this many consecutive failures
+// (validator spawn errors, run errors, parse errors — anything that ends in
+// clearValidatorStart), the worker enters backoff: watchdog and the validation
+// queue both refuse to re-spawn until the backoff window elapses. Prevents
+// tight retry loops from exhausting Hub/system file descriptors when the
+// underlying spawn transport is broken (e.g. codex cwd not in trusted projects).
+export const VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD = 3;
+export const VALIDATOR_SPAWN_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
+
+export function isValidatorSpawnBackoffActive(
+  validation: { spawn_failure_count?: number | null; last_spawn_failure_at?: string | null } | null | undefined,
+  nowMs: number = Date.now()
+): boolean {
+  if (!validation) {
+    return false;
+  }
+  const count = validation.spawn_failure_count ?? 0;
+  if (count < VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD) {
+    return false;
+  }
+  const lastFailureAt = validation.last_spawn_failure_at;
+  if (!lastFailureAt) {
+    return false;
+  }
+  const lastFailureMs = Date.parse(lastFailureAt);
+  if (Number.isNaN(lastFailureMs)) {
+    return false;
+  }
+  return nowMs - lastFailureMs < VALIDATOR_SPAWN_FAILURE_BACKOFF_MS;
+}
+
 const LegacyWorkerThreadEntrySchema = z.object({
   thread_id: z.string().min(1),
   started_at: z.string().datetime().optional()
@@ -181,7 +212,9 @@ export class LifecycleStore {
                 : null,
               history: previousStatus === "fix_requested"
                 ? state.workers[workerId]?.validation?.history ?? []
-                : []
+                : [],
+              spawn_failure_count: 0,
+              last_spawn_failure_at: null
             }
           }
         : {})
@@ -362,7 +395,9 @@ export class LifecycleStore {
         validator_thread_id: worker.validation?.validator_thread_id ?? null,
         last_score: worker.validation?.last_score ?? null,
         last_feedback: worker.validation?.last_feedback ?? null,
-        history: worker.validation?.history ?? []
+        history: worker.validation?.history ?? [],
+        spawn_failure_count: worker.validation?.spawn_failure_count ?? 0,
+        last_spawn_failure_at: worker.validation?.last_spawn_failure_at ?? null
       };
       this.logTransition(workerId, prevStatus, "awaiting_validation", "validation_intercept");
     });
@@ -383,6 +418,26 @@ export class LifecycleStore {
       if (!worker?.validation || worker.validation.validator_thread_id !== validatorThreadId) return;
 
       worker.validation.validator_thread_id = null;
+      // clearValidatorStart is only called on validator spawn/run/parse
+      // failures (success paths reset state via recordValidationOutcome).
+      // Track consecutive failures so the watchdog and queue can apply a
+      // backoff and stop hammering codex when the underlying transport is
+      // wedged (observed: cwd not in codex trusted projects → infinite
+      // spawn-and-fail loop, eventually exhausting system file descriptors).
+      worker.validation.spawn_failure_count = (worker.validation.spawn_failure_count ?? 0) + 1;
+      worker.validation.last_spawn_failure_at = this.now();
+    });
+  }
+
+  // Test/debug hook: reset the validator backoff counters so the next tick
+  // re-attempts immediately. Not currently called by production code, but
+  // exposed for explicit recovery flows.
+  resetValidatorSpawnBackoff(workerId: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker?.validation) return;
+      worker.validation.spawn_failure_count = 0;
+      worker.validation.last_spawn_failure_at = null;
     });
   }
 
@@ -655,6 +710,12 @@ function recordValidationOutcome(
   worker.validation.last_score = score;
   worker.validation.last_feedback = feedback;
   worker.validation.validator_thread_id = null;
+  // A validator successfully produced a verdict, so any prior consecutive
+  // spawn/run failures are no longer evidence of a stuck loop. Reset the
+  // backoff counter so future failures (e.g. flaky transport, transient hub
+  // FD pressure) start counting from zero instead of compounding indefinitely.
+  worker.validation.spawn_failure_count = 0;
+  worker.validation.last_spawn_failure_at = null;
   worker.validation.history.push({
     cycle,
     score,

@@ -7,7 +7,7 @@ import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status"
 import type { AutoResolveConfig, DispatchThreadStateV2 } from "../../types";
 import type { Logger } from "../base-role";
 import { autoResolve } from "./auto-resolver";
-import { LifecycleStore } from "./lifecycle-store";
+import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
 import {
   DEFAULT_RECONCILE_STALE_TIMEOUT_MS,
   queryHubThreadObservation,
@@ -295,13 +295,24 @@ function resolveBlockingRunningWorkers(
 }
 
 function hasPendingValidatorOrchestration(state: DispatchThreadStateV2): boolean {
+  const nowMs = Date.now();
   return Object.entries(state.workers).some(([workerId, worker]) => {
     if (workerId === DISPATCHER_WORKER_ID) {
       return false;
     }
 
     if (worker.status === "awaiting_validation") {
-      return !worker.validation?.validator_thread_id?.trim();
+      if (worker.validation?.validator_thread_id?.trim()) {
+        return false;
+      }
+      // Worker has had repeated validator spawn/run failures; honor the
+      // backoff window instead of firing the stall callback every tick.
+      // Without this, a broken spawn transport (e.g. codex cwd not trusted)
+      // produces a tight retry loop that exhausts Hub/system file descriptors.
+      if (isValidatorSpawnBackoffActive(worker.validation, nowMs)) {
+        return false;
+      }
+      return true;
     }
 
     if (worker.status === "fix_requested") {
