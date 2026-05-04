@@ -27,7 +27,11 @@ export const BUILT_IN_INTENTS = [
   "set_auto_approve",
   "register_service",
   "unregister_service",
-  "reply"
+  "reply",
+  "register_caller",
+  "unregister_caller",
+  "rotate_caller_key",
+  "list_callers"
 ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
@@ -151,6 +155,13 @@ export const ReplyChannelSchema = z.object({
 });
 export type ReplyChannel = z.infer<typeof ReplyChannelSchema>;
 
+export const CallerIdentitySchema = z.object({
+  caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
+  caller_label: z.string().min(1).max(64).optional(),
+  caller_version: z.string().min(1).max(32).optional()
+});
+export type CallerIdentity = z.infer<typeof CallerIdentitySchema>;
+
 export const HubPayloadSchema = z.object({
   content: z.string(),
   attachments: z.array(FileAttachmentSchema).default([]),
@@ -191,7 +202,8 @@ export const HubMessageSchema = z.object({
   payload: HubPayloadSchema,
   mode: BridgeModeSchema,
   reply_channel: ReplyChannelSchema,
-  suppress_reply: z.boolean().optional()
+  suppress_reply: z.boolean().optional(),
+  caller: CallerIdentitySchema.optional()
 });
 export type HubMessage = z.input<typeof HubMessageSchema>;
 
@@ -261,7 +273,10 @@ export const AgentInstanceSchema = z.object({
   integration_profile: z.string().min(1).optional(),
   sandbox_mode: SandboxModeSchema.optional(),
   /** Hub request trace that created or last correlated this instance (observability only). */
-  spawn_trace_id: z.string().nullable().optional()
+  spawn_trace_id: z.string().nullable().optional(),
+  spawned_by: CallerIdentitySchema.optional(),
+  last_caller: CallerIdentitySchema.optional(),
+  last_caller_at: z.string().datetime().optional()
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 

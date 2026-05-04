@@ -13,41 +13,42 @@
 | Schema | Kind | Fields / Allowed Values | Purpose | Key refs |
 |--------|------|-------------------------|---------|----------|
 | `ChannelSchema` | `enum` | `telegram`, `web`, `socket` | Validates inbound and reply channel identifiers. | `src/types.ts:3` |
-| `BuiltInIntentSchema` | `enum` | `run`, `terminal_input`, `spawn`, `restart`, `reboot`, `kill`, `status`, `attach`, `detach`, `gui`, `list`, `list_models`, `switch_model`, `detail`, `monitor_update`, `monitor_manual_update`, `push`, `capture_interval`, `history`, `set_auto_approve`, `register_service`, `unregister_service`, `reply` | Validates Meridian's reserved hub intents. | `src/types.ts:32` |
-| `IntentSchema` | `union` | Built-in intent enum or any non-empty string | Keeps the core intent set strict while allowing service-defined custom intents. | `src/types.ts:33` |
-| `BridgeModeSchema` | `enum` | `bridge`, `pane_bridge` | Distinguishes ordinary bridge execution from pane-streaming mode. | `src/types.ts:36` |
-| `AgentTypeSchema` | `enum` | `claude`, `codex`, `gemini`, `cursor` | Validates the supported provider identifiers. | `src/types.ts:39` |
-| `ReasoningEffortSchema` | `enum` | `low`, `medium`, `high`, `xhigh` | Constrains provider reasoning effort selections. | `src/types.ts:42` |
-| `HubResultStatusSchema` | `enum` | `success`, `error`, `partial`, `timeout` | Normalizes the top-level status on hub replies. | `src/types.ts:45` |
-| `HubRunStateSchema` | `enum` | `completed`, `still_running`, `timeout` | Describes whether a run is finished or still active. | `src/types.ts:48` |
-| `AgentInstanceStatusSchema` | `enum` | `idle`, `running`, `waiting`, `stopped`, `error` | Defines lifecycle states persisted for live agent instances. | `src/types.ts:51` |
-| `ThreadProgressEventKindSchema` | `enum` | `progress`, `approval` | Distinguishes ordinary progress text from approval prompts. | `src/types.ts:54` |
-| `ThreadProgressPhaseSchema` | `enum` | `running`, `waiting_for_input` | Marks the current phase of a partial-progress update. | `src/types.ts:57` |
-| `ThreadProgressSnapshotSchema` | `object` | `trace_id`, `thread_id`, `source`, `status="partial"`, `event_kind`, `phase`, `waiting_for_input`, `content`, `display_text`, `updated_at` | Validates structured progress snapshots embedded in partial results. | `src/types.ts:60` |
-| `FileAttachmentSchema` | `object` | `path`, `filename?`, `mime_type?` | Describes file attachments forwarded with messages or results. | `src/types.ts:74` |
-| `TelegramInlineButtonSchema` | `object` | `text`, `url?`, `callback_data?`; refine requires exactly one of `url` or `callback_data` | Validates Telegram inline button payloads. | `src/types.ts:81` |
-| `TelegramInlineKeyboardSchema` | `object` | `inline_keyboard: TelegramInlineButton[][]` with non-empty rows | Wraps Telegram button grids for reply payloads. | `src/types.ts:92` |
-| `InboundUIEventSchema` | `object` | `channel`, `raw_message_id`, `sender_id`, `content`, `attachments=[]`, `timestamp`, `reply_to` | Defines the canonical inbound interface event shape. | `src/types.ts:97` |
-| `CompositeChatIdSchema` | `string` | `{channel}:{id}` regex | Validates the newer channel-prefixed chat identifier format. | `src/types.ts:108` |
-| `LegacyChatIdSchema` | `string` | Non-empty string without `:` | Preserves backward compatibility for older chat IDs. | `src/types.ts:109` |
-| `SessionChatIdSchema` | `union` | Composite or legacy chat ID | Accepts either supported chat identifier format. | `src/types.ts:110` |
-| `ReplyChannelSchema` | `object` | `channel`, `chat_id`, `message_id?`, `bot_id?`, `chat_name?`, `bot_name?`, `socket_path?` | Captures routing metadata for Telegram, web, and socket replies. | `src/types.ts:113` |
-| `HubPayloadSchema` | `object` | `content`, `attachments=[]`, `raw_message_id?`, `reply_to?`, `spawn_dir?`, `model_id?`, `effort?`, `auto_approve?`, `monitor_updates_enabled?`, `monitor_updates_interval_sec?`, `gui_host_port_override?`, `push_enabled?` | Validates the payload body sent with hub intents. | `src/types.ts:125` |
-| `PrioritySchema` | `number` | Integer `0` through `9` | Normalizes message priority for the hub queue. | `src/types.ts:141` |
-| `OptionalUuidSchema` | `string` | Optional UUID | Reuses one tracing/span field helper across multiple objects. | `src/types.ts:144` |
-| `HubMessageSchema` | `object` | `trace_id`, `thread_id`, `actor_id`, `idempotency_key?`, `priority=5`, `span_id?`, `parent_span_id?`, `intent`, `target`, `payload`, `mode`, `reply_channel`, `suppress_reply?` | Validates inbound hub requests and applies the default priority. | `src/types.ts:146` |
-| `HubResultSchema` | `object` | `trace_id`, `thread_id`, `source`, `status`, `run_state?`, `content`, `summary_text?`, `details_text?`, `progress?`, `attachments=[]`, `telegram_inline_keyboard?`, `timestamp` | Validates the hub's final or partial result envelope. | `src/types.ts:163` |
-| `MonitorEventTypeSchema` | `enum` | `task_completed`, `status_changed`, `heartbeat_missed`, `agent_error`, `sse_reconnect_failed` | Enumerates monitor event categories. | `src/types.ts:179` |
-| `MonitorModeSchema` | `enum` | `sse_hook`, `heartbeat` | Identifies the transport mode used by monitoring. | `src/types.ts:188` |
-| `MonitorEventSchema` | `object` | `trace_id=null`, `span_id?`, `parent_span_id?`, `thread_id`, `event_type`, `monitor_mode`, `timestamp`, `agent_status?`, `agent_type?`, `last_known_pid?`, `missed_heartbeats?`, `sse_reconnect_count?`, `details?`, `error?` | Structures monitor telemetry for status and failure reporting. | `src/types.ts:191` |
-| `AgentInstanceSchema` | `object` | `thread_id`, `agent_type`, `model_id?`, `reasoning_effort?`, `supportsStream?`, `codexSessionId?`, `mode`, `socket_path`, `working_dir?`, `pid`, `tmux_pane`, `status`, `created_at`, `restart_safe?`, `auto_approve=true` | Validates persisted and in-memory agent instance state. | `src/types.ts:209` |
-| `PaneSubscribeRequestSchema` | `object` | `type="subscribe_pane_output"`, `thread_id`, `replay_lines?` | Validates pane output subscribe requests. | `src/types.ts:228` |
-| `PaneOutputChunkSchema` | `object` | `type="pane_output"`, `thread_id`, `chunk`, `cursor?`, `timestamp?`, `span_id?`, `parent_span_id?` | Describes incremental pane output frames broadcast to listeners. | `src/types.ts:235` |
-| `PaneOutputNotAvailableSchema` | `object` | `type="not_available"`, `thread_id`, `reason` | Reports why pane output cannot be streamed for a thread. | `src/types.ts:246` |
-| `PaneUnsubscribeRequestSchema` | `object` | `type="unsubscribe_pane_output"`, `thread_id` | Validates pane output unsubscribe requests. | `src/types.ts:253` |
-| `ProviderModelSchema` | `object` | `id`, `label` | Represents one selectable provider model. | `src/types.ts:259` |
-| `ProviderModelCatalogSchema` | `object` | `thread_id`, `provider`, `current_model_id=null`, `models[]` | Wraps the available model list for one provider thread. | `src/types.ts:265` |
-| `ServiceEndpointSchema` | `object` | `service?`, `socket_path`, `intents=[]`, `metadata?` | Validates dynamic service-registry endpoint records. | `src/types.ts:273` |
+| `BuiltInIntentSchema` | `enum` | `run`, `terminal_input`, `spawn`, `restart`, `reboot`, `kill`, `status`, `attach`, `detach`, `gui`, `list`, `list_models`, `switch_model`, `detail`, `monitor_update`, `monitor_manual_update`, `push`, `capture_interval`, `history`, `set_auto_approve`, `register_service`, `unregister_service`, `reply`, `register_caller`, `unregister_caller`, `rotate_caller_key`, `list_callers` | Validates Meridian's reserved hub intents. | `src/types.ts:37` `[UPDATED 2026-05-05]` |
+| `IntentSchema` | `union` | Built-in intent enum or any non-empty string | Keeps the core intent set strict while allowing service-defined custom intents. | `src/types.ts:38` `[UPDATED 2026-05-05]` |
+| `BridgeModeSchema` | `enum` | `bridge`, `pane_bridge`, `stateless_call` | Distinguishes ordinary bridge execution from pane-streaming mode. | `src/types.ts:41` `[UPDATED 2026-05-05]` |
+| `AgentTypeSchema` | `enum` | `claude`, `codex`, `gemini`, `cursor` | Validates the supported provider identifiers. | `src/types.ts:44` `[UPDATED 2026-05-05]` |
+| `ReasoningEffortSchema` | `enum` | `low`, `medium`, `high`, `xhigh` | Constrains provider reasoning effort selections. | `src/types.ts:53` `[UPDATED 2026-05-05]` |
+| `HubResultStatusSchema` | `enum` | `success`, `error`, `partial`, `timeout` | Normalizes the top-level status on hub replies. | `src/types.ts:56` `[UPDATED 2026-05-05]` |
+| `HubRunStateSchema` | `enum` | `completed`, `still_running`, `timeout` | Describes whether a run is finished or still active. | `src/types.ts:59` `[UPDATED 2026-05-05]` |
+| `AgentInstanceStatusSchema` | `enum` | `idle`, `running`, `waiting`, `stopped`, `error` | Defines lifecycle states persisted for live agent instances. | `src/types.ts:62` `[UPDATED 2026-05-05]` |
+| `ThreadProgressEventKindSchema` | `enum` | `progress`, `approval` | Distinguishes ordinary progress text from approval prompts. | `src/types.ts:65` `[UPDATED 2026-05-05]` |
+| `ThreadProgressPhaseSchema` | `enum` | `running`, `waiting_for_input` | Marks the current phase of a partial-progress update. | `src/types.ts:68` `[UPDATED 2026-05-05]` |
+| `ThreadProgressSnapshotSchema` | `object` | `trace_id`, `thread_id`, `source`, `status="partial"`, `event_kind`, `phase`, `waiting_for_input`, `content`, `display_text`, `updated_at` | Validates structured progress snapshots embedded in partial results. | `src/types.ts:71` `[UPDATED 2026-05-05]` |
+| `FileAttachmentSchema` | `object` | `path`, `filename?`, `mime_type?` | Describes file attachments forwarded with messages or results. | `src/types.ts:85` `[UPDATED 2026-05-05]` |
+| `TelegramInlineButtonSchema` | `object` | `text`, `url?`, `callback_data?`; refine requires exactly one of `url` or `callback_data` | Validates Telegram inline button payloads. | `src/types.ts:114` `[UPDATED 2026-05-05]` |
+| `TelegramInlineKeyboardSchema` | `object` | `inline_keyboard: TelegramInlineButton[][]` with non-empty rows | Wraps Telegram button grids for reply payloads. | `src/types.ts:125` `[UPDATED 2026-05-05]` |
+| `InboundUIEventSchema` | `object` | `channel`, `raw_message_id`, `sender_id`, `content`, `attachments=[]`, `timestamp`, `reply_to` | Defines the canonical inbound interface event shape. | `src/types.ts:130` `[UPDATED 2026-05-05]` |
+| `CompositeChatIdSchema` | `string` | `{channel}:{id}` regex | Validates the newer channel-prefixed chat identifier format. | `src/types.ts:141` `[UPDATED 2026-05-05]` |
+| `LegacyChatIdSchema` | `string` | Non-empty string without `:` | Preserves backward compatibility for older chat IDs. | `src/types.ts:142` `[UPDATED 2026-05-05]` |
+| `SessionChatIdSchema` | `union` | Composite or legacy chat ID | Accepts either supported chat identifier format. | `src/types.ts:143` `[UPDATED 2026-05-05]` |
+| `ReplyChannelSchema` | `object` | `channel`, `chat_id`, `message_id?`, `bot_id?`, `chat_name?`, `bot_name?`, `socket_path?` | Captures routing metadata for Telegram, web, and socket replies. | `src/types.ts:146` `[UPDATED 2026-05-05]` |
+| `CallerIdentitySchema` | `object` | `caller_id` (regex `^[a-z][a-z0-9_-]*$`), `caller_label?`, `caller_version?` | Validates the caller identity token attached to hub messages and agent instances. | `src/types.ts:158` `[ADDED 2026-05-05]` |
+| `HubPayloadSchema` | `object` | `content`, `attachments=[]`, `raw_message_id?`, `reply_to?`, `spawn_dir?`, `model_id?`, `effort?`, `auto_approve?`, `monitor_updates_enabled?`, `monitor_updates_interval_sec?`, `gui_host_port_override?`, `push_enabled?` | Validates the payload body sent with hub intents. | `src/types.ts:165` `[UPDATED 2026-05-05]` |
+| `PrioritySchema` | `number` | Integer `0` through `9` | Normalizes message priority for the hub queue. | `src/types.ts:187` `[UPDATED 2026-05-05]` |
+| `OptionalUuidSchema` | `string` | Optional UUID | Reuses one tracing/span field helper across multiple objects. | `src/types.ts:190` `[UPDATED 2026-05-05]` |
+| `HubMessageSchema` | `object` | `trace_id`, `thread_id`, `actor_id`, `idempotency_key?`, `priority=5`, `span_id?`, `parent_span_id?`, `intent`, `target`, `payload`, `mode`, `reply_channel`, `suppress_reply?`, `caller?` | Validates inbound hub requests and applies the default priority. | `src/types.ts:192` `[UPDATED 2026-05-05]` |
+| `HubResultSchema` | `object` | `trace_id`, `thread_id`, `source`, `status`, `run_state?`, `content`, `summary_text?`, `details_text?`, `progress?`, `attachments=[]`, `telegram_inline_keyboard?`, `timestamp` | Validates the hub's final or partial result envelope. | `src/types.ts:210` `[UPDATED 2026-05-05]` |
+| `MonitorEventTypeSchema` | `enum` | `task_completed`, `status_changed`, `heartbeat_missed`, `agent_error`, `sse_reconnect_failed` | Enumerates monitor event categories. | `src/types.ts:227` `[UPDATED 2026-05-05]` |
+| `MonitorModeSchema` | `enum` | `sse_hook`, `heartbeat` | Identifies the transport mode used by monitoring. | `src/types.ts:236` `[UPDATED 2026-05-05]` |
+| `MonitorEventSchema` | `object` | `trace_id=null`, `span_id?`, `parent_span_id?`, `thread_id`, `event_type`, `monitor_mode`, `timestamp`, `agent_status?`, `agent_type?`, `last_known_pid?`, `missed_heartbeats?`, `sse_reconnect_count?`, `details?`, `error?` | Structures monitor telemetry for status and failure reporting. | `src/types.ts:239` `[UPDATED 2026-05-05]` |
+| `AgentInstanceSchema` | `object` | `thread_id`, `agent_type`, `model_id?`, `reasoning_effort?`, `supportsStream?`, `codexSessionId?`, `mode`, `socket_path`, `working_dir?`, `pid`, `tmux_pane`, `status`, `created_at`, `restart_safe?`, `auto_approve=true`, `spawn_trace_id?`, `spawned_by?`, `last_caller?`, `last_caller_at?` | Validates persisted and in-memory agent instance state. | `src/types.ts:257` `[UPDATED 2026-05-05]` |
+| `PaneSubscribeRequestSchema` | `object` | `type="subscribe_pane_output"`, `thread_id`, `replay_lines?` | Validates pane output subscribe requests. | `src/types.ts:283` `[UPDATED 2026-05-05]` |
+| `PaneOutputChunkSchema` | `object` | `type="pane_output"`, `thread_id`, `chunk`, `cursor?`, `timestamp?`, `span_id?`, `parent_span_id?` | Describes incremental pane output frames broadcast to listeners. | `src/types.ts:290` `[UPDATED 2026-05-05]` |
+| `PaneOutputNotAvailableSchema` | `object` | `type="not_available"`, `thread_id`, `reason` | Reports why pane output cannot be streamed for a thread. | `src/types.ts:301` `[UPDATED 2026-05-05]` |
+| `PaneUnsubscribeRequestSchema` | `object` | `type="unsubscribe_pane_output"`, `thread_id` | Validates pane output unsubscribe requests. | `src/types.ts:308` `[UPDATED 2026-05-05]` |
+| `ProviderModelSchema` | `object` | `id`, `label` | Represents one selectable provider model. | `src/types.ts:314` `[UPDATED 2026-05-05]` |
+| `ProviderModelCatalogSchema` | `object` | `thread_id`, `provider`, `current_model_id=null`, `models[]` | Wraps the available model list for one provider thread. | `src/types.ts:320` `[UPDATED 2026-05-05]` |
+| `ServiceEndpointSchema` | `object` | `service?`, `socket_path`, `intents=[]`, `metadata?` | Validates dynamic service-registry endpoint records. | `src/types.ts:342` `[UPDATED 2026-05-05]` |
 
 ## Config Key Inventory
 
@@ -231,467 +232,481 @@
 ### `BUILT_IN_INTENTS`
 - **File**: `src/types.ts:6`
 - **Purpose**: Enumerates Meridian's reserved hub intent names.
-- **Implementation**: The readonly tuple is the single source of truth for built-in lifecycle, monitoring, service-registry, and reply intents, and it directly backs `BuiltInIntentSchema`.
+- **Implementation**: The readonly tuple is the single source of truth for built-in lifecycle, monitoring, service-registry, reply, and caller-registry intents, and it directly backs `BuiltInIntentSchema`. Added `register_caller`, `unregister_caller`, `rotate_caller_key`, `list_callers` in this round.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `BuiltInIntentSchema`
-- **File**: `src/types.ts:32`
+- **File**: `src/types.ts:37`
 - **Purpose**: Validates the reserved intent names listed in `BUILT_IN_INTENTS`.
 - **Implementation**: The schema wraps the tuple with `z.enum()`, ensuring the runtime validator and static tuple stay aligned.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `IntentSchema`
-- **File**: `src/types.ts:33`
+- **File**: `src/types.ts:38`
 - **Purpose**: Validates any hub intent Meridian is willing to route.
 - **Implementation**: The union accepts either a built-in intent or any non-empty string, which preserves compatibility with dynamically registered services while still protecting the empty-string case.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `Intent`
-- **File**: `src/types.ts:34`
+- **File**: `src/types.ts:39`
 - **Purpose**: Provides the TypeScript view of the validated intent value.
 - **Implementation**: The alias is inferred from `IntentSchema`, so the type tracks both built-in intents and custom service intent strings.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `BridgeModeSchema`
-- **File**: `src/types.ts:36`
-- **Purpose**: Validates the two bridge execution modes used by Meridian threads.
-- **Implementation**: The enum restricts mode selection to `bridge` and `pane_bridge`, which downstream code uses to decide whether pane streaming is available.
+- **File**: `src/types.ts:41`
+- **Purpose**: Validates the bridge execution modes used by Meridian threads.
+- **Implementation**: The enum restricts mode selection to `bridge`, `pane_bridge`, and `stateless_call`, which downstream code uses to decide whether pane streaming is available.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `BridgeMode`
-- **File**: `src/types.ts:37`
+- **File**: `src/types.ts:42`
 - **Purpose**: Provides the TypeScript union for bridge mode values.
 - **Implementation**: The alias is inferred from `BridgeModeSchema`, keeping type-level mode checks aligned with runtime parsing.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `AgentTypeSchema`
-- **File**: `src/types.ts:39`
+- **File**: `src/types.ts:44`
 - **Purpose**: Validates the provider IDs Meridian can spawn and track.
 - **Implementation**: The enum is restricted to `claude`, `codex`, `gemini`, and `cursor`, which matches the agent implementations under `src/agents/`.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `AgentType`
-- **File**: `src/types.ts:40`
+- **File**: `src/types.ts:45`
 - **Purpose**: Provides the TypeScript union for supported agent providers.
 - **Implementation**: The alias is inferred from `AgentTypeSchema`, which keeps the compile-time provider set synchronized with the runtime validator.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ReasoningEffortSchema`
-- **File**: `src/types.ts:42`
+- **File**: `src/types.ts:53`
 - **Purpose**: Validates requested provider reasoning effort levels.
 - **Implementation**: The enum constrains effort overrides to `low`, `medium`, `high`, or `xhigh`, which is reused by spawn flows and instance metadata.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ReasoningEffort`
-- **File**: `src/types.ts:43`
+- **File**: `src/types.ts:54`
 - **Purpose**: Provides the TypeScript union for reasoning effort values.
 - **Implementation**: The alias is inferred from `ReasoningEffortSchema`, keeping effort typing aligned with runtime validation.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `HubResultStatusSchema`
-- **File**: `src/types.ts:45`
+- **File**: `src/types.ts:56`
 - **Purpose**: Validates the top-level status attached to hub responses.
 - **Implementation**: The enum normalizes result outcomes into `success`, `error`, `partial`, or `timeout`, which downstream renderers and routers can branch on predictably.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `HubResultStatus`
-- **File**: `src/types.ts:46`
+- **File**: `src/types.ts:57`
 - **Purpose**: Provides the TypeScript union for normalized hub result status values.
 - **Implementation**: The alias is inferred from `HubResultStatusSchema`, so type-level status checks follow the same four-state runtime contract.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `HubRunStateSchema`
-- **File**: `src/types.ts:48`
+- **File**: `src/types.ts:59`
 - **Purpose**: Validates whether a run has completed or is still in flight.
 - **Implementation**: The enum is separate from top-level status so partial replies can still say whether the run is `still_running`, `completed`, or timed out.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `HubRunState`
-- **File**: `src/types.ts:49`
+- **File**: `src/types.ts:60`
 - **Purpose**: Provides the TypeScript union for run-state markers.
 - **Implementation**: The alias is inferred from `HubRunStateSchema`, which keeps the compile-time and runtime state vocabulary synchronized.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `AgentInstanceStatusSchema`
-- **File**: `src/types.ts:51`
+- **File**: `src/types.ts:62`
 - **Purpose**: Validates the lifecycle state stored for an agent instance.
 - **Implementation**: The enum covers idle, active, waiting, stopped, and error states so instance managers and monitors share a stable vocabulary.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `AgentInstanceStatus`
-- **File**: `src/types.ts:52`
+- **File**: `src/types.ts:63`
 - **Purpose**: Provides the TypeScript union for agent instance state.
 - **Implementation**: The alias is inferred from `AgentInstanceStatusSchema`, preventing drift between runtime state parsing and TypeScript consumers.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ThreadProgressEventKindSchema`
-- **File**: `src/types.ts:54`
+- **File**: `src/types.ts:65`
 - **Purpose**: Validates the kind of structured thread progress update.
 - **Implementation**: The enum distinguishes ordinary progress messages from approval prompts, which lets UIs render those two cases differently.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ThreadProgressEventKind`
-- **File**: `src/types.ts:55`
+- **File**: `src/types.ts:66`
 - **Purpose**: Provides the TypeScript union for progress event kinds.
 - **Implementation**: The alias is inferred from `ThreadProgressEventKindSchema`, which keeps progress-kind typing aligned with the runtime validator.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ThreadProgressPhaseSchema`
-- **File**: `src/types.ts:57`
+- **File**: `src/types.ts:68`
 - **Purpose**: Validates the execution phase represented by a progress snapshot.
 - **Implementation**: The enum limits phase values to `running` and `waiting_for_input`, matching the two partial-update states currently surfaced by Meridian.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ThreadProgressPhase`
-- **File**: `src/types.ts:58`
+- **File**: `src/types.ts:69`
 - **Purpose**: Provides the TypeScript union for progress phase values.
 - **Implementation**: The alias is inferred from `ThreadProgressPhaseSchema`, keeping type-level handling in sync with runtime validation.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ThreadProgressSnapshotSchema`
-- **File**: `src/types.ts:60`
+- **File**: `src/types.ts:71`
 - **Purpose**: Validates the structured progress snapshot attached to partial hub results.
 - **Implementation**: The object requires tracing, thread identity, provider, phase, waiting flag, and both raw plus display text, and it hard-codes `status` to `partial` so snapshots cannot masquerade as terminal results.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ThreadProgressSnapshot`
-- **File**: `src/types.ts:72`
+- **File**: `src/types.ts:83`
 - **Purpose**: Provides the TypeScript view of a validated progress snapshot.
 - **Implementation**: The alias is inferred from `ThreadProgressSnapshotSchema`, so consumers of `HubResult.progress` share the same runtime-checked shape.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `FileAttachmentSchema`
-- **File**: `src/types.ts:74`
+- **File**: `src/types.ts:85`
 - **Purpose**: Validates one file attachment reference carried through Meridian messages.
 - **Implementation**: The object requires a path and optionally accepts a display filename and MIME type so attachments can be routed without requiring up-front file inspection.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `FileAttachment`
-- **File**: `src/types.ts:79`
+- **File**: `src/types.ts:102`
 - **Purpose**: Provides the TypeScript shape of a validated attachment record.
 - **Implementation**: The alias is inferred from `FileAttachmentSchema`, which keeps attachment typing aligned with runtime validation.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `TelegramInlineButtonSchema`
-- **File**: `src/types.ts:81`
+- **File**: `src/types.ts:114`
 - **Purpose**: Validates one Telegram inline button payload.
 - **Implementation**: The object requires button text and allows either a URL or callback data, then applies a refine rule that enforces exactly one of those action fields.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `TelegramInlineButton`
-- **File**: `src/types.ts:90`
+- **File**: `src/types.ts:123`
 - **Purpose**: Provides the TypeScript shape for a validated Telegram inline button.
 - **Implementation**: The alias is inferred from `TelegramInlineButtonSchema`, which keeps Telegram keyboard typing aligned with the runtime rule that only one action field is present.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `TelegramInlineKeyboardSchema`
-- **File**: `src/types.ts:92`
+- **File**: `src/types.ts:125`
 - **Purpose**: Validates Telegram inline keyboard layouts included with hub results.
 - **Implementation**: The object wraps a non-empty array of non-empty button rows, ensuring callers cannot emit structurally empty keyboard payloads.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `TelegramInlineKeyboard`
-- **File**: `src/types.ts:95`
+- **File**: `src/types.ts:128`
 - **Purpose**: Provides the TypeScript shape of a validated inline keyboard.
 - **Implementation**: The alias is inferred from `TelegramInlineKeyboardSchema`, which keeps keyboard typing and runtime validation synchronized.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `InboundUIEventSchema`
-- **File**: `src/types.ts:97`
+- **File**: `src/types.ts:130`
 - **Purpose**: Validates the normalized inbound event shape used by interface adapters.
 - **Implementation**: The object captures channel, sender, raw message identity, text, attachments, timestamp, and optional reply target so downstream code can treat Telegram and other UI inputs uniformly.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `InboundUIEvent`
-- **File**: `src/types.ts:106`
+- **File**: `src/types.ts:139`
 - **Purpose**: Provides the TypeScript shape for a validated inbound UI event.
 - **Implementation**: The alias is inferred from `InboundUIEventSchema`, which keeps interface-event typing aligned with the runtime parser contract.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `CompositeChatIdSchema`
-- **File**: `src/types.ts:108`
+- **File**: `src/types.ts:141`
 - **Purpose**: Validates the modern channel-prefixed chat ID format.
 - **Implementation**: The regex requires a lowercase channel prefix followed by `:` and an arbitrary trailing identifier, which lets one string carry both channel and chat identity.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `LegacyChatIdSchema`
-- **File**: `src/types.ts:109`
+- **File**: `src/types.ts:142`
 - **Purpose**: Preserves validation for pre-channel chat IDs.
 - **Implementation**: The schema requires a non-empty string that contains no colon, which keeps legacy chat references compatible without colliding with the newer composite format.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `SessionChatIdSchema`
-- **File**: `src/types.ts:110`
+- **File**: `src/types.ts:143`
 - **Purpose**: Validates any chat ID that Meridian may persist in session state.
 - **Implementation**: The union accepts either the newer composite format or the legacy single-segment format so session recovery can span both generations of IDs.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `SessionChatId`
-- **File**: `src/types.ts:111`
+- **File**: `src/types.ts:144`
 - **Purpose**: Provides the TypeScript shape for a validated session chat ID.
 - **Implementation**: The alias is inferred from `SessionChatIdSchema`, which keeps session chat typing aligned with the dual-format runtime parser.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ReplyChannelSchema`
-- **File**: `src/types.ts:113`
+- **File**: `src/types.ts:146`
 - **Purpose**: Validates how a hub result should be routed back to a caller.
 - **Implementation**: The object carries the channel plus chat/message/bot metadata and an optional socket path for socket replies, giving the hub one normalized reply target across transports.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `ReplyChannel`
-- **File**: `src/types.ts:123`
+- **File**: `src/types.ts:156`
 - **Purpose**: Provides the TypeScript shape for a validated reply channel descriptor.
 - **Implementation**: The alias is inferred from `ReplyChannelSchema`, which keeps reply routing typing aligned with the runtime validator.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
+
+### `CallerIdentitySchema`
+- **File**: `src/types.ts:158`
+- **Purpose**: Validates the caller identity token attached to hub messages and agent instances.
+- **Implementation**: The object requires a lowercase-anchored `caller_id` (regex `^[a-z][a-z0-9_-]*$`) and optionally accepts a human-readable `caller_label` and a `caller_version` string. The schema is intentionally loose on the wire — the hub fills in `caller_label` from the registry after auth.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `CallerIdentity`
+- **File**: `src/types.ts:163`
+- **Purpose**: Provides the TypeScript shape for a validated caller identity record.
+- **Implementation**: The alias is inferred from `CallerIdentitySchema`, keeping caller-identity typing aligned with the runtime validator across hub messages, agent instances, and IPC frames.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
 
 ### `HubPayloadSchema`
-- **File**: `src/types.ts:125`
+- **File**: `src/types.ts:165`
 - **Purpose**: Validates the payload object carried inside a hub message.
 - **Implementation**: The object starts with the content and attachment fields, then layers on optional spawn, model, approval, monitor, GUI, and push controls so different intents can share one envelope shape.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `HubPayload`
-- **File**: `src/types.ts:139`
+- **File**: `src/types.ts:185`
 - **Purpose**: Provides the TypeScript shape for a validated hub payload.
 - **Implementation**: The alias is inferred from `HubPayloadSchema`, which keeps payload typing aligned with the runtime message contract.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PrioritySchema`
-- **File**: `src/types.ts:141`
+- **File**: `src/types.ts:187`
 - **Purpose**: Validates numeric hub message priority.
 - **Implementation**: The schema constrains values to integer priorities from `0` through `9`, which gives the router a bounded ordering key.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `Priority`
-- **File**: `src/types.ts:142`
+- **File**: `src/types.ts:188`
 - **Purpose**: Provides the TypeScript type for validated priority values.
 - **Implementation**: The alias is inferred from `PrioritySchema`, keeping type-level priority handling synchronized with the runtime constraint.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `OptionalUuidSchema`
-- **File**: `src/types.ts:144`
+- **File**: `src/types.ts:190`
 - **Purpose**: Validates optional UUID-valued tracing fields.
 - **Implementation**: The schema is reused for optional span identifiers so tracing fields across message, result, and monitor objects share one validation rule.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `HubMessageSchema`
-- **File**: `src/types.ts:146`
+- **File**: `src/types.ts:192`
 - **Purpose**: Validates the full inbound message envelope routed through the hub.
-- **Implementation**: The object requires tracing, thread, actor, intent, target, payload, mode, and reply-channel data, while making idempotency, span linkage, and reply suppression optional and defaulting priority to `5`.
+- **Implementation**: The object requires tracing, thread, actor, intent, target, payload, mode, and reply-channel data, while making idempotency, span linkage, reply suppression, and caller identity optional and defaulting priority to `5`. Added optional `caller` field (R-01).
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `HubMessage`
-- **File**: `src/types.ts:161`
+- **File**: `src/types.ts:208`
 - **Purpose**: Provides the input-side TypeScript shape for hub messages before defaults are applied.
 - **Implementation**: The alias uses `z.input<typeof HubMessageSchema>` rather than `z.infer`, so callers may omit fields such as `priority` that the schema fills in during parsing.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `HubResultSchema`
-- **File**: `src/types.ts:163`
+- **File**: `src/types.ts:210`
 - **Purpose**: Validates the full reply envelope returned from the hub.
 - **Implementation**: The object combines tracing data, provider identity, content, optional run-state and summary/detail text, optional structured progress, attachments, optional Telegram keyboard markup, and a required timestamp.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `HubResult`
-- **File**: `src/types.ts:177`
+- **File**: `src/types.ts:225`
 - **Purpose**: Provides the TypeScript shape for a validated hub result.
 - **Implementation**: The alias is inferred from `HubResultSchema`, which keeps downstream result handling aligned with the runtime response validator.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `MonitorEventTypeSchema`
-- **File**: `src/types.ts:179`
+- **File**: `src/types.ts:227`
 - **Purpose**: Validates monitor event categories emitted by health and streaming supervision.
 - **Implementation**: The enum covers task completion, status changes, missed heartbeats, agent errors, and exhausted SSE reconnect attempts.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `MonitorEventType`
-- **File**: `src/types.ts:186`
+- **File**: `src/types.ts:234`
 - **Purpose**: Provides the TypeScript union for monitor event category values.
 - **Implementation**: The alias is inferred from `MonitorEventTypeSchema`, so monitor handlers and serializers share the same runtime-checked event names.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `MonitorModeSchema`
-- **File**: `src/types.ts:188`
+- **File**: `src/types.ts:236`
 - **Purpose**: Validates which monitoring transport produced an event.
 - **Implementation**: The enum is limited to `sse_hook` and `heartbeat`, which matches the monitor subsystem's two collection strategies.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `MonitorMode`
-- **File**: `src/types.ts:189`
+- **File**: `src/types.ts:237`
 - **Purpose**: Provides the TypeScript union for monitor mode values.
 - **Implementation**: The alias is inferred from `MonitorModeSchema`, keeping monitor-mode typing synchronized with the runtime validator.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `MonitorEventSchema`
-- **File**: `src/types.ts:191`
+- **File**: `src/types.ts:239`
 - **Purpose**: Validates structured events emitted by the monitor subsystem.
 - **Implementation**: The object requires thread identity, event type, mode, and timestamp, then optionally carries trace/span data, agent status metadata, reconnect counters, arbitrary details, and a free-form error string.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `MonitorEvent`
-- **File**: `src/types.ts:207`
+- **File**: `src/types.ts:255`
 - **Purpose**: Provides the TypeScript shape for a validated monitor event.
 - **Implementation**: The alias is inferred from `MonitorEventSchema`, which keeps telemetry typing aligned with the runtime monitoring contract.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `AgentInstanceSchema`
-- **File**: `src/types.ts:209`
+- **File**: `src/types.ts:257`
 - **Purpose**: Validates the persisted and in-memory shape of one tracked agent instance.
-- **Implementation**: The object captures thread/provider identity, optional model and reasoning metadata, bridge mode, socket path, working directory, process and pane state, lifecycle status, creation time, restart safety, and the defaulted auto-approve flag.
+- **Implementation**: The object captures thread/provider identity, optional model and reasoning metadata, bridge mode, socket path, working directory, process and pane state, lifecycle status, creation time, restart safety, the defaulted auto-approve flag, and optional caller tracking fields (`spawned_by`, `last_caller`, `last_caller_at`) added in R-01.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `AgentInstance`
-- **File**: `src/types.ts:226`
+- **File**: `src/types.ts:281`
 - **Purpose**: Provides the input-side TypeScript shape for an agent instance record.
 - **Implementation**: The alias uses `z.input<typeof AgentInstanceSchema>` so callers can supply partially defaulted data, including omitted `auto_approve`, before the schema normalizes it.
 - **Dependencies**: None
-- **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `PaneSubscribeRequestSchema`
-- **File**: `src/types.ts:228`
+- **File**: `src/types.ts:283`
 - **Purpose**: Validates pane-output subscribe requests.
 - **Implementation**: The object requires the literal request type plus a thread ID and optional replay-line count, which gives the pane broadcaster enough information to attach and optionally backfill output.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneSubscribeRequest`
-- **File**: `src/types.ts:233`
+- **File**: `src/types.ts:288`
 - **Purpose**: Provides the TypeScript shape for a validated pane subscribe request.
 - **Implementation**: The alias is inferred from `PaneSubscribeRequestSchema`, which keeps pane-subscription typing aligned with the runtime validator.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneOutputChunkSchema`
-- **File**: `src/types.ts:235`
+- **File**: `src/types.ts:290`
 - **Purpose**: Validates one incremental pane output packet.
 - **Implementation**: The object requires the `pane_output` literal, thread ID, and text chunk, then optionally carries cursor, timestamp, and tracing fields for richer streaming clients.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneOutputChunk`
-- **File**: `src/types.ts:244`
+- **File**: `src/types.ts:299`
 - **Purpose**: Provides the TypeScript shape for a validated pane output packet.
 - **Implementation**: The alias is inferred from `PaneOutputChunkSchema`, so pane-stream consumers share the same runtime-checked structure.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneOutputNotAvailableSchema`
-- **File**: `src/types.ts:246`
+- **File**: `src/types.ts:301`
 - **Purpose**: Validates the negative reply sent when pane output cannot be streamed.
 - **Implementation**: The object requires the `not_available` literal, a thread ID, and a human-readable reason so clients can fail gracefully instead of waiting for output that will never arrive.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneOutputNotAvailable`
-- **File**: `src/types.ts:251`
+- **File**: `src/types.ts:306`
 - **Purpose**: Provides the TypeScript shape for a negative pane-output response.
 - **Implementation**: The alias is inferred from `PaneOutputNotAvailableSchema`, which keeps fallback pane-stream typing aligned with runtime validation.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneUnsubscribeRequestSchema`
-- **File**: `src/types.ts:253`
+- **File**: `src/types.ts:308`
 - **Purpose**: Validates pane-output unsubscribe requests.
 - **Implementation**: The object only needs the literal request type and thread ID, which is enough for the broadcaster to tear down a subscription.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `PaneUnsubscribeRequest`
-- **File**: `src/types.ts:257`
+- **File**: `src/types.ts:312`
 - **Purpose**: Provides the TypeScript shape for a validated pane unsubscribe request.
 - **Implementation**: The alias is inferred from `PaneUnsubscribeRequestSchema`, keeping pane-unsubscribe typing aligned with the runtime validator.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `ProviderModelSchema`
-- **File**: `src/types.ts:259`
+- **File**: `src/types.ts:314`
 - **Purpose**: Validates one provider model option advertised to a user.
 - **Implementation**: The object is intentionally minimal and only requires a stable model ID plus a human-readable label.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `ProviderModel`
-- **File**: `src/types.ts:263`
+- **File**: `src/types.ts:318`
 - **Purpose**: Provides the TypeScript shape for a validated provider model option.
 - **Implementation**: The alias is inferred from `ProviderModelSchema`, which keeps model-option typing aligned with runtime validation.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `ProviderModelCatalogSchema`
-- **File**: `src/types.ts:265`
+- **File**: `src/types.ts:320`
 - **Purpose**: Validates the model catalog returned for one provider thread.
 - **Implementation**: The object ties a thread and provider to the current selected model ID, defaulting that field to `null`, and a list of `ProviderModelSchema` entries.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `ProviderModelCatalog`
-- **File**: `src/types.ts:271`
+- **File**: `src/types.ts:326`
 - **Purpose**: Provides the TypeScript shape for a validated provider model catalog.
 - **Implementation**: The alias is inferred from `ProviderModelCatalogSchema`, keeping model-catalog typing aligned with the runtime contract.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `ServiceEndpointSchema`
-- **File**: `src/types.ts:273`
+- **File**: `src/types.ts:342`
 - **Purpose**: Validates one service-registry endpoint record.
 - **Implementation**: The object accepts an optional friendly service name, required socket path, a defaulted list of intents, and arbitrary metadata so the hub can register internal or external socket services uniformly.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T15:06:30+09:00]`
 
 ### `ServiceEndpoint`
-- **File**: `src/types.ts:279`
+- **File**: `src/types.ts:348`
 - **Purpose**: Provides the TypeScript shape for a validated service endpoint record.
 - **Implementation**: The alias is inferred from `ServiceEndpointSchema`, which keeps service-registry typing aligned with runtime validation.
 - **Dependencies**: None
