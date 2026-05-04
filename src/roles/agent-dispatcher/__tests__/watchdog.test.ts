@@ -578,6 +578,74 @@ describe("ReconciliationWatchdog", () => {
     expect(stallCallback).not.toHaveBeenCalled();
   });
 
+  it("invokes onDispatcherStalled when dispatcher hub reports running but a worker is awaiting validation with no validator spawned", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 🔍 | 1 | W-01 | Awaiting validation | CODEX | — | Worker reply received. |",
+        "| ⬜ | 2 | W-02 | Pending follow-up | CODEX | W-01 | Eligible later. |"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:10:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("d-01", "running"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "running_validation_pending",
+        continueWorkerId: "W-01"
+      })
+    );
+  });
+
   it("invokes onDispatcherStalled when the dispatcher thread is idle with no live worker blocking the next task", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
