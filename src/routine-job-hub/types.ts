@@ -4,6 +4,9 @@ export interface HubEntry {
   url: string;
   health_path: string;
   description?: string;
+  public_url?: string;
+  gui_port?: number;
+  action_label?: string;
   restart_script?: string;
 }
 

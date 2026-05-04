@@ -166,6 +166,48 @@ describe("routine job hub server", () => {
     await fs.rm(allowedRoot, { recursive: true, force: true });
   });
 
+  it("renders optional public url, gui urls, and custom action labels", async () => {
+    const child = await startChildServer(200);
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-metadata-ui-"));
+    const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-metadata-"));
+    const scriptPath = path.join(allowedRoot, "activate-tunnel.sh");
+    await fs.writeFile(scriptPath, "#!/usr/bin/env bash\necho ok\n", { mode: 0o755 });
+    const registryPath = path.join(root, "hub.json");
+    await fs.writeFile(registryPath, JSON.stringify([
+      {
+        id: "ioex-tunnel",
+        name: "ioex.io Tunnel",
+        description: "Cloudflare tunnel routing ioex.io to ADS",
+        url: child.baseUrl,
+        public_url: "https://ioex.io/",
+        health_path: "/",
+        gui_port: 3100,
+        action_label: "Activate tunnel",
+        restart_script: scriptPath
+      }
+    ]), "utf8");
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      probeTimeoutMs: 500,
+      restartScriptRoots: [allowedRoot]
+    });
+    servers.add(server);
+    await server.listen();
+
+    const page = await fetchText(`${server.url()}/`);
+    expect(page.body).toContain("ioex.io Tunnel");
+    expect(page.body).toContain("https://ioex.io/");
+    expect(page.body).toContain("GUI URLs");
+    expect(page.body).toContain(":3100");
+    expect(page.body).toContain("Activate tunnel");
+    expect(page.body).not.toContain("Rebuild &amp; restart");
+
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(allowedRoot, { recursive: true, force: true });
+  });
+
   it("runs an allowlisted restart script and returns its output", async () => {
     const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-"));
     const scriptPath = path.join(allowedRoot, "rebuild-and-restart.sh");
