@@ -1561,6 +1561,69 @@ describe("LifecycleStore", () => {
     });
   });
 
+  // Regression: BATCH-3-GATE on dispatcher a9a66025 spawned codex_74 + codex_75
+  // both at cycle 1 because a duplicate transitionToAwaitingValidation cleared
+  // validator_thread_id while the first validator was still in flight.
+  it("does not clear validator_thread_id when re-entering awaiting_validation while a validator is in flight", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart("BATCH-3-GATE", "worker-thread-72", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.transitionToAwaitingValidation("BATCH-3-GATE", 3);
+    harness.store.recordValidatorStart("BATCH-3-GATE", "validator-thread-74");
+
+    const before = harness.store.load().workers["BATCH-3-GATE"];
+    expect(before?.validation?.validator_thread_id).toBe("validator-thread-74");
+
+    // Simulate the dispatcher's Phase 1 calling intercept again because a
+    // late hub_result silently flipped the worker back to "completed".
+    harness.store.transitionToAwaitingValidation("BATCH-3-GATE", 3);
+
+    const after = harness.store.load().workers["BATCH-3-GATE"];
+    expect(after?.status).toBe("awaiting_validation");
+    expect(after?.validation?.validator_thread_id).toBe("validator-thread-74");
+  });
+
+  // Regression: PM resolver entry that failed with a Headers Timeout while
+  // the worker was blocked must be promoted to "completed" once the worker
+  // is later validated. Otherwise downstream consumers treat the timed-out
+  // PM as a real worker failure (BATCH-3-GATE codex_73 on a9a66025).
+  it("reconciles a previously failed PM resolver to completed when the worker passes validation", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart("BATCH-3-GATE", "worker-thread-72", "11111111-1111-4111-8111-111111111111", []);
+    // Worker reaches a blocked state before PM is invoked. This matches the
+    // a9a66025 production trace: the worker emitted a block_signal marker,
+    // which transitioned status to "blocked", which is what the PM was
+    // dispatched to resolve. PM_RESOLVED_TARGET_STATUSES does NOT include
+    // "blocked", so the existing recordPmResolverFailure reconcile path
+    // leaves the PM as "failed" — which is what we want to verify is
+    // rectified once the worker later passes validation.
+    harness.store.setWorkerStatus("BATCH-3-GATE", "blocked", "output_artifact:block_signal");
+
+    harness.store.recordPmResolverStart("pm-thread-73", {
+      status: "manual_intervention_required",
+      workerId: "BATCH-3-GATE",
+      message: "manual intervention required: BATCH-3-GATE reported a blocking failure",
+      source: "watchdog"
+    });
+    harness.store.recordPmResolverFailure("pm-thread-73", "Meridian API unreachable: Headers Timeout Error");
+
+    const failedPm = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-73");
+    expect(failedPm?.status).toBe("failed");
+    expect(failedPm?.error).toContain("Headers Timeout Error");
+
+    harness.store.transitionToAwaitingValidation("BATCH-3-GATE", 3);
+    harness.store.transitionToValidated("BATCH-3-GATE", {
+      score: 1,
+      feedback: "PASS",
+      validatorThreadId: "validator-thread-74"
+    });
+
+    const reconciledPm = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-73");
+    expect(reconciledPm?.status).toBe("completed");
+    expect(reconciledPm?.error).toBeNull();
+  });
+
   // ─── MeridianStatusMarker primary-signal tests (Phase A, Task A2) ────────
   describe("MeridianStatusMarker primary signal", () => {
     it("marks worker completed when marker says complete and the expected report file is fresh, despite narrative block phrases", async () => {

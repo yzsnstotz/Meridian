@@ -2319,6 +2319,18 @@ function resolveCompletedWorkerValidationDisposition(
     return null;
   }
 
+  // A validator is currently in flight for this worker. If the lifecycle has
+  // silently flipped the worker back to "completed" (e.g. a late hub_result
+  // update on the worker thread, or a reconciler pass on the same artifact)
+  // while the validator we just spawned is still running, do NOT re-intercept.
+  // Re-intercepting would call transitionToAwaitingValidation a second time,
+  // which historically cleared validator_thread_id and let Phase 2 spawn a
+  // duplicate validator (observed: BATCH-3-GATE codex_74 + codex_75 both
+  // running cycle 1 in dispatcher a9a66025). Trust the in-flight validator.
+  if (worker.validation?.validator_thread_id?.trim()) {
+    return null;
+  }
+
   if (!worker.validation) {
     return "awaiting_validation";
   }
