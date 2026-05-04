@@ -300,6 +300,48 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("does not complete a stale running worker when its completion report validation section contains FAIL", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput(
+      "reports/N-27.md",
+      [
+        "# N-27 Completion Report",
+        "",
+        "## Validation",
+        "",
+        "- `npm run check:bff` - FAIL",
+        "- Follow-up required before N-27 can be accepted."
+      ].join("\n")
+    );
+    harness.store.save(buildState({
+      workers: {
+        "N-27": {
+          ...buildRunningWorker("worker-thread-n27", outputPath, "2026-04-03T11:45:00.000Z"),
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-27"]?.status).toBe("running");
+    expect(report.changed).toEqual([]);
+  });
+
   it("keeps a worker running when its stored HubResult reports another worker's output", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

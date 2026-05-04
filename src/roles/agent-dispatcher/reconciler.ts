@@ -1235,10 +1235,42 @@ function outputArtifactsContainCompletionSignal(paths: string[], workerId: strin
 function outputArtifactHasCompletionSignal(content: string, workerId: string): boolean {
   return outputArtifactReferencesWorker(content, workerId)
     && /^#\s+.*\bCompletion Report\b/im.test(content)
-    && (/\bPASS\b/.test(content) || /✅/.test(content))
+    && validationSectionHasPassingEvidence(content)
     && !isNonCompletionContent(content)
-    && !hubResultContainsBlockSignal({ content })
-    && !hubResultContainsFailureSignal({ content });
+    && !hubResultContainsBlockSignal({ content });
+}
+
+function validationSectionHasPassingEvidence(content: string): boolean {
+  const section = extractMarkdownSection(content, "Validation") ?? content;
+  return (/\bPASS\b/.test(section) || /✅/.test(section))
+    && !/(?:^|\n)\s*(?:[-*]\s*)?.*\bFAIL\b/i.test(section);
+}
+
+function extractMarkdownSection(content: string, heading: string): string | null {
+  const lines = content.split(/\r?\n/);
+  const headingPattern = new RegExp(`^#{2,6}\\s+${escapeRegExp(heading)}\\s*$`, "i");
+  let startIndex = -1;
+  let headingLevel = 0;
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    const match = line.match(/^(#{2,6})\s+(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    if (startIndex === -1 && headingPattern.test(line)) {
+      startIndex = index + 1;
+      headingLevel = match[1]?.length ?? 0;
+      continue;
+    }
+
+    if (startIndex !== -1 && (match[1]?.length ?? 0) <= headingLevel) {
+      return lines.slice(startIndex, index).join("\n");
+    }
+  }
+
+  return startIndex === -1 ? null : lines.slice(startIndex).join("\n");
 }
 
 function outputArtifactReferencesWorker(content: string, workerId: string): boolean {
