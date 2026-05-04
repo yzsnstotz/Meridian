@@ -3,8 +3,14 @@ import path from "node:path";
 
 import type { A2AClient } from "../../a2a/client";
 import { RECONCILE_INTERVAL_MS } from "../../config";
+import killTool from "../../tool-gateway/tools/kill";
 import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status";
-import type { AutoResolveConfig, DispatchThreadStateV2 } from "../../types";
+import type {
+  AutoResolveConfig,
+  DispatchThreadStateV2,
+  DispatchWorkerState,
+  KillPolicy
+} from "../../types";
 import type { Logger } from "../base-role";
 import { autoResolve } from "./auto-resolver";
 import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
@@ -39,6 +45,18 @@ export interface WatchdogDeps {
   onDispatcherStalled?: (info: DispatcherStallInfo) => Promise<void>;
   isDispatcherPaused?: (dispatchPlanPath: string) => Promise<boolean>;
   autoResolveConfig?: AutoResolveConfig;
+  /**
+   * Resolves the configured kill_policy for the dispatcher that owns the given
+   * dispatch_plan_path. Returning null disables terminal-thread cleanup for
+   * that plan (e.g. when the role config cannot be located).
+   */
+  resolveKillPolicyForDispatchPlan?: (dispatchPlanPath: string) => Promise<KillPolicy | null>;
+  /**
+   * Issues a kill against the Meridian Hub for a worker thread. Defaults to
+   * the in-process `killTool` so production wires through the same transport
+   * the run-tool's terminal cleanup uses.
+   */
+  killThread?: (threadId: string) => Promise<void>;
 }
 
 export class ReconciliationWatchdog {
@@ -49,10 +67,15 @@ export class ReconciliationWatchdog {
   private readonly onDispatcherStalled: ((info: DispatcherStallInfo) => Promise<void>) | null;
   private readonly isDispatcherPaused: ((dispatchPlanPath: string) => Promise<boolean>) | null;
   private readonly autoResolveConfig: AutoResolveConfig | null;
+  private readonly resolveKillPolicyForDispatchPlan:
+    | ((dispatchPlanPath: string) => Promise<KillPolicy | null>)
+    | null;
+  private readonly killThread: (threadId: string) => Promise<void>;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private sweepInProgress = false;
+  private readonly cleanedTerminalThreadIds = new Set<string>();
 
   constructor(deps: WatchdogDeps) {
     this.resolveActiveDispatchPlanPaths = deps.resolveActiveDispatchPlanPaths;
@@ -62,6 +85,8 @@ export class ReconciliationWatchdog {
     this.onDispatcherStalled = deps.onDispatcherStalled ?? null;
     this.isDispatcherPaused = deps.isDispatcherPaused ?? null;
     this.autoResolveConfig = deps.autoResolveConfig ?? null;
+    this.resolveKillPolicyForDispatchPlan = deps.resolveKillPolicyForDispatchPlan ?? null;
+    this.killThread = deps.killThread ?? defaultKillThread;
   }
 
   start(): void {
@@ -148,6 +173,8 @@ export class ReconciliationWatchdog {
 
         reports.push(report);
 
+        await this.cleanupTerminalWorkerThreads(lifecycleStore, dispatchPlanPath);
+
         if (this.autoResolveConfig) {
           try {
             const resolveReport = await autoResolve(
@@ -190,6 +217,105 @@ export class ReconciliationWatchdog {
 
     return reports;
   }
+  /**
+   * Enforce kill_policy for any worker that has settled into a terminal
+   * lifecycle status with a still-recorded thread id. The run-tool's
+   * `cleanupWorkerThread` only runs in its success path; when the run-tool
+   * HTTP call to the Hub times out (or otherwise errors transiently), the
+   * worker is left in "running" and the watchdog reconciler is what later
+   * transitions it to "completed" via marker observation. Without this
+   * cleanup, those worker threads outlive their work.
+   */
+  private async cleanupTerminalWorkerThreads(
+    lifecycleStore: LifecycleStore,
+    dispatchPlanPath: string
+  ): Promise<void> {
+    if (!this.resolveKillPolicyForDispatchPlan) {
+      return;
+    }
+
+    let killPolicy: KillPolicy | null;
+    try {
+      killPolicy = await this.resolveKillPolicyForDispatchPlan(dispatchPlanPath);
+    } catch (error) {
+      this.log.warn("Watchdog: failed to resolve kill_policy for terminal cleanup", {
+        dispatchPlanPath,
+        error: asError(error).message
+      });
+      return;
+    }
+
+    if (!killPolicy || killPolicy === "never") {
+      return;
+    }
+
+    let lifecycleState: DispatchThreadStateV2;
+    try {
+      lifecycleState = lifecycleStore.load();
+    } catch (error) {
+      this.log.warn("Watchdog: failed to read lifecycle state for terminal cleanup", {
+        dispatchPlanPath,
+        error: asError(error).message
+      });
+      return;
+    }
+
+    const dispatcherThreadId = lifecycleState.dispatcher.thread_id?.trim() ?? "";
+    const activeThreadIds = collectCleanupBlockingThreadIds(lifecycleState);
+
+    const attemptedThreadIds = new Set<string>();
+    for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+      if (workerId === DISPATCHER_WORKER_ID) {
+        continue;
+      }
+
+      const threadId = worker.thread_id?.trim();
+      if (!threadId) {
+        continue;
+      }
+      if (attemptedThreadIds.has(threadId) || this.cleanedTerminalThreadIds.has(threadId)) {
+        continue;
+      }
+      // Never kill the dispatcher controller's own thread, even if a worker
+      // (briefly) shares the recorded id during a state transition.
+      if (threadId === dispatcherThreadId) {
+        continue;
+      }
+      if (activeThreadIds.has(threadId)) {
+        continue;
+      }
+      if (!shouldKillTerminalWorker(killPolicy, worker)) {
+        continue;
+      }
+
+      attemptedThreadIds.add(threadId);
+      try {
+        await this.killThread(threadId);
+        this.cleanedTerminalThreadIds.add(threadId);
+        this.log.info("Watchdog: terminal worker thread killed", {
+          event: "watchdog_terminal_kill",
+          dispatchPlanPath,
+          worker_id: workerId,
+          thread_id: threadId,
+          worker_status: worker.status,
+          kill_policy: killPolicy
+        });
+      } catch (error) {
+        const message = asError(error).message;
+        if (isMissingThreadCleanupError(message)) {
+          this.cleanedTerminalThreadIds.add(threadId);
+          continue;
+        }
+        this.log.warn("Watchdog: terminal worker cleanup kill failed", {
+          dispatchPlanPath,
+          worker_id: workerId,
+          thread_id: threadId,
+          error: message
+        });
+      }
+    }
+  }
+
   private async checkForStalledDispatcher(
     lifecycleStore: LifecycleStore,
     dispatchPlanPath: string
@@ -408,4 +534,53 @@ function resolveDispatchThreadPath(dispatchPlanPath: string): string {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function collectCleanupBlockingThreadIds(state: DispatchThreadStateV2): Set<string> {
+  const ids = new Set<string>();
+  for (const worker of Object.values(state.workers)) {
+    const threadId = worker.thread_id?.trim();
+    if (!threadId) {
+      continue;
+    }
+    if (
+      worker.status === "running"
+      || worker.status === "awaiting_validation"
+      || worker.status === "fix_requested"
+    ) {
+      ids.add(threadId);
+    }
+  }
+  return ids;
+}
+
+function shouldKillTerminalWorker(killPolicy: KillPolicy, worker: DispatchWorkerState): boolean {
+  if (killPolicy === "never") {
+    return false;
+  }
+  if (worker.status === "completed") {
+    return killPolicy === "always" || killPolicy === "on_success";
+  }
+  if (
+    worker.status === "failed"
+    || worker.status === "blocked"
+    || worker.status === "abandoned"
+    || worker.status === "skipped"
+  ) {
+    return killPolicy === "always";
+  }
+  return false;
+}
+
+function isMissingThreadCleanupError(message: string): boolean {
+  return /\bnot found\b/i.test(message)
+    || /\bmissing\b/i.test(message)
+    || /\bunknown thread\b/i.test(message);
+}
+
+async function defaultKillThread(threadId: string): Promise<void> {
+  const result = await killTool.execute({ thread_id: threadId });
+  if (!result.ok) {
+    throw new Error(result.error ?? `kill failed for thread ${threadId}`);
+  }
 }
