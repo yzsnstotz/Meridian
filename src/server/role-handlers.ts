@@ -19,7 +19,8 @@ import {
   hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
   hubResultContainsHitLimit,
-  isPmResolverHubResult
+  isPmResolverHubResult,
+  isValidatorSpawnBackoffActive
 } from "../roles/agent-dispatcher/lifecycle-store";
 import { createMeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
 import { parseMeridianStatusMarker } from "../roles/agent-dispatcher/meridian-status-marker";
@@ -2182,6 +2183,28 @@ async function processValidationQueue(
       }
 
       lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
+    }
+
+    // Skip workers that are in validator spawn-failure backoff. The watchdog
+    // and queue both honor this so a broken spawn transport (e.g. codex cwd
+    // not in trusted projects, hub FD pressure) cannot drive a tight retry
+    // loop. The worker remains in awaiting_validation; the next tick after
+    // the backoff window expires will attempt again.
+    const latestWorker = lifecycleStore.load().workers[workerId];
+    if (isValidatorSpawnBackoffActive(latestWorker?.validation)) {
+      log.info("Validator spawn backoff active; skipping respawn for now", {
+        event: "validator_spawn_backoff_active",
+        worker_id: workerId,
+        spawn_failure_count: latestWorker?.validation?.spawn_failure_count ?? 0,
+        last_spawn_failure_at: latestWorker?.validation?.last_spawn_failure_at ?? null
+      });
+      return {
+        ok: true,
+        status: "validation_in_progress",
+        message: `validation backoff active for ${workerId} after repeated spawn failures`,
+        worker: workerId,
+        validation_outcome: "backoff"
+      };
     }
 
     const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);

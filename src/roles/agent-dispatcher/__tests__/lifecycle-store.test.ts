@@ -6,7 +6,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DispatchThreadStateV2, HubResult } from "../../../types";
-import { LifecycleStore, buildEmptyDispatchThreadStateV2 } from "../lifecycle-store";
+import {
+  isValidatorSpawnBackoffActive,
+  LifecycleStore,
+  VALIDATOR_SPAWN_FAILURE_BACKOFF_MS,
+  VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD,
+  buildEmptyDispatchThreadStateV2
+} from "../lifecycle-store";
 
 const tempDirectories = new Set<string>();
 
@@ -1564,6 +1570,94 @@ describe("LifecycleStore", () => {
   // Regression: BATCH-3-GATE on dispatcher a9a66025 spawned codex_74 + codex_75
   // both at cycle 1 because a duplicate transitionToAwaitingValidation cleared
   // validator_thread_id while the first validator was still in flight.
+  it("increments spawn_failure_count and stamps last_spawn_failure_at on clearValidatorStart", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart("N-25", "worker-thread", "11111111-1111-4111-8111-111111111125", []);
+    harness.store.transitionToAwaitingValidation("N-25", 3);
+    harness.store.recordValidatorStart("N-25", "validator-thread-1");
+    harness.store.clearValidatorStart("N-25", "validator-thread-1");
+
+    const after1 = harness.store.load().workers["N-25"];
+    expect(after1?.validation?.spawn_failure_count).toBe(1);
+    expect(after1?.validation?.last_spawn_failure_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(after1?.validation?.validator_thread_id).toBeNull();
+
+    harness.store.recordValidatorStart("N-25", "validator-thread-2");
+    harness.store.clearValidatorStart("N-25", "validator-thread-2");
+
+    const after2 = harness.store.load().workers["N-25"];
+    expect(after2?.validation?.spawn_failure_count).toBe(2);
+  });
+
+  it("resets spawn_failure_count and last_spawn_failure_at when a validator successfully decides", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart("N-25", "worker-thread", "11111111-1111-4111-8111-111111111125", []);
+    harness.store.transitionToAwaitingValidation("N-25", 3);
+    harness.store.recordValidatorStart("N-25", "validator-thread-1");
+    harness.store.clearValidatorStart("N-25", "validator-thread-1");
+    harness.store.recordValidatorStart("N-25", "validator-thread-2");
+    harness.store.clearValidatorStart("N-25", "validator-thread-2");
+
+    expect(harness.store.load().workers["N-25"]?.validation?.spawn_failure_count).toBe(2);
+
+    // A successful validator verdict means future failures shouldn't compound
+    // on top of pre-success failures — the loop is no longer broken.
+    harness.store.transitionToValidated("N-25", {
+      score: 0.95,
+      feedback: "looks good",
+      validatorThreadId: "validator-thread-3"
+    });
+
+    const after = harness.store.load().workers["N-25"];
+    expect(after?.validation?.spawn_failure_count).toBe(0);
+    expect(after?.validation?.last_spawn_failure_at).toBeNull();
+  });
+
+  it("isValidatorSpawnBackoffActive flags workers with N+ failures inside the backoff window", () => {
+    const now = Date.parse("2026-05-04T10:00:00.000Z");
+
+    expect(
+      isValidatorSpawnBackoffActive(
+        {
+          spawn_failure_count: VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD,
+          last_spawn_failure_at: new Date(now - 60_000).toISOString()
+        },
+        now
+      )
+    ).toBe(true);
+
+    expect(
+      isValidatorSpawnBackoffActive(
+        {
+          spawn_failure_count: VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD - 1,
+          last_spawn_failure_at: new Date(now - 60_000).toISOString()
+        },
+        now
+      )
+    ).toBe(false);
+
+    expect(
+      isValidatorSpawnBackoffActive(
+        {
+          spawn_failure_count: VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD,
+          last_spawn_failure_at: new Date(now - VALIDATOR_SPAWN_FAILURE_BACKOFF_MS - 1_000).toISOString()
+        },
+        now
+      )
+    ).toBe(false);
+
+    expect(
+      isValidatorSpawnBackoffActive(
+        { spawn_failure_count: 0, last_spawn_failure_at: null },
+        now
+      )
+    ).toBe(false);
+
+    expect(isValidatorSpawnBackoffActive(undefined, now)).toBe(false);
+  });
+
   it("does not clear validator_thread_id when re-entering awaiting_validation while a validator is in flight", async () => {
     const harness = await createHarness();
 

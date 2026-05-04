@@ -183,7 +183,13 @@ export const ValidationStateSchema = z.object({
   validator_thread_id: z.string().min(1).nullable().default(null),
   last_score: z.number().min(0).max(1).nullable().default(null),
   last_feedback: z.string().nullable().default(null),
-  history: z.array(ValidationHistoryEntrySchema).default([])
+  history: z.array(ValidationHistoryEntrySchema).default([]),
+  // Tracks consecutive validator-spawn-or-run failures so the watchdog and
+  // queue can apply a backoff. Optional for backward compatibility with
+  // older state files and existing test fixtures; readers must coalesce
+  // (`?? 0`).
+  spawn_failure_count: z.number().int().min(0).optional(),
+  last_spawn_failure_at: z.string().datetime().nullable().optional()
 });
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 
