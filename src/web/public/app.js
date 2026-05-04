@@ -3000,14 +3000,19 @@ function resolveDispatcherDetailControls(detail) {
   const liveWorker = resolveLiveRunningWorker(detail);
   const validationWorker = resolveValidationContinueWorker(detail);
 
+  // Pause/Resume targets the dispatcher session itself — independent of worker
+  // state. Whenever the dispatcher has a live hub thread and is not terminal,
+  // expose the lifecycle control so users can stop autonomous progress at any
+  // time (including while a worker is mid-validation or waiting on a validator
+  // respawn). The Continue/Working button can render alongside it.
+  const lifecycle = resolveDispatcherLifecycleControls(status, hasLiveThread);
+
   if (isTerminalDispatcherStatus(status)) {
     return {
       showContinue: true,
       continueLabel: formatTerminalDispatcherStatus(status),
       continueDisabled: true,
-      showLifecycle: false,
-      lifecycleAction: null,
-      lifecycleLabel: ""
+      ...lifecycle
     };
   }
 
@@ -3016,9 +3021,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Working",
       continueDisabled: true,
-      showLifecycle: hasLiveThread,
-      lifecycleAction: hasLiveThread ? (status === "paused" ? "resume" : "pause") : null,
-      lifecycleLabel: hasLiveThread ? (status === "paused" ? "Resume" : "Pause") : ""
+      ...lifecycle
     };
   }
 
@@ -3027,9 +3030,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Continue",
       continueDisabled: false,
-      showLifecycle: false,
-      lifecycleAction: null,
-      lifecycleLabel: ""
+      ...lifecycle
     };
   }
 
@@ -3038,9 +3039,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Continue",
       continueDisabled: false,
-      showLifecycle: false,
-      lifecycleAction: null,
-      lifecycleLabel: ""
+      ...lifecycle
     };
   }
 
@@ -3049,9 +3048,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Continue",
       continueDisabled: false,
-      showLifecycle: false,
-      lifecycleAction: null,
-      lifecycleLabel: ""
+      ...lifecycle
     };
   }
 
@@ -3060,9 +3057,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: false,
       continueLabel: "Continue",
       continueDisabled: false,
-      showLifecycle: true,
-      lifecycleAction: "resume",
-      lifecycleLabel: "Resume"
+      ...lifecycle
     };
   }
 
@@ -3070,10 +3065,21 @@ function resolveDispatcherDetailControls(detail) {
     showContinue: false,
     continueLabel: "Continue",
     continueDisabled: false,
-    showLifecycle: true,
-    lifecycleAction: "pause",
-    lifecycleLabel: "Pause"
+    ...lifecycle
   };
+}
+
+function resolveDispatcherLifecycleControls(status, hasLiveThread) {
+  if (isTerminalDispatcherStatus(status)) {
+    return { showLifecycle: false, lifecycleAction: null, lifecycleLabel: "" };
+  }
+  if (!hasLiveThread || status === "needs_reactivation") {
+    return { showLifecycle: false, lifecycleAction: null, lifecycleLabel: "" };
+  }
+  if (status === "paused") {
+    return { showLifecycle: true, lifecycleAction: "resume", lifecycleLabel: "Resume" };
+  }
+  return { showLifecycle: true, lifecycleAction: "pause", lifecycleLabel: "Pause" };
 }
 
 function hasLiveDispatcherThread(detail) {
