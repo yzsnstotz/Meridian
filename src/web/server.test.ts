@@ -1617,6 +1617,33 @@ test("Web Interface Server GET /api/autoapprove returns 404 when thread missing 
   });
 });
 
+async function withEnv(
+  values: Record<string, string | undefined>,
+  callback: () => Promise<void>
+): Promise<void> {
+  const original = new Map<string, string | undefined>();
+  for (const key of Object.keys(values)) {
+    original.set(key, process.env[key]);
+    const nextValue = values[key];
+    if (nextValue === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = nextValue;
+    }
+  }
+  try {
+    await callback();
+  } finally {
+    for (const [key, value] of original.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 test("Web Interface Server spawn forwards auto_approve=false without injecting provider flags", async () => {
   const hubMessages: HubMessage[] = [];
   await withServer(async ({ baseUrl }) => {
@@ -1652,5 +1679,28 @@ test("Web Interface Server spawn forwards auto_approve=false without injecting p
         timestamp: new Date().toISOString()
       };
     }
+  });
+});
+
+test("startWebInterfaceServer sets meridian-web caller identity when bootstrap key is present", async () => {
+  const { startWebInterfaceServer } = await webServerModulePromise;
+  const { clearCallerIdentity, hasCallerIdentity } = await import("../interface/ipc-sender");
+
+  clearCallerIdentity();
+  await withEnv({ MERIDIAN_INTERNAL_BOOTSTRAP_KEY: "test-bootstrap-seed-web" }, async () => {
+    await startWebInterfaceServer({ enabled: false });
+    assert.equal(hasCallerIdentity(), true);
+  });
+  clearCallerIdentity();
+});
+
+test("startWebInterfaceServer throws bootstrap_key_missing when MERIDIAN_INTERNAL_BOOTSTRAP_KEY is absent", async () => {
+  const { startWebInterfaceServer } = await webServerModulePromise;
+
+  await withEnv({ MERIDIAN_INTERNAL_BOOTSTRAP_KEY: undefined }, async () => {
+    await assert.rejects(
+      () => startWebInterfaceServer({ enabled: false }),
+      /bootstrap_key_missing/
+    );
   });
 });

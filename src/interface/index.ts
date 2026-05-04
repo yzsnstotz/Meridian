@@ -16,11 +16,12 @@ import {
 } from "../types";
 import { config } from "../config";
 import { createLogger } from "../logger";
+import { deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { normalizeApprovalAction } from "../shared/approval";
 import { parseHubActionCallbackData } from "../shared/telegram-controls";
 import { authMiddleware } from "./auth";
 import { botRuntimes, syncBotCommands } from "./bot";
-import { requestHubMessage, sendHubMessage } from "./ipc-sender";
+import { requestHubMessage, sendHubMessage, setCallerIdentity } from "./ipc-sender";
 import { formatTelegramActorId, formatTelegramChatId, parseTelegramMessage } from "./parser";
 import { getHelpMessage, parseSlashCommand, type ParsedSlashCommand } from "./slash-handler";
 
@@ -1621,6 +1622,9 @@ async function startWebhookRuntimes(
 }
 
 export async function startInterface(options: StartInterfaceOptions = {}): Promise<void> {
+  const callerId = "meridian-telegram";
+  const callerKey = deriveBuiltinCallerKey(callerId);
+  setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian Telegram" });
   const runtimes = options.runtimes ?? (botRuntimes as InterfaceBotRuntime[]);
   const syncCommands = options.syncBotCommands ?? syncBotCommands;
   const webhookUrl = options.webhookUrl ?? config.WEBHOOK_URL;

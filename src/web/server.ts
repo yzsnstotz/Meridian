@@ -8,7 +8,8 @@ import path from "node:path";
 import { z } from "zod";
 
 import { config } from "../config";
-import { requestHubMessage, requestHubRunMessage } from "../interface/ipc-sender";
+import { requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
+import { deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import { cleanupStagedAttachments, stageInlineAttachments } from "../shared/attachment-transform";
@@ -1884,6 +1885,9 @@ export class WebInterfaceServer {
 }
 
 export async function startWebInterfaceServer(options: WebInterfaceServerOptions = {}): Promise<WebInterfaceServer | null> {
+  const callerId = "meridian-web";
+  const callerKey = deriveBuiltinCallerKey(callerId);
+  setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian Web" });
   const server = new WebInterfaceServer(options);
   const started = await server.start();
   return started ? server : null;

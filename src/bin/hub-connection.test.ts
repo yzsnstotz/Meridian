@@ -287,3 +287,14 @@ test("connectToHub throws when the Meridian API cannot be reached", { concurrenc
     }
   );
 });
+
+test("CLI bootstrap: deriveBuiltinCallerKey throws bootstrap_key_missing when MERIDIAN_INTERNAL_BOOTSTRAP_KEY is absent", { concurrency: false }, async () => {
+  clearCallerIdentity();
+  await withEnv({ MERIDIAN_INTERNAL_BOOTSTRAP_KEY: undefined }, async () => {
+    const { deriveBuiltinCallerKey } = await import("../shared/caller-bootstrap");
+    assert.throws(
+      () => deriveBuiltinCallerKey("meridian-cli"),
+      /bootstrap_key_missing/
+    );
+  });
+});
