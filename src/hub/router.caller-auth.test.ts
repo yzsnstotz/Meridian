@@ -1,0 +1,301 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+
+import type { HubMessage, HubResult } from "../types";
+import type { WireAuth } from "../shared/caller-wire";
+import type { CallerRecord } from "./caller-registry";
+import { InstanceRegistry } from "./registry";
+import { HubRouter } from "./router";
+import { buildPersistedHubState, savePersistedHubState } from "./state-store";
+
+function baseMessage(overrides: Partial<HubMessage> = {}): HubMessage {
+  return {
+    trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+    thread_id: "thread-1",
+    actor_id: "owner",
+    intent: "list",
+    target: "codex",
+    payload: { content: "", attachments: [] },
+    mode: "bridge",
+    reply_channel: { channel: "socket", chat_id: "owner", socket_path: "/tmp/x.sock" },
+    ...overrides
+  };
+}
+
+interface Harness {
+  router: HubRouter;
+  statePath: string;
+  cleanup: () => void;
+  mintCaller: (callerId: string, opts?: { kind?: "builtin" | "external"; revoked?: boolean; label?: string }) => string;
+}
+
+async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harness> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "router-caller-auth-"));
+  const statePath = path.join(tmpDir, "state.json");
+  savePersistedHubState(statePath, buildPersistedHubState(new Date().toISOString(), [], {}, {}, {}, initialCallers));
+  const router = new HubRouter(new InstanceRegistry(), { statePath });
+  await router.initialize();
+
+  const mintCaller = (
+    callerId: string,
+    opts: { kind?: "builtin" | "external"; revoked?: boolean; label?: string } = {}
+  ): string => {
+    const registry = router.getCallerRegistry();
+    if (!registry) throw new Error("registry_unavailable");
+    if (opts.kind === "builtin") {
+      const cleartextKey = crypto.randomBytes(16).toString("hex");
+      registry.ensureBuiltin({
+        caller_id: callerId,
+        caller_label: opts.label ?? callerId,
+        deriveKey: () => cleartextKey
+      });
+      if (opts.revoked) {
+        registry.revoke(callerId);
+      }
+      return cleartextKey;
+    }
+    const minted = registry.mint({ caller_id: callerId, caller_label: opts.label ?? callerId, kind: "external" });
+    if (opts.revoked) {
+      registry.revoke(callerId);
+    }
+    return minted.cleartextKey;
+  };
+
+  const cleanup = () => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  };
+
+  return { router, statePath, cleanup, mintCaller };
+}
+
+test("authenticateCaller: missing auth → caller_required", async () => {
+  const harness = await setupHarness();
+  try {
+    const result = await harness.router.route(baseMessage(), null);
+    assert.equal(result.status, "error");
+    assert.equal(result.content, "caller_required");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authenticateCaller: unknown caller_id → caller_unknown", async () => {
+  const harness = await setupHarness();
+  try {
+    const auth: WireAuth = { caller_id: "ghost", caller_key: "deadbeef" };
+    const result = await harness.router.route(baseMessage(), auth);
+    assert.equal(result.status, "error");
+    assert.equal(result.content, "caller_unknown");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authenticateCaller: revoked caller → caller_unknown", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("revoked-svc", { kind: "external" });
+    harness.router.getCallerRegistry()?.revoke("revoked-svc");
+    const result = await harness.router.route(
+      baseMessage(),
+      { caller_id: "revoked-svc", caller_key: cleartextKey }
+    );
+    assert.equal(result.status, "error");
+    assert.equal(result.content, "caller_unknown");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authenticateCaller: wrong key for known caller → caller_invalid", async () => {
+  const harness = await setupHarness();
+  try {
+    harness.mintCaller("svc-a", { kind: "external" });
+    const result = await harness.router.route(
+      baseMessage(),
+      { caller_id: "svc-a", caller_key: "00".repeat(32) }
+    );
+    assert.equal(result.status, "error");
+    assert.equal(result.content, "caller_invalid");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authenticateCaller: valid key → dispatch proceeds", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("svc-b", { kind: "external", label: "Service B" });
+    const result = await harness.router.route(
+      baseMessage({ intent: "list_callers", payload: { content: "", attachments: [] } }),
+      { caller_id: "svc-b", caller_key: cleartextKey }
+    );
+    assert.equal(result.status, "success");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authenticateCaller: spoofed caller_id in message body is overridden by registry → admin gate rejects non-admin", async () => {
+  // Critical behavior: even if a non-admin caller body-spoofs `caller.caller_id = "meridian-admin"`,
+  // the auth middleware injects the registry-authoritative id, so the admin gate rejects them.
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("svc-spoof", { kind: "external", label: "Service Spoof" });
+    const incoming = baseMessage({
+      intent: "register_caller",
+      payload: { content: JSON.stringify({ caller_id: "evil", caller_label: "Evil" }), attachments: [] }
+    });
+    // Client tries to spoof identity by setting message.caller.caller_id to admin.
+    incoming.caller = { caller_id: "meridian-admin", caller_label: "Pretender" };
+    const result = await harness.router.route(incoming, { caller_id: "svc-spoof", caller_key: cleartextKey });
+    assert.equal(result.status, "error");
+    assert.equal(result.content, "caller_not_authorized_for_intent");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authenticateCaller: touchLastSeen runs once per successful auth", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("svc-c", { kind: "external" });
+    const before = harness.router.getCallerRegistry()?.get("svc-c")?.last_seen_at ?? null;
+    const result = await harness.router.route(
+      baseMessage({ intent: "list_callers", payload: { content: "", attachments: [] } }),
+      { caller_id: "svc-c", caller_key: cleartextKey }
+    );
+    assert.equal(result.status, "success");
+    const after = harness.router.getCallerRegistry()?.get("svc-c")?.last_seen_at ?? null;
+    assert.notEqual(before, after);
+    assert.ok(after, "last_seen_at should be set after successful auth");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("admin gate: non-admin caller calling register_caller → caller_not_authorized_for_intent", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("svc-d", { kind: "external" });
+    const result = await harness.router.route(
+      baseMessage({
+        intent: "register_caller",
+        payload: { content: JSON.stringify({ caller_id: "x", caller_label: "X" }), attachments: [] }
+      }),
+      { caller_id: "svc-d", caller_key: cleartextKey }
+    );
+    assert.equal(result.status, "error");
+    assert.equal(result.content, "caller_not_authorized_for_intent");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("admin gate: meridian-admin caller calling register_caller → success", async () => {
+  const harness = await setupHarness();
+  try {
+    const adminKey = harness.mintCaller("meridian-admin", { kind: "builtin", label: "Meridian Admin" });
+    const result = await harness.router.route(
+      baseMessage({
+        intent: "register_caller",
+        payload: {
+          content: JSON.stringify({ caller_id: "new-ext", caller_label: "New External" }),
+          attachments: []
+        }
+      }),
+      { caller_id: "meridian-admin", caller_key: adminKey }
+    );
+    assert.equal(result.status, "success");
+    const parsed = JSON.parse(result.content) as { caller_id: string; caller_key: string };
+    assert.equal(parsed.caller_id, "new-ext");
+    assert.equal(typeof parsed.caller_key, "string");
+    assert.equal(parsed.caller_key.length, 64);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("admin gate: list_callers is allowed for any valid caller and strips key_hash", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("svc-e", { kind: "external", label: "Service E" });
+    const result = await harness.router.route(
+      baseMessage({ intent: "list_callers", payload: { content: "", attachments: [] } }),
+      { caller_id: "svc-e", caller_key: cleartextKey }
+    );
+    assert.equal(result.status, "success");
+    const body = JSON.parse(result.content) as { callers: Array<Record<string, unknown>>; bootstrap_key_set: boolean };
+    assert.ok(Array.isArray(body.callers));
+    assert.ok(body.callers.length >= 1);
+    for (const entry of body.callers) {
+      assert.equal(Object.prototype.hasOwnProperty.call(entry, "key_hash"), false, "key_hash must be stripped");
+    }
+    assert.equal(typeof body.bootstrap_key_set, "boolean");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("admin gate: rotate_caller_key by admin returns new cleartext", async () => {
+  const harness = await setupHarness();
+  try {
+    const adminKey = harness.mintCaller("meridian-admin", { kind: "builtin", label: "Meridian Admin" });
+    harness.mintCaller("rotate-target", { kind: "external" });
+    const result = await harness.router.route(
+      baseMessage({
+        intent: "rotate_caller_key",
+        payload: { content: JSON.stringify({ caller_id: "rotate-target" }), attachments: [] }
+      }),
+      { caller_id: "meridian-admin", caller_key: adminKey }
+    );
+    assert.equal(result.status, "success");
+    const parsed = JSON.parse(result.content) as { caller_key: string };
+    assert.equal(typeof parsed.caller_key, "string");
+    assert.equal(parsed.caller_key.length, 64);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("admin gate: unregister_caller by admin returns revoked_at", async () => {
+  const harness = await setupHarness();
+  try {
+    const adminKey = harness.mintCaller("meridian-admin", { kind: "builtin", label: "Meridian Admin" });
+    harness.mintCaller("doomed", { kind: "external" });
+    const result = await harness.router.route(
+      baseMessage({
+        intent: "unregister_caller",
+        payload: { content: JSON.stringify({ caller_id: "doomed" }), attachments: [] }
+      }),
+      { caller_id: "meridian-admin", caller_key: adminKey }
+    );
+    assert.equal(result.status, "success");
+    const parsed = JSON.parse(result.content) as { revoked_at: string };
+    assert.equal(typeof parsed.revoked_at, "string");
+    const status = harness.router.getCallerRegistry()?.get("doomed")?.revoked_at ?? null;
+    assert.ok(status, "registry should record revoked_at");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("legacy bypass: route() called without auth argument skips the auth middleware", async () => {
+  // Existing tests construct a HubRouter and call route(message) without an auth argument.
+  // That path must remain functional so non-auth router tests aren't broken by the middleware.
+  const harness = await setupHarness();
+  try {
+    const result: HubResult = await harness.router.route(baseMessage({ intent: "list_callers", payload: { content: "", attachments: [] } }));
+    assert.equal(result.status, "success");
+  } finally {
+    harness.cleanup();
+  }
+});

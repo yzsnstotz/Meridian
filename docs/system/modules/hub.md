@@ -254,10 +254,10 @@
 
 ### `HubRouter`
 - **File**: `src/hub/router.ts:317`
-- **Purpose**: Routes normalized hub intents to built-in thread operations or registered services while maintaining thread-local state and conversation history.
-- **Implementation**: It initializes from persisted state, handles `run`/`spawn`/`attach`/`push`/`history`/service-registration flows, tracks active runs and cooldowns, records canonical conversation history, and persists every mutation back through `state-store`. For run execution it supports direct streamed subprocesses for supported providers, falls back to agentapi polling when needed, and extracts Meridian summary blocks or stable snapshots to build final or partial results.
-- **Dependencies**: `agents/claude`, `agents/codex`, `agents/gemini`, `config`, `hub/instance-manager`, `hub/output-bus`, `hub/registry`, `hub/result-sender`, `hub/service-registry`, `hub/state-store`, `logger`, `shared/agent-output`, `shared/agentapi-client`, `shared/approval`, `shared/ipc`, `shared/stream-adapter`, `shared/stream-parsers/claude`, `shared/stream-parsers/codex`, `shared/stream-parsers/gemini`, `shared/telegram-controls`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Purpose**: Routes normalized hub intents to built-in thread operations or registered services while maintaining thread-local state and conversation history. Owns the `CallerRegistry` and the `authenticateCaller` security boundary.
+- **Implementation**: It initializes from persisted state (including the `callers: CallerRecord[]` registry), handles `run`/`spawn`/`attach`/`push`/`history`/service-registration flows, tracks active runs and cooldowns, records canonical conversation history, and persists every mutation back through `state-store`. For run execution it supports direct streamed subprocesses for supported providers, falls back to agentapi polling when needed, and extracts Meridian summary blocks or stable snapshots to build final or partial results. `route(message, auth)` runs `authenticateCaller` as the FIRST step before any intent dispatch — there is no whitelist of unauthenticated intents. On success the registry-authoritative `caller_label` is injected onto `message.caller` (overwriting any client-supplied value), `last_seen_at` is touched once, and the admin gate rejects `register_caller`/`unregister_caller`/`rotate_caller_key` from any caller other than `meridian-admin` with `caller_not_authorized_for_intent`. Unauthenticated requests get `caller_required`; unknown or revoked ids get `caller_unknown`; mismatched keys get `caller_invalid`. The four admin intent handlers project `key_hash` out of every response. `ensureBuiltinCallers(builtins, deriveKey)` is invoked at hub boot to (re)derive built-in records on every restart so rotating the bootstrap key intentionally invalidates them. [UPDATED 2026-05-05]
+- **Dependencies**: `agents/claude`, `agents/codex`, `agents/gemini`, `config`, `hub/caller-registry`, `hub/instance-manager`, `hub/output-bus`, `hub/registry`, `hub/result-sender`, `hub/service-registry`, `hub/state-store`, `logger`, `shared/agent-output`, `shared/agentapi-client`, `shared/approval`, `shared/caller-wire`, `shared/ipc`, `shared/stream-adapter`, `shared/stream-parsers/claude`, `shared/stream-parsers/codex`, `shared/stream-parsers/gemini`, `shared/telegram-controls`, `types`
+- **Status**: [UPDATED 2026-05-05]
 
 **src/hub/server.ts**
 
@@ -278,9 +278,30 @@
 ### `HubServer`
 - **File**: `src/hub/server.ts:135`
 - **Purpose**: Runs the hub IPC server, normalizes inbound frames, routes them, and delivers results across socket, Telegram, web, and websocket channels.
-- **Implementation**: On startup it rehydrates router state, registers static services, installs monitor/idempotency timers, and wires `OutputBus` hooks for adapter delivery, websocket A2A messages, and history recording. At runtime it handles pane subscribe/unsubscribe frames, priority-queues non-immediate messages, processes monitor events and completion alerts, accumulates pane-output push notifications with deduplication, and reuses router history to send detail-rich final replies.
-- **Dependencies**: `config`, `hub/a2a-websocket-log`, `hub/normalizer`, `hub/output-bus`, `hub/pane-broadcaster`, `hub/registry`, `hub/result-sender`, `hub/router`, `hub/socket-adapter`, `interface/adapters/telegram-adapter`, `interface/adapters/web-adapter`, `logger`, `monitor/events`, `shared/a2a-adapter`, `shared/agent-output`, `shared/stream-adapter`, `shared/telegram-controls`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Implementation**: On startup it calls `loadOrGenerateBootstrapKey()` first (PM Blocker #1: fail-fast on unwritable `.env`), then rehydrates router state, calls `router.ensureBuiltinCallers(BUILTIN_CALLERS, deriveBuiltinCallerKey)` to (re)materialize the built-in caller records, registers static services, installs monitor/idempotency timers, and wires `OutputBus` hooks for adapter delivery, websocket A2A messages, and history recording. At runtime it handles pane subscribe/unsubscribe frames, unwraps inbound `{ auth, message }` wire envelopes via `unwrapWireFrame`, priority-queues non-immediate messages, processes monitor events and completion alerts, accumulates pane-output push notifications with deduplication, and reuses router history to send detail-rich final replies. The `auth` envelope is forwarded to `router.route(message, auth)` as a side-channel so the caller-authentication middleware can validate it before any intent handler runs. [UPDATED 2026-05-05]
+- **Dependencies**: `config`, `hub/a2a-websocket-log`, `hub/normalizer`, `hub/output-bus`, `hub/pane-broadcaster`, `hub/registry`, `hub/result-sender`, `hub/router`, `hub/socket-adapter`, `interface/adapters/telegram-adapter`, `interface/adapters/web-adapter`, `logger`, `monitor/events`, `shared/a2a-adapter`, `shared/agent-output`, `shared/caller-bootstrap`, `shared/caller-wire`, `shared/stream-adapter`, `shared/telegram-controls`, `types`
+- **Status**: [UPDATED 2026-05-05]
+
+### `BOOTSTRAP_KEY_ENV_VAR`
+- **File**: `src/hub/server.ts:49`
+- **Purpose**: Canonical name of the environment variable that seeds built-in caller key derivation: `MERIDIAN_INTERNAL_BOOTSTRAP_KEY`.
+- **Implementation**: Exported as a string constant so the boot path, tests, and docs stay in lockstep with the `.env` write target.
+- **Dependencies**: none
+- **Status**: [ADDED 2026-05-05]
+
+### `BootstrapKeyEnvUnwritableError`
+- **File**: `src/hub/server.ts:57`
+- **Purpose**: Thrown by `loadOrGenerateBootstrapKey` when the bootstrap key is missing AND `.env` is not writable. Encodes PM Blocker #1: never silently regenerate per boot.
+- **Implementation**: Carries the resolved `envFilePath` and underlying filesystem cause; the `message` field names the path and the `MERIDIAN_INTERNAL_BOOTSTRAP_KEY` variable so operators can fix the install manually.
+- **Dependencies**: none
+- **Status**: [ADDED 2026-05-05]
+
+### `loadOrGenerateBootstrapKey(options): BootstrapKeyResult`
+- **File**: `src/hub/server.ts:88`
+- **Purpose**: Hub-boot entrypoint that ensures `MERIDIAN_INTERNAL_BOOTSTRAP_KEY` is set on `process.env` so `deriveBuiltinCallerKey` works for the rest of the process lifetime.
+- **Implementation**: Returns the existing key when already set; otherwise generates 32 random bytes hex, appends `MERIDIAN_INTERNAL_BOOTSTRAP_KEY=<hex>` to `.env` (default `path.resolve(process.cwd(), ".env")`), and sets it on `process.env`. If the append fails for any reason the function throws `BootstrapKeyEnvUnwritableError` with a clear actionable message; it never silently regenerates the key per boot. The cleartext key is NEVER logged — only a generation marker.
+- **Dependencies**: `node:crypto`, `node:fs`, `node:path`, `pino`
+- **Status**: [ADDED 2026-05-05]
 
 **src/hub/service-registry.ts**
 

@@ -1,10 +1,15 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { config, type AppConfig } from "../config";
 import { createLogger } from "../logger";
+import type { Logger } from "pino";
 import { MonitorEventSchema, type MonitorEvent } from "../monitor/events";
+import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
+import { unwrapWireFrame, type WireAuth } from "../shared/caller-wire";
 import { buildAgentErrorInlineKeyboard } from "../shared/telegram-controls";
 import type { A2AMessage } from "../shared/a2a-adapter";
 import {
@@ -39,6 +44,88 @@ interface InboundEnvelope {
   chatId?: string;
   chat_id?: string;
   event: unknown;
+}
+
+export const BOOTSTRAP_KEY_ENV_VAR = "MERIDIAN_INTERNAL_BOOTSTRAP_KEY";
+
+export interface BootstrapKeyResult {
+  key: string;
+  generated: boolean;
+  envFilePath: string;
+}
+
+export class BootstrapKeyEnvUnwritableError extends Error {
+  readonly envFilePath: string;
+  readonly cause: unknown;
+
+  constructor(envFilePath: string, cause: unknown) {
+    super(
+      `${BOOTSTRAP_KEY_ENV_VAR} missing and .env (${envFilePath}) is not writable. ` +
+        `Generate a key and add it manually as ${BOOTSTRAP_KEY_ENV_VAR}=<hex>.`
+    );
+    this.name = "BootstrapKeyEnvUnwritableError";
+    this.envFilePath = envFilePath;
+    this.cause = cause;
+  }
+}
+
+export interface LoadOrGenerateBootstrapKeyOptions {
+  envFilePath?: string;
+  env?: NodeJS.ProcessEnv;
+  logger?: Logger;
+  randomBytes?: (size: number) => Buffer;
+  appendFileSync?: (filePath: string, contents: string) => void;
+}
+
+/**
+ * Reads MERIDIAN_INTERNAL_BOOTSTRAP_KEY from process.env. If absent, generates
+ * a fresh 32-byte hex value, appends it to .env, and sets it on process.env so
+ * deriveBuiltinCallerKey works in the same process.
+ *
+ * PM Blocker #1: when the key is missing AND .env is not writable, throw
+ * BootstrapKeyEnvUnwritableError with a clear message naming the path and
+ * variable. NEVER silently regenerate per boot.
+ */
+export function loadOrGenerateBootstrapKey(
+  options: LoadOrGenerateBootstrapKeyOptions = {}
+): BootstrapKeyResult {
+  const env = options.env ?? process.env;
+  const envFilePath = options.envFilePath ?? path.resolve(process.cwd(), ".env");
+  const existing = env[BOOTSTRAP_KEY_ENV_VAR];
+  if (typeof existing === "string" && existing.trim().length > 0) {
+    return { key: existing.trim(), generated: false, envFilePath };
+  }
+
+  const randomBytes = options.randomBytes ?? ((size: number) => crypto.randomBytes(size));
+  const key = randomBytes(32).toString("hex");
+
+  const appendFileSync =
+    options.appendFileSync ??
+    ((filePath: string, contents: string) => {
+      fs.appendFileSync(filePath, contents, "utf8");
+    });
+
+  try {
+    appendFileSync(envFilePath, `\n${BOOTSTRAP_KEY_ENV_VAR}=${key}\n`);
+  } catch (error) {
+    throw new BootstrapKeyEnvUnwritableError(envFilePath, error);
+  }
+
+  env[BOOTSTRAP_KEY_ENV_VAR] = key;
+  if (env !== process.env) {
+    process.env[BOOTSTRAP_KEY_ENV_VAR] = key;
+  }
+
+  options.logger?.warn(
+    {
+      trace_id: null,
+      thread_id: null,
+      env_file: envFilePath
+    },
+    `${BOOTSTRAP_KEY_ENV_VAR} generated and appended to .env (one-time)`
+  );
+
+  return { key, generated: true, envFilePath };
 }
 
 export interface HubServerOptions {
@@ -179,8 +266,11 @@ export class HubServer {
       return;
     }
 
+    loadOrGenerateBootstrapKey({ logger: this.log });
+
     await this.removeStaleSocket();
     await this.router.initialize();
+    this.router.ensureBuiltinCallers(BUILTIN_CALLERS, deriveBuiltinCallerKey);
     for (const endpoint of this.staticServiceEndpoints) {
       this.router.registerServiceEndpoint(endpoint);
     }
@@ -423,7 +513,15 @@ export class HubServer {
         return null;
       }
 
-      message = this.normalizeIncomingMessage(parsed);
+      let auth: WireAuth | null = null;
+      let messagePayload: unknown = parsed;
+      const envelope = unwrapWireFrame(parsed);
+      if (envelope) {
+        auth = envelope.auth;
+        messagePayload = envelope.message;
+      }
+
+      message = this.normalizeIncomingMessage(messagePayload);
       this.injectSpanId(message);
 
       const cachedResult = this.checkIdempotency(message);
@@ -432,7 +530,7 @@ export class HubServer {
       }
 
       this.outputBusThreadByTrace.set(message.trace_id, message.thread_id);
-      const result = await this.router.route(message);
+      const result = await this.router.route(message, auth);
       const validatedResult = HubResultSchema.parse(result);
       this.cacheIdempotencyResult(message, validatedResult);
       if (!message.suppress_reply) {
