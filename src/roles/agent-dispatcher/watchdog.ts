@@ -227,11 +227,22 @@ export class ReconciliationWatchdog {
       try {
         const observation = await queryHubThreadObservation(this.hubClient, state.dispatcher.thread_id);
         if (observation.kind === "running") {
-          if (!isStaleSyntheticDispatcherWorker(state, Date.now())) {
+          // Validator orchestration is server-driven via the continueDispatcher
+          // API, not by the hub session itself. A hub thread that reports
+          // "running" can simply be alive-but-idle after emitting a final
+          // reply. If a worker is sitting in awaiting_validation with no
+          // validator spawned (or fix_requested with the retained worker
+          // thread cleared for relaunch), the hub will not move it forward —
+          // only a continueDispatcher tick will. Fall through to fire the
+          // stall callback in those cases instead of returning.
+          const pendingValidationOrchestration = hasPendingValidatorOrchestration(state);
+          if (!pendingValidationOrchestration && !isStaleSyntheticDispatcherWorker(state, Date.now())) {
             return;
           }
 
-          dispatcherStatus = "running_stale";
+          dispatcherStatus = pendingValidationOrchestration
+            ? "running_validation_pending"
+            : "running_stale";
         } else {
           dispatcherStatus = observation.rawStatus ?? observation.kind;
         }
@@ -281,6 +292,24 @@ function resolveBlockingRunningWorkers(
     .filter(([, worker]) => worker.status === "running")
     .filter(([workerId, worker]) => workerId !== continueWorkerId || worker.thread_id.trim().length > 0)
     .map(([workerId]) => workerId);
+}
+
+function hasPendingValidatorOrchestration(state: DispatchThreadStateV2): boolean {
+  return Object.entries(state.workers).some(([workerId, worker]) => {
+    if (workerId === DISPATCHER_WORKER_ID) {
+      return false;
+    }
+
+    if (worker.status === "awaiting_validation") {
+      return !worker.validation?.validator_thread_id?.trim();
+    }
+
+    if (worker.status === "fix_requested") {
+      return !worker.thread_id?.trim();
+    }
+
+    return false;
+  });
 }
 
 function isStaleSyntheticDispatcherWorker(state: DispatchThreadStateV2, nowMs: number): boolean {
