@@ -252,8 +252,8 @@ describe("dispatch-start parsing helpers", () => {
     const legend = parseDispatchPlanModelLegend([
       "| Model | Code | Provider | Model ID | Reasoning Effort | Assign When |",
       "|-------|------|----------|----------|-----------------|-------------|",
-      "| Codex | `CODEX` | `codex` | `gpt-5.4` | `high` | Well-specified |
-      "| Sonnet | `SONNET` | `claude` | `claude-sonnet-4-6` | `medium` | Moderate |
+      "| Codex | `CODEX` | `codex` | `gpt-5.4` | `high` | Well-specified |",
+      "| Sonnet | `SONNET` | `claude` | `claude-sonnet-4-6` | `medium` | Moderate |",
       ""
     ].join("\n"));
 
