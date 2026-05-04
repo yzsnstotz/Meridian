@@ -72,9 +72,9 @@ Global flags: `--help` prints root or per-command usage, and `--json` is accepte
 ### `defaultCliDependencies`
 - **File**: `src/bin/meridian-cli.ts:63`
 - **Purpose**: Provides the production dependency bundle used by the standalone CLI entrypoint.
-- **Implementation**: The constant wires in the exported Meridian API helpers, local provider model catalog lookup, the real clock, and direct stdout/stderr writers. The local `main()` function passes this bundle into `runCli()` when the file is executed as a script.
-- **Dependencies**: `bin/hub-connection`
-- **Status**: `[UPDATED 2026-04-16T12:30:00+09:00]`
+- **Implementation**: The constant wires in the exported Meridian API helpers, local provider model catalog lookup, the real clock, and direct stdout/stderr writers. The local `main()` function passes this bundle into `runCli()` when the file is executed as a script. [UPDATED 2026-05-05] `main()` now derives the `meridian-cli` caller key via `deriveBuiltinCallerKey` (from `shared/caller-bootstrap`) and calls `hub-connection`'s `setCallerIdentity` before invoking `runCli()`, so all HTTP requests carry the correct caller identity headers. Throws `bootstrap_key_missing` if `MERIDIAN_INTERNAL_BOOTSTRAP_KEY` is absent.
+- **Dependencies**: `bin/hub-connection`, `shared/caller-bootstrap`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `runCli(args: string[], deps: CliDependencies = defaultCliDependencies): Promise<number>`
 - **File**: `src/bin/meridian-cli.ts:642`

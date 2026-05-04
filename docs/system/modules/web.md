@@ -91,9 +91,9 @@ All API routes return JSON. Hub-backed routes construct `reply_channel.channel =
 ### `startWebInterfaceServer(options): Promise<WebInterfaceServer | null>`
 - **File**: `src/web/server.ts:1654`
 - **Purpose**: Starts the configured web server and returns the live instance when startup is enabled.
-- **Implementation**: The helper constructs `WebInterfaceServer`, calls `start()`, and converts the class-level boolean startup result into either the running server or `null`. The module-level CLI entrypoint below it stores that instance for `SIGINT` / `SIGTERM` shutdown.
-- **Dependencies**: `config`, `interface/ipc-sender`, `logger`, `log-retention`, `types`
-- **Status**: `[ADDED 2026-04-08T14:50:33+09:00]`
+- **Implementation**: The helper constructs `WebInterfaceServer`, calls `start()`, and converts the class-level boolean startup result into either the running server or `null`. The module-level CLI entrypoint below it stores that instance for `SIGINT` / `SIGTERM` shutdown. [UPDATED 2026-05-05] At process boot, before constructing the server, derives the `meridian-web` caller key via `deriveBuiltinCallerKey` (from `shared/caller-bootstrap`) and calls `setCallerIdentity` on the default IPC sender. Throws `bootstrap_key_missing` at boot if `MERIDIAN_INTERNAL_BOOTSTRAP_KEY` is absent.
+- **Dependencies**: `config`, `interface/ipc-sender`, `shared/caller-bootstrap`, `logger`, `log-retention`, `types`
+- **Status**: `[UPDATED 2026-05-05]`
 
 **src/web/public/app.js**
 

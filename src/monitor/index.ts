@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import { config } from "../config";
-import { sendIpcRequest } from "../shared/ipc";
-import { AgentInstanceSchema, type AgentInstance, type HubMessage, type HubResult } from "../types";
+import { requestHubMessage, setCallerIdentity } from "../interface/ipc-sender";
+import { deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
+import { AgentInstanceSchema, type AgentInstance, type HubMessage } from "../types";
 import { MonitorIpcReporter } from "./ipc-reporter";
 import { getMonitorLogger } from "./logger";
 import { MonitorManager } from "./monitor";
@@ -44,10 +45,7 @@ function buildListRequestMessage(): HubMessage {
 }
 
 async function fetchInstancesFromHub(): Promise<AgentInstance[]> {
-  const response = await sendIpcRequest<HubMessage, HubResult>(
-    config.HUB_SOCKET_PATH,
-    buildListRequestMessage()
-  );
+  const response = await requestHubMessage(buildListRequestMessage());
 
   if (response.status !== "success") {
     throw new Error(`Hub list request failed: ${response.content}`);
@@ -98,6 +96,9 @@ function syncMonitorRegistrations(
 }
 
 export async function startMonitorService(): Promise<void> {
+  const callerId = "meridian-monitor";
+  const callerKey = deriveBuiltinCallerKey(callerId);
+  setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian Monitor" });
   const manager = createMonitorManager();
   const keepAlive = setInterval(() => undefined, 60_000);
   const knownThreads = new Map<string, AgentInstance>();

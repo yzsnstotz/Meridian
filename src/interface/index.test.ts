@@ -4,6 +4,7 @@ import { test } from "node:test";
 process.env.MERIDIAN_DISABLE_INTERFACE_AUTOSTART = "true";
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
 process.env.ALLOWED_USER_IDS ??= "123456789";
+process.env.MERIDIAN_INTERNAL_BOOTSTRAP_KEY ??= "test-bootstrap-seed";
 
 const interfaceModulePromise = import("./index");
 
@@ -192,4 +193,64 @@ test("toHubMessage encodes /autoapprove as set_auto_approve with boolean content
   assert.equal(hubMessage.intent, "set_auto_approve");
   assert.equal(hubMessage.target, "active");
   assert.equal(hubMessage.payload.content, "true");
+});
+
+async function withEnv(
+  values: Record<string, string | undefined>,
+  callback: () => Promise<void>
+): Promise<void> {
+  const original = new Map<string, string | undefined>();
+  for (const key of Object.keys(values)) {
+    original.set(key, process.env[key]);
+    const nextValue = values[key];
+    if (nextValue === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = nextValue;
+    }
+  }
+  try {
+    await callback();
+  } finally {
+    for (const [key, value] of original.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+test("startInterface sets meridian-telegram caller identity when bootstrap key is present", async () => {
+  const { startInterface } = await interfaceModulePromise;
+  const { clearCallerIdentity, hasCallerIdentity } = await import("./ipc-sender");
+  const fake = createRuntime();
+
+  clearCallerIdentity();
+  await withEnv({ MERIDIAN_INTERNAL_BOOTSTRAP_KEY: "test-seed-telegram" }, async () => {
+    await startInterface({
+      runtimes: [fake.runtime],
+      syncBotCommands: async () => undefined,
+      webhookUrl: "",
+      logger: createLogger()
+    });
+    assert.equal(hasCallerIdentity(), true);
+  });
+  clearCallerIdentity();
+});
+
+test("startInterface throws bootstrap_key_missing when MERIDIAN_INTERNAL_BOOTSTRAP_KEY is absent", async () => {
+  const { startInterface } = await interfaceModulePromise;
+
+  await withEnv({ MERIDIAN_INTERNAL_BOOTSTRAP_KEY: undefined }, async () => {
+    await assert.rejects(
+      () => startInterface({
+        runtimes: [],
+        syncBotCommands: async () => undefined,
+        webhookUrl: ""
+      }),
+      /bootstrap_key_missing/
+    );
+  });
 });

@@ -175,9 +175,9 @@ Free text without a slash is treated as `run` intent. When a Telegram message re
 ### `startInterface(options: StartInterfaceOptions = {}): Promise<void>`
 - **File**: `src/interface/index.ts:1600`
 - **Purpose**: Starts the Telegram interface by syncing commands and then choosing long polling or webhook mode for the configured runtimes.
-- **Implementation**: It resolves defaults from config, allows callers to inject runtimes, logging, server construction, and webhook handler factories, then syncs bot commands before starting either polling or a webhook multiplexer. The surrounding module wires auth middleware, message parsing, slash handling, picker callbacks, and shutdown hooks up front, so `startInterface()` only has to activate transport.
-- **Dependencies**: `config`, `interface/auth`, `interface/bot`, `interface/ipc-sender`, `interface/parser`, `interface/slash-handler`
-- **Status**: `[ADDED 2026-04-08T14:23:07+09:00]`
+- **Implementation**: It resolves defaults from config, allows callers to inject runtimes, logging, server construction, and webhook handler factories, then syncs bot commands before starting either polling or a webhook multiplexer. The surrounding module wires auth middleware, message parsing, slash handling, picker callbacks, and shutdown hooks up front, so `startInterface()` only has to activate transport. [UPDATED 2026-05-05] At boot, derives the single shared `meridian-telegram` caller key via `deriveBuiltinCallerKey` and calls `setCallerIdentity` on the default IPC sender (single shared id per PM Blocker #3 — no per-bot ids). Throws `bootstrap_key_missing` if `MERIDIAN_INTERNAL_BOOTSTRAP_KEY` is absent.
+- **Dependencies**: `config`, `interface/auth`, `interface/bot`, `interface/ipc-sender`, `shared/caller-bootstrap`, `interface/parser`, `interface/slash-handler`
+- **Status**: `[UPDATED 2026-05-05]`
 
 **src/interface/ipc-sender.ts**
 

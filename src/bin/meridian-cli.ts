@@ -2,6 +2,7 @@
 
 import path from "node:path";
 
+import { deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { ProviderModelCatalog as SharedProviderModelCatalog, type ProviderModelCatalogResult } from "../shared/model-catalog";
 import {
   AgentTypeSchema,
@@ -12,7 +13,7 @@ import {
   type HubResult,
   type ReasoningEffort
 } from "../types";
-import { connectToHub, hubHttpRequest, type HubConnection, type HubHttpResponse } from "./hub-connection";
+import { connectToHub, hubHttpRequest, setCallerIdentity, type HubConnection, type HubHttpResponse } from "./hub-connection";
 
 const EXIT_SUCCESS = 0;
 const EXIT_ERROR = 1;
@@ -716,6 +717,9 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
 
 async function main(): Promise<void> {
   try {
+    const callerId = "meridian-cli";
+    const callerKey = deriveBuiltinCallerKey(callerId);
+    setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian CLI" });
     const exitCode = await runCli(process.argv.slice(2));
     process.exit(exitCode);
   } catch (error) {

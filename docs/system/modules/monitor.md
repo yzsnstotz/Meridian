@@ -58,9 +58,9 @@
 ### `startMonitorService(): Promise<void>`
 - **File**: `src/monitor/index.ts:100`
 - **Purpose**: Starts the background process that keeps monitor registrations synchronized with the hub.
-- **Implementation**: The function instantiates a manager, polls the hub over IPC for the active `AgentInstance` list, and registers, refreshes, or unregisters per-thread monitor tasks as socket paths, PIDs, and statuses change. It also installs a keepalive timer, logs startup and sync failures, and shuts the manager down cleanly on `SIGINT` or `SIGTERM`.
-- **Dependencies**: `config`, `shared/ipc`, `types`, `monitor/ipc-reporter`, `monitor/logger`, `monitor/monitor`
-- **Status**: `[ADDED 2026-04-08T14:44:32+09:00]`
+- **Implementation**: The function instantiates a manager, polls the hub over IPC for the active `AgentInstance` list, and registers, refreshes, or unregisters per-thread monitor tasks as socket paths, PIDs, and statuses change. It also installs a keepalive timer, logs startup and sync failures, and shuts the manager down cleanly on `SIGINT` or `SIGTERM`. [UPDATED 2026-05-05] At boot, derives the `meridian-monitor` caller key via `deriveBuiltinCallerKey` and calls `setCallerIdentity` on the default IPC sender before any hub communication. Hub list requests now go through `requestHubMessage` (interface/ipc-sender) to include the auth envelope; raw `sendIpcRequest` is no longer used for hub messages.
+- **Dependencies**: `config`, `interface/ipc-sender`, `shared/caller-bootstrap`, `types`, `monitor/ipc-reporter`, `monitor/logger`, `monitor/monitor`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `MonitorIpcReporterOptions`
 - **File**: `src/monitor/ipc-reporter.ts:6`
