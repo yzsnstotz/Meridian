@@ -57,6 +57,44 @@ describe("config", () => {
 
     expect(config.HUB_SOCKET_PATH).toBe("/tmp/from-process-env.sock");
   });
+
+  it("defaults STATE_FILE_PATH to a persistent XDG state location and does not warn", async () => {
+    const directory = await createTempDirectory();
+    const xdgStateHome = path.join(directory, "xdg-state");
+
+    delete process.env.STATE_FILE_PATH;
+    process.env.XDG_STATE_HOME = xdgStateHome;
+    process.chdir(directory);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const config = await import("./config");
+      expect(config.STATE_FILE_PATH).toBe(path.join(xdgStateHome, "meridian-roles", "state.json"));
+      expect(config.DEFAULT_STATE_FILE_PATH).toBe(config.STATE_FILE_PATH);
+      expect(config.IS_EPHEMERAL_STATE_FILE_PATH).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns when STATE_FILE_PATH resolves to an ephemeral filesystem", async () => {
+    const directory = await createTempDirectory();
+
+    process.env.STATE_FILE_PATH = "/tmp/meridian-roles/state.json";
+    process.chdir(directory);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const config = await import("./config");
+      expect(config.STATE_FILE_PATH).toBe("/tmp/meridian-roles/state.json");
+      expect(config.IS_EPHEMERAL_STATE_FILE_PATH).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain("ephemeral filesystem");
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 async function createTempDirectory(): Promise<string> {

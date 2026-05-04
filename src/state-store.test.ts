@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildSystemPromptFromConfig, materializeDispatcherSystemPrompt } from "./roles/agent-dispatcher/prompt-builder";
 import type { AppState } from "./types";
-import { StateStore, isStartupRehydratableRoleStatus } from "./state-store";
+import { LEGACY_EPHEMERAL_STATE_FILE_PATH, StateStore, isStartupRehydratableRoleStatus } from "./state-store";
 
 const sampleState: AppState = {
   roles: [
@@ -53,7 +53,7 @@ describe("StateStore", () => {
 
   it("returns null when the state file does not exist", async () => {
     const directory = await createTempDirectory();
-    const store = new StateStore(path.join(directory, "missing", "state.json"));
+    const store = new StateStore(path.join(directory, "missing", "state.json"), undefined, null);
 
     await expect(store.load()).resolves.toBeNull();
   });
@@ -259,6 +259,77 @@ describe("StateStore", () => {
     expect(tempFilePath).not.toBe("");
     await expect(store.save(sampleState)).rejects.toThrow('Set STATE_FILE_PATH to a writable absolute path');
     await expect(fs.access(tempFilePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("migrates state from the legacy ephemeral path when the persistent file is missing", async () => {
+    const directory = await createTempDirectory();
+    const persistentStatePath = path.join(directory, "state.json");
+    const legacyPayload = `${JSON.stringify(sampleState, null, 2)}\n`;
+    const renames: Array<{ from: string; to: string }> = [];
+    const realRename = fs.rename.bind(fs);
+
+    const store = new StateStore(persistentStatePath, {
+      mkdir: fs.mkdir.bind(fs),
+      writeFile: fs.writeFile.bind(fs),
+      rename: async (from, to) => {
+        const fromStr = String(from);
+        const toStr = String(to);
+        renames.push({ from: fromStr, to: toStr });
+        if (fromStr === LEGACY_EPHEMERAL_STATE_FILE_PATH) {
+          // Avoid touching the real /tmp file during tests.
+          return;
+        }
+        await realRename(from, to);
+      },
+      unlink: fs.unlink.bind(fs),
+      readFile: (async (filePath: Parameters<typeof fs.readFile>[0], encoding: Parameters<typeof fs.readFile>[1]) => {
+        const fp = String(filePath);
+        if (fp === persistentStatePath) {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        if (fp === LEGACY_EPHEMERAL_STATE_FILE_PATH) {
+          return legacyPayload;
+        }
+        return fs.readFile(filePath, encoding);
+      }) as typeof fs.readFile
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await expect(store.load()).resolves.toEqual(sampleState);
+      await expect(fs.readFile(persistentStatePath, "utf8")).resolves.toContain('"dispatcher-1"');
+      expect(
+        renames.some(
+          ({ from, to }) =>
+            from === LEGACY_EPHEMERAL_STATE_FILE_PATH && to.startsWith(`${LEGACY_EPHEMERAL_STATE_FILE_PATH}.migrated-`)
+        )
+      ).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain("Migrated 1 role(s) from legacy ephemeral state file");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not invoke the legacy migration when STATE_FILE_PATH is the legacy path", async () => {
+    let legacyReadAttempts = 0;
+    const store = new StateStore(LEGACY_EPHEMERAL_STATE_FILE_PATH, {
+      mkdir: fs.mkdir.bind(fs),
+      writeFile: fs.writeFile.bind(fs),
+      rename: fs.rename.bind(fs),
+      unlink: fs.unlink.bind(fs),
+      readFile: (async (filePath: Parameters<typeof fs.readFile>[0]) => {
+        if (String(filePath) === LEGACY_EPHEMERAL_STATE_FILE_PATH) {
+          legacyReadAttempts += 1;
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        throw Object.assign(new Error("unexpected read"), { code: "ENOENT" });
+      }) as typeof fs.readFile
+    });
+
+    await expect(store.load()).resolves.toBeNull();
+    expect(legacyReadAttempts).toBe(1);
   });
 });
 

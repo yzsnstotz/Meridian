@@ -1,12 +1,19 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
-import { STATE_FILE_PATH } from "./config";
+import { DEFAULT_STATE_FILE_PATH, STATE_FILE_PATH } from "./config";
 import { normalizePersistedAppState } from "./roles/agent-dispatcher/config-normalization";
 import { AppStateSchema, type AppState } from "./types";
 
 type FileSystem = Pick<typeof fs, "mkdir" | "writeFile" | "rename" | "unlink" | "readFile">;
-const WRITABLE_STATE_FILE_EXAMPLE = "/tmp/meridian-roles/state.json";
+const WRITABLE_STATE_FILE_EXAMPLE = DEFAULT_STATE_FILE_PATH;
+
+// Earlier releases shipped /tmp/meridian-roles/state.json as the writable
+// example and as the path baked into local .env files. macOS purges /tmp on
+// reboot, so any operator upgrading to a persistent STATE_FILE_PATH would
+// otherwise see their registered roles vanish on the next service restart.
+// load() transparently migrates this file forward exactly once.
+export const LEGACY_EPHEMERAL_STATE_FILE_PATH = "/tmp/meridian-roles/state.json";
 export const ACTIVE_ROLE_STATUS = "active";
 export const PAUSED_ROLE_STATUS = "paused";
 export const NEEDS_REACTIVATION_ROLE_STATUS = "needs_reactivation";
@@ -42,7 +49,8 @@ export function isTerminalAgentDispatcherRoleStatus(status: string): boolean {
 export class StateStore {
   constructor(
     private readonly filePath = STATE_FILE_PATH,
-    private readonly fileSystem: FileSystem = fs
+    private readonly fileSystem: FileSystem = fs,
+    private readonly legacyEphemeralPath: string | null = LEGACY_EPHEMERAL_STATE_FILE_PATH
   ) {}
 
   async save(state: AppState): Promise<void> {
@@ -78,11 +86,51 @@ export class StateStore {
       return normalizePersistedAppState(AppStateSchema.parse(JSON.parse(raw)));
     } catch (error) {
       if (isMissingFileError(error)) {
-        return null;
+        return await this.loadAndMigrateFromLegacyPath();
       }
 
       throw error;
     }
+  }
+
+  private async loadAndMigrateFromLegacyPath(): Promise<AppState | null> {
+    const legacyPath = this.legacyEphemeralPath;
+    if (legacyPath === null) {
+      return null;
+    }
+    if (path.resolve(this.filePath) === path.resolve(legacyPath)) {
+      return null;
+    }
+
+    let raw: string;
+    try {
+      raw = await this.fileSystem.readFile(legacyPath, "utf8");
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return null;
+      }
+      throw error;
+    }
+
+    const state = normalizePersistedAppState(AppStateSchema.parse(JSON.parse(raw)));
+    await this.save(state);
+
+    const archivedLegacyPath = `${legacyPath}.migrated-${Date.now()}`;
+    try {
+      await this.fileSystem.rename(legacyPath, archivedLegacyPath);
+    } catch {
+      // Best-effort archival — leaving the legacy file in place is harmless
+      // because the next load reads from this.filePath first and only falls
+      // through to the legacy reader when the persistent file is missing.
+    }
+
+    console.warn(
+      `[meridian-roles] Migrated ${state.roles.length} role(s) from legacy ephemeral state file ` +
+        `"${legacyPath}" to "${this.filePath}". ` +
+        `Original archived at "${archivedLegacyPath}".`
+    );
+
+    return state;
   }
 }
 

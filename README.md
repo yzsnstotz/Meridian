@@ -27,10 +27,10 @@ HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
 GUI_PORT=7701
 GUI_LISTEN_HOST=127.0.0.1
-STATE_FILE_PATH=/tmp/meridian-roles/state.json
+# STATE_FILE_PATH defaults to ${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json
 ```
 
-The checked-in `.env.example` already uses a writable `/tmp/meridian-roles/state.json` path for local development and CI. If `STATE_FILE_PATH` is left unset entirely, the service code falls back to `/var/lib/meridian-roles/state.json` for managed deployments.
+If `STATE_FILE_PATH` is left unset, the service writes to `${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json`, which persists across reboot. Do **not** point `STATE_FILE_PATH` at `/tmp` or `/var/tmp` on macOS — those directories are wiped on restart and the registry of registered scheduler/dispatcher roles will silently disappear. Managed deployments may override to `/var/lib/meridian-roles/state.json`.
 
 The service boot path is `src/index.ts`. Startup does three things:
 
@@ -55,7 +55,7 @@ HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
 GUI_PORT=7701
 GUI_LISTEN_HOST=127.0.0.1
-STATE_FILE_PATH=/tmp/meridian-roles/state.json
+# STATE_FILE_PATH defaults to ${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json
 ```
 
 Once the service is up, Meridian sees it as:

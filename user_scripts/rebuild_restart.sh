@@ -13,7 +13,6 @@ GUI_LISTEN_HOST="${GUI_LISTEN_HOST:-0.0.0.0}"
 ROLES_SOCKET_PATH="${ROLES_SOCKET_PATH:-/tmp/meridian-roles.sock}"
 
 mkdir -p "$LOG_DIR"
-mkdir -p "/tmp/meridian-roles"
 
 cd "$ROOT_DIR"
 

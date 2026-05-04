@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 // meridian-roles runtime configuration
@@ -8,13 +9,33 @@ const ENV_FILENAMES = [".env", ".env.local", ".meridian_n02/.env"];
 
 loadEnvFiles();
 
+// State files placed under macOS /tmp survive only until the next reboot, so a
+// /tmp default silently dropped registered scheduler/dispatcher roles after
+// each restart. Default to an XDG_STATE_HOME-rooted path (which honors the env
+// var when present and falls back to the standard user-level directory) so
+// fresh checkouts persist by default.
+export const DEFAULT_STATE_FILE_PATH = path.join(
+  resolveXdgStateHome(),
+  "meridian-roles",
+  "state.json"
+);
+
 export const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH ?? "/tmp/hub-socks/hub-core.sock";
 export const ROLES_SOCKET_PATH = process.env.ROLES_SOCKET_PATH ?? "/tmp/meridian-roles.sock";
 export const GUI_PORT = Number(process.env.GUI_PORT ?? 7701);
 export const GUI_LISTEN_HOST = normalizeOptionalEnvValue(process.env.GUI_LISTEN_HOST);
-export const STATE_FILE_PATH = process.env.STATE_FILE_PATH ?? "/var/lib/meridian-roles/state.json";
+export const STATE_FILE_PATH = process.env.STATE_FILE_PATH ?? DEFAULT_STATE_FILE_PATH;
 export const ROLES_SERVICE_ID = "service:meridian-roles";
 export const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 2 * 60 * 1000);
+
+export const IS_EPHEMERAL_STATE_FILE_PATH = isEphemeralFilesystemPath(STATE_FILE_PATH);
+if (IS_EPHEMERAL_STATE_FILE_PATH) {
+  console.warn(
+    `[meridian-roles] STATE_FILE_PATH is on an ephemeral filesystem (${STATE_FILE_PATH}); ` +
+      `registered scheduler/dispatcher roles will be lost on reboot. Point STATE_FILE_PATH at a ` +
+      `persistent path such as "${DEFAULT_STATE_FILE_PATH}".`
+  );
+}
 
 // Phase A6 kill-switch — when true, narrative-regex heuristics fall back when
 // the structured MeridianStatusMarker is absent or rejected on the worker and
@@ -89,4 +110,17 @@ function normalizeEnvValue(rawValue: string): string {
 function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function resolveXdgStateHome(): string {
+  const explicit = process.env.XDG_STATE_HOME?.trim();
+  if (explicit && path.isAbsolute(explicit)) {
+    return explicit;
+  }
+  return path.join(homedir(), ".local", "state");
+}
+
+function isEphemeralFilesystemPath(filePath: string): boolean {
+  const normalized = path.resolve(filePath);
+  return /^\/(?:private\/)?(?:tmp|var\/tmp)(?:\/|$)/.test(normalized);
 }
