@@ -31,6 +31,10 @@ import {
   materializeDispatcherSystemPrompt
 } from "../roles/agent-dispatcher/prompt-builder";
 import {
+  normalizeReasoningEffort,
+  parseDispatchModelCode
+} from "../roles/agent-dispatcher/model-routing";
+import {
   startPmResolver as startPmResolverDefault,
   type PmResolverRequest,
   type PmResolverResult
@@ -281,6 +285,7 @@ export interface DispatchWorkerDetail {
   task: string | null;
   model: string | null;
   applied_model: string | null;
+  applied_reasoning_effort: string | null;
   worker_thread_id: string;
   trace_id: string | null;
   command: DispatchMessageDetail | null;
@@ -370,6 +375,7 @@ export interface DispatchPlanData {
 export type DispatchPlanModelLegend = Record<string, {
   provider: string | null;
   model_id: string | null;
+  reasoning_effort: string | null;
 }>;
 
 export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
@@ -3083,6 +3089,11 @@ function buildDispatchWorkerDetail(
     dispatchPlanRow?.model ?? null,
     modelLegend
   );
+  const appliedReasoningEffort = resolveAppliedReasoningEffortForWorker(
+    worker,
+    dispatchPlanRow?.model ?? null,
+    modelLegend
+  );
   const status = resolveDispatchWorkerDetailStatus(worker, dispatchPlanRow);
 
   return {
@@ -3093,6 +3104,7 @@ function buildDispatchWorkerDetail(
     task: dispatchPlanRow?.task ?? null,
     model: dispatchPlanRow?.model ?? null,
     applied_model: appliedModel,
+    applied_reasoning_effort: appliedReasoningEffort,
     worker_thread_id: worker?.thread_id ?? dispatchPlanRow?.thread_id ?? "",
     trace_id: workerHubResult?.trace_id ?? worker?.trace_id ?? null,
     command: commandFallback
@@ -3133,6 +3145,19 @@ function resolveAppliedModelForWorker(
   }
 
   return resolveAppliedModel(modelCode, modelLegend);
+}
+
+function resolveAppliedReasoningEffortForWorker(
+  worker: DispatchWorkerState | null,
+  modelCode: string | null,
+  modelLegend: DispatchPlanModelLegend
+): string | null {
+  const overriddenEffort = worker?.applied_reasoning_effort?.trim();
+  if (overriddenEffort && overriddenEffort.length > 0) {
+    return overriddenEffort;
+  }
+
+  return resolveAppliedReasoningEffort(modelCode, modelLegend);
 }
 
 function resolveDispatchWorkerDetailStatus(
@@ -3501,7 +3526,10 @@ function parseDispatchPlanModelLegend(markdown: string): DispatchPlanModelLegend
 
       modelLegend[code] = {
         provider: columnIndex.provider === -1 ? null : readOptionalTableCell(rowCells[columnIndex.provider]),
-        model_id: readOptionalTableCell(rowCells[columnIndex.model_id])
+        model_id: readOptionalTableCell(rowCells[columnIndex.model_id]),
+        reasoning_effort: columnIndex.reasoning_effort === -1
+          ? null
+          : normalizeReasoningEffort(readOptionalTableCell(rowCells[columnIndex.reasoning_effort]) ?? undefined) ?? null
       };
     }
 
@@ -3549,6 +3577,7 @@ function indexDispatchModelLegendColumns(headerCells: string[]): {
   code: number;
   provider: number;
   model_id: number;
+  reasoning_effort: number;
 } | null {
   const normalizedHeaders = headerCells.map(normalizeTableHeader);
   const code = normalizedHeaders.indexOf("code");
@@ -3561,7 +3590,8 @@ function indexDispatchModelLegendColumns(headerCells: string[]): {
   return {
     code,
     provider: normalizedHeaders.indexOf("provider"),
-    model_id: modelId
+    model_id: modelId,
+    reasoning_effort: normalizedHeaders.indexOf("reasoning_effort")
   };
 }
 
@@ -3570,13 +3600,34 @@ function resolveAppliedModel(modelCode: string | null, modelLegend: DispatchPlan
     return null;
   }
 
-  const resolved = modelLegend[modelCode]?.model_id;
+  const parsedModel = parseDispatchModelCode(modelCode);
+  const normalizedModelCode = (parsedModel?.modelCode ?? modelCode).trim();
+  if (!normalizedModelCode) {
+    return null;
+  }
+
+  const resolved = modelLegend[normalizedModelCode]?.model_id;
   if (typeof resolved === "string" && resolved.trim().length > 0) {
     return resolved.trim();
   }
 
   // Fall back to the raw model code when the legend has no mapping.
-  return modelCode.trim();
+  return normalizedModelCode;
+}
+
+function resolveAppliedReasoningEffort(modelCode: string | null, modelLegend: DispatchPlanModelLegend): string | null {
+  const parsedModel = parseDispatchModelCode(modelCode ?? undefined);
+  if (parsedModel?.reasoningEffort) {
+    return parsedModel.reasoningEffort;
+  }
+
+  const normalizedModelCode = (parsedModel?.modelCode ?? (modelCode ?? "").trim());
+  if (!normalizedModelCode) {
+    return null;
+  }
+
+  const legendEffort = modelLegend[normalizedModelCode]?.reasoning_effort;
+  return legendEffort ? normalizeReasoningEffort(legendEffort) ?? null : null;
 }
 
 function readOptionalTableCell(value: string | undefined): string | null {

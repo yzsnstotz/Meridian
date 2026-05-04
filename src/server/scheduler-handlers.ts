@@ -66,7 +66,9 @@ const RunNowBodySchema = z.object({
 
 const UpdateWorkerStatusRequestSchema = z.object({
   status: z.string().min(1),
-  thread_id: z.string().min(1).optional()
+  thread_id: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  reasoning_effort: z.string().min(1).optional()
 });
 
 const ManualGateChecklistItemSchema = z.object({
@@ -404,13 +406,15 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     }
 
     try {
-      return {
+        return {
         ok: true,
         result: await executeUpdateWorkerStatusAction({
           planPath: config.dispatch_plan_path,
           workerId,
           status: parsed.data.status,
-          threadId: parsed.data.thread_id ?? null
+          threadId: parsed.data.thread_id ?? null,
+          modelId: parsed.data.model,
+          reasoningEffort: parsed.data.reasoning_effort
         })
       };
     } catch (error) {

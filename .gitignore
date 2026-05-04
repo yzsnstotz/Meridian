@@ -9,6 +9,8 @@ agent.md
 _meridian_hub
 logs/
 .worktrees/
+.claude/
+roles copy/
 
 # Ephemeral Hub dispatcher system prompt (written next to dispatch_plan.md)
 .meridian-roles-dispatcher-prompt-*.md
