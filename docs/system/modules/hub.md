@@ -319,9 +319,23 @@
 ### `PersistedHubState`
 - **File**: `src/hub/state-store.ts:61`
 - **Purpose**: Describes the versioned on-disk hub state snapshot.
-- **Implementation**: The type mirrors the validated v2 schema containing instances, session bindings, push subscriptions, and conversation history records that `HubRouter` rehydrates on startup.
+- **Implementation**: The type mirrors the validated v3 schema containing instances, session bindings, push subscriptions, conversation history records (each carrying `caller_id`/`caller_label`), and a top-level `callers: CallerRecord[]` registry that `HubRouter` rehydrates on startup. Legacy v1 and v2 payloads are upgraded through the chained migrators in this module.
 - **Dependencies**: `shared/approval`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Status**: [UPDATED 2026-05-05]
+
+### `CallerRecord` / `CallerRecordSchema`
+- **File**: `src/hub/state-store.ts:9`
+- **Purpose**: Persisted shape for one entry in the caller registry.
+- **Implementation**: Captures `caller_id`, `caller_label`, `caller_kind` (`"builtin" | "external"`), salted `key_hash` (`sha256(key + caller_id)`), and lifecycle timestamps (`created_at`, nullable `last_seen_at`, nullable `revoked_at`). Consumed by `src/hub/caller-registry.ts` and serialized as part of `PersistedHubState.callers`.
+- **Dependencies**: `zod`
+- **Status**: [ADDED 2026-05-05]
+
+### `migrateLegacyConversationHistoryV2ToV3(state: unknown): PersistedHubState`
+- **File**: `src/hub/state-store.ts:215`
+- **Purpose**: Upgrades a parsed v2 hub-state payload to the v3 shape used by the caller registry round.
+- **Implementation**: Returns the input unchanged when it already matches v3, otherwise validates as v2, fills `caller_id: null` / `caller_label: null` on every conversation history entry, and seeds an empty top-level `callers: []` array. The transformation is idempotent so calling it twice yields the same v3 object.
+- **Dependencies**: `zod`
+- **Status**: [ADDED 2026-05-05]
 
 ### `PersistedPushSubscription`
 - **File**: `src/hub/state-store.ts:62`
@@ -333,30 +347,30 @@
 ### `PersistedConversationHistoryEntry`
 - **File**: `src/hub/state-store.ts:63`
 - **Purpose**: Describes one persisted conversation-history row in the state file.
-- **Implementation**: The type stores ordered sequence numbers, event kind, summary/details/raw text, trace metadata, and replace keys so router history can be restored losslessly.
+- **Implementation**: The type stores ordered sequence numbers, event kind, summary/details/raw text, trace metadata, replace keys, and the v3-introduced nullable `caller_id` / `caller_label` fields so router history can be restored losslessly with caller attribution.
 - **Dependencies**: `shared/approval`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Status**: [UPDATED 2026-05-05]
 
 ### `buildEmptyPersistedHubState(nowIso: string): PersistedHubState`
 - **File**: `src/hub/state-store.ts:185`
-- **Purpose**: Creates a fresh empty v2 hub-state snapshot.
-- **Implementation**: It returns a fully initialized object with the supplied timestamp and empty instance, session, push-subscription, and conversation-history collections.
+- **Purpose**: Creates a fresh empty v3 hub-state snapshot.
+- **Implementation**: It returns a fully initialized v3 object with the supplied timestamp; empty instance, session, push-subscription, and conversation-history collections; and an empty `callers` array.
 - **Dependencies**: `shared/approval`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Status**: [UPDATED 2026-05-05]
 
-### `buildPersistedHubState(nowIso: string, instances: AgentInstance[], sessionBindings: Record<string, string>, pushSubscriptions: Record<string, PersistedPushSubscription[]> = {}, conversationHistory: Record<string, PersistedConversationHistoryEntry[]> = {}): PersistedHubState`
+### `buildPersistedHubState(nowIso: string, instances: AgentInstance[], sessionBindings: Record<string, string>, pushSubscriptions: Record<string, PersistedPushSubscription[]> = {}, conversationHistory: Record<string, PersistedConversationHistoryEntry[]> = {}, callers: CallerRecord[] = []): PersistedHubState`
 - **File**: `src/hub/state-store.ts:196`
-- **Purpose**: Validates and assembles a v2 hub-state snapshot from live registry and history data.
-- **Implementation**: The function pipes the supplied instances, bindings, push subscriptions, and conversation history through the zod schema so callers persist only normalized state.
+- **Purpose**: Validates and assembles a v3 hub-state snapshot from live registry, history, and caller-registry data.
+- **Implementation**: The function pipes the supplied instances, bindings, push subscriptions, conversation history, and caller registry through the zod schema so callers persist only normalized v3 state.
 - **Dependencies**: `shared/approval`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Status**: [UPDATED 2026-05-05]
 
 ### `loadPersistedHubState(statePath: string, nowIso: string): PersistedHubState`
 - **File**: `src/hub/state-store.ts:213`
-- **Purpose**: Loads persisted hub state from disk with legacy migration and safe fallback behavior.
-- **Implementation**: It reads and parses the JSON file, accepts current v2 state, migrates legacy v1 history entries into the new event model when possible, and returns an empty state on missing files or parse failures.
+- **Purpose**: Loads persisted hub state from disk with chained legacy migration (v1 → v2 → v3) and safe fallback behavior, plus one-shot legacy caller seeding.
+- **Implementation**: It reads and parses the JSON file, accepts current v3 state, otherwise migrates v2 payloads via `migrateLegacyConversationHistoryV2ToV3` and v1 payloads through the existing legacy chain, and returns an empty v3 state on missing files or parse failures. When the loaded state has an empty `callers` array AND `MERIDIAN_CALLER_KEYS` is set, it parses the JSON list, seeds each entry as `caller_kind: "external"` with `key_hash = sha256(caller_key + caller_id)`, and persists immediately so subsequent boots ignore the env var (revoked callers cannot be un-revoked by reboot).
 - **Dependencies**: `shared/approval`, `types`
-- **Status**: [ADDED 2026-04-08T14:10:55+09:00]
+- **Status**: [UPDATED 2026-05-05]
 
 ### `savePersistedHubState(statePath: string, state: PersistedHubState): void`
 - **File**: `src/hub/state-store.ts:234`
