@@ -172,7 +172,11 @@ export class LifecycleStore {
     traceId: string,
     expectedOutputs: string[],
     commandPreamble?: string | null,
-    options: { validationMaxFixCycles?: number } = {}
+    options: {
+      validationMaxFixCycles?: number;
+      appliedModelId?: string;
+      appliedReasoningEffort?: string;
+    } = {}
   ): void {
     const state = this.load();
     const nowIso = this.now();
@@ -194,6 +198,9 @@ export class LifecycleStore {
       status: "running",
       expected_outputs: [...expectedOutputs],
       hub_result: null,
+      applied_model_id: options.appliedModelId ?? state.workers[workerId]?.applied_model_id,
+      applied_reasoning_effort: options.appliedReasoningEffort
+        ?? state.workers[workerId]?.applied_reasoning_effort,
       command_preamble: commandPreamble ?? null,
       retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount,
       ...(options.validationMaxFixCycles !== undefined
@@ -292,6 +299,8 @@ export class LifecycleStore {
       clearHubResult?: boolean;
       incrementRetryCount?: boolean;
       resetRetryCount?: boolean;
+      appliedModelId?: string;
+      appliedReasoningEffort?: string;
     } = {}
   ): void {
     const state = this.load();
@@ -307,6 +316,10 @@ export class LifecycleStore {
       last_seen_at: this.now(),
       status,
       hub_result: options.clearHubResult ? null : worker.hub_result,
+      ...(options.appliedModelId !== undefined ? { applied_model_id: options.appliedModelId } : {}),
+      ...(options.appliedReasoningEffort !== undefined
+        ? { applied_reasoning_effort: options.appliedReasoningEffort }
+        : {}),
       retry_count: shouldIncrementRetryCount ? baseRetryCount + 1 : baseRetryCount
     };
 

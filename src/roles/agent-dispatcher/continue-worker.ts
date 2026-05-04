@@ -14,7 +14,7 @@ import { isValidationEnabledForWorker } from "./validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
 import { executeResumeWorkerAction } from "../../tool-gateway/tools/resume-worker";
 import killTool from "../../tool-gateway/tools/kill";
-import type { AgentDispatcherConfig } from "../../types";
+import type { AgentDispatcherConfig, DispatchWorkerState } from "../../types";
 
 type ResumeWorkerResult = Awaited<ReturnType<typeof executeResumeWorkerAction>>;
 type KillThreadResult = Awaited<ReturnType<typeof killTool.execute>>;
@@ -111,7 +111,7 @@ export async function continueDispatchWorker(
       });
     }
 
-    const launched = await launchWorkerFromDispatchPlan(config, dispatchPlanRow, launchWorker);
+    const launched = await launchWorkerFromDispatchPlan(config, dispatchPlanRow, launchWorker, currentWorkerState);
     if (!launched.ok) {
       const launchError = launched.error ?? "Failed to launch dispatch worker";
       orphanedLaunchThreadId = normalizeThreadId(launched.threadId);
@@ -159,7 +159,8 @@ export function shouldResetWorkerBeforeContinue(row: Pick<ContinueDispatchPlanRo
 async function launchWorkerFromDispatchPlan(
   config: ContinueWorkerConfig,
   dispatchPlanRow: ContinueDispatchPlanRow,
-  launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>
+  launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>,
+  currentWorkerState?: DispatchWorkerState | null
 ): Promise<LaunchDispatchWorkerResult> {
   const markdown = await fs.readFile(config.dispatch_plan_path, "utf8");
   const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
@@ -168,15 +169,21 @@ async function launchWorkerFromDispatchPlan(
   const resolvedModel = modelCode
     ? resolvedModelMap[modelCode] ?? resolveImplicitDispatchModelOverride(modelCode)
     : undefined;
-  const resolvedEffort = parsedModel?.reasoningEffort
+  const appliedModel = currentWorkerState?.applied_model_id?.trim();
+  const resolvedEffort = currentWorkerState?.applied_reasoning_effort
+    ?? parsedModel?.reasoningEffort
     ?? resolvedModel?.reasoning_effort
     ?? dispatchPlanRow.reasoningEffort;
+  const modelId = appliedModel ?? resolvedModel?.model_id?.trim();
+  const resolvedAgentType = modelCode
+    ? deriveAgentTypeFromModelCode(modelId ?? modelCode, config.agent_type)
+    : config.agent_type;
 
   const workerSpawnDir = resolveWorkerSpawnDir(config.dispatch_plan_path, dispatchPlanRow.worker)
     ?? resolveConfiguredDispatchRepoRoot(config);
 
   return launchWorker({
-    agentType: resolvedModel?.provider?.trim() || deriveAgentTypeFromModelCode(modelCode, config.agent_type),
+    agentType: resolvedModel?.provider?.trim() || resolvedAgentType,
     mode: config.mode,
     killPolicy: config.kill_policy,
     autoApprove: config.auto_approve,
@@ -184,7 +191,7 @@ async function launchWorkerFromDispatchPlan(
     dispatchPlanPath: config.dispatch_plan_path,
     dispatchRepoRoot: workerSpawnDir,
     workerId: dispatchPlanRow.worker,
-    modelId: resolvedModel?.model_id?.trim() || undefined,
+    modelId,
     effort: resolvedEffort,
     validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow)
   });
@@ -213,6 +220,9 @@ function resolveValidationMaxFixCycles(
 function deriveAgentTypeFromModelCode(modelCode: string, defaultAgentType: string): string {
   const normalized = modelCode.trim().toUpperCase();
   if (normalized.startsWith("CODEX")) {
+    return "codex";
+  }
+  if (normalized.startsWith("GPT")) {
     return "codex";
   }
   if (normalized === "OPUS" || normalized === "SONNET" || normalized.startsWith("CLAUDE")) {

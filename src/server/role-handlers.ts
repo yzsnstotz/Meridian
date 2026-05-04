@@ -167,7 +167,9 @@ const AgentDispatcherConfigPatchSchema = z.object({
 
 const UpdateWorkerStatusRequestSchema = z.object({
   status: z.string().min(1),
-  thread_id: z.string().min(1).optional()
+  thread_id: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  reasoning_effort: z.string().min(1).optional()
 });
 
 const PmResolveRequestSchema = z.object({
@@ -896,7 +898,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           planPath: context.effectiveConfig.dispatch_plan_path,
           workerId,
           status: parsed.data.status,
-          threadId: parsed.data.thread_id ?? null
+          threadId: parsed.data.thread_id ?? null,
+          modelId: parsed.data.model,
+          reasoningEffort: parsed.data.reasoning_effort
         })
       };
     } catch (error) {
@@ -3074,7 +3078,11 @@ function buildDispatchWorkerDetail(
   const conversation = parseDispatchConversation(workerHubResult?.details_text);
   const commandFallback = conversation.command ?? worker?.command_preamble ?? null;
   const replyContent = resolveDispatchReply(workerHubResult, conversation.reply);
-  const appliedModel = resolveAppliedModel(dispatchPlanRow?.model ?? null, modelLegend);
+  const appliedModel = resolveAppliedModelForWorker(
+    worker,
+    dispatchPlanRow?.model ?? null,
+    modelLegend
+  );
   const status = resolveDispatchWorkerDetailStatus(worker, dispatchPlanRow);
 
   return {
@@ -3112,6 +3120,19 @@ function buildDispatchWorkerDetail(
     validation: buildDispatchValidationDetail(worker?.validation),
     retry_count: worker?.retry_count ?? 0
   };
+}
+
+function resolveAppliedModelForWorker(
+  worker: DispatchWorkerState | null,
+  modelCode: string | null,
+  modelLegend: DispatchPlanModelLegend
+): string | null {
+  const overriddenModel = worker?.applied_model_id?.trim();
+  if (overriddenModel && overriddenModel.length > 0) {
+    return overriddenModel;
+  }
+
+  return resolveAppliedModel(modelCode, modelLegend);
 }
 
 function resolveDispatchWorkerDetailStatus(

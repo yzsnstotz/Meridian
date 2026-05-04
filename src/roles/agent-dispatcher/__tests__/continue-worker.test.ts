@@ -9,6 +9,7 @@ import {
   extractRepoFieldFromWorkerFile,
   resolveWorkerSpawnDir
 } from "../continue-worker";
+import { LifecycleStore } from "../lifecycle-store";
 
 const tempDirectories = new Set<string>();
 
@@ -286,6 +287,72 @@ describe("continueDispatchWorker", () => {
       workerId: "N-04",
       effort: "high",
       modelId: "gpt-5.4 medium"
+    }));
+  });
+
+  it("uses persisted runtime model/effort overrides when continuing a worker", async () => {
+    const { dir, commandPath, planPath } = await createTempDispatchPlan();
+    const sidecarPath = path.join(dir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath: planPath
+    });
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:10:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          applied_model_id: "gpt-5.5",
+          applied_reasoning_effort: "xhigh"
+        }
+      },
+      last_reconciled_at: null
+    });
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "worker-thread-n04"
+    });
+
+    await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: dir,
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          threshold_type: "score",
+          pass_threshold: 0.8,
+          max_fix_cycles: 4,
+          base_branch: "main"
+        }
+      },
+      [{ status: "⬜", worker: "N-04", model: "CODEX-HIGH", notes: "Single module" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: "gpt-5.5",
+      effort: "xhigh"
     }));
   });
 });

@@ -3,6 +3,12 @@ import path from "node:path";
 
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import type { LifecycleStatus } from "../../types";
+import {
+  parseDispatchModelCode,
+  resolveDispatchModelMapFromMarkdown,
+  resolveImplicitDispatchModelOverride
+} from "../../roles/agent-dispatcher/model-routing";
+import { normalizeReasoningEffort } from "../../roles/agent-dispatcher/model-routing";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const LIFECYCLE_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
@@ -56,6 +62,16 @@ const updateStatusTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "Worker thread identifier to persist in dispatch_threads.json when setting in_progress"
+    },
+    model: {
+      type: "string",
+      required: false,
+      description: "Optional model override to persist on this worker row"
+    },
+    reasoning_effort: {
+      type: "string",
+      required: false,
+      description: "Optional reasoning effort override to persist on this worker row"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -86,12 +102,25 @@ const updateStatusTool: ToolDefinition = {
     try {
       const normalizedStatus = parseRequestedStatus(requestedStatus);
       const workerThreadId = requireParam(params.thread_id);
-      await syncWorkerLifecycleState(planPath, worker, normalizedStatus, workerThreadId);
+      const markdown = await fs.readFile(planPath, "utf8");
+      const resolvedOverride = resolveUpdateStatusModelOverride(
+        markdown,
+        requireParam(params.model),
+        requireParam(params.reasoning_effort)
+      );
+
+      await syncWorkerLifecycleState(
+        planPath,
+        worker,
+        normalizedStatus,
+        workerThreadId,
+        resolvedOverride.appliedModelId,
+        resolvedOverride.appliedReasoningEffort
+      );
 
       // Always update the plan markdown directly. The lifecycle store's
       // syncPlanView guard prevents overwriting terminal-success statuses
       // (✅, ⛔ SKIPPED), but an explicit status change must be reflected.
-      const markdown = await fs.readFile(planPath, "utf8");
       const updated = updateWorkerStatusInMarkdown(markdown, worker, normalizedStatus);
       if (updated !== markdown) {
         await fs.writeFile(planPath, updated, "utf8");
@@ -119,6 +148,8 @@ export interface ExecuteUpdateWorkerStatusActionArgs {
   workerId: string;
   status: string;
   threadId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
 }
 
 export async function executeUpdateWorkerStatusAction(
@@ -131,7 +162,16 @@ export async function executeUpdateWorkerStatusAction(
 }> {
   const normalizedStatus = parseRequestedStatus(args.status);
   const threadId = requireParam(args.threadId ?? undefined);
-  const lifecycleUpdated = await syncWorkerLifecycleState(args.planPath, args.workerId, normalizedStatus, threadId);
+  const markdown = await fs.readFile(args.planPath, "utf8");
+  const resolvedOverride = resolveUpdateStatusModelOverride(markdown, args.modelId, args.reasoningEffort);
+  const lifecycleUpdated = await syncWorkerLifecycleState(
+    args.planPath,
+    args.workerId,
+    normalizedStatus,
+    threadId,
+    resolvedOverride.appliedModelId,
+    resolvedOverride.appliedReasoningEffort
+  );
   let resolvedThreadId = threadId;
 
   if (lifecycleUpdated) {
@@ -144,7 +184,6 @@ export async function executeUpdateWorkerStatusAction(
   // Always update the plan markdown directly. The lifecycle store's
   // syncPlanView guard prevents overwriting terminal-success statuses
   // (✅, ⛔ SKIPPED), but an explicit status change must be reflected.
-  const markdown = await fs.readFile(args.planPath, "utf8");
   const updated = updateWorkerStatusInMarkdown(markdown, args.workerId, normalizedStatus);
   if (updated !== markdown) {
     await fs.writeFile(args.planPath, updated, "utf8");
@@ -155,6 +194,42 @@ export async function executeUpdateWorkerStatusAction(
     status: normalizedStatus,
     thread_id: resolvedThreadId,
     lifecycle_updated: lifecycleUpdated
+  };
+}
+
+function resolveUpdateStatusModelOverride(
+  markdown: string,
+  rawModel: string | null | undefined,
+  rawReasoningEffort: string | null | undefined
+): {
+  appliedModelId?: string;
+  appliedReasoningEffort?: string;
+} {
+  const modelInput = requireParam(rawModel);
+  const parsedReasoningEffort = normalizeReasoningEffort(rawReasoningEffort ?? undefined);
+  if (!modelInput && !parsedReasoningEffort) {
+    return {};
+  }
+
+  const parsedModel = modelInput ? parseDispatchModelCode(modelInput) : null;
+  const modelCode = (parsedModel?.modelCode ?? modelInput ?? "").trim();
+  const modelEffort = parsedModel?.reasoningEffort;
+
+  let resolvedModelId: string | undefined;
+  let resolvedEffort: string | undefined;
+
+  if (modelCode) {
+    const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown);
+    const resolvedModel = resolvedModelMap[modelCode] ?? resolveImplicitDispatchModelOverride(modelCode);
+    resolvedModelId = resolvedModel?.model_id?.trim();
+    resolvedEffort = resolvedModel?.reasoning_effort;
+  }
+
+  return {
+    ...(resolvedModelId ?? modelInput ? { appliedModelId: resolvedModelId ?? modelCode } : {}),
+    ...(resolvedEffort ?? modelEffort ?? parsedReasoningEffort
+      ? { appliedReasoningEffort: resolvedEffort ?? modelEffort ?? parsedReasoningEffort! }
+      : {})
   };
 }
 
@@ -254,7 +329,9 @@ async function syncWorkerLifecycleState(
   planPath: string,
   worker: string,
   status: LifecycleStatus,
-  threadId: string | null
+  threadId: string | null,
+  appliedModelId?: string,
+  appliedReasoningEffort?: string
 ): Promise<boolean> {
   const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(planPath), {
     dispatchPlanPath: planPath
@@ -269,6 +346,14 @@ async function syncWorkerLifecycleState(
       return false;
     }
 
+    if (workerState) {
+      lifecycleStore.setWorkerStatus(worker, "running", "update_status_tool", {
+        ...(typeof appliedModelId !== "undefined" ? { appliedModelId } : {}),
+        ...(typeof appliedReasoningEffort !== "undefined" ? { appliedReasoningEffort } : {})
+      });
+      return true;
+    }
+
     state.workers[worker] = {
       thread_id: effectiveThreadId,
       trace_id: workerState?.trace_id ?? null,
@@ -278,7 +363,9 @@ async function syncWorkerLifecycleState(
       expected_outputs: [...(workerState?.expected_outputs ?? [])],
       hub_result: null,
       command_preamble: workerState?.command_preamble ?? null,
-      retry_count: workerState?.retry_count ?? 0
+      retry_count: workerState?.retry_count ?? 0,
+      ...(typeof appliedModelId !== "undefined" ? { applied_model_id: appliedModelId } : {}),
+      ...(typeof appliedReasoningEffort !== "undefined" ? { applied_reasoning_effort: appliedReasoningEffort } : {})
     };
     lifecycleStore.save(state);
     return true;
@@ -288,12 +375,11 @@ async function syncWorkerLifecycleState(
     return false;
   }
 
-  state.workers[worker] = {
-    ...workerState,
-    last_seen_at: nowIso,
-    status
-  };
-  lifecycleStore.save(state);
+  lifecycleStore.setWorkerStatus(worker, status, "update_status_tool", {
+    ...(typeof appliedModelId !== "undefined" ? { appliedModelId } : {}),
+    ...(typeof appliedReasoningEffort !== "undefined" ? { appliedReasoningEffort } : {}),
+    clearHubResult: false
+  });
   return true;
 }
 
