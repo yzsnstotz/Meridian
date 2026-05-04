@@ -14,7 +14,7 @@ Use this skill when an external agent needs a self-contained setup path for the 
 - Local checkout of `/Users/yzliu/work/Meridian/Meridian-roles`
 - Local checkout of `/Users/yzliu/work/Meridian` because Meridian-roles depends on the Meridian hub for worker spawn/run/kill flows
 - Meridian env file at `/Users/yzliu/work/Meridian/.env`
-- Writable state file path for local development, for example `/tmp/meridian-roles/state.json`
+- Writable state file path that survives reboot — the default `${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json` is fine. Avoid `/tmp` on macOS (purged on restart).
 
 Recommended values to verify before starting services:
 - `HUB_SOCKET_PATH`
@@ -77,7 +77,8 @@ export HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
 export GUI_PORT=7701
 export MERIDIAN_ROLES_HTTP=http://127.0.0.1:7701
 export ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
-export STATE_FILE_PATH=/tmp/meridian-roles/state.json
+# STATE_FILE_PATH defaults to ${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json
+# Override only if you need a different persistent path. Do NOT use /tmp on macOS.
 ```
 
 Optional notify configuration:

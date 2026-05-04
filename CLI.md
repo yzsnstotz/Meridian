@@ -71,13 +71,13 @@ The CLI talks to two services:
 | `MERIDIAN_REPLY_CHANNEL` | unset | JSON reply channel for `notify` |
 | `MERIDIAN_REPLY_CHANNELS` | unset | JSON array of reply channels for `notify` |
 | `ROLES_SOCKET_PATH` | `/tmp/meridian-roles.sock` | Meridian-roles A2A socket path when starting the service locally |
-| `STATE_FILE_PATH` | `/var/lib/meridian-roles/state.json` | Persistent role state file for the service |
+| `STATE_FILE_PATH` | `${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json` | Persistent role state file for the service |
 | `RECONCILE_INTERVAL_MS` | `120000` | Reconciliation interval for stale worker detection |
 
-For local development, the checked-in `.env.example` already uses a writable `/tmp/meridian-roles/state.json` path. If `STATE_FILE_PATH` is left unset entirely, the service code falls back to `/var/lib/meridian-roles/state.json` for managed deployments. An explicit override still works:
+The default state path is rooted under `XDG_STATE_HOME` so registered scheduler/dispatcher roles persist across reboots. **Do not point `STATE_FILE_PATH` at `/tmp` or `/var/tmp` on macOS** — those directories are purged on restart and the role registry will silently disappear (the service emits a startup warning if it detects an ephemeral path). Managed deployments may override to `/var/lib/meridian-roles/state.json`:
 
 ```bash
-export STATE_FILE_PATH=/tmp/meridian-roles/state.json
+export STATE_FILE_PATH=/var/lib/meridian-roles/state.json
 ```
 
 ## Commands
