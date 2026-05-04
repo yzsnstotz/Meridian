@@ -168,6 +168,36 @@ curl -X POST http://localhost:7701/api/role \
   }'
 ```
 
+## Dispatch model-routing contract
+
+`Model` on each `dispatch_plan.md` worker row supports both legacy code values and inline `model::effort` syntax:
+
+- `CODEX`, `CODEX-HIGH`, `CODEX-XHIGH` (legacy aliases)
+- `MODEL::effort`, e.g. `CODEX::high`
+- Optional `Reasoning Effort` column, e.g. `xhigh`, `high`, `medium`, `low`
+
+Precedence is:
+
+1. Explicit row `Model` suffix (`CODEX::high`)
+2. `Reasoning Effort` column in that row
+3. Legend default effort value
+4. Legacy alias defaults:
+   - `CODEX` → `medium`
+   - `CODEX-HIGH` → `high`
+   - `CODEX-XHIGH` → `xhigh`
+
+You can also persist a runtime override using `update-status` while a worker is in progress:
+
+```bash
+meridian-roles update-status \
+  --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md \
+  --worker N-07 \
+  --status in_progress \
+  --thread-id worker-thread-456 \
+  --model gpt-5.5 \
+  --reasoning-effort high
+```
+
 ## New role development guide
 
 Use the five-step flow below when you add a new role type:

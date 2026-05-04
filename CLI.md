@@ -109,6 +109,12 @@ Typical success payload:
 
 Run a dispatch command file inside an existing thread. This records lifecycle state in the sibling `dispatch_threads.json` file and attempts reconciliation after terminal results.
 
+Model routing at runtime uses this precedence:
+
+- `Model` suffix in the row (`CODEX::high`)
+- `Reasoning Effort` row column (`low|medium|high|xhigh`)
+- Legacy legend defaults (`CODEX`, `CODEX-HIGH`, `CODEX-XHIGH`)
+
 Params:
 - `--thread-id <id>`: required target thread id
 - `--command <path>`: required absolute path to the dispatch command file
@@ -161,11 +167,25 @@ Params:
 - `--worker <worker-id>`: required worker id
 - `--status <in_progress|done|failed>`: required status transition
 - `--thread-id <id>`: optional thread id, required when setting `in_progress` if the lifecycle store needs to persist thread ownership
+- `--model <id>`: optional model override persisted as runtime override
+- `--reasoning-effort <low|medium|high|xhigh>`: optional reasoning effort override persisted as runtime override
 
 Example:
 
 ```bash
 meridian-roles update-status --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --status done
+```
+
+Set a mid-workflow model + effort override:
+
+```bash
+meridian-roles update-status \
+  --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md \
+  --worker N-07 \
+  --status in_progress \
+  --thread-id worker-thread-456 \
+  --model gpt-5.5 \
+  --reasoning-effort high
 ```
 
 ### `resume-worker`
@@ -232,6 +252,7 @@ Rules:
 - Pass either `--model-map` or `--model-map-file`, not both.
 - The command expects `agent_dispatch_command.md` to live beside the dispatch plan.
 - Unknown model codes are kept as overrides and returned as warnings.
+- `CODEX`, `CODEX-HIGH`, `CODEX-XHIGH` legacy codes are accepted and normalized to their canonical route.
 
 Examples:
 
@@ -241,6 +262,8 @@ meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
 meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --pm-agent-type claude --pm-model-id claude-opus-4-7 --pm-reply-channels '[{"channel":"telegram","chat_id":"telegram:ops"}]'
 ```
+
+Model-effort aware dispatch plans support both `CODEX::high` inline suffix and a `Reasoning Effort` column.
 
 Success payload includes:
 - `dispatcher_id`

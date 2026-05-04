@@ -67,6 +67,19 @@
 
 ## II. Dispatch Overview
 
+### Model and reasoning-effort row contract
+
+Dispatch rows now carry model-effort intent at plan runtime:
+
+- `Model` accepts legacy codes and explicit `CODE::effort` values (for example `CODEX::high`).
+- `Reasoning Effort` is a separate optional column with values `low|medium|high|xhigh`.
+- If `Reasoning Effort` is absent, dispatcher resolution uses legend effort and fallback legacy defaults:
+  - `CODEX` → `medium`
+  - `CODEX-HIGH` → `high`
+  - `CODEX-XHIGH` → `xhigh`
+- Inline row effort (either `code::effort` or `Reasoning Effort`) wins over legend defaults and inline `dispatch-start` overrides.
+- Worker-level overrides set with `dispatch-status` patching are persisted to lifecycle state and are honored on `resume_worker`/continue.
+
 ```
 [PHASE 0 — Serial]
 N-01 (scaffold + core types)
