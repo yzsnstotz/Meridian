@@ -39,19 +39,26 @@ Global flags: `--help` prints root or per-command usage, and `--json` is accepte
 - **Dependencies**: None
 - **Status**: `[UPDATED 2026-04-16T12:30:00+09:00]`
 
+### `setCallerIdentity(args: CallerIdentitySetterArgs): void`
+- **File**: `src/bin/hub-connection.ts:45`
+- **Purpose**: Registers the caller identity used by every subsequent `hubHttpRequest` and `connectToHub` call.
+- **Implementation**: Validates `caller_id` / `caller_key` / `caller_label` (all required; empty rejected with `caller_identity_required`) plus optional `caller_version`, and stores them on a module-private slot. `clearCallerIdentity` resets the slot for tests; `hasCallerIdentity` reports whether the CLI is ready to make HTTP calls. Header names follow the canonical case mandated by the wire contract: `X-Meridian-Caller-Id`, `X-Meridian-Caller-Key`, `X-Meridian-Caller-Version`.
+- **Dependencies**: `shared/caller-wire`
+- **Status**: `[ADDED 2026-05-05]`
+
 ### `connectToHub(): Promise<HubConnection>`
-- **File**: `src/bin/hub-connection.ts:27`
+- **File**: `src/bin/hub-connection.ts:65`
 - **Purpose**: Verifies that the Meridian API boundary is reachable before the CLI dispatches a command.
-- **Implementation**: The function probes `MERIDIAN_HTTP` by requesting `/api/health` with the resolved bearer token, treating any HTTP response as proof that the public API boundary is live. If that request cannot connect or times out, it throws a Meridian API reachability error that `runCli()` converts into the CLI's unreachable exit code.
-- **Dependencies**: None
-- **Status**: `[UPDATED 2026-04-16T12:30:00+09:00]`
+- **Implementation**: Probes `MERIDIAN_HTTP` by requesting `/api/health` with the resolved bearer token plus the registered caller-identity headers, treating any HTTP response as proof that the public API boundary is live. If that request cannot connect or times out, it throws a Meridian API reachability error that `runCli()` converts into the CLI's unreachable exit code.
+- **Dependencies**: `shared/caller-wire`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `hubHttpRequest(method: string, path: string, body?: unknown): Promise<HubHttpResponse>`
-- **File**: `src/bin/hub-connection.ts:40`
+- **File**: `src/bin/hub-connection.ts:78`
 - **Purpose**: Sends an authenticated HTTP request to Meridian and returns a parsed response envelope.
-- **Implementation**: The helper resolves the route against `MERIDIAN_HTTP`, strips any `?token=` query from the base URL before building request URLs, reuses either `WEB_GUI_TOKEN` or the `MERIDIAN_HTTP` query token as a bearer token, adds JSON headers only when a body is present, enforces a `10s` timeout, and parses the response body as JSON when possible before falling back to raw text.
-- **Dependencies**: None
-- **Status**: `[UPDATED 2026-04-16T12:30:00+09:00]`
+- **Implementation**: Resolves the route against `MERIDIAN_HTTP`, strips any `?token=` query from the base URL before building request URLs, reuses either `WEB_GUI_TOKEN` or the `MERIDIAN_HTTP` query token as a bearer token, and **always** stamps `X-Meridian-Caller-Id` + `X-Meridian-Caller-Key` (plus optional `X-Meridian-Caller-Version`) from the registered caller identity — throwing `caller_identity_not_set` if `setCallerIdentity` has not run. Adds JSON headers only when a body is present, enforces a `10s` timeout, and parses the response body as JSON when possible before falling back to raw text.
+- **Dependencies**: `shared/caller-wire`
+- **Status**: `[UPDATED 2026-05-05]`
 
 **src/bin/meridian-cli.ts**
 

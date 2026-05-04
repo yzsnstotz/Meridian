@@ -7,6 +7,11 @@
 
 import http from "node:http";
 
+// Caller-identity HTTP headers (canonical case mandated by the wire contract):
+//   X-Meridian-Caller-Id, X-Meridian-Caller-Key, X-Meridian-Caller-Version.
+// Definitions live in shared/caller-wire.ts; the import below is the only source.
+import { CALLER_HTTP_HEADERS } from "../shared/caller-wire";
+
 const DEFAULT_MERIDIAN_HTTP = "http://localhost:3000";
 
 export interface HubConnection {
@@ -22,6 +27,42 @@ export interface HubHttpResponse {
   statusCode: number;
   headers: http.IncomingHttpHeaders;
   body: unknown;
+}
+
+export interface CallerIdentitySetterArgs {
+  caller_id: string;
+  caller_key: string;
+  caller_label: string;
+  caller_version?: string;
+}
+
+interface ResolvedCallerIdentity {
+  caller_id: string;
+  caller_key: string;
+  caller_label: string;
+  caller_version?: string;
+}
+
+let activeIdentity: ResolvedCallerIdentity | null = null;
+
+export function setCallerIdentity(args: CallerIdentitySetterArgs): void {
+  if (!args.caller_id || !args.caller_key || !args.caller_label) {
+    throw new Error("caller_identity_required");
+  }
+  activeIdentity = {
+    caller_id: args.caller_id,
+    caller_key: args.caller_key,
+    caller_label: args.caller_label,
+    ...(args.caller_version ? { caller_version: args.caller_version } : {})
+  };
+}
+
+export function clearCallerIdentity(): void {
+  activeIdentity = null;
+}
+
+export function hasCallerIdentity(): boolean {
+  return activeIdentity !== null;
 }
 
 export async function connectToHub(): Promise<HubConnection> {
@@ -112,8 +153,17 @@ function resolveMeridianApiToken(): string {
   }
 }
 
-function buildRequestHeaders(body?: unknown): http.OutgoingHttpHeaders | undefined {
-  const headers: http.OutgoingHttpHeaders = {};
+function buildRequestHeaders(body?: unknown): http.OutgoingHttpHeaders {
+  if (!activeIdentity) {
+    throw new Error("caller_identity_not_set");
+  }
+  const headers: http.OutgoingHttpHeaders = {
+    [CALLER_HTTP_HEADERS.id]: activeIdentity.caller_id,
+    [CALLER_HTTP_HEADERS.key]: activeIdentity.caller_key
+  };
+  if (activeIdentity.caller_version) {
+    headers[CALLER_HTTP_HEADERS.version] = activeIdentity.caller_version;
+  }
   const token = resolveMeridianApiToken();
   if (token) {
     headers.authorization = `Bearer ${token}`;
@@ -121,7 +171,7 @@ function buildRequestHeaders(body?: unknown): http.OutgoingHttpHeaders | undefin
   if (body !== undefined) {
     headers["content-type"] = "application/json";
   }
-  return Object.keys(headers).length > 0 ? headers : undefined;
+  return headers;
 }
 
 function isHttpReachable(baseUrl: string): Promise<boolean> {
