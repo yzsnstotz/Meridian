@@ -299,3 +299,143 @@ test("legacy bypass: route() called without auth argument skips the auth middlew
     harness.cleanup();
   }
 });
+
+test("terminal_input: history entry carries caller_id and caller_label from message.caller", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "cursor_01",
+    agent_type: "cursor",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:63011",
+    pid: 22,
+    tmux_pane: "agent_cursor_01",
+    status: "waiting",
+    created_at: new Date().toISOString()
+  });
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    sendTerminalInput: () => "Sent terminal input to cursor_01.",
+    getAttachedThread: () => "cursor_01",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-caller-history-test.json"
+  });
+
+  const caller = { caller_id: "meridian-web", caller_label: "Meridian Web" };
+  await router.route(
+    baseMessage({
+      intent: "terminal_input",
+      thread_id: "cursor_01",
+      target: "cursor_01",
+      payload: { content: "run", attachments: [] },
+      reply_channel: { channel: "socket", chat_id: "owner", socket_path: "/tmp/x.sock" },
+      caller
+    })
+  );
+
+  const history = router.getConversationHistoryForThread("cursor_01");
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.event_kind, "terminal_input");
+  assert.equal(history[0]?.caller_id, "meridian-web");
+  assert.equal(history[0]?.caller_label, "Meridian Web");
+});
+
+test("terminal_input: history entry has null caller fields when message.caller is undefined", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "cursor_02",
+    agent_type: "cursor",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:63012",
+    pid: 23,
+    tmux_pane: "agent_cursor_02",
+    status: "waiting",
+    created_at: new Date().toISOString()
+  });
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    sendTerminalInput: () => "Sent terminal input to cursor_02.",
+    getAttachedThread: () => "cursor_02",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-caller-history-test2.json"
+  });
+
+  await router.route(
+    baseMessage({
+      intent: "terminal_input",
+      thread_id: "cursor_02",
+      target: "cursor_02",
+      payload: { content: "run", attachments: [] },
+      reply_channel: { channel: "socket", chat_id: "owner", socket_path: "/tmp/x.sock" }
+    })
+  );
+
+  const history = router.getConversationHistoryForThread("cursor_02");
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.caller_id, null);
+  assert.equal(history[0]?.caller_label, null);
+});
+
+test("terminal_input: last_caller and last_caller_at updated on registry instance", async () => {
+  const registry = new InstanceRegistry();
+  const before = new Date();
+  registry.register({
+    thread_id: "cursor_03",
+    agent_type: "cursor",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:63013",
+    pid: 24,
+    tmux_pane: "agent_cursor_03",
+    status: "waiting",
+    created_at: before.toISOString()
+  });
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    sendTerminalInput: () => "Sent terminal input to cursor_03.",
+    getAttachedThread: () => "cursor_03",
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-caller-last-caller-test.json"
+  });
+
+  const caller = { caller_id: "meridian-cli", caller_label: "Meridian CLI" };
+  await router.route(
+    baseMessage({
+      intent: "terminal_input",
+      thread_id: "cursor_03",
+      target: "cursor_03",
+      payload: { content: "run", attachments: [] },
+      reply_channel: { channel: "socket", chat_id: "owner", socket_path: "/tmp/x.sock" },
+      caller
+    })
+  );
+
+  const instance = registry.get("cursor_03");
+  assert.equal(instance?.last_caller?.caller_id, "meridian-cli");
+  assert.equal(instance?.last_caller?.caller_label, "Meridian CLI");
+  assert.ok(instance?.last_caller_at, "last_caller_at should be set");
+  const lastCallerAt = new Date(instance!.last_caller_at!);
+  assert.ok(lastCallerAt.getTime() >= before.getTime(), "last_caller_at should be >= spawn time");
+});

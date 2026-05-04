@@ -1,5 +1,5 @@
 import { createLogger } from "../logger";
-import type { AgentInstance, AgentInstanceStatus } from "../types";
+import type { AgentInstance, AgentInstanceStatus, CallerIdentity } from "../types";
 
 const hubLog = createLogger("hub");
 
@@ -69,6 +69,14 @@ export class InstanceRegistry {
 
   setCodexSessionId(threadId: string, value: string | undefined): AgentInstance | undefined {
     return this.update(threadId, { codexSessionId: value });
+  }
+
+  setSpawnedBy(threadId: string, caller: CallerIdentity | undefined): AgentInstance | undefined {
+    return caller ? this.update(threadId, { spawned_by: caller }) : this.get(threadId);
+  }
+
+  setCaller(threadId: string, caller: CallerIdentity, ts: string): AgentInstance | undefined {
+    return this.update(threadId, { last_caller: caller, last_caller_at: ts });
   }
 
   private update(threadId: string, patch: Partial<AgentInstance>): AgentInstance | undefined {

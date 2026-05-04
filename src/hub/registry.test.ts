@@ -83,3 +83,71 @@ test("registry updates stream metadata without mutating identity", () => {
   assert.equal(sessionTracked?.codexSessionId, "session-123");
   assert.equal(registry.get("codex_01")?.codexSessionId, "session-123");
 });
+
+test("setCaller updates last_caller and last_caller_at atomically", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const caller = { caller_id: "meridian-web", caller_label: "Meridian Web" };
+  const ts = new Date().toISOString();
+  const updated = registry.setCaller("codex_01", caller, ts);
+
+  assert.equal(updated?.last_caller?.caller_id, "meridian-web");
+  assert.equal(updated?.last_caller?.caller_label, "Meridian Web");
+  assert.equal(updated?.last_caller_at, ts);
+  assert.equal(registry.get("codex_01")?.last_caller?.caller_id, "meridian-web");
+  assert.equal(registry.get("codex_01")?.last_caller_at, ts);
+});
+
+test("setCaller returns undefined for unknown thread", () => {
+  const registry = new InstanceRegistry();
+  const caller = { caller_id: "meridian-web", caller_label: "Meridian Web" };
+  assert.equal(registry.setCaller("nonexistent", caller, new Date().toISOString()), undefined);
+});
+
+test("setSpawnedBy sets spawned_by and returns updated instance", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const caller = { caller_id: "meridian-roles", caller_label: "Meridian Roles" };
+  const updated = registry.setSpawnedBy("codex_01", caller);
+
+  assert.equal(updated?.spawned_by?.caller_id, "meridian-roles");
+  assert.equal(registry.get("codex_01")?.spawned_by?.caller_id, "meridian-roles");
+});
+
+test("setSpawnedBy with undefined caller returns current instance without mutation", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_01.sock",
+    pid: 1234,
+    tmux_pane: null,
+    status: "idle",
+    created_at: new Date().toISOString()
+  });
+
+  const result = registry.setSpawnedBy("codex_01", undefined);
+  assert.equal(result?.spawned_by, undefined);
+  assert.equal(result?.thread_id, "codex_01");
+});

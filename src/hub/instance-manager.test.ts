@@ -1816,3 +1816,47 @@ test("graceful exit (SIGTERM) unregisters instance and clears session bindings",
   // Session bindings cleared
   assert.equal(manager.getAttachedThread("777:chat-b"), null);
 });
+
+test("spawn sets spawned_by from caller parameter", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(9901) as never) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const caller = { caller_id: "meridian-roles", caller_label: "Meridian Roles" };
+  const threadId = await manager.spawn("codex", "bridge", undefined, undefined, undefined, undefined, null, undefined, undefined, caller);
+  const instance = registry.get(threadId);
+
+  assert.equal(instance?.spawned_by?.caller_id, "meridian-roles");
+  assert.equal(instance?.spawned_by?.caller_label, "Meridian Roles");
+
+  await manager.kill(threadId);
+});
+
+test("spawn without caller leaves spawned_by undefined", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(9902) as never) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  const instance = registry.get(threadId);
+
+  assert.equal(instance?.spawned_by, undefined);
+
+  await manager.kill(threadId);
+});
