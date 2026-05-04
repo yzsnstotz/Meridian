@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import type {
@@ -517,6 +518,18 @@ function normalizeHubEntry(value: unknown): HubEntry | null {
     entry.description = record.description;
   }
 
+  if (typeof record.public_url === "string" && record.public_url.trim()) {
+    entry.public_url = record.public_url.trim();
+  }
+
+  if (typeof record.gui_port === "number" && Number.isInteger(record.gui_port) && record.gui_port > 0) {
+    entry.gui_port = record.gui_port;
+  }
+
+  if (typeof record.action_label === "string" && record.action_label.trim()) {
+    entry.action_label = record.action_label.trim();
+  }
+
   if (typeof record.restart_script === "string" && record.restart_script.trim()) {
     entry.restart_script = record.restart_script.trim();
   }
@@ -615,7 +628,24 @@ function renderHubPage(registry: HubRegistryResult, entries: ProbedHubEntry[]): 
       .description {
         color: var(--muted);
         min-height: 20px;
-        margin: 10px 0 18px;
+        margin: 10px 0 12px;
+      }
+      .route-list {
+        border-top: 1px solid var(--border);
+        display: grid;
+        gap: 6px;
+        margin: 0 0 16px;
+        padding-top: 12px;
+      }
+      .route-row {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .route-row strong {
+        color: var(--ink);
+        font-weight: 700;
       }
       .badge {
         align-items: center;
@@ -739,22 +769,54 @@ function renderRegistryNotices(registry: HubRegistryResult): string {
 
 function renderCard(entry: ProbedHubEntry): string {
   const statusLabel = getStatusLabel(entry.status, entry.status_code);
+  const actionLabel = entry.action_label ?? "Rebuild & restart";
   const restartButton = entry.restart_script
-    ? `\n    <button type="button" class="button" data-restart-id="${escapeAttribute(entry.id)}">Rebuild &amp; restart</button>`
+    ? `\n    <button type="button" class="button" data-restart-id="${escapeAttribute(entry.id)}">${escapeHtml(actionLabel)}</button>`
     : "";
   const restartStatus = entry.restart_script
     ? `\n  <p class="restart-status" data-restart-status="${escapeAttribute(entry.id)}" hidden></p>`
     : "";
+  const routeList = renderRouteList(entry);
   return `<article class="card">
   <div class="card-header">
     <h2>${escapeHtml(entry.name)}</h2>
     <span class="badge status-${entry.status}">${escapeHtml(statusLabel)}</span>
   </div>
   <p class="description">${escapeHtml(entry.description ?? "")}</p>
+  ${routeList}
   <div class="actions">
     <a class="button" href="${escapeAttribute(entry.url)}">Open dashboard</a>${restartButton}
   </div>${restartStatus}
 </article>`;
+}
+
+function renderRouteList(entry: ProbedHubEntry): string {
+  const rows = [
+    renderRouteRow("Local URL", entry.url),
+    entry.public_url ? renderRouteRow("Public URL", entry.public_url) : "",
+    entry.gui_port ? renderRouteRow("GUI URLs", getGuiUrls(entry.gui_port).join(", ")) : ""
+  ].filter(Boolean);
+
+  return rows.length > 0 ? `<div class="route-list">${rows.join("")}</div>` : "";
+}
+
+function renderRouteRow(label: string, value: string): string {
+  return `<div class="route-row"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`;
+}
+
+function getGuiUrls(port: number): string[] {
+  const hosts = new Set<string>();
+  hosts.add("127.0.0.1");
+
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    for (const networkInterface of interfaces ?? []) {
+      if (networkInterface.family === "IPv4" && !networkInterface.internal) {
+        hosts.add(networkInterface.address);
+      }
+    }
+  }
+
+  return Array.from(hosts).map((host) => `http://${host}:${port}`);
 }
 
 const RESTART_CLIENT_SCRIPT = `<script>
@@ -769,11 +831,11 @@ const RESTART_CLIENT_SCRIPT = `<script>
       );
       button.disabled = true;
       const originalLabel = button.textContent;
-      button.textContent = 'Rebuilding…';
+      button.textContent = 'Running...';
       if (status) {
         status.hidden = false;
         status.classList.remove('ok', 'err');
-        status.textContent = 'Running ' + id + ' rebuild script…';
+        status.textContent = 'Running ' + id + ' script...';
       }
       try {
         const res = await fetch(
