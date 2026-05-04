@@ -316,7 +316,15 @@ function hasPendingValidatorOrchestration(state: DispatchThreadStateV2): boolean
     }
 
     if (worker.status === "fix_requested") {
-      return !worker.thread_id?.trim();
+      // Validator feedback delivery is server-driven via continueDispatcher,
+      // not by the dispatcher hub session. A retained worker thread_id does
+      // not mean the hub will push feedback on its own — only a tick will.
+      // After a service or hub bounce, the recorded thread_id may also be
+      // stale (dead in the hub); processValidationQueue Phase 3 detects that
+      // by attempting delivery, and on failure clears the thread for relaunch.
+      // Both branches need the watchdog to fire when the hub reports running
+      // but is idle, so always treat fix_requested as pending here.
+      return true;
     }
 
     return false;
