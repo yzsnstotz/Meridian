@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 
+import { z } from "zod";
+
 import { config } from "../config";
 import { createLogger } from "../logger";
 import { buildClaudeStreamArgs } from "../agents/claude";
@@ -22,12 +24,14 @@ import {
   BUILT_IN_INTENTS,
   AgentInstanceStatusSchema,
   AgentTypeSchema,
+  CallerIdentitySchema,
   HubMessageSchema,
   HubResultSchema,
   ThreadProgressSnapshotSchema,
   type AgentInstance,
   type AgentType,
   type AttachmentResult,
+  type CallerIdentity,
   type FileAttachment,
   type HubMessage,
   type HubResult,
@@ -36,6 +40,8 @@ import {
   type ServiceEndpoint,
   type ThreadProgressSnapshot
 } from "../types";
+import type { WireAuth } from "../shared/caller-wire";
+import { CallerRegistry, type CallerRecord } from "./caller-registry";
 import { InstanceManager } from "./instance-manager";
 import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
@@ -181,6 +187,22 @@ export interface HubRouterOptions {
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
+const ADMIN_ONLY_INTENTS = new Set<string>(["register_caller", "unregister_caller", "rotate_caller_key"]);
+const ADMIN_CALLER_ID = "meridian-admin";
+
+const RegisterCallerPayloadSchema = z
+  .object({
+    caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
+    caller_label: z.string().min(1).max(64),
+    caller_kind: z.literal("external").optional()
+  })
+  .strict();
+
+const CallerIdOnlyPayloadSchema = z
+  .object({
+    caller_id: z.string().min(1)
+  })
+  .strict();
 
 class RunInterruptedError extends Error {
   constructor(readonly threadId: string) {
@@ -417,6 +439,7 @@ export class HubRouter {
   private readonly completedRunsByThread = new Map<string, CompletedRunRecord>();
   private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
   private readonly pendingRunFollowups = new Set<string>();
+  private callerRegistry: CallerRegistry | null = null;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -438,6 +461,11 @@ export class HubRouter {
     const persistedState = loadPersistedHubState(this.statePath, this.now().toISOString());
     const result = await this.instanceManager.rehydrateFromState(persistedState);
     this.rehydrateLocalState(persistedState);
+    this.callerRegistry = new CallerRegistry({
+      initialRecords: persistedState.callers ?? [],
+      persist: () => this.persistStateSafely(),
+      now: this.now
+    });
     this.persistStateSafely();
     this.log.info(
       {
@@ -451,7 +479,7 @@ export class HubRouter {
     );
   }
 
-  async route(rawMessage: HubMessage): Promise<HubResult> {
+  async route(rawMessage: HubMessage, auth?: WireAuth | null): Promise<HubResult> {
     const message = HubMessageSchema.parse(rawMessage);
     this.pruneAttachmentMetadata();
     const startedAt = Date.now();
@@ -468,6 +496,17 @@ export class HubRouter {
       },
       "Routing HubMessage"
     );
+
+    if (auth !== undefined) {
+      const authOutcome = this.authenticateCaller(message, auth);
+      if (!authOutcome.ok) {
+        return authOutcome.errorResult;
+      }
+      const adminGate = this.checkAdminIntentGate(message);
+      if (adminGate) {
+        return adminGate;
+      }
+    }
 
     try {
       const result = await this.routeByIntent(message);
@@ -568,6 +607,14 @@ export class HubRouter {
           return this.handleRegisterService(message);
         case "unregister_service":
           return this.handleUnregisterService(message);
+        case "register_caller":
+          return this.handleRegisterCaller(message);
+        case "unregister_caller":
+          return this.handleUnregisterCaller(message);
+        case "rotate_caller_key":
+          return this.handleRotateCallerKey(message);
+        case "list_callers":
+          return this.handleListCallers(message);
         case "reply":
           return this.handleReply(message);
         default:
@@ -1733,6 +1780,230 @@ export class HubRouter {
 
   private isBuiltInIntent(intent: string): boolean {
     return BUILT_IN_INTENT_SET.has(intent);
+  }
+
+  ensureBuiltinCallers(
+    builtins: ReadonlyArray<{ caller_id: string; caller_label: string }>,
+    deriveKey: (callerId: string) => string
+  ): void {
+    const registry = this.requireCallerRegistry();
+    for (const entry of builtins) {
+      registry.ensureBuiltin({
+        caller_id: entry.caller_id,
+        caller_label: entry.caller_label,
+        deriveKey: () => deriveKey(entry.caller_id)
+      });
+    }
+  }
+
+  getCallerRegistry(): CallerRegistry | null {
+    return this.callerRegistry;
+  }
+
+  private requireCallerRegistry(): CallerRegistry {
+    if (!this.callerRegistry) {
+      // Tests may exercise router methods without first calling initialize();
+      // bootstrap an in-memory registry so the admin handlers and middleware
+      // have somewhere to write. Real production goes through initialize().
+      this.callerRegistry = new CallerRegistry({
+        initialRecords: [],
+        persist: () => this.persistStateSafely(),
+        now: this.now
+      });
+    }
+    return this.callerRegistry;
+  }
+
+  private authenticateCaller(
+    message: HubMessage,
+    auth: WireAuth | null
+  ):
+    | { ok: true; record: CallerRecord }
+    | { ok: false; errorResult: HubResult } {
+    if (!auth || !auth.caller_id || !auth.caller_key) {
+      return { ok: false, errorResult: this.buildAuthErrorResult(message, "caller_required") };
+    }
+    const registry = this.requireCallerRegistry();
+    const record = registry.verify(auth.caller_id, auth.caller_key);
+    if (record) {
+      registry.touchLastSeen(record.caller_id);
+      const injected: CallerIdentity = {
+        caller_id: record.caller_id,
+        caller_label: record.caller_label,
+        ...(message.caller?.caller_version ? { caller_version: message.caller.caller_version } : {})
+      };
+      // Registry is authoritative for caller_label; overwrite any client-supplied value.
+      (message as { caller?: CallerIdentity }).caller = CallerIdentitySchema.parse(injected);
+      return { ok: true, record };
+    }
+    const existing = registry.get(auth.caller_id);
+    if (!existing || existing.revoked_at !== null) {
+      return { ok: false, errorResult: this.buildAuthErrorResult(message, "caller_unknown") };
+    }
+    return { ok: false, errorResult: this.buildAuthErrorResult(message, "caller_invalid") };
+  }
+
+  private checkAdminIntentGate(message: HubMessage): HubResult | null {
+    if (!ADMIN_ONLY_INTENTS.has(message.intent)) {
+      return null;
+    }
+    if (message.caller?.caller_id === ADMIN_CALLER_ID) {
+      return null;
+    }
+    return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+  }
+
+  private buildAuthErrorResult(message: HubMessage, content: string): HubResult {
+    return this.buildResult(
+      message,
+      "error",
+      this.resolveResultSource(message),
+      content,
+      message.thread_id
+    );
+  }
+
+  private parseAdminPayload<T>(
+    message: HubMessage,
+    schema: z.ZodType<T>
+  ): { ok: true; data: T } | { ok: false; errorResult: HubResult } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.payload.content);
+    } catch {
+      return {
+        ok: false,
+        errorResult: this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          `${message.intent}: payload.content must be JSON`,
+          message.thread_id
+        )
+      };
+    }
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+      return {
+        ok: false,
+        errorResult: this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          `${message.intent}: invalid payload (${result.error.issues
+            .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+            .join("; ")})`,
+          message.thread_id
+        )
+      };
+    }
+    return { ok: true, data: result.data };
+  }
+
+  private projectCallerForResponse(record: CallerRecord): Omit<CallerRecord, "key_hash"> {
+    // Strip key_hash before responding — Playbook §3.5: hashes never cross a process boundary.
+    const { key_hash: _ignored, ...projected } = record;
+    void _ignored;
+    return projected;
+  }
+
+  private handleRegisterCaller(message: HubMessage): HubResult {
+    const parsed = this.parseAdminPayload(message, RegisterCallerPayloadSchema);
+    if (!parsed.ok) {
+      return parsed.errorResult;
+    }
+    try {
+      const result = this.requireCallerRegistry().mint({
+        caller_id: parsed.data.caller_id,
+        caller_label: parsed.data.caller_label,
+        kind: "external"
+      });
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          caller_id: result.record.caller_id,
+          caller_key: result.cleartextKey
+        }),
+        message.thread_id
+      );
+    } catch (error) {
+      const err = error instanceof Error ? error.message : String(error);
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        `register_caller failed: ${err}`,
+        message.thread_id
+      );
+    }
+  }
+
+  private handleUnregisterCaller(message: HubMessage): HubResult {
+    const parsed = this.parseAdminPayload(message, CallerIdOnlyPayloadSchema);
+    if (!parsed.ok) {
+      return parsed.errorResult;
+    }
+    try {
+      const { revoked_at } = this.requireCallerRegistry().revoke(parsed.data.caller_id);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ revoked_at }),
+        message.thread_id
+      );
+    } catch (error) {
+      const err = error instanceof Error ? error.message : String(error);
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        `unregister_caller failed: ${err}`,
+        message.thread_id
+      );
+    }
+  }
+
+  private handleRotateCallerKey(message: HubMessage): HubResult {
+    const parsed = this.parseAdminPayload(message, CallerIdOnlyPayloadSchema);
+    if (!parsed.ok) {
+      return parsed.errorResult;
+    }
+    try {
+      const result = this.requireCallerRegistry().rotate(parsed.data.caller_id);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ caller_key: result.cleartextKey }),
+        message.thread_id
+      );
+    } catch (error) {
+      const err = error instanceof Error ? error.message : String(error);
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        `rotate_caller_key failed: ${err}`,
+        message.thread_id
+      );
+    }
+  }
+
+  private handleListCallers(message: HubMessage): HubResult {
+    const callers = this.requireCallerRegistry().list().map((record) => this.projectCallerForResponse(record));
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({
+        callers,
+        bootstrap_key_set: !!process.env.MERIDIAN_INTERNAL_BOOTSTRAP_KEY
+      }),
+      message.thread_id
+    );
   }
 
   private async dispatchToService(endpoint: ServiceEndpoint, message: HubMessage): Promise<HubResult> {
@@ -3276,7 +3547,8 @@ export class HubRouter {
           snapshot.instances ?? [],
           snapshot.session_bindings ?? {},
           this.serializePushSubscriptions(),
-          this.serializeConversationHistory()
+          this.serializeConversationHistory(),
+          this.callerRegistry?.list() ?? []
         )
       );
     } catch (error) {
