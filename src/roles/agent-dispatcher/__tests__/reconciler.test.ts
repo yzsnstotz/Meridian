@@ -251,6 +251,55 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("completes a stale initial validation-enabled worker from a clean completion report even when Hub still reports running", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput(
+      "reports/N-27.md",
+      [
+        "# N-27 Completion Report",
+        "",
+        "## Validation",
+        "",
+        "- `npm run check:bff` - PASS",
+        "- Exact AI Auto-Test command passed and printed `✅ N-27`."
+      ].join("\n")
+    );
+    harness.store.save(buildState({
+      workers: {
+        "N-27": {
+          ...buildRunningWorker("worker-thread-n27", outputPath, "2026-04-03T11:45:00.000Z"),
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-27"]?.status).toBe("completed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-27",
+        from: "running",
+        to: "completed",
+        trigger: "output_artifact:completion_signal:stale"
+      }
+    ]);
+  });
+
   it("keeps a worker running when its stored HubResult reports another worker's output", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
