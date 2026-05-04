@@ -115,6 +115,25 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
       });
       return roleState?.status === PAUSED_ROLE_STATUS;
     },
+    resolveKillPolicyForDispatchPlan: async (dispatchPlanPath) => {
+      const state = await loadAppState(stateStore);
+      for (const role of state.roles) {
+        if (role.roleType === "agent-dispatcher") {
+          const config = parseAgentDispatcherConfig(role);
+          if (config?.dispatch_plan_path === dispatchPlanPath) {
+            return config.kill_policy;
+          }
+          continue;
+        }
+        if (role.roleType === "scheduler") {
+          const config = parseSchedulerConfig(role);
+          if (config?.dispatch_plan_path === dispatchPlanPath) {
+            return config.kill_policy;
+          }
+        }
+      }
+      return null;
+    },
     onDispatcherStalled: async (info) => {
       const threadId = await resolveThreadIdForDispatchPlanPath(stateStore, info.dispatchPlanPath);
       if (!threadId) {

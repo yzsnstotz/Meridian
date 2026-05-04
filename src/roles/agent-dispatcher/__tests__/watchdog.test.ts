@@ -1382,6 +1382,181 @@ describe("ReconciliationWatchdog", () => {
       })
     );
   });
+
+  it("kills a worker thread once the watchdog reconciles it to completed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness("watchdog-terminal-cleanup-");
+    const outputPath = await harness.writeOutput("dev_history/W-01_report.md");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "running",
+          expected_outputs: [outputPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-02": {
+          thread_id: "w-thread-02",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient((message) => {
+      if (message.thread_id === "w-thread-01") {
+        return buildStatusResult(message.thread_id, "completed");
+      }
+      return buildStatusResult(message.thread_id, "running");
+    });
+
+    vi.spyOn(reconciliationFs, "existsSync").mockReturnValue(true);
+    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({
+      size: 100,
+      mtimeMs: Date.parse(FIXED_NOW)
+    } as ReturnType<typeof reconciliationFs.statSync>);
+
+    const killThread = vi.fn(async () => {});
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "always",
+      killThread
+    });
+
+    await watchdog.sweep();
+
+    expect(store.load().workers["W-01"]?.status).toBe("completed");
+    expect(killThread).toHaveBeenCalledTimes(1);
+    expect(killThread).toHaveBeenCalledWith("w-thread-01");
+    // Subsequent sweeps must not re-kill the same thread.
+    await watchdog.sweep();
+    expect(killThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not kill terminal workers when kill_policy is never", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness("watchdog-terminal-cleanup-never-");
+    const outputPath = await harness.writeOutput("dev_history/W-01_report.md");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "running",
+          expected_outputs: [outputPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient((message) =>
+      buildStatusResult(message.thread_id, "completed")
+    );
+
+    vi.spyOn(reconciliationFs, "existsSync").mockReturnValue(true);
+    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({
+      size: 100,
+      mtimeMs: Date.parse(FIXED_NOW)
+    } as ReturnType<typeof reconciliationFs.statSync>);
+
+    const killThread = vi.fn(async () => {});
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "never",
+      killThread
+    });
+
+    await watchdog.sweep();
+
+    expect(store.load().workers["W-01"]?.status).toBe("completed");
+    expect(killThread).not.toHaveBeenCalled();
+  });
+
+  it("does not kill awaiting_validation workers or the dispatcher controller thread", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness("watchdog-terminal-cleanup-validation-");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        DISPATCHER: {
+          thread_id: "d-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("d-01", "running"));
+
+    const killThread = vi.fn(async () => {});
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "always",
+      killThread
+    });
+
+    await watchdog.sweep();
+
+    expect(killThread).not.toHaveBeenCalled();
+  });
 });
 
 describe("continueDispatchWorker", () => {
