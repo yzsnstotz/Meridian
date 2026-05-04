@@ -27,12 +27,23 @@
 
 ---
 
-## Model Assignment Legend
+## Model Assignment Legend (model-routing contract)
 
-| Code | Model | Assign When |
-|------|-------|-------------|
-| `OPUS` | Claude Code | Complex multi-file coordination, architectural decisions, nuanced business logic, integration-heavy tasks |
-| `CODEX` | Codex | Well-specified interface implementations, config files, straightforward CRUD, UI with clear API contracts |
+| Code | Model | Provider | Model ID | Reasoning Effort | Assign When |
+|------|-------|----------|----------|-----------------|-------------|
+| `CODEX` | Codex | `codex` | `gpt-5.4` | `medium` | Well-specified interface implementations, config files, straightforward CRUD, UI with clear API contracts |
+| `CODEX-HIGH` | Codex High | `codex` | `gpt-5.5` | `high` | Complex implementation with higher synthesis complexity |
+| `CODEX-XHIGH` | Codex XHigh | `codex` | `gpt-5.5` | `xhigh` | Deep integration, cross-file redesign, or architecture-sensitive refactors |
+| `OPUS` | Claude Opus | `claude` | `claude-opus-4-7` | *(implicit)* | Complex multi-file coordination, architectural decisions, nuanced business logic, integration-heavy tasks |
+| `SONNET` | Claude Sonnet | `claude` | `claude-sonnet-4-6` | *(implicit)* | Moderate edits, focused implementation work |
+| `GEMINI` | Gemini | `gemini` | `gemini-2.5-pro` | *(implicit)* | Research-heavy and synthesis-heavy work |
+
+### Migration notes
+
+- Legacy `CODEX`, `CODEX-HIGH`, and `CODEX-XHIGH` rows continue to map to `gpt-5.4 medium`, `gpt-5.5 high`, and `gpt-5.5 xhigh` by default.
+- A worker row `Model` value can be explicit `CODE::effort` (for example `CODEX::high`), which overrides the legend effort for that row.
+- Rows can also specify `Reasoning Effort` as a separate column; row-level effort always takes precedence over legend effort.
+- Model codes are normalized case-insensitively, and unknown codes are accepted as overrides with warning surfaces.
 
 ---
 

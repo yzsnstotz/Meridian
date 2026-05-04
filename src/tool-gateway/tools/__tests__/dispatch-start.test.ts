@@ -248,6 +248,29 @@ describe("dispatch-start parsing helpers", () => {
     });
   });
 
+  it("supports model legend tables with reasoning effort columns", () => {
+    const legend = parseDispatchPlanModelLegend([
+      "| Model | Code | Provider | Model ID | Reasoning Effort | Assign When |",
+      "|-------|------|----------|----------|-----------------|-------------|",
+      "| Codex | `CODEX` | `codex` | `gpt-5.4` | `high` | Well-specified |
+      "| Sonnet | `SONNET` | `claude` | `claude-sonnet-4-6` | `medium` | Moderate |
+      ""
+    ].join("\n"));
+
+    expect(legend).toEqual({
+      CODEX: {
+        label: "Codex",
+        provider: "codex",
+        model_id: "gpt-5.4"
+      },
+      SONNET: {
+        label: "Sonnet",
+        provider: "claude",
+        model_id: "claude-sonnet-4-6"
+      }
+    });
+  });
+
   it("rejects malformed inline model_map entries", () => {
     expect(() => parseInlineModelMap("CODEX=codex")).toThrow("Invalid model_map entry: CODEX=codex");
   });
