@@ -445,6 +445,19 @@ function determineWorkerTransition(
     };
   }
 
+  if (
+    outputsPresent
+    && !hubResult
+    && (observation.kind === "running" || observation.kind === "idle")
+    && isStale(startedAt, nowMs, staleTimeoutMs)
+    && outputArtifactsContainCompletionSignal(expectedOutputs, workerId, startedAt)
+  ) {
+    return {
+      to: "completed",
+      trigger: "output_artifact:completion_signal:stale"
+    };
+  }
+
   if (observation.kind === "completed" && outputsPresent) {
     return {
       to: "completed",
@@ -1208,6 +1221,34 @@ function outputArtifactsContainBlockSignal(paths: string[], startedAt?: string):
     startedAt,
     reconciliationFs
   );
+}
+
+function outputArtifactsContainCompletionSignal(paths: string[], workerId: string, startedAt?: string): boolean {
+  return outputArtifactsContain(
+    paths,
+    (content) => outputArtifactHasCompletionSignal(content, workerId),
+    startedAt,
+    reconciliationFs
+  );
+}
+
+function outputArtifactHasCompletionSignal(content: string, workerId: string): boolean {
+  return outputArtifactReferencesWorker(content, workerId)
+    && /^#\s+.*\bCompletion Report\b/im.test(content)
+    && (/\bPASS\b/.test(content) || /✅/.test(content))
+    && !isNonCompletionContent(content)
+    && !hubResultContainsBlockSignal({ content })
+    && !hubResultContainsFailureSignal({ content });
+}
+
+function outputArtifactReferencesWorker(content: string, workerId: string): boolean {
+  const normalizedWorkerId = workerId.trim();
+  if (normalizedWorkerId.length === 0) {
+    return false;
+  }
+
+  return new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(normalizedWorkerId)}($|[^A-Za-z0-9_-])`, "i")
+    .test(content);
 }
 
 function reportedOutputsExist(hubResult: HubResult, expectedOutputs: string[] = [], startedAt?: string): boolean {
