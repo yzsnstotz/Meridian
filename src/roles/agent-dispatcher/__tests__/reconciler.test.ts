@@ -212,6 +212,45 @@ describe("reconcile", () => {
     });
   });
 
+  it("completes an initial validation-enabled worker from a fresh report when the HubResult is missing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput("reports/N-27.md");
+    harness.store.save(buildState({
+      workers: {
+        "N-27": {
+          ...buildRunningWorker("worker-thread-n27", outputPath, "2026-04-03T12:20:00.000Z"),
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "completed"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["N-27"]?.status).toBe("completed");
+    expect(report.changed).toEqual([
+      {
+        workerId: "N-27",
+        from: "running",
+        to: "completed",
+        trigger: "hub_status:completed:outputs_present"
+      }
+    ]);
+  });
+
   it("keeps a worker running when its stored HubResult reports another worker's output", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

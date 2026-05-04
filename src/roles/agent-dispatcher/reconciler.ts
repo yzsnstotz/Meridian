@@ -632,6 +632,10 @@ function isValidationReworkAwaitingFreshResult(
     return false;
   }
 
+  if (!hasValidationFeedbackCycle(worker.validation)) {
+    return false;
+  }
+
   if (!hubResult?.timestamp) {
     return true;
   }
@@ -643,6 +647,13 @@ function isValidationReworkAwaitingFreshResult(
   }
 
   return resultMs < lastSeenMs;
+}
+
+function hasValidationFeedbackCycle(validation: NonNullable<DispatchWorkerState["validation"]>): boolean {
+  return validation.current_cycle > 0
+    || typeof validation.last_score === "number"
+    || typeof validation.last_feedback === "string"
+    || validation.history.length > 0;
 }
 
 function readWorkerScanRunId(commandPreamble: string | null | undefined): string | null {
