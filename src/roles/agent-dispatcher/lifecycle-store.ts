@@ -338,12 +338,28 @@ export class LifecycleStore {
       const worker = state.workers[workerId];
       if (!worker) return;
 
+      // Idempotency: if a validator is already in flight for this worker,
+      // do not reset its state. Without this guard, a duplicate intercept
+      // call (e.g. when a late hub_result silently flips the worker back to
+      // "completed" while the validator is still running) would clear
+      // validator_thread_id and Phase 2 would spawn a second validator on
+      // the same cycle. Observed in BATCH-3-GATE on dispatcher a9a66025.
+      if (worker.status === "awaiting_validation" && worker.validation?.validator_thread_id?.trim()) {
+        return;
+      }
+
       const prevStatus = worker.status;
       worker.status = "awaiting_validation";
       worker.validation = {
         current_cycle: worker.validation?.current_cycle ?? 0,
         max_fix_cycles: maxFixCycles,
-        validator_thread_id: null,
+        // Preserve any existing validator_thread_id. The previous behavior
+        // unconditionally reset to null, which combined with a duplicate
+        // intercept allowed double validator spawns. The idempotency guard
+        // above already handles the active-flight case; this preserve covers
+        // the rare case where status is not awaiting_validation but a thread
+        // id is still recorded (e.g. crash recovery).
+        validator_thread_id: worker.validation?.validator_thread_id ?? null,
         last_score: worker.validation?.last_score ?? null,
         last_feedback: worker.validation?.last_feedback ?? null,
         history: worker.validation?.history ?? []
@@ -423,6 +439,13 @@ export class LifecycleStore {
         }
       }
       this.logTransition(workerId, prevStatus, "completed", "validation_passed");
+      // A prior PM resolver run that failed (typically a Headers Timeout from
+      // the Meridian API while the PM session itself may have completed) for
+      // this worker is no longer evidence of failure once the validator has
+      // declared the worker healthy. Promote those entries to "completed" so
+      // downstream consumers (gate dependencies, UI panels) don't treat a
+      // transient PM call failure as a real worker failure.
+      reconcileFailedPmResolversForRecoveredWorker(state, workerId, this.log, this.now);
     });
   }
 
@@ -839,6 +862,48 @@ function reconcilePmStatusAgainstWorkerState(
   }
 
   return PM_RESOLVED_TARGET_STATUSES.has(target.status) ? "completed" : "failed";
+}
+
+// Promote previously-failed PM resolver entries for `workerId` to "completed"
+// when the worker has just recovered to a healthy state (e.g. validator
+// passed). The failure usually corresponds to a Meridian API Headers Timeout
+// while the PM session itself either completed in the background or was
+// superseded by a successful re-run. Either way, once the worker is healthy
+// the PM "failed" status is misleading — gates that read `pm_resolvers[]`
+// to decide whether downstream batches can proceed would otherwise treat
+// the timed-out PM as a real worker failure.
+function reconcileFailedPmResolversForRecoveredWorker(
+  state: DispatchThreadStateV2,
+  workerId: string,
+  log: Pick<Logger, "info">,
+  now: () => string
+): void {
+  const target = state.workers[workerId];
+  if (!target || !PM_RESOLVED_TARGET_STATUSES.has(target.status)) {
+    return;
+  }
+  const entries = state.pm_resolvers ?? [];
+  if (entries.length === 0) {
+    return;
+  }
+  const nowIso = now();
+  for (const entry of entries) {
+    if (entry.status !== "failed") {
+      continue;
+    }
+    if ((entry.issue?.worker_id ?? "").trim() !== workerId) {
+      continue;
+    }
+    entry.status = "completed";
+    entry.last_seen_at = nowIso;
+    entry.error = null;
+    log.info("PM resolver reconciled after worker recovery", {
+      event: "pm_resolver_recovered_after_worker_recovery",
+      thread_id: entry.thread_id,
+      worker_id: workerId,
+      worker_status: target.status
+    });
+  }
 }
 
 function mapPmResolverRunStatus(result: {
