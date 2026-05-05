@@ -62,6 +62,7 @@ function createCliDeps(overrides: Partial<CliDependencies> = {}) {
     stderr: (chunk: string) => {
       stderr += chunk;
     },
+    readLine: async (_prompt: string) => "y",
     ...overrides
   };
 
@@ -540,4 +541,351 @@ test("runCli fails fast when the Meridian API is unreachable", async () => {
 
   await expectCliError(runCli(["status"], harness.deps), 3, /Meridian API is not reachable/i);
   assert.deepEqual(harness.httpCalls, []);
+});
+
+// ---- caller list ----
+
+test("runCli caller list shows caller table in human format", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: [
+        {
+          caller_id: "test-caller",
+          caller_label: "Test Caller",
+          caller_kind: "external",
+          created_at: "2026-05-05T00:00:00.000Z",
+          last_seen_at: null,
+          revoked_at: null
+        }
+      ]
+    };
+  };
+
+  const exitCode = await runCli(["caller", "list"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [{ method: "GET", route: "/api/callers", body: undefined }]);
+  assert.ok(harness.stderr().includes("test-caller"));
+  assert.equal(harness.stdout(), "");
+});
+
+test("runCli caller list --json emits raw API response", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  const callerBody = [
+    {
+      caller_id: "test-caller",
+      caller_label: "Test Caller",
+      caller_kind: "external",
+      created_at: "2026-05-05T00:00:00.000Z",
+      last_seen_at: null,
+      revoked_at: null
+    }
+  ];
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return { statusCode: 200, headers: {}, body: callerBody };
+  };
+
+  const exitCode = await runCli(["caller", "list", "--json"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(harness.stdout()), callerBody);
+});
+
+// ---- caller mint ----
+
+test("runCli caller mint prints caller_id and caller_key to stdout", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: {
+        caller_id: "new-caller",
+        caller_label: "New Caller",
+        caller_key: "deadbeef1234abcd"
+      }
+    };
+  };
+
+  const exitCode = await runCli(["caller", "mint", "--id", "new-caller", "--label", "New Caller"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/callers",
+      body: { caller_id: "new-caller", caller_label: "New Caller" }
+    }
+  ]);
+  assert.ok(harness.stdout().includes("caller_id:  new-caller"));
+  assert.ok(harness.stdout().includes("caller_key: deadbeef1234abcd"));
+  assert.ok(harness.stdout().includes("IMPORTANT: Save this key now."));
+  assert.equal(harness.stderr(), "");
+});
+
+test("runCli caller mint with invalid --id regex exits with code 2", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+
+  await expectCliError(
+    runCli(["caller", "mint", "--id", "INVALID_ID", "--label", "Test"], harness.deps),
+    2,
+    /\^?\[a-z\]/
+  );
+  assert.deepEqual(harness.httpCalls, []);
+});
+
+test("runCli caller mint without --label exits with code 2", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+
+  await expectCliError(
+    runCli(["caller", "mint", "--id", "test-id"], harness.deps),
+    2,
+    /--label is required/
+  );
+  assert.deepEqual(harness.httpCalls, []);
+});
+
+test("runCli caller mint without --id exits with code 2", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+
+  await expectCliError(
+    runCli(["caller", "mint", "--label", "Test"], harness.deps),
+    2,
+    /--id is required/
+  );
+  assert.deepEqual(harness.httpCalls, []);
+});
+
+test("runCli caller mint rejects --write-env flag (PM Blocker #2)", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+
+  await expectCliError(
+    runCli(["caller", "mint", "--id", "test-id", "--label", "Test", "--write-env", "/tmp/.env"], harness.deps),
+    2,
+    /write-env.*not supported/
+  );
+  assert.deepEqual(harness.httpCalls, []);
+});
+
+// ---- caller rotate ----
+
+test("runCli caller rotate --yes skips confirmation and prints new key", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: {
+        caller_id: "test-caller",
+        caller_key: "newkey5678abcdef"
+      }
+    };
+  };
+
+  const exitCode = await runCli(["caller", "rotate", "--id", "test-caller", "--yes"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/callers/test-caller/rotate",
+      body: {}
+    }
+  ]);
+  assert.ok(harness.stdout().includes("caller_key: newkey5678abcdef"));
+  assert.ok(harness.stdout().includes("IMPORTANT: Save this key now."));
+  assert.equal(harness.stderr(), "");
+});
+
+test("runCli caller rotate without --yes uses readLine to confirm", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const promptsSeen: string[] = [];
+  const harness = createCliDeps({
+    readLine: async (prompt: string) => {
+      promptsSeen.push(prompt);
+      return "y";
+    }
+  });
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: { caller_id: "test-caller", caller_key: "rotatedkey" }
+    };
+  };
+
+  const exitCode = await runCli(["caller", "rotate", "--id", "test-caller"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(promptsSeen.length, 1);
+  assert.ok(promptsSeen[0]?.includes("test-caller"));
+  assert.ok(harness.stdout().includes("caller_key: rotatedkey"));
+});
+
+// ---- caller revoke ----
+
+test("runCli caller revoke --yes skips confirmation and prints revoked_at", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: {
+        caller_id: "test-caller",
+        revoked_at: "2026-05-05T10:00:00.000Z"
+      }
+    };
+  };
+
+  const exitCode = await runCli(["caller", "revoke", "--id", "test-caller", "--yes"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "DELETE",
+      route: "/api/callers/test-caller",
+      body: undefined
+    }
+  ]);
+  assert.ok(harness.stdout().includes("revoked_at: 2026-05-05T10:00:00.000Z"));
+  assert.equal(harness.stderr(), "");
+});
+
+test("runCli caller revoke without --yes aborts when readLine returns n", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps({ readLine: async () => "n" });
+
+  const exitCode = await runCli(["caller", "revoke", "--id", "test-caller"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, []);
+  assert.ok(harness.stderr().includes("Aborted"));
+});
+
+// ---- list --json with caller fields ----
+
+test("runCli list --json passes through spawned_by, last_caller, last_caller_at", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: [
+        {
+          thread_id: "claude_01",
+          agent_type: "claude",
+          status: "running",
+          created_at: "2026-05-05T00:00:00.000Z",
+          spawned_by: { caller_id: "meridian-roles", caller_label: "Meridian Roles" },
+          last_caller: { caller_id: "meridian-roles", caller_label: "Meridian Roles" },
+          last_caller_at: "2026-05-05T07:18:42.913Z"
+        }
+      ]
+    };
+  };
+
+  const exitCode = await runCli(["list", "--json"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [{ method: "GET", route: "/api/instances", body: undefined }]);
+  const output = JSON.parse(harness.stdout());
+  assert.equal(output.ok, true);
+  const instance = output.instances[0];
+  assert.deepEqual(instance.spawned_by, { caller_id: "meridian-roles", caller_label: "Meridian Roles" });
+  assert.deepEqual(instance.last_caller, { caller_id: "meridian-roles", caller_label: "Meridian Roles" });
+  assert.equal(instance.last_caller_at, "2026-05-05T07:18:42.913Z");
+});
+
+test("runCli list human format shows caller column and (none) when absent", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: [
+        {
+          thread_id: "claude_01",
+          agent_type: "claude",
+          status: "running",
+          created_at: "2026-05-05T00:00:00.000Z",
+          last_caller: { caller_id: "meridian-roles", caller_label: "Meridian Roles" },
+          last_caller_at: "2026-05-05T07:18:42.913Z"
+        },
+        {
+          thread_id: "codex_02",
+          agent_type: "codex",
+          status: "idle",
+          created_at: "2026-05-05T00:00:00.000Z"
+        }
+      ]
+    };
+  };
+
+  const exitCode = await runCli(["list"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  const output = harness.stderr();
+  assert.ok(output.includes("caller=meridian-roles@2026-05-05T07:18Z"));
+  assert.ok(output.includes("(none)"));
+});
+
+// ---- history --json with caller fields ----
+
+test("runCli history --json entries include caller_id and caller_label", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: [
+        {
+          id: "entry-1",
+          event_kind: "final_reply",
+          source: "claude",
+          type: "agent",
+          content: "ok",
+          raw_content: "raw",
+          timestamp: "2026-05-05T07:00:00.000Z",
+          caller_id: "meridian-roles",
+          caller_label: "Meridian Roles"
+        }
+      ]
+    };
+  };
+
+  const exitCode = await runCli(["history", "claude_01", "--json"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    { method: "GET", route: "/api/history?thread_id=claude_01", body: undefined }
+  ]);
+  const output = JSON.parse(harness.stdout());
+  assert.equal(output.ok, true);
+  assert.equal(output.thread_id, "claude_01");
+  assert.equal(output.entries[0]?.caller_id, "meridian-roles");
+  assert.equal(output.entries[0]?.caller_label, "Meridian Roles");
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import readline from "node:readline";
 
 import { deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { ProviderModelCatalog as SharedProviderModelCatalog, type ProviderModelCatalogResult } from "../shared/model-catalog";
@@ -28,11 +29,14 @@ const COMMANDS: Record<string, string> = {
   kill: "Terminate an agent thread",
   interrupt: "Interrupt the active run without terminating the thread",
   stop: "Alias for interrupt",
+  list: "List running agent instances with caller info",
   status: "List running agent instances",
   send: "Send a message to an agent thread",
   logs: "Retrieve agent output logs",
+  history: "Retrieve conversation history entries with caller info",
   autoapprove: "Get or set auto-approve state",
-  health: "Check Meridian API health"
+  health: "Check Meridian API health",
+  caller: "Manage caller identities (list/mint/rotate/revoke)"
 };
 
 type WriteFn = (text: string) => void;
@@ -51,6 +55,7 @@ export interface CliDependencies {
   now: () => Date;
   stdout: WriteFn;
   stderr: WriteFn;
+  readLine: (prompt: string) => Promise<string>;
 }
 
 class CliError extends Error {
@@ -74,6 +79,15 @@ export const defaultCliDependencies: CliDependencies = {
   },
   stderr: (text: string) => {
     process.stderr.write(text);
+  },
+  readLine: (prompt: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(prompt, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+    });
   }
 };
 
@@ -144,6 +158,31 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       return;
     case "health":
       hint(deps, "Usage: meridian health");
+      return;
+    case "list":
+      hint(deps, "Usage: meridian list [--json]");
+      hint(deps, "");
+      hint(deps, "Options:");
+      hint(deps, "  --json  Emit raw instance JSON including spawned_by, last_caller, last_caller_at");
+      return;
+    case "history":
+      hint(deps, "Usage: meridian history <thread-id> [--json]");
+      hint(deps, "");
+      hint(deps, "Options:");
+      hint(deps, "  --json  JSON output (default; includes caller_id, caller_label per entry)");
+      return;
+    case "caller":
+      hint(deps, "Usage: meridian caller <subcommand> [options]");
+      hint(deps, "");
+      hint(deps, "Subcommands:");
+      hint(deps, "  list                                     List all caller identities");
+      hint(deps, "  mint --id <kebab-id> --label <label>     Mint a new caller key");
+      hint(deps, "  rotate --id <kebab-id> [--yes]           Rotate a caller key");
+      hint(deps, "  revoke --id <kebab-id> [--yes]           Revoke a caller");
+      hint(deps, "");
+      hint(deps, "Notes:");
+      hint(deps, "  mint and rotate print the cleartext key once to stdout. Copy it immediately.");
+      hint(deps, "  --id must match ^[a-z][a-z0-9_-]*$");
       return;
     default:
       hint(deps, `Unknown command: ${command}`);
@@ -657,6 +696,221 @@ async function handleHealth(deps: CliDependencies): Promise<void> {
   );
 }
 
+async function confirmAction(deps: CliDependencies, message: string, autoConfirm: boolean): Promise<boolean> {
+  if (autoConfirm) {
+    return true;
+  }
+  const answer = await deps.readLine(`${message} [y/N] `);
+  return answer.trim().toLowerCase() === "y";
+}
+
+function formatShortTime(iso: string): string {
+  return `${iso.slice(0, 16)}Z`;
+}
+
+async function handleList(args: string[], deps: CliDependencies): Promise<void> {
+  const isJson = args.includes("--json");
+  const instances = await listInstances(deps);
+
+  if (isJson) {
+    deps.stdout(`${JSON.stringify({ ok: true, instances }, null, 2)}\n`);
+    return;
+  }
+
+  const header = `${"THREAD_ID".padEnd(16)} ${"TYPE".padEnd(10)} ${"STATUS".padEnd(10)} CALLER`;
+  hint(deps, header);
+  hint(deps, "-".repeat(60));
+
+  for (const instance of instances) {
+    const threadId = String(instance.thread_id ?? "").padEnd(16);
+    const type = String(instance.agent_type ?? instance.type ?? "").padEnd(10);
+    const status = String(instance.status ?? "").padEnd(10);
+
+    let callerCol = "(none)";
+    const lastCaller = instance.last_caller;
+    if (lastCaller !== null && lastCaller !== undefined && typeof lastCaller === "object" && !Array.isArray(lastCaller)) {
+      const callerRecord = lastCaller as Record<string, unknown>;
+      const callerId = typeof callerRecord.caller_id === "string" ? callerRecord.caller_id : null;
+      const callerAt = typeof instance.last_caller_at === "string" ? instance.last_caller_at : null;
+      if (callerId) {
+        const shortTime = callerAt ? formatShortTime(callerAt) : "";
+        callerCol = shortTime ? `caller=${callerId}@${shortTime}` : `caller=${callerId}`;
+      }
+    }
+
+    hint(deps, `${threadId} ${type} ${status} ${callerCol}`);
+  }
+}
+
+async function handleCallerList(args: string[], deps: CliDependencies): Promise<void> {
+  const isJson = args.includes("--json");
+  const body = await requestApiBody(deps, "GET", "/api/callers");
+  const callers = requireJsonArray(body, "Meridian API returned an unexpected callers payload");
+
+  if (isJson) {
+    deps.stdout(`${JSON.stringify(body, null, 2)}\n`);
+    return;
+  }
+
+  const header = `${"ID".padEnd(24)} ${"LABEL".padEnd(24)} ${"KIND".padEnd(10)} ${"CREATED".padEnd(26)} ${"LAST_SEEN".padEnd(26)} STATUS`;
+  hint(deps, header);
+  hint(deps, "-".repeat(120));
+
+  for (const caller of callers) {
+    const id = String(caller.caller_id ?? "").padEnd(24);
+    const label = String(caller.caller_label ?? "").padEnd(24);
+    const kind = String(caller.caller_kind ?? "").padEnd(10);
+    const created = String(caller.created_at ?? "").padEnd(26);
+    const lastSeen = String(caller.last_seen_at ?? "(never)").padEnd(26);
+    const status = caller.revoked_at ? "revoked" : "active";
+    hint(deps, `${id} ${label} ${kind} ${created} ${lastSeen} ${status}`);
+  }
+}
+
+async function handleCallerMint(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+
+  // Playbook §3.2: write-env convenience flag is deferred; reject it explicitly
+  if (parsed.options.has("write-env")) {
+    throw new CliError(EXIT_INVALID_ARGS, "the write-env convenience flag is not supported in this version; save the key manually");
+  }
+
+  const id = expectStringOption(parsed, "id");
+  const label = expectStringOption(parsed, "label");
+
+  if (!id) {
+    throw new CliError(EXIT_INVALID_ARGS, "--id is required for caller mint");
+  }
+  if (!label) {
+    throw new CliError(EXIT_INVALID_ARGS, "--label is required for caller mint");
+  }
+
+  const ID_REGEX = /^[a-z][a-z0-9_-]*$/;
+  if (!ID_REGEX.test(id)) {
+    throw new CliError(EXIT_INVALID_ARGS, `--id must match ^[a-z][a-z0-9_-]*$ (got: ${id})`);
+  }
+
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "POST", "/api/callers", { caller_id: id, caller_label: label }),
+    "Meridian API returned an unexpected caller mint payload"
+  );
+
+  const callerId = typeof body.caller_id === "string" ? body.caller_id : id;
+  const callerKey = typeof body.caller_key === "string" ? body.caller_key : "";
+
+  // Playbook §3.4: cleartext key to stdout only, never persisted
+  deps.stdout(`caller_id:  ${callerId}\n`);
+  deps.stdout(`caller_key: ${callerKey}\n`);
+  deps.stdout(`IMPORTANT: Save this key now. You will not see it again.\n`);
+}
+
+async function handleCallerRotate(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  const id = expectStringOption(parsed, "id");
+  const autoConfirm = parsed.options.get("yes") === true;
+
+  if (!id) {
+    throw new CliError(EXIT_INVALID_ARGS, "--id is required for caller rotate");
+  }
+
+  const confirmed = await confirmAction(deps, `Rotate key for caller '${id}'?`, autoConfirm);
+  if (!confirmed) {
+    hint(deps, "Aborted.");
+    return;
+  }
+
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "POST", `/api/callers/${encodeURIComponent(id)}/rotate`, {}),
+    "Meridian API returned an unexpected caller rotate payload"
+  );
+
+  const callerId = typeof body.caller_id === "string" ? body.caller_id : id;
+  const callerKey = typeof body.caller_key === "string" ? body.caller_key : "";
+
+  // Playbook §3.4: cleartext key to stdout only
+  deps.stdout(`caller_id:  ${callerId}\n`);
+  deps.stdout(`caller_key: ${callerKey}\n`);
+  deps.stdout(`IMPORTANT: Save this key now. You will not see it again.\n`);
+}
+
+async function handleCallerRevoke(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  const id = expectStringOption(parsed, "id");
+  const autoConfirm = parsed.options.get("yes") === true;
+
+  if (!id) {
+    throw new CliError(EXIT_INVALID_ARGS, "--id is required for caller revoke");
+  }
+
+  const confirmed = await confirmAction(deps, `Revoke caller '${id}'? This cannot be undone.`, autoConfirm);
+  if (!confirmed) {
+    hint(deps, "Aborted.");
+    return;
+  }
+
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "DELETE", `/api/callers/${encodeURIComponent(id)}`),
+    "Meridian API returned an unexpected caller revoke payload"
+  );
+
+  const revokedAt = typeof body.revoked_at === "string" ? body.revoked_at : "";
+  deps.stdout(`revoked_at: ${revokedAt}\n`);
+}
+
+async function handleCaller(args: string[], deps: CliDependencies): Promise<void> {
+  const [subcommand, ...subArgs] = args;
+  switch (subcommand) {
+    case "list":
+      await handleCallerList(subArgs, deps);
+      return;
+    case "mint":
+      await handleCallerMint(subArgs, deps);
+      return;
+    case "rotate":
+      await handleCallerRotate(subArgs, deps);
+      return;
+    case "revoke":
+      await handleCallerRevoke(subArgs, deps);
+      return;
+    default:
+      throw new CliError(EXIT_INVALID_ARGS, `unknown caller subcommand: ${subcommand ?? ""}. Use: list, mint, rotate, revoke`);
+  }
+}
+
+async function handleHistory(args: string[], deps: CliDependencies): Promise<void> {
+  const filteredArgs = args.filter((a) => a !== "--json");
+  const threadId = filteredArgs[0]?.trim();
+  if (!threadId) {
+    throw new CliError(EXIT_INVALID_ARGS, "history requires exactly one thread id");
+  }
+
+  const entries = requireJsonArray(
+    await requestApiBody(deps, "GET", buildApiRoute("/api/history", { thread_id: threadId })),
+    "Meridian API returned an unexpected history payload"
+  ).map((entry) => ({
+    id: typeof entry.id === "string" ? entry.id : null,
+    event_kind: typeof entry.event_kind === "string" ? entry.event_kind : null,
+    source: typeof entry.source === "string" ? entry.source : null,
+    type: typeof entry.type === "string" ? entry.type : null,
+    content:
+      typeof entry.details_text === "string" && entry.details_text.trim()
+        ? entry.details_text
+        : typeof entry.content === "string"
+          ? entry.content
+          : "",
+    raw_content: typeof entry.raw_content === "string" ? entry.raw_content : "",
+    timestamp: typeof entry.timestamp === "string" ? entry.timestamp : null,
+    caller_id: typeof entry.caller_id === "string" ? entry.caller_id : null,
+    caller_label: typeof entry.caller_label === "string" ? entry.caller_label : null
+  }));
+
+  jsonOut(deps, {
+    ok: true,
+    thread_id: threadId,
+    entries
+  });
+}
+
 async function ensureHubReachable(deps: CliDependencies): Promise<void> {
   try {
     await deps.connectToHub();
@@ -697,6 +951,9 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
     case "stop":
       await handleInterrupt(commandArgs, deps);
       return EXIT_SUCCESS;
+    case "list":
+      await handleList(commandArgs, deps);
+      return EXIT_SUCCESS;
     case "status":
       await handleStatus(deps);
       return EXIT_SUCCESS;
@@ -706,11 +963,17 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
     case "logs":
       await handleLogs(commandArgs, deps);
       return EXIT_SUCCESS;
+    case "history":
+      await handleHistory(commandArgs, deps);
+      return EXIT_SUCCESS;
     case "autoapprove":
       await handleAutoapprove(commandArgs, deps);
       return EXIT_SUCCESS;
     case "health":
       await handleHealth(deps);
+      return EXIT_SUCCESS;
+    case "caller":
+      await handleCaller(commandArgs, deps);
       return EXIT_SUCCESS;
     default:
       throw new CliError(EXIT_INVALID_ARGS, `unknown command: ${command}`);

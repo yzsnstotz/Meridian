@@ -1,25 +1,31 @@
 # bin
 **Source**: `src/bin/`
 **Summary**: JSON-first CLI command dispatch for spawning and controlling Meridian agent threads through Meridian's authenticated HTTP API boundary, plus CLI-side API helpers for reachability and request shaping.
-**Last Scanned**: 2026-04-16T12:30:00+09:00
+**Last Scanned**: 2026-05-05
 **Exports Documented**: 7
 
 `src/bin/meridian-cli.ts` does manual argument parsing instead of using a command framework. Operational commands emit structured JSON on stdout, help text is written to stderr, and failures are normalized into exit codes `0`, `1`, `2`, `3`, and `4`.
 
 ## CLI Command Registry
 
-Global flags: `--help` prints root or per-command usage, and `--json` is accepted but ignored because JSON stdout is already the default. Every real subcommand goes through `ensureHubReachable()` before dispatch, so API reachability is the CLI's only public connectivity gate.
+Global flags: `--help` prints root or per-command usage, and `--json` is accepted but ignored because JSON stdout is already the default for most commands. Every real subcommand goes through `ensureHubReachable()` before dispatch, so API reachability is the CLI's only public connectivity gate.
 
 | Command | Usage | Options / Inputs | Meridian behavior | Key refs |
 |--------|------|---------|--------|--------------|
 | `spawn` | `meridian spawn [agent-type] [options]` | Optional positional provider plus `--provider`, `--model`, `--effort`, `--workdir`, `--auto-approve`, `--no-auto-approve`, `--mode` | Defaults the provider to `claude`, validates provider and reasoning effort through Zod-backed schemas, normalizes `a2a` and `agentapi` into bridge mode, then posts a structured JSON body to `/api/spawn` with optional model, effort, spawn directory, and auto-approve overrides. | `src/bin/meridian-cli.ts:103`, `src/bin/meridian-cli.ts:451`, `src/bin/meridian-cli.ts:642` |
 | `models` | `meridian models <provider>` | Positional provider or `--provider` | Lists the local provider model catalog for pre-spawn selection while still sharing the CLI's top-level API reachability gate. | `src/bin/meridian-cli.ts:116`, `src/bin/meridian-cli.ts:481`, `src/bin/meridian-cli.ts:642` |
 | `kill` | `meridian kill <thread-id>` | Exactly one thread ID | Posts `{ thread_id }` to `/api/kill` and returns `{ "ok": true }` on success. | `src/bin/meridian-cli.ts:120`, `src/bin/meridian-cli.ts:497`, `src/bin/meridian-cli.ts:642` |
+| `list` | `meridian list [--json]` | Optional `--json` flag | Without `--json`: prints a human-readable table of live instances with a `caller=<id>@<HH:MM>Z` column derived from `last_caller`/`last_caller_at`; shows `(none)` when absent. With `--json`: emits `{ ok, instances }` passing through all API fields including `spawned_by`, `last_caller`, and `last_caller_at` without filtering. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
 | `status` | `meridian status` | No command-specific options | Reads `/api/instances`, then reshapes each live instance into `{ thread_id, type, model, status, uptime }` using the current clock and `created_at`. | `src/bin/meridian-cli.ts:123`, `src/bin/meridian-cli.ts:508`, `src/bin/meridian-cli.ts:642` |
 | `send` | `meridian send <thread-id> <message>` | One thread ID plus a non-empty message string | Posts `{ thread_id, content, attachments: [] }` to `/api/run` and treats `success`, `partial`, and `timeout` API-backed hub statuses as acceptable CLI outcomes. | `src/bin/meridian-cli.ts:126`, `src/bin/meridian-cli.ts:528`, `src/bin/meridian-cli.ts:642` |
 | `logs` | `meridian logs <thread-id>` | Exactly one thread ID | Reads `/api/history?thread_id=...`, then normalizes the returned history entries into a stable `{ id, event_kind, source, type, content, raw_content, timestamp }` shape for scripts. | `src/bin/meridian-cli.ts:129`, `src/bin/meridian-cli.ts:558`, `src/bin/meridian-cli.ts:642` |
+| `history` | `meridian history <thread-id> [--json]` | Exactly one thread ID; optional `--json` flag | Like `logs` but includes `caller_id` and `caller_label` per entry; `--json` is stripped before thread-ID extraction so the flag does not interfere with positional parsing. Always emits JSON. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
 | `autoapprove` | `meridian autoapprove <on|off|status> [--thread <id>]` | Action plus optional `--thread` selector | Resolves an explicit thread or the single active instance through `/api/instances`, reads `/api/autoapprove` for status, and posts `{ thread_id, enabled }` to `/api/autoapprove` for updates. | `src/bin/meridian-cli.ts:132`, `src/bin/meridian-cli.ts:589`, `src/bin/meridian-cli.ts:642` |
 | `health` | `meridian health` | No command-specific options | Reads `/api/health` and emits the structured API payload directly; it does not fall back to raw socket or local uptime inference. | `src/bin/meridian-cli.ts:135`, `src/bin/meridian-cli.ts:627`, `src/bin/meridian-cli.ts:642` |
+| `caller list` | `meridian caller list [--json]` | Optional `--json` | Without `--json`: prints a human-readable table of all registered callers (`id`, `label`, `kind`, `created_at`, `last_seen_at`, `status`). With `--json`: emits the raw `/api/callers` array. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
+| `caller mint` | `meridian caller mint --id <kebab-id> --label <label>` | `--id` (required, `^[a-z][a-z0-9_-]*$`), `--label` (required) | Validates `--id` client-side, posts `{ caller_id, caller_label }` to `POST /api/callers`, then prints `caller_id`, `caller_key`, and a one-time-copy warning to stdout only. `--write-env` is rejected (PM Blocker #2 deferred). | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
+| `caller rotate` | `meridian caller rotate --id <kebab-id> [--yes]` | `--id` (required), `--yes` to skip confirmation | Prompts for confirmation unless `--yes`; posts to `POST /api/callers/:id/rotate`; prints new `caller_key` to stdout with one-time-copy warning. Built-ins return a server error surfaced by the CLI. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
+| `caller revoke` | `meridian caller revoke --id <kebab-id> [--yes]` | `--id` (required), `--yes` to skip confirmation | Prompts for confirmation unless `--yes`; sends `DELETE /api/callers/:id`; prints `revoked_at`. Built-ins return a server error surfaced by the CLI. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
 
 ## Exports
 
@@ -65,9 +71,9 @@ Global flags: `--help` prints root or per-command usage, and `--json` is accepte
 ### `CliDependencies`
 - **File**: `src/bin/meridian-cli.ts:43`
 - **Purpose**: Defines the injected API transport, clock, and output hooks that make the CLI runner testable.
-- **Implementation**: The interface bundles Meridian API reachability and request helpers, provider model lookup, the current-time callback, and stdout/stderr writers. `runCli()` and the command handlers use this contract so tests can substitute fake API behavior without forking the process.
+- **Implementation**: The interface bundles Meridian API reachability and request helpers, provider model lookup, the current-time callback, stdout/stderr writers, and a `readLine(prompt) → Promise<string>` hook used by confirmation prompts in `caller rotate` and `caller revoke`. Tests override `readLine` to bypass interactive prompts; `--yes` bypasses it at the call site.
 - **Dependencies**: `bin/hub-connection`, `types`
-- **Status**: `[UPDATED 2026-04-16T12:30:00+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ### `defaultCliDependencies`
 - **File**: `src/bin/meridian-cli.ts:63`
@@ -79,9 +85,9 @@ Global flags: `--help` prints root or per-command usage, and `--json` is accepte
 ### `runCli(args: string[], deps: CliDependencies = defaultCliDependencies): Promise<number>`
 - **File**: `src/bin/meridian-cli.ts:642`
 - **Purpose**: Implements the top-level CLI command router for Meridian's local control surface.
-- **Implementation**: The function handles root help, rejects unknown commands, prints per-command usage when `--help` is present, verifies Meridian API reachability, and dispatches to the specific spawn, kill, status, send, logs, auto-approve, or health handler. Public operational commands now use only structured HTTP responses from Meridian's API boundary, while uncaught failures are converted into `CliError` instances so the script entrypoint can return stable exit codes and machine-readable error bodies.
+- **Implementation**: The function handles root help, rejects unknown commands, prints per-command usage when `--help` is present, verifies Meridian API reachability, and dispatches to the specific spawn, kill, list, status, send, logs, history, auto-approve, health, or caller handler. The new `list` command is caller-aware; `history` includes `caller_id`/`caller_label` per entry; `caller` dispatches to four subcommands (`list`, `mint`, `rotate`, `revoke`) that hit the `/api/callers*` routes from N-04. Public operational commands use only structured HTTP responses from Meridian's API boundary, while uncaught failures are converted into `CliError` instances so the script entrypoint can return stable exit codes and machine-readable error bodies.
 - **Dependencies**: `bin/hub-connection`, `types`
-- **Status**: `[UPDATED 2026-04-16T12:30:00+09:00]`
+- **Status**: `[UPDATED 2026-05-05]`
 
 ## Test Files
 
