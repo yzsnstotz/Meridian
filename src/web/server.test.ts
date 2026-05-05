@@ -1979,7 +1979,7 @@ test("non-admin route /api/spawn forwards inbound X-Meridian-Caller-Id into hub 
     });
     assert.equal(response.status, 200);
   }, {
-    requestHub: async (message: HubMessage) => {
+    requestHubAsCaller: async (message: HubMessage) => {
       seenMessages.push(message);
       return {
         trace_id: message.trace_id,
@@ -1996,6 +1996,49 @@ test("non-admin route /api/spawn forwards inbound X-Meridian-Caller-Id into hub 
   assert.equal(seenMessages.length, 1);
   const callerField = seenMessages[0]?.caller as { caller_id?: string } | undefined;
   assert.equal(callerField?.caller_id, "external-bot");
+});
+
+test("non-admin route /api/spawn signs hub socket request with inbound caller headers", async () => {
+  const seenAuth: Array<{ caller_id: string; caller_key: string }> = [];
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "content-type": "application/json",
+        "X-Meridian-Caller-Id": "meridian-roles",
+        "X-Meridian-Caller-Key": "roles-key"
+      },
+      body: JSON.stringify({ type: "codex" })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      throw new Error(`requestHub should not receive inbound caller request: ${message.intent}`);
+    },
+    requestHubAsCaller: async (
+      message: HubMessage,
+      auth: { caller_id: string; caller_key: string }
+    ) => {
+      seenMessages.push(message);
+      seenAuth.push(auth);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_new",
+        source: "codex",
+        status: "success",
+        content: "{}",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.caller?.caller_id, "meridian-roles");
+  assert.deepEqual(seenAuth, [{ caller_id: "meridian-roles", caller_key: "roles-key" }]);
 });
 
 test("startWebInterfaceServer sets meridian-web caller identity when bootstrap key is present", async () => {

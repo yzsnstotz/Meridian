@@ -71,3 +71,9 @@ test("BUILTIN_CALLERS includes meridian-admin", () => {
   assert.ok(adminEntry, "meridian-admin must be present");
   assert.equal(adminEntry.caller_label, "Meridian Admin");
 });
+
+test("BUILTIN_CALLERS labels meridian-roles as Meridian-Roles", () => {
+  const rolesEntry = BUILTIN_CALLERS.find((c) => c.caller_id === "meridian-roles");
+  assert.ok(rolesEntry, "meridian-roles must be present");
+  assert.equal(rolesEntry.caller_label, "Meridian-Roles");
+});
