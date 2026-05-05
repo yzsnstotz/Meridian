@@ -10,6 +10,7 @@ import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
   createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdKnown,
   isLifecycleThreadIdReserved,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
@@ -330,7 +331,10 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
       sandboxMode: deps.validatorConfig.mode === "stateless_call" ? "read-only" : undefined
     });
 
-    if (!isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId)) {
+    const isCollision = deps.validatorConfig.mode === "stateless_call"
+      ? isLifecycleThreadIdKnown(deps.dispatchPlanPath, spawnResult.threadId)
+      : isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId);
+    if (!isCollision) {
       return spawnResult.threadId;
     }
 
