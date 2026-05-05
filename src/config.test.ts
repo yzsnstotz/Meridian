@@ -115,6 +115,20 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
   });
 });
 
+test("parseConfig derives TELEGRAM_BOT_TOKEN from TELEGRAM_BOT_TOKENS when single token is absent", async () => {
+  await withProcessEnv({}, async () => {
+    const { parseConfig } = await import("./config");
+    const config = parseConfig({
+      ...REQUIRED_ENV,
+      TELEGRAM_BOT_TOKEN: undefined,
+      TELEGRAM_BOT_TOKENS: "111111111:first_token,222222222:second_token"
+    });
+
+    assert.equal(config.TELEGRAM_BOT_TOKEN, "111111111:first_token");
+    assert.equal(config.TELEGRAM_BOT_TOKENS, "222222222:second_token");
+  });
+});
+
 test("parseConfig treats a blank AGENT_WORKDIR as the default workspace root", async () => {
   await withProcessEnv({}, async () => {
     const { DEFAULT_AGENT_WORKDIR, parseConfig } = await import("./config");
