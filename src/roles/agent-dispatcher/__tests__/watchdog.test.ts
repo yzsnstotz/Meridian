@@ -1557,6 +1557,72 @@ describe("ReconciliationWatchdog", () => {
 
     expect(killThread).not.toHaveBeenCalled();
   });
+
+  it("does not kill an active validator thread that collides with a terminal worker's stale thread_id", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness("watchdog-terminal-cleanup-validator-collision-");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    // Reproduces dispatcher 02972423: N-07 finished on codex_09 (terminal,
+    // stale thread_id row), the Hub recycled the freed id, and the validator
+    // orchestrator now tracks codex_09 as N-39's active validator thread. The
+    // watchdog cleanup must skip codex_09 — killing it strands the validator
+    // and the next continue tick spawns a duplicate (codex_10 in the bug).
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "N-07": {
+          thread_id: "codex_09",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "N-39": {
+          thread_id: "codex_42",
+          trace_id: null,
+          started_at: "2026-04-03T12:05:00.000Z",
+          last_seen_at: "2026-04-03T12:05:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: "codex_09",
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("d-01", "running"));
+
+    const killThread = vi.fn(async () => {});
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "always",
+      killThread
+    });
+
+    await watchdog.sweep();
+
+    expect(killThread).not.toHaveBeenCalledWith("codex_09");
+  });
 });
 
 describe("continueDispatchWorker", () => {
