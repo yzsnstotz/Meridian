@@ -2444,10 +2444,14 @@ async function runValidationCycleWithFeedbackLoop(
     }
 
     const delivered = await deliverValidatorFeedback(deps, workerId);
-    if (!delivered) {
+    if (!delivered.delivered) {
       log.warn("Validator feedback was not delivered after fix request", {
         event: "validator_feedback_not_delivered",
-        worker_id: workerId
+        worker_id: workerId,
+        reason: delivered.reason,
+        ...(delivered.reason === "delivery_error"
+          ? { error: delivered.error }
+          : { detail: delivered.detail })
       });
       return;
     }
