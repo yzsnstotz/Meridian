@@ -8,18 +8,26 @@ import {
   DEFAULT_CLAUDE_ALLOWED_TOOLS
 } from "./claude";
 
-test("buildClaudeCliArgs includes skip-permissions by default", () => {
+test("buildClaudeCliArgs omits skip-permissions by default", () => {
   const args = buildClaudeCliArgs();
 
-  assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "), "--dangerously-skip-permissions"]);
+  assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" ")]);
   assert.equal(args.includes("--output-format"), false);
   assert.equal(args.includes("--include-partial-messages"), false);
+  assert.equal(args.includes("--dangerously-skip-permissions"), false);
 });
 
 test("buildClaudeCliArgs appends skip-permissions flag for auto-approve", () => {
   const args = buildClaudeCliArgs(undefined, undefined, true);
 
   assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "), "--dangerously-skip-permissions"]);
+});
+
+test("buildClaudeCliArgs omits skip-permissions when auto-approve is disabled", () => {
+  const args = buildClaudeCliArgs(undefined, undefined, false);
+
+  assert.deepEqual(args, ["claude", "--allowedTools", DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" ")]);
+  assert.equal(args.includes("--dangerously-skip-permissions"), false);
 });
 
 test("buildClaudeSpawnArgs threads auto-approve to the provider CLI", () => {
@@ -40,7 +48,7 @@ test("buildClaudeSpawnArgs threads auto-approve to the provider CLI", () => {
 });
 
 test("buildClaudeStreamArgs enables stream-json print mode without affecting bridge args", () => {
-  const args = buildClaudeStreamArgs("claude-3");
+  const args = buildClaudeStreamArgs("claude-3", true);
 
   assert.deepEqual(args, [
     "claude",
@@ -57,6 +65,12 @@ test("buildClaudeStreamArgs enables stream-json print mode without affecting bri
   ]);
 });
 
+test("buildClaudeStreamArgs omits skip-permissions when auto-approve is disabled", () => {
+  const args = buildClaudeStreamArgs("claude-3", false);
+
+  assert.equal(args.includes("--dangerously-skip-permissions"), false);
+});
+
 test("buildClaudeCliArgs appends --effort flag when reasoningEffort is provided", () => {
   const args = buildClaudeCliArgs(undefined, "claude-opus-4-7", undefined, "high");
 
@@ -67,8 +81,7 @@ test("buildClaudeCliArgs appends --effort flag when reasoningEffort is provided"
     "--effort",
     "high",
     "--model",
-    "claude-opus-4-7",
-    "--dangerously-skip-permissions"
+    "claude-opus-4-7"
   ]);
 });
 
@@ -98,7 +111,7 @@ test("buildClaudeSpawnArgs threads reasoningEffort to the provider CLI", () => {
 });
 
 test("buildClaudeStreamArgs threads reasoningEffort to the print-mode CLI", () => {
-  const args = buildClaudeStreamArgs("claude-opus-4-7", undefined, "medium");
+  const args = buildClaudeStreamArgs("claude-opus-4-7", true, "medium");
 
   assert.deepEqual(args, [
     "claude",

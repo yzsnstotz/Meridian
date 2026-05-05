@@ -150,11 +150,15 @@
       });
   }
 
-  function mintCaller(callerId, callerLabel) {
+  function mintCaller(callerId, callerLabel, callerAuthority) {
+    var body = { caller_id: callerId, caller_label: callerLabel };
+    if (callerAuthority) {
+      body.caller_authority = callerAuthority;
+    }
     return fetchWithAuth("/api/callers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ caller_id: callerId, caller_label: callerLabel })
+      body: JSON.stringify(body)
     }).then(function (res) {
       return res.json().then(function (body) {
         if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));

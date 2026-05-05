@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 
 import { buildClaudeSpawnArgs } from "../agents/claude";
-import { buildCodexSpawnArgs } from "../agents/codex";
+import { buildCodexExecArgs, buildCodexSpawnArgs } from "../agents/codex";
 import { buildCursorSpawnArgs } from "../agents/cursor";
 import { buildGeminiSpawnArgs } from "../agents/gemini";
 import { config } from "../config";
@@ -68,6 +68,14 @@ export interface RehydrationResult {
 export interface StreamSpawnResult {
   stdout: NodeJS.ReadableStream;
   process: ChildProcess;
+}
+
+export interface SpawnInvocationDescriptor {
+  command: string;
+  args: string[];
+  provider_args: string[];
+  provider_append: string;
+  display: string;
 }
 
 export interface InstanceManagerOptions {
@@ -706,6 +714,48 @@ export class InstanceManager {
 
   list(): AgentInstance[] {
     return this.registry.list();
+  }
+
+  describeSpawnInvocation(instance: AgentInstance): SpawnInvocationDescriptor {
+    if (instance.mode === "stateless_call") {
+      const providerArgs = buildCodexExecArgs(
+        instance.model_id,
+        false,
+        instance.reasoning_effort,
+        "read-only"
+      );
+      return {
+        command: providerArgs[0] ?? "codex",
+        args: providerArgs,
+        provider_args: providerArgs,
+        provider_append: this.formatCommand(providerArgs),
+        display: this.formatCommand(providerArgs)
+      };
+    }
+
+    const listenArg = instance.socket_path.startsWith("http://") || instance.socket_path.startsWith("https://")
+      ? `--url=${instance.socket_path}`
+      : `--socket=${instance.socket_path}`;
+    const args = this.buildSpawnArgs(
+      instance.agent_type,
+      instance.mode,
+      listenArg,
+      instance.model_id,
+      instance.auto_approve,
+      instance.reasoning_effort,
+      instance.sandbox_mode
+    );
+    const providerSeparator = args.indexOf("--");
+    const providerArgs = providerSeparator >= 0 ? args.slice(providerSeparator + 1) : [];
+    const command = this.agentapiBinPath;
+    const display = this.formatCommand([command, ...args]);
+    return {
+      command,
+      args,
+      provider_args: providerArgs,
+      provider_append: this.formatCommand(providerArgs),
+      display
+    };
   }
 
   private async spawnWithRetry(
@@ -1757,6 +1807,17 @@ export class InstanceManager {
       return buildGeminiSpawnArgs(mode, null, listenArg, modelId);
     }
     return buildCursorSpawnArgs(mode, null, listenArg, modelId);
+  }
+
+  private formatCommand(args: string[]): string {
+    return args.map((arg) => this.shellQuote(arg)).join(" ");
+  }
+
+  private shellQuote(arg: string): string {
+    if (/^[A-Za-z0-9_./:=@%+,\-"\\]+$/.test(arg)) {
+      return arg;
+    }
+    return `'${arg.replace(/'/g, "'\"'\"'")}'`;
   }
 
   private buildAgentAttachCliArgs(binding: AgentEndpointBinding): string[] | null {

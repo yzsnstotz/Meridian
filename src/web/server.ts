@@ -149,7 +149,8 @@ const autoApproveQuerySchema = z.object({
 
 const registerCallerBodySchema = z.object({
   caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
-  caller_label: z.string().min(1).max(64)
+  caller_label: z.string().min(1).max(64),
+  caller_authority: CallerAuthoritySchema.optional()
 });
 
 const callerAuthorityBodySchema = z.object({
@@ -1947,7 +1948,7 @@ export class WebInterfaceServer {
     try {
       body = registerCallerBodySchema.parse(await this.readJsonBody(request));
     } catch {
-      this.respondJson(response, 400, { error: "Invalid request body: caller_id must match /^[a-z][a-z0-9_-]*$/ and caller_label must be 1-64 chars" });
+      this.respondJson(response, 400, { error: "Invalid request body: caller_id must match /^[a-z][a-z0-9_-]*$/, caller_label must be 1-64 chars, and caller_authority must be read, write, stateless_call, or admin" });
       return;
     }
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
@@ -1958,7 +1959,12 @@ export class WebInterfaceServer {
           intent: "register_caller",
           thread_id: "global",
           target: "global",
-          content: JSON.stringify({ caller_id: body.caller_id, caller_label: body.caller_label, caller_kind: "external" }),
+          content: JSON.stringify({
+            caller_id: body.caller_id,
+            caller_label: body.caller_label,
+            caller_kind: "external",
+            ...(body.caller_authority && { caller_authority: body.caller_authority })
+          }),
           caller: ADMIN_CALLER_IDENTITY
         })
       )
@@ -2014,7 +2020,7 @@ export class WebInterfaceServer {
     try {
       body = callerAuthorityBodySchema.parse(await this.readJsonBody(request));
     } catch {
-      this.respondJson(response, 400, { error: "Invalid request body: caller_authority must be read, write, or admin" });
+      this.respondJson(response, 400, { error: "Invalid request body: caller_authority must be read, write, stateless_call, or admin" });
       return;
     }
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);

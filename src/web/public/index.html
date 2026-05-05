@@ -632,6 +632,12 @@
     .detail-item { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
     .detail-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.025em; }
     .detail-value { font-size: 0.875rem; font-weight: 500; color: #fff; word-break: break-all; white-space: normal; overflow: hidden; text-overflow: ellipsis; }
+    .detail-value.mono {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.76rem;
+      line-height: 1.35;
+      color: #dbe7ff;
+    }
     .role-link {
       grid-column: 1 / -1;
       display: flex;
@@ -872,6 +878,21 @@
     .caller-status-active { color: var(--success-color); }
     .caller-status-revoked { color: var(--error-color); }
     .caller-admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+    .caller-authority-select {
+      min-width: 12rem;
+      max-width: 100%;
+      padding: 0.35rem 0.5rem;
+      border-radius: 0.45rem;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-color);
+      font-size: 0.75rem;
+      font-family: inherit;
+    }
+    .caller-authority-select:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
     .btn-caller-action {
       padding: 0.3rem 0.65rem;
       border-radius: 0.45rem;
@@ -998,7 +1019,8 @@
       letter-spacing: 0.04em;
       color: var(--text-dim);
     }
-    .mint-field input {
+    .mint-field input,
+    .mint-field select {
       width: 100%;
       padding: 0.55rem 0.75rem;
       border-radius: 0.5rem;
@@ -1009,7 +1031,8 @@
       font-family: inherit;
       box-sizing: border-box;
     }
-    .mint-field input:focus { outline: 2px solid var(--accent-color); outline-offset: 1px; }
+    .mint-field input:focus,
+    .mint-field select:focus { outline: 2px solid var(--accent-color); outline-offset: 1px; }
     .mint-field-error { font-size: 0.75rem; color: var(--error-color); min-height: 1rem; }
     .mint-dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 
@@ -1237,6 +1260,10 @@
       <div class="mint-field">
         <label for="mint-label-input">Label (display name)</label>
         <input id="mint-label-input" type="text" placeholder="e.g. My Service" maxlength="64" autocomplete="off" />
+      </div>
+      <div class="mint-field">
+        <label for="mint-authority-input">Authority</label>
+        <select id="mint-authority-input"></select>
       </div>
       <div class="mint-dialog-actions">
         <button type="button" id="mint-dialog-cancel" class="btn-copy-key">Cancel</button>
@@ -1822,6 +1849,8 @@
           var lastCallerLabel = (lastCaller && (lastCaller.caller_label || lastCaller.caller_id)) || "Unknown";
           var spawnedBy = inst.spawned_by;
           var spawnedByLabel = (spawnedBy && (spawnedBy.caller_label || spawnedBy.caller_id)) || "Unknown";
+          var spawnAppend = inst.spawn_append || inst.spawn_provider_append || "";
+          var spawnDisplay = spawnAppend || inst.spawn_display || "—";
 
           card.innerHTML = `
             <div class="card-head">
@@ -1855,6 +1884,10 @@
                 <div class="detail-item span-2">
                   <span class="detail-label">Spawned by</span>
                   <span class="detail-value" style="font-size:0.8rem;color:var(--text-dim)">${escapeHtml(spawnedByLabel)}</span>
+                </div>
+                <div class="detail-item span-2">
+                  <span class="detail-label">Provider append</span>
+                  <span class="detail-value mono">${escapeHtml(spawnDisplay)}</span>
                 </div>
                 <div class="detail-item span-2">
                   <span class="detail-label">Attached interface</span>
@@ -2050,6 +2083,27 @@
         return div.innerHTML;
       }
 
+      var CALLER_AUTHORITY_OPTIONS = [
+        { value: "read", label: "read — Hub inspect only" },
+        { value: "write", label: "write — normal Hub control" },
+        { value: "stateless_call", label: "stateless_call — Codex read-only calls" },
+        { value: "admin", label: "admin — caller/key management" }
+      ];
+
+      function normalizeCallerAuthority(value) {
+        var normalized = value == null ? "" : String(value).trim().toLowerCase();
+        return /^(read|write|stateless_call|admin)$/.test(normalized) ? normalized : "write";
+      }
+
+      function renderAuthorityOptions(selected) {
+        var normalized = normalizeCallerAuthority(selected);
+        return CALLER_AUTHORITY_OPTIONS.map(function (option) {
+          return '<option value="' + escapeHtml(option.value) + '"' +
+            (option.value === normalized ? " selected" : "") +
+            '>' + escapeHtml(option.label) + '</option>';
+        }).join("");
+      }
+
       function renderCallerTable(callers) {
         if (!callerAdminTableEl) return;
         var tbody = callerAdminTableEl.querySelector("tbody");
@@ -2061,7 +2115,7 @@
         tbody.innerHTML = callers.map(function (caller) {
           var isBuiltin = caller.caller_kind === "builtin";
           var idEsc = escapeHtml(caller.caller_id);
-          var authority = caller.caller_authority || (caller.caller_id === "meridian-admin" ? "admin" : "write");
+          var authority = normalizeCallerAuthority(caller.caller_authority || (caller.caller_id === "meridian-admin" ? "admin" : "write"));
           var authorityEsc = escapeHtml(authority);
           var statusClass = caller.revoked_at ? "caller-status-revoked" : "caller-status-active";
           var statusText = caller.revoked_at ? "Revoked" : "Active";
@@ -2076,14 +2130,16 @@
             : '<div class="caller-admin-actions">' +
                 '<button type="button" class="btn-caller-action" data-caller-action="view" data-caller-id="' + idEsc + '">View</button>' +
                 '<button type="button" class="btn-caller-action" data-caller-action="rotate" data-caller-id="' + idEsc + '">Rotate</button>' +
-                '<button type="button" class="btn-caller-action" data-caller-action="authority" data-caller-id="' + idEsc + '" data-caller-authority="' + authorityEsc + '">Authority</button>' +
                 '<button type="button" class="btn-caller-action danger" data-caller-action="revoke" data-caller-id="' + idEsc + '">Revoke</button>' +
               '</div>';
+          var authorityCell = '<select class="caller-authority-select" data-caller-id="' + idEsc + '" data-previous-authority="' + authorityEsc + '"' +
+            (isBuiltin ? ' disabled title="Built-in caller authority is managed by the Hub bootstrap."' : '') +
+            '>' + renderAuthorityOptions(authority) + '</select>';
           return '<tr>' +
             '<td><code>' + idEsc + '</code></td>' +
             '<td>' + escapeHtml(caller.caller_label || "—") + '</td>' +
             '<td>' + kindCell + '</td>' +
-            '<td><code>' + authorityEsc + '</code></td>' +
+            '<td>' + authorityCell + '</td>' +
             '<td>' + escapeHtml(caller.created_at ? formatDate(caller.created_at) : "—") + '</td>' +
             '<td>' + escapeHtml(caller.last_seen_at ? formatDate(caller.last_seen_at) : "—") + '</td>' +
             '<td class="' + statusClass + '">' + statusText + '</td>' +
@@ -2149,22 +2205,25 @@
       function doMintCaller() {
         var idInputEl = document.getElementById("mint-id-input");
         var labelInputEl = document.getElementById("mint-label-input");
+        var authorityInputEl = document.getElementById("mint-authority-input");
         var errorEl = document.getElementById("mint-id-error");
         var submitBtn = document.getElementById("mint-dialog-submit");
         if (!idInputEl || !labelInputEl) return;
         var id = idInputEl.value.trim();
         var label = labelInputEl.value.trim();
+        var authority = normalizeCallerAuthority(authorityInputEl && authorityInputEl.value);
         if (errorEl) errorEl.textContent = "";
         if (!/^[a-z][a-z0-9_-]*$/.test(id)) {
           if (errorEl) errorEl.textContent = "Must start with a–z and contain only a–z, 0–9, _, -";
           return;
         }
         if (submitBtn) submitBtn.disabled = true;
-        window.MeridianWeb.mintCaller(id, label || id)
+        window.MeridianWeb.mintCaller(id, label || id, authority)
           .then(function (body) {
             if (mintDialogEl && mintDialogEl.close) mintDialogEl.close();
             if (idInputEl) idInputEl.value = "";
             if (labelInputEl) labelInputEl.value = "";
+            if (authorityInputEl) authorityInputEl.value = "write";
             showKeyReveal(body.caller_id, body.caller_key);
             doLoadCallers();
           })
@@ -2188,18 +2247,24 @@
           });
       }
 
-      function doUpdateCallerAuthority(callerId, currentAuthority) {
-        var nextAuthority = prompt("Set authority for " + callerId + " (read, write, admin)", currentAuthority || "write");
-        if (nextAuthority == null) return;
-        nextAuthority = nextAuthority.trim().toLowerCase();
-        if (!/^(read|write|admin)$/.test(nextAuthority)) {
-          alert("Authority must be read, write, or admin.");
+      function doUpdateCallerAuthority(callerId, nextAuthority, selectEl) {
+        nextAuthority = normalizeCallerAuthority(nextAuthority);
+        if (!/^(read|write|stateless_call|admin)$/.test(nextAuthority)) {
+          alert("Authority must be read, write, stateless_call, or admin.");
           return;
         }
+        if (selectEl) selectEl.disabled = true;
         window.MeridianWeb.updateCallerAuthority(callerId, nextAuthority)
-          .then(function () { doLoadCallers(); })
+          .then(function () {
+            if (selectEl) selectEl.setAttribute("data-previous-authority", nextAuthority);
+            doLoadCallers();
+          })
           .catch(function (err) {
+            if (selectEl) selectEl.value = selectEl.getAttribute("data-previous-authority") || "write";
             alert("Authority update failed: " + (err && err.message ? err.message : "unknown error"));
+          })
+          .then(function () {
+            if (selectEl) selectEl.disabled = false;
           });
       }
 
@@ -2378,8 +2443,14 @@
           if (!callerId) return;
           if (action === "view") doViewCallerKey(callerId);
           else if (action === "rotate") doRotateCaller(callerId);
-          else if (action === "authority") doUpdateCallerAuthority(callerId, btn.getAttribute("data-caller-authority") || "write");
           else if (action === "revoke") doRevokeCaller(callerId);
+        });
+        callerAdminTableEl.addEventListener("change", function (e) {
+          var select = e.target.closest(".caller-authority-select");
+          if (!select || !callerAdminTableEl.contains(select) || select.disabled) return;
+          var callerId = select.getAttribute("data-caller-id");
+          if (!callerId) return;
+          doUpdateCallerAuthority(callerId, select.value, select);
         });
       }
 
@@ -2389,9 +2460,11 @@
         callerMintBtn.addEventListener("click", function () {
           var idEl = document.getElementById("mint-id-input");
           var labelEl = document.getElementById("mint-label-input");
+          var authorityEl = document.getElementById("mint-authority-input");
           var errEl = document.getElementById("mint-id-error");
           if (idEl) idEl.value = "";
           if (labelEl) labelEl.value = "";
+          if (authorityEl) authorityEl.value = "write";
           if (errEl) errEl.textContent = "";
           if (mintDialogEl && mintDialogEl.showModal) mintDialogEl.showModal();
         });
@@ -2402,6 +2475,11 @@
       var mintDialogCancelEl = document.getElementById("mint-dialog-cancel");
       var mintDialogSubmitEl = document.getElementById("mint-dialog-submit");
       var mintIdInputEl = document.getElementById("mint-id-input");
+      var mintAuthorityInputEl = document.getElementById("mint-authority-input");
+      if (mintAuthorityInputEl) {
+        mintAuthorityInputEl.innerHTML = renderAuthorityOptions("write");
+        mintAuthorityInputEl.value = "write";
+      }
       if (mintDialogCloseEl) {
         mintDialogCloseEl.addEventListener("click", function () {
           if (mintDialogEl && mintDialogEl.close) mintDialogEl.close();
