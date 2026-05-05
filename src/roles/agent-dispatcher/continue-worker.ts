@@ -179,8 +179,7 @@ async function launchWorkerFromDispatchPlan(
     ? deriveAgentTypeFromModelCode(modelId ?? modelCode, config.agent_type)
     : config.agent_type;
 
-  const workerSpawnDir = resolveWorkerSpawnDir(config.dispatch_plan_path, dispatchPlanRow.worker)
-    ?? resolveConfiguredDispatchRepoRoot(config);
+  const workerSpawnDir = resolveLaunchSpawnDir(config, dispatchPlanRow.worker);
 
   return launchWorker({
     agentType: resolvedModel?.provider?.trim() || resolvedAgentType,
@@ -195,6 +194,15 @@ async function launchWorkerFromDispatchPlan(
     effort: resolvedEffort,
     validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow)
   });
+}
+
+function resolveLaunchSpawnDir(config: ContinueWorkerConfig, workerId: string): string {
+  if (config.dispatch_repo_root?.trim()) {
+    return resolveConfiguredDispatchRepoRoot(config);
+  }
+
+  return resolveWorkerSpawnDir(config.dispatch_plan_path, workerId)
+    ?? resolveConfiguredDispatchRepoRoot(config);
 }
 
 function resolveValidationMaxFixCycles(

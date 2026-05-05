@@ -163,6 +163,89 @@ describe("continueDispatchWorker", () => {
     return { dir, planPath, commandPath };
   }
 
+  it("uses the dispatcher spawn root override before a non-Codex worker Repo target", async () => {
+    const { dir, planPath, commandPath } = await createTempDispatchPlan();
+    const overrideRoot = await fsPromises.mkdtemp(path.join(tmpdir(), "spawn-root-override-"));
+    const targetRepoRoot = await fsPromises.mkdtemp(path.join(tmpdir(), "target-repo-root-"));
+    tempDirectories.add(overrideRoot);
+    tempDirectories.add(targetRepoRoot);
+    await fsPromises.writeFile(
+      path.join(dir, "N-04.md"),
+      `- **Repo**: \`${targetRepoRoot}\`\n- **Runtime**: TypeScript`,
+      "utf8"
+    );
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "claude-worker-thread"
+    });
+
+    await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: overrideRoot,
+        model_map: {
+          OPUS: {
+            provider: "claude",
+            model_id: "claude-opus-4-7"
+          }
+        }
+      },
+      [{ status: "⬜", worker: "N-04", model: "OPUS", notes: "Single module" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "claude",
+      dispatchRepoRoot: overrideRoot
+    }));
+  });
+
+  it("uses the worker Repo target when the dispatcher spawn root override is absent", async () => {
+    const { dir, planPath, commandPath } = await createTempDispatchPlan();
+    const targetRepoRoot = await fsPromises.mkdtemp(path.join(tmpdir(), "target-repo-root-"));
+    tempDirectories.add(targetRepoRoot);
+    await fsPromises.writeFile(
+      path.join(dir, "N-04.md"),
+      `- **Repo**: \`${targetRepoRoot}\`\n- **Runtime**: TypeScript`,
+      "utf8"
+    );
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "gemini-worker-thread"
+    });
+
+    await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        model_map: {
+          GEMINI: {
+            provider: "gemini",
+            model_id: "gemini-2.5-pro"
+          }
+        }
+      },
+      [{ status: "⬜", worker: "N-04", model: "GEMINI", notes: "Single module" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(launchWorker).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "gemini",
+      dispatchRepoRoot: targetRepoRoot
+    }));
+  });
+
   it("passes validator max cycles to launchable workers when role validation is enabled", async () => {
     const { dir, planPath, commandPath } = await createTempDispatchPlan();
     const launchWorker = vi.fn().mockResolvedValue({
