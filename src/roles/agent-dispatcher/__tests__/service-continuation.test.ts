@@ -7,6 +7,13 @@ import {
 import type { DispatchThreadStateV2 } from "../../../types";
 
 describe("service continuation", () => {
+  it("treats hyphen dependency placeholders as no dependencies", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "⬜", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "-" },
+      { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState())).toBe("PRE-FLIGHT");
+  });
+
   it("resolves prefix wildcard dependencies such as all E-XX", () => {
     expect(resolveServiceContinueWorker([
       { status: "✅", batch: "1", worker: "E-01", model: "CODEX", depends_on: "PRE-FLIGHT" },

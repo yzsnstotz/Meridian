@@ -18,6 +18,7 @@ import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoi
 const ACTIVE_STATUS = "active";
 const AGENT_DISPATCHER_ROLE_TYPE = "agent-dispatcher";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 const PAUSED_STATUS = "paused";
 const EMPTY_APP_STATE: AppState = {
   roles: [],
@@ -229,6 +230,7 @@ export class SessionManager {
 
     const nextState = lifecycleStore.load();
     nextState.dispatcher = buildPendingDispatcherState();
+    delete nextState.workers[DISPATCHER_WORKER_ID];
     lifecycleStore.save(nextState);
     this.dispatcherThreadId = null;
   }

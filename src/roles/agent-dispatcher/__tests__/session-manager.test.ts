@@ -447,6 +447,52 @@ describe("SessionManager", () => {
     });
     expect(manager.getDispatcherThreadId()).toBeNull();
   });
+
+  it("prepareFreshDispatcherLaunch clears stale dispatcher pseudo-worker state", async () => {
+    const harness = await createHarness();
+    const lifecycle = createLifecycleStoreMock({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: FIXED_NOW,
+        status: "abandoned"
+      },
+      workers: {
+        DISPATCHER: {
+          thread_id: "dispatcher-thread-stale",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "N-01": {
+          thread_id: "worker-thread-n01",
+          trace_id: "22222222-2222-4222-8222-222222222222",
+          started_at: FIXED_NOW,
+          last_seen_at: FIXED_NOW,
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    const manager = new SessionManager("agent-dispatcher-role-6", {
+      stateStore: harness.stateStore,
+      lifecycleStore: lifecycle.store
+    });
+
+    await manager.prepareFreshDispatcherLaunch();
+
+    expect(lifecycle.getState().workers).not.toHaveProperty("DISPATCHER");
+    expect(lifecycle.getState().workers).toHaveProperty("N-01");
+  });
 });
 
 async function createHarness(options?: { planContent?: string }): Promise<{

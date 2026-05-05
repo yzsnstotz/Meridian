@@ -342,14 +342,14 @@ function splitDependencyClauses(value: string | undefined): string[] {
   }
 
   const trimmed = normalizeDependencyText(value);
-  if (trimmed.length === 0 || trimmed === "—") {
+  if (trimmed.length === 0 || trimmed === "—" || trimmed === "-") {
     return [];
   }
 
   return trimmed
     .split(/,|\s+\+\s+/)
     .map((clause) => normalizeDependencyText(clause))
-    .filter((clause) => clause.length > 0 && clause !== "—");
+    .filter((clause) => clause.length > 0 && clause !== "—" && clause !== "-");
 }
 
 function resolveDependencyRows(
