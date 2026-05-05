@@ -8,6 +8,7 @@ export interface HubEntry {
   gui_port?: number;
   action_label?: string;
   restart_script?: string;
+  terminate_script?: string;
 }
 
 export type HubProbeStatus = "up" | "down" | "disabled";

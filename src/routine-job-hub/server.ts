@@ -24,7 +24,12 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8765;
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_REGISTRY_PATH = "/Users/yzliu/work/Docs/Projects/routine-job/hub.json";
-const DEFAULT_RESTART_SCRIPT_ROOTS: readonly string[] = ["/Users/yzliu/work/tools/"];
+export const DEFAULT_RESTART_SCRIPT_ROOTS: readonly string[] = [
+  "/Users/yzliu/work/tools/",
+  "/Users/yzliu/work/projects/ADS/user_scripts/",
+  "/Users/yzliu/work/Meridian/user_scripts/",
+  "/Users/yzliu/work/Meridian/Meridian-roles/user_scripts/"
+];
 const DEFAULT_RESTART_TIMEOUT_MS = 180_000;
 const RESTART_OUTPUT_MAX_BYTES = 64 * 1024;
 
@@ -256,6 +261,15 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
         return;
       }
 
+      const terminateMatch = /^\/api\/entries\/([^/]+)\/terminate$/.exec(pathname);
+      if (terminateMatch && method === "POST") {
+        const id = decodeURIComponent(terminateMatch[1] ?? "");
+        const result = await this.runTerminate(id);
+        const statusCode = result.status === "ok" ? 200 : result.status === "rejected" ? 400 : 500;
+        writeJson(response, statusCode, result);
+        return;
+      }
+
       if ((pathname === "/" || pathname === "/index.html") && (method === "GET" || method === "HEAD")) {
         const registry = await loadHubRegistry({ registryPath: this.registryPath });
         const entries = await this.probeEntries(registry.entries);
@@ -290,6 +304,14 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
   }
 
   private async runRestart(id: string): Promise<HubRestartResult> {
+    return await this.runScript(id, "restart_script");
+  }
+
+  private async runTerminate(id: string): Promise<HubRestartResult> {
+    return await this.runScript(id, "terminate_script");
+  }
+
+  private async runScript(id: string, scriptField: "restart_script" | "terminate_script"): Promise<HubRestartResult> {
     const registry = await loadHubRegistry({ registryPath: this.registryPath });
     const entry = registry.entries.find((candidate) => candidate.id === id);
     if (!entry) {
@@ -304,7 +326,8 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
       };
     }
 
-    if (!entry.restart_script) {
+    const scriptPath = entry[scriptField];
+    if (!scriptPath) {
       return {
         id,
         status: "rejected",
@@ -312,11 +335,11 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
         duration_ms: 0,
         stdout: "",
         stderr: "",
-        error: `Entry ${id} has no restart_script configured`
+        error: `Entry ${id} has no ${scriptField} configured`
       };
     }
 
-    const validation = validateRestartScript(entry.restart_script, this.restartScriptRoots);
+    const validation = validateScriptPath(scriptPath, this.restartScriptRoots, scriptField);
     if (validation.error) {
       return {
         id,
@@ -329,7 +352,7 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
       };
     }
 
-    return await executeRestartScript(id, validation.scriptPath, this.restartTimeoutMs);
+    return await executeScript(id, validation.scriptPath, this.restartTimeoutMs, scriptField);
   }
 }
 
@@ -337,8 +360,16 @@ export function validateRestartScript(
   scriptPath: string,
   allowedRoots: readonly string[]
 ): { scriptPath: string; error?: undefined } | { scriptPath: ""; error: string } {
+  return validateScriptPath(scriptPath, allowedRoots, "restart_script");
+}
+
+function validateScriptPath(
+  scriptPath: string,
+  allowedRoots: readonly string[],
+  scriptField: "restart_script" | "terminate_script"
+): { scriptPath: string; error?: undefined } | { scriptPath: ""; error: string } {
   if (!path.isAbsolute(scriptPath)) {
-    return { scriptPath: "", error: `restart_script must be an absolute path: ${scriptPath}` };
+    return { scriptPath: "", error: `${scriptField} must be an absolute path: ${scriptPath}` };
   }
 
   const resolved = path.resolve(scriptPath);
@@ -350,7 +381,7 @@ export function validateRestartScript(
   if (!allowed) {
     return {
       scriptPath: "",
-      error: `restart_script ${resolved} is outside the allowed roots: ${allowedRoots.join(", ")}`
+      error: `${scriptField} ${resolved} is outside the allowed roots: ${allowedRoots.join(", ")}`
     };
   }
 
@@ -362,6 +393,15 @@ export async function executeRestartScript(
   scriptPath: string,
   timeoutMs: number
 ): Promise<HubRestartResult> {
+  return await executeScript(id, scriptPath, timeoutMs, "restart_script");
+}
+
+async function executeScript(
+  id: string,
+  scriptPath: string,
+  timeoutMs: number,
+  scriptField: "restart_script" | "terminate_script"
+): Promise<HubRestartResult> {
   try {
     await fs.access(scriptPath, fs.constants.X_OK);
   } catch (error) {
@@ -372,7 +412,7 @@ export async function executeRestartScript(
       duration_ms: 0,
       stdout: "",
       stderr: "",
-      error: `restart_script ${scriptPath} is not executable: ${
+      error: `${scriptField} ${scriptPath} is not executable: ${
         error instanceof Error ? error.message : String(error)
       }`
     };
@@ -393,10 +433,10 @@ export async function executeRestartScript(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      killRestartProcess(child.pid, "SIGTERM", () => child.kill("SIGTERM"));
+      killScriptProcess(child.pid, "SIGTERM", () => child.kill("SIGTERM"));
       setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) {
-          killRestartProcess(child.pid, "SIGKILL", () => child.kill("SIGKILL"));
+          killScriptProcess(child.pid, "SIGKILL", () => child.kill("SIGKILL"));
         }
       }, 2_000).unref();
     }, timeoutMs);
@@ -443,7 +483,7 @@ export async function executeRestartScript(
           duration_ms: duration,
           stdout,
           stderr,
-          error: `restart_script timed out after ${timeoutMs}ms`
+          error: `${scriptField} timed out after ${timeoutMs}ms`
         });
         return;
       }
@@ -459,14 +499,14 @@ export async function executeRestartScript(
         error: exitCode === 0
           ? undefined
           : signal
-            ? `restart_script terminated by signal ${signal}`
-            : `restart_script exited with code ${exitCode}`
+            ? `${scriptField} terminated by signal ${signal}`
+            : `${scriptField} exited with code ${exitCode}`
       });
     });
   });
 }
 
-function killRestartProcess(pid: number | undefined, signal: NodeJS.Signals, fallback: () => boolean): void {
+function killScriptProcess(pid: number | undefined, signal: NodeJS.Signals, fallback: () => boolean): void {
   if (pid === undefined) {
     fallback();
     return;
@@ -532,6 +572,10 @@ function normalizeHubEntry(value: unknown): HubEntry | null {
 
   if (typeof record.restart_script === "string" && record.restart_script.trim()) {
     entry.restart_script = record.restart_script.trim();
+  }
+
+  if (typeof record.terminate_script === "string" && record.terminate_script.trim()) {
+    entry.terminate_script = record.terminate_script.trim();
   }
 
   return entry;
@@ -771,10 +815,13 @@ function renderCard(entry: ProbedHubEntry): string {
   const statusLabel = getStatusLabel(entry.status, entry.status_code);
   const actionLabel = entry.action_label ?? "Rebuild & restart";
   const restartButton = entry.restart_script
-    ? `\n    <button type="button" class="button" data-restart-id="${escapeAttribute(entry.id)}">${escapeHtml(actionLabel)}</button>`
+    ? `\n    <button type="button" class="button" data-script-action="restart" data-restart-id="${escapeAttribute(entry.id)}">${escapeHtml(actionLabel)}</button>`
     : "";
-  const restartStatus = entry.restart_script
-    ? `\n  <p class="restart-status" data-restart-status="${escapeAttribute(entry.id)}" hidden></p>`
+  const terminateButton = entry.terminate_script
+    ? `\n    <button type="button" class="button" data-script-action="terminate" data-terminate-id="${escapeAttribute(entry.id)}">Terminate</button>`
+    : "";
+  const restartStatus = entry.restart_script || entry.terminate_script
+    ? `\n  <p class="restart-status" data-restart-status="${escapeAttribute(entry.id)}" data-script-status="${escapeAttribute(entry.id)}" hidden></p>`
     : "";
   const routeList = renderRouteList(entry);
   return `<article class="card">
@@ -785,7 +832,7 @@ function renderCard(entry: ProbedHubEntry): string {
   <p class="description">${escapeHtml(entry.description ?? "")}</p>
   ${routeList}
   <div class="actions">
-    <a class="button" href="${escapeAttribute(entry.url)}">Open dashboard</a>${restartButton}
+    <a class="button" href="${escapeAttribute(entry.url)}">Open dashboard</a>${restartButton}${terminateButton}
   </div>${restartStatus}
 </article>`;
 }
@@ -821,13 +868,14 @@ function getGuiUrls(port: number): string[] {
 
 const RESTART_CLIENT_SCRIPT = `<script>
 (function () {
-  const buttons = document.querySelectorAll('button[data-restart-id]');
+  const buttons = document.querySelectorAll('button[data-script-action]');
   buttons.forEach((button) => {
     button.addEventListener('click', async () => {
-      const id = button.getAttribute('data-restart-id');
+      const action = button.getAttribute('data-script-action');
+      const id = button.getAttribute(action === 'terminate' ? 'data-terminate-id' : 'data-restart-id');
       if (!id) return;
       const status = document.querySelector(
-        '[data-restart-status="' + CSS.escape(id) + '"]'
+        '[data-script-status="' + CSS.escape(id) + '"]'
       );
       button.disabled = true;
       const originalLabel = button.textContent;
@@ -835,11 +883,11 @@ const RESTART_CLIENT_SCRIPT = `<script>
       if (status) {
         status.hidden = false;
         status.classList.remove('ok', 'err');
-        status.textContent = 'Running ' + id + ' script...';
+        status.textContent = 'Running ' + action + ' script for ' + id + '...';
       }
       try {
         const res = await fetch(
-          '/api/entries/' + encodeURIComponent(id) + '/restart',
+          '/api/entries/' + encodeURIComponent(id) + '/' + action,
           { method: 'POST' }
         );
         const data = await res.json().catch(() => ({}));
@@ -848,8 +896,8 @@ const RESTART_CLIENT_SCRIPT = `<script>
           status.classList.toggle('ok', ok);
           status.classList.toggle('err', !ok);
           const summary = ok
-            ? 'Restart OK · ' + (data.duration_ms || 0) + 'ms'
-            : 'Restart failed: ' + (data.error || 'exit ' + data.exit_code);
+            ? labelAction(action) + ' OK · ' + (data.duration_ms || 0) + 'ms'
+            : labelAction(action) + ' failed: ' + (data.error || 'exit ' + data.exit_code);
           const detail = (data.stdout || '') + (data.stderr ? '\\n' + data.stderr : '');
           status.innerHTML = '';
           const head = document.createElement('span');
@@ -864,7 +912,7 @@ const RESTART_CLIENT_SCRIPT = `<script>
       } catch (error) {
         if (status) {
           status.classList.add('err');
-          status.textContent = 'Restart request failed: ' +
+          status.textContent = labelAction(action) + ' request failed: ' +
             (error && error.message ? error.message : String(error));
         }
       } finally {
@@ -873,6 +921,9 @@ const RESTART_CLIENT_SCRIPT = `<script>
       }
     });
   });
+  function labelAction(action) {
+    return action === 'terminate' ? 'Terminate' : 'Restart';
+  }
 })();
 </script>`;
 

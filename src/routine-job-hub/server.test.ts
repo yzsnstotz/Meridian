@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createRoutineJobHubServer,
+  DEFAULT_RESTART_SCRIPT_ROOTS,
   executeRestartScript,
   parseHubRegistry,
   probeEntry,
@@ -123,12 +124,14 @@ describe("routine job hub server", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("renders rebuild & restart button only when restart_script is configured", async () => {
+  it("renders rebuild, restart, and terminate buttons from configured scripts", async () => {
     const child = await startChildServer(200);
     const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-restart-ui-"));
     const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-"));
     const scriptPath = path.join(allowedRoot, "rebuild-and-restart.sh");
+    const terminateScriptPath = path.join(allowedRoot, "terminate.sh");
     await fs.writeFile(scriptPath, "#!/usr/bin/env bash\necho ok\n", { mode: 0o755 });
+    await fs.writeFile(terminateScriptPath, "#!/usr/bin/env bash\necho terminated\n", { mode: 0o755 });
     const registryPath = path.join(root, "hub.json");
     await fs.writeFile(registryPath, JSON.stringify([
       {
@@ -137,7 +140,8 @@ describe("routine job hub server", () => {
         description: "Has a rebuild script",
         url: child.baseUrl,
         health_path: "/healthz",
-        restart_script: scriptPath
+        restart_script: scriptPath,
+        terminate_script: terminateScriptPath
       },
       {
         id: "without-script",
@@ -159,8 +163,11 @@ describe("routine job hub server", () => {
 
     const page = await fetchText(`${server.url()}/`);
     expect(page.body).toContain('data-restart-id="with-script"');
+    expect(page.body).toContain('data-terminate-id="with-script"');
     expect(page.body).not.toContain('data-restart-id="without-script"');
+    expect(page.body).not.toContain('data-terminate-id="without-script"');
     expect(page.body).toContain("Rebuild &amp; restart");
+    expect(page.body).toContain("Terminate");
 
     await fs.rm(root, { recursive: true, force: true });
     await fs.rm(allowedRoot, { recursive: true, force: true });
@@ -259,7 +266,58 @@ describe("routine job hub server", () => {
     await fs.rm(allowedRoot, { recursive: true, force: true });
   });
 
-  it("rejects restart requests for unknown ids and unconfigured scripts", async () => {
+  it("runs an allowlisted terminate script and returns its output", async () => {
+    const allowedRoot = await fs.mkdtemp(path.join(tmpdir(), "tools-allowed-terminate-"));
+    const scriptPath = path.join(allowedRoot, "terminate.sh");
+    await fs.writeFile(
+      scriptPath,
+      "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'STATUS: stopping\\nSTATUS: DONE\\n'\nexit 0\n",
+      { mode: 0o755 }
+    );
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-terminate-run-"));
+    const registryPath = path.join(root, "hub.json");
+    await fs.writeFile(registryPath, JSON.stringify([
+      {
+        id: "meridian",
+        name: "Meridian",
+        url: "http://127.0.0.1:3000",
+        health_path: "/",
+        terminate_script: scriptPath
+      }
+    ]), "utf8");
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      probeTimeoutMs: 500,
+      restartScriptRoots: [allowedRoot]
+    });
+    servers.add(server);
+    await server.listen();
+
+    const result = await fetch(
+      `${server.url()}/api/entries/meridian/terminate`,
+      { method: "POST" }
+    );
+    expect(result.status).toBe(200);
+    const body = await result.json() as {
+      id: string;
+      status: string;
+      exit_code: number | null;
+      stdout: string;
+      stderr: string;
+    };
+    expect(body.id).toBe("meridian");
+    expect(body.status).toBe("ok");
+    expect(body.exit_code).toBe(0);
+    expect(body.stdout).toContain("STATUS: stopping");
+    expect(body.stdout).toContain("STATUS: DONE");
+
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(allowedRoot, { recursive: true, force: true });
+  });
+
+  it("rejects restart and terminate requests for unknown ids and unconfigured scripts", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-restart-reject-"));
     const registryPath = path.join(root, "hub.json");
     await fs.writeFile(registryPath, JSON.stringify([
@@ -297,6 +355,15 @@ describe("routine job hub server", () => {
     expect(noScriptBody.status).toBe("rejected");
     expect(noScriptBody.error).toContain("no restart_script configured");
 
+    const noTerminateScript = await fetch(
+      `${server.url()}/api/entries/no-script/terminate`,
+      { method: "POST" }
+    );
+    expect(noTerminateScript.status).toBe(400);
+    const noTerminateScriptBody = await noTerminateScript.json() as { status: string; error: string };
+    expect(noTerminateScriptBody.status).toBe("rejected");
+    expect(noTerminateScriptBody.error).toContain("no terminate_script configured");
+
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -317,6 +384,19 @@ describe("routine job hub server", () => {
 
     await fs.rm(insideRoot, { recursive: true, force: true });
     await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it("allowlists Meridian user scripts for direct maintenance registration", () => {
+    const scripts = [
+      "/Users/yzliu/work/projects/ADS/user_scripts/terminate.sh",
+      "/Users/yzliu/work/Meridian/user_scripts/terminate.sh",
+      "/Users/yzliu/work/Meridian/Meridian-roles/user_scripts/terminate.sh"
+    ];
+
+    for (const script of scripts) {
+      const validation = validateRestartScript(script, DEFAULT_RESTART_SCRIPT_ROOTS);
+      expect("error" in validation && validation.error).toBeFalsy();
+    }
   });
 
   it("kills restart scripts that exceed the timeout", async () => {
