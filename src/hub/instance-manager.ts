@@ -602,18 +602,24 @@ export class InstanceManager {
     };
   }
 
-  async switchModel(threadId: string, nextModelId: string): Promise<string> {
+  async switchModel(
+    threadId: string,
+    nextModelId: string,
+    reasoningEffort?: ReasoningEffort
+  ): Promise<string> {
     const existing = this.registry.get(threadId);
     if (!existing) {
       throw new Error(`Cannot switch model; thread_id=${threadId} is not registered`);
     }
+    const nextReasoningEffort = reasoningEffort ?? existing.reasoning_effort;
 
-    if (existing.model_id === nextModelId) {
+    if (existing.model_id === nextModelId && existing.reasoning_effort === nextReasoningEffort) {
       return threadId;
     }
 
     const previousStatus = existing.status;
     const previousModelId = existing.model_id ?? null;
+    const previousReasoningEffort = existing.reasoning_effort;
     await this.killInternal(threadId, true);
     const restartedThreadId = await this.spawnWithRetry(
       existing.agent_type,
@@ -622,7 +628,7 @@ export class InstanceManager {
       existing.working_dir,
       nextModelId,
       existing.auto_approve,
-      existing.reasoning_effort,
+      nextReasoningEffort,
       null,
       existing.integration_profile,
       existing.sandbox_mode
@@ -636,6 +642,8 @@ export class InstanceManager {
         agent_type: existing.agent_type,
         from_model_id: previousModelId,
         to_model_id: nextModelId,
+        from_reasoning_effort: previousReasoningEffort,
+        to_reasoning_effort: nextReasoningEffort,
         pid: current?.pid ?? null,
         socket_path: current?.socket_path ?? null,
         prev_status: previousStatus,

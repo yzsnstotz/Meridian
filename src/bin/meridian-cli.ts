@@ -13,6 +13,7 @@ import {
   type HubResult,
   type ReasoningEffort
 } from "../types";
+import { parseModelReference } from "../shared/model-reference";
 import { connectToHub, hubHttpRequest, setCallerIdentity, type HubConnection, type HubHttpResponse } from "./hub-connection";
 
 const EXIT_SUCCESS = 0;
@@ -473,14 +474,15 @@ async function handleSpawn(args: string[], deps: CliDependencies): Promise<void>
   const workdir = expectStringOption(parsed, "workdir");
   const autoApprove = expectBooleanOption(parsed, "auto-approve") ?? true;
   const mode = parseMode(expectStringOption(parsed, "mode"));
+  const modelRef = parseModelReference(modelId, reasoningEffort);
 
   const result = await requestHubResult(deps, "POST", "/api/spawn", {
     type: provider,
     provider,
     mode,
     auto_approve: autoApprove,
-    ...(modelId && { model_id: modelId }),
-    ...(reasoningEffort && { effort: reasoningEffort }),
+    ...(modelRef.modelId && { model_id: modelRef.modelId }),
+    ...(modelRef.reasoningEffort && { effort: modelRef.reasoningEffort }),
     ...(workdir && { spawn_dir: path.resolve(workdir) })
   });
 
