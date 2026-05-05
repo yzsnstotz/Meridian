@@ -385,6 +385,14 @@ async function buildWorkerPreamble(
     lines.push("");
   }
 
+  const reportOutputs = expectedOutputs.filter((outputPath) => outputPath.trim().toLowerCase().endsWith(".md"));
+  if (!isDispatcherWorker(workerId) && reportOutputs.length > 0) {
+    lines.push(`# Report History Policy`);
+    lines.push(`Report path(s): ${reportOutputs.map((outputPath) => `\`${outputPath}\``).join(", ")}`);
+    lines.push(`If a report file already exists, append a new attempt section instead of replacing the existing file. Preserve prior worker, validator, and PM history in that task report.`);
+    lines.push("");
+  }
+
   const previousAttemptContext = await buildPreviousAttemptContext(previousWorkerState, expectedOutputs);
   if (previousAttemptContext) {
     lines.push(`# Previous Attempt Context`);

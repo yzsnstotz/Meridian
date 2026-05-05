@@ -353,6 +353,10 @@ function getEffectiveLifecycleStatus(workerState: DispatchThreadStateV2["workers
     return null;
   }
 
+  if (workerState.status === "completed" || workerState.status === "skipped") {
+    return workerState.status;
+  }
+
   const workerHubResult = getWorkerOwnedHubResult(workerState);
 
   if (workerState.status !== "blocked" && workerHubResult && hubResultContainsBlockSignal(workerHubResult)) {

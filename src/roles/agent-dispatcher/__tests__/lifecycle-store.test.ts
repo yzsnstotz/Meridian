@@ -1714,8 +1714,11 @@ describe("LifecycleStore", () => {
   // PM as a real worker failure (BATCH-3-GATE codex_73 on a9a66025).
   it("reconciles a previously failed PM resolver to completed when the worker passes validation", async () => {
     const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "reports", "BATCH-3-GATE.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# BATCH-3-GATE Report\n\nWorker report.\n", "utf8");
 
-    harness.store.recordWorkerStart("BATCH-3-GATE", "worker-thread-72", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.recordWorkerStart("BATCH-3-GATE", "worker-thread-72", "11111111-1111-4111-8111-111111111111", [reportPath]);
     // Worker reaches a blocked state before PM is invoked. This matches the
     // a9a66025 production trace: the worker emitted a block_signal marker,
     // which transitioned status to "blocked", which is what the PM was
@@ -1747,6 +1750,42 @@ describe("LifecycleStore", () => {
     const reconciledPm = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-73");
     expect(reconciledPm?.status).toBe("completed");
     expect(reconciledPm?.error).toBeNull();
+    expect(reconciledPm?.result?.content).toContain("completed because worker BATCH-3-GATE recovered to completed");
+
+    const report = await fsp.readFile(reportPath, "utf8");
+    expect(report).toContain("## Validator Report - BATCH-3-GATE - Cycle 1");
+    expect(report).toContain("PASS");
+    expect(report).toContain("## PM Resolver Report - BATCH-3-GATE");
+    expect(report).toContain("Headers Timeout Error");
+  });
+
+  it("appends PM resolver replies to the target worker report", async () => {
+    const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "reports", "N-57.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# N-57 Report\n\nWorker report.\n", "utf8");
+
+    harness.store.recordWorkerStart("N-57", "worker-thread-n57", "11111111-1111-4111-8111-111111111111", [reportPath]);
+    harness.store.setWorkerStatus("N-57", "blocked", "test_blocked");
+    harness.store.recordPmResolverStart("pm-thread-n57", {
+      status: "manual_intervention_required",
+      workerId: "N-57",
+      message: "manual intervention required: N-57 claimed completion without expected outputs",
+      source: "watchdog"
+    });
+    harness.store.recordPmResolverResult("pm-thread-n57", {
+      status: "success",
+      content: "Resolved N-57 by verifying the report and marking it complete.",
+      raw: {
+        trace_id: "pm-trace-n57",
+        timestamp: "2026-05-05T20:36:01.550Z"
+      }
+    });
+
+    const report = await fsp.readFile(reportPath, "utf8");
+    expect(report).toContain("Worker report.");
+    expect(report).toContain("## PM Resolver Report - N-57");
+    expect(report).toContain("Resolved N-57 by verifying the report and marking it complete.");
   });
 
   // ─── MeridianStatusMarker primary-signal tests (Phase A, Task A2) ────────
