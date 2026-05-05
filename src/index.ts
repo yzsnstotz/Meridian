@@ -8,8 +8,13 @@ import { A2AServer } from "./a2a/server";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
-import { MAX_AUTOMATIC_RECOVERY_RETRIES } from "./roles/agent-dispatcher/service-continuation";
-import { isHumanDispatchRow, type DispatchContinuationPlanRow } from "./roles/agent-dispatcher/service-continuation";
+import {
+  MAX_AUTOMATIC_RECOVERY_RETRIES,
+  isHumanDispatchRow,
+  resolveManualInterventionWorker,
+  resolveServiceContinueWorker,
+  type DispatchContinuationPlanRow
+} from "./roles/agent-dispatcher/service-continuation";
 import {
   isValidationEnabledForWorker,
   isValidatorResultPassing
@@ -272,7 +277,12 @@ async function buildStartupActivations(
   );
   const activations: StartupActivation[] = [];
 
-  validStartupRoles.forEach(({ roleState, index }, probeIndex) => {
+  for (let probeIndex = 0; probeIndex < validStartupRoles.length; probeIndex += 1) {
+    const startupRole = validStartupRoles[probeIndex];
+    if (!startupRole) {
+      continue;
+    }
+    const { roleState, index } = startupRole;
     const probe = probes[probeIndex];
     const result = probe.status === "fulfilled"
       ? probe.value
@@ -287,10 +297,13 @@ async function buildStartupActivations(
       ...nextState.roles[index]
     };
 
+    let hasRecoverableStartupWork = true;
     if (result.dispatcherConfig) {
+      hasRecoverableStartupWork = !result.needsReactivation
+        || await hasStartupRecoverableDispatchWork(result.dispatcherConfig);
       const nextStatus = roleState.status === PAUSED_ROLE_STATUS
         ? PAUSED_ROLE_STATUS
-        : result.needsReactivation
+        : result.needsReactivation && hasRecoverableStartupWork
           ? NEEDS_REACTIVATION_ROLE_STATUS
           : ACTIVE_ROLE_STATUS;
       if (nextRoleState.status !== nextStatus) {
@@ -299,13 +312,25 @@ async function buildStartupActivations(
         stateChanged = true;
       }
 
-      if (result.needsReactivation) {
+      if (result.needsReactivation && hasRecoverableStartupWork) {
         log.warn("Startup rehydration marked dispatcher for reactivation", {
           roleId: roleState.threadId,
           threadId: result.dispatcherThreadId,
           reason: result.failureReason ?? "dispatcher_thread_unavailable"
         });
       }
+
+      if (result.needsReactivation && !hasRecoverableStartupWork) {
+        log.info("Startup rehydration skipped dispatcher with no recoverable automatic work", {
+          roleId: roleState.threadId,
+          threadId: result.dispatcherThreadId,
+          reason: result.failureReason ?? "dispatcher_thread_unavailable"
+        });
+      }
+    }
+
+    if (result.dispatcherConfig && result.needsReactivation && !hasRecoverableStartupWork) {
+      continue;
     }
 
     activations.push({
@@ -315,7 +340,7 @@ async function buildStartupActivations(
       },
       dispatcherConfig: result.dispatcherConfig
     });
-  });
+  }
 
   if (invalidStartupRoleIndexes.size > 0) {
     nextState.roles = nextState.roles.filter((_, index) => !invalidStartupRoleIndexes.has(index));
@@ -963,6 +988,43 @@ export async function settleTerminalAgentDispatcherRoles(
   }
 
   return state;
+}
+
+export async function hasStartupRecoverableDispatchWork(config: AgentDispatcherConfig): Promise<boolean> {
+  let lifecycleState: DispatchThreadStateV2;
+  let rows: DispatchContinuationPlanRow[];
+
+  try {
+    lifecycleState = new LifecycleStore(resolveDispatchThreadPath(config.dispatch_plan_path)).load();
+    const parsedRows = parseDispatchPlanRows(await fs.readFile(config.dispatch_plan_path, "utf8"));
+    rows = parsedRows.map(toContinuationRow);
+  } catch {
+    return true;
+  }
+
+  const serviceWorker = resolveServiceContinueWorker(rows, lifecycleState);
+  if (serviceWorker) {
+    return true;
+  }
+
+  const manualInterventionWorker = resolveManualInterventionWorker(rows, lifecycleState);
+  if (manualInterventionWorker) {
+    return true;
+  }
+
+  return rows.some((row) => {
+    if (isHumanDispatchRow(row)) {
+      return false;
+    }
+
+    const workerId = row.worker.trim();
+    if (!workerId) {
+      return false;
+    }
+
+    const worker = lifecycleState.workers[workerId];
+    return worker?.status === "awaiting_validation" || worker?.status === "fix_requested";
+  });
 }
 
 async function resolveSettledDispatchPlanRoleStatus(

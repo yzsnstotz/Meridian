@@ -5,9 +5,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StateStore } from "./state-store";
-import { resolveDispatchPlanPathsFromState } from "./index";
+import { hasStartupRecoverableDispatchWork, resolveDispatchPlanPathsFromState } from "./index";
 import { buildEmptyRunState } from "./roles/scheduler/scheduler-state-store";
-import type { SchedulerConfig } from "./types";
+import { AgentDispatcherConfigSchema, type SchedulerConfig } from "./types";
 
 const tempDirectories = new Set<string>();
 
@@ -193,8 +193,87 @@ describe("resolveDispatchPlanPathsFromState", () => {
   });
 });
 
+describe("hasStartupRecoverableDispatchWork", () => {
+  it("does not reactivate a dispatcher that is waiting on a human gate", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-startup-human-gate-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ✅ | 1 | V-01-A | Automated validation | CODEX | - | done |",
+      "| ⬜ | 2 | V-01-B | Human launch review | HUMAN | V-01-A | waiting on operator |",
+      "| ⬜ | 3 | N-16 | Lock launch contract | CODEX | V-01-B | blocked by human gate |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-05T21:42:51.459Z",
+        status: "abandoned"
+      },
+      workers: {
+        "V-01-A": {
+          thread_id: "codex_174",
+          trace_id: null,
+          started_at: "2026-05-05T13:58:19.725Z",
+          last_seen_at: "2026-05-05T14:08:06.869Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "DISPATCHER": {
+          thread_id: "codex_01",
+          trace_id: null,
+          started_at: "2026-05-05T21:42:51.470Z",
+          last_seen_at: "2026-05-05T21:43:17.761Z",
+          status: "abandoned",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 2
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    await expect(hasStartupRecoverableDispatchWork(buildAgentDispatcherConfig(dispatchPlanPath))).resolves.toBe(false);
+  });
+
+  it("reactivates a dispatcher when automatic work is eligible", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-startup-eligible-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ⬜ | 1 | N-01 | Ready automatic work | CODEX | - | ready |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "pending"
+      },
+      workers: {},
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    await expect(hasStartupRecoverableDispatchWork(buildAgentDispatcherConfig(dispatchPlanPath))).resolves.toBe(true);
+  });
+});
+
 function buildAgentDispatcherConfig(dispatchPlanPath: string) {
-  return {
+  return AgentDispatcherConfigSchema.parse({
     dispatch_plan_path: dispatchPlanPath,
     command_file_path: path.join(path.dirname(dispatchPlanPath), "dispatch_command.md"),
     dispatch_repo_root: path.dirname(dispatchPlanPath),
@@ -204,7 +283,7 @@ function buildAgentDispatcherConfig(dispatchPlanPath: string) {
     mode: "bridge",
     kill_policy: "always",
     auto_approve: true
-  };
+  });
 }
 
 function buildSchedulerConfig(dispatchPlanPath: string): SchedulerConfig {
