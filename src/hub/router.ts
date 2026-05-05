@@ -637,7 +637,6 @@ export class HubRouter {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
     const client = this.clientFactory(instance.thread_id);
-    let clientConnected = false;
     if (message.caller) {
       this.registry.setCaller(threadId, message.caller, this.now().toISOString());
     }
@@ -659,7 +658,6 @@ export class HubRouter {
       }
 
       await client.connect(instance.socket_path);
-      clientConnected = true;
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
       const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
       const response = await client.sendMessage(runContent, message.payload.attachments, instance.agent_type);
@@ -1050,6 +1048,7 @@ export class HubRouter {
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const status = await this.instanceManager.status(threadId);
+    this.recordCallerInteraction(threadId, message, { adoptMissingSpawnedBy: true });
     this.persistStateSafely();
     const content = this.appendAttachmentSummary(JSON.stringify(status, null, 2), status.instance.thread_id);
     return this.buildResult(
@@ -1323,6 +1322,10 @@ export class HubRouter {
       this.extractConcreteThreadId(message.thread_id) ??
       this.instanceManager.getAttachedThread(encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id)) ??
       undefined;
+    if (requestedThread) {
+      this.recordCallerInteraction(requestedThread, message, { adoptMissingSpawnedBy: true });
+      this.persistStateSafely();
+    }
     const historyDetail = this.resolveConversationDetailRecord(requestedTrace, requestedThread);
     if (historyDetail) {
       const title = `Detail for trace=${historyDetail.traceId} thread=${historyDetail.threadId}`;
@@ -1368,6 +1371,30 @@ export class HubRouter {
       this.resolveResultSource(message),
       message.payload.content
     );
+  }
+
+  private recordCallerInteraction(
+    threadId: string,
+    message: HubMessage,
+    options: { adoptMissingSpawnedBy?: boolean } = {}
+  ): void {
+    if (!message.caller || !this.registry.has(threadId)) {
+      return;
+    }
+
+    const updated = this.registry.setCaller(threadId, message.caller, this.now().toISOString());
+    if (
+      options.adoptMissingSpawnedBy === true &&
+      updated &&
+      !updated.spawned_by &&
+      this.isServiceCallerSelfProbe(message)
+    ) {
+      this.registry.setSpawnedBy(threadId, message.caller);
+    }
+  }
+
+  private isServiceCallerSelfProbe(message: HubMessage): boolean {
+    return Boolean(message.caller && message.actor_id === `service:${message.caller.caller_id}`);
   }
 
   private handleMonitorUpdate(message: HubMessage): HubResult {
