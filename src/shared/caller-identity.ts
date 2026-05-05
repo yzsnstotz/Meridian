@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import type { HubMessage } from "../types";
 
 const DEFAULT_CALLER_ID = "meridian-roles";
-const DEFAULT_CALLER_LABEL = "Meridian Roles";
+const DEFAULT_CALLER_LABEL = "Meridian-Roles";
 
 export interface CallerIdentity {
   caller_id: string;

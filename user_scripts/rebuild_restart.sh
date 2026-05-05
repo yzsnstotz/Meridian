@@ -11,6 +11,8 @@ RUN_LOG="$LOG_DIR/meridian-roles.out.log"
 GUI_PORT="${GUI_PORT:-7701}"
 GUI_LISTEN_HOST="${GUI_LISTEN_HOST:-0.0.0.0}"
 ROLES_SOCKET_PATH="${ROLES_SOCKET_PATH:-/tmp/meridian-roles.sock}"
+HUB_SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-core.sock}"
+ENSURE_MERIDIAN_HUB="${ENSURE_MERIDIAN_HUB:-true}"
 
 mkdir -p "$LOG_DIR"
 
@@ -48,6 +50,7 @@ fi
 export GUI_PORT
 export GUI_LISTEN_HOST
 export ROLES_SOCKET_PATH
+export HUB_SOCKET_PATH
 if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
   export MERIDIAN_INTERNAL_BOOTSTRAP_KEY
 fi
@@ -159,6 +162,63 @@ kill_repo_port_listeners() {
   fi
 }
 
+hub_socket_reachable() {
+  if [[ ! -S "${HUB_SOCKET_PATH}" ]]; then
+    return 1
+  fi
+
+  node -e '
+const net = require("node:net");
+const socketPath = process.argv[1];
+const socket = net.createConnection(socketPath);
+const timer = setTimeout(() => {
+  socket.destroy();
+  process.exit(1);
+}, 1000);
+socket.once("connect", () => {
+  clearTimeout(timer);
+  socket.end();
+  process.exit(0);
+});
+socket.once("error", () => {
+  clearTimeout(timer);
+  process.exit(1);
+});
+' "${HUB_SOCKET_PATH}" >/dev/null 2>&1
+}
+
+ensure_meridian_hub_socket() {
+  if [[ "${ENSURE_MERIDIAN_HUB}" == "false" ]]; then
+    return 0
+  fi
+
+  if hub_socket_reachable; then
+    return 0
+  fi
+
+  local restart_script="$ROOT_DIR/_meridian_hub/user_scripts/restart.sh"
+  if [[ ! -x "$restart_script" ]]; then
+    echo "Meridian Hub socket is missing or unreachable at ${HUB_SOCKET_PATH}, and restart script was not found: ${restart_script}" >&2
+    return 1
+  fi
+
+  echo "Meridian Hub socket missing or unreachable at ${HUB_SOCKET_PATH}; restarting Meridian runtime with --keep-agents..."
+  (
+    cd "$ROOT_DIR/_meridian_hub"
+    HUB_SOCKET_PATH="$HUB_SOCKET_PATH" ./user_scripts/restart.sh --keep-agents
+  )
+
+  for _ in $(seq 1 30); do
+    if hub_socket_reachable; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Meridian Hub socket still unreachable after runtime restart: ${HUB_SOCKET_PATH}" >&2
+  return 1
+}
+
 if [[ -f "$PID_FILE" ]]; then
   old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
@@ -200,6 +260,8 @@ if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
   npm ci
 fi
 
+ensure_meridian_hub_socket
+
 echo "Building meridian-roles..."
 npm run build
 
@@ -209,7 +271,7 @@ new_pid=""
 launch_mode="nohup"
 health_session_name=""
 
-echo "meridian-roles rebuild_restart: listen_host=${GUI_LISTEN_HOST} gui_port=${GUI_PORT} socket=${ROLES_SOCKET_PATH}" >&2
+echo "meridian-roles rebuild_restart: listen_host=${GUI_LISTEN_HOST} gui_port=${GUI_PORT} socket=${ROLES_SOCKET_PATH} hub_socket=${HUB_SOCKET_PATH}" >&2
 echo "meridian-roles rebuild_restart: start_command=${START_CMD[*]}" >&2
 
 echo "Starting meridian-roles in background..."
@@ -218,7 +280,7 @@ if command -v tmux >/dev/null 2>&1; then
   if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
     bootstrap_export=" MERIDIAN_INTERNAL_BOOTSTRAP_KEY=$(shell_escape "$MERIDIAN_INTERNAL_BOOTSTRAP_KEY")"
   fi
-  tmux_command="cd $(shell_escape "$ROOT_DIR") && export GUI_PORT=$(shell_escape "$GUI_PORT") GUI_LISTEN_HOST=$(shell_escape "$GUI_LISTEN_HOST") ROLES_SOCKET_PATH=$(shell_escape "$ROLES_SOCKET_PATH")${bootstrap_export} && exec npm start >> $(shell_escape "$RUN_LOG") 2>&1"
+  tmux_command="cd $(shell_escape "$ROOT_DIR") && export GUI_PORT=$(shell_escape "$GUI_PORT") GUI_LISTEN_HOST=$(shell_escape "$GUI_LISTEN_HOST") ROLES_SOCKET_PATH=$(shell_escape "$ROLES_SOCKET_PATH") HUB_SOCKET_PATH=$(shell_escape "$HUB_SOCKET_PATH")${bootstrap_export} && exec npm start >> $(shell_escape "$RUN_LOG") 2>&1"
   kill_tmux_session "$TMUX_SESSION_NAME"
   tmux new-session -d -s "$TMUX_SESSION_NAME" "$tmux_command"
   printf '%s\n' "$TMUX_SESSION_NAME" > "$TMUX_SESSION_FILE"
@@ -236,7 +298,7 @@ else
   rm -f "$PID_FILE"
 fi
 
-echo "Waiting for meridian-roles to become healthy (http://127.0.0.1:${GUI_PORT}/, socket: ${ROLES_SOCKET_PATH})..."
+echo "Waiting for meridian-roles to become healthy (http://127.0.0.1:${GUI_PORT}/, socket: ${ROLES_SOCKET_PATH}, hub socket: ${HUB_SOCKET_PATH})..."
 echo "meridian-roles rebuild_restart: launch_mode=${launch_mode}${new_pid:+ pid=${new_pid}}${health_session_name:+ session=${health_session_name}}" >&2
 
 healthy="false"
@@ -252,7 +314,7 @@ for _ in $(seq 1 "${HEALTH_MAX_ATTEMPTS}"); do
   fi
 
   if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "http://127.0.0.1:${GUI_PORT}/" >/dev/null 2>&1; then
-    if [[ -S "${ROLES_SOCKET_PATH}" ]]; then
+    if [[ -S "${ROLES_SOCKET_PATH}" ]] && hub_socket_reachable; then
       healthy_streak=$((healthy_streak + 1))
       if [[ "$healthy_streak" -ge "${HEALTH_STREAK_REQUIRED}" ]]; then
         healthy="true"
