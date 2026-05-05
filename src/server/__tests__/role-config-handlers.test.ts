@@ -4200,6 +4200,76 @@ describe("role config handlers", () => {
     }
   });
 
+  it("does not attach a dispatcher thread when persisted role already needs reactivation", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-role-reactivation-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-role-reactivation",
+          roleType: "agent-dispatcher",
+          status: "needs_reactivation",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ⬜ | 7 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | awaiting restart |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-04-07T14:00:00.000Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: "2026-04-07T14:15:00.000Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
+      const harness = createHarness(persistedState, undefined, [], "unused", attachToThread);
+
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-role-reactivation")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-role-reactivation",
+        status: "needs_reactivation",
+        dispatcher_thread_id: null,
+        current_worker: null,
+        session_log: [
+          "Role status: needs_reactivation",
+          `Dispatch plan: ${dispatchPlanPath}`,
+          "Dispatcher thread: pending",
+          "Current worker: idle"
+        ]
+      });
+      expect(attachToThread).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("projects needs_reactivation from /api/roles when lifecycle already marked the dispatcher abandoned", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-stale-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

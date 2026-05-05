@@ -117,6 +117,7 @@ type PersistableStateStore = Pick<StateStore, "load" | "save">;
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 const REACTIVATION_REQUIRED_DISPATCHER_STATUSES = new Set<LifecycleStatus>(["abandoned", "failed"]);
+const PM_RESOLVER_DETAIL_TIMEOUT_MS = 1_500;
 type DispatcherThreadAwareRole = {
   getDispatcherThreadId(): string | null;
 };
@@ -1132,7 +1133,7 @@ async function getRole(
   if (response.tasks.length === 0 && dispatchPlanRows.length > 0) {
     response.tasks = buildSyntheticDispatchTasks(dispatchPlanRows);
   }
-  let dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
+  let dispatcherThreadId = resolveVisibleDispatcherThreadId(lifecycleState, effectiveRoleStatus);
   let dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
   let continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
   let currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
@@ -1164,7 +1165,7 @@ async function getRole(
       dispatchPlan.rows,
       agentDispatcherConfig.validator
     );
-    dispatcherThreadId = resolveDispatcherThreadId(lifecycleState);
+    dispatcherThreadId = resolveVisibleDispatcherThreadId(lifecycleState, effectiveRoleStatus);
     dispatcherEntry = lifecycleState.workers[DISPATCHER_WORKER_ID] ?? null;
     continueWorker = resolveServiceContinueWorker(dispatchPlanRows, lifecycleState);
     currentWorker = resolveCurrentWorker(dispatchPlanRows, lifecycleState);
@@ -2681,6 +2682,14 @@ function resolveDispatcherThreadId(lifecycleState: DispatchThreadStateV2): strin
     : null;
 }
 
+function resolveVisibleDispatcherThreadId(lifecycleState: DispatchThreadStateV2, roleStatus: string): string | null {
+  if (roleStatus === NEEDS_REACTIVATION_ROLE_STATUS) {
+    return null;
+  }
+
+  return resolveDispatcherThreadId(lifecycleState);
+}
+
 async function validateDispatcherThreadForContinue(
   dispatchPlanPath: string,
   roleId: string,
@@ -2934,8 +2943,16 @@ async function loadPmResolverLiveDetail(
     return null;
   }
 
+  if (entry.status !== "running") {
+    return null;
+  }
+
   try {
-    const detail = await context.getThreadDetail(entry.thread_id);
+    const detail = await withTimeout(
+      context.getThreadDetail(entry.thread_id),
+      PM_RESOLVER_DETAIL_TIMEOUT_MS,
+      `PM resolver detail timed out after ${PM_RESOLVER_DETAIL_TIMEOUT_MS}ms`
+    );
     const lines = splitLogLines(detail);
     return isEmptyCachedDetailResponse(lines) ? null : detail;
   } catch (error) {
@@ -3053,6 +3070,22 @@ function buildRecoveredPmResolverDetails(
       roleId: context.roleId,
       liveDetail: null
     }));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function formatPmResolverIssueContext(entry: PmResolverLifecycleState): string {
