@@ -194,7 +194,12 @@ export const ValidationStateSchema = z.object({
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 
 export const DispatchWorkerStateSchema = z.object({
-  thread_id: z.string().min(1),
+  // Empty string is the sentinel for "cleared for relaunch" written by
+  // clearWorkerThreadForRelaunch when validator-feedback delivery fails on a
+  // dead worker thread (typically after a hub restart or thread expiry).
+  // Consumers already gate on `worker.thread_id?.trim()`. min(1) here used to
+  // throw on save and trap the worker in an infinite respawn loop.
+  thread_id: z.string(),
   trace_id: z.string().nullable().default(null),
   started_at: z.string().datetime(),
   last_seen_at: z.string().datetime(),

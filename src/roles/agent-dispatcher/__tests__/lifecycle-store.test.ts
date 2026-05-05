@@ -2392,6 +2392,44 @@ describe("LifecycleStore", () => {
       });
     });
   });
+
+  describe("clearWorkerThreadForRelaunch", () => {
+    it("persists empty thread_id without throwing on schema validation", async () => {
+      // Regression: DispatchWorkerStateSchema previously enforced
+      // thread_id.min(1), so save() rejected the cleared state and the
+      // dispatcher looped forever trying to deliver validator feedback to
+      // a dead thread (observed: thread_id=codex_45 after a hub restart).
+      const harness = await createHarness();
+
+      harness.store.recordWorkerStart(
+        "N-37",
+        "codex_45",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+      harness.store.transitionToFixRequested(
+        "N-37",
+        0.5,
+        "needs more work",
+        "validator-thread-1"
+      );
+
+      expect(() => harness.store.clearWorkerThreadForRelaunch("N-37", "validator_feedback_undeliverable"))
+        .not.toThrow();
+
+      const reloaded = harness.store.load();
+      expect(reloaded.workers["N-37"]?.thread_id).toBe("");
+      expect(reloaded.workers["N-37"]?.status).toBe("fix_requested");
+      // Validation feedback must be preserved so the relaunched worker can
+      // be fed prior context via buildPreviousAttemptContext.
+      expect(reloaded.workers["N-37"]?.validation?.last_feedback).toBe("needs more work");
+
+      const onDisk = JSON.parse(await fsp.readFile(harness.filePath, "utf8")) as DispatchThreadStateV2;
+      expect(onDisk.workers["N-37"]?.thread_id).toBe("");
+    });
+  });
 });
 
 async function createHarness(options: {
