@@ -79,6 +79,63 @@ kill_by_pattern() {
   fi
 }
 
+process_cwd() {
+  local pid="$1"
+  lsof -a -d cwd -Fn -p "${pid}" 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+runtime_pids_for_service() {
+  local npm_script="$1"
+  shift
+
+  local pid command cwd entrypoint matched
+  while read -r pid command; do
+    [[ -z "${pid}" || -z "${command}" ]] && continue
+
+    matched=0
+    for entrypoint in "$@"; do
+      if [[ "${command}" == *"${ROOT_DIR}/${entrypoint}"* ]]; then
+        matched=1
+        break
+      fi
+
+      if [[ "${command}" == *" ${entrypoint}"* || "${command}" == "${entrypoint}"* ]]; then
+        cwd="$(process_cwd "${pid}")"
+        if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+          matched=1
+          break
+        fi
+      fi
+    done
+
+    if [[ "${matched}" -eq 0 && "${command}" == *"npm run ${npm_script}"* ]]; then
+      cwd="$(process_cwd "${pid}")"
+      if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+        matched=1
+      fi
+    fi
+
+    if [[ "${matched}" -eq 1 ]]; then
+      printf '%s\n' "${pid}"
+    fi
+  done < <(ps -axo pid=,command=) | sort -u
+}
+
+kill_runtime_service() {
+  local label="$1"
+  local npm_script="$2"
+  shift 2
+
+  local pids
+  pids="$(runtime_pids_for_service "${npm_script}" "$@")"
+  if [[ -n "${pids}" ]]; then
+    log "Stopping ${label}: ${pids//$'\n'/ }"
+    kill_pids "${pids}"
+  else
+    log "No running ${label} found"
+  fi
+}
+
 stop_pm2_apps() {
   if ! command -v pm2 >/dev/null 2>&1; then
     return 0
@@ -241,10 +298,10 @@ if [[ "${KEEP_AGENTS}" -eq 1 ]] && pm2_runtime_available; then
   PM2_KEEP_AGENTS_MODE=1
   log "PM2 keep-agents mode detected; skipping direct Meridian process kills"
 else
-  kill_by_pattern "${ROOT_DIR}/src/hub/index.ts|${ROOT_DIR}/dist/hub/index.js|npm run start:hub" "hub"
-  kill_by_pattern "${ROOT_DIR}/src/interface/index.ts|${ROOT_DIR}/dist/interface/index.js|npm run start:interface" "interface"
-  kill_by_pattern "${ROOT_DIR}/src/monitor/index.ts|${ROOT_DIR}/dist/monitor/index.js|npm run start:monitor" "monitor"
-  kill_by_pattern "${ROOT_DIR}/src/web/server.ts|${ROOT_DIR}/dist/web/server.js|npm run start:web" "web-gui"
+  kill_runtime_service "hub" "start:hub" "src/hub/index.ts" "dist/hub/index.js"
+  kill_runtime_service "interface" "start:interface" "src/interface/index.ts" "dist/interface/index.js"
+  kill_runtime_service "monitor" "start:monitor" "src/monitor/index.ts" "dist/monitor/index.js"
+  kill_runtime_service "web-gui" "start:web" "src/web/server.ts" "dist/web/server.js"
 fi
 
 if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
