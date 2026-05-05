@@ -136,6 +136,55 @@
     } catch (e) {}
   }
 
+  // Caller registry API helpers — used by index.html admin panel.
+  // Each returns a Promise that resolves to the parsed JSON body on success,
+  // or rejects with an Error whose message is the server error string.
+
+  function loadCallers() {
+    return fetchWithAuth("/api/callers")
+      .then(function (res) {
+        return res.json().then(function (body) {
+          if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+          return body;
+        });
+      });
+  }
+
+  function mintCaller(callerId, callerLabel) {
+    return fetchWithAuth("/api/callers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caller_id: callerId, caller_label: callerLabel })
+    }).then(function (res) {
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+        return body;
+      });
+    });
+  }
+
+  function rotateCaller(callerId) {
+    return fetchWithAuth("/api/callers/" + encodeURIComponent(callerId) + "/rotate", {
+      method: "POST"
+    }).then(function (res) {
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+        return body;
+      });
+    });
+  }
+
+  function revokeCaller(callerId) {
+    return fetchWithAuth("/api/callers/" + encodeURIComponent(callerId), {
+      method: "DELETE"
+    }).then(function (res) {
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+        return body;
+      });
+    });
+  }
+
   window.MeridianWeb = {
     getToken: getToken,
     setToken: setToken,
@@ -146,6 +195,10 @@
     getFocusModeEnabled: getFocusModeEnabled,
     setFocusModeEnabled: setFocusModeEnabled,
     getCustomFilters: getCustomFilters,
-    setCustomFilters: setCustomFilters
+    setCustomFilters: setCustomFilters,
+    loadCallers: loadCallers,
+    mintCaller: mintCaller,
+    rotateCaller: rotateCaller,
+    revokeCaller: revokeCaller
   };
 })();

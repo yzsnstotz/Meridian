@@ -536,6 +536,93 @@ test("hub layout restores the meridian-roles entrance without probing role detai
   assert.match(indexHtml, /Hub thread IDs are not the same as meridian-roles role IDs/);
 });
 
+// N-05: agent card last-caller line + caller-admin panel + modals
+
+test("hub layout renders last-caller line on every agent card", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /class="card-caller"/);
+  assert.match(indexHtml, /class="card-caller-dot"/);
+  assert.match(indexHtml, /Last caller:/);
+  assert.match(indexHtml, /inst\.last_caller/);
+  assert.match(indexHtml, /lastCallerLabel/);
+  assert.match(indexHtml, /"Unknown"/);
+});
+
+test("hub layout renders spawned-by detail in card secondary section", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /Spawned by/);
+  assert.match(indexHtml, /spawnedByLabel/);
+  assert.match(indexHtml, /inst\.spawned_by/);
+});
+
+test("hub layout contains caller-admin panel with table and mint button", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="caller-admin"/);
+  assert.match(indexHtml, /id="caller-admin-table"/);
+  assert.match(indexHtml, /id="caller-mint"/);
+  assert.match(indexHtml, /Caller keys/);
+  assert.match(indexHtml, /Mint new caller/);
+});
+
+test("hub layout contains key reveal modal with show-once semantics", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="key-reveal-dialog"/);
+  assert.match(indexHtml, /id="key-reveal-key"/);
+  assert.match(indexHtml, /id="key-reveal-dismiss"/);
+  assert.match(indexHtml, /id="key-reveal-copy"/);
+  assert.match(indexHtml, /Copy this key now/);
+  // dismissKeyReveal clears both inputs — key never survives modal close
+  assert.match(indexHtml, /function dismissKeyReveal\(\)/);
+  assert.match(indexHtml, /keyInput\.value = ""/);
+});
+
+test("hub layout key reveal modal does not persist key to any storage", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  // Verify no localStorage/sessionStorage writes occur near the key reveal modal
+  const revealFnStart = indexHtml.indexOf("function showKeyReveal(");
+  const dismissFnStart = indexHtml.indexOf("function dismissKeyReveal(");
+  assert.notEqual(revealFnStart, -1, "showKeyReveal function must exist");
+  assert.notEqual(dismissFnStart, -1, "dismissKeyReveal function must exist");
+
+  // Neither function should contain storage writes
+  const revealEnd = indexHtml.indexOf("\n      }", revealFnStart) + 8;
+  const dismissEnd = indexHtml.indexOf("\n      }", dismissFnStart) + 8;
+  const revealBody = indexHtml.slice(revealFnStart, revealEnd);
+  const dismissBody = indexHtml.slice(dismissFnStart, dismissEnd);
+  assert.doesNotMatch(revealBody, /localStorage\.setItem/);
+  assert.doesNotMatch(revealBody, /sessionStorage\.setItem/);
+  assert.doesNotMatch(dismissBody, /localStorage\.setItem/);
+  assert.doesNotMatch(dismissBody, /sessionStorage\.setItem/);
+});
+
+test("hub layout contains mint dialog with client-side regex validation", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="mint-dialog"/);
+  assert.match(indexHtml, /id="mint-id-input"/);
+  assert.match(indexHtml, /id="mint-label-input"/);
+  assert.match(indexHtml, /id="mint-id-error"/);
+  // Client regex must exactly match the server-side regex: ^[a-z][a-z0-9_-]*$
+  assert.match(indexHtml, /\^\[a-z\]\[a-z0-9_-\]\*\$/);
+});
+
+test("hub layout built-in callers render without rotate/revoke buttons", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  // caller_kind === "builtin" check must be present in renderCallerTable
+  assert.match(indexHtml, /caller_kind.*builtin|builtin.*caller_kind/);
+  assert.match(indexHtml, /isBuiltin/);
+  // When builtin, actions must NOT include rotate/revoke buttons
+  assert.match(indexHtml, /data-caller-action="rotate"/);
+  assert.match(indexHtml, /data-caller-action="revoke"/);
+  assert.match(indexHtml, /isBuiltin[\s\S]*read-only/);
+});
+
 test("hub layout exposes actual agent, current model, and in-card kill controls", async () => {
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
 
