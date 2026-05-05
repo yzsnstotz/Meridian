@@ -268,6 +268,11 @@ class FakeElement {
 }
 
 function collectRenderedText(element: FakeElement): string {
+  // R-06: skip the chat-bubble-meta strip (caller + timestamp) so tests can
+  // assert the bubble's textual payload independent of the meta header.
+  if (element.classList && element.classList.contains("chat-bubble-meta")) {
+    return "";
+  }
   return [element.textContent, ...element.children.map((child) => collectRenderedText(child))]
     .filter(Boolean)
     .join("\n")
@@ -380,7 +385,12 @@ function createTerminalBehaviorHarness(html: string): {
     setTimeout,
     clearTimeout,
     Date,
-    console
+    console,
+    Intl,
+    // R-06: trace_id → caller resolution + locally-known web GUI identity.
+    traceCallerById: Object.create(null),
+    WEB_GUI_CALLER: { caller_id: "meridian-web", caller_label: "Meridian Web" },
+    META_TIME_FORMATTER: null
   };
 
   context.latestKnownTraceId = "";
@@ -403,6 +413,10 @@ function createTerminalBehaviorHarness(html: string): {
     "isPendingHistoryEntry",
     "findLatestPendingHistoryEntry",
     "findLatestFinalHistoryEntry",
+    "rememberCallerForTrace",
+    "lookupCallerForTrace",
+    "callerFromHistoryEntry",
+    "formatBubbleTimePretty",
     "restoreServerChatHistory",
     "renderProgressSnapshot",
     "maybeResolveProgressFromServerHistory",
@@ -972,4 +986,144 @@ test("terminal explorer directory rows expose keyboard accessible toggles", asyn
   assert.match(terminalHtml, /row\.setAttribute\("role", "button"\)/);
   assert.match(terminalHtml, /row\.setAttribute\("tabindex", "0"\)/);
   assert.match(terminalHtml, /row\.setAttribute\("aria-expanded"/);
+});
+
+// R-06: chat-bubble meta strip (caller + ISO timestamp; trace_id matching)
+function findMetaStrip(bubble: FakeElement): FakeElement | null {
+  for (const child of bubble.children) {
+    if (child.classList && child.classList.contains("chat-bubble-meta")) {
+      return child;
+    }
+  }
+  return null;
+}
+
+function findMetaSpan(bubble: FakeElement, cls: string): FakeElement | null {
+  const meta = findMetaStrip(bubble);
+  if (!meta) return null;
+  for (const child of meta.children) {
+    if (child.classList && child.classList.contains(cls)) {
+      return child;
+    }
+  }
+  return null;
+}
+
+test("terminal chat bubble renders caller_label and pretty timestamp from history entry", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const restoreServerChatHistory = context.restoreServerChatHistory as (entries: unknown[]) => boolean;
+
+  restoreServerChatHistory([
+    {
+      id: "history-user-meta-1",
+      event_kind: "user_send",
+      type: "user",
+      content: "ship it",
+      details_text: "",
+      trace_id: "11111111-1111-4111-8111-111111111111",
+      caller_id: "meridian-roles",
+      caller_label: "Meridian Roles",
+      timestamp: "2026-05-04T16:18:42.913Z"
+    }
+  ]);
+
+  assert.equal(chatMessagesEl.children.length, 1);
+  const bubble = chatMessagesEl.children[0] as FakeElement;
+  const callerSpan = findMetaSpan(bubble, "chat-bubble-caller");
+  const timeSpan = findMetaSpan(bubble, "chat-bubble-time");
+  assert.ok(callerSpan, "expected chat-bubble-caller span");
+  assert.equal(callerSpan?.textContent, "Meridian Roles");
+  assert.ok(timeSpan, "expected chat-bubble-time span");
+  assert.equal(timeSpan?.getAttribute("title"), "2026-05-04T16:18:42.913Z");
+  assert.match(String(timeSpan?.textContent ?? ""), /\d{1,2}:\d{2}/);
+  assert.equal(bubble.getAttribute("data-caller-id"), "meridian-roles");
+});
+
+test("terminal agent bubble inherits caller from originating user_send via trace_id", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const restoreServerChatHistory = context.restoreServerChatHistory as (entries: unknown[]) => boolean;
+  const traceId = "22222222-2222-4222-8222-222222222222";
+
+  restoreServerChatHistory([
+    {
+      id: "history-user-meta-2",
+      event_kind: "user_send",
+      type: "user",
+      content: "deploy",
+      details_text: "",
+      trace_id: traceId,
+      caller_id: "meridian-cli",
+      caller_label: "Meridian CLI",
+      timestamp: "2026-05-04T16:20:00.000Z"
+    },
+    {
+      id: "history-agent-meta-2",
+      event_kind: "final_reply",
+      type: "agent",
+      content: "deployed",
+      details_text: "",
+      trace_id: traceId,
+      caller_id: null,
+      caller_label: null,
+      timestamp: "2026-05-04T16:20:42.000Z"
+    }
+  ]);
+
+  assert.equal(chatMessagesEl.children.length, 2);
+  const agentBubble = chatMessagesEl.children[1] as FakeElement;
+  const callerSpan = findMetaSpan(agentBubble, "chat-bubble-caller");
+  assert.ok(callerSpan, "expected agent bubble to have a caller span");
+  assert.equal(callerSpan?.textContent, "Meridian CLI");
+  assert.equal(agentBubble.getAttribute("data-caller-id"), "meridian-cli");
+});
+
+test("terminal agent bubble with no resolvable caller still shows timestamp", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const restoreServerChatHistory = context.restoreServerChatHistory as (entries: unknown[]) => boolean;
+
+  restoreServerChatHistory([
+    {
+      id: "history-agent-orphan",
+      event_kind: "final_reply",
+      type: "agent",
+      content: "no parent in this slice",
+      details_text: "",
+      trace_id: "33333333-3333-4333-8333-333333333333",
+      caller_id: null,
+      caller_label: null,
+      timestamp: "2026-05-04T16:30:00.000Z"
+    }
+  ]);
+
+  const bubble = chatMessagesEl.children[0] as FakeElement;
+  const callerSpan = findMetaSpan(bubble, "chat-bubble-caller");
+  const timeSpan = findMetaSpan(bubble, "chat-bubble-time");
+  // Caller span exists but is hidden (no caller_label string content).
+  assert.ok(callerSpan, "caller span should exist");
+  assert.equal(callerSpan?.textContent, "");
+  assert.equal(callerSpan?.style.visibility, "hidden");
+  assert.ok(timeSpan, "time span should still render");
+  assert.equal(timeSpan?.getAttribute("title"), "2026-05-04T16:30:00.000Z");
+  assert.equal(bubble.getAttribute("data-caller-id"), null);
+});
+
+test("terminal addChatBubble remains backwards compatible without options", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { chatMessagesEl, context } = createTerminalBehaviorHarness(terminalHtml);
+  const addChatBubble = context.addChatBubble as (
+    content: string,
+    type?: string,
+    detailsText?: string,
+    options?: Record<string, unknown>
+  ) => void;
+
+  addChatBubble("hello");
+
+  const bubble = chatMessagesEl.children[0] as FakeElement;
+  assert.ok(bubble, "bubble should be created without options");
+  // No caller, no timestamp → no meta strip should render.
+  assert.equal(findMetaStrip(bubble), null);
 });
