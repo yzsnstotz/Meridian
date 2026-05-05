@@ -8,6 +8,7 @@ const EXPECTED_IDS = [
   "meridian-cli",
   "meridian-telegram",
   "meridian-monitor",
+  "meridian-roles",
   "meridian-admin",
 ] as const;
 
@@ -56,8 +57,8 @@ test("deriveBuiltinCallerKey reads env var at call time, not at module load", ()
   assert.match(key, /^[0-9a-f]{64}$/);
 });
 
-test("BUILTIN_CALLERS contains exactly five entries", () => {
-  assert.equal(BUILTIN_CALLERS.length, 5);
+test("BUILTIN_CALLERS contains exactly six entries", () => {
+  assert.equal(BUILTIN_CALLERS.length, 6);
 });
 
 test("BUILTIN_CALLERS contains exactly the expected caller ids in order", () => {
