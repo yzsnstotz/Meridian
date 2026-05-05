@@ -233,6 +233,33 @@ describe("service continuation", () => {
     expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
   });
 
+  it("treats completed lifecycle dependencies as satisfied when the plan row is stale blocked", () => {
+    const rows = [
+      {
+        status: "⛔ BLOCKED",
+        batch: "3",
+        worker: "BATCH-3-GATE",
+        model: "CODEX-XHIGH",
+        depends_on: "N-14,N-15"
+      },
+      {
+        status: "⬜",
+        batch: "7",
+        worker: "N-40",
+        model: "CODEX-XHIGH",
+        depends_on: "BATCH-3-GATE"
+      }
+    ];
+    const lifecycleState = createLifecycleState({
+      "BATCH-3-GATE": {
+        status: "completed",
+        hub_result: createHubResult("outcome: blocked before PM resolved it")
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBe("N-40");
+  });
+
   it("does not flag manual intervention when lifecycle is awaiting_validation despite a stale ⛔ BLOCKED plan row", () => {
     const rows = [
       { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }

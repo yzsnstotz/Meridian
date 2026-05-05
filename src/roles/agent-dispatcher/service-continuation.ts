@@ -269,7 +269,7 @@ function isEligibleServiceContinueRow(
     case "⛔ BLOCKED":
       return false;
     case "⬜":
-      return areDispatchDependenciesSatisfied(row, rows, rowsByWorker);
+      return areDispatchDependenciesSatisfied(row, rows, rowsByWorker, lifecycleState);
     default:
       // fix_requested workers (🔁 FIX N/M) are eligible — they need feedback delivery
       if (trimmedStatus.startsWith("🔁")) {
@@ -301,11 +301,12 @@ function hubResultRequiresManualIntervention(
 function areDispatchDependenciesSatisfied(
   row: DispatchContinuationPlanRow,
   rows: DispatchContinuationPlanRow[],
-  rowsByWorker: Map<string, DispatchContinuationPlanRow>
+  rowsByWorker: Map<string, DispatchContinuationPlanRow>,
+  lifecycleState: DispatchThreadStateV2
 ): boolean {
   return normalizeDependsOnWorkers(row.depends_on).every((dependencyClause) => {
     const dependencyRows = resolveDependencyRows(dependencyClause, row, rows, rowsByWorker);
-    return dependencyRows.length > 0 && dependencyRows.every((dependencyRow) => isDispatchDependencyTerminal(dependencyRow.status));
+    return dependencyRows.length > 0 && dependencyRows.every((dependencyRow) => isDispatchDependencyTerminal(dependencyRow, lifecycleState));
   });
 }
 
@@ -680,8 +681,16 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function isDispatchDependencyTerminal(status: string | undefined): boolean {
-  const normalized = status?.trim();
+function isDispatchDependencyTerminal(
+  row: DispatchContinuationPlanRow,
+  lifecycleState: DispatchThreadStateV2
+): boolean {
+  const worker = resolveLifecycleWorkerState(lifecycleState, row.worker);
+  if (worker?.status === "completed" || worker?.status === "skipped") {
+    return true;
+  }
+
+  const normalized = row.status?.trim();
   return normalized === "✅" || normalized === "⛔ SKIPPED";
 }
 
