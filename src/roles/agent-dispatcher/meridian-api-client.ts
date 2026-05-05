@@ -6,9 +6,16 @@
  * (R-03) so the cross-service launch transport is fully owned by Meridian.
  */
 
+import { getCallerIdentity } from "../../shared/caller-identity";
+
 const DEFAULT_MERIDIAN_HTTP = "http://127.0.0.1:3000";
 const SPAWN_REQUEST_TIMEOUT_MS = 10_000;
 const KILL_REQUEST_TIMEOUT_MS = 10_000;
+const CALLER_HTTP_HEADERS = {
+  id: "X-Meridian-Caller-Id",
+  key: "X-Meridian-Caller-Key",
+  version: "X-Meridian-Caller-Version"
+} as const;
 
 export type MeridianAgentType = "codex" | "claude" | "cursor" | "gemini";
 
@@ -229,6 +236,7 @@ async function postMeridianJson(
     "content-type": "application/json",
     accept: "application/json"
   };
+  applyCallerHeaders(headers);
   const token = resolveMeridianApiToken(options);
   if (token) {
     headers.authorization = `Bearer ${token}`;
@@ -283,6 +291,13 @@ async function postMeridianJson(
   }
 
   return parsedBody;
+}
+
+function applyCallerHeaders(headers: Record<string, string>): void {
+  const identity = getCallerIdentity();
+  headers[CALLER_HTTP_HEADERS.id] = identity.caller_id;
+  headers[CALLER_HTTP_HEADERS.key] = identity.caller_key;
+  headers[CALLER_HTTP_HEADERS.version] = identity.caller_id;
 }
 
 function resolveMeridianHttpBase(override: string | undefined): string {
