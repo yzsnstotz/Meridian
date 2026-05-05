@@ -1091,6 +1091,37 @@ describe("LifecycleStore", () => {
     await expect(fsp.readFile(harness.dispatchPlanPath, "utf8")).resolves.toContain("| ⛔ SKIPPED | 5 | R-06 | Recovery row |");
   });
 
+  it("renders a validator-completed worker as ✅ even when its original hub result was blocked", async () => {
+    const harness = await createHarness({
+      dispatchPlanPath: path.join(tmpdir(), "meridian-roles-custom-plan", `dispatch-plan-validated-blocked-${Date.now()}.md`),
+      planTemplate: [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task |",
+        "|--------|-------|--------|------|",
+        "| ⛔ BLOCKED | 3 | BATCH-3-GATE | Cross-package gate |",
+        "| ⬜ | 7 | N-40 | Downstream UI |",
+        ""
+      ].join("\n")
+    });
+
+    harness.store.recordWorkerStart("BATCH-3-GATE", "worker-thread-333", "33333333-3333-4333-8333-333333333333", []);
+    harness.store.recordWorkerResult("BATCH-3-GATE", buildHubResult({
+      thread_id: "worker-thread-333",
+      status: "success",
+      content: "⛔ BLOCKED — gate failed before PM resolved it",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+    harness.store.transitionToAwaitingValidation("BATCH-3-GATE", 3);
+    harness.store.transitionToValidated("BATCH-3-GATE", {
+      score: 1,
+      feedback: "PM verified the blocker was fixed.",
+      validatorThreadId: "validator-thread-333"
+    });
+
+    await expect(fsp.readFile(harness.dispatchPlanPath, "utf8")).resolves.toContain("| ✅ | 3 | BATCH-3-GATE | Cross-package gate |");
+  });
+
   it("writes the derived dispatch plan to the configured plan path on lifecycle transitions", async () => {
     const harness = await createHarness({
       dispatchPlanPath: path.join(tmpdir(), "meridian-roles-custom-plan", `dispatch_plan-${Date.now()}.md`),

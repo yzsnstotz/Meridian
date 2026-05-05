@@ -1771,6 +1771,10 @@ function formatTableRow(cells: string[]): string {
 }
 
 function resolveDisplayStatus(worker: DispatchWorkerState): string {
+  if (worker.status === "completed" || worker.status === "skipped") {
+    return PLAN_STATUS_SYMBOLS[worker.status];
+  }
+
   if (worker.status !== "blocked" && worker.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
     return PLAN_STATUS_SYMBOLS.blocked;
   }
