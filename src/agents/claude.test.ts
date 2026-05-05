@@ -56,3 +56,63 @@ test("buildClaudeStreamArgs enables stream-json print mode without affecting bri
     "--dangerously-skip-permissions"
   ]);
 });
+
+test("buildClaudeCliArgs appends --effort flag when reasoningEffort is provided", () => {
+  const args = buildClaudeCliArgs(undefined, "claude-opus-4-7", undefined, "high");
+
+  assert.deepEqual(args, [
+    "claude",
+    "--allowedTools",
+    DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
+    "--effort",
+    "high",
+    "--model",
+    "claude-opus-4-7",
+    "--dangerously-skip-permissions"
+  ]);
+});
+
+test("buildClaudeCliArgs omits --effort flag when reasoningEffort is absent", () => {
+  const args = buildClaudeCliArgs(undefined, "claude-opus-4-7");
+
+  assert.equal(args.includes("--effort"), false);
+});
+
+test("buildClaudeSpawnArgs threads reasoningEffort to the provider CLI", () => {
+  const args = buildClaudeSpawnArgs("bridge", null, "--socket=/tmp/claude.sock", "claude-opus-4-7", true, "xhigh");
+
+  assert.deepEqual(args, [
+    "server",
+    "--type=claude",
+    "--socket=/tmp/claude.sock",
+    "--",
+    "claude",
+    "--allowedTools",
+    DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
+    "--effort",
+    "xhigh",
+    "--model",
+    "claude-opus-4-7",
+    "--dangerously-skip-permissions"
+  ]);
+});
+
+test("buildClaudeStreamArgs threads reasoningEffort to the print-mode CLI", () => {
+  const args = buildClaudeStreamArgs("claude-opus-4-7", undefined, "medium");
+
+  assert.deepEqual(args, [
+    "claude",
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--allowedTools",
+    DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
+    "--effort",
+    "medium",
+    "--model",
+    "claude-opus-4-7",
+    "--dangerously-skip-permissions"
+  ]);
+});

@@ -1751,7 +1751,7 @@ export class InstanceManager {
       return buildCodexSpawnArgs(mode, null, listenArg, modelId, autoApprove, reasoningEffort, sandboxMode);
     }
     if (type === "claude") {
-      return buildClaudeSpawnArgs(mode, null, listenArg, modelId, autoApprove);
+      return buildClaudeSpawnArgs(mode, null, listenArg, modelId, autoApprove, reasoningEffort);
     }
     if (type === "gemini") {
       return buildGeminiSpawnArgs(mode, null, listenArg, modelId);

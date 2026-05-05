@@ -406,6 +406,47 @@ test("spawn claude bridge includes --allowedTools args", async () => {
   await manager.kill(threadId);
 });
 
+test("spawn claude bridge threads reasoning_effort to the CLI --effort flag", async () => {
+  const registry = new InstanceRegistry();
+  const spawnCalls: string[][] = [];
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: ((_: string, args: string[]) => {
+      spawnCalls.push(args);
+      return new FakeChildProcess(1208) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("claude", "bridge", undefined, "claude-opus-4-7", true, "high");
+  const socketPath = socketPathForThread(threadId);
+
+  assert.equal(threadId, "claude_01");
+  assert.equal(registry.get(threadId)?.reasoning_effort, "high");
+  assert.deepEqual(spawnCalls[0], [
+    "server",
+    "--type=claude",
+    `--socket=${socketPath}`,
+    "--",
+    "claude",
+    "--allowedTools",
+    "Bash Edit Replace",
+    "--effort",
+    "high",
+    "--model",
+    "claude-opus-4-7",
+    "--dangerously-skip-permissions"
+  ]);
+
+  await manager.kill(threadId);
+});
+
 test("spawn codex bridge includes auto-approve flag when requested", async () => {
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
