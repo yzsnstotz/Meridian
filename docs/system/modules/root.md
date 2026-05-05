@@ -1,8 +1,8 @@
 # root
 **Source**: `src/`
 **Summary**: Root-level runtime contracts, environment configuration, logging factories, and log retention helpers shared across Meridian subsystems.
-**Last Scanned**: `2026-04-08T15:06:30+09:00`
-**Exports Documented**: 84
+**Last Scanned**: `2026-05-05T00:00:00+09:00` `[UPDATED 2026-05-05]`
+**Exports Documented**: 86
 
 `src/types.ts` is Meridian's central contract layer: it defines the Zod validators and inferred TypeScript shapes used by the hub, interface, shared transports, CLI, and monitor code. `src/config.ts`, `src/logger.ts`, and `src/log-retention.ts` provide the process-wide defaults and operational utilities those modules rely on.
 

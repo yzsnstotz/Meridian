@@ -1,7 +1,7 @@
 # monitor
 **Source**: `src/monitor/`
 **Summary**: Monitor event schemas, logger/reporter helpers, and the background service that tracks agent threads over SSE with heartbeat fallback.
-**Last Scanned**: 2026-04-08T14:44:32+09:00
+**Last Scanned**: `2026-05-05T00:00:00+09:00` `[UPDATED 2026-05-05]`
 **Exports Documented**: 13
 
 ## Exports

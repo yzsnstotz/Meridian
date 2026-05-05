@@ -1,8 +1,8 @@
 # interface
 **Source**: `src/interface/`
 **Summary**: Telegram ingress, slash-command parsing, interactive picker flows, webhook/long-poll startup, and channel adapters that bridge interface events to hub messages and outbound replies.
-**Last Scanned**: `2026-04-08T14:23:07+09:00`
-**Exports Documented**: 28
+**Last Scanned**: `2026-05-05T00:00:00+09:00` `[UPDATED 2026-05-05]`
+**Exports Documented**: 31
 
 `src/interface/index.ts` is the runtime entrypoint for the Telegram interface. On module load it attaches auth, message, and callback handlers to the default `botRuntimes`, installs shutdown hooks, and autostarts unless `MERIDIAN_DISABLE_INTERFACE_AUTOSTART` is set to `"true"`.
 

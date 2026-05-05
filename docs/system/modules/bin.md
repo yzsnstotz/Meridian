@@ -2,7 +2,7 @@
 **Source**: `src/bin/`
 **Summary**: JSON-first CLI command dispatch for spawning and controlling Meridian agent threads through Meridian's authenticated HTTP API boundary, plus CLI-side API helpers for reachability and request shaping.
 **Last Scanned**: 2026-05-05
-**Exports Documented**: 7
+**Exports Documented**: 8
 
 `src/bin/meridian-cli.ts` does manual argument parsing instead of using a command framework. Operational commands emit structured JSON on stdout, help text is written to stderr, and failures are normalized into exit codes `0`, `1`, `2`, `3`, and `4`.
 
