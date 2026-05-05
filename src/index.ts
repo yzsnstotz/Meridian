@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import path from "node:path";
 
 import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
@@ -8,8 +9,14 @@ import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { MAX_AUTOMATIC_RECOVERY_RETRIES } from "./roles/agent-dispatcher/service-continuation";
+import { isHumanDispatchRow, type DispatchContinuationPlanRow } from "./roles/agent-dispatcher/service-continuation";
+import {
+  isValidationEnabledForWorker,
+  isValidatorResultPassing
+} from "./roles/agent-dispatcher/validator-orchestrator";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
+import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "./tool-gateway/tools/dispatch-status";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
 import { SchedulerRole } from "./roles/definitions/scheduler";
 import { SchedulerStateStore } from "./roles/scheduler/scheduler-state-store";
@@ -26,7 +33,8 @@ import {
   NEEDS_REACTIVATION_ROLE_STATUS,
   StateStore,
   isReconcilableAgentDispatcherRoleStatus,
-  isStartupRehydratableRoleStatus
+  isStartupRehydratableRoleStatus,
+  isTerminalAgentDispatcherRoleStatus
 } from "./state-store";
 import {
   AgentDispatcherConfigSchema,
@@ -37,7 +45,8 @@ import {
   type HubMessage,
   type HubResult,
   type RoleState,
-  type SchedulerConfig
+  type SchedulerConfig,
+  type ValidatorConfig
 } from "./types";
 
 export * from "./types";
@@ -231,7 +240,7 @@ async function buildStartupActivations(
   client: A2AClient,
   log: typeof console
 ): Promise<StartupActivation[]> {
-  const currentState = await loadAppState(stateStore);
+  const currentState = await settleTerminalAgentDispatcherRoles(stateStore, log);
   const startupRoles = currentState.roles
     .map((roleState, index) => ({ roleState, index }))
     .filter(({ roleState }) => isStartupRehydratableRoleStatus(roleState.status));
@@ -883,7 +892,7 @@ async function persistAgentDispatcherRoleStatus(
 }
 
 export async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
-  const state = await loadAppState(stateStore);
+  const state = await settleTerminalAgentDispatcherRoles(stateStore);
   const paths: string[] = [];
 
   for (const role of state.roles) {
@@ -894,7 +903,15 @@ export async function resolveDispatchPlanPathsFromState(stateStore: StateStore):
 
       const config = parseAgentDispatcherConfig(role);
       if (config) {
-        paths.push(config.dispatch_plan_path);
+        if (!isTerminalAgentDispatcherRoleStatus(role.status)) {
+          paths.push(config.dispatch_plan_path);
+          continue;
+        }
+
+        const terminalStatus = await resolveSettledDispatchPlanRoleStatus(config);
+        if (!terminalStatus) {
+          paths.push(config.dispatch_plan_path);
+        }
       }
       continue;
     }
@@ -908,6 +925,128 @@ export async function resolveDispatchPlanPathsFromState(stateStore: StateStore):
   }
 
   return [...new Set(paths)];
+}
+
+export async function settleTerminalAgentDispatcherRoles(
+  stateStore: StateStore,
+  log?: Pick<Console, "info" | "warn">
+): Promise<AppState> {
+  const state = await loadAppState(stateStore);
+  let stateChanged = false;
+
+  for (const role of state.roles) {
+    if (role.roleType !== "agent-dispatcher" || isTerminalAgentDispatcherRoleStatus(role.status)) {
+      continue;
+    }
+
+    const config = parseAgentDispatcherConfig(role);
+    if (!config) {
+      continue;
+    }
+
+    const terminalStatus = await resolveSettledDispatchPlanRoleStatus(config);
+    if (!terminalStatus) {
+      continue;
+    }
+
+    role.status = terminalStatus;
+    stateChanged = true;
+    log?.info?.("Agent-dispatcher plan is terminal; skipping active rehydration", {
+      roleId: role.threadId,
+      status: terminalStatus,
+      dispatchPlanPath: config.dispatch_plan_path
+    });
+  }
+
+  if (stateChanged) {
+    await stateStore.save(state);
+  }
+
+  return state;
+}
+
+async function resolveSettledDispatchPlanRoleStatus(
+  config: AgentDispatcherConfig
+): Promise<"completed" | "failed" | null> {
+  let lifecycleState: DispatchThreadStateV2;
+  let rows: DispatchPlanWorkerRow[];
+
+  try {
+    lifecycleState = new LifecycleStore(resolveDispatchThreadPath(config.dispatch_plan_path)).load();
+    rows = parseDispatchPlanRows(await fs.readFile(config.dispatch_plan_path, "utf8"));
+  } catch {
+    return null;
+  }
+
+  const nonHumanRows = rows.filter((row) => !isHumanDispatchRow(toContinuationRow(row)) && row.worker_id.trim().length > 0);
+  if (nonHumanRows.length === 0) {
+    return null;
+  }
+
+  const terminalStatuses = nonHumanRows.map((row) => resolveSettledDispatchRowStatus(row, lifecycleState, config.validator));
+  if (terminalStatuses.some((status) => status === null)) {
+    return null;
+  }
+
+  return terminalStatuses.some((status) => status === "failed") ? "failed" : "completed";
+}
+
+function resolveSettledDispatchRowStatus(
+  row: DispatchPlanWorkerRow,
+  lifecycleState: DispatchThreadStateV2,
+  validatorConfig?: ValidatorConfig
+): "completed" | "failed" | null {
+  const worker = lifecycleState.workers[row.worker_id];
+  if (!worker) {
+    return null;
+  }
+
+  const planStatus = row.status.trim();
+  if (
+    worker.status === "completed"
+    && (planStatus === "✅" || planStatus === "🔄")
+    && isCompletedWorkerValidationSatisfied(row, lifecycleState, validatorConfig)
+  ) {
+    return "completed";
+  }
+
+  if (worker.status === "skipped" && (planStatus === "⛔ SKIPPED" || planStatus === "🔄")) {
+    return "completed";
+  }
+
+  if (
+    (worker.status === "failed" || worker.status === "blocked" || worker.status === "abandoned")
+    && (planStatus === "❌" || planStatus === "⛔ BLOCKED" || planStatus === "⚠️ ABANDONED" || planStatus === "🔄")
+  ) {
+    return "failed";
+  }
+
+  return null;
+}
+
+function isCompletedWorkerValidationSatisfied(
+  row: DispatchPlanWorkerRow,
+  lifecycleState: DispatchThreadStateV2,
+  validatorConfig?: ValidatorConfig
+): boolean {
+  const continuationRow = toContinuationRow(row);
+  if (!validatorConfig?.enabled || !isValidationEnabledForWorker(validatorConfig, continuationRow)) {
+    return true;
+  }
+
+  const score = lifecycleState.workers[row.worker_id]?.validation?.last_score;
+  return typeof score === "number" && isValidatorResultPassing(validatorConfig, continuationRow, score);
+}
+
+function toContinuationRow(row: DispatchPlanWorkerRow): DispatchContinuationPlanRow {
+  return {
+    status: row.status,
+    batch: row.batch,
+    worker: row.worker_id,
+    model: row.model,
+    depends_on: row.depends_on,
+    notes: row.notes
+  };
 }
 
 function parseAgentDispatcherConfig(roleState: RoleState): AgentDispatcherConfig | null {
