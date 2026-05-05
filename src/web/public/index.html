@@ -107,7 +107,7 @@
     }
     .spawn-row-bottom-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 0.56fr) auto;
       gap: 0.75rem 0.875rem;
       align-items: stretch;
       width: 100%;
@@ -862,6 +862,17 @@
                 >
                   <option value="">Model: provider default</option>
                 </select>
+                <select
+                  id="spawn-effort"
+                  class="select"
+                  aria-label="Spawn reasoning effort"
+                >
+                  <option value="">Reasoning effort: default</option>
+                  <option value="low">Reasoning effort: low</option>
+                  <option value="medium">Reasoning effort: medium</option>
+                  <option value="high">Reasoning effort: high</option>
+                  <option value="xhigh">Reasoning effort: xhigh</option>
+                </select>
                 <label class="toggle" for="spawn-auto-approve">
                   <input id="spawn-auto-approve" type="checkbox" />
                   <span>Auto-approve agent prompts</span>
@@ -966,13 +977,16 @@
       var providerEl = document.getElementById("spawn-provider");
       var spawnModeEl = document.getElementById("spawn-mode");
       var spawnModelEl = document.getElementById("spawn-model");
+      var spawnEffortEl = document.getElementById("spawn-effort");
       var autoApproveEl = document.getElementById("spawn-auto-approve");
       var SPAWN_PROVIDER_STORAGE_KEY = "meridian_spawn_provider";
       var SPAWN_MODE_STORAGE_KEY = "meridian_spawn_mode";
       var SPAWN_MODEL_STORAGE_KEY = "meridian_spawn_model_by_provider";
+      var SPAWN_EFFORT_STORAGE_KEY = "meridian_spawn_effort_by_provider";
       var SPAWN_AUTO_APPROVE_STORAGE_KEY = "meridian_spawn_auto_approve";
       var SPAWN_REPO_STORAGE_KEY = "meridian_spawn_repo";
       var spawnModelByProvider = {};
+      var spawnEffortByProvider = {};
       var spawnModelRequestToken = 0;
       /** Relative path under AGENT_WORKDIR or an absolute path selected from the workspace picker. */
       var spawnRepoRelative = "";
@@ -1038,10 +1052,59 @@
         return "pane_bridge";
       }
 
+      function normalizeSpawnEffort(value) {
+        var effort = value == null ? "" : String(value).trim().toLowerCase();
+        return effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh"
+          ? effort
+          : "";
+      }
+
+      function parseModelReferenceWithEffort(rawModelId, explicitReasoningEffort) {
+        var modelId = rawModelId == null ? "" : String(rawModelId).trim();
+        var explicitEffort = normalizeSpawnEffort(explicitReasoningEffort);
+        var normalizedEffort = explicitEffort || "";
+        if (!modelId) {
+          return {
+            modelId: "",
+            reasoningEffort: normalizedEffort
+          };
+        }
+        var separatorIndex = modelId.indexOf("::");
+        if (separatorIndex > -1) {
+          var modelPart = modelId.slice(0, separatorIndex).trim();
+          if (modelPart) {
+            return {
+              modelId: modelPart,
+              reasoningEffort: normalizedEffort || normalizeSpawnEffort(modelId.slice(separatorIndex + 2))
+            };
+          }
+        }
+        var lastSpaceIndex = modelId.lastIndexOf(" ");
+        if (lastSpaceIndex > -1) {
+          var possibleEffort = modelId.slice(lastSpaceIndex + 1).toLowerCase().trim();
+          if (possibleEffort === "low" || possibleEffort === "medium" || possibleEffort === "high" || possibleEffort === "xhigh") {
+            return {
+              modelId: modelId.slice(0, lastSpaceIndex).trim(),
+              reasoningEffort: normalizedEffort || possibleEffort
+            };
+          }
+        }
+        return {
+          modelId: modelId,
+          reasoningEffort: normalizedEffort
+        };
+      }
+
       function readSavedSpawnModel(provider) {
         var normalizedProvider = normalizeSpawnProvider(provider);
         var saved = spawnModelByProvider[normalizedProvider];
         return typeof saved === "string" ? saved : "";
+      }
+
+      function readSavedSpawnEffort(provider) {
+        var normalizedProvider = normalizeSpawnProvider(provider);
+        var saved = spawnEffortByProvider[normalizedProvider];
+        return normalizeSpawnEffort(saved);
       }
 
       function writeSavedSpawnModel(provider, modelId) {
@@ -1052,6 +1115,16 @@
           return;
         }
         spawnModelByProvider[normalizedProvider] = normalizedModelId;
+      }
+
+      function writeSavedSpawnEffort(provider, effort) {
+        var normalizedProvider = normalizeSpawnProvider(provider);
+        var normalizedEffort = normalizeSpawnEffort(effort);
+        if (!normalizedEffort) {
+          delete spawnEffortByProvider[normalizedProvider];
+          return;
+        }
+        spawnEffortByProvider[normalizedProvider] = normalizedEffort;
       }
 
       function hasSpawnModelOption(modelId) {
@@ -1068,6 +1141,7 @@
         if (!spawnModelEl) return;
         var normalizedProvider = normalizeSpawnProvider(provider);
         var savedModelId = readSavedSpawnModel(normalizedProvider);
+        var savedEffort = readSavedSpawnEffort(normalizedProvider);
         spawnModelEl.innerHTML = "";
 
         var defaultOption = document.createElement("option");
@@ -1095,6 +1169,7 @@
 
         spawnModelEl.disabled = false;
         spawnModelEl.value = savedModelId && hasSpawnModelOption(savedModelId) ? savedModelId : "";
+        if (spawnEffortEl) spawnEffortEl.value = savedEffort;
       }
 
       function setSpawnModelLoading() {
@@ -1152,6 +1227,15 @@
               }
             }
           }
+          if (spawnEffortEl) {
+            var savedEffortRaw = localStorage.getItem(SPAWN_EFFORT_STORAGE_KEY);
+            if (savedEffortRaw) {
+              var parsedEfforts = JSON.parse(savedEffortRaw);
+              if (parsedEfforts && typeof parsedEfforts === "object") {
+                spawnEffortByProvider = parsedEfforts;
+              }
+            }
+          }
           if (autoApproveEl) {
             autoApproveEl.checked = localStorage.getItem(SPAWN_AUTO_APPROVE_STORAGE_KEY) !== "false";
           }
@@ -1159,6 +1243,7 @@
           spawnRepoRelative = savedRepo && typeof savedRepo === "string" ? savedRepo : "";
         } catch (e) {
           spawnModelByProvider = {};
+          spawnEffortByProvider = {};
           spawnRepoRelative = "";
         }
         updateWorkspaceButton();
@@ -1170,6 +1255,8 @@
           if (spawnModeEl) localStorage.setItem(SPAWN_MODE_STORAGE_KEY, normalizeSpawnMode(spawnModeEl.value));
           if (spawnModelEl) writeSavedSpawnModel(providerEl && providerEl.value, spawnModelEl.value || "");
           localStorage.setItem(SPAWN_MODEL_STORAGE_KEY, JSON.stringify(spawnModelByProvider));
+          if (spawnEffortEl) writeSavedSpawnEffort(providerEl && providerEl.value, spawnEffortEl.value || "");
+          localStorage.setItem(SPAWN_EFFORT_STORAGE_KEY, JSON.stringify(spawnEffortByProvider));
           if (autoApproveEl) localStorage.setItem(SPAWN_AUTO_APPROVE_STORAGE_KEY, autoApproveEl.checked ? "true" : "false");
           localStorage.setItem(SPAWN_REPO_STORAGE_KEY, spawnRepoRelative || "");
         } catch (e) {}
@@ -1696,9 +1783,15 @@
         if (spawnRepoRelative && String(spawnRepoRelative).trim()) {
           repoPayload.repo = String(spawnRepoRelative).trim();
         }
+        var selectedModelId = spawnModelEl && String(spawnModelEl.value || "").trim();
+        var selectedEffort = spawnEffortEl && String(spawnEffortEl.value || "").trim();
+        var parsedModel = parseModelReferenceWithEffort(selectedModelId, selectedEffort);
         var modelPayload = {};
-        if (spawnModelEl && String(spawnModelEl.value || "").trim()) {
-          modelPayload.model_id = String(spawnModelEl.value).trim();
+        if (parsedModel.modelId) {
+          modelPayload.model_id = parsedModel.modelId;
+        }
+        if (parsedModel.reasoningEffort) {
+          modelPayload.effort = parsedModel.reasoningEffort;
         }
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
@@ -1736,6 +1829,7 @@
       }
       if (spawnModeEl) spawnModeEl.addEventListener("change", saveSpawnPreferences);
       if (spawnModelEl) spawnModelEl.addEventListener("change", saveSpawnPreferences);
+      if (spawnEffortEl) spawnEffortEl.addEventListener("change", saveSpawnPreferences);
       if (autoApproveEl) autoApproveEl.addEventListener("change", saveSpawnPreferences);
 
       if (btnSpawnWorkspace) btnSpawnWorkspace.addEventListener("click", openSpawnWorkspaceDialog);

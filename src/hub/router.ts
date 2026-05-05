@@ -20,6 +20,7 @@ import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { sendIpcRequest } from "../shared/ipc";
 import { buildWebGuiUrl, tryBuildGuiInlineKeyboard } from "../shared/telegram-controls";
+import { parseModelReference } from "../shared/model-reference";
 import {
   BUILT_IN_INTENTS,
   AgentInstanceStatusSchema,
@@ -1124,17 +1125,19 @@ export class HubRouter {
   private async handleSpawn(message: HubMessage): Promise<HubResult> {
     const type = AgentTypeSchema.parse(message.target);
     const spawnDir = message.payload.spawn_dir?.trim() || undefined;
-    const modelId = message.payload.model_id?.trim() || undefined;
-    const reasoningEffort = message.payload.effort;
+    const modelReference = parseModelReference(
+      message.payload.model_id,
+      message.payload.effort
+    );
     const integrationProfile = message.payload.integration_profile;
     const sandboxMode = message.payload.sandbox_mode;
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
       spawnDir,
-      modelId,
+      modelReference.modelId,
       message.payload.auto_approve,
-      reasoningEffort,
+      modelReference.reasoningEffort,
       message.trace_id,
       integrationProfile,
       sandboxMode,
@@ -1289,15 +1292,20 @@ export class HubRouter {
   private async handleSwitchModel(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadIdFromThread(message);
     const instance = this.resolveInstance(threadId);
-    const modelId = message.payload.content.trim();
-    if (!modelId) {
+    const modelInput = message.payload.model_id?.trim() || message.payload.content.trim();
+    const modelReference = parseModelReference(modelInput, message.payload.effort);
+    if (!modelReference.modelId) {
       throw new Error("switch_model requires a provider model id");
     }
-    const switchedThreadId = await this.instanceManager.switchModel(threadId, modelId);
+    const switchedThreadId = await this.instanceManager.switchModel(
+      threadId,
+      modelReference.modelId,
+      modelReference.reasoningEffort
+    );
     const switched = this.registry.get(switchedThreadId);
     const content =
       switched === undefined
-        ? `Switched ${threadId} to model=${modelId}`
+        ? `Switched ${threadId} to model=${modelReference.modelId}`
         : JSON.stringify({ thread_id: switchedThreadId, instance: switched }, null, 2);
     return this.buildResult(
       message,

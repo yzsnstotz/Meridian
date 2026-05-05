@@ -945,6 +945,13 @@
       <select id="model-select" class="header-select" title="Model selector">
         <option value="">Model: loading…</option>
       </select>
+      <select id="model-effort-select" class="header-select" title="Model reasoning effort">
+        <option value="">Reasoning effort: default</option>
+        <option value="low">Reasoning effort: low</option>
+        <option value="medium">Reasoning effort: medium</option>
+        <option value="high">Reasoning effort: high</option>
+        <option value="xhigh">Reasoning effort: xhigh</option>
+      </select>
       <select id="capture-interval" class="focus-toggle" style="appearance:auto;padding:3px 6px;font-size:11px;">
         <option value="3000">Cap 3s</option>
         <option value="5000">Cap 5s</option>
@@ -1115,6 +1122,7 @@
       var sidebarOverlay = document.getElementById("sidebar-overlay");
       var sessionListEl = document.getElementById("session-list");
       var modelSelectEl = document.getElementById("model-select");
+      var modelEffortSelectEl = document.getElementById("model-effort-select");
 
       // ── Chat view state ──
       var chatMessagesEl = document.getElementById("chat-messages");
@@ -1176,8 +1184,140 @@
       var serverHistoryAuthoritative = false;
       var modelCatalogState = null;
       var CUSTOM_MODEL_OPTION_VALUE = "__custom__";
+      var MODEL_EFFORT_STORAGE_KEY = "meridian_model_effort:" + (threadId || "active");
+      var currentModelEffort = "";
+
+      function readStoredModelEffort() {
+        try {
+          return normalizeModelEffort(localStorage.getItem(MODEL_EFFORT_STORAGE_KEY));
+        } catch (e) {}
+        return "";
+      }
+
+      function saveStoredModelEffort(effort) {
+        try {
+          var normalizedEffort = normalizeModelEffort(effort);
+          if (!normalizedEffort) {
+            localStorage.removeItem(MODEL_EFFORT_STORAGE_KEY);
+            return;
+          }
+          localStorage.setItem(MODEL_EFFORT_STORAGE_KEY, normalizedEffort);
+        } catch (e) {}
+      }
+
+      function syncModelEffortControl(value) {
+        if (!modelEffortSelectEl) return;
+        modelEffortSelectEl.value = normalizeModelEffort(value);
+      }
 
       function isMobile() { return window.innerWidth <= 768; }
+
+      function normalizeModelEffort(value) {
+        var effort = value == null ? "" : String(value).trim().toLowerCase();
+        return effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh"
+          ? effort
+          : "";
+      }
+
+      function parseModelReferenceWithEffort(rawModelId, explicitEffort) {
+        var modelId = rawModelId == null ? "" : String(rawModelId).trim();
+        var normalizedEffort = normalizeModelEffort(explicitEffort);
+        if (!modelId) {
+          return {
+            modelId: "",
+            reasoningEffort: normalizedEffort
+          };
+        }
+        var separatorIndex = modelId.indexOf("::");
+        if (separatorIndex > -1) {
+          var modelPart = modelId.slice(0, separatorIndex).trim();
+          if (modelPart) {
+            return {
+              modelId: modelPart,
+              reasoningEffort: normalizedEffort || normalizeModelEffort(modelId.slice(separatorIndex + 2))
+            };
+          }
+        }
+        var lastSpaceIndex = modelId.lastIndexOf(" ");
+        if (lastSpaceIndex > -1) {
+          var possibleEffort = modelId.slice(lastSpaceIndex + 1).toLowerCase().trim();
+          if (possibleEffort === "low" || possibleEffort === "medium" || possibleEffort === "high" || possibleEffort === "xhigh") {
+            return {
+              modelId: modelId.slice(0, lastSpaceIndex).trim(),
+              reasoningEffort: normalizedEffort || possibleEffort
+            };
+          }
+        }
+        return {
+          modelId: modelId,
+          reasoningEffort: normalizedEffort
+        };
+      }
+
+      function requestModelSwitch() {
+        if (!modelSelectEl) return;
+        var selectedId = modelSelectEl.value;
+        var selectedEffort = modelEffortSelectEl && modelEffortSelectEl.value;
+        var normalizedEffort = normalizeModelEffort(selectedEffort);
+        var currentModelId = modelCatalogState && modelCatalogState.current_model_id ? modelCatalogState.current_model_id : "";
+
+        if (selectedId === CUSTOM_MODEL_OPTION_VALUE) {
+          var manualId = window.prompt("Enter provider model id:", currentModelId || "");
+          if (!manualId || !manualId.trim()) {
+            refreshModelCatalog(currentModelId);
+            return;
+          }
+          selectedId = manualId.trim();
+        }
+
+        if (!selectedId) {
+          return;
+        }
+
+        var parsedModel = parseModelReferenceWithEffort(selectedId, selectedEffort);
+        if (!parsedModel.modelId) {
+          addChatBubble("Model switch failed: invalid model id", "agent");
+          refreshModelCatalog(currentModelId || "");
+          return;
+        }
+
+        if (selectedId === currentModelId && normalizedEffort === currentModelEffort) {
+          return;
+        }
+
+        modelSelectEl.disabled = true;
+        window.MeridianWeb.fetchWithAuth("/api/models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            thread_id: threadId,
+            model_id: parsedModel.modelId,
+            ...(parsedModel.reasoningEffort ? { effort: parsedModel.reasoningEffort } : {})
+          })
+        })
+          .then(function(res) {
+            return res.json().then(function(data) {
+              if (!res.ok) {
+                throw new Error(data && data.error ? data.error : "Failed to switch model");
+              }
+              return data;
+            });
+          })
+          .then(function() {
+            addChatBubble("Model switch requested: " + parsedModel.modelId, "agent");
+            currentModelEffort = normalizeModelEffort(parsedModel.reasoningEffort);
+            saveStoredModelEffort(currentModelEffort);
+            syncModelEffortControl(currentModelEffort);
+            return new Promise(function(resolve) { setTimeout(resolve, 1200); });
+          })
+          .then(function() {
+            return refreshModelCatalog(parsedModel.modelId);
+          })
+          .catch(function(err) {
+            addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent");
+            refreshModelCatalog(currentModelId || "");
+          });
+      }
 
       function stripAnsi(str) {
         return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
@@ -2939,6 +3079,9 @@
 
       function refreshModelCatalog(selectedModelId) {
         if (!modelSelectEl) return Promise.resolve(null);
+        if (!currentModelEffort) {
+          currentModelEffort = readStoredModelEffort();
+        }
         function formatModelText(modelLabelOrId) {
           return modelLabelOrId ? "Model: " + modelLabelOrId : "Model";
         }
@@ -2983,6 +3126,8 @@
                 throw new Error(data && data.error ? data.error : "Failed to load models");
               }
               modelCatalogState = data;
+              currentModelEffort = readStoredModelEffort();
+              syncModelEffortControl(currentModelEffort);
               modelSelectEl.innerHTML = "";
               var models = Array.isArray(data.models) ? data.models : [];
               var currentModelId = typeof data.current_model_id === "string" ? data.current_model_id : "";
@@ -3031,42 +3176,16 @@
 
       if (modelSelectEl) {
         modelSelectEl.addEventListener("change", function() {
-          var selectedId = modelSelectEl.value;
-          var currentModelId = modelCatalogState && modelCatalogState.current_model_id ? modelCatalogState.current_model_id : "";
-          if (selectedId === CUSTOM_MODEL_OPTION_VALUE) {
-            var manualId = window.prompt("Enter provider model id:", currentModelId || "");
-            if (!manualId || !manualId.trim()) {
-              refreshModelCatalog(currentModelId);
-              return;
-            }
-            selectedId = manualId.trim();
+          requestModelSwitch();
+        });
+      }
+
+      if (modelEffortSelectEl) {
+        modelEffortSelectEl.addEventListener("change", function() {
+          if (!modelSelectEl || modelSelectEl.disabled) {
+            return;
           }
-          if (!selectedId || selectedId === currentModelId) return;
-          modelSelectEl.disabled = true;
-          window.MeridianWeb.fetchWithAuth("/api/models", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ thread_id: threadId, model_id: selectedId })
-          })
-            .then(function(res) {
-              return res.json().then(function(data) {
-                if (!res.ok) {
-                  throw new Error(data && data.error ? data.error : "Failed to switch model");
-                }
-                return data;
-              });
-            })
-            .then(function() {
-              addChatBubble("Model switch requested: " + selectedId, "agent");
-              return new Promise(function(resolve) { setTimeout(resolve, 1200); });
-            })
-            .then(function() {
-              return refreshModelCatalog(selectedId);
-            })
-            .catch(function(err) {
-              addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent");
-              refreshModelCatalog(currentModelId || "");
-            });
+          requestModelSwitch();
         });
       }
 
