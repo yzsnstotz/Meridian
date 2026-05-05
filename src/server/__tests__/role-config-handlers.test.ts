@@ -3674,6 +3674,111 @@ describe("role config handlers", () => {
     }
   });
 
+  it("renders a stale-running PM resolver with a terminal live marker as completed", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-pm-live-marker-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 7G | BATCH-7-GATE | Dashboard privacy gate | CODEX-HIGH | N-14, N-15 | Baseline | PM resolved |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-05T13:44:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "BATCH-7-GATE": buildLifecycleWorker({
+          thread_id: "codex_167",
+          started_at: "2026-05-05T13:44:19.465Z",
+          last_seen_at: "2026-05-05T13:50:24.783Z",
+          status: "completed"
+        })
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_169",
+          status: "running",
+          started_at: "2026-05-05T13:46:19.384Z",
+          last_seen_at: "2026-05-05T13:46:19.384Z",
+          agent_type: "codex",
+          model_id: null,
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "BATCH-7-GATE",
+            source: "watchdog",
+            message: "BATCH-7-GATE requested PM resolution"
+          },
+          result: null,
+          error: null
+        }
+      ],
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        [
+          "Your message:",
+          "Resolve BATCH-7-GATE",
+          "",
+          "Agent reply:",
+          "Resolved the PM blocker for BATCH-7-GATE.",
+          "",
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: BATCH-7-GATE",
+          "role: pm-resolver",
+          "outcome: resolved",
+          "pm_action: force_complete",
+          "notes: Marked BATCH-7-GATE completed after PM-scoped privacy fix.",
+          "<<<END>>>"
+        ].join("\n")
+      );
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-pm-live-marker", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-pm-live-marker"
+      )).resolves.toMatchObject({
+        dispatch_plan: {
+          rows: [
+            expect.objectContaining({
+              worker: "BATCH-7-GATE",
+              lifecycle_status: "completed",
+              active_owner_kind: null,
+              active_owner_thread_id: null
+            })
+          ]
+        },
+        dispatch_details: expect.arrayContaining([
+          expect.objectContaining({
+            detail_kind: "pm_resolver",
+            worker_id: "PM:BATCH-7-GATE",
+            status: "completed",
+            worker_thread_id: "codex_169",
+            reply: expect.objectContaining({
+              content: expect.stringContaining("outcome: resolved")
+            })
+          })
+        ])
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits a separate validator dispatch detail per validation cycle in worker.validation.history", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-validator-cycles-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
