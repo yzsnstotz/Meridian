@@ -82,6 +82,27 @@ test("runHealthcheck passes when tunnel, origin, and public URL are healthy", as
   assert.deepEqual(deps.commands, []);
 });
 
+test("runHealthcheck does not fail when a stale state file is unwritable", async () => {
+  const deps = fakeDeps(
+    new Map([
+      ["http://127.0.0.1:20241/ready", response(200, '{"status":200,"readyConnections":4}')],
+      ["http://127.0.0.1:3100", response(200)],
+      ["https://ioex.io", response(200)]
+    ])
+  );
+  deps.readState = () => ({ lastFailureKey: "previous failure" });
+  deps.writeState = () => {
+    const error = new Error("EACCES: permission denied, open '/var/tmp/ioex-tunnel-healthcheck-state.json'");
+    error.code = "EACCES";
+    throw error;
+  };
+
+  const result = await runHealthcheck(baseConfig({ stateFile: "/var/tmp/ioex-tunnel-healthcheck-state.json" }), deps);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.failures, []);
+});
+
 test("runHealthcheck restarts cloudflared when the connector has no ready connections", async () => {
   const deps = fakeDeps(
     new Map([

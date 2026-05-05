@@ -166,7 +166,7 @@ function maybeNotify(config, deps, failures) {
   const lastNotifyAt = Number(previous?.lastNotifyAt ?? 0);
   const shouldNotify = previous?.lastFailureKey !== failureKey || now - lastNotifyAt >= config.notifyCooldownMs;
 
-  deps.writeState(config.stateFile, {
+  writeStateNonFatal(config, deps, {
     lastFailureKey: failureKey,
     lastFailureAt: now,
     lastNotifyAt: shouldNotify ? now : lastNotifyAt
@@ -187,11 +187,26 @@ function clearFailureState(config, deps) {
     return;
   }
 
-  deps.writeState(config.stateFile, {
+  writeStateNonFatal(config, deps, {
     ...previous,
     lastHealthyAt: deps.now(),
     lastFailureKey: null
   });
+}
+
+function writeStateNonFatal(config, deps, state) {
+  try {
+    deps.writeState(config.stateFile, state);
+  } catch (error) {
+    deps.log(
+      JSON.stringify({
+        time: new Date(deps.now()).toISOString(),
+        level: "warn",
+        ok: true,
+        message: `state file not writable: ${error.message}`
+      })
+    );
+  }
 }
 
 function sendDesktopNotification(deps, failures) {
