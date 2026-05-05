@@ -26,23 +26,33 @@ function baseMessage(overrides: Partial<HubMessage> = {}): HubMessage {
   };
 }
 
+function parseJsonPrefix<T>(content: string): T {
+  const attachmentIndex = content.indexOf("\n\nAttached chat sessions:");
+  const jsonContent = attachmentIndex >= 0 ? content.slice(0, attachmentIndex) : content;
+  return JSON.parse(jsonContent) as T;
+}
+
+type TestCallerAuthority = "read" | "write" | "stateless_call" | "admin";
+
 interface Harness {
   router: HubRouter;
+  registry: InstanceRegistry;
   statePath: string;
   cleanup: () => void;
-  mintCaller: (callerId: string, opts?: { kind?: "builtin" | "external"; revoked?: boolean; label?: string; authority?: "read" | "write" | "admin" }) => string;
+  mintCaller: (callerId: string, opts?: { kind?: "builtin" | "external"; revoked?: boolean; label?: string; authority?: TestCallerAuthority }) => string;
 }
 
 async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harness> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "router-caller-auth-"));
   const statePath = path.join(tmpDir, "state.json");
   savePersistedHubState(statePath, buildPersistedHubState(new Date().toISOString(), [], {}, {}, {}, initialCallers));
-  const router = new HubRouter(new InstanceRegistry(), { statePath });
+  const registry = new InstanceRegistry();
+  const router = new HubRouter(registry, { statePath });
   await router.initialize();
 
   const mintCaller = (
     callerId: string,
-    opts: { kind?: "builtin" | "external"; revoked?: boolean; label?: string; authority?: "read" | "write" | "admin" } = {}
+    opts: { kind?: "builtin" | "external"; revoked?: boolean; label?: string; authority?: TestCallerAuthority } = {}
   ): string => {
     const registry = router.getCallerRegistry();
     if (!registry) throw new Error("registry_unavailable");
@@ -79,7 +89,7 @@ async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harnes
     }
   };
 
-  return { router, statePath, cleanup, mintCaller };
+  return { router, registry, statePath, cleanup, mintCaller };
 }
 
 test("authenticateCaller: missing auth → caller_required", async () => {
@@ -227,6 +237,75 @@ test("authority gate: read caller can list but cannot spawn", async () => {
   }
 });
 
+test("authority gate: stateless_call caller can spawn Codex stateless read-only but not bridge", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("stateless-svc", { kind: "external", authority: "stateless_call" });
+    const statelessSpawn = await harness.router.route(
+      baseMessage({
+        intent: "spawn",
+        payload: { content: "", attachments: [] },
+        target: "codex",
+        mode: "stateless_call"
+      }),
+      { caller_id: "stateless-svc", caller_key: cleartextKey }
+    );
+    assert.equal(statelessSpawn.status, "success");
+    const body = parseJsonPrefix<{ instance: { mode: string; sandbox_mode: string; auto_approve: boolean } }>(
+      statelessSpawn.content
+    );
+    assert.equal(body.instance.mode, "stateless_call");
+    assert.equal(body.instance.sandbox_mode, "read-only");
+    assert.equal(body.instance.auto_approve, false);
+
+    const bridgeSpawn = await harness.router.route(
+      baseMessage({
+        intent: "spawn",
+        payload: { content: "", attachments: [] },
+        target: "codex",
+        mode: "bridge"
+      }),
+      { caller_id: "stateless-svc", caller_key: cleartextKey }
+    );
+    assert.equal(bridgeSpawn.status, "error");
+    assert.equal(bridgeSpawn.content, "caller_not_authorized_for_intent");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authority gate: stateless_call caller cannot run bridge threads", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("stateless-run-svc", { kind: "external", authority: "stateless_call" });
+    harness.registry.register({
+      thread_id: "codex_bridge",
+      agent_type: "codex",
+      mode: "bridge",
+      socket_path: "/tmp/agentapi-codex_bridge.sock",
+      pid: 22,
+      tmux_pane: null,
+      status: "idle",
+      created_at: new Date().toISOString(),
+      auto_approve: false
+    });
+
+    const blockedRun = await harness.router.route(
+      baseMessage({
+        intent: "run",
+        thread_id: "codex_bridge",
+        target: "codex_bridge",
+        payload: { content: "should block", attachments: [] }
+      }),
+      { caller_id: "stateless-run-svc", caller_key: cleartextKey }
+    );
+    assert.equal(blockedRun.status, "error");
+    assert.equal(blockedRun.content, "caller_not_authorized_for_intent");
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("authority gate: admin authority can update caller authority", async () => {
   const harness = await setupHarness();
   try {
@@ -265,6 +344,34 @@ test("admin gate: meridian-admin caller calling register_caller → success", as
     assert.equal(parsed.caller_id, "new-ext");
     assert.equal(typeof parsed.caller_key, "string");
     assert.equal(parsed.caller_key.length, 64);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("admin gate: register_caller accepts caller_authority at mint time", async () => {
+  const harness = await setupHarness();
+  try {
+    const adminKey = harness.mintCaller("meridian-admin", { kind: "builtin", label: "Meridian Admin" });
+    const result = await harness.router.route(
+      baseMessage({
+        intent: "register_caller",
+        payload: {
+          content: JSON.stringify({
+            caller_id: "stateless-ext",
+            caller_label: "Stateless External",
+            caller_authority: "stateless_call"
+          }),
+          attachments: []
+        }
+      }),
+      { caller_id: "meridian-admin", caller_key: adminKey }
+    );
+    assert.equal(result.status, "success");
+    const parsed = JSON.parse(result.content) as { caller_id: string; caller_authority: string };
+    assert.equal(parsed.caller_id, "stateless-ext");
+    assert.equal(parsed.caller_authority, "stateless_call");
+    assert.equal(harness.router.getCallerRegistry()?.get("stateless-ext")?.caller_authority, "stateless_call");
   } finally {
     harness.cleanup();
   }

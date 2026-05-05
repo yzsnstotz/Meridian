@@ -29,14 +29,15 @@ export function buildClaudeCliArgs(
   autoApprove?: boolean,
   reasoningEffort?: ReasoningEffort
 ): string[] {
-  void autoApprove;
   // agentapi launches Claude in interactive mode, so omit --print-only streaming flags here.
   const args = [claudeAgentConfig.command, "--allowedTools", allowedTools.join(" ")];
   appendReasoningEffortFlag(args, reasoningEffort);
   if (modelId) {
     args.push("--model", modelId);
   }
-  args.push("--dangerously-skip-permissions");
+  if (autoApprove === true) {
+    args.push("--dangerously-skip-permissions");
+  }
   return args;
 }
 
@@ -60,7 +61,6 @@ export function buildClaudeStreamArgs(
   autoApprove?: boolean,
   reasoningEffort?: ReasoningEffort
 ): string[] {
-  void autoApprove;
   const args = [
     claudeAgentConfig.command,
     "--print",
@@ -75,6 +75,8 @@ export function buildClaudeStreamArgs(
   if (modelId) {
     args.push("--model", modelId);
   }
-  args.push("--dangerously-skip-permissions");
+  if (autoApprove === true) {
+    args.push("--dangerously-skip-permissions");
+  }
   return args;
 }

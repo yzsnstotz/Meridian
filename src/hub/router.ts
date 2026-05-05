@@ -204,7 +204,8 @@ const RegisterCallerPayloadSchema = z
   .object({
     caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
     caller_label: z.string().min(1).max(64),
-    caller_kind: z.literal("external").optional()
+    caller_kind: z.literal("external").optional(),
+    caller_authority: CallerAuthoritySchema.optional()
   })
   .strict();
 
@@ -1104,6 +1105,10 @@ export class HubRouter {
       const attachment = this.instanceManager.getThreadAttachment(currentInstance.thread_id);
       const attachable = this.instanceManager.isThreadAttachableBySession(currentInstance.thread_id, requestSessionId);
       const attachedLabels = attachment.sessions.map((session) => this.describeAttachedSession(session));
+      const spawnInvocation =
+        typeof this.instanceManager.describeSpawnInvocation === "function"
+          ? this.instanceManager.describeSpawnInvocation(currentInstance)
+          : { command: "", args: [], provider_args: [], provider_append: "", display: "" };
       const history = this.readConversationHistory(currentInstance.thread_id);
       const lastEntry = history[history.length - 1] ?? null;
       let lastTraceId: string | null = null;
@@ -1122,6 +1127,11 @@ export class HubRouter {
         attached_labels: attachedLabels,
         attached_interface: attachment.interface_id,
         attachable,
+        spawn_command: spawnInvocation.command,
+        spawn_args: spawnInvocation.args,
+        spawn_provider_args: spawnInvocation.provider_args,
+        spawn_append: spawnInvocation.provider_append,
+        spawn_display: spawnInvocation.display,
         last_trace_id: lastTraceId,
         last_interaction_at: lastEntry?.timestamp ?? null
       };
@@ -1144,13 +1154,14 @@ export class HubRouter {
       message.payload.model_id,
       message.payload.effort
     );
+    const modelId = modelReference.modelId || undefined;
     const integrationProfile = message.payload.integration_profile;
     const sandboxMode = message.payload.sandbox_mode;
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
       spawnDir,
-      modelReference.modelId,
+      modelId,
       message.payload.auto_approve,
       modelReference.reasoningEffort,
       message.trace_id,
@@ -1915,7 +1926,44 @@ export class HubRouter {
     if (authority === "read" && !READ_AUTHORITY_INTENTS.has(message.intent)) {
       return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
     }
+    if (authority === "stateless_call" && !this.isStatelessCallAuthorityAllowed(message)) {
+      return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+    }
     return null;
+  }
+
+  private isStatelessCallAuthorityAllowed(message: HubMessage): boolean {
+    if (READ_AUTHORITY_INTENTS.has(message.intent)) {
+      return true;
+    }
+
+    if (message.intent === "spawn") {
+      const sandboxMode = message.payload.sandbox_mode ?? "read-only";
+      return (
+        message.target === "codex" &&
+        message.mode === "stateless_call" &&
+        sandboxMode === "read-only" &&
+        message.payload.auto_approve !== true
+      );
+    }
+
+    if (message.intent === "run") {
+      let threadId: string;
+      try {
+        threadId = this.resolveThreadId(message);
+      } catch {
+        return false;
+      }
+      const instance = this.registry.get(threadId);
+      return (
+        instance?.agent_type === "codex" &&
+        instance.mode === "stateless_call" &&
+        instance.sandbox_mode === "read-only" &&
+        instance.auto_approve === false
+      );
+    }
+
+    return false;
   }
 
   private buildAuthErrorResult(message: HubMessage, content: string): HubResult {
@@ -1981,7 +2029,8 @@ export class HubRouter {
       const result = this.requireCallerRegistry().mint({
         caller_id: parsed.data.caller_id,
         caller_label: parsed.data.caller_label,
-        kind: "external"
+        kind: "external",
+        authority: parsed.data.caller_authority
       });
       return this.buildResult(
         message,

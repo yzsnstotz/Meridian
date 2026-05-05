@@ -54,7 +54,7 @@ export type SandboxMode = z.infer<typeof SandboxModeSchema>;
 export const ReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 
-export const CallerAuthoritySchema = z.enum(["read", "write", "admin"]);
+export const CallerAuthoritySchema = z.enum(["read", "write", "stateless_call", "admin"]);
 export type CallerAuthority = z.infer<typeof CallerAuthoritySchema>;
 
 export const HubResultStatusSchema = z.enum(["success", "error", "partial", "timeout"]);

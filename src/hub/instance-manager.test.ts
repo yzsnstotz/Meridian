@@ -121,6 +121,41 @@ test("spawn registers stateless_call codex instance without launching AgentAPI",
   assert.equal(registry.get(threadId), undefined);
 });
 
+test("describeSpawnInvocation exposes provider append flags for agent cards", async () => {
+  const registry = new InstanceRegistry();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => {
+      return new FakeChildProcess(1401) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge", undefined, "gpt-5.4", true, "high");
+  const instance = registry.get(threadId);
+  assert.ok(instance);
+
+  const invocation = manager.describeSpawnInvocation(instance);
+  assert.equal(invocation.command, "/Users/yzliu/work/Meridian/bin/agentapi");
+  assert.deepEqual(invocation.provider_args, [
+    "codex",
+    "-c",
+    'model_reasoning_effort="high"',
+    "--model",
+    "gpt-5.4",
+    "--dangerously-bypass-approvals-and-sandbox"
+  ]);
+  assert.equal(invocation.provider_append, 'codex -c model_reasoning_effort="high" --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox');
+
+  await manager.kill(threadId);
+});
+
 test("spawn rejects stateless_call for non-Codex providers", async () => {
   const registry = new InstanceRegistry();
   let spawnCalls = 0;
@@ -399,8 +434,7 @@ test("spawn claude bridge includes --allowedTools args", async () => {
     "--",
     "claude",
     "--allowedTools",
-    "Bash Edit Replace",
-    "--dangerously-skip-permissions"
+    "Bash Edit Replace"
   ]);
 
   await manager.kill(threadId);
@@ -530,8 +564,7 @@ test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge
     "--",
     "claude",
     "--allowedTools",
-    "Bash Edit Replace",
-    "--dangerously-skip-permissions"
+    "Bash Edit Replace"
   ]);
 
   await manager.kill(threadId);

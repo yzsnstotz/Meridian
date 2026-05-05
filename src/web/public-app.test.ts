@@ -7,7 +7,7 @@ import test from "node:test";
 type MeridianWebFull = {
   getToken: () => string;
   loadCallers: () => Promise<unknown>;
-  mintCaller: (id: string, label: string) => Promise<unknown>;
+  mintCaller: (id: string, label: string, authority?: string) => Promise<unknown>;
   rotateCaller: (id: string) => Promise<unknown>;
   updateCallerAuthority: (id: string, authority: string) => Promise<unknown>;
   revokeCaller: (id: string) => Promise<unknown>;
@@ -177,7 +177,7 @@ test("loadCallers makes an authenticated GET to /api/callers", async () => {
 
 test("mintCaller posts to /api/callers with authenticated JSON body", async () => {
   const { mw, captured } = createCallerApiHarness("mytoken");
-  await mw.mintCaller("my-service", "My Service");
+  await mw.mintCaller("my-service", "My Service", "stateless_call");
   assert.equal(captured.length, 1);
   assert.match(captured[0]!.url, /\/api\/callers$/);
   assert.equal(captured[0]!.method, "POST");
@@ -185,6 +185,7 @@ test("mintCaller posts to /api/callers with authenticated JSON body", async () =
   const sent = JSON.parse(captured[0]!.body ?? "{}");
   assert.equal(sent.caller_id, "my-service");
   assert.equal(sent.caller_label, "My Service");
+  assert.equal(sent.caller_authority, "stateless_call");
 });
 
 test("rotateCaller posts to /api/callers/:id/rotate with auth header", async () => {

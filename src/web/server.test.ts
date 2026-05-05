@@ -1767,6 +1767,48 @@ test("POST /api/callers registers external caller and returns cleartext key", as
   assert.equal((seenMessages[0]?.caller as { caller_id?: string })?.caller_id, "meridian-admin");
 });
 
+test("POST /api/callers forwards requested caller authority", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        caller_id: "stateless-bot",
+        caller_label: "Stateless Bot",
+        caller_authority: "stateless_call"
+      })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { caller_id: string; caller_authority: string };
+    assert.equal(payload.caller_id, "stateless-bot");
+    assert.equal(payload.caller_authority, "stateless_call");
+  }, {
+    requestAdminHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      const body = JSON.parse(message.payload.content as string) as Record<string, unknown>;
+      assert.equal(body.caller_authority, "stateless_call");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({
+          caller_id: "stateless-bot",
+          caller_key: "cleartext-stateless",
+          caller_authority: "stateless_call"
+        }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "register_caller");
+});
+
 test("POST /api/callers returns 401 without Bearer token", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/callers`, {
