@@ -40,6 +40,7 @@ LOG_DIR="${LOG_DIR:-/var/log/hub}"
 HUB_SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-core.sock}"
 RUNTIME_LOG_DIR="${MERIDIAN_RUNTIME_LOG_DIR:-${ROOT_DIR}/logs}"
 MERIDIAN_STATE_PATH="${MERIDIAN_STATE_PATH:-/tmp/meridian-state.json}"
+PM2_KEEP_AGENTS_MODE=0
 
 log() {
   printf '[restart] %s\n' "$1"
@@ -93,6 +94,22 @@ stop_pm2_apps() {
   pm2 delete ecosystem.config.js >/dev/null 2>&1 || true
 }
 
+pm2_runtime_available() {
+  if ! command -v pm2 >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! pm2 ping >/dev/null 2>&1; then
+    return 1
+  fi
+  if [[ ! -f "${ROOT_DIR}/ecosystem.config.js" ]]; then
+    return 1
+  fi
+  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" || ! -f "${ROOT_DIR}/dist/web/server.js" ]]; then
+    return 1
+  fi
+  return 0
+}
+
 cleanup_tmux_agent_sessions() {
   if ! command -v tmux >/dev/null 2>&1; then
     return 0
@@ -113,16 +130,7 @@ cleanup_tmux_agent_sessions() {
 }
 
 start_with_pm2() {
-  if ! command -v pm2 >/dev/null 2>&1; then
-    return 1
-  fi
-  if ! pm2 ping >/dev/null 2>&1; then
-    return 1
-  fi
-  if [[ ! -f "${ROOT_DIR}/ecosystem.config.js" ]]; then
-    return 1
-  fi
-  if [[ ! -f "${ROOT_DIR}/dist/hub/index.js" || ! -f "${ROOT_DIR}/dist/interface/index.js" || ! -f "${ROOT_DIR}/dist/monitor/index.js" || ! -f "${ROOT_DIR}/dist/web/server.js" ]]; then
+  if ! pm2_runtime_available; then
     return 1
   fi
 
@@ -143,6 +151,48 @@ start_with_pm2() {
     pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
   )
   return 0
+}
+
+hub_socket_reachable() {
+  if [[ ! -S "${HUB_SOCKET_PATH}" ]]; then
+    return 1
+  fi
+
+  node -e '
+const net = require("node:net");
+const socketPath = process.argv[1];
+const socket = net.createConnection(socketPath);
+const timer = setTimeout(() => {
+  socket.destroy();
+  process.exit(1);
+}, 1000);
+socket.once("connect", () => {
+  clearTimeout(timer);
+  socket.end();
+  process.exit(0);
+});
+socket.once("error", () => {
+  clearTimeout(timer);
+  process.exit(1);
+});
+' "${HUB_SOCKET_PATH}" >/dev/null 2>&1
+}
+
+wait_for_hub_socket() {
+  local attempts="${HUB_SOCKET_READY_ATTEMPTS:-30}"
+  local delay="${HUB_SOCKET_READY_DELAY_SEC:-1}"
+
+  for _ in $(seq 1 "${attempts}"); do
+    if hub_socket_reachable; then
+      log "Hub socket is reachable: ${HUB_SOCKET_PATH}"
+      return 0
+    fi
+    sleep "${delay}"
+  done
+
+  echo "Hub socket is not reachable after restart: ${HUB_SOCKET_PATH}" >&2
+  echo "Check ${LOG_DIR}/hub.log and ${LOG_DIR}/hub-error.log for startup errors." >&2
+  return 1
 }
 
 start_with_npm() {
@@ -187,10 +237,15 @@ start_with_node_dist() {
 log "Stopping existing Meridian processes"
 stop_pm2_apps
 
-kill_by_pattern "${ROOT_DIR}/src/hub/index.ts|${ROOT_DIR}/dist/hub/index.js|npm run start:hub" "hub"
-kill_by_pattern "${ROOT_DIR}/src/interface/index.ts|${ROOT_DIR}/dist/interface/index.js|npm run start:interface" "interface"
-kill_by_pattern "${ROOT_DIR}/src/monitor/index.ts|${ROOT_DIR}/dist/monitor/index.js|npm run start:monitor" "monitor"
-kill_by_pattern "${ROOT_DIR}/src/web/server.ts|${ROOT_DIR}/dist/web/server.js|npm run start:web" "web-gui"
+if [[ "${KEEP_AGENTS}" -eq 1 ]] && pm2_runtime_available; then
+  PM2_KEEP_AGENTS_MODE=1
+  log "PM2 keep-agents mode detected; skipping direct Meridian process kills"
+else
+  kill_by_pattern "${ROOT_DIR}/src/hub/index.ts|${ROOT_DIR}/dist/hub/index.js|npm run start:hub" "hub"
+  kill_by_pattern "${ROOT_DIR}/src/interface/index.ts|${ROOT_DIR}/dist/interface/index.js|npm run start:interface" "interface"
+  kill_by_pattern "${ROOT_DIR}/src/monitor/index.ts|${ROOT_DIR}/dist/monitor/index.js|npm run start:monitor" "monitor"
+  kill_by_pattern "${ROOT_DIR}/src/web/server.ts|${ROOT_DIR}/dist/web/server.js|npm run start:web" "web-gui"
+fi
 
 if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
   log "Preserving existing agentapi processes, tmux agent sessions, and persisted hub state"
@@ -200,7 +255,11 @@ else
 fi
 
 log "Cleaning stale sockets"
-rm -f "${HUB_SOCKET_PATH}" >/dev/null 2>&1 || true
+if [[ "${PM2_KEEP_AGENTS_MODE}" -eq 1 ]]; then
+  log "Skipping Hub socket cleanup because PM2 keep-agents mode manages restart ordering"
+else
+  rm -f "${HUB_SOCKET_PATH}" >/dev/null 2>&1 || true
+fi
 if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
   log "Skipping agent socket cleanup because keep-agents mode is enabled"
 else
@@ -209,12 +268,15 @@ else
 fi
 
 if start_with_pm2; then
+  wait_for_hub_socket
   log "Restart complete (PM2 mode)"
   pm2 status calling-hub calling-interface calling-monitor calling-web || true
 elif start_with_node_dist; then
+  wait_for_hub_socket
   log "Restart complete (node dist mode)"
 else
   start_with_npm
+  wait_for_hub_socket
   log "Restart complete (npm mode)"
 fi
 
