@@ -94,6 +94,8 @@ export async function startPmResolver(
       error instanceof Error ? error.message : String(error),
       deps.log
     );
+  }).finally(() => {
+    void safeKillPmResolver(meridianApi, spawned.threadId, request.dispatcherId, deps.log);
   });
 
   run.catch((error) => {
@@ -110,6 +112,23 @@ export async function startPmResolver(
     thread_id: spawned.threadId,
     message: `PM resolver started for ${request.issue.workerId ?? request.issue.status}`
   };
+}
+
+async function safeKillPmResolver(
+  meridianApi: MeridianApiClient,
+  threadId: string,
+  dispatcherId: string,
+  log: PmResolverDeps["log"]
+): Promise<void> {
+  try {
+    await meridianApi.kill(threadId);
+  } catch (error) {
+    log?.warn("Failed to kill PM resolver thread after run", {
+      dispatcherId,
+      threadId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 function safeRecordPmResolverStart(

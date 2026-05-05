@@ -106,6 +106,7 @@ describe("buildPmResolverPrompt", () => {
       "| ⛔ BLOCKED | 1 | BATCH-1-GATE | Verify gates | CODEX | — |"
     ].join("\n"), "utf8");
 
+    const kill = vi.fn(async () => ({ threadId: "pm-thread-123", status: "killed", raw: {} }));
     const meridianApi: MeridianApiClient = {
       spawn: async () => ({ threadId: "pm-thread-123" }),
       run: async () => ({
@@ -126,7 +127,7 @@ describe("buildPmResolverPrompt", () => {
           timestamp: "2026-05-03T00:00:00.000Z"
         }
       }),
-      kill: async () => ({ threadId: "pm-thread-123", status: "killed", raw: {} })
+      kill
     };
 
     try {
@@ -165,6 +166,7 @@ describe("buildPmResolverPrompt", () => {
             })
           })
         ]);
+        expect(kill).toHaveBeenCalledWith("pm-thread-123");
       });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
