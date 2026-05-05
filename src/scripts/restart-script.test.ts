@@ -24,3 +24,13 @@ test("restart.sh waits for Hub socket readiness before reporting restart complet
   assert.match(script, /Hub socket is reachable/);
   assert.match(script, /wait_for_hub_socket/);
 });
+
+test("restart.sh stops relative node dist entrypoints launched from the repo root", async () => {
+  const script = await readRestartScript();
+
+  assert.match(script, /runtime_pids_for_service\(\)/);
+  assert.match(script, /process_cwd\(\)/);
+  assert.match(script, /dist\/web\/server\.js/);
+  assert.match(script, /src\/web\/server\.ts/);
+  assert.match(script, /cwd/);
+});
