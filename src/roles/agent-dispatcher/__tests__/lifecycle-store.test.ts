@@ -1788,6 +1788,34 @@ describe("LifecycleStore", () => {
     expect(report).toContain("Resolved N-57 by verifying the report and marking it complete.");
   });
 
+  it("finalizes a running PM resolver when its target worker is manually completed", async () => {
+    const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "reports", "BATCH-7-GATE.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# BATCH-7-GATE Report\n\nWorker report.\n", "utf8");
+
+    harness.store.recordWorkerStart(
+      "BATCH-7-GATE",
+      "worker-thread-b7",
+      "11111111-1111-4111-8111-111111111111",
+      [reportPath]
+    );
+    harness.store.setWorkerStatus("BATCH-7-GATE", "blocked", "needs_pm");
+    harness.store.recordPmResolverStart("pm-thread-b7", {
+      status: "manual_intervention_required",
+      workerId: "BATCH-7-GATE",
+      message: "manual intervention required: BATCH-7-GATE requested PM resolution",
+      source: "watchdog"
+    });
+
+    harness.store.setWorkerStatus("BATCH-7-GATE", "completed", "update_status_tool");
+
+    const pmResolver = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-b7");
+    expect(pmResolver?.status).toBe("completed");
+    expect(pmResolver?.error).toBeNull();
+    expect(pmResolver?.result?.content).toContain("completed because worker BATCH-7-GATE recovered to completed");
+  });
+
   // ─── MeridianStatusMarker primary-signal tests (Phase A, Task A2) ────────
   describe("MeridianStatusMarker primary signal", () => {
     it("marks worker completed when marker says complete and the expected report file is fresh, despite narrative block phrases", async () => {

@@ -324,6 +324,7 @@ export class LifecycleStore {
     };
 
     this.logTransition(workerId, worker.status, status, trigger);
+    reconcilePmResolversForRecoveredWorker(state, workerId, this.log, this.now);
     this.save(state);
   }
 
@@ -514,7 +515,7 @@ export class LifecycleStore {
       // declared the worker healthy. Promote those entries to "completed" so
       // downstream consumers (gate dependencies, UI panels) don't treat a
       // transient PM call failure as a real worker failure.
-      reconcileFailedPmResolversForRecoveredWorker(state, workerId, this.log, this.now);
+      reconcilePmResolversForRecoveredWorker(state, workerId, this.log, this.now);
     });
   }
 
@@ -1036,15 +1037,13 @@ function reconcilePmStatusAgainstWorkerState(
   return PM_RESOLVED_TARGET_STATUSES.has(target.status) ? "completed" : "failed";
 }
 
-// Promote previously-failed PM resolver entries for `workerId` to "completed"
-// when the worker has just recovered to a healthy state (e.g. validator
-// passed). The failure usually corresponds to a Meridian API Headers Timeout
-// while the PM session itself either completed in the background or was
-// superseded by a successful re-run. Either way, once the worker is healthy
-// the PM "failed" status is misleading — gates that read `pm_resolvers[]`
-// to decide whether downstream batches can proceed would otherwise treat
-// the timed-out PM as a real worker failure.
-function reconcileFailedPmResolversForRecoveredWorker(
+// Promote PM resolver entries for `workerId` to "completed" when the worker
+// has just reached a healthy state. A failed PM entry usually corresponds to a
+// Meridian API timeout after the PM action already landed. A running PM entry
+// usually means the PM agent used `update-status` successfully but the service
+// did not record the PM run result before restart/transport loss. Either way,
+// once the worker is healthy, the PM issue is resolved.
+function reconcilePmResolversForRecoveredWorker(
   state: DispatchThreadStateV2,
   workerId: string,
   log: Pick<Logger, "info">,
@@ -1060,12 +1059,13 @@ function reconcileFailedPmResolversForRecoveredWorker(
   }
   const nowIso = now();
   for (const entry of entries) {
-    if (entry.status !== "failed") {
+    if (entry.status !== "failed" && entry.status !== "running") {
       continue;
     }
     if ((entry.issue?.worker_id ?? "").trim() !== workerId) {
       continue;
     }
+    const previousStatus = entry.status;
     const previousError = entry.error;
     entry.status = "completed";
     entry.last_seen_at = nowIso;
@@ -1088,6 +1088,7 @@ function reconcileFailedPmResolversForRecoveredWorker(
     log.info("PM resolver reconciled after worker recovery", {
       event: "pm_resolver_recovered_after_worker_recovery",
       thread_id: entry.thread_id,
+      from_status: previousStatus,
       worker_id: workerId,
       worker_status: target.status
     });
