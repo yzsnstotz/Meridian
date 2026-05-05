@@ -4,9 +4,14 @@ import path from "node:path";
 import { test } from "node:test";
 
 const restartScriptPath = path.resolve(process.cwd(), "user_scripts/restart.sh");
+const terminateScriptPath = path.resolve(process.cwd(), "user_scripts/terminate.sh");
 
 async function readRestartScript(): Promise<string> {
   return fs.readFile(restartScriptPath, "utf8");
+}
+
+async function readTerminateScript(): Promise<string> {
+  return fs.readFile(terminateScriptPath, "utf8");
 }
 
 test("restart.sh keep-agents PM2 mode avoids direct process kills before socket cleanup", async () => {
@@ -33,4 +38,14 @@ test("restart.sh stops relative node dist entrypoints launched from the repo roo
   assert.match(script, /dist\/web\/server\.js/);
   assert.match(script, /src\/web\/server\.ts/);
   assert.match(script, /cwd/);
+});
+
+test("terminate.sh stops Meridian and meridian-roles without starting services", async () => {
+  const script = await readTerminateScript();
+
+  assert.match(script, /stop_meridian_roles/);
+  assert.match(script, /kill_runtime_service "hub"/);
+  assert.match(script, /kill_runtime_service "web-gui"/);
+  assert.doesNotMatch(script, /start_with_pm2/);
+  assert.doesNotMatch(script, /start_with_npm/);
 });
