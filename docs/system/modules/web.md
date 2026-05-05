@@ -1,8 +1,8 @@
 # web
 **Source**: `src/web/`
 **Summary**: Authenticated HTTP and WebSocket endpoints plus static hub, terminal, and bridge pages for spawning agents, browsing logs and files, editing working trees, and streaming pane output.
-**Last Scanned**: 2026-04-16T12:00:00+09:00
-**Exports Documented**: 14
+**Last Scanned**: `2026-05-05T00:00:00+09:00` `[UPDATED 2026-05-05]`
+**Exports Documented**: 18
 
 `src/web/server.ts` serves the `public/` bundle directly and allows those static assets to load without auth so the pages can render their own missing-token states. Every `/api/*` route and `/ws/terminal` still requires the GUI token via `Authorization: Bearer <token>` or `?token=`, and session identity is resolved from `x-session-id`, `session_id`, or the `meridian_session` cookie before hub messages are built.
 
@@ -10,7 +10,9 @@
 
 The `/api/*` routes are the canonical public control surface for Meridian. External clients (Meridian GUI, Meridian CLI, and Meridian-roles) depend only on these JSON request/response shapes. The Hub Unix socket and raw `HubMessage` payload shapes are private to Meridian; the server helpers in `src/web/server.ts` translate between the HTTP contract and Hub messages so callers never need socket paths, raw `intent` payloads, or detached `run` transport details.
 
-Approval policy is a neutral boundary field (`auto_approve: boolean` on `/api/spawn`, `enabled: boolean` on `/api/autoapprove`). Meridian is the single place that maps the policy into provider-specific CLI flags — `--dangerously-bypass-approvals-and-sandbox` for Codex (`src/agents/codex.ts:39`, `src/agents/codex.ts:52`, `src/agents/codex.ts:68`) and `--dangerously-skip-permissions` for Claude (`src/agents/claude.ts:29`, `src/agents/claude.ts:63`). External callers must never ship provider CLI flags through the API.
+Approval policy is a neutral boundary field (`auto_approve: boolean` on `/api/spawn`, `enabled: boolean` on `/api/autoapprove`).
+
+Caller identity for hub attribution follows the canonical HTTP headers (per Playbook §3.7): `X-Meridian-Caller-Id`, `X-Meridian-Caller-Key`, `X-Meridian-Caller-Version`. External callers (CLI, automation) may include these headers on any request; the web server reads them via `callerEnvelopeFromHttpHeaders` (from `shared/caller-wire`) and attaches the extracted caller identity to the forwarded hub message. Currently only `/api/spawn` propagates the inbound caller to the hub; admin routes (`/api/callers*`) always sign as `meridian-admin` regardless of inbound headers. `[UPDATED 2026-05-05]` Meridian is the single place that maps the policy into provider-specific CLI flags — `--dangerously-bypass-approvals-and-sandbox` for Codex (`src/agents/codex.ts:39`, `src/agents/codex.ts:52`, `src/agents/codex.ts:68`) and `--dangerously-skip-permissions` for Claude (`src/agents/claude.ts:29`, `src/agents/claude.ts:63`). External callers must never ship provider CLI flags through the API.
 
 ## Endpoint Inventory
 
@@ -31,7 +33,7 @@ All API routes return JSON. Hub-backed routes construct `reply_channel.channel =
 | `/api/detach` | `POST` | Detaches the current web session from the selected or active thread. | Uses the shared thread-action handler with `intent: "detach"`. | `src/web/server.ts:608`, `src/web/server.ts:826` |
 | `/api/spawn_repos/browse` | `GET` | Browses nested directories under `config.AGENT_WORKDIR` for the workspace picker dialog. | Validates the optional `relative` query, blocks traversal, returns only visible subdirectories, and reports `parent_relative` for the Up button. | `src/web/server.ts:613`, `src/web/server.ts:923` |
 | `/api/spawn_repos` | `GET` | Returns the first page of top-level spawnable repo directories under `config.AGENT_WORKDIR`. | Reads the agent workdir locally, keeps only directories, sorts names, and limits the list to `64`. | `src/web/server.ts:618`, `src/web/server.ts:849` |
-| `/api/spawn` | `POST` | Spawns a new GUI-linked agent session. | Validates provider/mode/model/effort/auto-approve input, resolves `repo` or `spawn_dir` under `config.AGENT_WORKDIR`, forwards the browser host override, and sends `intent: "spawn"`. | `src/web/server.ts:623`, `src/web/server.ts:865` |
+| `/api/spawn` | `POST` | Spawns a new GUI-linked agent session. | Validates provider/mode/model/effort/auto-approve input, resolves `repo` or `spawn_dir` under `config.AGENT_WORKDIR`, forwards the browser host override, and sends `intent: "spawn"`. When `X-Meridian-Caller-Id` and `X-Meridian-Caller-Key` headers are present (`callerEnvelopeFromHttpHeaders`), attaches the inbound caller identity so the hub records `spawned_by` on the new instance. `[UPDATED 2026-05-05]` | `src/web/server.ts:623`, `src/web/server.ts:865` |
 | `/api/files` | `GET` | Lists a thread working tree for the terminal file explorer. | Validates `thread_id` and `depth`, resolves the instance working directory via the hub `list` payload, then walks the filesystem while skipping dotfiles. | `src/web/server.ts:628`, `src/web/server.ts:1011` |
 | `/api/history` | `GET` | Returns persisted history entries for one thread. | Validates `thread_id` and forwards `intent: "history"` for that thread. | `src/web/server.ts:633`, `src/web/server.ts:1036` |
 | `/api/history_threads` | `GET` | Returns the session-history index used by the terminal sidebar. | Reuses global `intent: "history"` with `thread_id: "global"` / `target: "all"`. | `src/web/server.ts:638`, `src/web/server.ts:1056` |

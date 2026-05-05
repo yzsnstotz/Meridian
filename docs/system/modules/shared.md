@@ -1,8 +1,8 @@
 # shared
 **Source**: `src/shared/`
 **Summary**: Shared transport adapters, stream parsers, approval and output normalization, provider model discovery, and Telegram/UI helpers reused by the hub, interface, and agent lifecycle layers.
-**Last Scanned**: `2026-04-08T14:28:58+09:00`
-**Exports Documented**: 64
+**Last Scanned**: `2026-05-05T00:00:00+09:00` `[UPDATED 2026-05-05]`
+**Exports Documented**: 77
 
 ## Stream Parser Registry
 
@@ -517,6 +517,85 @@
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-05-05]`
 
+**src/shared/caller-wire.ts** `[ADDED 2026-05-05]`
+
+### `CALLER_HTTP_HEADERS`
+- **File**: `src/shared/caller-wire.ts:5`
+- **Purpose**: Canonical object containing the three HTTP header names used for caller identity on all outbound Meridian HTTP requests.
+- **Implementation**: `{ id: "X-Meridian-Caller-Id", key: "X-Meridian-Caller-Key", version: "X-Meridian-Caller-Version" } as const`. This constant is the single source of truth enforcing the exact header casing mandated by Playbook §3.7.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `WireAuthSchema` / `WireAuth`
+- **File**: `src/shared/caller-wire.ts:11`
+- **Purpose**: Zod schema and inferred type for the `{ caller_id, caller_key }` auth object placed in every outbound IPC frame.
+- **Implementation**: Requires both fields to be non-empty strings. `WireAuth` is `z.infer<typeof WireAuthSchema>`. The cleartext key never leaves this envelope and is never persisted.
+- **Dependencies**: `zod`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `WireFrameSchema` / `WireFrame`
+- **File**: `src/shared/caller-wire.ts:17`
+- **Purpose**: Zod schema and inferred type for the `{ auth: WireAuth, message: HubMessage }` wire envelope sent over hub IPC sockets.
+- **Implementation**: Wraps `WireAuthSchema` and `HubMessageSchema` so every inbound frame can be validated in one step. `unwrapWireFrame` uses this schema to parse frames safely.
+- **Dependencies**: `zod`, `types`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `CallerIdentityWithKey`
+- **File**: `src/shared/caller-wire.ts:23`
+- **Purpose**: Extends `CallerIdentity` with the mandatory `caller_key` field needed to build outbound wire frames.
+- **Implementation**: Interface adding `caller_key: string` to `CallerIdentity`. `IpcSender` and `hub-connection` store identity in this shape so `wrapHubMessage` can stamp both the auth envelope and the `message.caller` metadata.
+- **Dependencies**: `types`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `wrapHubMessage<TMessage>(message, identity): { auth: WireAuth; message: TMessage }`
+- **File**: `src/shared/caller-wire.ts:28`
+- **Purpose**: Wraps a hub message in the `{ auth, message }` IPC wire envelope and injects caller metadata onto `message.caller`.
+- **Implementation**: Validates that both `caller_id` and `caller_key` are non-empty (throws `caller_identity_required`), spreads the message and sets `message.caller = { caller_id, caller_label?, caller_version? }`, then returns `{ auth: { caller_id, caller_key }, message }`. The cleartext key appears only in `auth` — never in `message.caller`.
+- **Dependencies**: `types`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `UnwrappedFrame`
+- **File**: `src/shared/caller-wire.ts:49`
+- **Purpose**: Return type of `unwrapWireFrame` — carries the validated `{ auth: WireAuth, message: HubMessage }` pair.
+- **Implementation**: Plain interface used by hub server and socket adapter after safe-parsing an inbound IPC payload.
+- **Dependencies**: `types`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `unwrapWireFrame(payload): UnwrappedFrame | null`
+- **File**: `src/shared/caller-wire.ts:54`
+- **Purpose**: Safe-parses a raw IPC payload into a validated `UnwrappedFrame`; returns `null` for any frame that lacks the `{ auth, message }` shape or fails schema validation.
+- **Implementation**: Guards for object shape, then runs `WireAuthSchema.safeParse` and `HubMessageSchema.safeParse` separately so callers can log the specific failure. Returns `null` on any validation failure instead of throwing.
+- **Dependencies**: `types`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `isWireFrameShape(payload): boolean`
+- **File**: `src/shared/caller-wire.ts:73`
+- **Purpose**: Fast structural check for whether a payload looks like a wire frame before full parsing.
+- **Implementation**: Returns `true` only when the payload is a non-null object with both `auth` and `message` keys. Used by hub server to decide whether to treat a raw IPC buffer as a wire-envelope or a legacy bare `HubMessage`.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `callerEnvelopeFromHttpHeaders(headers): WireAuth | null`
+- **File**: `src/shared/caller-wire.ts:82`
+- **Purpose**: Extracts the caller auth pair from incoming HTTP request headers using case-insensitive lookup.
+- **Implementation**: Builds a lowercase header index, looks up `X-Meridian-Caller-Id` and `X-Meridian-Caller-Key`, and returns `{ caller_id, caller_key }` only when both are present and non-empty. Used by the web server's `extractInboundCaller` to propagate external caller identity onto hub spawn messages, and by `hub-connection.ts` for test assertions.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `callerVersionFromHttpHeaders(headers): string | null`
+- **File**: `src/shared/caller-wire.ts:94`
+- **Purpose**: Extracts the optional `X-Meridian-Caller-Version` value from incoming HTTP request headers.
+- **Implementation**: Reuses the case-insensitive lookup helper; returns the trimmed header value or `null` when absent.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
+### `CALLER_REQUIRED_ERROR`
+- **File**: `src/shared/caller-wire.ts:120`
+- **Purpose**: Canonical error string (`"caller_required"`) thrown when a caller-authenticated boundary rejects an unauthenticated request.
+- **Implementation**: String constant exported so hub router and middleware can reference the error code without importing a separate error types file.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
 ## Test Files
 
 - `src/shared/a2a-adapter.test.ts`
@@ -532,3 +611,4 @@
 - `src/shared/stream-parsers/gemini.test.ts`
 - `src/shared/stream-parsers/ndjson.test.ts`
 - `src/shared/caller-bootstrap.test.ts` `[ADDED 2026-05-05]`
+- `src/shared/caller-wire.test.ts` `[ADDED 2026-05-05]`

@@ -1,8 +1,8 @@
 # hub
 **Source**: `src/hub/`
 **Summary**: Core hub orchestration for IPC routing, agent lifecycle, persisted conversation state, pane streaming, and multi-channel result delivery; `index.ts` boots `HubServer` and log retention.
-**Last Scanned**: `2026-04-08T14:10:55+09:00`
-**Exports Documented**: 47
+**Last Scanned**: `2026-05-05T00:00:00+09:00` `[UPDATED 2026-05-05]`
+**Exports Documented**: 62
 
 `src/hub/index.ts` is the non-exported runtime entrypoint. It constructs the default `HubServer`, starts the log-retention worker, and installs `SIGINT`/`SIGTERM` shutdown handling.
 
