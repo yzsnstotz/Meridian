@@ -10,7 +10,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { IpcSender, requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
 import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
-import { callerEnvelopeFromHttpHeaders } from "../shared/caller-wire";
+import { callerEnvelopeFromHttpHeaders, type WireAuth } from "../shared/caller-wire";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import { cleanupStagedAttachments, stageInlineAttachments } from "../shared/attachment-transform";
@@ -219,6 +219,11 @@ export interface WebInterfaceServerOptions {
   staticDir?: string;
   requestHub?: (message: HubMessage) => Promise<HubResult>;
   requestHubRun?: (message: HubMessage) => Promise<HubResult>;
+  requestHubAsCaller?: (
+    message: HubMessage,
+    auth: WireAuth,
+    options?: { run?: boolean }
+  ) => Promise<HubResult>;
   requestAdminHub?: (message: HubMessage) => Promise<HubResult>;
   providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
@@ -491,6 +496,11 @@ export class WebInterfaceServer {
   private readonly staticDir: string;
   private readonly requestHub: (message: HubMessage) => Promise<HubResult>;
   private readonly requestHubRun: (message: HubMessage) => Promise<HubResult>;
+  private readonly requestHubAsCaller: (
+    message: HubMessage,
+    auth: WireAuth,
+    options?: { run?: boolean }
+  ) => Promise<HubResult>;
   private readonly requestAdminHub: (message: HubMessage) => Promise<HubResult>;
   private readonly providerModelCatalog: ProviderModelCatalogLookup;
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
@@ -511,6 +521,8 @@ export class WebInterfaceServer {
     this.staticDir = options.staticDir ?? defaultStaticDir;
     this.requestHub = options.requestHub ?? requestHubMessage;
     this.requestHubRun = options.requestHubRun ?? requestHubRunMessage;
+    this.requestHubAsCaller = options.requestHubAsCaller ?? ((message, auth, requestOptions) =>
+      this.requestHubWithCallerIdentity(message, auth, requestOptions));
     this.requestAdminHub = options.requestAdminHub ?? this.buildAdminSender();
     this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
@@ -916,7 +928,8 @@ export class WebInterfaceServer {
 
     try {
       const result = HubResultSchema.parse(
-        await this.requestHubRun(
+        await this.requestHubForRequest(
+          request,
           this.buildHubMessage({
             sessionId,
             intent: "run",
@@ -924,7 +937,8 @@ export class WebInterfaceServer {
             target: threadSelector.target,
             content: body.content,
             attachments: stagedAttachments.attachments
-          })
+          }),
+          { run: true }
         )
       );
 
@@ -946,7 +960,8 @@ export class WebInterfaceServer {
     const body = threadActionBodySchema.parse(await this.readJsonBody(request));
     const threadSelector = normalizeThreadSelector(body.thread_id);
     const result = HubResultSchema.parse(
-      await this.requestHub(
+      await this.requestHubForRequest(
+        request,
         this.buildHubMessage({
           sessionId,
           intent,
@@ -1001,7 +1016,8 @@ export class WebInterfaceServer {
       }
     }
     const result = HubResultSchema.parse(
-      await this.requestHub(
+      await this.requestHubForRequest(
+        request,
         this.buildHubMessage({
           sessionId,
           intent: "spawn",
@@ -1849,9 +1865,40 @@ export class WebInterfaceServer {
   }
 
   private extractInboundCaller(request: http.IncomingMessage): CallerIdentity | undefined {
-    const envelope = callerEnvelopeFromHttpHeaders(request.headers as Record<string, string | string[] | undefined>);
+    const envelope = this.extractInboundCallerEnvelope(request);
     if (!envelope) return undefined;
     return { caller_id: envelope.caller_id };
+  }
+
+  private extractInboundCallerEnvelope(request: http.IncomingMessage): WireAuth | null {
+    return callerEnvelopeFromHttpHeaders(request.headers as Record<string, string | string[] | undefined>);
+  }
+
+  private async requestHubForRequest(
+    request: http.IncomingMessage,
+    message: HubMessage,
+    options: { run?: boolean } = {}
+  ): Promise<HubResult> {
+    const auth = this.extractInboundCallerEnvelope(request);
+    if (auth) {
+      return this.requestHubAsCaller(message, auth, options);
+    }
+    return options.run ? this.requestHubRun(message) : this.requestHub(message);
+  }
+
+  private async requestHubWithCallerIdentity(
+    message: HubMessage,
+    auth: WireAuth,
+    options: { run?: boolean } = {}
+  ): Promise<HubResult> {
+    const sender = new IpcSender({ socketPath: this.hubSocketPath });
+    sender.setCallerIdentity({
+      caller_id: auth.caller_id,
+      caller_key: auth.caller_key,
+      // The hub validates auth and replaces message.caller from CallerRegistry.
+      caller_label: auth.caller_id
+    });
+    return options.run ? sender.requestRun(message) : sender.request(message);
   }
 
   private async handleListCallersRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -1874,7 +1921,11 @@ export class WebInterfaceServer {
     }
     const parsed = JSON.parse(result.content) as { callers?: Array<Record<string, unknown>>; bootstrap_key_set?: unknown };
     if (parsed && Array.isArray(parsed.callers)) {
-      parsed.callers = parsed.callers.map(({ key_hash: _stripped, ...rest }) => rest);
+      parsed.callers = parsed.callers.map((caller) => {
+        const sanitized = { ...caller };
+        delete sanitized.key_hash;
+        return sanitized;
+      });
     }
     this.respondJson(response, 200, parsed);
   }

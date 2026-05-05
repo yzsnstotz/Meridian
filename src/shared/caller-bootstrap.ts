@@ -11,6 +11,6 @@ export const BUILTIN_CALLERS = [
   { caller_id: "meridian-cli",       caller_label: "Meridian CLI" },
   { caller_id: "meridian-telegram",  caller_label: "Meridian Telegram" },
   { caller_id: "meridian-monitor",   caller_label: "Meridian Monitor" },
-  { caller_id: "meridian-roles",     caller_label: "Meridian Roles" },
+  { caller_id: "meridian-roles",     caller_label: "Meridian-Roles" },
   { caller_id: "meridian-admin",     caller_label: "Meridian Admin" }
 ] as const;
