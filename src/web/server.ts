@@ -33,6 +33,7 @@ import {
   ProviderCapabilitySchema,
   ReasoningEffortSchema,
   SandboxModeSchema,
+  CallerAuthoritySchema,
   ThreadProgressSnapshotSchema,
   type AgentType,
   type CallerIdentity,
@@ -149,6 +150,10 @@ const autoApproveQuerySchema = z.object({
 const registerCallerBodySchema = z.object({
   caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
   caller_label: z.string().min(1).max(64)
+});
+
+const callerAuthorityBodySchema = z.object({
+  caller_authority: CallerAuthoritySchema
 });
 
 const a2aPartSchema = z.union([
@@ -792,6 +797,13 @@ export class WebInterfaceServer {
         const callerId = decodeURIComponent(callerSuffix.slice(0, -"/rotate".length));
         if (callerId && !callerId.includes("/")) {
           await this.handleRotateCallerKeyRequest(request, response, callerId);
+          return;
+        }
+      }
+      if (request.method === "PATCH" && callerSuffix.endsWith("/authority")) {
+        const callerId = decodeURIComponent(callerSuffix.slice(0, -"/authority".length));
+        if (callerId && !callerId.includes("/")) {
+          await this.handleUpdateCallerAuthorityRequest(request, response, callerId);
           return;
         }
       }
@@ -1977,6 +1989,43 @@ export class WebInterfaceServer {
           thread_id: "global",
           target: "global",
           content: JSON.stringify({ caller_id: callerId }),
+          caller: ADMIN_CALLER_IDENTITY
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const isNotFound = result.content.includes("caller_unknown");
+      this.respondJson(response, isNotFound ? 404 : 400, { error: result.content });
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleUpdateCallerAuthorityRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    callerId: string
+  ): Promise<void> {
+    if (BUILTIN_CALLER_ID_SET.has(callerId)) {
+      this.respondJson(response, 400, { error: "Built-in callers are read-only; authority changes are not allowed" });
+      return;
+    }
+    let body: z.infer<typeof callerAuthorityBodySchema>;
+    try {
+      body = callerAuthorityBodySchema.parse(await this.readJsonBody(request));
+    } catch {
+      this.respondJson(response, 400, { error: "Invalid request body: caller_authority must be read, write, or admin" });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestAdminHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "update_caller_authority",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ caller_id: callerId, caller_authority: body.caller_authority }),
           caller: ADMIN_CALLER_IDENTITY
         })
       )

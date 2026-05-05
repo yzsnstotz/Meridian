@@ -31,6 +31,7 @@ export const BUILT_IN_INTENTS = [
   "register_caller",
   "unregister_caller",
   "rotate_caller_key",
+  "update_caller_authority",
   "list_callers"
 ] as const;
 
@@ -52,6 +53,9 @@ export type SandboxMode = z.infer<typeof SandboxModeSchema>;
 
 export const ReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
+
+export const CallerAuthoritySchema = z.enum(["read", "write", "admin"]);
+export type CallerAuthority = z.infer<typeof CallerAuthoritySchema>;
 
 export const HubResultStatusSchema = z.enum(["success", "error", "partial", "timeout"]);
 export type HubResultStatus = z.infer<typeof HubResultStatusSchema>;
@@ -158,6 +162,7 @@ export type ReplyChannel = z.infer<typeof ReplyChannelSchema>;
 export const CallerIdentitySchema = z.object({
   caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
   caller_label: z.string().min(1).max(64).optional(),
+  caller_authority: CallerAuthoritySchema.optional(),
   caller_version: z.string().min(1).max(32).optional()
 });
 export type CallerIdentity = z.infer<typeof CallerIdentitySchema>;

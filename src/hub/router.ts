@@ -26,6 +26,7 @@ import {
   AgentInstanceStatusSchema,
   AgentTypeSchema,
   CallerIdentitySchema,
+  CallerAuthoritySchema,
   HubMessageSchema,
   HubResultSchema,
   ThreadProgressSnapshotSchema,
@@ -190,7 +191,13 @@ export interface HubRouterOptions {
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
-const ADMIN_ONLY_INTENTS = new Set<string>(["register_caller", "unregister_caller", "rotate_caller_key"]);
+const ADMIN_ONLY_INTENTS = new Set<string>([
+  "register_caller",
+  "unregister_caller",
+  "rotate_caller_key",
+  "update_caller_authority"
+]);
+const READ_AUTHORITY_INTENTS = new Set<string>(["status", "list", "list_models", "detail", "gui", "history", "list_callers"]);
 const ADMIN_CALLER_ID = "meridian-admin";
 
 const RegisterCallerPayloadSchema = z
@@ -204,6 +211,13 @@ const RegisterCallerPayloadSchema = z
 const CallerIdOnlyPayloadSchema = z
   .object({
     caller_id: z.string().min(1)
+  })
+  .strict();
+
+const UpdateCallerAuthorityPayloadSchema = z
+  .object({
+    caller_id: z.string().min(1),
+    caller_authority: CallerAuthoritySchema
   })
   .strict();
 
@@ -505,9 +519,9 @@ export class HubRouter {
       if (!authOutcome.ok) {
         return authOutcome.errorResult;
       }
-      const adminGate = this.checkAdminIntentGate(message);
-      if (adminGate) {
-        return adminGate;
+      const authorityGate = this.checkCallerAuthority(message, authOutcome.record);
+      if (authorityGate) {
+        return authorityGate;
       }
     }
 
@@ -616,6 +630,8 @@ export class HubRouter {
           return this.handleUnregisterCaller(message);
         case "rotate_caller_key":
           return this.handleRotateCallerKey(message);
+        case "update_caller_authority":
+          return this.handleUpdateCallerAuthority(message);
         case "list_callers":
           return this.handleListCallers(message);
         case "reply":
@@ -1874,6 +1890,7 @@ export class HubRouter {
       const injected: CallerIdentity = {
         caller_id: record.caller_id,
         caller_label: record.caller_label,
+        caller_authority: record.caller_authority,
         ...(message.caller?.caller_version ? { caller_version: message.caller.caller_version } : {})
       };
       // Registry is authoritative for caller_label; overwrite any client-supplied value.
@@ -1887,14 +1904,18 @@ export class HubRouter {
     return { ok: false, errorResult: this.buildAuthErrorResult(message, "caller_invalid") };
   }
 
-  private checkAdminIntentGate(message: HubMessage): HubResult | null {
-    if (!ADMIN_ONLY_INTENTS.has(message.intent)) {
+  private checkCallerAuthority(message: HubMessage, record: CallerRecord): HubResult | null {
+    const authority = record.caller_authority ?? "write";
+    if (record.caller_id === ADMIN_CALLER_ID || authority === "admin") {
       return null;
     }
-    if (message.caller?.caller_id === ADMIN_CALLER_ID) {
-      return null;
+    if (ADMIN_ONLY_INTENTS.has(message.intent)) {
+      return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
     }
-    return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+    if (authority === "read" && !READ_AUTHORITY_INTENTS.has(message.intent)) {
+      return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+    }
+    return null;
   }
 
   private buildAuthErrorResult(message: HubMessage, content: string): HubResult {
@@ -1968,7 +1989,8 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           caller_id: result.record.caller_id,
-          caller_key: result.cleartextKey
+          caller_key: result.cleartextKey,
+          caller_authority: result.record.caller_authority
         }),
         message.thread_id
       );
@@ -2031,6 +2053,35 @@ export class HubRouter {
         "error",
         this.resolveResultSource(message),
         `rotate_caller_key failed: ${err}`,
+        message.thread_id
+      );
+    }
+  }
+
+  private handleUpdateCallerAuthority(message: HubMessage): HubResult {
+    const parsed = this.parseAdminPayload(message, UpdateCallerAuthorityPayloadSchema);
+    if (!parsed.ok) {
+      return parsed.errorResult;
+    }
+    try {
+      const record = this.requireCallerRegistry().updateAuthority(parsed.data.caller_id, parsed.data.caller_authority);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          caller_id: record.caller_id,
+          caller_authority: record.caller_authority
+        }),
+        message.thread_id
+      );
+    } catch (error) {
+      const err = error instanceof Error ? error.message : String(error);
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        `update_caller_authority failed: ${err}`,
         message.thread_id
       );
     }

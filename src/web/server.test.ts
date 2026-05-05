@@ -1846,6 +1846,38 @@ test("POST /api/callers/:id/rotate returns new cleartext key", async () => {
   assert.equal((seenMessages[0]?.caller as { caller_id?: string })?.caller_id, "meridian-admin");
 });
 
+test("PATCH /api/callers/:id/authority updates caller authority", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/my-bot/authority`, {
+      method: "PATCH",
+      headers: { Authorization: "Bearer secret-token", "content-type": "application/json" },
+      body: JSON.stringify({ caller_authority: "read" })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { caller_id: string; caller_authority: string };
+    assert.equal(payload.caller_id, "my-bot");
+    assert.equal(payload.caller_authority, "read");
+  }, {
+    requestAdminHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({ caller_id: "my-bot", caller_authority: "read" }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "update_caller_authority");
+});
+
 test("POST /api/callers/:id/rotate returns 401 without Bearer token", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/api/callers/my-bot/rotate`, { method: "POST" });

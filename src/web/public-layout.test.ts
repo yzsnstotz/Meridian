@@ -620,7 +620,8 @@ test("hub layout built-in callers render without rotate/revoke buttons", async (
   // When builtin, actions must NOT include rotate/revoke buttons
   assert.match(indexHtml, /data-caller-action="rotate"/);
   assert.match(indexHtml, /data-caller-action="revoke"/);
-  assert.match(indexHtml, /isBuiltin[\s\S]*read-only/);
+  assert.match(indexHtml, /data-caller-action="view"/);
+  assert.match(indexHtml, /data-caller-action="authority"/);
 });
 
 test("hub layout exposes actual agent, current model, and in-card kill controls", async () => {

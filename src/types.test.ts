@@ -420,10 +420,11 @@ test("CallerIdentitySchema rejects caller_id with dot or slash", () => {
   assert.throws(() => CallerIdentitySchema.parse({ caller_id: "my/service" }));
 });
 
-test("BUILT_IN_INTENTS includes the four admin caller intents", () => {
+test("BUILT_IN_INTENTS includes the caller management intents", () => {
   assert.equal(BuiltInIntentSchema.parse("register_caller"), "register_caller");
   assert.equal(BuiltInIntentSchema.parse("unregister_caller"), "unregister_caller");
   assert.equal(BuiltInIntentSchema.parse("rotate_caller_key"), "rotate_caller_key");
+  assert.equal(BuiltInIntentSchema.parse("update_caller_authority"), "update_caller_authority");
   assert.equal(BuiltInIntentSchema.parse("list_callers"), "list_callers");
 });
 

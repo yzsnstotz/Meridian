@@ -255,7 +255,7 @@
 ### `HubRouter`
 - **File**: `src/hub/router.ts:317`
 - **Purpose**: Routes normalized hub intents to built-in thread operations or registered services while maintaining thread-local state and conversation history. Owns the `CallerRegistry` and the `authenticateCaller` security boundary.
-- **Implementation**: It initializes from persisted state (including the `callers: CallerRecord[]` registry), handles `run`/`spawn`/`attach`/`push`/`history`/service-registration flows, tracks active runs and cooldowns, records canonical conversation history, and persists every mutation back through `state-store`. For run execution it supports direct streamed subprocesses for supported providers, falls back to agentapi polling when needed, and extracts Meridian summary blocks or stable snapshots to build final or partial results. `route(message, auth)` runs `authenticateCaller` as the FIRST step before any intent dispatch — there is no whitelist of unauthenticated intents. On success the registry-authoritative `caller_label` is injected onto `message.caller` (overwriting any client-supplied value), `last_seen_at` is touched once, and the admin gate rejects `register_caller`/`unregister_caller`/`rotate_caller_key` from any caller other than `meridian-admin` with `caller_not_authorized_for_intent`. Unauthenticated requests get `caller_required`; unknown or revoked ids get `caller_unknown`; mismatched keys get `caller_invalid`. The four admin intent handlers project `key_hash` out of every response. `ensureBuiltinCallers(builtins, deriveKey)` is invoked at hub boot to (re)derive built-in records on every restart so rotating the bootstrap key intentionally invalidates them. On `spawn`, `message.caller` is forwarded to `instanceManager.spawn()` so the new instance records `spawned_by`. On mutate intents (`run`, `terminal_input`), the handler calls `registry.setCaller(threadId, message.caller, ts)` to update `last_caller` and `last_caller_at` before dispatch; read-only intents (`list`, `status`, etc.) are excluded. Every user-originated conversation history entry (`user_send`, `terminal_input`) carries `caller_id` and `caller_label` from `message.caller`; agent-originated entries (`progress`, `approval`, `final_reply`) always carry `null`. [UPDATED 2026-05-05]
+- **Implementation**: It initializes from persisted state (including the `callers: CallerRecord[]` registry), handles `run`/`spawn`/`attach`/`push`/`history`/service-registration flows, tracks active runs and cooldowns, records canonical conversation history, and persists every mutation back through `state-store`. For run execution it supports direct streamed subprocesses for supported providers, falls back to agentapi polling when needed, and extracts Meridian summary blocks or stable snapshots to build final or partial results. `route(message, auth)` runs `authenticateCaller` as the FIRST step before any intent dispatch — there is no whitelist of unauthenticated intents. On success the registry-authoritative `caller_label` and `caller_authority` are injected onto `message.caller` (overwriting any client-supplied values), `last_seen_at` is touched once, and the authority gate rejects disallowed intents with `caller_not_authorized_for_intent`: `read` callers can only use list/status/detail/gui/history/model-list/caller-list reads, `write` callers can use normal non-admin operations including spawn/run, and `admin` callers can use caller-management intents (`register_caller`, `unregister_caller`, `rotate_caller_key`, `update_caller_authority`). `meridian-admin` remains admin even if loaded from an older record. Unauthenticated requests get `caller_required`; unknown or revoked ids get `caller_unknown`; mismatched keys get `caller_invalid`. Caller intent handlers project `key_hash` out of every response. `ensureBuiltinCallers(builtins, deriveKey)` is invoked at hub boot to (re)derive built-in records on every restart so rotating the bootstrap key intentionally invalidates them; `meridian-admin` is materialized with `admin` authority and other built-ins default to `write`. On `spawn`, `message.caller` is forwarded to `instanceManager.spawn()` so the new instance records `spawned_by`. Caller authority gates whether spawn is allowed; it does not map to provider CLI sandbox flags. Those remain controlled by the spawn payload (`sandbox_mode`, `auto_approve`) and provider argument builders. On mutate intents (`run`, `terminal_input`), the handler calls `registry.setCaller(threadId, message.caller, ts)` to update `last_caller` and `last_caller_at` before dispatch; read-only intents (`list`, `status`, etc.) are excluded. Every user-originated conversation history entry (`user_send`, `terminal_input`) carries `caller_id` and `caller_label` from `message.caller`; agent-originated entries (`progress`, `approval`, `final_reply`) always carry `null`. [UPDATED 2026-05-05]
 - **Dependencies**: `agents/claude`, `agents/codex`, `agents/gemini`, `config`, `hub/caller-registry`, `hub/instance-manager`, `hub/output-bus`, `hub/registry`, `hub/result-sender`, `hub/service-registry`, `hub/state-store`, `logger`, `shared/agent-output`, `shared/agentapi-client`, `shared/approval`, `shared/caller-wire`, `shared/ipc`, `shared/stream-adapter`, `shared/stream-parsers/claude`, `shared/stream-parsers/codex`, `shared/stream-parsers/gemini`, `shared/telegram-controls`, `types`
 - **Status**: [UPDATED 2026-05-05]
 
@@ -354,7 +354,7 @@
 ### `CallerRecord` / `CallerRecordSchema`
 - **File**: `src/hub/state-store.ts:9`
 - **Purpose**: Persisted shape for one entry in the caller registry.
-- **Implementation**: Captures `caller_id`, `caller_label`, `caller_kind` (`"builtin" | "external"`), salted `key_hash` (`sha256(key + caller_id)`), and lifecycle timestamps (`created_at`, nullable `last_seen_at`, nullable `revoked_at`). Consumed by `src/hub/caller-registry.ts` and serialized as part of `PersistedHubState.callers`.
+- **Implementation**: Captures `caller_id`, `caller_label`, `caller_kind` (`"builtin" | "external"`), `caller_authority` (`"read" | "write" | "admin"`, defaulting older records to `"write"`), salted `key_hash` (`sha256(key + caller_id)`), and lifecycle timestamps (`created_at`, nullable `last_seen_at`, nullable `revoked_at`). Consumed by `src/hub/caller-registry.ts` and serialized as part of `PersistedHubState.callers`.
 - **Dependencies**: `zod`
 - **Status**: [ADDED 2026-05-05]
 
@@ -411,8 +411,8 @@
 
 ### `CallerRegistry`
 - **File**: `src/hub/caller-registry.ts:33`
-- **Purpose**: In-memory cache of `CallerRecord`s with mint/rotate/revoke/verify/ensureBuiltin/touchLastSeen, persisted through a callback supplied by the hub server.
-- **Implementation**: Constructor seeds a `Map<caller_id, CallerRecord>` from `initialRecords` and stores the persistence callback, clock, and random-bytes generator (the latter two are injectable for tests). Every mutating method (`mint`, `rotate`, `revoke`, `ensureBuiltin`, `touchLastSeen`) ends by snapshotting the map and invoking `persist`. `verify` recomputes `sha256(cleartextKey + caller_id)` and compares it with the stored `key_hash` via `crypto.timingSafeEqual` on equal-length 32-byte buffers; revoked records short-circuit to `null`. `ensureBuiltin` is idempotent on builtin records, refreshes the hash when `deriveKey()` rotates, and throws `caller_kind_collision` if the slot is held by an external caller. `mint` throws on duplicate ids so re-minting under the same id requires an explicit revoke + remint flow.
+- **Purpose**: In-memory cache of `CallerRecord`s with mint/rotate/revoke/authority-update/verify/ensureBuiltin/touchLastSeen, persisted through a callback supplied by the hub server.
+- **Implementation**: Constructor seeds a `Map<caller_id, CallerRecord>` from `initialRecords` and stores the persistence callback, clock, and random-bytes generator (the latter two are injectable for tests). Every mutating method (`mint`, `rotate`, `revoke`, `updateAuthority`, `ensureBuiltin`, `touchLastSeen`) ends by snapshotting the map and invoking `persist`. `verify` recomputes `sha256(cleartextKey + caller_id)` and compares it with the stored `key_hash` via `crypto.timingSafeEqual` on equal-length 32-byte buffers; revoked records short-circuit to `null`. `ensureBuiltin` is idempotent on builtin records, refreshes the hash when `deriveKey()` rotates, keeps `meridian-admin` at `admin` authority unless explicitly overridden, and throws `caller_kind_collision` if the slot is held by an external caller. `mint` throws on duplicate ids so re-minting under the same id requires an explicit revoke + remint flow.
 - **Dependencies**: `node:crypto`, `hub/state-store`
 - **Status**: `[ADDED 2026-05-05]`
 
@@ -430,10 +430,10 @@
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-05-05]`
 
-### `mint(args: { caller_id, caller_label, kind: "external" }): { record, cleartextKey }`
+### `mint(args: { caller_id, caller_label, kind: "external", authority? }): { record, cleartextKey }`
 - **File**: `src/hub/caller-registry.ts:58`
 - **Purpose**: Creates a new external caller and returns its cleartext key once.
-- **Implementation**: Throws `caller_already_exists` if the id is taken (regardless of kind), generates 32 random bytes hex as the cleartext key, stores the `sha256(key + caller_id)` hash, and persists. The cleartext key is returned to the caller and never stored.
+- **Implementation**: Throws `caller_already_exists` if the id is taken (regardless of kind), generates 32 random bytes hex as the cleartext key, stores the `sha256(key + caller_id)` hash, sets authority to the supplied value or `"write"`, and persists. The cleartext key is returned to the caller and never stored.
 - **Dependencies**: `node:crypto`
 - **Status**: `[ADDED 2026-05-05]`
 
@@ -451,6 +451,13 @@
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-05-05]`
 
+### `updateAuthority(callerId: string, authority: "read" | "write" | "admin"): CallerRecord`
+- **File**: `src/hub/caller-registry.ts:102`
+- **Purpose**: Changes the persisted authority for an existing caller without rotating or revealing its key.
+- **Implementation**: Throws `caller_unknown` if the id is missing, otherwise updates `caller_authority`, persists the registry, and returns a cloned record.
+- **Dependencies**: None
+- **Status**: `[ADDED 2026-05-05]`
+
 ### `verify(callerId: string, cleartextKey: string): CallerRecord | null`
 - **File**: `src/hub/caller-registry.ts:100`
 - **Purpose**: Authenticates a `(caller_id, cleartextKey)` pair in constant time.
@@ -458,10 +465,10 @@
 - **Dependencies**: `node:crypto`
 - **Status**: `[ADDED 2026-05-05]`
 
-### `ensureBuiltin(args: { caller_id, caller_label, deriveKey: () => string }): CallerRecord`
+### `ensureBuiltin(args: { caller_id, caller_label, authority?, deriveKey: () => string }): CallerRecord`
 - **File**: `src/hub/caller-registry.ts:120`
 - **Purpose**: Idempotently materializes a `caller_kind: "builtin"` record from the boot-time bootstrap key.
-- **Implementation**: When no record exists, creates one with the derived key hash. When a builtin record exists, recomputes the expected hash and updates `key_hash` / `caller_label` / clears `revoked_at` only if any of those changed (covers bootstrap-key rotation across hub restarts). Throws `caller_kind_collision` if the slot is held by an external caller.
+- **Implementation**: When no record exists, creates one with the derived key hash and authority (`meridian-admin` defaults to `admin`, other built-ins default to `write`). When a builtin record exists, recomputes the expected hash and updates `key_hash` / `caller_label` / `caller_authority` / clears `revoked_at` only if any of those changed (covers bootstrap-key rotation across hub restarts). Throws `caller_kind_collision` if the slot is held by an external caller.
 - **Dependencies**: `node:crypto`
 - **Status**: `[ADDED 2026-05-05]`
 
