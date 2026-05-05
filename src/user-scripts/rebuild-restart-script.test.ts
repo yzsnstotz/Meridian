@@ -15,3 +15,14 @@ describe("user_scripts/rebuild_restart.sh", () => {
     expect(script).toContain("HUB_SOCKET_PATH=$(shell_escape");
   });
 });
+
+describe("user_scripts/terminate.sh", () => {
+  it("is valid bash and performs termination without rebuilding", async () => {
+    const scriptPath = path.resolve(__dirname, "../../user_scripts/terminate.sh");
+    const script = await fs.readFile(scriptPath, "utf8");
+
+    expect(script).toContain("terminate");
+    expect(script).toContain("kill_repo_port_listeners");
+    expect(script).not.toContain("npm run build");
+  });
+});
