@@ -8,12 +8,14 @@ import path from "node:path";
 import { z } from "zod";
 
 import { config } from "../config";
-import { requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
-import { deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
+import { IpcSender, requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
+import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
+import { callerEnvelopeFromHttpHeaders } from "../shared/caller-wire";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import { cleanupStagedAttachments, stageInlineAttachments } from "../shared/attachment-transform";
 import { getProviderCapabilities, listProviderCapabilities } from "../shared/provider-capabilities";
+import { parseModelReference } from "../shared/model-reference";
 import {
   ProviderModelCatalog as SharedProviderModelCatalog,
   type ProviderModelCatalogResult
@@ -33,6 +35,7 @@ import {
   SandboxModeSchema,
   ThreadProgressSnapshotSchema,
   type AgentType,
+  type CallerIdentity,
   type FileAttachment,
   type HubMessage,
   type HubResult,
@@ -41,6 +44,9 @@ import {
   type ReasoningEffort,
   type SandboxMode
 } from "../types";
+
+const BUILTIN_CALLER_ID_SET = new Set<string>(BUILTIN_CALLERS.map((c) => c.caller_id));
+const ADMIN_CALLER_IDENTITY: CallerIdentity = { caller_id: "meridian-admin", caller_label: "Meridian Admin" };
 
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const sessionCookieName = "meridian_session";
@@ -111,7 +117,8 @@ const threadQuerySchema = z.object({
 
 const switchModelBodySchema = z.object({
   thread_id: z.string().min(1),
-  model_id: z.string().min(1)
+  model_id: z.string().min(1),
+  effort: ReasoningEffortSchema.optional()
 });
 
 const fileWriteBodySchema = z.object({
@@ -137,6 +144,11 @@ const autoApproveSetBodySchema = z.object({
 
 const autoApproveQuerySchema = z.object({
   thread_id: z.string().min(1)
+});
+
+const registerCallerBodySchema = z.object({
+  caller_id: z.string().min(1).regex(/^[a-z][a-z0-9_-]*$/),
+  caller_label: z.string().min(1).max(64)
 });
 
 const a2aPartSchema = z.union([
@@ -207,6 +219,7 @@ export interface WebInterfaceServerOptions {
   staticDir?: string;
   requestHub?: (message: HubMessage) => Promise<HubResult>;
   requestHubRun?: (message: HubMessage) => Promise<HubResult>;
+  requestAdminHub?: (message: HubMessage) => Promise<HubResult>;
   providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
   logger?: WebInterfaceLogger;
@@ -478,6 +491,7 @@ export class WebInterfaceServer {
   private readonly staticDir: string;
   private readonly requestHub: (message: HubMessage) => Promise<HubResult>;
   private readonly requestHubRun: (message: HubMessage) => Promise<HubResult>;
+  private readonly requestAdminHub: (message: HubMessage) => Promise<HubResult>;
   private readonly providerModelCatalog: ProviderModelCatalogLookup;
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
   private readonly logger: WebInterfaceLogger;
@@ -497,6 +511,7 @@ export class WebInterfaceServer {
     this.staticDir = options.staticDir ?? defaultStaticDir;
     this.requestHub = options.requestHub ?? requestHubMessage;
     this.requestHubRun = options.requestHubRun ?? requestHubRunMessage;
+    this.requestAdminHub = options.requestAdminHub ?? this.buildAdminSender();
     this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
@@ -749,6 +764,32 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/callers" && request.method === "GET") {
+      await this.handleListCallersRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/callers" && request.method === "POST") {
+      await this.handleRegisterCallerRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/callers/")) {
+      const callerSuffix = requestUrl.pathname.slice("/api/callers/".length);
+      if (request.method === "POST" && callerSuffix.endsWith("/rotate")) {
+        const callerId = decodeURIComponent(callerSuffix.slice(0, -"/rotate".length));
+        if (callerId && !callerId.includes("/")) {
+          await this.handleRotateCallerKeyRequest(request, response, callerId);
+          return;
+        }
+      }
+      if (request.method === "DELETE" && callerSuffix && !callerSuffix.includes("/")) {
+        const callerId = decodeURIComponent(callerSuffix);
+        await this.handleUnregisterCallerRequest(request, response, callerId);
+        return;
+      }
+    }
+
     await this.serveStaticAsset(requestUrl.pathname, response);
   }
 
@@ -938,6 +979,7 @@ export class WebInterfaceServer {
   private async handleSpawnRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = spawnRequestBodySchema.parse(await this.readJsonBody(request));
+    const modelReference = parseModelReference(body.model_id, body.effort);
     const isAdsPublicProfile = body.integration_profile === "ads_public";
     const target = body.provider ?? body.type;
     if (isAdsPublicProfile && target !== "codex") {
@@ -970,10 +1012,11 @@ export class WebInterfaceServer {
           autoApprove,
           guiHostPortOverride: typeof hostHeader === "string" ? hostHeader.trim() : undefined,
           spawnDir,
-          modelId: body.model_id?.trim(),
-          effort: body.effort,
+          modelId: modelReference.modelId,
+          effort: modelReference.reasoningEffort,
           integrationProfile: body.integration_profile,
-          sandboxMode
+          sandboxMode,
+          caller: this.extractInboundCaller(request)
         })
       )
     );
@@ -1297,6 +1340,11 @@ export class WebInterfaceServer {
   private async handleSwitchModelRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const body = switchModelBodySchema.parse(await this.readJsonBody(request));
+    const modelReference = parseModelReference(body.model_id, body.effort);
+    if (!modelReference.modelId) {
+      this.respondJson(response, 400, { error: "switch_model requires a provider model id" });
+      return;
+    }
     const result = HubResultSchema.parse(
       await this.requestHub(
         this.buildHubMessage({
@@ -1304,7 +1352,9 @@ export class WebInterfaceServer {
           intent: "switch_model",
           thread_id: body.thread_id,
           target: body.thread_id,
-          content: body.model_id
+          content: modelReference.modelId,
+          modelId: modelReference.modelId,
+          effort: modelReference.reasoningEffort
         })
       )
     );
@@ -1751,6 +1801,7 @@ export class WebInterfaceServer {
     historyMaxContentChars?: number;
     historyMaxDetailChars?: number;
     historyMaxRawChars?: number;
+    caller?: CallerIdentity;
   }): HubMessage {
     return HubMessageSchema.parse({
       trace_id: randomUUID(),
@@ -1779,8 +1830,142 @@ export class WebInterfaceServer {
       reply_channel: {
         channel: "web",
         chat_id: `web:${params.sessionId}`
-      }
+      },
+      ...(params.caller !== undefined ? { caller: params.caller } : {})
     });
+  }
+
+  private buildAdminSender(): (message: HubMessage) => Promise<HubResult> {
+    const socketPath = this.hubSocketPath;
+    let sender: IpcSender | null = null;
+    return async (message: HubMessage): Promise<HubResult> => {
+      if (!sender) {
+        const key = deriveBuiltinCallerKey("meridian-admin");
+        sender = new IpcSender({ socketPath });
+        sender.setCallerIdentity({ caller_id: "meridian-admin", caller_key: key, caller_label: "Meridian Admin" });
+      }
+      return sender.request(message);
+    };
+  }
+
+  private extractInboundCaller(request: http.IncomingMessage): CallerIdentity | undefined {
+    const envelope = callerEnvelopeFromHttpHeaders(request.headers as Record<string, string | string[] | undefined>);
+    if (!envelope) return undefined;
+    return { caller_id: envelope.caller_id };
+  }
+
+  private async handleListCallersRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestAdminHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "list_callers",
+          thread_id: "global",
+          target: "global",
+          content: "",
+          caller: ADMIN_CALLER_IDENTITY
+        })
+      )
+    );
+    if (result.status !== "success") {
+      this.respondJson(response, 502, { error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+    const parsed = JSON.parse(result.content) as { callers?: Array<Record<string, unknown>>; bootstrap_key_set?: unknown };
+    if (parsed && Array.isArray(parsed.callers)) {
+      parsed.callers = parsed.callers.map(({ key_hash: _stripped, ...rest }) => rest);
+    }
+    this.respondJson(response, 200, parsed);
+  }
+
+  private async handleRegisterCallerRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    let body: z.infer<typeof registerCallerBodySchema>;
+    try {
+      body = registerCallerBodySchema.parse(await this.readJsonBody(request));
+    } catch {
+      this.respondJson(response, 400, { error: "Invalid request body: caller_id must match /^[a-z][a-z0-9_-]*$/ and caller_label must be 1-64 chars" });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestAdminHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_caller",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ caller_id: body.caller_id, caller_label: body.caller_label, caller_kind: "external" }),
+          caller: ADMIN_CALLER_IDENTITY
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const isConflict = result.content.includes("caller_already_exists");
+      this.respondJson(response, isConflict ? 409 : 400, { error: result.content });
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleRotateCallerKeyRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    callerId: string
+  ): Promise<void> {
+    if (BUILTIN_CALLER_ID_SET.has(callerId)) {
+      this.respondJson(response, 400, { error: "Built-in callers are read-only; key rotation is not allowed" });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestAdminHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "rotate_caller_key",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ caller_id: callerId }),
+          caller: ADMIN_CALLER_IDENTITY
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const isNotFound = result.content.includes("caller_unknown");
+      this.respondJson(response, isNotFound ? 404 : 400, { error: result.content });
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleUnregisterCallerRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    callerId: string
+  ): Promise<void> {
+    if (BUILTIN_CALLER_ID_SET.has(callerId)) {
+      this.respondJson(response, 400, { error: "Built-in callers are read-only; revoke is not allowed" });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestAdminHub(
+        this.buildHubMessage({
+          sessionId,
+          intent: "unregister_caller",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ caller_id: callerId }),
+          caller: ADMIN_CALLER_IDENTITY
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const isNotFound = result.content.includes("caller_unknown");
+      this.respondJson(response, isNotFound ? 404 : 400, { error: result.content });
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
   }
 
   private isPublicStaticAsset(pathname: string): boolean {

@@ -1682,6 +1682,322 @@ test("Web Interface Server spawn forwards auto_approve=false without injecting p
   });
 });
 
+test("GET /api/callers returns caller list signed as meridian-admin with key_hash stripped", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`, {
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { callers: Array<Record<string, unknown>>; bootstrap_key_set: boolean };
+    assert.equal(typeof payload.bootstrap_key_set, "boolean");
+    assert.ok(Array.isArray(payload.callers));
+    for (const record of payload.callers) {
+      assert.ok(!("key_hash" in record), "key_hash must not appear in list response");
+    }
+    assert.equal(payload.callers[0]?.caller_id, "meridian-web");
+  }, {
+    requestAdminHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({
+          callers: [
+            { caller_id: "meridian-web", caller_kind: "builtin", caller_label: "Meridian Web", key_hash: "shouldbestripped123" }
+          ],
+          bootstrap_key_set: true
+        }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "list_callers");
+  assert.equal((seenMessages[0]?.caller as { caller_id?: string })?.caller_id, "meridian-admin");
+});
+
+test("GET /api/callers returns 401 without Bearer token", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`);
+    assert.equal(response.status, 401);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("POST /api/callers registers external caller and returns cleartext key", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token", "content-type": "application/json" },
+      body: JSON.stringify({ caller_id: "my-bot", caller_label: "My Bot" })
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { caller_id: string; caller_key: string };
+    assert.equal(payload.caller_id, "my-bot");
+    assert.equal(typeof payload.caller_key, "string");
+    assert.ok(payload.caller_key.length > 0);
+  }, {
+    requestAdminHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      const body = JSON.parse(message.payload.content as string) as Record<string, unknown>;
+      assert.equal(body.caller_kind, "external");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({ caller_id: "my-bot", caller_key: "cleartext-abc123" }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "register_caller");
+  assert.equal((seenMessages[0]?.caller as { caller_id?: string })?.caller_id, "meridian-admin");
+});
+
+test("POST /api/callers returns 401 without Bearer token", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ caller_id: "my-bot", caller_label: "My Bot" })
+    });
+    assert.equal(response.status, 401);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("POST /api/callers returns 409 on caller_id collision", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token", "content-type": "application/json" },
+      body: JSON.stringify({ caller_id: "existing-bot", caller_label: "Existing Bot" })
+    });
+    assert.equal(response.status, 409);
+  }, {
+    requestAdminHub: async (message: HubMessage) => ({
+      trace_id: message.trace_id,
+      thread_id: "global",
+      source: "codex",
+      status: "error",
+      content: "caller_already_exists: existing-bot",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    })
+  });
+});
+
+test("POST /api/callers returns 400 for invalid caller_id (bad regex)", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token", "content-type": "application/json" },
+      body: JSON.stringify({ caller_id: "INVALID-UPPERCASE", caller_label: "Bad Bot" })
+    });
+    assert.equal(response.status, 400);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("POST /api/callers/:id/rotate returns new cleartext key", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/my-bot/rotate`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { caller_key: string };
+    assert.equal(typeof payload.caller_key, "string");
+    assert.ok(payload.caller_key.length > 0);
+  }, {
+    requestAdminHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({ caller_key: "new-cleartext-xyz789" }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "rotate_caller_key");
+  assert.equal((seenMessages[0]?.caller as { caller_id?: string })?.caller_id, "meridian-admin");
+});
+
+test("POST /api/callers/:id/rotate returns 401 without Bearer token", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/my-bot/rotate`, { method: "POST" });
+    assert.equal(response.status, 401);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("POST /api/callers/meridian-web/rotate returns 400 for built-in caller", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/meridian-web/rotate`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 400);
+    const payload = (await response.json()) as { error: string };
+    assert.match(payload.error, /built-in/i);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("POST /api/callers/:id/rotate returns 404 for unknown caller", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/nonexistent/rotate`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 404);
+  }, {
+    requestAdminHub: async (message: HubMessage) => ({
+      trace_id: message.trace_id,
+      thread_id: "global",
+      source: "codex",
+      status: "error",
+      content: "caller_unknown: nonexistent",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    })
+  });
+});
+
+test("DELETE /api/callers/:id revokes a caller and returns revoked_at", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/my-bot`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { revoked_at: string };
+    assert.equal(typeof payload.revoked_at, "string");
+  }, {
+    requestAdminHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "global",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({ revoked_at: new Date().toISOString() }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  assert.equal(seenMessages[0]?.intent, "unregister_caller");
+  assert.equal((seenMessages[0]?.caller as { caller_id?: string })?.caller_id, "meridian-admin");
+});
+
+test("DELETE /api/callers/:id returns 401 without Bearer token", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/my-bot`, { method: "DELETE" });
+    assert.equal(response.status, 401);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("DELETE /api/callers/meridian-admin returns 400 for built-in caller", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/meridian-admin`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 400);
+    const payload = (await response.json()) as { error: string };
+    assert.match(payload.error, /built-in/i);
+  }, {
+    requestAdminHub: async () => { throw new Error("requestAdminHub should not be called"); }
+  });
+});
+
+test("DELETE /api/callers/:id returns 404 for unknown caller", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/callers/nonexistent`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer secret-token" }
+    });
+    assert.equal(response.status, 404);
+  }, {
+    requestAdminHub: async (message: HubMessage) => ({
+      trace_id: message.trace_id,
+      thread_id: "global",
+      source: "codex",
+      status: "error",
+      content: "caller_unknown: nonexistent",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    })
+  });
+});
+
+test("non-admin route /api/spawn forwards inbound X-Meridian-Caller-Id into hub envelope caller field", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "content-type": "application/json",
+        "X-Meridian-Caller-Id": "external-bot",
+        "X-Meridian-Caller-Key": "some-key-value"
+      },
+      body: JSON.stringify({ type: "codex" })
+    });
+    assert.equal(response.status, 200);
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_new",
+        source: "codex",
+        status: "success",
+        content: "{}",
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(seenMessages.length, 1);
+  const callerField = seenMessages[0]?.caller as { caller_id?: string } | undefined;
+  assert.equal(callerField?.caller_id, "external-bot");
+});
+
 test("startWebInterfaceServer sets meridian-web caller identity when bootstrap key is present", async () => {
   const { startWebInterfaceServer } = await webServerModulePromise;
   const { clearCallerIdentity, hasCallerIdentity } = await import("../interface/ipc-sender");
