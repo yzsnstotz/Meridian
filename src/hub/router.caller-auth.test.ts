@@ -439,3 +439,91 @@ test("terminal_input: last_caller and last_caller_at updated on registry instanc
   const lastCallerAt = new Date(instance!.last_caller_at!);
   assert.ok(lastCallerAt.getTime() >= before.getTime(), "last_caller_at should be >= spawn time");
 });
+
+test("detail: service self-probe backfills missing legacy caller attribution", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_legacy",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_legacy.sock",
+    pid: 42,
+    tmux_pane: "agent_codex_legacy",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-caller-detail-adoption-test.json"
+  });
+
+  const caller = { caller_id: "meridian-roles", caller_label: "Meridian-Roles" };
+  await router.route(
+    baseMessage({
+      intent: "detail",
+      thread_id: "codex_legacy",
+      target: "codex_legacy",
+      actor_id: "service:meridian-roles",
+      caller
+    })
+  );
+
+  const instance = registry.get("codex_legacy");
+  assert.equal(instance?.last_caller?.caller_id, "meridian-roles");
+  assert.equal(instance?.last_caller?.caller_label, "Meridian-Roles");
+  assert.equal(instance?.spawned_by?.caller_id, "meridian-roles");
+  assert.equal(instance?.spawned_by?.caller_label, "Meridian-Roles");
+});
+
+test("detail: non-service caller does not claim missing spawned_by", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_legacy",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_legacy.sock",
+    pid: 43,
+    tmux_pane: "agent_codex_legacy",
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-caller-detail-nonservice-test.json"
+  });
+
+  const caller = { caller_id: "meridian-web", caller_label: "Meridian Web" };
+  await router.route(
+    baseMessage({
+      intent: "detail",
+      thread_id: "codex_legacy",
+      target: "codex_legacy",
+      actor_id: "web:browser-session",
+      caller
+    })
+  );
+
+  const instance = registry.get("codex_legacy");
+  assert.equal(instance?.last_caller?.caller_id, "meridian-web");
+  assert.equal(instance?.spawned_by, undefined);
+});
