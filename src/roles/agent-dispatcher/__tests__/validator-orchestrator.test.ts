@@ -140,6 +140,52 @@ describe("executeValidationCycle", () => {
     }));
   });
 
+  it("retries validator spawn when Meridian recycles a terminal worker thread id", async () => {
+    const harness = await createHarness({
+      validatorConfig: {
+        agent_type: "codex",
+        mode: "stateless_call"
+      }
+    });
+    const state = harness.lifecycleStore.load();
+    state.workers["BATCH-1-GATE"] = {
+      thread_id: "codex_40",
+      trace_id: null,
+      started_at: "2026-05-02T00:00:00.000Z",
+      last_seen_at: "2026-05-02T00:10:00.000Z",
+      status: "completed",
+      expected_outputs: [],
+      hub_result: null,
+      command_preamble: null,
+      retry_count: 0
+    };
+    harness.lifecycleStore.save(state);
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "codex_40" })
+      .mockResolvedValueOnce({ threadId: "validator-thread-fresh" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-fresh",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.91,"feedback":"accepted"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "passed",
+      score: 0.91
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    expect(harness.run).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "validator-thread-fresh"
+    }));
+    expect(harness.kill).toHaveBeenCalledWith("codex_40");
+    expect(harness.lifecycleStore.load().workers["N-02"]?.validation?.history[0]?.validator_thread_id)
+      .toBe("validator-thread-fresh");
+  });
+
   it("kills the retained worker thread after validation passes when kill policy allows success cleanup", async () => {
     const harness = await createHarness({ killPolicy: "on_success" });
     harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-pass" });

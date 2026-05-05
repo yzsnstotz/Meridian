@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DispatchThreadStateV2, DispatchWorkerState, LifecycleStatus } from "../../../types";
 import {
   isActiveThreadReservationStatus,
+  isThreadIdKnownInLifecycleState,
   isThreadIdReservedInLifecycleState
 } from "../thread-id-reservation";
 
@@ -101,6 +102,38 @@ describe("isThreadIdReservedInLifecycleState", () => {
 
     expect(isThreadIdReservedInLifecycleState(state, "")).toBe(false);
     expect(isThreadIdReservedInLifecycleState(state, "   ")).toBe(false);
+  });
+});
+
+describe("isThreadIdKnownInLifecycleState", () => {
+  it("treats terminal worker and validator history thread ids as known", () => {
+    const state = buildState({
+      dispatcher: { thread_id: "codex_dispatcher", status: "completed" },
+      workers: {
+        "W-DONE": worker({
+          thread_id: "codex_worker_done",
+          status: "completed",
+          validation: {
+            ...validatorState({ validator_thread_id: "codex_validator_current" }),
+            history: [
+              {
+                cycle: 1,
+                score: 1,
+                feedback: "accepted",
+                validator_thread_id: "codex_validator_history",
+                timestamp: "2026-05-05T00:00:00.000Z"
+              }
+            ]
+          }
+        })
+      }
+    });
+
+    expect(isThreadIdKnownInLifecycleState(state, "codex_dispatcher")).toBe(true);
+    expect(isThreadIdKnownInLifecycleState(state, "codex_worker_done")).toBe(true);
+    expect(isThreadIdKnownInLifecycleState(state, "codex_validator_current")).toBe(true);
+    expect(isThreadIdKnownInLifecycleState(state, "codex_validator_history")).toBe(true);
+    expect(isThreadIdKnownInLifecycleState(state, "codex_new")).toBe(false);
   });
 });
 

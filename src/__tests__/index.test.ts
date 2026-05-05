@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   hasPmResolverHandledCurrentWorkerIssue,
+  resolveRetryExhaustedWorkerNeedingPm,
   tryContinueDispatchWorker,
   type WatchdogContinueDispatcher
 } from "../index";
@@ -87,6 +88,38 @@ describe("watchdog direct dispatcher recovery", () => {
 });
 
 describe("watchdog PM resolver repeat guard", () => {
+  it("selects a retry-exhausted abandoned worker for PM resolution even when later work can continue", () => {
+    const state: Pick<DispatchThreadStateV2, "workers" | "pm_resolvers"> = {
+      workers: {
+        "N-01": {
+          thread_id: "codex_37",
+          trace_id: null,
+          started_at: "2026-05-05T06:10:43.917Z",
+          last_seen_at: "2026-05-05T06:11:48.773Z",
+          status: "abandoned",
+          expected_outputs: ["/tmp/reports/N-01.md"],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 2
+        },
+        "N-02": {
+          thread_id: "codex_41",
+          trace_id: null,
+          started_at: "2026-05-05T06:20:43.920Z",
+          last_seen_at: "2026-05-05T06:22:42.766Z",
+          status: "running",
+          expected_outputs: ["/tmp/reports/N-02.md"],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: []
+    };
+
+    expect(resolveRetryExhaustedWorkerNeedingPm(state)).toBe("N-01");
+  });
+
   it("treats a non-failed PM resolver after the current worker start as handled", () => {
     const state = buildPmResolverGuardState({
       workerStartedAt: "2026-05-02T17:52:24.552Z",

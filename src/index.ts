@@ -7,6 +7,7 @@ import { A2AServer } from "./a2a/server";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
+import { MAX_AUTOMATIC_RECOVERY_RETRIES } from "./roles/agent-dispatcher/service-continuation";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
@@ -647,24 +648,6 @@ async function maybeStartPmResolverForWatchdogRecovery(
   seenIssueKeys: Set<string>,
   log: typeof console
 ): Promise<void> {
-  if (!PM_RESOLVER_WATCHDOG_STATUSES.has(recovery.status)) {
-    return;
-  }
-
-  const issueKey = [
-    threadId,
-    recovery.status,
-    recovery.workerId ?? ""
-  ].join("\u0000");
-  if (seenIssueKeys.has(issueKey)) {
-    log.info("Watchdog stall: PM resolver already requested for this issue", {
-      threadId,
-      workerId: recovery.workerId,
-      status: recovery.status
-    });
-    return;
-  }
-
   const state = await loadAppState(stateStore);
   const roleState = state.roles.find((role) => role.threadId === threadId);
   if (!roleState) {
@@ -689,12 +672,41 @@ async function maybeStartPmResolverForWatchdogRecovery(
     });
   }
 
-  if (lifecycleState && hasPmResolverHandledCurrentWorkerIssue(lifecycleState, recovery.workerId)) {
+  let issueStatus: ContinueDispatcherResponse["status"] = recovery.status;
+  let issueWorkerId = recovery.workerId;
+  let issueMessage = recovery.message;
+  if (!PM_RESOLVER_WATCHDOG_STATUSES.has(recovery.status)) {
+    const exhaustedWorkerId = lifecycleState ? resolveRetryExhaustedWorkerNeedingPm(lifecycleState) : null;
+    if (!exhaustedWorkerId) {
+      return;
+    }
+
+    const exhaustedStatus = lifecycleState?.workers[exhaustedWorkerId]?.status ?? "terminal";
+    issueStatus = "manual_intervention_required";
+    issueWorkerId = exhaustedWorkerId;
+    issueMessage = `manual intervention required: ${exhaustedWorkerId} exhausted automatic retries after ${exhaustedStatus}`;
+  }
+
+  const issueKey = [
+    threadId,
+    issueStatus,
+    issueWorkerId ?? ""
+  ].join("\u0000");
+  if (seenIssueKeys.has(issueKey)) {
+    log.info("Watchdog stall: PM resolver already requested for this issue", {
+      threadId,
+      workerId: issueWorkerId,
+      status: issueStatus
+    });
+    return;
+  }
+
+  if (lifecycleState && hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {
     seenIssueKeys.add(issueKey);
     log.info("Watchdog stall: PM resolver already handled current worker issue", {
       threadId,
-      workerId: recovery.workerId,
-      status: recovery.status
+      workerId: issueWorkerId,
+      status: issueStatus
     });
     return;
   }
@@ -705,16 +717,16 @@ async function maybeStartPmResolverForWatchdogRecovery(
       dispatcherId: threadId,
       config,
       issue: {
-        status: recovery.status,
-        workerId: recovery.workerId ?? undefined,
-        message: recovery.message,
+        status: issueStatus,
+        workerId: issueWorkerId ?? undefined,
+        message: issueMessage,
         source: "watchdog"
       }
     });
     log.info("Watchdog stall: PM resolver handoff completed", {
       threadId,
-      workerId: recovery.workerId,
-      status: recovery.status,
+      workerId: issueWorkerId,
+      status: issueStatus,
       pmResolverStatus: result.status,
       pmResolverThreadId: result.status === "pm_resolver_started" ? result.thread_id : undefined,
       message: result.message
@@ -726,8 +738,8 @@ async function maybeStartPmResolverForWatchdogRecovery(
     seenIssueKeys.delete(issueKey);
     log.warn("Watchdog stall: PM resolver handoff failed", {
       threadId,
-      workerId: recovery.workerId,
-      status: recovery.status,
+      workerId: issueWorkerId,
+      status: issueStatus,
       error: asError(error).message
     });
   }
@@ -765,6 +777,26 @@ export function hasPmResolverHandledCurrentWorkerIssue(
       || (!Number.isNaN(entryLastSeenAtMs) && entryLastSeenAtMs >= workerStartedAtMs)
     );
   });
+}
+
+export function resolveRetryExhaustedWorkerNeedingPm(
+  state: Pick<DispatchThreadStateV2, "workers" | "pm_resolvers">
+): string | null {
+  for (const [workerId, worker] of Object.entries(state.workers)) {
+    if (worker.status !== "abandoned" && worker.status !== "failed") {
+      continue;
+    }
+    if ((worker.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES) {
+      continue;
+    }
+    if (hasPmResolverHandledCurrentWorkerIssue(state, workerId)) {
+      continue;
+    }
+
+    return workerId;
+  }
+
+  return null;
 }
 
 export async function tryContinueDispatchWorker(

@@ -5,7 +5,7 @@ import {
   hubResultContainsHitLimit
 } from "./lifecycle-store";
 
-const MAX_AUTOMATIC_RECOVERY_RETRIES = 2;
+export const MAX_AUTOMATIC_RECOVERY_RETRIES = 2;
 
 export interface DispatchContinuationPlanRow {
   status: string;
