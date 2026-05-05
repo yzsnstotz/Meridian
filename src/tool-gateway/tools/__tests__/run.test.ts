@@ -800,6 +800,7 @@ describe("run tool", () => {
     const sentContent = mockRun.mock.calls[0]?.[0]?.content as string;
     expect(sentContent).toContain("write the completion report to `/tmp/dispatch/reports/runs/run-123/PRE-FLIGHT.md`");
     expect(sentContent).toContain("supersedes any report path in the command file");
+    expect(sentContent).toContain("append a new attempt section instead of replacing the existing file");
   });
 
   it("passes the scheduler scan run id to workers without requiring local date recomputation", async () => {

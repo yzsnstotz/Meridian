@@ -6,6 +6,9 @@
  * (R-03) so the cross-service launch transport is fully owned by Meridian.
  */
 
+import http from "node:http";
+import https from "node:https";
+
 import { getCallerIdentity } from "../../shared/caller-identity";
 
 const DEFAULT_MERIDIAN_HTTP = "http://127.0.0.1:3000";
@@ -77,12 +80,10 @@ export interface MeridianApiClientOptions {
 }
 
 export function createMeridianApiClient(options: MeridianApiClientOptions = {}): MeridianApiClient {
-  const httpFetch = options.fetch ?? fetch;
-
   return {
     async spawn(request) {
       const body = buildSpawnRequestBody(request);
-      const responseBody = await postMeridianJson(httpFetch, options, "/api/spawn", body, {
+      const responseBody = await postMeridianJson(options, "/api/spawn", body, {
         timeoutMs: SPAWN_REQUEST_TIMEOUT_MS,
         operation: "spawn"
       });
@@ -112,7 +113,6 @@ export function createMeridianApiClient(options: MeridianApiClientOptions = {}):
       }
 
       const responseBody = await postMeridianJson(
-        httpFetch,
         options,
         "/api/run",
         {
@@ -153,7 +153,6 @@ export function createMeridianApiClient(options: MeridianApiClientOptions = {}):
       }
 
       const responseBody = await postMeridianJson(
-        httpFetch,
         options,
         "/api/kill",
         { thread_id: trimmed },
@@ -223,7 +222,6 @@ interface PostOptions {
 }
 
 async function postMeridianJson(
-  httpFetch: typeof fetch,
   options: MeridianApiClientOptions,
   pathname: string,
   body: unknown,
@@ -251,9 +249,13 @@ async function postMeridianJson(
     init.signal = AbortSignal.timeout(postOptions.timeoutMs);
   }
 
+  if (!options.fetch) {
+    return await postMeridianJsonNative(requestUrl, headers, init.body as string, postOptions);
+  }
+
   let response: Response;
   try {
-    response = await httpFetch(requestUrl, init);
+    response = await options.fetch(requestUrl, init);
   } catch (error) {
     throw new MeridianApiError(
       `${postOptions.operation} failed: Meridian API unreachable at ${baseUrl}: ${asErrorMessage(error)}`
@@ -287,6 +289,84 @@ async function postMeridianJson(
     throw new MeridianApiError(
       `${postOptions.operation} failed: unexpected response body shape from Meridian`,
       response.status
+    );
+  }
+
+  return parsedBody;
+}
+
+async function postMeridianJsonNative(
+  requestUrl: URL,
+  headers: Record<string, string>,
+  bodyText: string,
+  postOptions: PostOptions
+): Promise<Record<string, unknown>> {
+  const response = await new Promise<{ statusCode: number; statusMessage: string; body: string }>((resolve, reject) => {
+    const transport = requestUrl.protocol === "https:" ? https : http;
+    const request = transport.request(
+      requestUrl,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-length": String(Buffer.byteLength(bodyText)),
+          connection: "close"
+        }
+      },
+      (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        incoming.on("end", () => {
+          resolve({
+            statusCode: incoming.statusCode ?? 0,
+            statusMessage: incoming.statusMessage ?? "",
+            body: Buffer.concat(chunks).toString("utf8")
+          });
+        });
+      }
+    );
+
+    request.on("error", reject);
+    if (postOptions.timeoutMs > 0) {
+      request.setTimeout(postOptions.timeoutMs, () => {
+        request.destroy(new Error(`${postOptions.operation} request timed out after ${postOptions.timeoutMs}ms`));
+      });
+    }
+    request.end(bodyText);
+  }).catch((error) => {
+    throw new MeridianApiError(
+      `${postOptions.operation} failed: Meridian API unreachable at ${requestUrl.origin}/: ${asErrorMessage(error)}`
+    );
+  });
+
+  let parsedBody: unknown = null;
+  try {
+    const text = response.body.trim();
+    parsedBody = text ? JSON.parse(text) : null;
+  } catch (error) {
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      throw new MeridianApiError(
+        `${postOptions.operation} failed: invalid JSON response from Meridian: ${asErrorMessage(error)}`,
+        response.statusCode
+      );
+    }
+  }
+
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    const errorFromBody = isPlainObject(parsedBody) ? readErrorMessage(parsedBody) : null;
+    const fallback = response.statusMessage || `HTTP ${response.statusCode}`;
+    throw new MeridianApiError(
+      `${postOptions.operation} failed: ${errorFromBody ?? fallback}`,
+      response.statusCode
+    );
+  }
+
+  if (!isPlainObject(parsedBody)) {
+    throw new MeridianApiError(
+      `${postOptions.operation} failed: unexpected response body shape from Meridian`,
+      response.statusCode
     );
   }
 

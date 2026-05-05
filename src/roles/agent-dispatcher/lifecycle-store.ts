@@ -481,7 +481,7 @@ export class LifecycleStore {
 
       const prevStatus = worker.status;
       worker.status = "fix_requested";
-      recordValidationOutcome(worker, score, feedback, validatorThreadId, this.now);
+      recordValidationOutcome(workerId, worker, score, feedback, validatorThreadId, this.now);
       this.logTransition(workerId, prevStatus, "fix_requested", "validation_below_threshold");
     });
   }
@@ -496,6 +496,7 @@ export class LifecycleStore {
       if (worker.validation) {
         if (validationResult) {
           recordValidationOutcome(
+            workerId,
             worker,
             validationResult.score,
             validationResult.feedback,
@@ -531,6 +532,7 @@ export class LifecycleStore {
       if (worker.validation) {
         if (validationResult) {
           recordValidationOutcome(
+            workerId,
             worker,
             validationResult.score,
             validationResult.feedback,
@@ -669,6 +671,7 @@ export class LifecycleStore {
       entry.last_seen_at = this.now();
       entry.result = normalizePmResolverResult(result);
       entry.error = entry.status === "failed" ? entry.error : null;
+      appendPmResolverReportHistory(state, entry, entry.result?.content ?? null);
     });
   }
 
@@ -683,6 +686,7 @@ export class LifecycleStore {
       entry.status = reconciled;
       entry.last_seen_at = this.now();
       entry.error = reconciled === "failed" ? error : null;
+      appendPmResolverReportHistory(state, entry, error);
 
       // Phase A6 observability: mirror the signal_source emission shape from
       // recordPmResolverResult so the A7 soak metric (signal_source distribution
@@ -708,6 +712,7 @@ interface ValidationTransitionResult {
 }
 
 function recordValidationOutcome(
+  workerId: string,
   worker: DispatchWorkerState,
   score: number,
   feedback: string,
@@ -719,6 +724,7 @@ function recordValidationOutcome(
   }
 
   const cycle = worker.validation.current_cycle + 1;
+  const timestamp = now();
   worker.validation.current_cycle = cycle;
   worker.validation.last_score = score;
   worker.validation.last_feedback = feedback;
@@ -734,8 +740,100 @@ function recordValidationOutcome(
     score,
     feedback,
     validator_thread_id: validatorThreadId,
-    timestamp: now()
+    timestamp
   });
+  appendWorkerReportHistory(
+    workerId,
+    worker,
+    `Validator Report - ${workerId} - Cycle ${cycle}`,
+    [
+      `- Validator Thread: ${validatorThreadId}`,
+      `- Score: ${score}`,
+      `- Timestamp: ${timestamp}`,
+      "",
+      "Feedback:",
+      "",
+      feedback
+    ].join("\n")
+  );
+}
+
+function appendPmResolverReportHistory(
+  state: DispatchThreadStateV2,
+  entry: PmResolverLifecycleState,
+  fallbackText: string | null
+): void {
+  const workerId = entry.issue?.worker_id?.trim();
+  if (!workerId) {
+    return;
+  }
+
+  const worker = state.workers[workerId];
+  if (!worker) {
+    return;
+  }
+
+  const result = entry.result;
+  const body = [
+    `- PM Thread: ${entry.thread_id}`,
+    `- Status: ${entry.status}`,
+    `- Issue: ${entry.issue.status}`,
+    `- Source: ${entry.issue.source}`,
+    `- Timestamp: ${result?.timestamp ?? entry.last_seen_at}`,
+    entry.issue.message ? `- Message: ${entry.issue.message}` : null,
+    entry.issue.error ? `- Issue Error: ${entry.issue.error}` : null,
+    entry.error ? `- Error: ${entry.error}` : null,
+    "",
+    result?.content ?? result?.summary_text ?? fallbackText
+  ].filter((line): line is string => line !== null && line !== undefined).join("\n");
+
+  appendWorkerReportHistory(workerId, worker, `PM Resolver Report - ${workerId}`, body);
+}
+
+function appendWorkerReportHistory(
+  workerId: string,
+  worker: DispatchWorkerState,
+  heading: string,
+  body: string
+): void {
+  const reportPath = resolveWorkerReportPath(worker.expected_outputs, workerId);
+  if (!reportPath) {
+    return;
+  }
+
+  try {
+    if (!fs.existsSync(reportPath)) {
+      return;
+    }
+    const section = [
+      "",
+      "",
+      "---",
+      "",
+      `## ${heading}`,
+      "",
+      body.trim()
+    ].join("\n");
+    fs.appendFileSync(reportPath, section.endsWith("\n") ? section : `${section}\n`, "utf8");
+  } catch {
+    // Report-history append is best-effort. The lifecycle sidecar remains the
+    // authoritative status store if a report path is unavailable or read-only.
+  }
+}
+
+function resolveWorkerReportPath(expectedOutputs: string[], workerId: string): string | null {
+  const normalizedWorkerId = workerId.toLowerCase();
+  return expectedOutputs.find((outputPath) => {
+    const normalized = outputPath.trim().replace(/\\/g, "/").toLowerCase();
+    if (!normalized.endsWith(".md")) {
+      return false;
+    }
+    const basename = path.basename(normalized);
+    return basename === `${normalizedWorkerId}.md`
+      || basename === `${normalizedWorkerId}_report.md`
+      || normalized.includes("/reports/")
+      || normalized.includes("/dev_history/");
+  }) ?? null;
 }
 
 function renderPlanMarkdown(state: DispatchThreadStateV2, planTemplate: string): string {
@@ -968,9 +1066,25 @@ function reconcileFailedPmResolversForRecoveredWorker(
     if ((entry.issue?.worker_id ?? "").trim() !== workerId) {
       continue;
     }
+    const previousError = entry.error;
     entry.status = "completed";
     entry.last_seen_at = nowIso;
+    if (!entry.result) {
+      entry.result = {
+        status: "recovered",
+        run_state: "completed",
+        content: [
+          `PM resolver ${entry.thread_id} completed because worker ${workerId} recovered to ${target.status}.`,
+          previousError ? `Original PM transport error: ${previousError}` : null
+        ].filter((line): line is string => Boolean(line)).join("\n"),
+        summary_text: null,
+        details_text: null,
+        trace_id: null,
+        timestamp: nowIso
+      };
+    }
     entry.error = null;
+    appendPmResolverReportHistory(state, entry, previousError);
     log.info("PM resolver reconciled after worker recovery", {
       event: "pm_resolver_recovered_after_worker_recovery",
       thread_id: entry.thread_id,

@@ -224,6 +224,7 @@ export function buildPmResolverPrompt(request: PmResolverRequest): string {
     "# Authority",
     "- Inspect the dispatch plan, lifecycle sidecar, worker reports, command file, repo, and docs needed to understand the blocker.",
     "- You may edit source, docs, dispatch plan notes/statuses, or config when that is the appropriate fix.",
+    "- If the target worker report already exists, append a PM resolver section to it instead of replacing prior worker or validator history.",
     "- You may choose model/routing recommendations and update the plan when the current assignment is the blocker.",
     "- You may use the configured PM channels for user-facing status, questions, and escalation.",
     "- Escalate to a human only for credentials, approvals, external account actions, or product decisions you cannot resolve from the available context.",

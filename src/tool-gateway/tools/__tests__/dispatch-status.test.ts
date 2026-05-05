@@ -302,6 +302,85 @@ describe("dispatch-status tool", () => {
     }));
   });
 
+  it("does not downgrade a completed lifecycle worker because its old reply contains block text", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-completed-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 9 | N-57 | Perf gate | CODEX-HIGH | BATCH-7-GATE | N-57.md | PM resolved |",
+        "| ⬜ | Ω-1 | V-01-A | Validation | CODEX-XHIGH | N-57 | V-01.md | Depends on N-57 |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-05-05T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "N-57": {
+            thread_id: "worker-thread-n57",
+            trace_id: null,
+            started_at: "2026-05-05T00:00:00.000Z",
+            last_seen_at: "2026-05-05T00:10:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            retry_count: 0,
+            hub_result: {
+              trace_id: "11111111-1111-4111-8111-111111111111",
+              thread_id: "worker-thread-n57",
+              source: "codex",
+              status: "success",
+              run_state: "completed",
+              content: "Earlier attempt was BLOCKED, but PM later verified and marked this worker complete.",
+              attachments: [],
+              timestamp: "2026-05-05T00:10:00.000Z"
+            }
+          }
+        },
+        pm_resolvers: [],
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toMatchObject({
+      summary: {
+        total: 2,
+        pending: 1,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        skipped: 0,
+        stale: 0
+      },
+      workers: [
+        expect.objectContaining({
+          worker_id: "N-57",
+          status: "✅",
+          lifecycle_status: "completed",
+          failure_reason: null
+        }),
+        expect.objectContaining({
+          worker_id: "V-01-A",
+          status: "⬜"
+        })
+      ]
+    });
+  });
+
   it("reports recovered PM resolver replies separately from worker status", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-pm-");
     tempDirectories.add(directory);

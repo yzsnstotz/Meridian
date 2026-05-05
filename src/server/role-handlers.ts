@@ -23,7 +23,7 @@ import {
   isPmResolverHubResult,
   isValidatorSpawnBackoffActive
 } from "../roles/agent-dispatcher/lifecycle-store";
-import { createMeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
+import { createMeridianApiClient, type MeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
 import { parseMeridianStatusMarker } from "../roles/agent-dispatcher/meridian-status-marker";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import {
@@ -220,6 +220,7 @@ export interface RoleHandlersOptions {
   sendHubRequest?: (message: HubMessage) => Promise<HubResult>;
   launchDispatchWorker?: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>;
   startPmResolver?: (request: PmResolverRequest) => Promise<PmResolverResult>;
+  meridianApi?: MeridianApiClient;
   log?: Logger;
 }
 
@@ -733,6 +734,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         lifecycleState,
         log,
         attachToThread,
+        options.meridianApi,
         effectiveWorkerId
       );
       if (validatorResult) {
@@ -2121,6 +2123,7 @@ async function processValidationQueue(
   lifecycleState: DispatchThreadStateV2,
   log: Logger,
   attachToThread?: (threadId: string) => Promise<void>,
+  meridianApi?: MeridianApiClient,
   preferredWorkerId?: string | null
 ): Promise<ContinueDispatcherResponse | null> {
   const validatorConfig = config.validator;
@@ -2159,7 +2162,7 @@ async function processValidationQueue(
   if (preferredFixWorkerId) {
     const preferredWorker = lifecycleStore.load().workers[preferredFixWorkerId];
     if (preferredWorker?.status === "fix_requested" && preferredWorker.thread_id?.trim()) {
-      const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
+      const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi);
       const response = await buildValidatorFeedbackDeliveryResponse(deps, preferredFixWorkerId, log);
       if (response) {
         return response;
@@ -2219,7 +2222,7 @@ async function processValidationQueue(
       };
     }
 
-    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
+    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi);
 
     void runValidationCycleWithFeedbackLoop(deps, workerId, row, log)
       .catch((error) => {
@@ -2256,7 +2259,7 @@ async function processValidationQueue(
     // thread via buildPreviousAttemptContext.
     if (!worker.thread_id?.trim()) continue;
 
-    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log);
+    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi);
 
     const response = await buildValidatorFeedbackDeliveryResponse(deps, workerId, log);
     if (response === null) {
@@ -2331,12 +2334,13 @@ function buildValidatorDeps(
   lifecycleStore: LifecycleStore,
   validatorConfig: ValidatorConfig,
   dispatchPlanPath: string,
-  log: Logger
+  log: Logger,
+  meridianApi?: MeridianApiClient
 ): ValidatorOrchestratorDeps {
   return {
     lifecycleStore,
     validatorConfig,
-    meridianApi: createMeridianApiClient(),
+    meridianApi: meridianApi ?? createMeridianApiClient(),
     killPolicy: config.kill_policy,
     spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),
     dispatchPlanPath,
@@ -3227,6 +3231,11 @@ function resolveDispatchWorkerDetailStatus(
   dispatchPlanRow: DispatchPlanRow | null
 ): LifecycleStatus {
   const workerHubResult = getWorkerOwnedHubResult(worker);
+  const workerLifecycleStatus = worker?.status ?? normalizeLifecycleStatus(dispatchPlanRow?.lifecycle_status);
+
+  if (workerLifecycleStatus === "completed" || workerLifecycleStatus === "skipped") {
+    return workerLifecycleStatus;
+  }
 
   if (workerHubResult && hubResultContainsBlockSignal(workerHubResult)) {
     return "blocked";
@@ -3241,7 +3250,7 @@ function resolveDispatchWorkerDetailStatus(
     return enrichedLifecycleStatus;
   }
 
-  return worker?.status ?? mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow?.status) ?? "pending";
+  return workerLifecycleStatus ?? mapDispatchPlanStatusToLifecycleStatus(dispatchPlanRow?.status) ?? "pending";
 }
 
 function getWorkerOwnedHubResult(worker: DispatchWorkerState | null | undefined): HubResult | null {

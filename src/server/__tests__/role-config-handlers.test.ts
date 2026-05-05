@@ -7,6 +7,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
+import { createMeridianApiClient } from "../../roles/agent-dispatcher/meridian-api-client";
 import { AgentDispatcherRole } from "../../roles/definitions/agent-dispatcher";
 import type { LaunchConfig, LaunchResult } from "../../roles/agent-dispatcher/launcher";
 import type { PmResolverRequest, PmResolverResult } from "../../roles/agent-dispatcher/pm-resolver";
@@ -16,6 +17,7 @@ import { RoleRegistry } from "../../roles/role-registry";
 import { RoleRunner } from "../../roles/role-runner";
 import killTool from "../../tool-gateway/tools/kill";
 import updateStatusTool from "../../tool-gateway/tools/update-status";
+import { resetCallerIdentityCache } from "../../shared/caller-identity";
 import { createRoleHandlers, type RoleHandlers } from "../role-handlers";
 import type { AppState, DispatcherConfig, DispatchWorkerState, HubMessage, HubResult, ReplyChannel } from "../../types";
 
@@ -3507,7 +3509,7 @@ describe("role config handlers", () => {
     }
   });
 
-  it("shows blocked dispatch detail status when a completed hub result contains a blocking report", async () => {
+  it("shows blocked dispatch detail status when lifecycle is blocked and the hub result contains a blocking report", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-blocked-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -3529,7 +3531,7 @@ describe("role config handlers", () => {
       workers: {
         "PRE-FLIGHT": buildLifecycleWorker({
           thread_id: "codex_05",
-          status: "completed",
+          status: "blocked",
           expected_outputs: [path.join(tempDir, "reports", "PRE-FLIGHT.md")],
           hub_result: {
             ...buildHubResult([
@@ -3575,6 +3577,76 @@ describe("role config handlers", () => {
               worker: "PRE-FLIGHT",
               status: "⛔ BLOCKED",
               lifecycle_status: "blocked"
+            })
+          ]
+        }
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("shows completed dispatch detail status when lifecycle completion supersedes an old blocked reply", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-completed-detail-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 9 | N-57 | Perf gate | CODEX-HIGH | BATCH-7-GATE | TaskSpec | PM resolved |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-05T04:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-57": buildLifecycleWorker({
+          thread_id: "codex_57",
+          status: "completed",
+          expected_outputs: [path.join(tempDir, "reports", "N-57.md")],
+          hub_result: {
+            ...buildHubResult([
+              "Earlier in the run this task was BLOCKED by missing output evidence.",
+              "PM later verified the report and marked the worker complete."
+            ].join("\n")),
+            trace_id: "33333333-3333-4333-8333-333333333333",
+            thread_id: "codex_57"
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness();
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-completed-detail", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "GET",
+        "/api/role/agent-dispatcher-completed-detail"
+      )).resolves.toMatchObject({
+        dispatch_details: [
+          expect.objectContaining({
+            worker_id: "N-57",
+            status: "completed",
+            reply: expect.objectContaining({
+              content: expect.stringContaining("BLOCKED")
+            })
+          })
+        ],
+        dispatch_plan: {
+          rows: [
+            expect.objectContaining({
+              worker: "N-57",
+              status: "✅",
+              lifecycle_status: "completed"
             })
           ]
         }
@@ -4899,6 +4971,10 @@ function createHarness(
   launchDispatchWorker: ((config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>) | null = null,
   startPmResolver: ((request: PmResolverRequest) => Promise<PmResolverResult>) | null = null
 ) {
+  if (!process.env.MERIDIAN_INTERNAL_BOOTSTRAP_KEY) {
+    process.env.MERIDIAN_INTERNAL_BOOTSTRAP_KEY = "test-bootstrap-seed";
+  }
+  resetCallerIdentityCache();
   const log = createLogger();
   const registry = new RoleRegistry();
   const runner = new RoleRunner({
@@ -4982,6 +5058,7 @@ function createHarness(
           }
         })
   };
+  const testMeridianApi = createMeridianApiClient({ fetch: globalThis.fetch });
 
   return {
     log,
@@ -4995,6 +5072,7 @@ function createHarness(
         threadId: "worker-thread-continued"
       })),
       ...(startPmResolver ? { startPmResolver } : {}),
+      meridianApi: testMeridianApi,
       log
     })
   };
