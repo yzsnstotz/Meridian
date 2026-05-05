@@ -31,6 +31,27 @@ const envBoolean = (defaultValue: boolean) =>
     )
     .transform((value) => value === "true");
 
+function normalizeTelegramTokenEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const primaryToken = env.TELEGRAM_BOT_TOKEN?.trim();
+  if (primaryToken) {
+    return env;
+  }
+
+  const tokens = (env.TELEGRAM_BOT_TOKENS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return env;
+  }
+
+  return {
+    ...env,
+    TELEGRAM_BOT_TOKEN: tokens[0],
+    TELEGRAM_BOT_TOKENS: tokens.slice(1).join(",")
+  };
+}
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -126,7 +147,7 @@ const envSchema = z
   });
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env) {
-  const parsed = envSchema.safeParse(env);
+  const parsed = envSchema.safeParse(normalizeTelegramTokenEnv(env));
 
   if (!parsed.success) {
     const issueSummary = parsed.error.issues
