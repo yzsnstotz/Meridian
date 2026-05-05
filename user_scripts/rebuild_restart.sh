@@ -30,9 +30,27 @@ for env_file in "$ROOT_DIR/.env" "$ROOT_DIR/.env.local"; do
   fi
 done
 
+# meridian-roles authenticates to the hub as a built-in caller; the bootstrap
+# secret used to derive caller_key lives in the Meridian repo's .env. Source it
+# from _meridian_hub (symlink to the Meridian checkout) when not already in env
+# so launches via this script work standalone.
+if [[ -z "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
+  for hub_env in "$ROOT_DIR/_meridian_hub/.env" "$ROOT_DIR/_meridian_hub/.env.local"; do
+    if [[ -f "$hub_env" ]]; then
+      set -a
+      # shellcheck source=/dev/null
+      source "$hub_env"
+      set +a
+    fi
+  done
+fi
+
 export GUI_PORT
 export GUI_LISTEN_HOST
 export ROLES_SOCKET_PATH
+if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
+  export MERIDIAN_INTERNAL_BOOTSTRAP_KEY
+fi
 
 shell_escape() {
   printf '%q' "$1"
@@ -196,7 +214,11 @@ echo "meridian-roles rebuild_restart: start_command=${START_CMD[*]}" >&2
 
 echo "Starting meridian-roles in background..."
 if command -v tmux >/dev/null 2>&1; then
-  tmux_command="cd $(shell_escape "$ROOT_DIR") && export GUI_PORT=$(shell_escape "$GUI_PORT") GUI_LISTEN_HOST=$(shell_escape "$GUI_LISTEN_HOST") ROLES_SOCKET_PATH=$(shell_escape "$ROLES_SOCKET_PATH") && exec npm start >> $(shell_escape "$RUN_LOG") 2>&1"
+  bootstrap_export=""
+  if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
+    bootstrap_export=" MERIDIAN_INTERNAL_BOOTSTRAP_KEY=$(shell_escape "$MERIDIAN_INTERNAL_BOOTSTRAP_KEY")"
+  fi
+  tmux_command="cd $(shell_escape "$ROOT_DIR") && export GUI_PORT=$(shell_escape "$GUI_PORT") GUI_LISTEN_HOST=$(shell_escape "$GUI_LISTEN_HOST") ROLES_SOCKET_PATH=$(shell_escape "$ROLES_SOCKET_PATH")${bootstrap_export} && exec npm start >> $(shell_escape "$RUN_LOG") 2>&1"
   kill_tmux_session "$TMUX_SESSION_NAME"
   tmux new-session -d -s "$TMUX_SESSION_NAME" "$tmux_command"
   printf '%s\n' "$TMUX_SESSION_NAME" > "$TMUX_SESSION_FILE"
