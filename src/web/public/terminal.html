@@ -745,6 +745,16 @@
       align-self: flex-start;
       border-bottom-left-radius: 0.25rem;
     }
+    .chat-bubble-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      opacity: 0.7;
+      margin-bottom: 0.35rem;
+      gap: 0.5rem;
+    }
+    .chat-bubble-caller { font-weight: 600; }
+    .chat-bubble-time { font-variant-numeric: tabular-nums; }
     .chat-text {
       white-space: pre-wrap;
       font-family: "SF Mono", "Fira Code", monospace;
@@ -1157,6 +1167,14 @@
       var suppressibleMessageState = Object.create(null);
       var seenBubbleFingerprintAtMs = Object.create(null);
       var chatHistoryHydrating = false;
+      // R-06: trace_id → caller resolution map. Populated from history
+      // user_send/terminal_input entries on /api/history load and from local
+      // user sends; consumed by agent bubbles that share the originating
+      // trace_id. Lower-cased trace_id keys.
+      var traceCallerById = Object.create(null);
+      // R-06: built-in identity for messages typed locally in this Web GUI.
+      // Matches the bootstrap caller registered by R-04 (`startWebInterfaceServer`).
+      var WEB_GUI_CALLER = { caller_id: "meridian-web", caller_label: "Meridian Web" };
       var EXPANDED_DIRS_STORAGE_KEY = "meridian_expanded_dirs:" + (threadId || "active");
       var expandedDirs = new Set();
       var fileTreeEntries = [];
@@ -1276,7 +1294,7 @@
 
         var parsedModel = parseModelReferenceWithEffort(selectedId, selectedEffort);
         if (!parsedModel.modelId) {
-          addChatBubble("Model switch failed: invalid model id", "agent");
+          addChatBubble("Model switch failed: invalid model id", "agent", "", { timestamp: new Date().toISOString() });
           refreshModelCatalog(currentModelId || "");
           return;
         }
@@ -1304,7 +1322,7 @@
             });
           })
           .then(function() {
-            addChatBubble("Model switch requested: " + parsedModel.modelId, "agent");
+            addChatBubble("Model switch requested: " + parsedModel.modelId, "agent", "", { timestamp: new Date().toISOString() });
             currentModelEffort = normalizeModelEffort(parsedModel.reasoningEffort);
             saveStoredModelEffort(currentModelEffort);
             syncModelEffortControl(currentModelEffort);
@@ -1314,7 +1332,7 @@
             return refreshModelCatalog(parsedModel.modelId);
           })
           .catch(function(err) {
-            addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent");
+            addChatBubble("Model switch failed: " + (err && err.message ? err.message : "unknown error"), "agent", "", { timestamp: new Date().toISOString() });
             refreshModelCatalog(currentModelId || "");
           });
       }
@@ -1593,6 +1611,82 @@
         syncOverflowTraceRow();
       }
 
+      // R-06: register the originating caller for a trace_id so subsequent
+      // agent bubbles sharing that trace_id can render the same caller label.
+      function rememberCallerForTrace(traceId, caller) {
+        if (typeof traceId !== "string") return;
+        var key = traceId.trim().toLowerCase();
+        if (!key) return;
+        if (!caller || typeof caller !== "object") return;
+        var callerId = typeof caller.caller_id === "string" ? caller.caller_id : "";
+        if (!callerId) return;
+        var label = typeof caller.caller_label === "string" && caller.caller_label
+          ? caller.caller_label
+          : callerId;
+        traceCallerById[key] = { caller_id: callerId, caller_label: label };
+      }
+
+      function lookupCallerForTrace(traceId) {
+        if (typeof traceId !== "string") return null;
+        var key = traceId.trim().toLowerCase();
+        if (!key) return null;
+        return traceCallerById[key] || null;
+      }
+
+      // R-06: derive a caller object from a history entry's nullable
+      // caller_id / caller_label fields. Returns null when no caller_id.
+      function callerFromHistoryEntry(entry) {
+        if (!entry || typeof entry !== "object") return null;
+        var callerId = typeof entry.caller_id === "string" ? entry.caller_id : "";
+        if (!callerId) return null;
+        var label = typeof entry.caller_label === "string" && entry.caller_label
+          ? entry.caller_label
+          : callerId;
+        return { caller_id: callerId, caller_label: label };
+      }
+
+      var META_TIME_FORMATTER = (function() {
+        try {
+          return new Intl.DateTimeFormat(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          });
+        } catch (e) {
+          return null;
+        }
+      })();
+
+      // R-06: format an ISO timestamp into a short local-time label
+      // ("MMM D, HH:MM"). Returns "" for missing/invalid input so the meta
+      // strip can hide the time span gracefully rather than rendering "Invalid".
+      function formatBubbleTimePretty(isoTs) {
+        if (typeof isoTs !== "string" || !isoTs) return "";
+        var ms = Date.parse(isoTs);
+        if (isNaN(ms)) return "";
+        var d = new Date(ms);
+        if (META_TIME_FORMATTER) {
+          var parts = META_TIME_FORMATTER.formatToParts(d);
+          var month = "", day = "", hour = "", minute = "";
+          for (var i = 0; i < parts.length; i++) {
+            var p = parts[i];
+            if (p.type === "month") month = p.value;
+            else if (p.type === "day") day = p.value;
+            else if (p.type === "hour") hour = p.value;
+            else if (p.type === "minute") minute = p.value;
+          }
+          if (month && day && hour && minute) {
+            return month + " " + day + ", " + hour + ":" + minute;
+          }
+        }
+        // Fallback: manual format
+        var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        var pad = function(n) { return n < 10 ? "0" + n : "" + n; };
+        return months[d.getMonth()] + " " + d.getDate() + ", " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+      }
+
       function syncOverflowTraceRow() {
         var valEl = document.getElementById("overflow-trace-value");
         var btn = document.getElementById("overflow-copy-trace");
@@ -1703,7 +1797,9 @@
             addChatBubble(content, "agent", details, {
               messageKey: messageKey,
               dedupe: false,
-              persist: false
+              persist: false,
+              timestamp: new Date().toISOString(),
+              traceId: currentTaskId
             });
             rememberA2AOutputElement(currentTaskId, messageKey);
           }
@@ -1746,7 +1842,9 @@
         pendingA2ARenderTaskIds.delete(normalizedTaskId);
         addChatBubble(finalContent, "agent", details, {
           messageKey: buildTraceMessageKey("agent", normalizedTaskId),
-          dedupe: false
+          dedupe: false,
+          timestamp: new Date().toISOString(),
+          traceId: normalizedTaskId
         });
         rememberA2AOutputElement(normalizedTaskId, buildTraceMessageKey("agent", normalizedTaskId));
         completedA2AResults.set(normalizedTaskId, {
@@ -1877,9 +1975,22 @@
         serverHistoryAuthoritative = true;
         cacheServerHistory(entries);
         clearActiveProgressBubble();
+        // R-06: also pre-populate the trace map from this batch so the agent
+        // bubble we render below can resolve to the originating user's caller.
+        for (var hi = 0; hi < entries.length; hi++) {
+          var historyEntry = normalizeHistoryEntry(entries[hi]);
+          if (!historyEntry) continue;
+          var historyCaller = callerFromHistoryEntry(historyEntry);
+          if (historyCaller && typeof historyEntry.trace_id === "string" && historyEntry.trace_id) {
+            rememberCallerForTrace(historyEntry.trace_id, historyCaller);
+          }
+        }
         addChatBubble(latestFinalEntry.content || "", latestFinalEntry.type || "agent", latestFinalEntry.details_text || "", {
           persist: false,
-          messageKey: buildHistoryMessageKey(latestFinalEntry)
+          messageKey: buildHistoryMessageKey(latestFinalEntry),
+          caller: callerFromHistoryEntry(latestFinalEntry),
+          timestamp: typeof latestFinalEntry.timestamp === "string" ? latestFinalEntry.timestamp : "",
+          traceId: typeof latestFinalEntry.trace_id === "string" ? latestFinalEntry.trace_id : ""
         });
         lastFlushedContent = stripAnsi(latestFinalEntry.content || "");
         lastRunResultAtMs = Date.now();
@@ -2191,12 +2302,21 @@
         var truncatedContent = truncateHistoryText(item.content, CHAT_HISTORY_MAX_CONTENT_CHARS);
         var originalDetails = typeof item.detailsText === "string" ? item.detailsText : "";
         var resolvedDetails = originalDetails || (truncatedContent !== item.content ? item.content : "");
+        // R-06: preserve caller + timestamp + trace_id so the meta strip
+        // re-renders identically after a page reload. caller_label may be ""
+        // when only caller_id was known.
+        var storedCallerId = typeof item.caller_id === "string" ? item.caller_id : "";
+        var storedCallerLabel = typeof item.caller_label === "string" ? item.caller_label : "";
         return {
           content: truncatedContent,
           type: item.type,
           detailsText: truncateHistoryText(resolvedDetails, CHAT_HISTORY_MAX_DETAIL_CHARS),
           messageKey: typeof item.messageKey === "string" ? item.messageKey : "",
-          ts: typeof item.ts === "number" ? item.ts : Date.now()
+          ts: typeof item.ts === "number" ? item.ts : Date.now(),
+          caller_id: storedCallerId,
+          caller_label: storedCallerLabel,
+          timestamp: typeof item.timestamp === "string" ? item.timestamp : "",
+          trace_id: typeof item.trace_id === "string" ? item.trace_id : ""
         };
       }
 
@@ -2249,15 +2369,20 @@
         } catch (e) {}
       }
 
-      function appendChatHistoryEntry(content, type, detailsText, messageKey) {
+      function appendChatHistoryEntry(content, type, detailsText, messageKey, meta) {
         if (chatHistoryHydrating) return;
         var history = readChatHistory();
+        var safeMeta = meta && typeof meta === "object" ? meta : {};
         var entry = {
           content: content,
           type: type || "agent",
           detailsText: detailsText || "",
           messageKey: messageKey || "",
-          ts: Date.now()
+          ts: Date.now(),
+          caller_id: typeof safeMeta.caller_id === "string" ? safeMeta.caller_id : "",
+          caller_label: typeof safeMeta.caller_label === "string" ? safeMeta.caller_label : "",
+          timestamp: typeof safeMeta.timestamp === "string" ? safeMeta.timestamp : "",
+          trace_id: typeof safeMeta.trace_id === "string" ? safeMeta.trace_id : ""
         };
         if (entry.messageKey) {
           for (var historyIndex = history.length - 1; historyIndex >= 0; historyIndex--) {
@@ -2274,14 +2399,31 @@
       function restoreChatHistory() {
         var history = readChatHistory().slice(-CHAT_HISTORY_RESTORE_LIMIT);
         if (history.length === 0) return false;
+        // R-06: prime trace_id → caller map BEFORE rendering so agent bubbles
+        // restored later in the same loop can resolve their originating caller.
+        for (var ti = 0; ti < history.length; ti++) {
+          var pre = history[ti];
+          if (pre && pre.type === "user" && pre.caller_id && pre.trace_id) {
+            rememberCallerForTrace(pre.trace_id, {
+              caller_id: pre.caller_id,
+              caller_label: pre.caller_label || pre.caller_id
+            });
+          }
+        }
         chatHistoryHydrating = true;
         try {
           for (var i = 0; i < history.length; i++) {
             var entry = history[i];
+            var entryCaller = entry.caller_id
+              ? { caller_id: entry.caller_id, caller_label: entry.caller_label || entry.caller_id }
+              : null;
             addChatBubble(entry.content, entry.type, entry.detailsText, {
               persist: false,
               dedupe: false,
-              messageKey: entry.messageKey || ""
+              messageKey: entry.messageKey || "",
+              caller: entryCaller,
+              timestamp: entry.timestamp || "",
+              traceId: entry.trace_id || traceIdFromMessageKey(entry.messageKey || "")
             });
           }
         } finally {
@@ -2300,12 +2442,23 @@
         writeChatHistory(entries.map(function(entry) {
           var normalized = normalizeHistoryEntry(entry);
           if (!normalized) return null;
+          // R-06: persist caller fields + raw ISO timestamp + trace_id so the
+          // meta strip survives a page reload that hits localStorage before
+          // /api/history responds.
+          var rawCallerId = typeof normalized.caller_id === "string" ? normalized.caller_id : "";
+          var rawCallerLabel = typeof normalized.caller_label === "string" ? normalized.caller_label : "";
+          var rawTimestamp = typeof normalized.timestamp === "string" ? normalized.timestamp : "";
+          var rawTraceId = typeof normalized.trace_id === "string" ? normalized.trace_id : "";
           return {
             content: normalized.content || "",
             type: normalized.type || "agent",
             detailsText: normalized.details_text || "",
             messageKey: buildHistoryMessageKey(normalized),
-            ts: Date.parse(normalized.timestamp || "") || Date.now()
+            ts: Date.parse(rawTimestamp) || Date.now(),
+            caller_id: rawCallerId,
+            caller_label: rawCallerLabel,
+            timestamp: rawTimestamp,
+            trace_id: rawTraceId
           };
         }).filter(function(entry) { return Boolean(entry); }));
       }
@@ -2334,15 +2487,32 @@
           renderEntries.push(renderEntry);
         }
 
+        // R-06: build trace_id → caller map ONCE per /api/history load.
+        // User entries (user_send / terminal_input) carry the originating
+        // caller; agent entries inherit it via trace_id match. Done before
+        // rendering so any agent entry rendered in this same loop can resolve.
+        for (var ti = 0; ti < renderEntries.length; ti++) {
+          var indexEntry = normalizeHistoryEntry(renderEntries[ti]);
+          if (!indexEntry) continue;
+          var indexCaller = callerFromHistoryEntry(indexEntry);
+          if (indexCaller && typeof indexEntry.trace_id === "string" && indexEntry.trace_id) {
+            rememberCallerForTrace(indexEntry.trace_id, indexCaller);
+          }
+        }
         chatHistoryHydrating = true;
         try {
           for (var i = 0; i < renderEntries.length; i++) {
             var entry = normalizeHistoryEntry(renderEntries[i]);
             if (!entry) continue;
+            var entryCaller = callerFromHistoryEntry(entry);
+            var entryTraceId = typeof entry.trace_id === "string" ? entry.trace_id : "";
             addChatBubble(entry.content || "", entry.type || "agent", entry.details_text || "", {
               persist: false,
               dedupe: false,
-              messageKey: buildHistoryMessageKey(entry)
+              messageKey: buildHistoryMessageKey(entry),
+              caller: entryCaller,
+              timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
+              traceId: entryTraceId
             });
           }
         } finally {
@@ -2477,6 +2647,54 @@
           bubbleElementsByKey[messageKey] = bubble;
         }
 
+        // R-06: meta strip (caller + timestamp). For agent bubbles whose own
+        // caller is unknown, fall back to the trace_id → caller map populated
+        // from the originating user_send entry.
+        var metaCaller = null;
+        if (opts.caller && typeof opts.caller === "object" && typeof opts.caller.caller_id === "string" && opts.caller.caller_id) {
+          metaCaller = {
+            caller_id: opts.caller.caller_id,
+            caller_label: typeof opts.caller.caller_label === "string" && opts.caller.caller_label
+              ? opts.caller.caller_label
+              : opts.caller.caller_id
+          };
+        }
+        var metaTraceId = typeof opts.traceId === "string" ? opts.traceId : "";
+        if (!metaCaller && resolvedType !== "user" && metaTraceId) {
+          var resolved = lookupCallerForTrace(metaTraceId);
+          if (resolved) metaCaller = resolved;
+        }
+        if (resolvedType === "user" && metaCaller && metaTraceId) {
+          rememberCallerForTrace(metaTraceId, metaCaller);
+        }
+        var metaIso = typeof opts.timestamp === "string" ? opts.timestamp : "";
+        var metaPretty = formatBubbleTimePretty(metaIso);
+        if (metaCaller || metaPretty) {
+          var metaEl = document.createElement("div");
+          metaEl.className = "chat-bubble-meta";
+          var callerSpan = document.createElement("span");
+          callerSpan.className = "chat-bubble-caller";
+          if (metaCaller) {
+            callerSpan.textContent = metaCaller.caller_label;
+            bubble.setAttribute("data-caller-id", metaCaller.caller_id);
+          } else {
+            callerSpan.textContent = "";
+            callerSpan.style.visibility = "hidden";
+          }
+          metaEl.appendChild(callerSpan);
+          var timeSpan = document.createElement("span");
+          timeSpan.className = "chat-bubble-time";
+          if (metaPretty) {
+            timeSpan.textContent = metaPretty;
+            timeSpan.setAttribute("title", metaIso);
+          } else {
+            timeSpan.textContent = "";
+            timeSpan.style.visibility = "hidden";
+          }
+          metaEl.appendChild(timeSpan);
+          bubble.appendChild(metaEl);
+        }
+
         // Split content into text vs code blocks
         var lines = content.split("\n");
         var currentBlock = [];
@@ -2590,10 +2808,13 @@
               btn.addEventListener("click", function() {
                 var approvalToken = opt.submit || opt.key || opt.action || "";
                 resolveApprovalOptions(approvalToken);
-                addChatBubble(opt.label, "user");
+                addChatBubble(opt.label, "user", "", {
+                  caller: WEB_GUI_CALLER,
+                  timestamp: new Date().toISOString()
+                });
                 sendTerminalApproval(approvalToken).catch(function(err) {
                   var msg = err && err.message ? err.message : "Approval action failed.";
-                  addChatBubble("Error: " + msg, "agent");
+                  addChatBubble("Error: " + msg, "agent", "", { timestamp: new Date().toISOString() });
                 });
                 if (navigator.vibrate) navigator.vibrate(10);
               });
@@ -2611,12 +2832,15 @@
               btn.className = "chat-option-btn";
               btn.textContent = opt.key + ". " + opt.label;
               btn.addEventListener("click", function() {
-                addChatBubble(opt.key, "user");
+                addChatBubble(opt.key, "user", "", {
+                  caller: WEB_GUI_CALLER,
+                  timestamp: new Date().toISOString()
+                });
                 optDiv.querySelectorAll(".chat-option-btn").forEach(function(b) { b.disabled = true; });
                 btn.classList.add("selected");
                 sendTerminalText(opt.key).catch(function(err) {
                   var msg = err && err.message ? err.message : "Terminal input failed.";
-                  addChatBubble("Error: " + msg, "agent");
+                  addChatBubble("Error: " + msg, "agent", "", { timestamp: new Date().toISOString() });
                 });
                 if (navigator.vibrate) navigator.vibrate(10);
               });
@@ -2633,12 +2857,15 @@
               btn.className = "chat-yn-btn " + opt.cls;
               btn.textContent = opt.label;
               btn.addEventListener("click", function() {
-                addChatBubble(opt.key, "user");
+                addChatBubble(opt.key, "user", "", {
+                  caller: WEB_GUI_CALLER,
+                  timestamp: new Date().toISOString()
+                });
                 ynDiv.querySelectorAll(".chat-yn-btn").forEach(function(b) { b.disabled = true; });
                 btn.classList.add("selected");
                 sendTerminalText(opt.key).catch(function(err) {
                   var msg = err && err.message ? err.message : "Terminal input failed.";
-                  addChatBubble("Error: " + msg, "agent");
+                  addChatBubble("Error: " + msg, "agent", "", { timestamp: new Date().toISOString() });
                 });
                 if (navigator.vibrate) navigator.vibrate(10);
               });
@@ -2651,7 +2878,14 @@
         chatMessagesEl.appendChild(bubble);
         if (chatMessagesEl.classList.contains("chat-messages-empty")) chatMessagesEl.classList.remove("chat-messages-empty");
         if (chatAutoScroll) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-        if (opts.persist !== false) appendChatHistoryEntry(content, resolvedType, resolvedDetails, messageKey);
+        if (opts.persist !== false) {
+          appendChatHistoryEntry(content, resolvedType, resolvedDetails, messageKey, {
+            caller_id: metaCaller ? metaCaller.caller_id : "",
+            caller_label: metaCaller ? metaCaller.caller_label : "",
+            timestamp: metaIso,
+            trace_id: metaTraceId
+          });
+        }
       }
 
       function showChatTyping(show, text) {
@@ -2743,7 +2977,11 @@
           }
           var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || newContent);
           var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || newContent);
-          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: buildTraceMessageKey("agent", bubbleTraceId) });
+          addChatBubble(cleanSummary, "agent", rawDetail, {
+            messageKey: buildTraceMessageKey("agent", bubbleTraceId),
+            timestamp: new Date().toISOString(),
+            traceId: bubbleTraceId
+          });
           lastFocusSummarySent = cleanSummary;
           lastSubmittedInput = "";
           // Only clear trace_id when a proper summary was extracted.
@@ -2753,7 +2991,11 @@
         } else {
           var cleanText = stripMeridianNoise(newContent);
           if (!cleanText) return;
-          addChatBubble(cleanText, "agent");
+          var nonFocusTraceId = lastSubmittedTraceId || resolveTraceIdFromText(newContent);
+          addChatBubble(cleanText, "agent", "", {
+            timestamp: new Date().toISOString(),
+            traceId: nonFocusTraceId
+          });
         }
       }
 
@@ -2767,7 +3009,11 @@
           if (!cleanSummary || cleanSummary === fallbackSummaryText) return;
           var rawDetail = composeRawDetail(lastSubmittedInput, digest.rawOutput || text);
           var bubbleTraceId = expectedTraceId || resolveTraceIdFromText(digest.rawOutput || text);
-          addChatBubble(cleanSummary, "agent", rawDetail, { messageKey: buildTraceMessageKey("agent", bubbleTraceId) });
+          addChatBubble(cleanSummary, "agent", rawDetail, {
+            messageKey: buildTraceMessageKey("agent", bubbleTraceId),
+            timestamp: new Date().toISOString(),
+            traceId: bubbleTraceId
+          });
           lastFocusSummarySent = cleanSummary;
           lastSubmittedInput = "";
           // Only clear trace_id when a proper summary was extracted;
@@ -2778,7 +3024,11 @@
         } else {
           var cleanText = stripMeridianNoise(stripSummaryProtocolTags(text));
           if (!cleanText) return;
-          addChatBubble(cleanText, "agent");
+          var renderTraceId = lastSubmittedTraceId || resolveTraceIdFromText(text);
+          addChatBubble(cleanText, "agent", "", {
+            timestamp: new Date().toISOString(),
+            traceId: renderTraceId
+          });
         }
       }
 
@@ -2823,14 +3073,14 @@
         }).then(function(r) { return r.json(); }).then(function(data) {
           if (data && data.status === "error") {
             updatePushButton(false);
-            addChatBubble("Push: " + (data.content || "unknown error"), "agent");
+            addChatBubble("Push: " + (data.content || "unknown error"), "agent", "", { timestamp: new Date().toISOString() });
           } else if (data && data.status === "success") {
             updatePushButton(enabled);
-            if (data.content) addChatBubble(data.content, "agent");
+            if (data.content) addChatBubble(data.content, "agent", "", { timestamp: new Date().toISOString() });
           }
         }).catch(function(err) {
           updatePushButton(false);
-          addChatBubble("Push toggle failed: " + (err && err.message ? err.message : "network error"), "agent");
+          addChatBubble("Push toggle failed: " + (err && err.message ? err.message : "network error"), "agent", "", { timestamp: new Date().toISOString() });
         });
       }
 
@@ -2952,7 +3202,14 @@
         activeProgressMessageKey = nextMessageKey;
         activeProgressTraceId = traceId;
         recordLatestTraceId(traceId);
-        addChatBubble(truncatedContent, "agent", progressDetails, { messageKey: nextMessageKey });
+        var snapshotTimestamp = typeof snapshot.timestamp === "string" && snapshot.timestamp
+          ? snapshot.timestamp
+          : new Date().toISOString();
+        addChatBubble(truncatedContent, "agent", progressDetails, {
+          messageKey: nextMessageKey,
+          timestamp: snapshotTimestamp,
+          traceId: traceId
+        });
         showChatTyping(false);
       }
 
@@ -3460,7 +3717,7 @@
         ws.onmessage = handleWsMessage;
         ws.onerror = function() {
           if (!wsConnected) {
-            addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent");
+            addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent", "", { timestamp: new Date().toISOString() });
           }
         };
         ws.onclose = function(ev) {
@@ -3473,7 +3730,7 @@
 
       function scheduleWsReconnect() {
         if (wsReconnectAttempts >= WS_MAX_RECONNECT_ATTEMPTS) {
-          addChatBubble("Connection lost after " + WS_MAX_RECONNECT_ATTEMPTS + " attempts. Refresh the page.", "agent");
+          addChatBubble("Connection lost after " + WS_MAX_RECONNECT_ATTEMPTS + " attempts. Refresh the page.", "agent", "", { timestamp: new Date().toISOString() });
           return;
         }
         var delay = Math.min(1000 * Math.pow(1.5, wsReconnectAttempts), 15000);
@@ -3494,8 +3751,8 @@
         if (threadId && token) {
           connectWebSocket();
         } else {
-          if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent");
-          else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent");
+          if (!threadId) addChatBubble("No session. Open this page from the hub by tapping a session card.", "agent", "", { timestamp: new Date().toISOString() });
+          else if (!token) addChatBubble("Missing token. Open this page from the hub so the URL contains ?token=.", "agent", "", { timestamp: new Date().toISOString() });
         }
       });
 
@@ -3640,11 +3897,11 @@
         var cmd = cmdInput.value.trim();
         if (!cmd) return;
         if (!threadId) {
-          addChatBubble("Error: No session. Open this page from the hub (click a session card).", "agent");
+          addChatBubble("Error: No session. Open this page from the hub (click a session card).", "agent", "", { timestamp: new Date().toISOString() });
           return;
         }
         if (!window.MeridianWeb.getToken()) {
-          addChatBubble("Error: Missing token. Open this page from the hub with ?token= in the URL.", "agent");
+          addChatBubble("Error: Missing token. Open this page from the hub with ?token= in the URL.", "agent", "", { timestamp: new Date().toISOString() });
           return;
         }
         // Reset chat buffer for new turn — ensures 1:1 ask-to-reply
@@ -3657,7 +3914,11 @@
         runPending = true;
         clearActiveProgressBubble();
 
-        addChatBubble(cmd, "user");
+        var sendNowIso = new Date().toISOString();
+        addChatBubble(cmd, "user", "", {
+          caller: WEB_GUI_CALLER,
+          timestamp: sendNowIso
+        });
         lastSubmittedInput = cmd;
         lastSubmittedTraceId = "";
         showChatTyping(true, "Awaiting agent reply...");
@@ -3672,6 +3933,9 @@
             if (data && typeof data.trace_id === "string") {
               lastSubmittedTraceId = data.trace_id.toLowerCase();
               recordLatestTraceId(data.trace_id);
+              // R-06: agent reply bubbles for this trace_id should resolve to
+              // the same caller as the prompt that triggered them.
+              rememberCallerForTrace(lastSubmittedTraceId, WEB_GUI_CALLER);
             }
             var a2aResult = lastSubmittedTraceId ? completedA2AResults.get(lastSubmittedTraceId) : null;
             if (a2aResult) {
@@ -3696,7 +3960,9 @@
                   clearActiveProgressBubble();
                   lastFlushedContent = stripAnsi(structuredBubble.rawContent || structuredBubble.content);
                   addChatBubble(structuredBubble.content, "agent", structuredBubble.detailsText || "", {
-                    messageKey: bubbleMessageKey
+                    messageKey: bubbleMessageKey,
+                    timestamp: new Date().toISOString(),
+                    traceId: bubbleTraceId
                   });
                 }
                 lastRunResultAtMs = Date.now();
@@ -3727,7 +3993,7 @@
             showChatTyping(false);
             var msg = err && err.message ? err.message : "Send failed.";
             if (err && err.status === 401) msg = "Unauthorized. Refresh the page from the hub so the URL includes ?token=.";
-            addChatBubble("Error: " + msg, "agent");
+            addChatBubble("Error: " + msg, "agent", "", { timestamp: new Date().toISOString() });
             if (navigator.vibrate) navigator.vibrate(50);
         });
         cmdInput.value = "";
