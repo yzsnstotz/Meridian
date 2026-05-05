@@ -13,6 +13,7 @@ import {
   resolveConfiguredDispatchRepoRoot,
   resolveConfiguredDocsRoot
 } from "../roles/agent-dispatcher/dispatch-paths";
+import { wrapForHub } from "../shared/caller-identity";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import {
   LifecycleStore,
@@ -3742,7 +3743,7 @@ function sendHubRequest(message: HubMessage): Promise<z.infer<typeof HubResultSc
       socket.setTimeout(ATTACH_RESPONSE_TIMEOUT_MS);
 
       try {
-        socket.write(JSON.stringify(message));
+        socket.write(JSON.stringify(wrapForHub(message)));
         socket.end();
       } catch (error) {
         fail(error);

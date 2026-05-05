@@ -3,6 +3,7 @@ import net from "node:net";
 
 import { HUB_SOCKET_PATH, ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../config";
 import type { Logger } from "../roles/base-role";
+import { wrapForHub } from "../shared/caller-identity";
 import {
   AgentInstanceSchema,
   HubResultSchema,
@@ -379,7 +380,7 @@ export class A2AClient {
         clearTimeout(timeout);
 
         try {
-          socket.end(JSON.stringify(message));
+          socket.end(JSON.stringify(wrapForHub(message as HubMessage)));
           settled = true;
           resolve();
         } catch (error) {
@@ -429,7 +430,7 @@ export class A2AClient {
         socket.setTimeout(this.responseTimeoutMs);
 
         try {
-          socket.write(JSON.stringify(message));
+          socket.write(JSON.stringify(wrapForHub(message)));
           socket.end();
         } catch (error) {
           fail(error);
