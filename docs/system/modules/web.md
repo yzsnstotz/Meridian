@@ -61,7 +61,7 @@ All API routes return JSON. Hub-backed routes construct `reply_channel.channel =
 
 | Path | Purpose | Key DOM IDs / Functions | Surface | Key refs |
 |--------|------|---------|--------|--------------|
-| `/` and `/index.html` | Hub landing page for spawning sessions, browsing live agents, and monitoring log footprint. | Uses `#spawn-provider`, `#btn-spawn`, `#grid`, `#log-list`, and the `#spawn-workspace-dialog` picker; core flows are `fetchList()`, `spawn()`, `fetchSpawnBrowse()`, `openLogViewer()`, and `clearLogFile()`. | Calls `/api/instances`, `/api/logs`, `/api/log_file`, `/api/log_file/clear`, `/api/spawn`, and `/api/spawn_repos/browse`; opens `terminal.html` per thread and links to the sibling meridian-roles UI. | `src/web/public/index.html:788`, `src/web/public/index.html:1031`, `src/web/public/index.html:1111`, `src/web/public/index.html:1202`, `src/web/public/index.html:1349`, `src/web/public/index.html:1381` |
+| `/` and `/index.html` | Hub landing page for spawning sessions, browsing live agents, monitoring log footprint, and managing caller keys. Each agent card shows a "Last caller: …" line and a "Spawned by: …" detail row populated from `inst.last_caller` and `inst.spawned_by`. A collapsible `<details id="caller-admin">` panel lists all registered callers with Rotate/Revoke actions for external callers; a Mint button opens a validated modal that calls `POST /api/callers` and shows the cleartext key exactly once in the key reveal modal. `[UPDATED 2026-05-05]` | Uses `#spawn-provider`, `#btn-spawn`, `#grid`, `#log-list`, `#caller-admin`, `#caller-admin-table`, `#caller-mint`, `#key-reveal-dialog`, `#mint-dialog`, and the `#spawn-workspace-dialog` picker; core flows are `fetchList()`, `spawn()`, `fetchSpawnBrowse()`, `openLogViewer()`, `clearLogFile()`, `doLoadCallers()`, `doMintCaller()`, `doRotateCaller()`, `doRevokeCaller()`, `renderCallerTable()`, `showKeyReveal()`, and `dismissKeyReveal()`. | Calls `/api/instances`, `/api/logs`, `/api/log_file`, `/api/log_file/clear`, `/api/spawn`, `/api/spawn_repos/browse`, `/api/callers` (GET/POST), `/api/callers/:id/rotate` (POST), and `/api/callers/:id` (DELETE); opens `terminal.html` per thread and links to the sibling meridian-roles UI. | `src/web/public/index.html` |
 | `/terminal.html` | Primary live session UI with terminal pane, filtered chat view, file explorer/editor, session history, model picker, push toggle, and mobile overflow actions. Every chat bubble (user + agent) renders a `.chat-bubble-meta` strip with caller label and ISO timestamp; agent bubbles inherit the originating user_send caller via a trace_id → caller map built once per `/api/history` load. `[UPDATED 2026-05-05]` | Uses `#term-container`, `#chat-messages`, `#file-tree`, `#editor-content`, `#model-select`, `#capture-interval`, and `#filters-modal`; core flows are `loadXterm()`, `handleA2AMessage()`, `pollThreadProgress()`, `refreshModelCatalog()`, `connectWebSocket()`, `refreshFiles()`, `openFile()`, `handleSend()`, plus `addChatBubble(content, type, detailsText, { caller, timestamp, traceId })` and the `rememberCallerForTrace` / `lookupCallerForTrace` / `formatBubbleTimePretty` helpers added by R-06. | Calls `/ws/terminal`, `/api/history`, `/api/progress/:thread_id`, `/api/files`, `/api/file`, `/api/run`, `/api/terminal_input`, `/api/push`, `/api/models`, `/api/capture_interval`, `/api/reboot`, `/api/kill`, `/api/history_threads`, and `/api/instances`. | `src/web/public/terminal.html:913`, `src/web/public/terminal.html:1072`, `src/web/public/terminal.html:1615`, `src/web/public/terminal.html:2683`, `src/web/public/terminal.html:2867`, `src/web/public/terminal.html:3254`, `src/web/public/terminal.html:3772`, `src/web/public/terminal.html:3802`, `src/web/public/terminal.html:3436` |
 | `/bridge.html` | Minimal single-thread bridge page for quick run / kill / reboot control without the full terminal UI. | Uses `#thread-label`, `#latest-result`, `#input-run`, `#btn-run`, `#btn-kill`, and `#btn-reboot`; core flows are `setMeta()`, `runCommand()`, and `threadAction()`. | Calls `/api/instances`, `/api/run`, `/api/kill`, and `/api/reboot`. | `src/web/public/bridge.html:49`, `src/web/public/bridge.html:152`, `src/web/public/bridge.html:162`, `src/web/public/bridge.html:181`, `src/web/public/bridge.html:205` |
 | `/app.js` | Shared browser helper namespace for token storage, API base resolution, authenticated fetches, focus-mode persistence, and custom filter persistence. | Exposes `window.MeridianWeb.*` methods used by both HTML clients. | Adds the GUI token to API requests and persists UI preferences in browser storage. | `src/web/public/app.js:13`, `src/web/public/app.js:84`, `src/web/public/app.js:103`, `src/web/public/app.js:124`, `src/web/public/app.js:139` |
@@ -170,6 +170,34 @@ All API routes return JSON. Hub-backed routes construct `reply_channel.channel =
 - **Implementation**: It serializes the filter array into `localStorage` under the scope-prefixed key and ignores storage errors so filter editing does not break the rest of the UI.
 - **Dependencies**: None
 - **Status**: `[ADDED 2026-04-08T14:50:33+09:00]`
+
+### `window.MeridianWeb.loadCallers()`
+- **File**: `src/web/public/app.js`
+- **Purpose**: Fetches the full caller list from the hub admin API.
+- **Implementation**: Calls `GET /api/callers` via `fetchWithAuth`, returns a Promise that resolves to the parsed JSON body `{ callers, bootstrap_key_set }` or rejects with the server error message. Callers of this function render the result into `#caller-admin-table`.
+- **Dependencies**: `fetchWithAuth`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `window.MeridianWeb.mintCaller(callerId, callerLabel)`
+- **File**: `src/web/public/app.js`
+- **Purpose**: Registers a new external caller and returns its cleartext key for one-time display.
+- **Implementation**: Posts `{ caller_id, caller_label }` to `POST /api/callers` via `fetchWithAuth`. Resolves to `{ caller_id, caller_key }` (cleartext, show-once) or rejects with the server error. The caller key must be shown in the key reveal modal and never persisted.
+- **Dependencies**: `fetchWithAuth`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `window.MeridianWeb.rotateCaller(callerId)`
+- **File**: `src/web/public/app.js`
+- **Purpose**: Rotates an external caller's key and returns the new cleartext key for one-time display.
+- **Implementation**: Posts to `POST /api/callers/:id/rotate` via `fetchWithAuth`. Resolves to `{ caller_key }` (cleartext, show-once) or rejects with the server error. Built-in callers return 400.
+- **Dependencies**: `fetchWithAuth`
+- **Status**: `[ADDED 2026-05-05]`
+
+### `window.MeridianWeb.revokeCaller(callerId)`
+- **File**: `src/web/public/app.js`
+- **Purpose**: Revokes an external caller, permanently disabling their key.
+- **Implementation**: Sends `DELETE /api/callers/:id` via `fetchWithAuth`. Resolves to `{ revoked_at }` or rejects with the server error. Built-in callers return 400.
+- **Dependencies**: `fetchWithAuth`
+- **Status**: `[ADDED 2026-05-05]`
 
 ## Test Files
 

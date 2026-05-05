@@ -788,6 +788,230 @@
     .fab:active { transform: scale(0.92); }
     .fab svg { width: 24px; height: 24px; }
 
+    /* Agent card — last caller line */
+    .card-caller {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      margin-top: -0.25rem;
+    }
+    .card-caller strong { color: var(--text-color); font-weight: 600; }
+    .card-caller-dot {
+      width: 0.4rem;
+      height: 0.4rem;
+      border-radius: 50%;
+      background: var(--accent-color);
+      opacity: 0.7;
+      flex-shrink: 0;
+    }
+
+    /* Caller admin panel */
+    #caller-admin {
+      margin-top: 1.25rem;
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      overflow: hidden;
+    }
+    #caller-admin > summary {
+      padding: 0.85rem 1.1rem;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: var(--text-color);
+      user-select: none;
+      list-style: none;
+    }
+    #caller-admin > summary::-webkit-details-marker { display: none; }
+    #caller-admin > summary::before { content: "▶ "; font-size: 0.65rem; color: var(--text-dim); }
+    #caller-admin[open] > summary::before { content: "▼ "; }
+    #caller-admin > summary:hover { background: var(--surface-hover); }
+    .caller-admin-body {
+      padding: 0.85rem 1.1rem;
+      border-top: 1px solid var(--border-color);
+      overflow-x: auto;
+    }
+    #caller-admin-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+      margin-bottom: 0.85rem;
+    }
+    #caller-admin-table th {
+      text-align: left;
+      padding: 0.4rem 0.6rem;
+      color: var(--text-dim);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--border-color);
+    }
+    #caller-admin-table td {
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid rgba(45, 51, 67, 0.5);
+      color: var(--text-color);
+      vertical-align: middle;
+    }
+    #caller-admin-table tr:last-child td { border-bottom: none; }
+    #caller-admin-table code {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      color: var(--accent-color);
+    }
+    .caller-badge-builtin {
+      display: inline-block;
+      font-size: 0.65rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 0.35rem;
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-dim);
+      margin-left: 0.35rem;
+    }
+    .caller-status-active { color: var(--success-color); }
+    .caller-status-revoked { color: var(--error-color); }
+    .caller-admin-actions { display: flex; gap: 0.4rem; }
+    .btn-caller-action {
+      padding: 0.3rem 0.65rem;
+      border-radius: 0.45rem;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-color);
+      font-size: 0.75rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-caller-action:hover { background: rgba(255, 255, 255, 0.08); }
+    .btn-caller-action.danger { border-color: rgba(239, 68, 68, 0.3); color: #fca5a5; }
+    .btn-caller-action.danger:hover { background: rgba(239, 68, 68, 0.12); }
+    #caller-mint {
+      padding: 0.5rem 1rem;
+      border-radius: 0.6rem;
+      border: none;
+      background: var(--accent-color);
+      color: #fff;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #caller-mint:hover { background: var(--accent-hover); }
+
+    /* Key reveal modal */
+    .key-reveal-dialog {
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 0.85rem;
+      background: rgba(15, 18, 28, 0.98);
+      color: var(--text-color);
+      padding: 0;
+      max-width: min(480px, 94vw);
+      width: 100%;
+    }
+    .key-reveal-dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+    .key-reveal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .key-reveal-head h3 { margin: 0; font-size: 0.9rem; font-weight: 700; }
+    .key-reveal-body { padding: 1rem; display: flex; flex-direction: column; gap: 0.85rem; }
+    .key-reveal-warning {
+      font-size: 0.8rem;
+      color: #fbbf24;
+      background: rgba(251, 191, 36, 0.08);
+      border: 1px solid rgba(251, 191, 36, 0.2);
+      border-radius: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      margin: 0;
+    }
+    .key-reveal-field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .key-reveal-field label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+    }
+    .key-reveal-field input {
+      width: 100%;
+      padding: 0.55rem 0.75rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.3);
+      color: #fff;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.8rem;
+      box-sizing: border-box;
+    }
+    .key-reveal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .btn-copy-key {
+      padding: 0.5rem 1rem;
+      border-radius: 0.55rem;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-color);
+      font-size: 0.8125rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-copy-key:hover { background: rgba(255, 255, 255, 0.1); }
+    .btn-key-saved {
+      padding: 0.5rem 1rem;
+      border-radius: 0.55rem;
+      border: none;
+      background: var(--success-color);
+      color: #fff;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-key-saved:hover { opacity: 0.9; }
+
+    /* Mint dialog */
+    .mint-dialog {
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 0.85rem;
+      background: rgba(15, 18, 28, 0.98);
+      color: var(--text-color);
+      padding: 0;
+      max-width: min(420px, 94vw);
+      width: 100%;
+    }
+    .mint-dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+    .mint-dialog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .mint-dialog-head h3 { margin: 0; font-size: 0.9rem; font-weight: 700; }
+    .mint-dialog-body { padding: 1rem; display: flex; flex-direction: column; gap: 0.85rem; }
+    .mint-field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .mint-field label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+    }
+    .mint-field input {
+      width: 100%;
+      padding: 0.55rem 0.75rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.3);
+      color: #fff;
+      font-size: 0.875rem;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    .mint-field input:focus { outline: 2px solid var(--accent-color); outline-offset: 1px; }
+    .mint-field-error { font-size: 0.75rem; color: var(--error-color); min-height: 1rem; }
+    .mint-dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+
     @media (max-width: 640px) {
       .spawn-row-top {
         grid-template-columns: 1fr;
@@ -899,6 +1123,27 @@
         </div>
       </div>
 
+      <details id="caller-admin">
+        <summary>Caller keys</summary>
+        <div class="caller-admin-body">
+          <table id="caller-admin-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Label</th>
+                <th>Kind</th>
+                <th>Created</th>
+                <th>Last seen</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <button type="button" id="caller-mint">Mint new caller</button>
+        </div>
+      </details>
+
       <section id="log-overview" class="overview-panel">
         <div class="overview-head">
           <div>
@@ -954,6 +1199,50 @@
     <pre id="log-view-body" class="log-view-body"></pre>
   </dialog>
 
+  <dialog id="key-reveal-dialog" class="key-reveal-dialog" aria-labelledby="key-reveal-title">
+    <div class="key-reveal-head">
+      <h3 id="key-reveal-title">New caller key</h3>
+      <button type="button" id="key-reveal-close" class="log-view-close" aria-label="Close">×</button>
+    </div>
+    <div class="key-reveal-body">
+      <p class="key-reveal-warning">Copy this key now — it will not be shown again.</p>
+      <div class="key-reveal-field">
+        <label for="key-reveal-id">Caller ID</label>
+        <input id="key-reveal-id" type="text" readonly aria-readonly="true" />
+      </div>
+      <div class="key-reveal-field">
+        <label for="key-reveal-key">Caller key (copy this now)</label>
+        <input id="key-reveal-key" type="text" readonly aria-readonly="true" />
+      </div>
+      <div class="key-reveal-actions">
+        <button type="button" id="key-reveal-copy" class="btn-copy-key">Copy to clipboard</button>
+        <button type="button" id="key-reveal-dismiss" class="btn-key-saved">I've saved the key</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="mint-dialog" class="mint-dialog" aria-labelledby="mint-dialog-title">
+    <div class="mint-dialog-head">
+      <h3 id="mint-dialog-title">Mint new caller</h3>
+      <button type="button" id="mint-dialog-close" class="log-view-close" aria-label="Close">×</button>
+    </div>
+    <div class="mint-dialog-body">
+      <div class="mint-field">
+        <label for="mint-id-input">Caller ID</label>
+        <input id="mint-id-input" type="text" placeholder="e.g. my-service" autocomplete="off" />
+        <div id="mint-id-error" class="mint-field-error"></div>
+      </div>
+      <div class="mint-field">
+        <label for="mint-label-input">Label (display name)</label>
+        <input id="mint-label-input" type="text" placeholder="e.g. My Service" maxlength="64" autocomplete="off" />
+      </div>
+      <div class="mint-dialog-actions">
+        <button type="button" id="mint-dialog-cancel" class="btn-copy-key">Cancel</button>
+        <button type="button" id="mint-dialog-submit" class="btn-key-saved">Mint</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="app.js"></script>
   <script>
     (function () {
@@ -1001,6 +1290,10 @@
       var spawnWorkspaceCloseBtn = document.getElementById("spawn-workspace-close");
       var lastBrowsePayload = null;
       var meridianRolesHeaderLink = document.getElementById("meridian-roles-header-link");
+      var callerAdminEl = document.getElementById("caller-admin");
+      var callerAdminTableEl = document.getElementById("caller-admin-table");
+      var keyRevealDialogEl = document.getElementById("key-reveal-dialog");
+      var mintDialogEl = document.getElementById("mint-dialog");
 
       function meridianRolesGuiOrigin() {
         try {
@@ -1523,11 +1816,19 @@
             : "—";
           var actualAgent = resolveActualAgent(inst) || "—";
           var currentModel = resolveCurrentModel(inst) || "Not reported";
-          
+          var lastCaller = inst.last_caller;
+          var lastCallerLabel = (lastCaller && (lastCaller.caller_label || lastCaller.caller_id)) || "Unknown";
+          var spawnedBy = inst.spawned_by;
+          var spawnedByLabel = (spawnedBy && (spawnedBy.caller_label || spawnedBy.caller_id)) || "Unknown";
+
           card.innerHTML = `
             <div class="card-head">
               <span class="thread-id">${escapeHtml(inst.thread_id)}</span>
               <div class="status-dot ${isActive ? "active" : ""}"></div>
+            </div>
+            <div class="card-caller" title="Last caller into this thread">
+              <span class="card-caller-dot"></span>
+              Last caller: <strong>${escapeHtml(lastCallerLabel)}</strong>
             </div>
             ${repoBlock}
             <div class="card-footer">
@@ -1548,6 +1849,10 @@
                 <div class="detail-item">
                   <span class="detail-label">Mode</span>
                   <span class="detail-value">${escapeHtml(inst.mode || "bridge")}</span>
+                </div>
+                <div class="detail-item span-2">
+                  <span class="detail-label">Spawned by</span>
+                  <span class="detail-value" style="font-size:0.8rem;color:var(--text-dim)">${escapeHtml(spawnedByLabel)}</span>
                 </div>
                 <div class="detail-item span-2">
                   <span class="detail-label">Attached interface</span>
@@ -1743,6 +2048,126 @@
         return div.innerHTML;
       }
 
+      function renderCallerTable(callers) {
+        if (!callerAdminTableEl) return;
+        var tbody = callerAdminTableEl.querySelector("tbody");
+        if (!tbody) return;
+        if (!callers || !callers.length) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:1rem">No callers registered.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = callers.map(function (caller) {
+          var isBuiltin = caller.caller_kind === "builtin";
+          var idEsc = escapeHtml(caller.caller_id);
+          var statusClass = caller.revoked_at ? "caller-status-revoked" : "caller-status-active";
+          var statusText = caller.revoked_at ? "Revoked" : "Active";
+          var kindCell = isBuiltin
+            ? "built-in" + '<span class="caller-badge-builtin">(built-in)</span>'
+            : escapeHtml(caller.caller_kind || "external");
+          var actionsCell = isBuiltin
+            ? '<span style="color:var(--text-dim);font-size:0.75rem">read-only</span>'
+            : '<div class="caller-admin-actions">' +
+                '<button type="button" class="btn-caller-action" data-caller-action="rotate" data-caller-id="' + idEsc + '">Rotate</button>' +
+                '<button type="button" class="btn-caller-action danger" data-caller-action="revoke" data-caller-id="' + idEsc + '">Revoke</button>' +
+              '</div>';
+          return '<tr>' +
+            '<td><code>' + idEsc + '</code></td>' +
+            '<td>' + escapeHtml(caller.caller_label || "—") + '</td>' +
+            '<td>' + kindCell + '</td>' +
+            '<td>' + escapeHtml(caller.created_at ? formatDate(caller.created_at) : "—") + '</td>' +
+            '<td>' + escapeHtml(caller.last_seen_at ? formatDate(caller.last_seen_at) : "—") + '</td>' +
+            '<td class="' + statusClass + '">' + statusText + '</td>' +
+            '<td>' + actionsCell + '</td>' +
+            '</tr>';
+        }).join("");
+      }
+
+      function showKeyReveal(callerId, callerKey) {
+        if (!keyRevealDialogEl) return;
+        var idInput = document.getElementById("key-reveal-id");
+        var keyInput = document.getElementById("key-reveal-key");
+        if (idInput) idInput.value = callerId;
+        if (keyInput) keyInput.value = callerKey;
+        if (keyRevealDialogEl.showModal) keyRevealDialogEl.showModal();
+      }
+
+      function dismissKeyReveal() {
+        var idInput = document.getElementById("key-reveal-id");
+        var keyInput = document.getElementById("key-reveal-key");
+        if (idInput) idInput.value = "";
+        if (keyInput) keyInput.value = "";
+        if (keyRevealDialogEl && keyRevealDialogEl.close) keyRevealDialogEl.close();
+      }
+
+      function doLoadCallers() {
+        if (!window.MeridianWeb.ensureToken()) return;
+        var tbody = callerAdminTableEl && callerAdminTableEl.querySelector("tbody");
+        if (tbody) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:1rem">Loading...</td></tr>';
+        }
+        window.MeridianWeb.loadCallers()
+          .then(function (body) {
+            renderCallerTable(Array.isArray(body && body.callers) ? body.callers : []);
+          })
+          .catch(function (err) {
+            if (tbody) {
+              tbody.innerHTML = '<tr><td colspan="7" style="color:var(--error-color);padding:1rem">' +
+                escapeHtml(err && err.message ? err.message : "Failed to load callers") + '</td></tr>';
+            }
+          });
+      }
+
+      function doMintCaller() {
+        var idInputEl = document.getElementById("mint-id-input");
+        var labelInputEl = document.getElementById("mint-label-input");
+        var errorEl = document.getElementById("mint-id-error");
+        var submitBtn = document.getElementById("mint-dialog-submit");
+        if (!idInputEl || !labelInputEl) return;
+        var id = idInputEl.value.trim();
+        var label = labelInputEl.value.trim();
+        if (errorEl) errorEl.textContent = "";
+        if (!/^[a-z][a-z0-9_-]*$/.test(id)) {
+          if (errorEl) errorEl.textContent = "Must start with a–z and contain only a–z, 0–9, _, -";
+          return;
+        }
+        if (submitBtn) submitBtn.disabled = true;
+        window.MeridianWeb.mintCaller(id, label || id)
+          .then(function (body) {
+            if (mintDialogEl && mintDialogEl.close) mintDialogEl.close();
+            if (idInputEl) idInputEl.value = "";
+            if (labelInputEl) labelInputEl.value = "";
+            showKeyReveal(body.caller_id, body.caller_key);
+            doLoadCallers();
+          })
+          .catch(function (err) {
+            if (errorEl) errorEl.textContent = err && err.message ? err.message : "Mint failed";
+          })
+          .then(function () {
+            if (submitBtn) submitBtn.disabled = false;
+          });
+      }
+
+      function doRotateCaller(callerId) {
+        if (!confirm("Rotate key for " + callerId + "? The current key will stop working immediately.")) return;
+        window.MeridianWeb.rotateCaller(callerId)
+          .then(function (body) {
+            showKeyReveal(callerId, body.caller_key);
+            doLoadCallers();
+          })
+          .catch(function (err) {
+            alert("Rotate failed: " + (err && err.message ? err.message : "unknown error"));
+          });
+      }
+
+      function doRevokeCaller(callerId) {
+        if (!confirm("Revoke caller " + callerId + "? This permanently disables their key.")) return;
+        window.MeridianWeb.revokeCaller(callerId)
+          .then(function () { doLoadCallers(); })
+          .catch(function (err) {
+            alert("Revoke failed: " + (err && err.message ? err.message : "unknown error"));
+          });
+      }
+
       function fetchList() {
         if (!window.MeridianWeb.ensureToken()) {
           showState("unauthorized");
@@ -1889,6 +2314,92 @@
       if (logViewCloseEl && logViewDialogEl) {
         logViewCloseEl.addEventListener("click", function () {
           logViewDialogEl.close();
+        });
+      }
+
+      // Caller admin panel — lazy-load callers on first open
+      if (callerAdminEl) {
+        callerAdminEl.addEventListener("toggle", function () {
+          if (callerAdminEl.open) doLoadCallers();
+        });
+      }
+
+      // Caller admin table — event delegation for rotate/revoke buttons
+      if (callerAdminTableEl) {
+        callerAdminTableEl.addEventListener("click", function (e) {
+          var btn = e.target.closest("[data-caller-action]");
+          if (!btn || !callerAdminTableEl.contains(btn)) return;
+          var action = btn.getAttribute("data-caller-action");
+          var callerId = btn.getAttribute("data-caller-id");
+          if (!callerId) return;
+          if (action === "rotate") doRotateCaller(callerId);
+          else if (action === "revoke") doRevokeCaller(callerId);
+        });
+      }
+
+      // Mint button → open mint dialog
+      var callerMintBtn = document.getElementById("caller-mint");
+      if (callerMintBtn) {
+        callerMintBtn.addEventListener("click", function () {
+          var idEl = document.getElementById("mint-id-input");
+          var labelEl = document.getElementById("mint-label-input");
+          var errEl = document.getElementById("mint-id-error");
+          if (idEl) idEl.value = "";
+          if (labelEl) labelEl.value = "";
+          if (errEl) errEl.textContent = "";
+          if (mintDialogEl && mintDialogEl.showModal) mintDialogEl.showModal();
+        });
+      }
+
+      // Mint dialog controls
+      var mintDialogCloseEl = document.getElementById("mint-dialog-close");
+      var mintDialogCancelEl = document.getElementById("mint-dialog-cancel");
+      var mintDialogSubmitEl = document.getElementById("mint-dialog-submit");
+      var mintIdInputEl = document.getElementById("mint-id-input");
+      if (mintDialogCloseEl) {
+        mintDialogCloseEl.addEventListener("click", function () {
+          if (mintDialogEl && mintDialogEl.close) mintDialogEl.close();
+        });
+      }
+      if (mintDialogCancelEl) {
+        mintDialogCancelEl.addEventListener("click", function () {
+          if (mintDialogEl && mintDialogEl.close) mintDialogEl.close();
+        });
+      }
+      if (mintDialogSubmitEl) {
+        mintDialogSubmitEl.addEventListener("click", doMintCaller);
+      }
+      if (mintIdInputEl) {
+        mintIdInputEl.addEventListener("input", function () {
+          var errEl = document.getElementById("mint-id-error");
+          if (!errEl) return;
+          var val = mintIdInputEl.value;
+          if (!val || /^[a-z][a-z0-9_-]*$/.test(val)) {
+            errEl.textContent = "";
+          } else {
+            errEl.textContent = "Must start with a–z and contain only a–z, 0–9, _, -";
+          }
+        });
+      }
+
+      // Key reveal modal controls
+      var keyRevealCloseEl = document.getElementById("key-reveal-close");
+      var keyRevealDismissEl = document.getElementById("key-reveal-dismiss");
+      var keyRevealCopyEl = document.getElementById("key-reveal-copy");
+      if (keyRevealCloseEl) keyRevealCloseEl.addEventListener("click", dismissKeyReveal);
+      if (keyRevealDismissEl) keyRevealDismissEl.addEventListener("click", dismissKeyReveal);
+      if (keyRevealCopyEl) {
+        keyRevealCopyEl.addEventListener("click", function () {
+          var keyInput = document.getElementById("key-reveal-key");
+          if (!keyInput || !keyInput.value) return;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(keyInput.value).then(function () {
+              keyRevealCopyEl.textContent = "Copied!";
+              setTimeout(function () { keyRevealCopyEl.textContent = "Copy to clipboard"; }, 2000);
+            }).catch(function () { keyInput.select(); });
+          } else {
+            keyInput.select();
+          }
         });
       }
 
