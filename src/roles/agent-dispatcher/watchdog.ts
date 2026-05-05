@@ -540,15 +540,32 @@ function collectCleanupBlockingThreadIds(state: DispatchThreadStateV2): Set<stri
   const ids = new Set<string>();
   for (const worker of Object.values(state.workers)) {
     const threadId = worker.thread_id?.trim();
-    if (!threadId) {
-      continue;
-    }
     if (
-      worker.status === "running"
-      || worker.status === "awaiting_validation"
-      || worker.status === "fix_requested"
+      threadId
+      && (
+        worker.status === "running"
+        || worker.status === "awaiting_validation"
+        || worker.status === "fix_requested"
+      )
     ) {
       ids.add(threadId);
+    }
+    // Validator threads are alive while the worker is awaiting_validation /
+    // fix_requested. The Hub recycles freed thread_ids, so a stale row on a
+    // terminal worker (e.g. N-07 status=completed, thread_id=codex_09) can
+    // collide with a freshly spawned validator that the lifecycle now records
+    // as `validation.validator_thread_id`. Without this guard, terminal-thread
+    // cleanup kills the active validator and the next continue tick spawns a
+    // second one (the "double validator" symptom — observed dispatcher
+    // 02972423: N-39 validator codex_09 killed mid-cycle, codex_10 respawned).
+    // Mirrors thread-id-reservation.isThreadIdReservedInLifecycleState, which
+    // already protects validator threads on the spawn-side collision check.
+    const validatorThreadId = worker.validation?.validator_thread_id?.trim();
+    if (
+      validatorThreadId
+      && (worker.status === "awaiting_validation" || worker.status === "fix_requested")
+    ) {
+      ids.add(validatorThreadId);
     }
   }
   return ids;
