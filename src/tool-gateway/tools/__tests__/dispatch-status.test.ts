@@ -377,6 +377,83 @@ describe("dispatch-status tool", () => {
     }));
   });
 
+  it("does not show a stale running PM resolver as active owner after the worker completes", async () => {
+    const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-pm-owner-");
+    tempDirectories.add(directory);
+    const planPath = `${directory}/dispatch_plan.md`;
+    const sidecarPath = `${directory}/dispatch_threads.json`;
+
+    await fs.writeFile(
+      planPath,
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 7G | BATCH-7-GATE | Dashboard privacy gate | CODEX-HIGH | N-14, N-15 | Baseline | PM resolved |",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await fs.writeFile(
+      sidecarPath,
+      `${JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-05-05T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "BATCH-7-GATE": {
+            thread_id: "codex_167",
+            trace_id: null,
+            started_at: "2026-05-05T13:44:19.465Z",
+            last_seen_at: "2026-05-05T13:50:24.783Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 2
+          }
+        },
+        pm_resolvers: [
+          {
+            thread_id: "codex_169",
+            status: "running",
+            started_at: "2026-05-05T13:46:19.384Z",
+            last_seen_at: "2026-05-05T13:46:19.384Z",
+            agent_type: "codex",
+            model_id: null,
+            mode: "bridge",
+            auto_approve: true,
+            issue: {
+              status: "manual_intervention_required",
+              worker_id: "BATCH-7-GATE",
+              message: "manual intervention required: BATCH-7-GATE requested PM resolution",
+              error: null,
+              source: "watchdog"
+            },
+            result: null,
+            error: null
+          }
+        ],
+        last_reconciled_at: null
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    await expect(buildDispatchStatusReport(planPath)).resolves.toEqual(expect.objectContaining({
+      workers: [
+        expect.objectContaining({
+          worker_id: "BATCH-7-GATE",
+          lifecycle_status: "completed",
+          active_owner_kind: null,
+          active_owner_thread_id: null
+        })
+      ]
+    }));
+  });
+
   it("does not report an old thread id as the current assignment after manual retry resets a worker to pending", async () => {
     const directory = await fs.mkdtemp("/tmp/meridian-roles-dispatch-status-");
     tempDirectories.add(directory);

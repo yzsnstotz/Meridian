@@ -2986,12 +2986,13 @@ function buildPmResolverDetail(
     ?? formatPmResolverIssueContext(entry);
   const workerId = entry.issue.worker_id ?? entry.thread_id;
   const timestamp = entry.result?.timestamp ?? entry.last_seen_at;
+  const status = resolvePmResolverDetailStatus(entry, replyContent);
 
   return {
     detail_kind: "pm_resolver",
     worker_id: `PM:${workerId}`,
     task_id: workerId,
-    status: entry.status,
+    status,
     task: `Resolve ${workerId}: ${entry.issue.status}`,
     model: "PM",
     applied_model: entry.model_id ?? entry.agent_type ?? "PM",
@@ -3022,6 +3023,27 @@ function buildPmResolverDetail(
       : null,
     validation: null
   };
+}
+
+function resolvePmResolverDetailStatus(
+  entry: PmResolverLifecycleState,
+  replyContent: string | null
+): PmResolverLifecycleState["status"] {
+  if (entry.status !== "running" || !replyContent) {
+    return entry.status;
+  }
+
+  const marker = parseMeridianStatusMarker(replyContent);
+  if (!marker || marker.role !== "pm-resolver") {
+    return entry.status;
+  }
+
+  const targetWorkerId = entry.issue.worker_id;
+  if (targetWorkerId && marker.worker_id !== targetWorkerId) {
+    return entry.status;
+  }
+
+  return marker.outcome === "resolved" ? "completed" : "failed";
 }
 
 function buildRecoveredPmResolverDetails(

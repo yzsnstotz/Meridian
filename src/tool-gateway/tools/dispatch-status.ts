@@ -293,8 +293,12 @@ function resolveActiveOwner(
   displayLifecycleStatus: string | null,
   lifecycleState: DispatchThreadStateV2
 ): { kind: DispatchActiveOwnerKind | null; thread_id: string | null } {
-  // PM resolver wins if there is a running entry targeting this worker —
-  // PM owns the thread until it terminates regardless of lifecycle status.
+  if (displayLifecycleStatus === "completed" || displayLifecycleStatus === "skipped") {
+    return { kind: null, thread_id: null };
+  }
+
+  // PM resolver wins if there is a running entry targeting a non-terminal
+  // worker. Terminal rows ignore stale PM metadata so they do not look active.
   const runningPm = (lifecycleState.pm_resolvers ?? []).find(
     (entry) => entry.status === "running" && entry.issue?.worker_id === workerId
   );
