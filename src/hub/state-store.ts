@@ -4,18 +4,19 @@ import path from "node:path";
 import { z } from "zod";
 
 import { isApprovalPrompt, normalizeApprovalAction, parseApprovalSummaryFromRawContent } from "../shared/approval";
-import { AgentInstanceSchema, type AgentInstance } from "../types";
+import { AgentInstanceSchema, CallerAuthoritySchema, type AgentInstance } from "../types";
 
 export const CallerRecordSchema = z.object({
   caller_id: z.string().min(1),
   caller_label: z.string().min(1),
   caller_kind: z.enum(["builtin", "external"]),
+  caller_authority: CallerAuthoritySchema.default("write"),
   key_hash: z.string().min(1),
   created_at: z.string().datetime(),
   last_seen_at: z.string().datetime().nullable(),
   revoked_at: z.string().datetime().nullable()
 });
-export type CallerRecord = z.infer<typeof CallerRecordSchema>;
+export type CallerRecord = z.input<typeof CallerRecordSchema>;
 
 const PersistedPushSubscriptionSchema = z.object({
   session_id: z.string().min(1),
@@ -276,6 +277,7 @@ function seedCallersFromLegacyEnv(rawJson: string, nowIso: string): CallerRecord
     caller_id: entry.caller_id,
     caller_label: entry.caller_label,
     caller_kind: "external" as const,
+    caller_authority: "write" as const,
     key_hash: crypto.createHash("sha256").update(entry.caller_key + entry.caller_id).digest("hex"),
     created_at: nowIso,
     last_seen_at: null,

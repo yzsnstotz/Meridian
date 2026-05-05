@@ -174,6 +174,19 @@
     });
   }
 
+  function updateCallerAuthority(callerId, authority) {
+    return fetchWithAuth("/api/callers/" + encodeURIComponent(callerId) + "/authority", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caller_authority: authority })
+    }).then(function (res) {
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+        return body;
+      });
+    });
+  }
+
   function revokeCaller(callerId) {
     return fetchWithAuth("/api/callers/" + encodeURIComponent(callerId), {
       method: "DELETE"
@@ -199,6 +212,7 @@
     loadCallers: loadCallers,
     mintCaller: mintCaller,
     rotateCaller: rotateCaller,
+    updateCallerAuthority: updateCallerAuthority,
     revokeCaller: revokeCaller
   };
 })();

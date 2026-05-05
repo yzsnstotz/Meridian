@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { type CallerRecord } from "./state-store";
+import { type CallerAuthority } from "../types";
 
 export type { CallerRecord };
 
@@ -55,7 +56,7 @@ export class CallerRegistry {
     return record ? cloneRecord(record) : null;
   }
 
-  mint(args: { caller_id: string; caller_label: string; kind: "external" }): MintResult {
+  mint(args: { caller_id: string; caller_label: string; kind: "external"; authority?: CallerAuthority }): MintResult {
     if (this.records.has(args.caller_id)) {
       throw new Error(`caller_already_exists: ${args.caller_id}`);
     }
@@ -64,6 +65,7 @@ export class CallerRegistry {
       caller_id: args.caller_id,
       caller_label: args.caller_label,
       caller_kind: "external",
+      caller_authority: args.authority ?? "write",
       key_hash: computeKeyHash(cleartextKey, args.caller_id),
       created_at: this.nowIso(),
       last_seen_at: null,
@@ -97,6 +99,16 @@ export class CallerRegistry {
     return { revoked_at: revokedAt };
   }
 
+  updateAuthority(callerId: string, authority: CallerAuthority): CallerRecord {
+    const existing = this.records.get(callerId);
+    if (!existing) {
+      throw new Error(`caller_unknown: ${callerId}`);
+    }
+    existing.caller_authority = authority;
+    this.persist();
+    return cloneRecord(existing);
+  }
+
   verify(callerId: string, cleartextKey: string): CallerRecord | null {
     const record = this.records.get(callerId);
     if (!record) {
@@ -120,6 +132,7 @@ export class CallerRegistry {
   ensureBuiltin(args: {
     caller_id: string;
     caller_label: string;
+    authority?: CallerAuthority;
     deriveKey: () => string;
   }): CallerRecord {
     const existing = this.records.get(args.caller_id);
@@ -137,6 +150,11 @@ export class CallerRegistry {
         existing.caller_label = args.caller_label;
         mutated = true;
       }
+      const nextAuthority = args.authority ?? (args.caller_id === "meridian-admin" ? "admin" : "write");
+      if (existing.caller_authority !== nextAuthority) {
+        existing.caller_authority = nextAuthority;
+        mutated = true;
+      }
       if (existing.revoked_at !== null) {
         existing.revoked_at = null;
         mutated = true;
@@ -150,6 +168,7 @@ export class CallerRegistry {
       caller_id: args.caller_id,
       caller_label: args.caller_label,
       caller_kind: "builtin",
+      caller_authority: args.authority ?? (args.caller_id === "meridian-admin" ? "admin" : "write"),
       key_hash: computeKeyHash(args.deriveKey(), args.caller_id),
       created_at: this.nowIso(),
       last_seen_at: null,

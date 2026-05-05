@@ -871,7 +871,7 @@
     }
     .caller-status-active { color: var(--success-color); }
     .caller-status-revoked { color: var(--error-color); }
-    .caller-admin-actions { display: flex; gap: 0.4rem; }
+    .caller-admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
     .btn-caller-action {
       padding: 0.3rem 0.65rem;
       border-radius: 0.45rem;
@@ -883,6 +883,7 @@
       font-family: inherit;
     }
     .btn-caller-action:hover { background: rgba(255, 255, 255, 0.08); }
+    .btn-caller-action:disabled { opacity: 0.45; cursor: not-allowed; }
     .btn-caller-action.danger { border-color: rgba(239, 68, 68, 0.3); color: #fca5a5; }
     .btn-caller-action.danger:hover { background: rgba(239, 68, 68, 0.12); }
     #caller-mint {
@@ -1132,6 +1133,7 @@
                 <th>ID</th>
                 <th>Label</th>
                 <th>Kind</th>
+                <th>Authority</th>
                 <th>Created</th>
                 <th>Last seen</th>
                 <th>Status</th>
@@ -1205,13 +1207,13 @@
       <button type="button" id="key-reveal-close" class="log-view-close" aria-label="Close">×</button>
     </div>
     <div class="key-reveal-body">
-      <p class="key-reveal-warning">Copy this key now — it will not be shown again.</p>
+      <p id="key-reveal-warning" class="key-reveal-warning">Copy this key now — it will not be shown again.</p>
       <div class="key-reveal-field">
         <label for="key-reveal-id">Caller ID</label>
         <input id="key-reveal-id" type="text" readonly aria-readonly="true" />
       </div>
       <div class="key-reveal-field">
-        <label for="key-reveal-key">Caller key (copy this now)</label>
+        <label id="key-reveal-key-label" for="key-reveal-key">Caller key (copy this now)</label>
         <input id="key-reveal-key" type="text" readonly aria-readonly="true" />
       </div>
       <div class="key-reveal-actions">
@@ -2053,27 +2055,35 @@
         var tbody = callerAdminTableEl.querySelector("tbody");
         if (!tbody) return;
         if (!callers || !callers.length) {
-          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:1rem">No callers registered.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-dim);padding:1rem">No callers registered.</td></tr>';
           return;
         }
         tbody.innerHTML = callers.map(function (caller) {
           var isBuiltin = caller.caller_kind === "builtin";
           var idEsc = escapeHtml(caller.caller_id);
+          var authority = caller.caller_authority || (caller.caller_id === "meridian-admin" ? "admin" : "write");
+          var authorityEsc = escapeHtml(authority);
           var statusClass = caller.revoked_at ? "caller-status-revoked" : "caller-status-active";
           var statusText = caller.revoked_at ? "Revoked" : "Active";
           var kindCell = isBuiltin
             ? "built-in" + '<span class="caller-badge-builtin">(built-in)</span>'
             : escapeHtml(caller.caller_kind || "external");
           var actionsCell = isBuiltin
-            ? '<span style="color:var(--text-dim);font-size:0.75rem">read-only</span>'
+            ? '<div class="caller-admin-actions">' +
+                '<button type="button" class="btn-caller-action" data-caller-action="view" data-caller-id="' + idEsc + '">View</button>' +
+                '<span style="color:var(--text-dim);font-size:0.75rem">built-in</span>' +
+              '</div>'
             : '<div class="caller-admin-actions">' +
+                '<button type="button" class="btn-caller-action" data-caller-action="view" data-caller-id="' + idEsc + '">View</button>' +
                 '<button type="button" class="btn-caller-action" data-caller-action="rotate" data-caller-id="' + idEsc + '">Rotate</button>' +
+                '<button type="button" class="btn-caller-action" data-caller-action="authority" data-caller-id="' + idEsc + '" data-caller-authority="' + authorityEsc + '">Authority</button>' +
                 '<button type="button" class="btn-caller-action danger" data-caller-action="revoke" data-caller-id="' + idEsc + '">Revoke</button>' +
               '</div>';
           return '<tr>' +
             '<td><code>' + idEsc + '</code></td>' +
             '<td>' + escapeHtml(caller.caller_label || "—") + '</td>' +
             '<td>' + kindCell + '</td>' +
+            '<td><code>' + authorityEsc + '</code></td>' +
             '<td>' + escapeHtml(caller.created_at ? formatDate(caller.created_at) : "—") + '</td>' +
             '<td>' + escapeHtml(caller.last_seen_at ? formatDate(caller.last_seen_at) : "—") + '</td>' +
             '<td class="' + statusClass + '">' + statusText + '</td>' +
@@ -2082,20 +2092,35 @@
         }).join("");
       }
 
-      function showKeyReveal(callerId, callerKey) {
+      function showKeyReveal(callerId, callerKey, options) {
         if (!keyRevealDialogEl) return;
+        var unavailable = options && options.unavailable;
+        var titleEl = document.getElementById("key-reveal-title");
+        var warningEl = document.getElementById("key-reveal-warning");
+        var keyLabelEl = document.getElementById("key-reveal-key-label");
         var idInput = document.getElementById("key-reveal-id");
         var keyInput = document.getElementById("key-reveal-key");
+        var copyBtn = document.getElementById("key-reveal-copy");
+        if (titleEl) titleEl.textContent = unavailable ? "Caller key" : "New caller key";
+        if (warningEl) {
+          warningEl.textContent = unavailable
+            ? "Existing keys are stored as unrecoverable hashes. Rotate this caller to reveal a replacement key."
+            : "Copy this key now — it will not be shown again.";
+        }
+        if (keyLabelEl) keyLabelEl.textContent = unavailable ? "Caller key" : "Caller key (copy this now)";
         if (idInput) idInput.value = callerId;
-        if (keyInput) keyInput.value = callerKey;
+        if (keyInput) keyInput.value = unavailable ? "(not stored; rotate to create a visible replacement)" : callerKey;
+        if (copyBtn) copyBtn.disabled = !!unavailable;
         if (keyRevealDialogEl.showModal) keyRevealDialogEl.showModal();
       }
 
       function dismissKeyReveal() {
         var idInput = document.getElementById("key-reveal-id");
         var keyInput = document.getElementById("key-reveal-key");
+        var copyBtn = document.getElementById("key-reveal-copy");
         if (idInput) idInput.value = "";
         if (keyInput) keyInput.value = "";
+        if (copyBtn) copyBtn.disabled = false;
         if (keyRevealDialogEl && keyRevealDialogEl.close) keyRevealDialogEl.close();
       }
 
@@ -2103,7 +2128,7 @@
         if (!window.MeridianWeb.ensureToken()) return;
         var tbody = callerAdminTableEl && callerAdminTableEl.querySelector("tbody");
         if (tbody) {
-          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:1rem">Loading...</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-dim);padding:1rem">Loading...</td></tr>';
         }
         window.MeridianWeb.loadCallers()
           .then(function (body) {
@@ -2111,10 +2136,14 @@
           })
           .catch(function (err) {
             if (tbody) {
-              tbody.innerHTML = '<tr><td colspan="7" style="color:var(--error-color);padding:1rem">' +
+              tbody.innerHTML = '<tr><td colspan="8" style="color:var(--error-color);padding:1rem">' +
                 escapeHtml(err && err.message ? err.message : "Failed to load callers") + '</td></tr>';
             }
           });
+      }
+
+      function doViewCallerKey(callerId) {
+        showKeyReveal(callerId, "", { unavailable: true });
       }
 
       function doMintCaller() {
@@ -2156,6 +2185,21 @@
           })
           .catch(function (err) {
             alert("Rotate failed: " + (err && err.message ? err.message : "unknown error"));
+          });
+      }
+
+      function doUpdateCallerAuthority(callerId, currentAuthority) {
+        var nextAuthority = prompt("Set authority for " + callerId + " (read, write, admin)", currentAuthority || "write");
+        if (nextAuthority == null) return;
+        nextAuthority = nextAuthority.trim().toLowerCase();
+        if (!/^(read|write|admin)$/.test(nextAuthority)) {
+          alert("Authority must be read, write, or admin.");
+          return;
+        }
+        window.MeridianWeb.updateCallerAuthority(callerId, nextAuthority)
+          .then(function () { doLoadCallers(); })
+          .catch(function (err) {
+            alert("Authority update failed: " + (err && err.message ? err.message : "unknown error"));
           });
       }
 
@@ -2332,7 +2376,9 @@
           var action = btn.getAttribute("data-caller-action");
           var callerId = btn.getAttribute("data-caller-id");
           if (!callerId) return;
-          if (action === "rotate") doRotateCaller(callerId);
+          if (action === "view") doViewCallerKey(callerId);
+          else if (action === "rotate") doRotateCaller(callerId);
+          else if (action === "authority") doUpdateCallerAuthority(callerId, btn.getAttribute("data-caller-authority") || "write");
           else if (action === "revoke") doRevokeCaller(callerId);
         });
       }

@@ -9,6 +9,7 @@ type MeridianWebFull = {
   loadCallers: () => Promise<unknown>;
   mintCaller: (id: string, label: string) => Promise<unknown>;
   rotateCaller: (id: string) => Promise<unknown>;
+  updateCallerAuthority: (id: string, authority: string) => Promise<unknown>;
   revokeCaller: (id: string) => Promise<unknown>;
 };
 
@@ -156,11 +157,12 @@ function createCallerApiHarness(token: string): {
   };
 }
 
-test("MeridianWeb exposes loadCallers, mintCaller, rotateCaller, revokeCaller", () => {
+test("MeridianWeb exposes loadCallers, mintCaller, rotateCaller, updateCallerAuthority, revokeCaller", () => {
   const { mw } = createCallerApiHarness("tok");
   assert.equal(typeof mw.loadCallers, "function");
   assert.equal(typeof mw.mintCaller, "function");
   assert.equal(typeof mw.rotateCaller, "function");
+  assert.equal(typeof mw.updateCallerAuthority, "function");
   assert.equal(typeof mw.revokeCaller, "function");
 });
 
@@ -192,6 +194,17 @@ test("rotateCaller posts to /api/callers/:id/rotate with auth header", async () 
   assert.match(captured[0]!.url, /\/api\/callers\/my-service\/rotate$/);
   assert.equal(captured[0]!.method, "POST");
   assert.equal(captured[0]!.headers["Authorization"], "Bearer mytoken");
+});
+
+test("updateCallerAuthority patches /api/callers/:id/authority with auth header", async () => {
+  const { mw, captured } = createCallerApiHarness("mytoken");
+  await mw.updateCallerAuthority("my-service", "read");
+  assert.equal(captured.length, 1);
+  assert.match(captured[0]!.url, /\/api\/callers\/my-service\/authority$/);
+  assert.equal(captured[0]!.method, "PATCH");
+  assert.equal(captured[0]!.headers["Authorization"], "Bearer mytoken");
+  const sent = JSON.parse(captured[0]!.body ?? "{}");
+  assert.equal(sent.caller_authority, "read");
 });
 
 test("revokeCaller sends DELETE to /api/callers/:id with auth header", async () => {

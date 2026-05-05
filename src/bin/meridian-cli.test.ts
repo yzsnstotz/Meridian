@@ -558,6 +558,7 @@ test("runCli caller list shows caller table in human format", async () => {
           caller_id: "test-caller",
           caller_label: "Test Caller",
           caller_kind: "external",
+          caller_authority: "write",
           created_at: "2026-05-05T00:00:00.000Z",
           last_seen_at: null,
           revoked_at: null
@@ -582,6 +583,7 @@ test("runCli caller list --json emits raw API response", async () => {
       caller_id: "test-caller",
       caller_label: "Test Caller",
       caller_kind: "external",
+      caller_authority: "write",
       created_at: "2026-05-05T00:00:00.000Z",
       last_seen_at: null,
       revoked_at: null

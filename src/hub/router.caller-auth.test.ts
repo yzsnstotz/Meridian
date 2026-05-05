@@ -30,7 +30,7 @@ interface Harness {
   router: HubRouter;
   statePath: string;
   cleanup: () => void;
-  mintCaller: (callerId: string, opts?: { kind?: "builtin" | "external"; revoked?: boolean; label?: string }) => string;
+  mintCaller: (callerId: string, opts?: { kind?: "builtin" | "external"; revoked?: boolean; label?: string; authority?: "read" | "write" | "admin" }) => string;
 }
 
 async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harness> {
@@ -42,7 +42,7 @@ async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harnes
 
   const mintCaller = (
     callerId: string,
-    opts: { kind?: "builtin" | "external"; revoked?: boolean; label?: string } = {}
+    opts: { kind?: "builtin" | "external"; revoked?: boolean; label?: string; authority?: "read" | "write" | "admin" } = {}
   ): string => {
     const registry = router.getCallerRegistry();
     if (!registry) throw new Error("registry_unavailable");
@@ -51,6 +51,7 @@ async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harnes
       registry.ensureBuiltin({
         caller_id: callerId,
         caller_label: opts.label ?? callerId,
+        authority: opts.authority,
         deriveKey: () => cleartextKey
       });
       if (opts.revoked) {
@@ -58,7 +59,12 @@ async function setupHarness(initialCallers: CallerRecord[] = []): Promise<Harnes
       }
       return cleartextKey;
     }
-    const minted = registry.mint({ caller_id: callerId, caller_label: opts.label ?? callerId, kind: "external" });
+    const minted = registry.mint({
+      caller_id: callerId,
+      caller_label: opts.label ?? callerId,
+      kind: "external",
+      authority: opts.authority
+    });
     if (opts.revoked) {
       registry.revoke(callerId);
     }
@@ -195,6 +201,46 @@ test("admin gate: non-admin caller calling register_caller → caller_not_author
     );
     assert.equal(result.status, "error");
     assert.equal(result.content, "caller_not_authorized_for_intent");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authority gate: read caller can list but cannot spawn", async () => {
+  const harness = await setupHarness();
+  try {
+    const cleartextKey = harness.mintCaller("read-svc", { kind: "external", authority: "read" });
+    const listResult = await harness.router.route(
+      baseMessage({ intent: "list", payload: { content: "", attachments: [] } }),
+      { caller_id: "read-svc", caller_key: cleartextKey }
+    );
+    assert.notEqual(listResult.status, "error");
+
+    const spawnResult = await harness.router.route(
+      baseMessage({ intent: "spawn", payload: { content: "", attachments: [] }, target: "codex" }),
+      { caller_id: "read-svc", caller_key: cleartextKey }
+    );
+    assert.equal(spawnResult.status, "error");
+    assert.equal(spawnResult.content, "caller_not_authorized_for_intent");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("authority gate: admin authority can update caller authority", async () => {
+  const harness = await setupHarness();
+  try {
+    const adminKey = harness.mintCaller("admin-svc", { kind: "external", authority: "admin" });
+    harness.mintCaller("target-svc", { kind: "external", authority: "write" });
+    const result = await harness.router.route(
+      baseMessage({
+        intent: "update_caller_authority",
+        payload: { content: JSON.stringify({ caller_id: "target-svc", caller_authority: "read" }), attachments: [] }
+      }),
+      { caller_id: "admin-svc", caller_key: adminKey }
+    );
+    assert.equal(result.status, "success");
+    assert.equal(harness.router.getCallerRegistry()?.get("target-svc")?.caller_authority, "read");
   } finally {
     harness.cleanup();
   }

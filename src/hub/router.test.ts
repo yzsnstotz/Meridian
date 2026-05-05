@@ -405,7 +405,16 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
   assert.equal(first.content, "first answer");
   assert.equal(connectCount, 0);
   assert.deepEqual(spawnCalls[0], {
-    args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"', "--sandbox", "read-only"],
+    args: [
+      "codex",
+      "exec",
+      "--json",
+      "-c",
+      'model_reasoning_effort="xhigh"',
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check"
+    ],
     prompt: "hello"
   });
   assert.equal(registry.get("codex_stream_01")?.codexSessionId, "codex-session-123");
@@ -434,7 +443,8 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
       "-c",
       'model_reasoning_effort="xhigh"',
       "--sandbox",
-      "read-only"
+      "read-only",
+      "--skip-git-repo-check"
     ],
     prompt: "next"
   });
@@ -577,11 +587,29 @@ test("HubRouter runs stateless_call Codex threads without resuming prior exec se
   assert.equal(connectCount, 0);
   assert.deepEqual(spawnCalls, [
     {
-      args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"', "--sandbox", "read-only"],
+      args: [
+        "codex",
+        "exec",
+        "--json",
+        "-c",
+        'model_reasoning_effort="xhigh"',
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check"
+      ],
       prompt: "classify A"
     },
     {
-      args: ["codex", "exec", "--json", "-c", 'model_reasoning_effort="xhigh"', "--sandbox", "read-only"],
+      args: [
+        "codex",
+        "exec",
+        "--json",
+        "-c",
+        'model_reasoning_effort="xhigh"',
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check"
+      ],
       prompt: "classify B"
     }
   ]);

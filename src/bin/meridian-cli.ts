@@ -752,7 +752,7 @@ async function handleCallerList(args: string[], deps: CliDependencies): Promise<
     return;
   }
 
-  const header = `${"ID".padEnd(24)} ${"LABEL".padEnd(24)} ${"KIND".padEnd(10)} ${"CREATED".padEnd(26)} ${"LAST_SEEN".padEnd(26)} STATUS`;
+  const header = `${"ID".padEnd(24)} ${"LABEL".padEnd(24)} ${"KIND".padEnd(10)} ${"AUTHORITY".padEnd(10)} ${"CREATED".padEnd(26)} ${"LAST_SEEN".padEnd(26)} STATUS`;
   hint(deps, header);
   hint(deps, "-".repeat(120));
 
@@ -760,10 +760,11 @@ async function handleCallerList(args: string[], deps: CliDependencies): Promise<
     const id = String(caller.caller_id ?? "").padEnd(24);
     const label = String(caller.caller_label ?? "").padEnd(24);
     const kind = String(caller.caller_kind ?? "").padEnd(10);
+    const authority = String(caller.caller_authority ?? "write").padEnd(10);
     const created = String(caller.created_at ?? "").padEnd(26);
     const lastSeen = String(caller.last_seen_at ?? "(never)").padEnd(26);
     const status = caller.revoked_at ? "revoked" : "active";
-    hint(deps, `${id} ${label} ${kind} ${created} ${lastSeen} ${status}`);
+    hint(deps, `${id} ${label} ${kind} ${authority} ${created} ${lastSeen} ${status}`);
   }
 }
 

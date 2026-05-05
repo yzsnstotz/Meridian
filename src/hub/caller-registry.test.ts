@@ -39,6 +39,7 @@ test("mint creates an external record and returns the cleartext key once", () =>
   assert.equal(cleartextKey.length, 64);
   assert.equal(cleartextKey, "ab".repeat(32));
   assert.equal(record.caller_kind, "external");
+  assert.equal(record.caller_authority, "write");
   assert.equal(record.caller_id, "ext-1");
   assert.equal(record.caller_label, "External 1");
   assert.equal(record.key_hash, expectedKeyHash(cleartextKey, "ext-1"));
@@ -47,6 +48,18 @@ test("mint creates an external record and returns the cleartext key once", () =>
   assert.equal(record.revoked_at, null);
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0]?.[0]?.caller_id, "ext-1");
+});
+
+test("updateAuthority changes a caller authority and persists the record", () => {
+  const persisted: CallerRecord[][] = [];
+  const registry = new CallerRegistry({ persist: (records) => persisted.push(records) });
+  registry.mint({ caller_id: "ext-auth", caller_label: "External Auth", kind: "external" });
+
+  const updated = registry.updateAuthority("ext-auth", "read");
+
+  assert.equal(updated.caller_authority, "read");
+  assert.equal(registry.get("ext-auth")?.caller_authority, "read");
+  assert.equal(persisted.at(-1)?.find((record) => record.caller_id === "ext-auth")?.caller_authority, "read");
 });
 
 test("mint throws when an id already exists (regardless of kind)", () => {
