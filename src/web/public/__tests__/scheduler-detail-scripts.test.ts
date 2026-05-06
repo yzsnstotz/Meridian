@@ -422,6 +422,61 @@ describe("scheduler detail public scripts", () => {
     });
   });
 
+  it("hides dispatcher continuation when an active role is idle at a human gate", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const context = vm.createContext({
+      console,
+      document: {
+        body: { dataset: { page: "test" } },
+        addEventListener: () => undefined,
+        getElementById: () => null,
+        querySelectorAll: () => []
+      },
+      fetch: async () => jsonResponse({}),
+      setInterval: () => undefined,
+      URLSearchParams,
+      window: {
+        location: {
+          pathname: "/role/agent-dispatcher-test",
+          search: ""
+        }
+      }
+    });
+
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const controls = vm.runInContext(`resolveDispatcherDetailControls({
+      status: "active",
+      dispatcher_thread_id: "",
+      continue_worker: null,
+      dispatch_details: [],
+      dispatch_plan: {
+        rows: [
+          {
+            worker: "V-01-B",
+            status: "⬜",
+            model: "HUMAN"
+          },
+          {
+            worker: "N-16",
+            status: "⬜",
+            model: "CODEX-XHIGH"
+          }
+        ]
+      }
+    })`, context) as {
+      showContinue: boolean;
+      showLifecycle: boolean;
+      showStartHub: boolean;
+    };
+
+    expect(controls).toMatchObject({
+      showContinue: false,
+      showLifecycle: false,
+      showStartHub: false
+    });
+  });
+
   it("exposes validator threshold_type controls in dispatcher creation and config editing", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const indexHtml = await fs.readFile(path.join(publicDir, "index.html"), "utf8");

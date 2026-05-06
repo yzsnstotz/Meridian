@@ -1122,6 +1122,7 @@ async function setupDashboard() {
               class="primary-button"
               data-dispatcher-id="${escapeHtml(detail.thread_id)}"
               data-dispatcher-action="start-hub"
+              ${control.showStartHub ? "" : "hidden"}
             >Start hub session</button>
             <button
               type="button"
@@ -1538,6 +1539,9 @@ async function setupRoleDetail() {
         continueHubBtn.textContent = dispatcherControls.continueLabel;
         continueHubBtn.disabled = dispatcherControls.continueDisabled;
       }
+      if (startHubBtn) {
+        startHubBtn.hidden = !dispatcherControls.showStartHub;
+      }
       if (lifecycleHubBtn) {
         lifecycleHubBtn.hidden = !dispatcherControls.showLifecycle;
         lifecycleHubBtn.textContent = dispatcherControls.lifecycleLabel;
@@ -1553,7 +1557,9 @@ async function setupRoleDetail() {
               `/api/agent-dispatcher/${encodeURIComponent(threadId)}/start-hub`,
               { method: "POST" }
             );
-            startHubFeedback.textContent = `Hub session started (${started.dispatcher_thread_id}).`;
+            startHubFeedback.textContent = started.status === "still_blocked"
+              ? formatContinueResult(started)
+              : `Hub session started (${started.dispatcher_thread_id}).`;
             await render();
           } catch (error) {
             startHubFeedback.textContent = getErrorMessage(error);
@@ -3111,32 +3117,37 @@ function resolveDispatcherCardControl(detail) {
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
   const validationWorker = resolveValidationContinueWorker(detail);
+  const showStartHub = status === "needs_reactivation" || hasLiveThread;
 
   if (isTerminalDispatcherStatus(status)) {
-    return { action: "continue", label: formatTerminalDispatcherStatus(status), disabled: true };
+    return { action: "continue", label: formatTerminalDispatcherStatus(status), disabled: true, showStartHub: false };
   }
 
   if (liveWorker) {
-    return { action: "continue", label: "Working", disabled: true };
+    return { action: "continue", label: "Working", disabled: true, showStartHub };
   }
 
   if (validationWorker) {
-    return { action: "continue", label: "Continue", disabled: false };
+    return { action: "continue", label: "Continue", disabled: false, showStartHub };
   }
 
   if (recoverableWorker) {
-    return { action: "continue", label: "Continue", disabled: false };
+    return { action: "continue", label: "Continue", disabled: false, showStartHub };
   }
 
   if (status === "paused" && hasLiveThread) {
-    return { action: "resume", label: "Resume", disabled: false };
+    return { action: "resume", label: "Resume", disabled: false, showStartHub };
   }
 
-  if (!hasLiveThread || status === "needs_reactivation") {
-    return { action: "continue", label: "Continue", disabled: false };
+  if (status === "needs_reactivation") {
+    return { action: "continue", label: "Continue", disabled: false, showStartHub };
   }
 
-  return { action: "pause", label: "Pause", disabled: false };
+  if (!hasLiveThread) {
+    return { action: "continue", label: "Idle", disabled: true, showStartHub: false };
+  }
+
+  return { action: "pause", label: "Pause", disabled: false, showStartHub };
 }
 
 function resolveDispatcherDetailControls(detail) {
@@ -3145,6 +3156,7 @@ function resolveDispatcherDetailControls(detail) {
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
   const validationWorker = resolveValidationContinueWorker(detail);
+  const showStartHub = status === "needs_reactivation" || hasLiveThread;
 
   // Pause/Resume targets the dispatcher session itself — independent of worker
   // state. Whenever the dispatcher has a live hub thread and is not terminal,
@@ -3158,6 +3170,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: formatTerminalDispatcherStatus(status),
       continueDisabled: true,
+      showStartHub: false,
       ...lifecycle
     };
   }
@@ -3167,6 +3180,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Working",
       continueDisabled: true,
+      showStartHub,
       ...lifecycle
     };
   }
@@ -3176,6 +3190,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Continue",
       continueDisabled: false,
+      showStartHub,
       ...lifecycle
     };
   }
@@ -3185,15 +3200,17 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: true,
       continueLabel: "Continue",
       continueDisabled: false,
+      showStartHub,
       ...lifecycle
     };
   }
 
-  if (!hasLiveThread || status === "needs_reactivation") {
+  if (status === "needs_reactivation") {
     return {
       showContinue: true,
       continueLabel: "Continue",
       continueDisabled: false,
+      showStartHub,
       ...lifecycle
     };
   }
@@ -3203,6 +3220,7 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: false,
       continueLabel: "Continue",
       continueDisabled: false,
+      showStartHub,
       ...lifecycle
     };
   }
@@ -3211,6 +3229,7 @@ function resolveDispatcherDetailControls(detail) {
     showContinue: false,
     continueLabel: "Continue",
     continueDisabled: false,
+    showStartHub,
     ...lifecycle
   };
 }
