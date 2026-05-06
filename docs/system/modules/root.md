@@ -79,7 +79,7 @@
 | `LOG_SESSION_FILE_MAX_BYTES` | `LOG_SESSION_FILE_MAX_BYTES` | `positive int` | `10485760` | Trim session logs after 10 MiB. |
 | `LOG_SESSION_FILE_KEEP_BYTES` | `LOG_SESSION_FILE_KEEP_BYTES` | `positive int` | `1048576` | Keep the last 1 MiB of an oversized session log. |
 | `LOG_SESSION_FILE_MAX_AGE_HOURS` | `LOG_SESSION_FILE_MAX_AGE_HOURS` | `positive int` | `168` | Remove session logs older than 7 days. |
-| `MERIDIAN_STATE_PATH` | `MERIDIAN_STATE_PATH` | `string` | `/tmp/meridian-state.json` | JSON state-store path. |
+| `MERIDIAN_STATE_PATH` | `MERIDIAN_STATE_PATH` | `string` | `.meridian/state/hub-state.json` | JSON state-store path. Keep this outside `/tmp` so caller registry records survive normal restarts. The legacy `/tmp/meridian-state.json` value is normalized to this durable default. |
 | `AGENT_WORKDIR` | `AGENT_WORKDIR` | `string` | `DEFAULT_AGENT_WORKDIR` | Default agent spawn root resolved from `process.cwd()/..`. |
 | `COORDINATOR_SOCKET_PATH` | `COORDINATOR_SOCKET_PATH` | `string` | `""` | Empty string disables coordinator socket wiring. |
 | `COORDINATOR_INTENTS` | `COORDINATOR_INTENTS` | `csv -> string[]` | `[]` | Splits, trims, and filters comma-separated intent names. |

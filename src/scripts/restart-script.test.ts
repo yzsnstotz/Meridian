@@ -40,6 +40,18 @@ test("restart.sh stops relative node dist entrypoints launched from the repo roo
   assert.match(script, /cwd/);
 });
 
+test("restart.sh preserves persisted hub state unless reset-state is explicit", async () => {
+  const script = await readRestartScript();
+
+  assert.match(script, /RESET_STATE=0/);
+  assert.match(script, /--reset-state/);
+  assert.match(script, /LEGACY_MERIDIAN_STATE_PATH/);
+  assert.match(script, /Migrating legacy temp hub state/);
+  assert.match(script, /Preserving persisted hub state/);
+  assert.match(script, /Resetting persisted hub state/);
+  assert.doesNotMatch(script, /rm -f "\$\{MERIDIAN_STATE_PATH\}" >\/dev\/null 2>&1 \|\| true\nfi\n\nif start_with_pm2/);
+});
+
 test("terminate.sh stops Meridian and meridian-roles without starting services", async () => {
   const script = await readTerminateScript();
 
@@ -48,4 +60,14 @@ test("terminate.sh stops Meridian and meridian-roles without starting services",
   assert.match(script, /kill_runtime_service "web-gui"/);
   assert.doesNotMatch(script, /start_with_pm2/);
   assert.doesNotMatch(script, /start_with_npm/);
+});
+
+test("terminate.sh preserves persisted hub state unless reset-state is explicit", async () => {
+  const script = await readTerminateScript();
+
+  assert.match(script, /RESET_STATE=0/);
+  assert.match(script, /--reset-state/);
+  assert.match(script, /LEGACY_MERIDIAN_STATE_PATH/);
+  assert.match(script, /preserve persisted hub state/);
+  assert.match(script, /reset persisted hub state/);
 });
