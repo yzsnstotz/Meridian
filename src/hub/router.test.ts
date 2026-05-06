@@ -1245,6 +1245,62 @@ test("HubRouter list omits stopped instances", async () => {
   assert.doesNotMatch(result.content, /codex_01/);
 });
 
+test("HubRouter list keeps errored stateless calls visible", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_session_error_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    socket_path: "http://127.0.0.1:61011",
+    pid: 10,
+    tmux_pane: "agent_codex_session_error_01",
+    status: "error",
+    created_at: new Date().toISOString()
+  });
+  registry.register({
+    thread_id: "codex_stateless_error_01",
+    agent_type: "codex",
+    mode: "stateless_call",
+    socket_path: "stateless:codex_stateless_error_01",
+    pid: 0,
+    tmux_pane: null,
+    status: "error",
+    sandbox_mode: "read-only",
+    auto_approve: false,
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+  registry.register({
+    thread_id: "codex_stateless_stopped_01",
+    agent_type: "codex",
+    mode: "stateless_call",
+    socket_path: "stateless:codex_stateless_stopped_01",
+    pid: 0,
+    tmux_pane: null,
+    status: "stopped",
+    sandbox_mode: "read-only",
+    auto_approve: false,
+    supportsStream: true,
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await router.route(baseMessage({ intent: "list", target: "all", thread_id: "global" }));
+
+  assert.equal(result.status, "success");
+  assert.match(result.content, /codex_stateless_error_01/);
+  assert.doesNotMatch(result.content, /codex_session_error_01/);
+  assert.doesNotMatch(result.content, /codex_stateless_stopped_01/);
+});
+
 test("HubRouter list backfills the live current model when the registry has none", async () => {
   const registry = new InstanceRegistry();
   registry.register({

@@ -165,6 +165,14 @@ const THREAD_HISTORY_LIMIT = 400;
 const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
 const ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT = 40_000;
 
+function shouldListInstance(instance: AgentInstance): boolean {
+  if (instance.mode === "stateless_call") {
+    return instance.status !== "stopped";
+  }
+
+  return LIVE_INSTANCE_STATUSES.has(instance.status);
+}
+
 function conversationEntryTypeForEventKind(eventKind: ConversationEventKind): "user" | "agent" {
   return eventKind === "user_send" || eventKind === "terminal_input" ? "user" : "agent";
 }
@@ -1081,7 +1089,7 @@ export class HubRouter {
     const requestSessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     const instances = this.instanceManager
       .list()
-      .filter((instance) => LIVE_INSTANCE_STATUSES.has(instance.status));
+      .filter((instance) => shouldListInstance(instance));
     const listedInstances = await Promise.all(instances.map(async (instance) => {
       let currentInstance = instance;
       if (typeof this.instanceManager.status === "function") {
