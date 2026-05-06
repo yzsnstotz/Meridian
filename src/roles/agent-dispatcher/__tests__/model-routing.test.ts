@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeReasoningEffort,
   parseDispatchModelCode,
-  resolveDispatchModelMapFromMarkdown
+  resolveDispatchModelMapFromMarkdown,
+  resolveImplicitDispatchModelOverride
 } from "../model-routing";
 
 describe("resolveDispatchModelMapFromMarkdown", () => {
@@ -121,5 +122,43 @@ describe("resolveDispatchModelMapFromMarkdown", () => {
 
   it("preserves unsupported reasoning values in resolve model parsing as null", () => {
     expect(normalizeReasoningEffort("ultra")).toBeUndefined();
+  });
+});
+
+describe("resolveImplicitDispatchModelOverride", () => {
+  it("returns the legacy implicit defaults for known aliases", () => {
+    expect(resolveImplicitDispatchModelOverride("CODEX-HIGH")).toEqual({
+      provider: "codex",
+      model_id: "gpt-5.5 high"
+    });
+    expect(resolveImplicitDispatchModelOverride("OPUS")).toEqual({
+      provider: "claude",
+      model_id: "claude-opus-4-7"
+    });
+  });
+
+  it("treats canonical taskspec v1.2+ model ids as the model_id directly", () => {
+    // Without this fallback, a row like `gpt-5.5::high` would parse to
+    // modelCode="gpt-5.5" with no legend entry — `modelId` ends up undefined,
+    // the spawn omits `model_id`, and the Hub falls back to whatever the codex
+    // CLI is configured with locally (observed: `gpt-5.5-xhigh`). Recognizing
+    // canonical ids here keeps taskspec / dispatcher detail / Hub aligned.
+    expect(resolveImplicitDispatchModelOverride("gpt-5.5")).toEqual({
+      provider: "codex",
+      model_id: "gpt-5.5"
+    });
+    expect(resolveImplicitDispatchModelOverride("claude-opus-4-7")).toEqual({
+      provider: "claude",
+      model_id: "claude-opus-4-7"
+    });
+    expect(resolveImplicitDispatchModelOverride("gemini-2.5-pro")).toEqual({
+      provider: "gemini",
+      model_id: "gemini-2.5-pro"
+    });
+  });
+
+  it("returns undefined for unknown codes with no canonical prefix", () => {
+    expect(resolveImplicitDispatchModelOverride("UNKNOWN")).toBeUndefined();
+    expect(resolveImplicitDispatchModelOverride("MY-CUSTOM-CODE")).toBeUndefined();
   });
 });

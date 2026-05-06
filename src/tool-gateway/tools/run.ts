@@ -65,6 +65,16 @@ const runTool: ToolDefinition = {
       type: "string",
       required: false,
       description: "When set, retain successful worker threads for validation until approval or max cycles"
+    },
+    applied_model_id: {
+      type: "string",
+      required: false,
+      description: "The exact model id sent to /api/spawn for this thread; persisted so the GUI mirrors the Hub agent card"
+    },
+    applied_reasoning_effort: {
+      type: "string",
+      required: false,
+      description: "The exact reasoning effort (thinking level) sent to /api/spawn for this thread"
     }
   },
   async execute(params: Record<string, string>): Promise<ToolResult> {
@@ -97,6 +107,9 @@ const runTool: ToolDefinition = {
         error: `Unsupported validator_max_fix_cycles: ${params.validator_max_fix_cycles}`
       };
     }
+
+    const appliedModelId = params.applied_model_id?.trim() || undefined;
+    const appliedReasoningEffort = normalizeReasoningEffort(params.applied_reasoning_effort);
 
     let interrupted = false;
     const handleSigint = (): void => {
@@ -139,15 +152,22 @@ const runTool: ToolDefinition = {
         previousWorkerState ?? null,
         expectedOutputs
       );
+      const recordOptions: {
+        validationMaxFixCycles?: number;
+        appliedModelId?: string;
+        appliedReasoningEffort?: string;
+      } = {};
       if (validationMaxFixCycles !== undefined) {
-        lifecycleStore.recordWorkerStart(
-          worker,
-          threadId,
-          traceId,
-          expectedOutputs,
-          preamble,
-          { validationMaxFixCycles }
-        );
+        recordOptions.validationMaxFixCycles = validationMaxFixCycles;
+      }
+      if (appliedModelId) {
+        recordOptions.appliedModelId = appliedModelId;
+      }
+      if (appliedReasoningEffort) {
+        recordOptions.appliedReasoningEffort = appliedReasoningEffort;
+      }
+      if (Object.keys(recordOptions).length > 0) {
+        lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble, recordOptions);
       } else {
         lifecycleStore.recordWorkerStart(worker, threadId, traceId, expectedOutputs, preamble);
       }

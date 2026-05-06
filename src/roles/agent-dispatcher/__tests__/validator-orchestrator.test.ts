@@ -104,7 +104,12 @@ describe("executeValidationCycle", () => {
     expect(harness.run).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "validator-thread-fresh"
     }));
-    expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
+    // The first spawn returned `worker-thread-n02`, which is the *live* worker
+    // thread for N-02 (status=awaiting_validation). The orphan-kill must NOT
+    // fire on that branch — killing it would terminate the worker we are
+    // about to validate (observed: "worker had been killed before validator
+    // approval"). The retry still happens; only the kill is suppressed.
+    expect(harness.kill).not.toHaveBeenCalledWith("worker-thread-n02");
     const worker = harness.lifecycleStore.load().workers["N-02"];
     expect(worker?.status).toBe("completed");
     expect(worker?.validation?.history[0]?.validator_thread_id).toBe("validator-thread-fresh");

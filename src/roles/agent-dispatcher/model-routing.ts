@@ -80,7 +80,47 @@ export function resolveImplicitDispatchModelOverride(
   }
 
   const implicit = IMPLICIT_MODEL_CODE_DEFAULTS[normalized];
-  return implicit ? { ...implicit } : undefined;
+  if (implicit) {
+    return { ...implicit };
+  }
+
+  // Canonical model IDs (taskspec v1.2+ canonical syntax: `gpt-5.5::high`,
+  // `claude-opus-4-7::high`, etc.) reach this point with the effort already
+  // stripped by parseDispatchModelCode. The legend may not enumerate them
+  // (it can use legacy aliases like `CODEX-HIGH`), so without a fallback the
+  // resolved model_id stays undefined and the spawn request omits model_id —
+  // the Hub then falls back to whatever default the codex CLI is configured
+  // with locally (observed: `gpt-5.5-xhigh` even when taskspec asks for
+  // `gpt-5.5 high`). Recognize provider-prefixed canonical IDs and pass them
+  // through as the model_id directly so the Hub honors the taskspec choice.
+  return resolveCanonicalModelOverride(modelCode);
+}
+
+const CANONICAL_PROVIDER_BY_PREFIX: Array<[RegExp, string]> = [
+  [/^gpt[-_]/i, "codex"],
+  [/^claude[-_]/i, "claude"],
+  [/^gemini[-_]/i, "gemini"]
+];
+
+function resolveCanonicalModelOverride(
+  rawModelCode: string | null | undefined
+): ResolvedDispatchModel | undefined {
+  if (typeof rawModelCode !== "string") {
+    return undefined;
+  }
+
+  const trimmed = rawModelCode.trim().replace(/^`+|`+$/g, "");
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const provider = CANONICAL_PROVIDER_BY_PREFIX.find(([pattern]) => pattern.test(trimmed))?.[1];
+  if (!provider) {
+    return undefined;
+  }
+
+  const modelId = normalizeModelId(trimmed);
+  return modelId ? { provider, model_id: modelId } : undefined;
 }
 
 export function parseDispatchModelCode(rawModel: string | undefined): ParsedDispatchModelRef | null {

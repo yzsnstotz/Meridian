@@ -11,6 +11,7 @@ import {
 import {
   ThreadIdCollisionError,
   createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdLiveWorkerThread,
   isLifecycleThreadIdReserved,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
@@ -107,7 +108,12 @@ export async function launchDispatcher(
       spawnDir,
       modelId: config.modelId?.trim() || undefined,
       autoApprove: config.autoApprove
-    }, (candidateThreadId) => isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId));
+    }, {
+      isPersistedThreadIdReserved: (candidateThreadId) =>
+        isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId),
+      isPersistedThreadIdLiveWorker: (candidateThreadId) =>
+        isLifecycleThreadIdLiveWorkerThread(config.dispatchPlanPath, candidateThreadId)
+    });
   } catch (error) {
     return {
       ok: false,
@@ -190,23 +196,38 @@ const SPAWN_TRANSIENT_PATTERNS = [
   /service.unavailable/i
 ];
 
+interface DispatcherSpawnRetryGuards {
+  isPersistedThreadIdReserved: (threadId: string) => boolean;
+  isPersistedThreadIdLiveWorker?: (threadId: string) => boolean;
+}
+
 async function spawnWithRetry(
   meridianApi: MeridianApiClient,
   request: import("./meridian-api-client").MeridianSpawnRequest,
-  isPersistedThreadIdReserved: (threadId: string) => boolean = () => false
+  guards: DispatcherSpawnRetryGuards | ((threadId: string) => boolean) = { isPersistedThreadIdReserved: () => false }
 ): Promise<string> {
+  const resolvedGuards: DispatcherSpawnRetryGuards = typeof guards === "function"
+    ? { isPersistedThreadIdReserved: guards }
+    : guards;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
     try {
       const result = await meridianApi.spawn(request);
-      if (isPersistedThreadIdReserved(result.threadId)) {
-        await killCollidedSpawnedThread(meridianApi, result.threadId, "dispatcher spawn");
+      if (resolvedGuards.isPersistedThreadIdReserved(result.threadId)) {
+        // Skip the orphan-kill when the colliding id is currently a live worker
+        // thread: killing it would terminate the worker agent that the lifecycle
+        // store still has in `awaiting_validation`/`fix_requested`/`running`.
+        const collidesWithLiveWorker = resolvedGuards.isPersistedThreadIdLiveWorker?.(result.threadId) ?? false;
+        if (!collidesWithLiveWorker) {
+          await killCollidedSpawnedThread(meridianApi, result.threadId, "dispatcher spawn");
+        }
         lastError = createLifecycleThreadIdCollisionError(result.threadId);
         if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
           console.warn("dispatcher spawn returned reserved lifecycle thread id, retrying", {
             attempt: attempt + 1,
             threadId: result.threadId,
+            skippedKill: collidesWithLiveWorker,
             error: lastError.message
           });
           continue;

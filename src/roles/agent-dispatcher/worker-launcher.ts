@@ -8,6 +8,7 @@ import {
 import {
   ThreadIdCollisionError,
   createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdLiveWorkerThread,
   isLifecycleThreadIdReserved,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
@@ -40,6 +41,17 @@ export interface DispatchRunHandoffRequest {
   workerId: string;
   killPolicy?: KillPolicy;
   validationMaxFixCycles?: number;
+  /**
+   * The exact `model_id` value sent to `/api/spawn`. Recording this lets the
+   * dispatcher detail GUI display the same model the Hub is actually running,
+   * so taskspec / dispatcher / Hub all agree.
+   */
+  appliedModelId?: string;
+  /**
+   * The exact `effort` (reasoning effort, a.k.a. thinking level) sent to
+   * `/api/spawn`. Stored alongside `appliedModelId` for the same reason.
+   */
+  appliedReasoningEffort?: string;
 }
 
 export interface LaunchDispatchWorkerDeps {
@@ -81,6 +93,12 @@ export function createDefaultLaunchDispatchWorkerDeps(): LaunchDispatchWorkerDep
       if (request.validationMaxFixCycles !== undefined) {
         params.validator_max_fix_cycles = String(request.validationMaxFixCycles);
       }
+      if (request.appliedModelId) {
+        params.applied_model_id = request.appliedModelId;
+      }
+      if (request.appliedReasoningEffort) {
+        params.applied_reasoning_effort = request.appliedReasoningEffort;
+      }
 
       const result = await runTool.execute(params);
       if (!result.ok) {
@@ -105,11 +123,12 @@ export async function launchDispatchWorker(
     };
   }
 
+  const parsedModel = parseModelIdWithEffort(config.modelId?.trim() || undefined);
+  const explicitEffort = config.effort?.trim().toLowerCase();
+  const resolvedEffort = explicitEffort ?? parsedModel.effort;
+
   let threadId: string;
   try {
-    const parsedModel = parseModelIdWithEffort(config.modelId?.trim() || undefined);
-    const explicitEffort = config.effort?.trim().toLowerCase();
-    const resolvedEffort = explicitEffort ?? parsedModel.effort;
     threadId = await spawnWithRetry(deps.meridianApi, {
       agentType: config.agentType,
       mode: config.mode,
@@ -117,7 +136,12 @@ export async function launchDispatchWorker(
       modelId: parsedModel.modelId,
       effort: resolvedEffort,
       autoApprove: config.autoApprove
-    }, (candidateThreadId) => isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId));
+    }, {
+      isPersistedThreadIdReserved: (candidateThreadId) =>
+        isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId),
+      isPersistedThreadIdLiveWorker: (candidateThreadId) =>
+        isLifecycleThreadIdLiveWorkerThread(config.dispatchPlanPath, candidateThreadId)
+    });
   } catch (error) {
     return {
       ok: false,
@@ -134,7 +158,13 @@ export async function launchDispatchWorker(
     commandFilePath: config.commandFilePath,
     workerId: config.workerId,
     killPolicy: config.killPolicy,
-    validationMaxFixCycles: config.validationMaxFixCycles
+    validationMaxFixCycles: config.validationMaxFixCycles,
+    // Forward the *resolved* model id + reasoning effort that the Hub actually
+    // received, so the dispatcher detail GUI shows the same values as the Hub
+    // agent card. Passing the parsed pieces (model id without effort suffix +
+    // effort separately) keeps display formatting consistent across surfaces.
+    appliedModelId: parsedModel.modelId,
+    appliedReasoningEffort: resolvedEffort
   };
 
   if (activeRunHandoffsByThreadId.has(threadId)) {
@@ -181,11 +211,19 @@ const SPAWN_TRANSIENT_PATTERNS = [
   /service.unavailable/i
 ];
 
+interface SpawnRetryGuards {
+  isPersistedThreadIdReserved: (threadId: string) => boolean;
+  isPersistedThreadIdLiveWorker?: (threadId: string) => boolean;
+}
+
 async function spawnWithRetry(
   meridianApi: MeridianApiClient,
   request: import("./meridian-api-client").MeridianSpawnRequest,
-  isPersistedThreadIdReserved: (threadId: string) => boolean = () => false
+  guards: SpawnRetryGuards | ((threadId: string) => boolean) = { isPersistedThreadIdReserved: () => false }
 ): Promise<string> {
+  const resolvedGuards: SpawnRetryGuards = typeof guards === "function"
+    ? { isPersistedThreadIdReserved: guards }
+    : guards;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
@@ -206,13 +244,23 @@ async function spawnWithRetry(
         }
         throw lastError;
       }
-      if (isPersistedThreadIdReserved(result.threadId)) {
-        await killCollidedSpawnedThread(meridianApi, result.threadId, "worker spawn");
+      if (resolvedGuards.isPersistedThreadIdReserved(result.threadId)) {
+        // Skip the orphan-kill when the colliding id is a live worker thread.
+        // Killing it would terminate that worker agent (observed: Hub recycles
+        // a freed validator/worker id back into the spawn pool while another
+        // worker still holds it as `worker.thread_id`; PR #134's kill then
+        // takes out the live worker). Prefer an orphan leak over taking out a
+        // live worker.
+        const collidesWithLiveWorker = resolvedGuards.isPersistedThreadIdLiveWorker?.(result.threadId) ?? false;
+        if (!collidesWithLiveWorker) {
+          await killCollidedSpawnedThread(meridianApi, result.threadId, "worker spawn");
+        }
         lastError = createLifecycleThreadIdCollisionError(result.threadId);
         if (attempt < SPAWN_RETRY_DELAYS_MS.length) {
           console.warn("worker spawn returned reserved lifecycle thread id, retrying", {
             attempt: attempt + 1,
             threadId: result.threadId,
+            skippedKill: collidesWithLiveWorker,
             error: lastError.message
           });
           continue;

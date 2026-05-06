@@ -10,6 +10,7 @@ import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
   createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdLiveWorkerThread,
   isLifecycleThreadIdReserved,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
@@ -343,13 +344,27 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
       return spawnResult.threadId;
     }
 
-    await killCollidedSpawnedThread(deps.meridianApi, spawnResult.threadId, "validator spawn");
+    // The freshly spawned validator landed on a thread id that is already an
+    // active reservation in lifecycle. PR #134 kills the orphan spawn here to
+    // prevent leaks. But when the colliding id is the *live worker thread* we
+    // are about to validate, killing it terminates the worker agent itself
+    // (observed in the Hub UI as "the worker had been killed before validator
+    // approval"). Skip the kill in that case and just retry — preferring an
+    // orphan leak over taking out the worker we are validating.
+    const collidesWithLiveWorker = isLifecycleThreadIdLiveWorkerThread(
+      deps.dispatchPlanPath,
+      spawnResult.threadId
+    );
+    if (!collidesWithLiveWorker) {
+      await killCollidedSpawnedThread(deps.meridianApi, spawnResult.threadId, "validator spawn");
+    }
     lastError = createLifecycleThreadIdCollisionError(spawnResult.threadId);
     if (attempt < VALIDATOR_SPAWN_MAX_ATTEMPTS - 1) {
       deps.log.warn("Validator spawn returned reserved lifecycle thread id, retrying", {
         event: "validator_spawn_thread_id_collision_retry",
         thread_id: spawnResult.threadId,
         attempt: attempt + 1,
+        skipped_kill: collidesWithLiveWorker,
         error: lastError.message
       });
     }
