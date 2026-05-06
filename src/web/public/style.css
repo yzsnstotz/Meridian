@@ -799,9 +799,84 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 .dispatch-detail-retry-pill { color: #f5b27a; border-color: rgba(245, 178, 122, 0.5); }
 .dispatch-detail-cycle-pill { color: var(--accent); border-color: var(--accent); }
 .dispatch-detail-score-pill { color: #9ad3a6; border-color: rgba(154, 211, 166, 0.5); }
+.dispatch-detail-human-pill { color: #ffd166; border-color: rgba(255, 209, 102, 0.55); }
 
 .dispatch-detail-card-validator { border-left: 3px solid var(--accent); }
 .dispatch-detail-card-pm_resolver { border-left: 3px solid #c79bf3; }
+
+.dispatch-detail-alive {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.65);
+  vertical-align: middle;
+  animation: dispatch-detail-pulse 1.6s ease-out infinite;
+}
+
+@keyframes dispatch-detail-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+.dispatch-detail-footer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dispatch-detail-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dispatch-detail-action-button {
+  font-size: 0.75rem;
+}
+
+.dispatch-detail-talk {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dispatch-detail-talk-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.dispatch-detail-talk-input {
+  resize: vertical;
+  width: 100%;
+  min-height: 48px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-primary);
+}
+
+.dispatch-detail-talk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dispatch-detail-talk-status {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
 
 .dispatch-detail-messages {
   display: grid;

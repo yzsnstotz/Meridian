@@ -179,6 +179,10 @@ const UpdateWorkerStatusRequestSchema = z.object({
   reasoning_effort: z.string().min(1).optional()
 });
 
+const HumanResolveWorkerRequestSchema = z.object({
+  note: z.string().min(1).optional()
+});
+
 const PmResolveRequestSchema = z.object({
   status: z.string().min(1),
   worker_id: z.string().min(1).optional(),
@@ -204,6 +208,7 @@ type RoleRouteMatch =
   | { kind: "resume-worker"; threadId: string; workerId: string }
   | { kind: "continue-worker"; threadId: string; workerId: string }
   | { kind: "update-worker-status"; threadId: string; workerId: string }
+  | { kind: "human-resolve-worker"; threadId: string; workerId: string }
   | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string }
@@ -305,6 +310,16 @@ export interface DispatchWorkerDetail {
   validator_cycle?: number;
   validator_score?: number | null;
   validator_outcome?: "pass" | "fix_requested" | "fail";
+  // GUI-only signal: true when the underlying session/thread should be
+  // considered live (the worker, validator, or PM resolver is in a
+  // running/in-flight state with a thread_id present). Drives the green-dot
+  // indicator on each dispatch detail card.
+  is_alive?: boolean;
+  // Set on `worker` bars when an operator explicitly marked the worker
+  // resolved out-of-band (PM-killed-after-human-takeover scenario). The GUI
+  // surfaces this as a HUMAN-resolved badge so PM failure context is not
+  // mistaken for a regression.
+  human_resolution?: { resolved_at: string; note: string | null } | null;
 }
 
 export interface DispatchValidationDetail {
@@ -558,6 +573,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "update-worker-status":
             writeJson(response, 200, await updateWorkerStatusForRole(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
+          case "human-resolve-worker":
+            writeJson(response, 200, await humanResolveWorkerForRole(route.threadId, route.workerId, await readJsonBody(request)));
             return true;
           case "reconcile":
             writeJson(response, 200, await reconcileActiveDispatcher());
@@ -961,6 +979,58 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
       throw error;
     }
+  }
+
+  async function humanResolveWorkerForRole(
+    threadId: string,
+    workerId: string,
+    body: unknown
+  ): Promise<{
+    ok: true;
+    worker_id: string;
+    status: LifecycleStatus;
+    human_resolution: { resolved_at: string; note: string | null };
+  }> {
+    const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
+    if (context.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    const parsed = HumanResolveWorkerRequestSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw createHttpError(400, "Invalid human-resolve payload");
+    }
+
+    const planPath = context.effectiveConfig.dispatch_plan_path;
+    const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(planPath), {
+      dispatchPlanPath: planPath
+    });
+
+    try {
+      lifecycleStore.markHumanResolved(workerId, parsed.data.note ?? null);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.includes("Worker not found")) {
+        throw createHttpError(404, message);
+      }
+      throw error;
+    }
+
+    const after = lifecycleStore.load();
+    const updated = after.workers[workerId];
+    if (!updated?.human_resolution) {
+      throw createHttpError(500, `Worker ${workerId} did not record human_resolution`);
+    }
+
+    return {
+      ok: true,
+      worker_id: workerId,
+      status: updated.status,
+      human_resolution: {
+        resolved_at: updated.human_resolution.resolved_at,
+        note: updated.human_resolution.note ?? null
+      }
+    };
   }
 
   async function getChannels(): Promise<{
@@ -1825,6 +1895,17 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     && parts[5] === "status"
   ) {
     return { kind: "update-worker-status", threadId: parts[2], workerId: parts[4] };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "roles"
+    && parts[3] === "worker"
+    && parts[5] === "human-resolve"
+  ) {
+    return { kind: "human-resolve-worker", threadId: parts[2], workerId: parts[4] };
   }
 
   if (
@@ -3068,7 +3149,8 @@ function buildPmResolverDetail(
           content: replyContent
         }
       : null,
-    validation: null
+    validation: null,
+    is_alive: status === "running" && Boolean(entry.thread_id?.trim())
   };
 }
 
@@ -3239,8 +3321,29 @@ function buildDispatchWorkerDetail(
         }
       : null,
     validation: buildDispatchValidationDetail(worker?.validation),
-    retry_count: worker?.retry_count ?? 0
+    retry_count: worker?.retry_count ?? 0,
+    is_alive: isWorkerSessionAlive(worker, status),
+    human_resolution: worker?.human_resolution
+      ? {
+          resolved_at: worker.human_resolution.resolved_at,
+          note: worker.human_resolution.note ?? null
+        }
+      : null
   };
+}
+
+function isWorkerSessionAlive(
+  worker: DispatchWorkerState | null,
+  effectiveStatus: string
+): boolean {
+  if (!worker?.thread_id?.trim()) {
+    return false;
+  }
+  const status = (effectiveStatus || worker.status || "").toString().toLowerCase();
+  return status === "running"
+    || status === "blocked"
+    || status === "awaiting_validation"
+    || status === "fix_requested";
 }
 
 function resolveAppliedModelForWorker(
