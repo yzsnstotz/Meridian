@@ -143,6 +143,94 @@ export function countEligiblePendingServiceContinueWorkersFromWorkerRows(
   }).length;
 }
 
+export function hasRecoverableDispatchWork(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): boolean {
+  if (rows.length === 0) {
+    return true;
+  }
+
+  if (resolveServiceContinueWorker(rows, lifecycleState)) {
+    return true;
+  }
+
+  if (resolveManualInterventionWorker(rows, lifecycleState)) {
+    return true;
+  }
+
+  const rowsByWorker = indexRowsByWorker(rows);
+  return rows.some((row) => {
+    if (isHumanDispatchRow(row)) {
+      return false;
+    }
+
+    const workerId = row.worker.trim();
+    if (!workerId) {
+      return false;
+    }
+
+    const worker = resolveLifecycleWorkerState(lifecycleState, workerId);
+    if (worker?.status === "awaiting_validation" || worker?.status === "fix_requested") {
+      return true;
+    }
+
+    if (worker?.status === "completed" || worker?.status === "skipped") {
+      return false;
+    }
+
+    const status = row.status.trim();
+    if (status === "✅" || status === "⛔ SKIPPED" || status === "⛔ BLOCKED") {
+      return false;
+    }
+
+    if ((status === "❌" || status === "⚠️ ABANDONED") && !isRetryableTerminalWorker(lifecycleState, row.worker)) {
+      return false;
+    }
+
+    if (isBlockedByOpenHumanGate(row, rows, rowsByWorker, lifecycleState)) {
+      return false;
+    }
+
+    return status === "⬜"
+      || status === "🔄"
+      || status === "❌"
+      || status === "⚠️ ABANDONED"
+      || status.startsWith("🔁");
+  });
+}
+
+function isBlockedByOpenHumanGate(
+  row: DispatchContinuationPlanRow,
+  rows: DispatchContinuationPlanRow[],
+  rowsByWorker: Map<string, DispatchContinuationPlanRow>,
+  lifecycleState: DispatchThreadStateV2,
+  seenWorkers = new Set<string>()
+): boolean {
+  const workerId = normalizeWorkerIdentifier(row.worker);
+  if (workerId) {
+    if (seenWorkers.has(workerId)) {
+      return false;
+    }
+    seenWorkers.add(workerId);
+  }
+
+  const dependencyRows = normalizeDependsOnWorkers(row.depends_on)
+    .flatMap((dependencyClause) => resolveDependencyRows(dependencyClause, row, rows, rowsByWorker));
+
+  return dependencyRows.some((dependencyRow) => {
+    if (isDispatchDependencyTerminal(dependencyRow, lifecycleState)) {
+      return false;
+    }
+
+    if (isHumanDispatchRow(dependencyRow)) {
+      return true;
+    }
+
+    return isBlockedByOpenHumanGate(dependencyRow, rows, rowsByWorker, lifecycleState, seenWorkers);
+  });
+}
+
 function resolveImplicitContinueWorker(
   rows: DispatchContinuationPlanRow[],
   lifecycleState: DispatchThreadStateV2

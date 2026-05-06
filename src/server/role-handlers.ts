@@ -43,6 +43,7 @@ import {
 import { reconcile } from "../roles/agent-dispatcher/reconciler";
 import { SchedulerStateStore } from "../roles/scheduler/scheduler-state-store";
 import {
+  hasRecoverableDispatchWork,
   isHumanDispatchRow,
   resolveManualInterventionWorker,
   resolveServiceContinueWorker,
@@ -370,6 +371,13 @@ export interface ContinueDispatcherResponse {
   validation_outcome?: string;
 }
 
+interface StartAgentDispatcherHubSessionResponse {
+  ok: true;
+  dispatcher_thread_id?: string;
+  status?: "still_blocked";
+  message?: string;
+}
+
 export interface DispatchPlanData {
   rows: DispatchPlanRow[];
   modelLegend: DispatchPlanModelLegend;
@@ -606,10 +614,20 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     };
   }
 
-  async function startAgentDispatcherHubSession(threadId: string): Promise<{
-    ok: true;
-    dispatcher_thread_id: string;
-  }> {
+  async function startAgentDispatcherHubSession(threadId: string): Promise<StartAgentDispatcherHubSessionResponse> {
+    const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
+    if (context.roleType !== "agent-dispatcher") {
+      throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    if (!await hasRecoverableDispatchWorkForConfig(context.effectiveConfig, log)) {
+      return {
+        ok: true,
+        status: "still_blocked",
+        message: "still blocked: waiting on human/PM gate or unmet dependency"
+      };
+    }
+
     const activeRole = resolveActiveRoleBinding(threadId);
     if (activeRole && activeRole.roleType === "agent-dispatcher") {
       const result = await options.runner.relaunchAgentDispatcherHub(threadId);
@@ -690,6 +708,16 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         force: parsed.data.force ?? false
       })
     };
+  }
+
+  async function hasRecoverableDispatchWorkForConfig(config: AgentDispatcherConfig, log: Logger): Promise<boolean> {
+    try {
+      const dispatchPlan = await loadDispatchPlanData(config.dispatch_plan_path, log);
+      const lifecycleState = await loadDispatchLifecycleState(config.dispatch_plan_path, log);
+      return hasRecoverableDispatchWork(dispatchPlan.rows, lifecycleState);
+    } catch {
+      return true;
+    }
   }
 
   async function continueDispatcherForRole(threadId: string, workerId?: string): Promise<ContinueDispatcherResponse> {
@@ -831,6 +859,15 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           ok: true,
           status: "plan_complete",
           message: "plan complete: all non-human workers are terminal",
+          ...(effectiveDispatcherThreadId ? { dispatcher_thread_id: effectiveDispatcherThreadId } : {})
+        };
+      }
+
+      if (!hasRecoverableDispatchWork(dispatchPlanData.rows, lifecycleState)) {
+        return {
+          ok: true,
+          status: "still_blocked",
+          message: "still blocked: waiting on human/PM gate or unmet dependency",
           ...(effectiveDispatcherThreadId ? { dispatcher_thread_id: effectiveDispatcherThreadId } : {})
         };
       }
@@ -1538,11 +1575,17 @@ function deriveAgentDispatcherRoleStatus(
     return terminalStatus;
   }
 
+  const hasRecoverableWork = hasRecoverableDispatchWork(rows, lifecycleState);
+
+  if (roleStatus === NEEDS_REACTIVATION_ROLE_STATUS && !hasRecoverableWork) {
+    return ACTIVE_ROLE_STATUS;
+  }
+
   if (roleStatus === NEEDS_REACTIVATION_ROLE_STATUS) {
     return roleStatus;
   }
 
-  if (REACTIVATION_REQUIRED_DISPATCHER_STATUSES.has(lifecycleState.dispatcher.status)) {
+  if (REACTIVATION_REQUIRED_DISPATCHER_STATUSES.has(lifecycleState.dispatcher.status) && hasRecoverableWork) {
     return NEEDS_REACTIVATION_ROLE_STATUS;
   }
 

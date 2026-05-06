@@ -4512,6 +4512,110 @@ describe("role config handlers", () => {
     }
   });
 
+  it("keeps a human-gated agent-dispatcher idle when its controller thread is abandoned", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-human-gate-idle-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const persistedState: AppState = {
+      roles: [
+        {
+          threadId: "agent-dispatcher-human-gate-idle",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            tasks: [],
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            use_agent_dispatcher: true
+          }
+        }
+      ],
+      promptStore: {}
+    };
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 8 | V-01-A | Automated validation | CODEX | - | TaskSpec | done |",
+      "| ⬜ | 8 | V-01-B | Human launch review | HUMAN | V-01-A | TaskSpec | waiting on operator |",
+      "| ⬜ | 9 | N-16 | Lock launch contract | CODEX | V-01-B | TaskSpec | blocked by human gate |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-stale",
+        started_at: "2026-05-06T00:39:06.702Z",
+        status: "abandoned"
+      },
+      workers: {
+        "V-01-A": buildLifecycleWorker({
+          thread_id: "worker-thread-v01a",
+          status: "completed",
+          validation: {
+            current_cycle: 1,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: 1,
+            last_feedback: "pass",
+            history: []
+          }
+        }),
+        "DISPATCHER": buildLifecycleWorker({
+          thread_id: "dispatcher-thread-stale",
+          status: "completed"
+        })
+      },
+      last_reconciled_at: "2026-05-06T00:39:19.261Z"
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const launchDispatcher = vi.fn(async () => ({
+        ok: true as const,
+        threadId: "dispatcher-thread-new"
+      }));
+      const harness = createHarness(persistedState, undefined, [], "unused", null, null, launchDispatcher);
+
+      await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            thread_id: "agent-dispatcher-human-gate-idle",
+            status: "active"
+          })
+        ])
+      );
+      await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-human-gate-idle")).resolves.toMatchObject({
+        thread_id: "agent-dispatcher-human-gate-idle",
+        status: "active",
+        dispatcher_thread_id: null,
+        continue_worker: null
+      });
+      await expect(invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-human-gate-idle/continue")).resolves.toMatchObject({
+        ok: true,
+        status: "still_blocked",
+        message: expect.stringContaining("waiting on human")
+      });
+      await expect(invokeJson(harness.roleHandlers, "POST", "/api/agent-dispatcher/agent-dispatcher-human-gate-idle/start-hub")).resolves.toMatchObject({
+        ok: true,
+        status: "still_blocked",
+        message: expect.stringContaining("waiting on human")
+      });
+      expect(launchDispatcher).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("projects completed for finished agent-dispatcher plans instead of persisted active", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-complete-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

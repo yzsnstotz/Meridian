@@ -10,9 +10,8 @@ import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import {
   MAX_AUTOMATIC_RECOVERY_RETRIES,
+  hasRecoverableDispatchWork,
   isHumanDispatchRow,
-  resolveManualInterventionWorker,
-  resolveServiceContinueWorker,
   type DispatchContinuationPlanRow
 } from "./roles/agent-dispatcher/service-continuation";
 import {
@@ -1002,29 +1001,7 @@ export async function hasStartupRecoverableDispatchWork(config: AgentDispatcherC
     return true;
   }
 
-  const serviceWorker = resolveServiceContinueWorker(rows, lifecycleState);
-  if (serviceWorker) {
-    return true;
-  }
-
-  const manualInterventionWorker = resolveManualInterventionWorker(rows, lifecycleState);
-  if (manualInterventionWorker) {
-    return true;
-  }
-
-  return rows.some((row) => {
-    if (isHumanDispatchRow(row)) {
-      return false;
-    }
-
-    const workerId = row.worker.trim();
-    if (!workerId) {
-      return false;
-    }
-
-    const worker = lifecycleState.workers[workerId];
-    return worker?.status === "awaiting_validation" || worker?.status === "fix_requested";
-  });
+  return hasRecoverableDispatchWork(rows, lifecycleState);
 }
 
 async function resolveSettledDispatchPlanRoleStatus(
