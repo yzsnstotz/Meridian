@@ -1550,9 +1550,7 @@ export function isPmResolverHubResult(
     return false;
   }
 
-  const source = hubResult.source.trim().toLowerCase();
-  const content = `${hubResult.summary_text ?? ""}\n${hubResult.content ?? ""}\n${hubResult.details_text ?? ""}`;
-  return source === "pm-resolver" || /\bPM (?:resolver|resolution|resolved)\b/i.test(content);
+  return hubResult.source.trim().toLowerCase() === "pm-resolver";
 }
 
 function isToleratedItemFailureSummary(content: string): boolean {
