@@ -24,7 +24,8 @@ const CONFIG_KEYS = [
   "WEB_GUI_TOKEN",
   "WEB_GUI_HTTPS",
   "TLS_CERT_PATH",
-  "TLS_KEY_PATH"
+  "TLS_KEY_PATH",
+  "MERIDIAN_STATE_PATH"
 ] as const;
 
 async function withProcessEnv(overrides: Record<string, string>, fn: () => Promise<void> | void) {
@@ -58,6 +59,7 @@ test("parseConfig applies v2 defaults for webhook and web GUI fields", async () 
 
     assert.equal(DEFAULT_AGENT_WORKDIR, path.resolve(process.cwd(), ".."));
     assert.equal(config.AGENT_WORKDIR, DEFAULT_AGENT_WORKDIR);
+    assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
     assert.equal(config.COORDINATOR_SOCKET_PATH, "");
     assert.deepEqual(config.COORDINATOR_INTENTS, []);
     assert.equal(config.WEBHOOK_URL, "");
@@ -112,6 +114,30 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
     assert.equal(config.WEB_GUI_HTTPS, true);
     assert.equal(config.TLS_CERT_PATH, "/etc/ssl/certs/gui.pem");
     assert.equal(config.TLS_KEY_PATH, "/etc/ssl/private/gui.key");
+  });
+});
+
+test("parseConfig maps the legacy tmp hub state path to the durable default", async () => {
+  await withProcessEnv({}, async () => {
+    const { parseConfig } = await import("./config");
+    const config = parseConfig({
+      ...REQUIRED_ENV,
+      MERIDIAN_STATE_PATH: "/tmp/meridian-state.json"
+    });
+
+    assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
+  });
+});
+
+test("parseConfig resolves relative hub state paths from the process cwd", async () => {
+  await withProcessEnv({}, async () => {
+    const { parseConfig } = await import("./config");
+    const config = parseConfig({
+      ...REQUIRED_ENV,
+      MERIDIAN_STATE_PATH: ".meridian/state/hub-state.json"
+    });
+
+    assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
   });
 });
 

@@ -5,6 +5,8 @@ import { z } from "zod";
 dotenv.config({ override: true, quiet: true });
 
 export const DEFAULT_AGENT_WORKDIR = path.resolve(process.cwd(), "..");
+export const DEFAULT_MERIDIAN_STATE_PATH = path.resolve(process.cwd(), ".meridian/state/hub-state.json");
+export const LEGACY_TMP_MERIDIAN_STATE_PATH = "/tmp/meridian-state.json";
 
 const optionalEnvString = () => z.string().default("");
 const optionalPathWithDefault = (defaultValue: string) =>
@@ -12,6 +14,14 @@ const optionalPathWithDefault = (defaultValue: string) =>
     (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
     z.string().default(defaultValue)
   );
+const meridianStatePathWithDefault = () =>
+  z.preprocess((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed === "" || trimmed === LEGACY_TMP_MERIDIAN_STATE_PATH ? undefined : trimmed;
+  }, z.string().default(DEFAULT_MERIDIAN_STATE_PATH).transform((value) => path.resolve(value)));
 const envStringList = () =>
   z
     .string()
@@ -89,7 +99,7 @@ const envSchema = z
     LOG_SESSION_FILE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
     LOG_SESSION_FILE_KEEP_BYTES: z.coerce.number().int().positive().default(1024 * 1024),
     LOG_SESSION_FILE_MAX_AGE_HOURS: z.coerce.number().int().positive().default(168),
-    MERIDIAN_STATE_PATH: z.string().default("/tmp/meridian-state.json"),
+    MERIDIAN_STATE_PATH: meridianStatePathWithDefault(),
     AGENT_WORKDIR: optionalPathWithDefault(DEFAULT_AGENT_WORKDIR),
     COORDINATOR_SOCKET_PATH: optionalEnvString(),
     COORDINATOR_INTENTS: envStringList(),

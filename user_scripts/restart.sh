@@ -8,12 +8,14 @@
 # Usage:
 #   ./user_scripts/restart.sh
 #   ./user_scripts/restart.sh --keep-agents
+#   ./user_scripts/restart.sh --reset-state
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
 KEEP_AGENTS=0
+RESET_STATE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,13 +23,22 @@ while [[ $# -gt 0 ]]; do
       KEEP_AGENTS=1
       shift
       ;;
+    --reset-state)
+      RESET_STATE=1
+      shift
+      ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: ./user_scripts/restart.sh [--keep-agents]" >&2
+      echo "Usage: ./user_scripts/restart.sh [--keep-agents] [--reset-state]" >&2
       exit 1
       ;;
   esac
 done
+
+if [[ "${KEEP_AGENTS}" -eq 1 && "${RESET_STATE}" -eq 1 ]]; then
+  echo "--reset-state cannot be combined with --keep-agents" >&2
+  exit 1
+fi
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -39,12 +50,35 @@ fi
 LOG_DIR="${LOG_DIR:-/var/log/hub}"
 HUB_SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-core.sock}"
 RUNTIME_LOG_DIR="${MERIDIAN_RUNTIME_LOG_DIR:-${ROOT_DIR}/logs}"
-MERIDIAN_STATE_PATH="${MERIDIAN_STATE_PATH:-/tmp/meridian-state.json}"
+DEFAULT_MERIDIAN_STATE_PATH="${ROOT_DIR}/.meridian/state/hub-state.json"
+LEGACY_MERIDIAN_STATE_PATH="/tmp/meridian-state.json"
+MERIDIAN_STATE_PATH="${MERIDIAN_STATE_PATH:-${DEFAULT_MERIDIAN_STATE_PATH}}"
+if [[ "${MERIDIAN_STATE_PATH}" == "${LEGACY_MERIDIAN_STATE_PATH}" ]]; then
+  MERIDIAN_STATE_PATH="${DEFAULT_MERIDIAN_STATE_PATH}"
+elif [[ "${MERIDIAN_STATE_PATH}" != /* ]]; then
+  MERIDIAN_STATE_PATH="${ROOT_DIR}/${MERIDIAN_STATE_PATH}"
+fi
+export MERIDIAN_STATE_PATH
 PM2_KEEP_AGENTS_MODE=0
 
 log() {
   printf '[restart] %s\n' "$1"
 }
+
+migrate_legacy_state_path() {
+  if [[ "${MERIDIAN_STATE_PATH}" != "${DEFAULT_MERIDIAN_STATE_PATH}" ]]; then
+    return 0
+  fi
+  if [[ -f "${MERIDIAN_STATE_PATH}" || ! -f "${LEGACY_MERIDIAN_STATE_PATH}" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${MERIDIAN_STATE_PATH}")"
+  cp -p "${LEGACY_MERIDIAN_STATE_PATH}" "${MERIDIAN_STATE_PATH}"
+  log "Migrating legacy temp hub state: ${LEGACY_MERIDIAN_STATE_PATH} -> ${MERIDIAN_STATE_PATH}"
+}
+
+migrate_legacy_state_path
 
 kill_pids() {
   local pids="$1"
@@ -321,7 +355,13 @@ if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
   log "Skipping agent socket cleanup because keep-agents mode is enabled"
 else
   rm -f /tmp/agentapi-*.sock >/dev/null 2>&1 || true
-  rm -f "${MERIDIAN_STATE_PATH}" >/dev/null 2>&1 || true
+fi
+
+if [[ "${RESET_STATE}" -eq 1 ]]; then
+  log "Resetting persisted hub state: ${MERIDIAN_STATE_PATH}"
+  rm -f "${MERIDIAN_STATE_PATH}" "${LEGACY_MERIDIAN_STATE_PATH}" >/dev/null 2>&1 || true
+else
+  log "Preserving persisted hub state: ${MERIDIAN_STATE_PATH}"
 fi
 
 if start_with_pm2; then
