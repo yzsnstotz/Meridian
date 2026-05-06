@@ -103,6 +103,12 @@ describe("routine job hub server", () => {
     expect(page.body).toContain('data-clawso-build-mode="debug"');
     expect(page.body).toContain('data-clawso-build-mode="local"');
     expect(page.body).toContain('data-clawso-build-mode="online"');
+    expect(page.body).toContain('data-clawso-command-log="debug"');
+    expect(page.body).toContain('data-clawso-command-log="local"');
+    expect(page.body).toContain('data-clawso-command-log="online"');
+    expect(page.body).toContain("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));");
+    expect(page.body).toContain(".maintenance-status pre {\n        box-sizing: border-box;");
+    expect(page.body).toContain("overflow-wrap: anywhere;");
     expect(page.body).toContain("data-clawso-footprint-total");
     expect(page.body).toContain('data-clawso-footprint-path="tauri-target"');
     expect(page.body).toContain("3.7 GB");
@@ -129,7 +135,7 @@ describe("routine job hub server", () => {
     await fs.writeFile(registryPath, "[]", "utf8");
     await fs.writeFile(
       path.join(scriptDir, "release-desktop-client--local.sh"),
-      `#!/usr/bin/env bash\nset -euo pipefail\necho local-build\nprintf dmg > "${path.join(dmgDir, "Clawso_1.2.4_aarch64.dmg")}"\n`,
+      `#!/usr/bin/env bash\nset -euo pipefail\necho local-build\necho local-warning >&2\nprintf dmg > "${path.join(dmgDir, "Clawso_1.2.4_aarch64.dmg")}"\n`,
       { mode: 0o755 }
     );
     const opened: string[] = [];
@@ -151,9 +157,15 @@ describe("routine job hub server", () => {
       body: JSON.stringify({ mode: "local" })
     });
     expect(build.status).toBe(200);
-    const buildResult = await build.json() as { status: string; stdout: string; artifact: { path: string } | null };
+    const buildResult = await build.json() as {
+      artifact: { path: string } | null;
+      status: string;
+      stderr: string;
+      stdout: string;
+    };
     expect(buildResult.status).toBe("ok");
     expect(buildResult.stdout).toContain("local-build");
+    expect(buildResult.stderr).toContain("local-warning");
     expect(buildResult.artifact?.path).toContain("Clawso_1.2.4_aarch64.dmg");
 
     const activate = await fetch(`${server.url()}/api/clawso-desktop-maintenance/activate`, {

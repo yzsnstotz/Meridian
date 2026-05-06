@@ -1212,7 +1212,12 @@ function renderHubPage(
         align-items: start;
         display: grid;
         gap: 16px;
-        grid-template-columns: minmax(0, 1fr) minmax(220px, 0.36fr);
+        grid-template-columns: minmax(0, 1fr) minmax(240px, 0.34fr);
+      }
+      .maintenance-topline > div,
+      .maintenance-modes,
+      .maintenance-mode {
+        min-width: 0;
       }
       .maintenance-total {
         font-size: 30px;
@@ -1232,12 +1237,14 @@ function renderHubPage(
         justify-content: space-between;
       }
       .maintenance-modes {
+        align-items: start;
         display: grid;
         gap: 12px;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         margin-top: 16px;
       }
       .maintenance-mode {
+        align-content: start;
         border: 1px solid var(--border);
         border-radius: 8px;
         display: grid;
@@ -1260,7 +1267,10 @@ function renderHubPage(
         font-size: 12px;
         line-height: 1.35;
         margin: 0;
+        min-width: 0;
+        overflow: hidden;
         white-space: pre-wrap;
+        word-break: break-word;
       }
       .maintenance-status.ok { color: var(--up); }
       .maintenance-status.err { color: var(--down); }
@@ -1373,7 +1383,8 @@ function renderHubPage(
       }
       .restart-status.ok { color: var(--up); }
       .restart-status.err { color: var(--down); }
-      .restart-status pre {
+      .restart-status pre,
+      .maintenance-status pre {
         background: #0b1020;
         border-radius: 6px;
         color: #e6edf3;
@@ -1383,6 +1394,13 @@ function renderHubPage(
         max-height: 220px;
         overflow: auto;
         padding: 8px 10px;
+      }
+      .maintenance-status pre {
+        box-sizing: border-box;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
       footer {
         border-top: 1px solid var(--border);
@@ -1445,15 +1463,15 @@ function renderClawsoDesktopMaintenanceCard(status: ClawsoMaintenanceStatus): st
     <div>
       <h2 id="clawso-desktop-maintenance-heading">Clawso Desktop Maintenance</h2>
       <p class="description">Local desktop-client build control for debug, local validation, and online release modes.</p>
-      <div class="maintenance-modes">
-        ${modes}
-      </div>
     </div>
     <div>
       <div class="route-row"><strong>Repo:</strong> ${escapeHtml(status.repoRoot)}</div>
       <div class="maintenance-total" data-clawso-footprint-total>${escapeHtml(status.footprint.formattedTotal)}</div>
       <div class="maintenance-breakdown">${breakdown}</div>
     </div>
+  </div>
+  <div class="maintenance-modes">
+    ${modes}
   </div>
 </section>`;
 }
@@ -1483,7 +1501,7 @@ function renderClawsoMaintenanceMode(mode: ClawsoBuildModeStatus): string {
     <button type="button" class="button" data-clawso-build-mode="${escapeAttribute(mode.id)}"${disabled}>${escapeHtml(mode.actionLabel)}</button>
     <button type="button" class="button" data-clawso-activate-mode="${escapeAttribute(mode.id)}"${activateDisabled}>Activate</button>
   </div>
-  <p class="maintenance-status" data-clawso-status="${escapeAttribute(mode.id)}" hidden></p>
+  <div class="maintenance-status" data-clawso-status="${escapeAttribute(mode.id)}" data-clawso-command-log="${escapeAttribute(mode.id)}" aria-live="polite" hidden></div>
 </article>`;
 }
 
@@ -1677,9 +1695,19 @@ const CLAWSO_MAINTENANCE_CLIENT_SCRIPT = `<script>
         if (status) {
           status.classList.toggle('ok', ok);
           status.classList.toggle('err', !ok);
-          status.textContent = ok
+          const summary = ok
             ? 'Build OK · ' + (data.duration_ms || 0) + 'ms'
             : 'Build failed: ' + (data.error || 'exit ' + data.exit_code);
+          const detail = (data.stdout || '') + (data.stderr ? '\\n' + data.stderr : '');
+          status.innerHTML = '';
+          const head = document.createElement('span');
+          head.textContent = summary;
+          status.appendChild(head);
+          if (detail.trim()) {
+            const pre = document.createElement('pre');
+            pre.textContent = detail.trim();
+            status.appendChild(pre);
+          }
         }
         if (ok && artifact && data.artifact && data.artifact.path) {
           artifact.textContent = formatArtifact(data.artifact);
