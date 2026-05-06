@@ -804,11 +804,7 @@ export function hasPmResolverHandledCurrentWorkerIssue(
     }
 
     const entryStartedAtMs = Date.parse(entry.started_at);
-    const entryLastSeenAtMs = Date.parse(entry.last_seen_at);
-    return (
-      (!Number.isNaN(entryStartedAtMs) && entryStartedAtMs >= workerStartedAtMs)
-      || (!Number.isNaN(entryLastSeenAtMs) && entryLastSeenAtMs >= workerStartedAtMs)
-    );
+    return !Number.isNaN(entryStartedAtMs) && entryStartedAtMs >= workerStartedAtMs;
   });
 }
 

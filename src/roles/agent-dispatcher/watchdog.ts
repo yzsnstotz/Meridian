@@ -546,6 +546,7 @@ function collectCleanupBlockingThreadIds(state: DispatchThreadStateV2): Set<stri
         worker.status === "running"
         || worker.status === "awaiting_validation"
         || worker.status === "fix_requested"
+        || worker.status === "blocked"
       )
     ) {
       ids.add(threadId);

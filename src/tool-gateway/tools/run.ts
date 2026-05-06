@@ -303,7 +303,7 @@ async function cleanupWorkerThread(
   killPolicy: KillPolicy,
   lifecycleStatus?: string
 ): Promise<void> {
-  if (lifecycleStatus === "running" || lifecycleStatus === "awaiting_validation" || lifecycleStatus === "fix_requested") {
+  if (lifecycleStatus === "running" || lifecycleStatus === "awaiting_validation" || lifecycleStatus === "fix_requested" || lifecycleStatus === "blocked") {
     return;
   }
 
