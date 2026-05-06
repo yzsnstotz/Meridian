@@ -702,6 +702,47 @@ test("hub stateless card close helpers hide only stateless call cards", async ()
   assert.deepEqual(split.stateless, []);
 });
 
+test("hub stateless card display helpers show provider default model and neutral status", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+  const context: Record<string, unknown> = {};
+
+  bindTerminalFunctions(indexHtml, context, [
+    "readDisplayString",
+    "isStatelessCallInstance",
+    "resolveActualAgent",
+    "formatAgentLabel",
+    "readModelFromSpawnArgs",
+    "resolveCurrentModel",
+    "resolveCardStatus"
+  ]);
+
+  const statelessError = {
+    thread_id: "codex_58",
+    agent_type: "codex",
+    mode: "stateless_call",
+    status: "error",
+    spawn_args: ["codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check"]
+  };
+  const statelessWithModelArg = {
+    thread_id: "codex_59",
+    agent_type: "codex",
+    mode: "stateless_call",
+    status: "error",
+    spawn_args: ["codex", "exec", "--json", "--model", "gpt-5.4"]
+  };
+  const sessionedError = {
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "pane_bridge",
+    status: "error"
+  };
+
+  assert.equal((context.resolveCurrentModel as (item: unknown) => string)(statelessError), "Codex default");
+  assert.equal((context.resolveCurrentModel as (item: unknown) => string)(statelessWithModelArg), "gpt-5.4");
+  assert.equal((context.resolveCardStatus as (item: unknown) => string)(statelessError), "idle");
+  assert.equal((context.resolveCardStatus as (item: unknown) => string)(sessionedError), "error");
+});
+
 test("bridge layout does not hard-cap content width on large screens", async () => {
   const bridgeHtml = await fs.promises.readFile(path.join(publicDir, "bridge.html"), "utf8");
 
