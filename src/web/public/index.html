@@ -531,6 +531,59 @@
       gap: 1.25rem;
     }
 
+    .agent-card-section {
+      margin-bottom: 1.5rem;
+    }
+
+    .agent-card-section + .agent-card-section {
+      margin-top: 1.75rem;
+    }
+
+    .agent-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .agent-section-title {
+      display: flex;
+      align-items: baseline;
+      gap: 0.65rem;
+      min-width: 0;
+    }
+
+    .agent-section-title h2 {
+      color: #fff;
+      font-size: 0.95rem;
+      line-height: 1.2;
+    }
+
+    .agent-section-count {
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .btn-quiet {
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-dim);
+      box-shadow: none;
+    }
+
+    .btn-quiet:hover {
+      background: rgba(255, 255, 255, 0.08);
+      transform: none;
+    }
+
+    .btn-quiet:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
     .instance-card {
       background: var(--surface-color);
       border: 1px solid var(--border-color);
@@ -558,11 +611,43 @@
     .instance-card:hover { border-color: var(--accent-color); transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
     .instance-card:hover::after { opacity: 1; }
 
+    .instance-card.stateless-card::after {
+      background: #14b8a6;
+    }
+
     .card-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 0.5rem;
+    }
+
+    .card-head-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      flex-shrink: 0;
+    }
+
+    .card-close-btn {
+      width: 1.75rem;
+      height: 1.75rem;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 0.5rem;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .card-close-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
     }
 
     .card-repo {
@@ -1135,14 +1220,35 @@
         </div>
       </div>
 
-      <div id="grid" class="card-grid">
-        <!-- Cards injected here -->
-      </div>
+      <section id="sessioned-agents-section" class="agent-card-section">
+        <div class="agent-section-head">
+          <div class="agent-section-title">
+            <h2>Sessioned agents</h2>
+            <span id="sessioned-agent-count" class="agent-section-count">0 cards</span>
+          </div>
+        </div>
+        <div id="grid" class="card-grid">
+          <!-- Sessioned cards injected here -->
+        </div>
+      </section>
+
+      <section id="stateless-agents-section" class="agent-card-section hidden">
+        <div class="agent-section-head">
+          <div class="agent-section-title">
+            <h2>Stateless call agents</h2>
+            <span id="stateless-agent-count" class="agent-section-count">0 cards</span>
+          </div>
+          <button type="button" id="close-stateless-cards" class="btn btn-quiet">Close all stateless cards</button>
+        </div>
+        <div id="stateless-grid" class="card-grid">
+          <!-- Stateless cards injected here -->
+        </div>
+      </section>
 
       <div id="empty-state" class="hidden">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--border-color)"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
         <div>
-          <h3 style="margin-bottom: 0.5rem">No active sessions</h3>
+          <h3 style="margin-bottom: 0.5rem">No visible agent cards</h3>
           <p>Spawn an agent to start coding.</p>
         </div>
       </div>
@@ -1277,6 +1383,12 @@
     (function () {
       var REFRESH_MS = 5000;
       var gridEl = document.getElementById("grid");
+      var sessionedSectionEl = document.getElementById("sessioned-agents-section");
+      var sessionedAgentCountEl = document.getElementById("sessioned-agent-count");
+      var statelessSectionEl = document.getElementById("stateless-agents-section");
+      var statelessGridEl = document.getElementById("stateless-grid");
+      var statelessAgentCountEl = document.getElementById("stateless-agent-count");
+      var closeStatelessCardsBtn = document.getElementById("close-stateless-cards");
       var contentEl = document.getElementById("content");
       var authErrorEl = document.getElementById("auth-error");
       var loadingEl = document.getElementById("loading");
@@ -1292,6 +1404,8 @@
       var logViewErrorEl = document.getElementById("log-view-error");
       var logViewBannerEl = document.getElementById("log-view-banner");
       var logViewCloseEl = document.getElementById("log-view-close");
+      var closedStatelessAgentIds = {};
+      var lastRenderedInstances = [];
       var providerEl = document.getElementById("spawn-provider");
       var spawnModeEl = document.getElementById("spawn-mode");
       var spawnModelEl = document.getElementById("spawn-model");
@@ -1706,6 +1820,93 @@
         return "";
       }
 
+      function loadClosedStatelessCards() {
+        try {
+          var raw = sessionStorage.getItem("meridian_closed_stateless_agent_cards");
+          if (!raw) return {};
+          var parsed = JSON.parse(raw);
+          return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+        } catch (e) {
+          return {};
+        }
+      }
+
+      function persistClosedStatelessCards() {
+        try {
+          var keys = Object.keys(closedStatelessAgentIds || {}).filter(function (key) {
+            return key && closedStatelessAgentIds[key];
+          });
+          if (!keys.length) {
+            sessionStorage.removeItem("meridian_closed_stateless_agent_cards");
+            return;
+          }
+          var next = {};
+          keys.forEach(function (key) { next[key] = true; });
+          sessionStorage.setItem("meridian_closed_stateless_agent_cards", JSON.stringify(next));
+        } catch (e) {}
+      }
+
+      function isStatelessCallInstance(inst) {
+        return readDisplayString(inst, ["mode"]).toLowerCase() === "stateless_call";
+      }
+
+      function statelessCardKey(inst) {
+        return readDisplayString(inst, ["thread_id"]);
+      }
+
+      function isClosedStatelessCard(inst) {
+        var key = statelessCardKey(inst);
+        return Boolean(key && closedStatelessAgentIds && closedStatelessAgentIds[key]);
+      }
+
+      function closeStatelessCard(inst) {
+        var key = statelessCardKey(inst);
+        if (!key) return;
+        closedStatelessAgentIds[key] = true;
+        persistClosedStatelessCards();
+      }
+
+      function closeAllStatelessCards(instances) {
+        var list = Array.isArray(instances) ? instances : [];
+        list.forEach(function (inst) {
+          if (!isStatelessCallInstance(inst)) return;
+          var key = statelessCardKey(inst);
+          if (key) closedStatelessAgentIds[key] = true;
+        });
+        persistClosedStatelessCards();
+      }
+
+      function cleanupClosedStatelessCards(instances) {
+        var list = Array.isArray(instances) ? instances : [];
+        var liveKeys = {};
+        list.forEach(function (inst) {
+          if (!isStatelessCallInstance(inst)) return;
+          var key = statelessCardKey(inst);
+          if (key) liveKeys[key] = true;
+        });
+        var changed = false;
+        Object.keys(closedStatelessAgentIds || {}).forEach(function (key) {
+          if (!liveKeys[key]) {
+            delete closedStatelessAgentIds[key];
+            changed = true;
+          }
+        });
+        if (changed) persistClosedStatelessCards();
+      }
+
+      function splitVisibleInstances(instances) {
+        var split = { sessioned: [], stateless: [] };
+        var list = Array.isArray(instances) ? instances : [];
+        list.forEach(function (inst) {
+          if (isStatelessCallInstance(inst)) {
+            if (!isClosedStatelessCard(inst)) split.stateless.push(inst);
+          } else {
+            split.sessioned.push(inst);
+          }
+        });
+        return split;
+      }
+
       function resolveActualAgent(inst) {
         return readDisplayString(inst, ["actual_agent", "agent_type", "type"]);
       }
@@ -1811,129 +2012,171 @@
           });
       }
 
+      function renderInstanceCard(inst, options) {
+        options = options || {};
+        var rolesBase = meridianRolesGuiOrigin();
+        var card = document.createElement("div");
+        card.className = "instance-card" + (options.stateless ? " stateless-card" : "");
+
+        var isActive = inst.status === "running";
+        var wd = inst.working_dir;
+        var repoName = wd ? repoBasenameFromPath(wd) : "";
+        var repoBlock = wd
+          ? '<div class="card-repo">' +
+              '<span class="card-repo-name">' + escapeHtml(repoName) + "</span>" +
+              '<span class="card-repo-path">' + escapeHtml(wd) + "</span>" +
+            "</div>"
+          : '<div class="card-repo">' +
+              '<span class="card-repo-name" style="color:var(--text-dim);font-weight:500">No repo path</span>' +
+            "</div>";
+        var lastAt = inst.last_interaction_at || inst.updated_at || inst.created_at;
+        var lastInteractionLabel = inst.last_interaction_at
+          ? formatDate(inst.last_interaction_at)
+          : "—";
+        var lastTrace = inst.last_trace_id && String(inst.last_trace_id).trim()
+          ? String(inst.last_trace_id).trim()
+          : "—";
+        var actualAgent = resolveActualAgent(inst) || "—";
+        var currentModel = resolveCurrentModel(inst) || "Not reported";
+        var lastCaller = inst.last_caller;
+        var lastCallerLabel = (lastCaller && (lastCaller.caller_label || lastCaller.caller_id)) || "Unknown";
+        var spawnedBy = inst.spawned_by;
+        var spawnedByLabel = (spawnedBy && (spawnedBy.caller_label || spawnedBy.caller_id)) || "Unknown";
+        var spawnAppend = inst.spawn_append || inst.spawn_provider_append || "";
+        var spawnDisplay = spawnAppend || inst.spawn_display || "—";
+        var closeButton = options.stateless
+          ? '<button type="button" class="card-close-btn" aria-label="Close stateless agent card" title="Close stateless agent card">×</button>'
+          : "";
+
+        card.innerHTML = `
+          <div class="card-head">
+            <span class="thread-id">${escapeHtml(inst.thread_id)}</span>
+            <div class="card-head-actions">
+              <div class="status-dot ${isActive ? "active" : ""}"></div>
+              ${closeButton}
+            </div>
+          </div>
+          <div class="card-caller" title="Last caller into this thread">
+            <span class="card-caller-dot"></span>
+            Last caller: <strong>${escapeHtml(lastCallerLabel)}</strong>
+          </div>
+          ${repoBlock}
+          <div class="card-footer">
+            <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(inst.status || "offline")}</span>
+            <span title="${escapeHtml(lastAt || "")}">${escapeHtml(formatDate(lastAt))}</span>
+          </div>
+          <details class="card-secondary">
+            <summary>More info</summary>
+            <div class="card-secondary-body">
+              <div class="detail-item">
+                <span class="detail-label">Actual agent</span>
+                <span class="detail-value">${escapeHtml(actualAgent)}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Current model</span>
+                <span class="detail-value">${escapeHtml(currentModel)}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Mode</span>
+                <span class="detail-value">${escapeHtml(inst.mode || "bridge")}</span>
+              </div>
+              <div class="detail-item span-2">
+                <span class="detail-label">Spawned by</span>
+                <span class="detail-value" style="font-size:0.8rem;color:var(--text-dim)">${escapeHtml(spawnedByLabel)}</span>
+              </div>
+              <div class="detail-item span-2">
+                <span class="detail-label">Provider append</span>
+                <span class="detail-value mono">${escapeHtml(spawnDisplay)}</span>
+              </div>
+              <div class="detail-item span-2">
+                <span class="detail-label">Attached interface</span>
+                <span class="detail-value">${escapeHtml(formatAttachedInterfaceLabel(inst))}</span>
+              </div>
+              <div class="detail-item span-2">
+                <span class="detail-label">Last trace ID</span>
+                <span class="detail-value" style="font-family:SF Mono,Fira Code,monospace;font-size:0.8rem">${escapeHtml(lastTrace)}</span>
+              </div>
+              <div class="detail-item span-2">
+                <span class="detail-label">Last interaction</span>
+                <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
+              </div>
+              <button type="button" class="btn card-interrupt-btn">Interrupt run</button>
+              <button type="button" class="btn card-kill-btn">Kill agent</button>
+              <a class="role-link" href="${rolesBase}/" target="_blank" rel="noopener noreferrer">meridian-roles →</a>
+            </div>
+          </details>
+        `;
+
+        var detailsEl = card.querySelector("details.card-secondary");
+        var roleLinkEl = card.querySelector(".role-link");
+        var interruptButtonEl = card.querySelector(".card-interrupt-btn");
+        var killButtonEl = card.querySelector(".card-kill-btn");
+        var closeButtonEl = card.querySelector(".card-close-btn");
+        if (detailsEl) {
+          detailsEl.addEventListener("click", function (e) { e.stopPropagation(); });
+        }
+        if (roleLinkEl) {
+          roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
+          roleLinkEl.title = "Open meridian-roles. Hub thread IDs are not the same as meridian-roles role IDs.";
+        }
+        if (interruptButtonEl) {
+          interruptButtonEl.addEventListener("click", function (e) {
+            e.stopPropagation();
+            interruptInstance(inst, interruptButtonEl);
+          });
+        }
+        if (killButtonEl) {
+          killButtonEl.addEventListener("click", function (e) {
+            e.stopPropagation();
+            killInstance(inst, killButtonEl);
+          });
+        }
+        if (closeButtonEl && typeof options.onClose === "function") {
+          closeButtonEl.addEventListener("click", function (e) {
+            e.stopPropagation();
+            options.onClose(inst);
+          });
+        }
+        card.addEventListener("click", function () { openInstance(inst); });
+        return card;
+      }
+
+      function renderCardGroup(targetEl, instances, options) {
+        if (!targetEl) return;
+        targetEl.innerHTML = "";
+        instances.forEach(function (inst) {
+          targetEl.appendChild(renderInstanceCard(inst, options));
+        });
+      }
+
+      function updateAgentSection(sectionEl, countEl, count) {
+        if (sectionEl) sectionEl.classList.toggle("hidden", count === 0);
+        if (countEl) countEl.textContent = count + (count === 1 ? " card" : " cards");
+      }
+
       function renderGrid(instances) {
-        gridEl.innerHTML = "";
-        if (!instances || instances.length === 0) {
+        lastRenderedInstances = Array.isArray(instances) ? instances : [];
+        cleanupClosedStatelessCards(lastRenderedInstances);
+
+        var split = splitVisibleInstances(lastRenderedInstances);
+        renderCardGroup(gridEl, split.sessioned, {});
+        renderCardGroup(statelessGridEl, split.stateless, {
+          stateless: true,
+          onClose: function (inst) {
+            closeStatelessCard(inst);
+            renderGrid(lastRenderedInstances);
+          }
+        });
+
+        updateAgentSection(sessionedSectionEl, sessionedAgentCountEl, split.sessioned.length);
+        updateAgentSection(statelessSectionEl, statelessAgentCountEl, split.stateless.length);
+        if (closeStatelessCardsBtn) closeStatelessCardsBtn.disabled = split.stateless.length === 0;
+
+        if (split.sessioned.length === 0 && split.stateless.length === 0) {
           emptyStateEl.classList.remove("hidden");
           return;
         }
         emptyStateEl.classList.add("hidden");
-
-        var rolesBase = meridianRolesGuiOrigin();
-        
-        instances.forEach(function (inst) {
-          var card = document.createElement("div");
-          card.className = "instance-card";
-          
-          var isActive = inst.status === "running";
-          var wd = inst.working_dir;
-          var repoName = wd ? repoBasenameFromPath(wd) : "";
-          var repoBlock = wd
-            ? '<div class="card-repo">' +
-                '<span class="card-repo-name">' + escapeHtml(repoName) + "</span>" +
-                '<span class="card-repo-path">' + escapeHtml(wd) + "</span>" +
-              "</div>"
-            : '<div class="card-repo">' +
-                '<span class="card-repo-name" style="color:var(--text-dim);font-weight:500">No repo path</span>' +
-              "</div>";
-          var lastAt = inst.last_interaction_at || inst.updated_at || inst.created_at;
-          var lastInteractionLabel = inst.last_interaction_at
-            ? formatDate(inst.last_interaction_at)
-            : "—";
-          var lastTrace = inst.last_trace_id && String(inst.last_trace_id).trim()
-            ? String(inst.last_trace_id).trim()
-            : "—";
-          var actualAgent = resolveActualAgent(inst) || "—";
-          var currentModel = resolveCurrentModel(inst) || "Not reported";
-          var lastCaller = inst.last_caller;
-          var lastCallerLabel = (lastCaller && (lastCaller.caller_label || lastCaller.caller_id)) || "Unknown";
-          var spawnedBy = inst.spawned_by;
-          var spawnedByLabel = (spawnedBy && (spawnedBy.caller_label || spawnedBy.caller_id)) || "Unknown";
-          var spawnAppend = inst.spawn_append || inst.spawn_provider_append || "";
-          var spawnDisplay = spawnAppend || inst.spawn_display || "—";
-
-          card.innerHTML = `
-            <div class="card-head">
-              <span class="thread-id">${escapeHtml(inst.thread_id)}</span>
-              <div class="status-dot ${isActive ? "active" : ""}"></div>
-            </div>
-            <div class="card-caller" title="Last caller into this thread">
-              <span class="card-caller-dot"></span>
-              Last caller: <strong>${escapeHtml(lastCallerLabel)}</strong>
-            </div>
-            ${repoBlock}
-            <div class="card-footer">
-              <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(inst.status || "offline")}</span>
-              <span title="${escapeHtml(lastAt || "")}">${escapeHtml(formatDate(lastAt))}</span>
-            </div>
-            <details class="card-secondary">
-              <summary>More info</summary>
-              <div class="card-secondary-body">
-                <div class="detail-item">
-                  <span class="detail-label">Actual agent</span>
-                  <span class="detail-value">${escapeHtml(actualAgent)}</span>
-                </div>
-                <div class="detail-item">
-                  <span class="detail-label">Current model</span>
-                  <span class="detail-value">${escapeHtml(currentModel)}</span>
-                </div>
-                <div class="detail-item">
-                  <span class="detail-label">Mode</span>
-                  <span class="detail-value">${escapeHtml(inst.mode || "bridge")}</span>
-                </div>
-                <div class="detail-item span-2">
-                  <span class="detail-label">Spawned by</span>
-                  <span class="detail-value" style="font-size:0.8rem;color:var(--text-dim)">${escapeHtml(spawnedByLabel)}</span>
-                </div>
-                <div class="detail-item span-2">
-                  <span class="detail-label">Provider append</span>
-                  <span class="detail-value mono">${escapeHtml(spawnDisplay)}</span>
-                </div>
-                <div class="detail-item span-2">
-                  <span class="detail-label">Attached interface</span>
-                  <span class="detail-value">${escapeHtml(formatAttachedInterfaceLabel(inst))}</span>
-                </div>
-                <div class="detail-item span-2">
-                  <span class="detail-label">Last trace ID</span>
-                  <span class="detail-value" style="font-family:SF Mono,Fira Code,monospace;font-size:0.8rem">${escapeHtml(lastTrace)}</span>
-                </div>
-                <div class="detail-item span-2">
-                  <span class="detail-label">Last interaction</span>
-                  <span class="detail-value" title="${escapeHtml(inst.last_interaction_at || "")}">${escapeHtml(lastInteractionLabel)}</span>
-                </div>
-                <button type="button" class="btn card-interrupt-btn">Interrupt run</button>
-                <button type="button" class="btn card-kill-btn">Kill agent</button>
-                <a class="role-link" href="${rolesBase}/" target="_blank" rel="noopener noreferrer">meridian-roles →</a>
-              </div>
-            </details>
-          `;
-          
-          var detailsEl = card.querySelector("details.card-secondary");
-          var roleLinkEl = card.querySelector(".role-link");
-          var interruptButtonEl = card.querySelector(".card-interrupt-btn");
-          var killButtonEl = card.querySelector(".card-kill-btn");
-          if (detailsEl) {
-            detailsEl.addEventListener("click", function (e) { e.stopPropagation(); });
-          }
-          if (roleLinkEl) {
-            roleLinkEl.addEventListener("click", function (e) { e.stopPropagation(); });
-            roleLinkEl.title = "Open meridian-roles. Hub thread IDs are not the same as meridian-roles role IDs.";
-          }
-          if (interruptButtonEl) {
-            interruptButtonEl.addEventListener("click", function (e) {
-              e.stopPropagation();
-              interruptInstance(inst, interruptButtonEl);
-            });
-          }
-          if (killButtonEl) {
-            killButtonEl.addEventListener("click", function (e) {
-              e.stopPropagation();
-              killInstance(inst, killButtonEl);
-            });
-          }
-          card.addEventListener("click", function () { openInstance(inst); });
-          gridEl.appendChild(card);
-        });
       }
 
       function renderLogInventory(payload) {
@@ -2132,7 +2375,7 @@
                 '<button type="button" class="btn-caller-action" data-caller-action="rotate" data-caller-id="' + idEsc + '">Rotate</button>' +
                 '<button type="button" class="btn-caller-action danger" data-caller-action="revoke" data-caller-id="' + idEsc + '">Revoke</button>' +
               '</div>';
-          var authorityCell = '<select class="caller-authority-select" data-caller-id="' + idEsc + '" data-previous-authority="' + authorityEsc + '"' +
+          var authorityCell = '<select class="caller-authority-select" data-caller-action="authority" data-caller-id="' + idEsc + '" data-previous-authority="' + authorityEsc + '"' +
             (isBuiltin ? ' disabled title="Built-in caller authority is managed by the Hub bootstrap."' : '') +
             '>' + renderAuthorityOptions(authority) + '</select>';
           return '<tr>' +
@@ -2355,6 +2598,12 @@
       }
 
       btnSpawn.addEventListener("click", spawn);
+      if (closeStatelessCardsBtn) {
+        closeStatelessCardsBtn.addEventListener("click", function () {
+          closeAllStatelessCards(lastRenderedInstances);
+          renderGrid(lastRenderedInstances);
+        });
+      }
       if (providerEl) {
         providerEl.addEventListener("change", function () {
           saveSpawnProviderPreference();
@@ -2557,6 +2806,7 @@
         ptrStartY = 0;
       }, { passive: true });
 
+      closedStatelessAgentIds = loadClosedStatelessCards();
       loadSpawnPreferences();
       void loadSpawnModelOptions(true);
       fetchList();

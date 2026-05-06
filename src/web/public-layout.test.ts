@@ -636,6 +636,72 @@ test("hub layout exposes actual agent, current model, and in-card kill controls"
   assert.match(indexHtml, /\/api\/kill/);
 });
 
+test("hub layout separates stateless call agents into their own card row", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  assert.match(indexHtml, /id="sessioned-agents-section"/);
+  assert.match(indexHtml, /id="stateless-agents-section"/);
+  assert.match(indexHtml, /id="stateless-grid"/);
+  assert.match(indexHtml, /id="close-stateless-cards"/);
+  assert.match(indexHtml, /Stateless call agents/);
+  assert.match(indexHtml, /Close all stateless cards/);
+  assert.match(indexHtml, /function renderInstanceCard\(/);
+  assert.match(indexHtml, /function splitVisibleInstances\(instances\)/);
+});
+
+test("hub stateless card close helpers hide only stateless call cards", async () => {
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+  const stored: Record<string, string> = {};
+  const context: Record<string, unknown> = {
+    closedStatelessAgentIds: {},
+    sessionStorage: {
+      getItem(key: string): string | null {
+        return Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] ?? null : null;
+      },
+      setItem(key: string, value: string): void {
+        stored[key] = String(value);
+      },
+      removeItem(key: string): void {
+        delete stored[key];
+      }
+    }
+  };
+
+  bindTerminalFunctions(indexHtml, context, [
+    "readDisplayString",
+    "isStatelessCallInstance",
+    "statelessCardKey",
+    "isClosedStatelessCard",
+    "persistClosedStatelessCards",
+    "splitVisibleInstances",
+    "closeStatelessCard",
+    "closeAllStatelessCards"
+  ]);
+
+  const instances = [
+    { thread_id: "codex_01", mode: "pane_bridge", status: "running" },
+    { thread_id: "codex_stateless_01", mode: "stateless_call", status: "idle" },
+    { thread_id: "codex_stateless_02", mode: "stateless_call", status: "running" }
+  ];
+
+  let split = (context.splitVisibleInstances as (items: unknown[]) => { sessioned: unknown[]; stateless: unknown[] })(instances);
+  assert.deepEqual(split.sessioned.map((item) => (item as { thread_id: string }).thread_id), ["codex_01"]);
+  assert.deepEqual(split.stateless.map((item) => (item as { thread_id: string }).thread_id), [
+    "codex_stateless_01",
+    "codex_stateless_02"
+  ]);
+
+  (context.closeStatelessCard as (item: unknown) => void)(instances[1]);
+  split = (context.splitVisibleInstances as (items: unknown[]) => { sessioned: unknown[]; stateless: unknown[] })(instances);
+  assert.deepEqual(split.sessioned.map((item) => (item as { thread_id: string }).thread_id), ["codex_01"]);
+  assert.deepEqual(split.stateless.map((item) => (item as { thread_id: string }).thread_id), ["codex_stateless_02"]);
+
+  (context.closeAllStatelessCards as (items: unknown[]) => void)(instances);
+  split = (context.splitVisibleInstances as (items: unknown[]) => { sessioned: unknown[]; stateless: unknown[] })(instances);
+  assert.deepEqual(split.sessioned.map((item) => (item as { thread_id: string }).thread_id), ["codex_01"]);
+  assert.deepEqual(split.stateless, []);
+});
+
 test("bridge layout does not hard-cap content width on large screens", async () => {
   const bridgeHtml = await fs.promises.readFile(path.join(publicDir, "bridge.html"), "utf8");
 
