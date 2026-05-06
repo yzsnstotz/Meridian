@@ -9,6 +9,7 @@ import {
   createRoutineJobHubServer,
   DEFAULT_RESTART_SCRIPT_ROOTS,
   executeRestartScript,
+  formatClawsoBuildBytes,
   parseHubRegistry,
   probeEntry,
   validateRestartScript,
@@ -59,6 +60,112 @@ describe("parseHubRegistry", () => {
 });
 
 describe("routine job hub server", () => {
+  it("renders the Clawso desktop maintenance card with three build modes and footprint", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-clawso-card-"));
+    const registryPath = path.join(root, "hub.json");
+    const clawsoRoot = path.join(root, "clawso");
+    await fs.mkdir(path.join(clawsoRoot, "user_scripts"), { recursive: true });
+    await fs.mkdir(path.join(clawsoRoot, "apps/client/src-tauri/target/release/bundle/dmg"), { recursive: true });
+    await fs.writeFile(registryPath, "[]", "utf8");
+    await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--debug.sh"), "#!/usr/bin/env bash\n", {
+      mode: 0o755
+    });
+    await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--local.sh"), "#!/usr/bin/env bash\n", {
+      mode: 0o755
+    });
+    await fs.writeFile(
+      path.join(clawsoRoot, "apps/client/src-tauri/target/release/bundle/dmg/Clawso_1.2.3_aarch64.dmg"),
+      "dmg",
+      "utf8"
+    );
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      clawsoRepoRoot: clawsoRoot,
+      clawsoSizeReader: async (absolutePath) => {
+        if (absolutePath.endsWith("src-tauri/target")) return 4_000_000_000;
+        if (absolutePath.endsWith("apps/client/dist")) return 2_000_000;
+        if (absolutePath.endsWith(".dist/release-logs")) return 500_000;
+        return 0;
+      }
+    });
+    servers.add(server);
+    await server.listen();
+
+    const page = await fetchText(`${server.url()}/`);
+    const status = await fetchJson<{
+      footprint: { totalBytes: number; formattedTotal: string };
+      modes: Array<{ id: string; available: boolean; artifactType: string; unavailableReason?: string }>;
+    }>(`${server.url()}/api/clawso-desktop-maintenance`);
+
+    expect(page.body).toContain("Clawso Desktop Maintenance");
+    expect(page.body).toContain('data-clawso-build-mode="debug"');
+    expect(page.body).toContain('data-clawso-build-mode="local"');
+    expect(page.body).toContain('data-clawso-build-mode="online"');
+    expect(page.body).toContain("data-clawso-footprint-total");
+    expect(page.body).toContain('data-clawso-footprint-path="tauri-target"');
+    expect(page.body).toContain("3.7 GB");
+    expect(status.footprint.totalBytes).toBe(4_002_500_000);
+    expect(status.footprint.formattedTotal).toBe("3.7 GB");
+    expect(status.modes.map((mode) => [mode.id, mode.available, mode.artifactType])).toEqual([
+      ["debug", true, "app"],
+      ["local", true, "dmg"],
+      ["online", false, "dmg"]
+    ]);
+    expect(status.modes[2]?.unavailableReason).toContain("Missing script");
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("runs Clawso desktop build scripts and activates the generated artifact", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-clawso-run-"));
+    const registryPath = path.join(root, "hub.json");
+    const clawsoRoot = path.join(root, "clawso");
+    const scriptDir = path.join(clawsoRoot, "user_scripts");
+    const dmgDir = path.join(clawsoRoot, "apps/client/src-tauri/target/release/bundle/dmg");
+    await fs.mkdir(scriptDir, { recursive: true });
+    await fs.mkdir(dmgDir, { recursive: true });
+    await fs.writeFile(registryPath, "[]", "utf8");
+    await fs.writeFile(
+      path.join(scriptDir, "release-desktop-client--local.sh"),
+      `#!/usr/bin/env bash\nset -euo pipefail\necho local-build\nprintf dmg > "${path.join(dmgDir, "Clawso_1.2.4_aarch64.dmg")}"\n`,
+      { mode: 0o755 }
+    );
+    const opened: string[] = [];
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      clawsoRepoRoot: clawsoRoot,
+      clawsoScriptTimeoutMs: 1_000,
+      clawsoArtifactOpener: async (artifactPath) => {
+        opened.push(artifactPath);
+      }
+    });
+    servers.add(server);
+    await server.listen();
+
+    const build = await fetch(`${server.url()}/api/clawso-desktop-maintenance/build`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "local" })
+    });
+    expect(build.status).toBe(200);
+    const buildResult = await build.json() as { status: string; stdout: string; artifact: { path: string } | null };
+    expect(buildResult.status).toBe("ok");
+    expect(buildResult.stdout).toContain("local-build");
+    expect(buildResult.artifact?.path).toContain("Clawso_1.2.4_aarch64.dmg");
+
+    const activate = await fetch(`${server.url()}/api/clawso-desktop-maintenance/activate`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "local" })
+    });
+    expect(activate.status).toBe(200);
+    expect(opened).toEqual([path.join(dmgDir, "Clawso_1.2.4_aarch64.dmg")]);
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
   it("renders a missing registry notice without crashing", async () => {
     const missingRegistry = path.join(tmpdir(), `missing-hub-${Date.now()}.json`);
     const server = createRoutineJobHubServer({
@@ -432,6 +539,14 @@ describe("routine job hub server", () => {
       status: "down",
       health_url: `${hangingChild.baseUrl}/healthz`
     }));
+  });
+});
+
+describe("Clawso desktop maintenance helpers", () => {
+  it("formats build footprint bytes", () => {
+    expect(formatClawsoBuildBytes(0)).toBe("0 B");
+    expect(formatClawsoBuildBytes(1_536)).toBe("1.5 KB");
+    expect(formatClawsoBuildBytes(3_973_988_761)).toBe("3.7 GB");
   });
 });
 
