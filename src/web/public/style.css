@@ -36,6 +36,7 @@
   --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
   --transition: 120ms ease;
+  --detail-sticky-top: 64px;
 }
 
 [hidden] {
@@ -255,6 +256,29 @@ code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
 .panel-form {
   background: var(--bg-elevated);
   border-color: var(--line-strong);
+}
+
+.detail-sticky-head {
+  position: sticky;
+  top: var(--detail-sticky-top);
+  z-index: 90;
+  align-self: start;
+}
+
+.panel.detail-sticky-head,
+.scheduler-sticky-head .panel,
+.scheduler-sticky-head .stat-card {
+  box-shadow: var(--shadow-md);
+}
+
+.panel.detail-sticky-head {
+  background: rgba(18, 21, 28, 0.96);
+  backdrop-filter: blur(12px);
+}
+
+.scheduler-sticky-head {
+  display: grid;
+  gap: 12px;
 }
 
 .panel-heading {
