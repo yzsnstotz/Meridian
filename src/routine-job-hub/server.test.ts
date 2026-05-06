@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import http from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
   DEFAULT_RESTART_SCRIPT_ROOTS,
   executeRestartScript,
   formatClawsoBuildBytes,
+  formatClawsoDisplayPath,
   parseHubRegistry,
   probeEntry,
   validateRestartScript,
@@ -60,17 +61,21 @@ describe("parseHubRegistry", () => {
 });
 
 describe("routine job hub server", () => {
-  it("renders the Clawso desktop maintenance card with three build modes and footprint", async () => {
+  it("renders the Clawso desktop maintenance card with four build modes and footprint", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-clawso-card-"));
     const registryPath = path.join(root, "hub.json");
     const clawsoRoot = path.join(root, "clawso");
     await fs.mkdir(path.join(clawsoRoot, "user_scripts"), { recursive: true });
     await fs.mkdir(path.join(clawsoRoot, "apps/client/src-tauri/target/release/bundle/dmg"), { recursive: true });
+    await fs.mkdir(path.join(clawsoRoot, ".dist/client-webwrap"), { recursive: true });
     await fs.writeFile(registryPath, "[]", "utf8");
     await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--debug.sh"), "#!/usr/bin/env bash\n", {
       mode: 0o755
     });
     await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--local.sh"), "#!/usr/bin/env bash\n", {
+      mode: 0o755
+    });
+    await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--webwrap.sh"), "#!/usr/bin/env bash\n", {
       mode: 0o755
     });
     await fs.writeFile(
@@ -83,6 +88,7 @@ describe("routine job hub server", () => {
       port: 0,
       registryPath,
       clawsoRepoRoot: clawsoRoot,
+      clawsoBranchReader: async () => "feat/client-rebuild--v3",
       clawsoSizeReader: async (absolutePath) => {
         if (absolutePath.endsWith("src-tauri/target")) return 4_000_000_000;
         if (absolutePath.endsWith("apps/client/dist")) return 2_000_000;
@@ -96,16 +102,32 @@ describe("routine job hub server", () => {
     const page = await fetchText(`${server.url()}/`);
     const status = await fetchJson<{
       footprint: { totalBytes: number; formattedTotal: string };
-      modes: Array<{ id: string; available: boolean; artifactType: string; unavailableReason?: string }>;
+      modes: Array<{
+        artifactType: string;
+        available: boolean;
+        branch: string;
+        id: string;
+        scriptDirectoryDisplay: string;
+        unavailableReason?: string;
+      }>;
     }>(`${server.url()}/api/clawso-desktop-maintenance`);
 
     expect(page.body).toContain("Clawso Desktop Maintenance");
     expect(page.body).toContain('data-clawso-build-mode="debug"');
     expect(page.body).toContain('data-clawso-build-mode="local"');
     expect(page.body).toContain('data-clawso-build-mode="online"');
+    expect(page.body).toContain('data-clawso-build-mode="webwrap"');
+    expect(page.body).toContain("Mode 4: Web-app wrapper");
+    expect(page.body).toContain("Script:</strong> user_scripts/release-desktop-client--webwrap.sh");
+    expect(page.body).toContain("http://127.0.0.1:5173/");
+    expect(page.body).not.toContain("https://v3-client-web.clawso.pages.dev/");
+    expect(page.body).not.toContain("Preview:</strong>");
+    expect(page.body).toContain("Branch:</strong> feat/client-rebuild--v3");
+    expect(page.body).toContain(`Script dir:</strong> ${clawsoRoot}/user_scripts`);
     expect(page.body).toContain('data-clawso-command-log="debug"');
     expect(page.body).toContain('data-clawso-command-log="local"');
     expect(page.body).toContain('data-clawso-command-log="online"');
+    expect(page.body).toContain('data-clawso-command-log="webwrap"');
     expect(page.body).toContain("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));");
     expect(page.body).toContain(".maintenance-status pre {\n        box-sizing: border-box;");
     expect(page.body).toContain("overflow-wrap: anywhere;");
@@ -117,8 +139,11 @@ describe("routine job hub server", () => {
     expect(status.modes.map((mode) => [mode.id, mode.available, mode.artifactType])).toEqual([
       ["debug", true, "app"],
       ["local", true, "dmg"],
-      ["online", false, "dmg"]
+      ["online", false, "dmg"],
+      ["webwrap", true, "url"]
     ]);
+    expect(status.modes.every((mode) => mode.branch === "feat/client-rebuild--v3")).toBe(true);
+    expect(status.modes.every((mode) => mode.scriptDirectoryDisplay === `${clawsoRoot}/user_scripts`)).toBe(true);
     expect(status.modes[2]?.unavailableReason).toContain("Missing script");
 
     await fs.rm(root, { recursive: true, force: true });
@@ -174,6 +199,67 @@ describe("routine job hub server", () => {
     });
     expect(activate.status).toBe(200);
     expect(opened).toEqual([path.join(dmgDir, "Clawso_1.2.4_aarch64.dmg")]);
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("runs the Clawso webwrap mode as a no-deploy local build and exposes the local URL", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-clawso-webwrap-"));
+    const registryPath = path.join(root, "hub.json");
+    const clawsoRoot = path.join(root, "clawso");
+    const scriptDir = path.join(clawsoRoot, "user_scripts");
+    const webwrapDir = path.join(clawsoRoot, ".dist/client-webwrap");
+    const argsPath = path.join(root, "webwrap-args.txt");
+    await fs.mkdir(scriptDir, { recursive: true });
+    await fs.writeFile(registryPath, "[]", "utf8");
+    await fs.writeFile(
+      path.join(scriptDir, "release-desktop-client--webwrap.sh"),
+      `#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' "$@" > "${argsPath}"\nmkdir -p "${webwrapDir}"\necho webwrap-local-build\n`,
+      { mode: 0o755 }
+    );
+    const opened: string[] = [];
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      clawsoRepoRoot: clawsoRoot,
+      clawsoScriptTimeoutMs: 1_000,
+      clawsoArtifactOpener: async (artifactPath) => {
+        opened.push(artifactPath);
+      }
+    });
+    servers.add(server);
+    await server.listen();
+
+    const before = await fetchJson<{ modes: Array<{ id: string; artifact: { path: string } | null }> }>(
+      `${server.url()}/api/clawso-desktop-maintenance`
+    );
+    expect(before.modes.find((mode) => mode.id === "webwrap")?.artifact).toBeNull();
+
+    const build = await fetch(`${server.url()}/api/clawso-desktop-maintenance/build`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "webwrap" })
+    });
+    expect(build.status).toBe(200);
+    const buildResult = await build.json() as {
+      artifact: { path: string; type: string } | null;
+      status: string;
+      stdout: string;
+    };
+    expect(buildResult.status).toBe("ok");
+    expect(buildResult.stdout).toContain("webwrap-local-build");
+    expect(buildResult.artifact).toEqual(expect.objectContaining({
+      path: "http://127.0.0.1:5173/",
+      type: "url"
+    }));
+    expect(await fs.readFile(argsPath, "utf8")).toBe("--no-deploy\n--yes\n");
+
+    const activate = await fetch(`${server.url()}/api/clawso-desktop-maintenance/activate`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "webwrap" })
+    });
+    expect(activate.status).toBe(200);
+    expect(opened).toEqual(["http://127.0.0.1:5173/"]);
 
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -559,6 +645,12 @@ describe("Clawso desktop maintenance helpers", () => {
     expect(formatClawsoBuildBytes(0)).toBe("0 B");
     expect(formatClawsoBuildBytes(1_536)).toBe("1.5 KB");
     expect(formatClawsoBuildBytes(3_973_988_761)).toBe("3.7 GB");
+  });
+
+  it("formats Clawso paths under the home directory with a tilde", () => {
+    expect(formatClawsoDisplayPath(path.join(homedir(), "work/projects/clawso-v3-build/user_scripts"))).toBe(
+      "~/work/projects/clawso-v3-build/user_scripts"
+    );
   });
 });
 

@@ -24,7 +24,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8765;
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_REGISTRY_PATH = "/Users/yzliu/work/Docs/Projects/routine-job/hub.json";
-const DEFAULT_CLAWSO_REPO_ROOT = "/Users/yzliu/work/projects/clawso";
+const DEFAULT_CLAWSO_REPO_ROOT = "/Users/yzliu/work/projects/clawso-v3-build";
 export const DEFAULT_RESTART_SCRIPT_ROOTS: readonly string[] = [
   "/Users/yzliu/work/tools/",
   "/Users/yzliu/work/projects/ADS/user_scripts/",
@@ -36,10 +36,11 @@ const DEFAULT_CLAWSO_SCRIPT_TIMEOUT_MS = 45 * 60_000;
 const RESTART_OUTPUT_MAX_BYTES = 64 * 1024;
 const CLAWSO_OUTPUT_MAX_BYTES = 256 * 1024;
 
-type ClawsoBuildModeId = "debug" | "local" | "online";
-type ClawsoBuildArtifactType = "app" | "dmg";
+type ClawsoBuildModeId = "debug" | "local" | "online" | "webwrap";
+type ClawsoBuildArtifactType = "app" | "dmg" | "url";
 type ClawsoSizeReader = (absolutePath: string) => Promise<number>;
 type ClawsoArtifactOpener = (artifactPath: string) => Promise<void>;
+type ClawsoBranchReader = (repoRoot: string) => Promise<string>;
 
 interface ClawsoBuildMode {
   id: ClawsoBuildModeId;
@@ -51,6 +52,7 @@ interface ClawsoBuildMode {
   artifactType: ClawsoBuildArtifactType;
   artifactRelPath?: string;
   artifactDirRelPath?: string;
+  artifactUrl?: string;
   description: string;
   requiresOnlineConfirmation?: boolean;
 }
@@ -67,10 +69,15 @@ interface ClawsoBuildModeStatus {
   artifact: ClawsoBuildArtifact | null;
   artifactType: ClawsoBuildArtifactType;
   available: boolean;
+  branch: string;
   description: string;
   id: ClawsoBuildModeId;
   modeNumber: number;
+  artifactUrl?: string;
+  scriptDirectory: string;
+  scriptDirectoryDisplay: string;
   scriptPath: string;
+  scriptRelPath: string;
   title: string;
   actionLabel: string;
   unavailableReason?: string;
@@ -149,6 +156,18 @@ const CLAWSO_BUILD_MODES: readonly ClawsoBuildMode[] = [
     artifactDirRelPath: "apps/client/src-tauri/target/release/bundle/dmg",
     description: "Full Supabase, GitHub, Cloudflare, and manifest release pipeline.",
     requiresOnlineConfirmation: true
+  },
+  {
+    id: "webwrap",
+    modeNumber: 4,
+    title: "Web-app wrapper",
+    actionLabel: "Build local web view",
+    scriptRelPath: "user_scripts/release-desktop-client--webwrap.sh",
+    args: ["--no-deploy", "--yes"],
+    artifactType: "url",
+    artifactRelPath: ".dist/client-webwrap",
+    artifactUrl: "http://127.0.0.1:5173/",
+    description: "Builds the apps/client SPA plus Pages Functions worker for local browser testing; no Cloudflare deploy."
   }
 ];
 
@@ -168,6 +187,7 @@ export interface RoutineJobHubServerOptions {
   clawsoRepoRoot?: string;
   clawsoScriptTimeoutMs?: number;
   clawsoSizeReader?: ClawsoSizeReader;
+  clawsoBranchReader?: ClawsoBranchReader;
   clawsoArtifactOpener?: ClawsoArtifactOpener;
   log?: Pick<Console, "error" | "info">;
 }
@@ -309,6 +329,7 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
   private readonly clawsoRepoRoot: string;
   private readonly clawsoScriptTimeoutMs: number;
   private readonly clawsoSizeReader: ClawsoSizeReader;
+  private readonly clawsoBranchReader: ClawsoBranchReader;
   private readonly clawsoArtifactOpener: ClawsoArtifactOpener;
   private readonly log: Pick<Console, "error" | "info">;
   private server: Server | null = null;
@@ -324,6 +345,7 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
     this.clawsoRepoRoot = path.resolve(options.clawsoRepoRoot ?? DEFAULT_CLAWSO_REPO_ROOT);
     this.clawsoScriptTimeoutMs = options.clawsoScriptTimeoutMs ?? DEFAULT_CLAWSO_SCRIPT_TIMEOUT_MS;
     this.clawsoSizeReader = options.clawsoSizeReader ?? readDirectorySizeWithDu;
+    this.clawsoBranchReader = options.clawsoBranchReader ?? readGitBranch;
     this.clawsoArtifactOpener = options.clawsoArtifactOpener ?? openArtifactWithSystem;
     this.log = options.log ?? console;
   }
@@ -390,7 +412,11 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
       }
 
       if (pathname === "/api/clawso-desktop-maintenance" && method === "GET") {
-        const status = await buildClawsoDesktopMaintenanceStatus(this.clawsoRepoRoot, this.clawsoSizeReader);
+        const status = await buildClawsoDesktopMaintenanceStatus(
+          this.clawsoRepoRoot,
+          this.clawsoSizeReader,
+          this.clawsoBranchReader
+        );
         writeJson(response, 200, status);
         return;
       }
@@ -444,7 +470,11 @@ class NodeRoutineJobHubServer implements RoutineJobHubServer {
       if ((pathname === "/" || pathname === "/index.html") && (method === "GET" || method === "HEAD")) {
         const registry = await loadHubRegistry({ registryPath: this.registryPath });
         const entries = await this.probeEntries(registry.entries);
-        const clawsoStatus = await buildClawsoDesktopMaintenanceStatus(this.clawsoRepoRoot, this.clawsoSizeReader);
+        const clawsoStatus = await buildClawsoDesktopMaintenanceStatus(
+          this.clawsoRepoRoot,
+          this.clawsoSizeReader,
+          this.clawsoBranchReader
+        );
         const body = renderHubPage(registry, entries, clawsoStatus);
         writeHtml(response, 200, method === "HEAD" ? "" : body);
         return;
@@ -695,12 +725,28 @@ export function formatClawsoBuildBytes(bytes: number): string {
   return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+export function formatClawsoDisplayPath(absolutePath: string): string {
+  const resolved = path.resolve(absolutePath);
+  const home = os.homedir();
+  if (resolved === home) {
+    return "~";
+  }
+
+  if (resolved.startsWith(`${home}${path.sep}`)) {
+    return `~/${path.relative(home, resolved).split(path.sep).join("/")}`;
+  }
+
+  return resolved;
+}
+
 async function buildClawsoDesktopMaintenanceStatus(
   repoRoot: string,
-  sizeReader: ClawsoSizeReader
+  sizeReader: ClawsoSizeReader,
+  branchReader: ClawsoBranchReader
 ): Promise<ClawsoMaintenanceStatus> {
+  const branch = await branchReader(repoRoot);
   const [modes, footprint] = await Promise.all([
-    Promise.all(CLAWSO_BUILD_MODES.map((mode) => getClawsoBuildModeStatus(repoRoot, mode))),
+    Promise.all(CLAWSO_BUILD_MODES.map((mode) => getClawsoBuildModeStatus(repoRoot, mode, branch))),
     collectClawsoBuildFootprint(repoRoot, sizeReader)
   ]);
 
@@ -736,17 +782,27 @@ async function collectClawsoBuildFootprint(
   };
 }
 
-async function getClawsoBuildModeStatus(repoRoot: string, mode: ClawsoBuildMode): Promise<ClawsoBuildModeStatus> {
+async function getClawsoBuildModeStatus(
+  repoRoot: string,
+  mode: ClawsoBuildMode,
+  branch: string
+): Promise<ClawsoBuildModeStatus> {
   const scriptPath = path.join(repoRoot, mode.scriptRelPath);
+  const scriptDirectory = path.dirname(scriptPath);
   const scriptCheck = await checkClawsoScript(scriptPath, mode.scriptRelPath);
   return {
     artifact: await findClawsoArtifact(repoRoot, mode.id),
     artifactType: mode.artifactType,
     available: scriptCheck.available,
+    branch,
     description: mode.description,
     id: mode.id,
     modeNumber: mode.modeNumber,
+    artifactUrl: mode.artifactUrl,
+    scriptDirectory,
+    scriptDirectoryDisplay: formatClawsoDisplayPath(scriptDirectory),
     scriptPath,
+    scriptRelPath: mode.scriptRelPath,
     title: mode.title,
     actionLabel: mode.actionLabel,
     unavailableReason: scriptCheck.unavailableReason
@@ -770,7 +826,7 @@ async function checkClawsoScript(
 
 async function findClawsoArtifact(repoRoot: string, modeId: ClawsoBuildModeId): Promise<ClawsoBuildArtifact | null> {
   const mode = getClawsoMode(modeId);
-  if (mode.artifactType === "app") {
+  if (mode.artifactType === "app" || mode.artifactType === "url") {
     const appPath = path.join(repoRoot, mode.artifactRelPath ?? "");
     try {
       const info = await fs.stat(appPath);
@@ -779,9 +835,9 @@ async function findClawsoArtifact(repoRoot: string, modeId: ClawsoBuildModeId): 
       }
       return {
         bytes: null,
-        name: path.basename(appPath),
-        path: appPath,
-        type: "app",
+        name: mode.artifactUrl ?? path.basename(appPath),
+        path: mode.artifactUrl ?? appPath,
+        type: mode.artifactType,
         updatedAt: info.mtime.toISOString()
       };
     } catch {
@@ -836,7 +892,7 @@ function readRequestedClawsoMode(body: unknown): ClawsoBuildModeId {
   }
 
   const mode = (body as { mode?: unknown }).mode;
-  return mode === "debug" || mode === "local" || mode === "online" ? mode : "local";
+  return mode === "debug" || mode === "local" || mode === "online" || mode === "webwrap" ? mode : "local";
 }
 
 async function runClawsoDesktopBuild(
@@ -1032,6 +1088,32 @@ async function readDirectorySizeWithDu(absolutePath: string): Promise<number> {
     child.on("close", () => {
       const blocks = Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "0", 10);
       resolve(Number.isFinite(blocks) ? blocks * 1024 : 0);
+    });
+  });
+}
+
+async function readGitBranch(repoRoot: string): Promise<string> {
+  const branch = await readGitOutput(["-C", repoRoot, "branch", "--show-current"]);
+  if (branch) {
+    return branch;
+  }
+
+  const sha = await readGitOutput(["-C", repoRoot, "rev-parse", "--short", "HEAD"]);
+  return sha ? `detached:${sha}` : "unknown";
+}
+
+async function readGitOutput(args: string[]): Promise<string> {
+  return await new Promise<string>((resolve) => {
+    const child = spawn("git", args, {
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    let stdout = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.on("error", () => resolve(""));
+    child.on("close", (code) => {
+      resolve(code === 0 ? stdout.trim() : "");
     });
   });
 }
@@ -1465,7 +1547,7 @@ function renderClawsoDesktopMaintenanceCard(status: ClawsoMaintenanceStatus): st
       <p class="description">Local desktop-client build control for debug, local validation, and online release modes.</p>
     </div>
     <div>
-      <div class="route-row"><strong>Repo:</strong> ${escapeHtml(status.repoRoot)}</div>
+      <div class="route-row"><strong>Repo:</strong> ${escapeHtml(formatClawsoDisplayPath(status.repoRoot))}</div>
       <div class="maintenance-total" data-clawso-footprint-total>${escapeHtml(status.footprint.formattedTotal)}</div>
       <div class="maintenance-breakdown">${breakdown}</div>
     </div>
@@ -1488,6 +1570,11 @@ function renderClawsoMaintenanceMode(mode: ClawsoBuildModeStatus): string {
   const unavailable = mode.unavailableReason
     ? `<p class="maintenance-status err">${escapeHtml(mode.unavailableReason)}</p>`
     : "";
+  const modeMeta = `<div class="route-list">
+    <div class="route-row"><strong>Branch:</strong> ${escapeHtml(mode.branch)}</div>
+    <div class="route-row"><strong>Script:</strong> ${escapeHtml(mode.scriptRelPath)}</div>
+    <div class="route-row"><strong>Script dir:</strong> ${escapeHtml(mode.scriptDirectoryDisplay)}</div>
+  </div>`;
 
   return `<article class="maintenance-mode">
   <div class="card-header">
@@ -1495,6 +1582,7 @@ function renderClawsoMaintenanceMode(mode: ClawsoBuildModeStatus): string {
     ${availability}
   </div>
   <p class="description">${escapeHtml(mode.description)}</p>
+  ${modeMeta}
   ${unavailable}
   <p class="maintenance-artifact" data-clawso-artifact="${escapeAttribute(mode.id)}">${escapeHtml(artifact)}</p>
   <div class="actions">
