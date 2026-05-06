@@ -1911,8 +1911,49 @@
         return readDisplayString(inst, ["actual_agent", "agent_type", "type"]);
       }
 
+      function formatAgentLabel(value) {
+        var raw = typeof value === "string" ? value.trim() : "";
+        if (!raw) return "Provider";
+        return raw.charAt(0).toUpperCase() + raw.slice(1);
+      }
+
+      function readModelFromSpawnArgs(inst) {
+        if (!inst || typeof inst !== "object") return "";
+        var args = Array.isArray(inst.spawn_args)
+          ? inst.spawn_args
+          : Array.isArray(inst.spawn_provider_args)
+            ? inst.spawn_provider_args
+            : [];
+        for (var i = 0; i < args.length; i++) {
+          var arg = typeof args[i] === "string" ? args[i].trim() : "";
+          if (!arg) continue;
+          if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
+            return args[i + 1].trim();
+          }
+          if (arg.indexOf("--model=") === 0 && arg.slice("--model=".length).trim()) {
+            return arg.slice("--model=".length).trim();
+          }
+        }
+        return "";
+      }
+
       function resolveCurrentModel(inst) {
-        return readDisplayString(inst, ["current_model_id", "model_id", "model"]);
+        var reportedModel = readDisplayString(inst, ["current_model_id", "model_id", "model"]);
+        if (reportedModel) return reportedModel;
+        var modelFromArgs = readModelFromSpawnArgs(inst);
+        if (modelFromArgs) return modelFromArgs;
+        if (isStatelessCallInstance(inst)) {
+          return formatAgentLabel(resolveActualAgent(inst)) + " default";
+        }
+        return "";
+      }
+
+      function resolveCardStatus(inst) {
+        var status = readDisplayString(inst, ["status"]).toLowerCase();
+        if (isStatelessCallInstance(inst) && status === "error") {
+          return "idle";
+        }
+        return status || "offline";
       }
 
       function formatBytes(bytes) {
@@ -2018,7 +2059,8 @@
         var card = document.createElement("div");
         card.className = "instance-card" + (options.stateless ? " stateless-card" : "");
 
-        var isActive = inst.status === "running";
+        var cardStatus = resolveCardStatus(inst);
+        var isActive = cardStatus === "running";
         var wd = inst.working_dir;
         var repoName = wd ? repoBasenameFromPath(wd) : "";
         var repoBlock = wd
@@ -2062,7 +2104,7 @@
           </div>
           ${repoBlock}
           <div class="card-footer">
-            <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(inst.status || "offline")}</span>
+            <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(cardStatus)}</span>
             <span title="${escapeHtml(lastAt || "")}">${escapeHtml(formatDate(lastAt))}</span>
           </div>
           <details class="card-secondary">
