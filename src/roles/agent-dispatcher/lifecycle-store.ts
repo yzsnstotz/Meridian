@@ -328,6 +328,45 @@ export class LifecycleStore {
     this.save(state);
   }
 
+  // Operator-driven recovery for the PM-killed-after-human-takeover scenario:
+  // worker is blocked, PM escalated to a human and was killed, and the human
+  // ended up unblocking the worker thread directly. Without this, the worker
+  // sidecar stays `blocked`, the PM entry stays `failed`, and the dispatcher
+  // never advances. We mark the worker `running` (puts it back under normal
+  // observation/validation) and stamp `human_resolution` so the GUI can show
+  // a HUMAN-resolved badge and downstream gates can ignore the prior PM
+  // failure. Transitioning to `running` also triggers
+  // `reconcilePmResolversForRecoveredWorker`, which promotes any matching
+  // `failed`/`running` PM entries to `completed`.
+  markHumanResolved(workerId: string, note: string | null): void {
+    const state = this.load();
+    const worker = state.workers[workerId];
+    if (!worker) {
+      throw new Error(`Worker not found in lifecycle state: ${workerId}`);
+    }
+    const nowIso = this.now();
+    const previousStatus = worker.status;
+    const nextStatus: LifecycleStatus = "running";
+    state.workers[workerId] = {
+      ...worker,
+      last_seen_at: nowIso,
+      status: nextStatus,
+      human_resolution: {
+        resolved_at: nowIso,
+        note: note?.trim() ? note.trim() : null
+      }
+    };
+    this.logTransition(workerId, previousStatus, nextStatus, "human_resolved");
+    this.log.info("Worker marked HUMAN-resolved", {
+      event: "worker_human_resolved",
+      worker_id: workerId,
+      from_status: previousStatus,
+      note: note?.trim() ? note.trim() : null
+    });
+    reconcilePmResolversForRecoveredWorker(state, workerId, this.log, this.now);
+    this.save(state);
+  }
+
   getWorkersInState(status: LifecycleStatus): LifecycleWorkerEntry[] {
     const state = this.load();
 

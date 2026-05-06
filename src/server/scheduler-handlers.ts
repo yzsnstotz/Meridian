@@ -23,6 +23,7 @@ import { resolveServiceContinueWorker } from "../roles/agent-dispatcher/service-
 import { buildDispatchStatusReport } from "../tool-gateway/tools/dispatch-status";
 import { executeResumeWorkerAction, ResumeWorkerActionRequestSchema } from "../tool-gateway/tools/resume-worker";
 import { executeUpdateWorkerStatusAction } from "../tool-gateway/tools/update-status";
+import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import {
   buildDispatchWorkerDetails,
   enrichDispatchPlanRows,
@@ -52,6 +53,7 @@ type SchedulerRouteMatch =
   | { kind: "continue-worker"; threadId: string; workerId: string }
   | { kind: "resume-worker"; threadId: string; workerId: string }
   | { kind: "update-worker-status"; threadId: string; workerId: string }
+  | { kind: "human-resolve-worker"; threadId: string; workerId: string }
   | { kind: "complete-manual-gate"; threadId: string }
   | { kind: "delete-scheduler"; threadId: string };
 
@@ -151,6 +153,9 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
             return true;
           case "update-worker-status":
             writeJson(response, 200, await updateSchedulerWorkerStatus(route.threadId, route.workerId, await readJsonBody(request)));
+            return true;
+          case "human-resolve-worker":
+            writeJson(response, 200, await humanResolveSchedulerWorker(route.threadId, route.workerId, await readJsonBody(request)));
             return true;
           case "complete-manual-gate":
             writeJson(response, 200, await completeManualGate(route.threadId, await readJsonBody(request)));
@@ -429,6 +434,45 @@ export function createSchedulerHandlers(options: SchedulerHandlersOptions): Sche
     }
   }
 
+  async function humanResolveSchedulerWorker(threadId: string, workerId: string, body: unknown) {
+    const role = resolveSchedulerRole(threadId);
+    const config = role.getEngine()?.getConfig() ?? role.config;
+    const noteRaw = (body && typeof body === "object" && "note" in body && typeof (body as { note: unknown }).note === "string")
+      ? (body as { note: string }).note
+      : null;
+    const note = noteRaw && noteRaw.trim().length > 0 ? noteRaw.trim() : null;
+
+    const planPath = config.dispatch_plan_path;
+    const lifecycleStore = new LifecycleStore(
+      path.join(path.dirname(planPath), "dispatch_threads.json"),
+      { dispatchPlanPath: planPath }
+    );
+
+    try {
+      lifecycleStore.markHumanResolved(workerId, note);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.includes("Worker not found")) {
+        throw createHttpError(404, message);
+      }
+      throw error;
+    }
+
+    const after = lifecycleStore.load();
+    const updated = after.workers[workerId];
+    return {
+      ok: true,
+      worker_id: workerId,
+      status: updated?.status ?? null,
+      human_resolution: updated?.human_resolution
+        ? {
+            resolved_at: updated.human_resolution.resolved_at,
+            note: updated.human_resolution.note ?? null
+          }
+        : null
+    };
+  }
+
   async function completeManualGate(threadId: string, body: unknown) {
     const role = resolveSchedulerRole(threadId);
     const config = role.getEngine()?.getConfig() ?? role.config;
@@ -638,6 +682,17 @@ function matchSchedulerRoute(request: IncomingMessage): SchedulerRouteMatch | nu
     && parts[5] === "status"
   ) {
     return { kind: "update-worker-status", threadId: parts[2]!, workerId: parts[4]! };
+  }
+
+  if (
+    method === "POST"
+    && parts.length === 6
+    && parts[0] === "api"
+    && parts[1] === "scheduler"
+    && parts[3] === "worker"
+    && parts[5] === "human-resolve"
+  ) {
+    return { kind: "human-resolve-worker", threadId: parts[2]!, workerId: parts[4]! };
   }
 
   if (

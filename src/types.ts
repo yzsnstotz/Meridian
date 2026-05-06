@@ -193,6 +193,12 @@ export const ValidationStateSchema = z.object({
 });
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 
+export const HumanResolutionSchema = z.object({
+  resolved_at: z.string().datetime(),
+  note: z.string().nullable().default(null)
+});
+export type HumanResolution = z.infer<typeof HumanResolutionSchema>;
+
 export const DispatchWorkerStateSchema = z.object({
   // Empty string is the sentinel for "cleared for relaunch" written by
   // clearWorkerThreadForRelaunch when validator-feedback delivery fails on a
@@ -210,7 +216,13 @@ export const DispatchWorkerStateSchema = z.object({
   applied_reasoning_effort: z.string().min(1).optional(),
   command_preamble: z.string().nullable().default(null),
   retry_count: z.number().int().min(0).default(0),
-  validation: ValidationStateSchema.optional()
+  validation: ValidationStateSchema.optional(),
+  // Set when an operator resolved a blocked worker out-of-band (e.g. by
+  // talking directly to the worker thread because PM was killed after
+  // escalation). Persists alongside lifecycle status so the GUI can surface
+  // a HUMAN-resolved badge and downstream gates can ignore the prior PM
+  // failure.
+  human_resolution: HumanResolutionSchema.nullable().optional()
 });
 export type DispatchWorkerState = z.infer<typeof DispatchWorkerStateSchema>;
 

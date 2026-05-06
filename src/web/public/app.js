@@ -365,6 +365,18 @@ function setupSchedulerDetail() {
 
   if (!workerActionsBound) {
     workerActionsBound = true;
+    const dispatchPlanBody = document.getElementById("dispatch-progress-body")
+      || document.getElementById("dispatch-plan-body");
+    const dispatchPlanFeedback = document.getElementById("dispatch-progress-feedback")
+      || document.getElementById("dispatch-plan-feedback");
+    if (dispatchPlanBody) {
+      bindDispatchDetailActions(dispatchPlanBody, dispatchPlanFeedback, {
+        humanResolveUrl: (workerId) =>
+          `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/human-resolve`,
+        hubRelayUrl: () => `/api/hub-relay`,
+        afterAction: poll
+      });
+    }
     bindSchedulerWorkerActions(schedulerId, poll);
   }
 
@@ -654,6 +666,128 @@ function bindSchedulerWorkerActions(schedulerId, poll) {
       }
     } finally {
       setDispatchPlanControlsDisabled(dispatchPlanBody, false);
+    }
+  });
+}
+
+function bindDispatchDetailActions(rootEl, feedbackEl, options) {
+  if (!rootEl || rootEl.dataset.detailActionsBound === "true") {
+    return;
+  }
+  rootEl.dataset.detailActionsBound = "true";
+
+  const setFeedback = (message) => {
+    if (feedbackEl) {
+      feedbackEl.textContent = message;
+    }
+  };
+
+  rootEl.addEventListener("click", async (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest("button[data-detail-action='human-resolve']")
+      : null;
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    event.preventDefault();
+    const workerId = button.getAttribute("data-detail-worker-id");
+    if (!workerId) {
+      return;
+    }
+    const note = window.prompt(
+      `Mark ${workerId} as HUMAN-resolved? This sets the worker to running, reconciles any failed PM resolver entries, and stamps a HUMAN-resolved badge. Optional note:`,
+      ""
+    );
+    if (note === null) {
+      return;
+    }
+    button.disabled = true;
+    setFeedback(`Marking ${workerId} HUMAN-resolved...`);
+    try {
+      await fetchJson(options.humanResolveUrl(workerId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: note.trim() ? note.trim() : undefined })
+      });
+      setFeedback(`${workerId} marked HUMAN-resolved.`);
+      if (typeof options.afterAction === "function") {
+        await options.afterAction();
+      }
+    } catch (error) {
+      setFeedback(getErrorMessage(error));
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  rootEl.addEventListener("submit", async (event) => {
+    const form = event.target instanceof Element
+      ? event.target.closest("form[data-detail-action='talk']")
+      : null;
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    event.preventDefault();
+    const threadIdAttr = form.getAttribute("data-detail-thread-id");
+    const detailKind = form.getAttribute("data-detail-kind") || "worker";
+    const textarea = form.querySelector("textarea[name='content']");
+    const submitBtn = form.querySelector("button[type='submit']");
+    const localFeedback = form.querySelector("[data-talk-feedback]");
+    if (!threadIdAttr || !(textarea instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    const content = textarea.value.trim();
+    if (!content) {
+      if (localFeedback) {
+        localFeedback.textContent = "Type a message before sending.";
+      }
+      return;
+    }
+    if (submitBtn instanceof HTMLButtonElement) {
+      submitBtn.disabled = true;
+    }
+    if (localFeedback) {
+      localFeedback.textContent = `Sending to ${detailKind}...`;
+    }
+    setFeedback(`Sending message to ${detailKind} thread ${threadIdAttr}...`);
+    try {
+      const traceId = (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const message = {
+        trace_id: traceId,
+        thread_id: threadIdAttr,
+        actor_id: "service:meridian-roles",
+        intent: "run",
+        target: threadIdAttr,
+        priority: 5,
+        mode: "bridge",
+        reply_channel: { channel: "web", chat_id: "service:meridian-roles" },
+        payload: { content, attachments: [] }
+      };
+      await fetchJson(options.hubRelayUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message)
+      });
+      textarea.value = "";
+      if (localFeedback) {
+        localFeedback.textContent = "Sent.";
+      }
+      setFeedback(`Message delivered to ${detailKind} thread ${threadIdAttr}.`);
+      if (typeof options.afterAction === "function") {
+        await options.afterAction();
+      }
+    } catch (error) {
+      const msg = getErrorMessage(error);
+      if (localFeedback) {
+        localFeedback.textContent = msg;
+      }
+      setFeedback(msg);
+    } finally {
+      if (submitBtn instanceof HTMLButtonElement) {
+        submitBtn.disabled = false;
+      }
     }
   });
 }
@@ -1625,6 +1759,12 @@ async function setupRoleDetail() {
 
       if (!dispatchPlanActionsBound && dispatchPlanBody) {
         dispatchPlanActionsBound = true;
+        bindDispatchDetailActions(dispatchPlanBody, dispatchPlanFeedback, {
+          humanResolveUrl: (workerId) =>
+            `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/human-resolve`,
+          hubRelayUrl: () => `/api/hub-relay`,
+          afterAction: async () => { await render(); }
+        });
         dispatchPlanBody.addEventListener("click", async (event) => {
           const actionTarget = event.target instanceof Element
             ? event.target.closest("[data-continue-worker], [data-resume-action], [data-status-apply]")
@@ -2346,14 +2486,29 @@ function renderDispatchDetailCard(detail, options = {}) {
   const scoreBadge = isValidator && typeof detail.validator_score === "number"
     ? `<span class="dispatch-detail-pill dispatch-detail-score-pill">score ${escapeHtml(formatValidatorScore(detail.validator_score))}</span>`
     : "";
+  const aliveDot = detail.is_alive
+    ? `<span class="dispatch-detail-alive" title="Session is alive (${escapeHtml(detail.detail_kind || "worker")})" aria-label="alive"></span>`
+    : "";
+  const humanResolvedBadge = !isPmResolver && !isValidator && detail.human_resolution
+    ? `<span class="dispatch-detail-pill dispatch-detail-human-pill" title="Marked HUMAN-resolved at ${escapeHtml(detail.human_resolution.resolved_at || "")}">HUMAN resolved</span>`
+    : "";
 
   const showInlineValidation = !isPmResolver && !isValidator && !hasSiblingValidatorBars;
+  const taskId = isPmResolver
+    ? (detail.task_id || (detail.worker_id || "").replace(/^PM:/i, ""))
+    : detail.worker_id || "";
+  const threadId = detail.worker_thread_id || "";
+  const detailKind = detail.detail_kind || "worker";
+  const showHumanResolve = !isPmResolver && !isValidator
+    && (String(detail.status || "").toLowerCase() === "blocked" || detail.is_alive === true);
+  const canTalk = Boolean(threadId);
 
   return `
-    <details class="dispatch-detail-card dispatch-detail-card-${escapeHtml(detail.detail_kind || "worker")}">
+    <details class="dispatch-detail-card dispatch-detail-card-${escapeHtml(detailKind)}">
       <summary class="dispatch-detail-summary">
         <div class="dispatch-detail-header">
           <div class="dispatch-detail-title">
+            ${aliveDot}
             <h3>${escapeHtml(taskLabel)}</h3>
             <p class="dispatch-detail-subtitle">${escapeHtml(subtitleParts.join(" / ") || "Worker detail")}</p>
           </div>
@@ -2361,14 +2516,15 @@ function renderDispatchDetailCard(detail, options = {}) {
             ${cycleBadge}
             ${scoreBadge}
             ${retryBadge}
+            ${humanResolvedBadge}
             <span class="status-pill status-${escapeHtml(detail.status)}">${escapeHtml(detail.status)}</span>
           </div>
         </div>
       </summary>
       <div class="dispatch-detail-body">
         <dl class="summary-grid">
-          <div><dt>${isValidator ? "validator" : "worker"}</dt><dd><code>${escapeHtml(detail.worker_id || "---")}</code></dd></div>
-          <div><dt>${isValidator ? "validator_thread" : "worker_thread"}</dt><dd><code>${escapeHtml(detail.worker_thread_id || "---")}</code></dd></div>
+          <div><dt>${isValidator ? "validator" : (isPmResolver ? "pm_resolver" : "worker")}</dt><dd><code>${escapeHtml(detail.worker_id || "---")}</code></dd></div>
+          <div><dt>${isValidator ? "validator_thread" : "thread"}</dt><dd><code>${escapeHtml(detail.worker_thread_id || "---")}</code></dd></div>
           <div><dt>trace_id</dt><dd><code>${escapeHtml(detail.trace_id || "---")}</code></dd></div>
         </dl>
         <div class="dispatch-detail-messages">
@@ -2376,8 +2532,49 @@ function renderDispatchDetailCard(detail, options = {}) {
           ${renderDispatchMessage(replyLabel, detail.reply, emptyReply)}
           ${showInlineValidation ? renderDispatchValidationMessage(detail.validation) : ""}
         </div>
+        ${renderDispatchDetailActions({ taskId, threadId, detailKind, showHumanResolve, canTalk })}
       </div>
     </details>
+  `;
+}
+
+function renderDispatchDetailActions({ taskId, threadId, detailKind, showHumanResolve, canTalk }) {
+  const taskAttr = escapeHtml(taskId || "");
+  const threadAttr = escapeHtml(threadId || "");
+  const kindAttr = escapeHtml(detailKind || "worker");
+  const humanResolveBtn = showHumanResolve && taskId
+    ? `<button type="button" class="ghost-button dispatch-detail-action-button"
+        data-detail-action="human-resolve"
+        data-detail-worker-id="${taskAttr}"
+        title="Mark this worker HUMAN-resolved (clears blocked + reconciles failed PM)">
+        ✋ HUMAN resolved
+      </button>`
+    : "";
+  const talkForm = canTalk
+    ? `<form class="dispatch-detail-talk" data-detail-action="talk"
+        data-detail-thread-id="${threadAttr}"
+        data-detail-kind="${kindAttr}"
+        data-detail-worker-id="${taskAttr}">
+        <label class="dispatch-detail-talk-label" for="dispatch-detail-talk-${taskAttr}">
+          Talk directly to ${kindAttr}
+        </label>
+        <textarea id="dispatch-detail-talk-${taskAttr}" class="dispatch-detail-talk-input"
+          name="content" rows="2"
+          placeholder="Type to send a message to this thread (intent: run)..."></textarea>
+        <div class="dispatch-detail-talk-actions">
+          <button type="submit" class="ghost-button dispatch-detail-action-button">Send</button>
+          <span class="dispatch-detail-talk-status" data-talk-feedback></span>
+        </div>
+      </form>`
+    : "";
+  if (!humanResolveBtn && !talkForm) {
+    return "";
+  }
+  return `
+    <div class="dispatch-detail-footer">
+      ${humanResolveBtn ? `<div class="dispatch-detail-footer-actions">${humanResolveBtn}</div>` : ""}
+      ${talkForm}
+    </div>
   `;
 }
 
