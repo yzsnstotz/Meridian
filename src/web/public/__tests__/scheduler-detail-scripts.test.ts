@@ -42,6 +42,18 @@ describe("scheduler detail public scripts", () => {
     expect(styleCss).toContain("display: none !important");
   });
 
+  it("keeps dispatcher and scheduler status/action headers sticky", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const roleHtml = await fs.readFile(path.join(publicDir, "role.html"), "utf8");
+    const schedulerHtml = await fs.readFile(path.join(publicDir, "scheduler.html"), "utf8");
+    const styleCss = await fs.readFile(path.join(publicDir, "style.css"), "utf8");
+
+    expect(roleHtml).toContain('<section class="panel detail-sticky-head">');
+    expect(schedulerHtml).toContain('<section class="detail-sticky-head scheduler-sticky-head"');
+    expect(styleCss).toContain("--detail-sticky-top: 64px");
+    expect(styleCss).toMatch(/\.detail-sticky-head\s*{[^}]*position:\s*sticky;[^}]*top:\s*var\(--detail-sticky-top\);[^}]*z-index:\s*90;/s);
+  });
+
   it("renders every validator cycle in dispatcher detail validation output", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");

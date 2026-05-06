@@ -30,25 +30,41 @@
         <p class="lede" id="scheduler-plan-path">---</p>
       </section>
 
-      <!-- Status + Stats -->
-      <div class="stat-row">
-        <div class="stat-card">
-          <div class="stat-card-value" id="s-status-val">idle</div>
-          <div class="stat-card-label">Status</div>
+      <section class="detail-sticky-head scheduler-sticky-head" aria-label="Scheduler status and actions">
+        <!-- Status + Stats -->
+        <div class="stat-row">
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-status-val">idle</div>
+            <div class="stat-card-label">Status</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-completed-cycles">0</div>
+            <div class="stat-card-label">Completed Cycles</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-next-run-val">---</div>
+            <div class="stat-card-label">Next Run</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-last-outcome-val">---</div>
+            <div class="stat-card-label">Last Outcome</div>
+          </div>
         </div>
-        <div class="stat-card">
-          <div class="stat-card-value" id="s-completed-cycles">0</div>
-          <div class="stat-card-label">Completed Cycles</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-value" id="s-next-run-val">---</div>
-          <div class="stat-card-label">Next Run</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-value" id="s-last-outcome-val">---</div>
-          <div class="stat-card-label">Last Outcome</div>
-        </div>
-      </div>
+
+        <!-- Controls -->
+        <section class="panel">
+          <div class="panel-heading"><h2>Controls</h2></div>
+          <div class="controls">
+            <button class="primary-button" data-action="start">Start</button>
+            <button class="ghost-button" data-action="stop">Stop</button>
+            <button class="ghost-button" data-action="pause">Pause</button>
+            <button class="ghost-button" data-action="resume">Resume</button>
+            <button class="primary-button" data-action="run-now">Run Now</button>
+            <button class="danger-button" data-action="cancel-run">Cancel Run</button>
+          </div>
+          <p id="control-feedback" class="feedback" role="status" aria-live="polite" style="margin-top:10px"></p>
+        </section>
+      </section>
 
       <!-- Status Detail -->
       <section class="panel">
@@ -68,20 +84,6 @@
             <tr><th>Last Completed Report</th><td id="s-last-report">---</td></tr>
           </tbody>
         </table>
-      </section>
-
-      <!-- Controls -->
-      <section class="panel">
-        <div class="panel-heading"><h2>Controls</h2></div>
-        <div class="controls">
-          <button class="primary-button" data-action="start">Start</button>
-          <button class="ghost-button" data-action="stop">Stop</button>
-          <button class="ghost-button" data-action="pause">Pause</button>
-          <button class="ghost-button" data-action="resume">Resume</button>
-          <button class="primary-button" data-action="run-now">Run Now</button>
-          <button class="danger-button" data-action="cancel-run">Cancel Run</button>
-        </div>
-        <p id="control-feedback" class="feedback" role="status" aria-live="polite" style="margin-top:10px"></p>
       </section>
 
       <!-- Dispatch Plan Progress -->
