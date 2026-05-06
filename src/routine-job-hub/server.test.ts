@@ -68,6 +68,7 @@ describe("routine job hub server", () => {
     await fs.mkdir(path.join(clawsoRoot, "user_scripts"), { recursive: true });
     await fs.mkdir(path.join(clawsoRoot, "apps/client/src-tauri/target/release/bundle/dmg"), { recursive: true });
     await fs.mkdir(path.join(clawsoRoot, ".dist/client-webwrap"), { recursive: true });
+    await fs.writeFile(path.join(clawsoRoot, ".dist/client-webwrap/.local-url"), "http://127.0.0.1:5173/\n", "utf8");
     await fs.writeFile(registryPath, "[]", "utf8");
     await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--debug.sh"), "#!/usr/bin/env bash\n", {
       mode: 0o755
@@ -214,7 +215,7 @@ describe("routine job hub server", () => {
     await fs.writeFile(registryPath, "[]", "utf8");
     await fs.writeFile(
       path.join(scriptDir, "release-desktop-client--webwrap.sh"),
-      `#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' "$@" > "${argsPath}"\nmkdir -p "${webwrapDir}"\necho webwrap-local-build\n`,
+      `#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' "$@" > "${argsPath}"\nmkdir -p "${webwrapDir}"\nprintf 'http://127.0.0.1:5173/\\n' > "${path.join(webwrapDir, ".local-url")}"\necho webwrap-local-build\n`,
       { mode: 0o755 }
     );
     const opened: string[] = [];
@@ -260,6 +261,42 @@ describe("routine job hub server", () => {
     });
     expect(activate.status).toBe(200);
     expect(opened).toEqual(["http://127.0.0.1:5173/"]);
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("waits for the Clawso webwrap script to publish its local URL artifact", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "routine-job-hub-clawso-webwrap-url-"));
+    const registryPath = path.join(root, "hub.json");
+    const clawsoRoot = path.join(root, "clawso");
+    await fs.mkdir(path.join(clawsoRoot, "user_scripts"), { recursive: true });
+    await fs.mkdir(path.join(clawsoRoot, ".dist/client-webwrap"), { recursive: true });
+    await fs.writeFile(registryPath, "[]", "utf8");
+    await fs.writeFile(path.join(clawsoRoot, "user_scripts/release-desktop-client--webwrap.sh"), "#!/usr/bin/env bash\n", {
+      mode: 0o755
+    });
+
+    const server = createRoutineJobHubServer({
+      port: 0,
+      registryPath,
+      clawsoRepoRoot: clawsoRoot
+    });
+    servers.add(server);
+    await server.listen();
+
+    const status = await fetchJson<{ modes: Array<{ id: string; artifact: { path: string } | null }> }>(
+      `${server.url()}/api/clawso-desktop-maintenance`
+    );
+    const page = await fetchText(`${server.url()}/`);
+
+    expect(status.modes.find((mode) => mode.id === "webwrap")?.artifact).toBeNull();
+    expect(page.body).not.toContain("http://127.0.0.1:5173/");
+
+    await fs.writeFile(path.join(clawsoRoot, ".dist/client-webwrap/.local-url"), "http://127.0.0.1:5173/\n", "utf8");
+    const after = await fetchJson<{ modes: Array<{ id: string; artifact: { path: string } | null }> }>(
+      `${server.url()}/api/clawso-desktop-maintenance`
+    );
+    expect(after.modes.find((mode) => mode.id === "webwrap")?.artifact?.path).toBe("http://127.0.0.1:5173/");
 
     await fs.rm(root, { recursive: true, force: true });
   });

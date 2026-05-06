@@ -52,7 +52,6 @@ interface ClawsoBuildMode {
   artifactType: ClawsoBuildArtifactType;
   artifactRelPath?: string;
   artifactDirRelPath?: string;
-  artifactUrl?: string;
   description: string;
   requiresOnlineConfirmation?: boolean;
 }
@@ -73,7 +72,6 @@ interface ClawsoBuildModeStatus {
   description: string;
   id: ClawsoBuildModeId;
   modeNumber: number;
-  artifactUrl?: string;
   scriptDirectory: string;
   scriptDirectoryDisplay: string;
   scriptPath: string;
@@ -166,7 +164,6 @@ const CLAWSO_BUILD_MODES: readonly ClawsoBuildMode[] = [
     args: ["--no-deploy", "--yes"],
     artifactType: "url",
     artifactRelPath: ".dist/client-webwrap",
-    artifactUrl: "http://127.0.0.1:5173/",
     description: "Builds the apps/client SPA plus Pages Functions worker for local browser testing; no Cloudflare deploy."
   }
 ];
@@ -798,7 +795,6 @@ async function getClawsoBuildModeStatus(
     description: mode.description,
     id: mode.id,
     modeNumber: mode.modeNumber,
-    artifactUrl: mode.artifactUrl,
     scriptDirectory,
     scriptDirectoryDisplay: formatClawsoDisplayPath(scriptDirectory),
     scriptPath,
@@ -826,7 +822,30 @@ async function checkClawsoScript(
 
 async function findClawsoArtifact(repoRoot: string, modeId: ClawsoBuildModeId): Promise<ClawsoBuildArtifact | null> {
   const mode = getClawsoMode(modeId);
-  if (mode.artifactType === "app" || mode.artifactType === "url") {
+  if (mode.artifactType === "url") {
+    const artifactDir = path.join(repoRoot, mode.artifactRelPath ?? "");
+    try {
+      const info = await fs.stat(artifactDir);
+      if (!info.isDirectory()) {
+        return null;
+      }
+      const localUrl = (await fs.readFile(path.join(artifactDir, ".local-url"), "utf8")).trim();
+      if (!localUrl) {
+        return null;
+      }
+      return {
+        bytes: null,
+        name: localUrl,
+        path: localUrl,
+        type: "url",
+        updatedAt: info.mtime.toISOString()
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  if (mode.artifactType === "app") {
     const appPath = path.join(repoRoot, mode.artifactRelPath ?? "");
     try {
       const info = await fs.stat(appPath);
@@ -835,9 +854,9 @@ async function findClawsoArtifact(repoRoot: string, modeId: ClawsoBuildModeId): 
       }
       return {
         bytes: null,
-        name: mode.artifactUrl ?? path.basename(appPath),
-        path: mode.artifactUrl ?? appPath,
-        type: mode.artifactType,
+        name: path.basename(appPath),
+        path: appPath,
+        type: "app",
         updatedAt: info.mtime.toISOString()
       };
     } catch {
