@@ -10,7 +10,6 @@ import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
   createLifecycleThreadIdCollisionError,
-  isLifecycleThreadIdKnown,
   isLifecycleThreadIdReserved,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
@@ -165,6 +164,7 @@ export async function executeValidationCycle(
   } catch (error) {
     const reason = `failed to spawn validator: ${asErrorMessage(error)}`;
     log.warn("Validator spawn failed", { event: "validator_spawn_error", worker_id: workerId, error: reason });
+    lifecycleStore.recordValidatorSpawnFailure(workerId);
     return { status: "error", reason };
   }
 
@@ -331,9 +331,14 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
       sandboxMode: deps.validatorConfig.mode === "stateless_call" ? "read-only" : undefined
     });
 
-    const isCollision = deps.validatorConfig.mode === "stateless_call"
-      ? isLifecycleThreadIdKnown(deps.dispatchPlanPath, spawnResult.threadId)
-      : isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId);
+    // Use the active-reservation check for all modes. The broader
+    // "isLifecycleThreadIdKnown" check (which blocked every ID ever seen,
+    // including terminal-worker history) caused a deadlock: the Hub recycles
+    // killed thread IDs back into its pool rather than advancing past the last
+    // known ID, so a long-running dispatcher with many completed workers
+    // exhausted the usable ID space and the spawn-retry loop never escaped.
+    // Terminal workers' thread IDs are safe to reuse — the agents are dead.
+    const isCollision = isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId);
     if (!isCollision) {
       return spawnResult.threadId;
     }
