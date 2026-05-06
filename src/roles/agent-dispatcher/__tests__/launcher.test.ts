@@ -183,8 +183,11 @@ describe("launchDispatcher", () => {
       threadId: "dispatcher-thread-fresh"
     });
     expect(harness.spawn).toHaveBeenCalledTimes(2);
-    expect(harness.kill).toHaveBeenCalledTimes(1);
-    expect(harness.kill).toHaveBeenCalledWith("worker-thread-existing");
+    // The colliding id `worker-thread-existing` is the *live* worker thread for
+    // N-03 (status=running). Killing it would terminate the live worker, so the
+    // orphan-kill branch is suppressed; the spawn just retries until it lands
+    // on a non-colliding id.
+    expect(harness.kill).not.toHaveBeenCalled();
     expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
       threadId: "dispatcher-thread-fresh",
       commandFilePath: harness.expectedCommandPath,
@@ -230,8 +233,11 @@ describe("launchDispatcher", () => {
       error: "spawn failed: Meridian returned reserved thread id worker-thread-existing already recorded in lifecycle state"
     });
     expect(harness.spawn).toHaveBeenCalledTimes(3);
-    expect(harness.kill).toHaveBeenCalledTimes(3);
-    expect(harness.kill).toHaveBeenCalledWith("worker-thread-existing");
+    // `worker-thread-existing` is N-03's live worker thread (status=running);
+    // the orphan-kill branch is suppressed for live worker collisions to avoid
+    // taking out the worker agent. Retry exhaustion still surfaces the
+    // collision error to the caller.
+    expect(harness.kill).not.toHaveBeenCalled();
     expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 

@@ -88,6 +88,42 @@ export function isThreadIdReservedInLifecycleState(
   });
 }
 
+/**
+ * Returns true when the candidate thread id matches a *live* worker thread
+ * (`worker.thread_id` of an actively-reserved worker), as distinct from a
+ * validator thread or dispatcher thread.
+ *
+ * Used by spawn-collision retry paths to decide whether `killCollidedSpawnedThread`
+ * is safe. PR #134 introduced kill-on-collision to clear orphaned freshly-spawned
+ * agents whose ids matched stale active reservations. But when the colliding id
+ * is the *current* live worker thread we are about to validate or feed back into,
+ * the kill terminates the worker agent itself (observed in the Hub UI as "the
+ * worker had been killed before validator approval"). In that case we must skip
+ * the kill and just retry the spawn — preferring an orphan leak over taking out
+ * the worker.
+ */
+export function isLifecycleThreadIdLiveWorkerThread(
+  dispatchPlanPath: string,
+  candidateThreadId: string
+): boolean {
+  const normalizedCandidate = candidateThreadId.trim();
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  const lifecycleStore = new LifecycleStore(
+    path.join(path.dirname(dispatchPlanPath), "dispatch_threads.json"),
+    { dispatchPlanPath }
+  );
+  const state = lifecycleStore.load();
+  return Object.values(state.workers).some((worker) => {
+    if (!isActiveThreadReservationStatus(worker.status)) {
+      return false;
+    }
+    return worker.thread_id === normalizedCandidate;
+  });
+}
+
 export function isThreadIdKnownInLifecycleState(
   state: DispatchThreadStateV2,
   candidateThreadId: string

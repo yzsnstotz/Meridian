@@ -57,7 +57,9 @@ describe("launchDispatchWorker", () => {
       threadId: "worker-thread-123",
       commandFilePath: harness.commandFilePath,
       workerId: "N-01",
-      killPolicy: "always"
+      killPolicy: "always",
+      appliedModelId: "gpt-5.4",
+      appliedReasoningEffort: undefined
     });
   });
 
@@ -278,7 +280,9 @@ describe("launchDispatchWorker", () => {
       threadId: "worker-thread-fresh",
       commandFilePath: harness.commandFilePath,
       workerId: "N-02",
-      killPolicy: "always"
+      killPolicy: "always",
+      appliedModelId: "gpt-5.4",
+      appliedReasoningEffort: undefined
     });
   });
 
@@ -338,15 +342,21 @@ describe("launchDispatchWorker", () => {
       threadId: "worker-thread-fresh"
     });
     expect(harness.spawn).toHaveBeenCalledTimes(3);
-    expect(harness.kill).toHaveBeenCalledTimes(2);
-    expect(harness.kill).toHaveBeenNthCalledWith(1, "validator-thread-existing");
-    expect(harness.kill).toHaveBeenNthCalledWith(2, "worker-thread-existing");
+    // Kill is called ONCE — only on the validator-thread-existing collision
+    // (a validator thread is not a live worker thread). The
+    // worker-thread-existing collision is a live `worker.thread_id` for R-04
+    // (`awaiting_validation`), and killing it would terminate that worker
+    // agent, so the orphan-kill branch is skipped for live worker collisions.
+    expect(harness.kill).toHaveBeenCalledTimes(1);
+    expect(harness.kill).toHaveBeenCalledWith("validator-thread-existing");
     expect(harness.dispatchRunHandoff).toHaveBeenCalledTimes(1);
     expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
       threadId: "worker-thread-fresh",
       commandFilePath: harness.commandFilePath,
       workerId: "BATCH-2-GATE",
-      killPolicy: "always"
+      killPolicy: "always",
+      appliedModelId: "gpt-5.4",
+      appliedReasoningEffort: undefined
     });
   });
 
