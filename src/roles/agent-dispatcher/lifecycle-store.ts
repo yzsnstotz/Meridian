@@ -426,6 +426,18 @@ export class LifecycleStore {
     });
   }
 
+  // Called when validator spawn itself fails (before recordValidatorStart could
+  // set validator_thread_id). Increments the spawn-failure backoff counter so
+  // the watchdog and queue stop hammering a broken spawn transport.
+  recordValidatorSpawnFailure(workerId: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker?.validation) return;
+      worker.validation.spawn_failure_count = (worker.validation.spawn_failure_count ?? 0) + 1;
+      worker.validation.last_spawn_failure_at = this.now();
+    });
+  }
+
   clearValidatorStart(workerId: string, validatorThreadId: string): void {
     this.mutate((state) => {
       const worker = state.workers[workerId];
