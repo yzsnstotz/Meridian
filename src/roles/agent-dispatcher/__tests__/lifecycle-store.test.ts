@@ -2491,6 +2491,97 @@ describe("LifecycleStore", () => {
     });
   });
 
+  describe("output artifact block signal scoping to current attempt", () => {
+    it("completes a worker when the report has historical BLOCKED text from earlier attempts but the current attempt section is clean", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-60.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "N-60",
+        "worker-thread-n60",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      // Derive timestamps relative to the actual started_at set by the store.
+      const startedAtMs = Date.parse(harness.store.load().workers["N-60"]!.started_at!);
+      const beforeIso = new Date(startedAtMs - 3600_000).toISOString(); // 1 hour before
+      const afterIso = new Date(startedAtMs + 1000).toISOString();      // 1 second after
+
+      const historicalSection = [
+        `## Attempt 1 — ${beforeIso} — role: worker`,
+        "",
+        "Outcome: BLOCKED before implementation.",
+        ""
+      ].join("\n");
+
+      const currentSection = [
+        `## Attempt 2 — ${afterIso} — role: worker`,
+        "",
+        "PR #308 merged. Work complete.",
+        "Git delivery: branch pushed, PR merged."
+      ].join("\n");
+
+      await fsp.writeFile(reportPath, historicalSection + currentSection, "utf8");
+
+      harness.store.recordWorkerResult("N-60", buildHubResult({
+        thread_id: "worker-thread-n60",
+        status: "success",
+        run_state: "completed",
+        source: "output_artifact",
+        content: "Recovered N-60 result from output artifact:\n\n" + historicalSection + currentSection,
+        timestamp: afterIso
+      }));
+
+      expect(harness.store.load().workers["N-60"]).toMatchObject({
+        status: "completed"
+      });
+    });
+
+    it("still flags blocked when the CURRENT attempt section contains a real BLOCKED signal", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "N-61.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "N-61",
+        "worker-thread-n61",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      const startedAtMs = Date.parse(harness.store.load().workers["N-61"]!.started_at!);
+      const beforeIso = new Date(startedAtMs - 3600_000).toISOString();
+      const afterIso = new Date(startedAtMs + 1000).toISOString();
+
+      const content = [
+        `## Attempt 1 — ${beforeIso} — role: worker`,
+        "",
+        "Previously: succeeded.",
+        "",
+        `## Attempt 2 — ${afterIso} — role: worker`,
+        "",
+        "Outcome: BLOCKED before implementation. Missing dependency."
+      ].join("\n");
+
+      await fsp.writeFile(reportPath, content, "utf8");
+
+      harness.store.recordWorkerResult("N-61", buildHubResult({
+        thread_id: "worker-thread-n61",
+        status: "success",
+        run_state: "completed",
+        source: "output_artifact",
+        content,
+        timestamp: afterIso
+      }));
+
+      expect(harness.store.load().workers["N-61"]).toMatchObject({
+        status: "blocked"
+      });
+    });
+  });
+
   describe("clearWorkerThreadForRelaunch", () => {
     it("persists empty thread_id without throwing on schema validation", async () => {
       // Regression: DispatchWorkerStateSchema previously enforced

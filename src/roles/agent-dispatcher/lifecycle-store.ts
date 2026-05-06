@@ -1681,7 +1681,7 @@ function expectedOutputsExist(expectedOutputs: string[], startedAt?: string): bo
 function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedAt?: string): boolean {
   return outputArtifactsContain(
     expectedOutputs,
-    (content) => hubResultContainsFailureSignal({ content }),
+    (content) => hubResultContainsFailureSignal({ content: sliceContentFromStartedAt(content, startedAt) }),
     startedAt
   );
 }
@@ -1689,9 +1689,34 @@ function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedA
 function outputArtifactsContainBlockSignal(expectedOutputs: string[], startedAt?: string): boolean {
   return outputArtifactsContain(
     expectedOutputs,
-    (content) => hubResultContainsBlockSignal({ content }),
+    (content) => hubResultContainsBlockSignal({ content: sliceContentFromStartedAt(content, startedAt) }),
     startedAt
   );
+}
+
+// Append-only report files accumulate content from all prior attempts. When
+// checking for block/fail signals in an output artifact, only scan content
+// written at or after started_at so that historical block text from previous
+// attempts does not shadow a successful current attempt. The boundary is found
+// by locating the first ISO 8601 timestamp in the file that is >= started_at;
+// everything before that position is history.
+function sliceContentFromStartedAt(content: string, startedAt?: string): string {
+  if (!startedAt || !content) {
+    return content;
+  }
+  const startedAtMs = Date.parse(startedAt);
+  if (Number.isNaN(startedAtMs)) {
+    return content;
+  }
+  const isoPattern = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = isoPattern.exec(content)) !== null) {
+    const ts = Date.parse(m[1]);
+    if (!Number.isNaN(ts) && ts >= startedAtMs) {
+      return content.slice(m.index);
+    }
+  }
+  return content;
 }
 
 function reportedOutputsExist(hubResult: HubResult, expectedOutputs: string[] = [], startedAt?: string): boolean {
