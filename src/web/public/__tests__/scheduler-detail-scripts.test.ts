@@ -434,7 +434,12 @@ describe("scheduler detail public scripts", () => {
     });
   });
 
-  it("hides dispatcher continuation when an active role is idle at a human gate", async () => {
+  it("shows an Idle indicator and Start hub recovery for an active role with no live hub thread", async () => {
+    // Even when the dispatcher is parked behind a human gate (or just woken up
+    // after a process restart), the operator must be able to spawn a hub
+    // thread from the role detail page — otherwise an "active" dispatcher
+    // whose thread died is silently locked out of all controls. The Idle
+    // indicator marks the parked state without removing the recovery path.
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
     const context = vm.createContext({
@@ -478,14 +483,18 @@ describe("scheduler detail public scripts", () => {
       }
     })`, context) as {
       showContinue: boolean;
+      continueLabel: string;
+      continueDisabled: boolean;
       showLifecycle: boolean;
       showStartHub: boolean;
     };
 
     expect(controls).toMatchObject({
-      showContinue: false,
+      showContinue: true,
+      continueLabel: "Idle",
+      continueDisabled: true,
       showLifecycle: false,
-      showStartHub: false
+      showStartHub: true
     });
   });
 

@@ -3486,7 +3486,7 @@ function mapDispatchPlanStatusToLifecycleStatus(status: string | null | undefine
   }
 }
 
-function parseDispatchConversation(detailsText: string | undefined): { command: string | null; reply: string | null } {
+function parseDispatchConversation(detailsText: string | null | undefined): { command: string | null; reply: string | null } {
   if (!detailsText) {
     return {
       command: null,
@@ -3531,7 +3531,7 @@ function resolveDispatchReply(hubResult: HubResult | null | undefined, parsedRep
     ?? normalizeConversationSection(hubResult.details_text);
 }
 
-function normalizeConversationSection(value: string | undefined): string | null {
+function normalizeConversationSection(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
   }

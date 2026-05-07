@@ -110,8 +110,12 @@ export const HubResultSchema = z.object({
   status: HubResultStatusSchema,
   run_state: HubRunStateSchema.optional(),
   content: z.string(),
-  summary_text: z.string().optional(),
-  details_text: z.string().optional(),
+  // Tolerate `null` here — some hub backends (and synthetic hub_results
+  // injected for lifecycle recovery) write an explicit null summary/details.
+  // Without `.nullable()` Zod throws and `loadDispatchLifecycleState` falls
+  // back to an empty state, blanking every worker bar in the role detail GUI.
+  summary_text: z.string().nullable().optional(),
+  details_text: z.string().nullable().optional(),
   attachments: z.array(FileAttachmentSchema).default([]),
   timestamp: z.string().datetime()
 });

@@ -3319,7 +3319,10 @@ function resolveDispatcherCardControl(detail) {
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
   const validationWorker = resolveValidationContinueWorker(detail);
-  const showStartHub = status === "needs_reactivation" || hasLiveThread;
+  // Start hub session is available whenever the dispatcher is non-terminal —
+  // including when its hub thread is missing, so the operator can spawn a
+  // recovery thread without leaving the dashboard.
+  const showStartHub = !isTerminalDispatcherStatus(status);
 
   if (isTerminalDispatcherStatus(status)) {
     return { action: "continue", label: formatTerminalDispatcherStatus(status), disabled: true, showStartHub: false };
@@ -3346,7 +3349,7 @@ function resolveDispatcherCardControl(detail) {
   }
 
   if (!hasLiveThread) {
-    return { action: "continue", label: "Idle", disabled: true, showStartHub: false };
+    return { action: "continue", label: "Idle", disabled: true, showStartHub };
   }
 
   return { action: "pause", label: "Pause", disabled: false, showStartHub };
@@ -3358,7 +3361,11 @@ function resolveDispatcherDetailControls(detail) {
   const recoverableWorker = normalizeText(detail?.continue_worker);
   const liveWorker = resolveLiveRunningWorker(detail);
   const validationWorker = resolveValidationContinueWorker(detail);
-  const showStartHub = status === "needs_reactivation" || hasLiveThread;
+  // Start hub session must remain reachable whenever the dispatcher is
+  // non-terminal — including the `active` + no-live-thread state that occurs
+  // after a process restart, so the operator can spawn a recovery thread from
+  // the role detail page instead of being silently locked out.
+  const showStartHub = !isTerminalDispatcherStatus(status);
 
   // Pause/Resume targets the dispatcher session itself — independent of worker
   // state. Whenever the dispatcher has a live hub thread and is not terminal,
@@ -3422,6 +3429,20 @@ function resolveDispatcherDetailControls(detail) {
       showContinue: false,
       continueLabel: "Continue",
       continueDisabled: false,
+      showStartHub,
+      ...lifecycle
+    };
+  }
+
+  // Non-terminal dispatcher with no live hub thread (typical after a process
+  // restart). Show a disabled "Idle" indicator so the action bar isn't blank,
+  // and leave Start hub session enabled (showStartHub above) as the recovery
+  // path. Mirrors the dashboard card's behaviour for the same state.
+  if (!hasLiveThread) {
+    return {
+      showContinue: true,
+      continueLabel: "Idle",
+      continueDisabled: true,
       showStartHub,
       ...lifecycle
     };
