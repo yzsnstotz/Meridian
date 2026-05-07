@@ -2582,6 +2582,97 @@ describe("LifecycleStore", () => {
     });
   });
 
+  describe("recordWorkerStart validation history preservation", () => {
+    it("preserves validation history across relaunches even when previous status is not fix_requested", async () => {
+      // Regression: V-03-A 2026-05-07. The earlier gate keyed on
+      // `previousStatus === "fix_requested"` only, so a worker that hit
+      // fix_requested → relaunched → abandoned → resume_worker:retry had its
+      // entire validation history wiped on the pending → running transition.
+      // The operator was left with no record of why the worker had been
+      // respawning. Any prior validation context must survive a relaunch.
+      const harness = await createHarness();
+
+      harness.store.recordWorkerStart(
+        "N-37",
+        "codex_45",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+      harness.store.transitionToFixRequested(
+        "N-37",
+        0.5,
+        "cycle one needs more work",
+        "validator-thread-1"
+      );
+
+      // Simulate the catastrophic relaunch chain: thread cleared for
+      // relaunch, new thread launched, that thread abandons, operator
+      // retries via setWorkerStatus(pending) + new recordWorkerStart.
+      harness.store.clearWorkerThreadForRelaunch("N-37", "validator_feedback_undeliverable");
+      harness.store.recordWorkerStart(
+        "N-37",
+        "codex_46",
+        "22222222-2222-4222-8222-222222222222",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+      harness.store.markAbandoned("N-37", "thread_missing:no_evidence");
+      harness.store.setWorkerStatus("N-37", "pending", "resume_worker:retry", { incrementRetryCount: true });
+      harness.store.recordWorkerStart(
+        "N-37",
+        "codex_47",
+        "33333333-3333-4333-8333-333333333333",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+
+      const reloaded = harness.store.load().workers["N-37"];
+      expect(reloaded?.status).toBe("running");
+      // The validator's cycle-1 evidence must still be visible to the
+      // operator (and to runValidationCycleWithFeedbackLoop, which uses
+      // current_cycle to pick the next cycle number).
+      expect(reloaded?.validation?.last_score).toBe(0.5);
+      expect(reloaded?.validation?.last_feedback).toBe("cycle one needs more work");
+      expect(reloaded?.validation?.history).toHaveLength(1);
+      expect(reloaded?.validation?.history?.[0]).toMatchObject({
+        cycle: 1,
+        score: 0.5,
+        feedback: "cycle one needs more work"
+      });
+      expect(reloaded?.validation?.current_cycle).toBe(1);
+      // validator_thread_id is correctly reset on a fresh worker launch:
+      // the prior validator was for the old thread.
+      expect(reloaded?.validation?.validator_thread_id).toBeNull();
+    });
+
+    it("starts fresh validation block for a worker with no prior validation context", async () => {
+      const harness = await createHarness();
+
+      harness.store.recordWorkerStart(
+        "N-01",
+        "worker-thread-111",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+
+      const worker = harness.store.load().workers["N-01"];
+      expect(worker?.validation).toMatchObject({
+        current_cycle: 0,
+        max_fix_cycles: 3,
+        validator_thread_id: null,
+        last_score: null,
+        last_feedback: null,
+        history: []
+      });
+    });
+  });
+
   describe("clearWorkerThreadForRelaunch", () => {
     it("persists empty thread_id without throwing on schema validation", async () => {
       // Regression: DispatchWorkerStateSchema previously enforced

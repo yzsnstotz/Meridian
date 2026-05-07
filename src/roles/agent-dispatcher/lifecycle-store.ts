@@ -190,6 +190,26 @@ export class LifecycleStore {
     // have already been incremented by setWorkerStatus, so skip those.
     const shouldIncrementRetry = previousStatus === "failed" || previousStatus === "blocked" || previousStatus === "abandoned";
 
+    // Preserve any prior validation context across worker relaunches. The
+    // earlier gate keyed on `previousStatus === "fix_requested"` only, so a
+    // worker that bounced through abandoned/failed/blocked between cycles
+    // (e.g. validator feedback delivery to a dead thread → relaunch →
+    // abandoned → resume_worker:retry) silently lost its score+feedback and
+    // every prior cycle's history. Observed on V-03-A 2026-05-07: cycle-1
+    // 0.5 feedback was wiped after a `pending → running (run_tool_start)`
+    // transition, leaving the operator without any record of why the worker
+    // had been respawning. As long as the lifecycle store has prior
+    // validation context for this worker, carry it forward — only reset on
+    // truly fresh starts (no prior worker entry, or no prior validation).
+    const priorWorker = state.workers[workerId];
+    const priorValidation = priorWorker?.validation;
+    const hasPriorValidationContext = !!priorValidation && (
+      (priorValidation.history?.length ?? 0) > 0
+      || typeof priorValidation.last_score === "number"
+      || typeof priorValidation.last_feedback === "string"
+      || priorValidation.current_cycle > 0
+    );
+
     state.workers[workerId] = {
       thread_id: threadId,
       trace_id: traceId,
@@ -198,27 +218,30 @@ export class LifecycleStore {
       status: "running",
       expected_outputs: [...expectedOutputs],
       hub_result: null,
-      applied_model_id: options.appliedModelId ?? state.workers[workerId]?.applied_model_id,
+      applied_model_id: options.appliedModelId ?? priorWorker?.applied_model_id,
       applied_reasoning_effort: options.appliedReasoningEffort
-        ?? state.workers[workerId]?.applied_reasoning_effort,
+        ?? priorWorker?.applied_reasoning_effort,
       command_preamble: commandPreamble ?? null,
       retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount,
       ...(options.validationMaxFixCycles !== undefined
         ? {
             validation: {
-              current_cycle: previousStatus === "fix_requested"
-                ? state.workers[workerId]?.validation?.current_cycle ?? 0
+              current_cycle: hasPriorValidationContext
+                ? priorValidation?.current_cycle ?? 0
                 : 0,
               max_fix_cycles: options.validationMaxFixCycles,
+              // validator_thread_id is always reset on a fresh worker launch:
+              // any pending validator was for the old worker thread and
+              // would not match the new spawn.
               validator_thread_id: null,
-              last_score: previousStatus === "fix_requested"
-                ? state.workers[workerId]?.validation?.last_score ?? null
+              last_score: hasPriorValidationContext
+                ? priorValidation?.last_score ?? null
                 : null,
-              last_feedback: previousStatus === "fix_requested"
-                ? state.workers[workerId]?.validation?.last_feedback ?? null
+              last_feedback: hasPriorValidationContext
+                ? priorValidation?.last_feedback ?? null
                 : null,
-              history: previousStatus === "fix_requested"
-                ? state.workers[workerId]?.validation?.history ?? []
+              history: hasPriorValidationContext
+                ? priorValidation?.history ?? []
                 : [],
               spawn_failure_count: 0,
               last_spawn_failure_at: null
