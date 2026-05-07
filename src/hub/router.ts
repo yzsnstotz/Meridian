@@ -3285,6 +3285,12 @@ export class HubRouter {
     let stablePolls = 0;
     let unchangedSnapshotPolls = 0;
     let lastKnownRunActivity: "active" | "inactive" | "unknown" = "unknown";
+    // Tracks the most recently persisted progress snapshot so the detail page
+    // can surface mid-run back-and-forth even when the viewer was not on the
+    // page at stream time. We persist via recordAgentPushConversation with a
+    // replace_key so all progress writes for one trace overwrite the same
+    // history row instead of bloating conversation history.
+    let lastPersistedProgress: string | null = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (runLogContext && this.isRunInterrupted(runLogContext.thread_id, traceId)) {
@@ -3302,6 +3308,16 @@ export class HubRouter {
         const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] ?? null : null;
         const combinedReply = this.combineNewAgentReplySnapshots(snapshots, previousSnapshot);
         const hasNewAgentReply = latest ? this.isNewAgentReply(latest, previousSnapshot) : false;
+
+        if (
+          runLogContext
+          && combinedReply
+          && hasNewAgentReply
+          && combinedReply !== lastPersistedProgress
+        ) {
+          this.recordAgentPushConversation(runLogContext.thread_id, combinedReply, traceId, "progress");
+          lastPersistedProgress = combinedReply;
+        }
 
         if (latest && previousSnapshot && !hasNewAgentReply) {
           unchangedSnapshotPolls += 1;
