@@ -1621,27 +1621,88 @@ export class InstanceManager {
     );
   }
 
-  /** Wait for a managed child process to exit, with a timeout. */
+  /**
+   * SIGKILL the process group of a detached child PID. agentapi is spawned
+   * with `detached: true` (it is its own process group leader), so a negative
+   * pid SIGKILL reaches every descendant — agentapi itself, the codex/claude
+   * CLI subprocess it launched, and any tool processes underneath. Without
+   * this escalation, a SIGTERM that the PTY wrapper or CLI swallows leaves
+   * the worker producing output after kill, while Hub has already
+   * unregistered the thread.
+   */
+  private escalateToSigkill(pid: number, threadId: string): void {
+    if (!Number.isInteger(pid) || pid <= 1) {
+      return;
+    }
+    let groupKilled = false;
+    try {
+      process.kill(-pid, "SIGKILL");
+      groupKilled = true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ESRCH" && code !== "EPERM") {
+        this.log.warn(
+          { thread_id: threadId, pid, error: (error as Error).message },
+          "Kill escalation: process-group SIGKILL failed"
+        );
+      }
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ESRCH") {
+        this.log.warn(
+          { thread_id: threadId, pid, error: (error as Error).message },
+          "Kill escalation: SIGKILL failed"
+        );
+      }
+    }
+    this.log.warn(
+      { thread_id: threadId, pid, group_killed: groupKilled },
+      "Kill escalated to SIGKILL after SIGTERM grace expired"
+    );
+  }
+
+  /** Wait for a managed child process to exit, escalating to SIGKILL on timeout. */
   private async waitForChildExit(child: ChildProcess, threadId: string, timeoutMs = 10_000): Promise<void> {
     if (child.exitCode !== null || child.signalCode !== null || child.killed) {
       return;
     }
-    return new Promise<void>((resolve) => {
+    const exited = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         child.removeListener("exit", onExit);
-        this.log.warn({ thread_id: threadId, timeout_ms: timeoutMs }, "Kill exit wait timed out; proceeding with cleanup");
-        resolve();
+        resolve(false);
       }, timeoutMs);
       const onExit = () => {
         clearTimeout(timer);
-        resolve();
+        resolve(true);
       };
       child.once("exit", onExit);
     });
+
+    if (exited) {
+      return;
+    }
+
+    if (typeof child.pid === "number") {
+      this.escalateToSigkill(child.pid, threadId);
+      await this.waitForPidExit(child.pid, threadId, 2_000, /*alreadyEscalated*/ true);
+    } else {
+      this.log.warn(
+        { thread_id: threadId, timeout_ms: timeoutMs },
+        "Kill exit wait timed out; child has no pid to escalate"
+      );
+    }
   }
 
-  /** Poll until a PID is no longer alive, with a timeout. */
-  private async waitForPidExit(pid: number, threadId: string, timeoutMs = 10_000): Promise<void> {
+  /** Poll until a PID is no longer alive; escalate to SIGKILL on timeout. */
+  private async waitForPidExit(
+    pid: number,
+    threadId: string,
+    timeoutMs = 10_000,
+    alreadyEscalated = false
+  ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     const pollInterval = 200;
     while (Date.now() < deadline) {
@@ -1654,7 +1715,27 @@ export class InstanceManager {
       }
       await new Promise((r) => setTimeout(r, pollInterval));
     }
-    this.log.warn({ thread_id: threadId, pid, timeout_ms: timeoutMs }, "Kill PID exit wait timed out; proceeding with cleanup");
+    if (alreadyEscalated) {
+      this.log.warn(
+        { thread_id: threadId, pid, timeout_ms: timeoutMs },
+        "Kill PID exit wait timed out after SIGKILL; proceeding with cleanup"
+      );
+      return;
+    }
+    this.escalateToSigkill(pid, threadId);
+    const reapDeadline = Date.now() + 2_000;
+    while (Date.now() < reapDeadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    this.log.warn(
+      { thread_id: threadId, pid, timeout_ms: timeoutMs },
+      "Kill PID exit wait timed out after SIGKILL; proceeding with cleanup"
+    );
   }
 
   private watchChildProcess(threadId: string, child: ChildProcess): void {
