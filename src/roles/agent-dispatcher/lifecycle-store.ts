@@ -1660,7 +1660,7 @@ function combineHubResultSignalText(
     .join("\n\n");
 }
 
-function extractAgentReplyDetailsText(detailsText: string | undefined): string | null {
+function extractAgentReplyDetailsText(detailsText: string | null | undefined): string | null {
   if (typeof detailsText !== "string" || detailsText.trim().length === 0) {
     return null;
   }
