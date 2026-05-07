@@ -588,6 +588,24 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "hub-relay": {
             const hubMessage = HubMessageSchema.parse(await readJsonBody(request));
+            // GUI talk-to-thread fires `intent: "run"` at a long-running
+            // bridge worker; the hub does not reply until the agent run
+            // resolves, so the request socket would otherwise hang for the
+            // full 30s ATTACH_RESPONSE_TIMEOUT and surface as
+            // "Attach request timed out" even though the message reached
+            // the worker. When the caller asks for fire-and-forget (via
+            // `suppress_reply: true`), bypass the request/response path
+            // and just enqueue.
+            if (hubMessage.suppress_reply === true) {
+              await sendHubFireAndForget(hubMessage);
+              writeJson(response, 200, {
+                ok: true,
+                queued: true,
+                trace_id: hubMessage.trace_id,
+                thread_id: hubMessage.thread_id
+              });
+              return true;
+            }
             const result = await sendHubRequestImpl(hubMessage);
             writeJson(response, 200, result);
             return true;
@@ -3891,6 +3909,41 @@ function isSeparatorRow(cells: string[]): boolean {
 
 const ATTACH_CONNECT_TIMEOUT_MS = 5_000;
 const ATTACH_RESPONSE_TIMEOUT_MS = 30_000;
+
+function sendHubFireAndForget(message: HubMessage): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const socket = net.createConnection(HUB_SOCKET_PATH);
+    const connectTimeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy(new Error(`Hub fire-and-forget connect timed out after ${ATTACH_CONNECT_TIMEOUT_MS}ms`));
+    }, ATTACH_CONNECT_TIMEOUT_MS);
+
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(connectTimeout);
+      socket.destroy();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    socket.once("connect", () => {
+      if (settled) return;
+      clearTimeout(connectTimeout);
+      try {
+        socket.end(JSON.stringify(wrapForHub(message)), () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        });
+      } catch (error) {
+        fail(error);
+      }
+    });
+    socket.once("error", fail);
+  });
+}
 
 async function defaultAttachToThread(threadId: string): Promise<void> {
   const result = await sendHubRequest(buildAttachMessage(threadId));
