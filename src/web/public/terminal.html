@@ -761,6 +761,8 @@
       font-size: 0.8125rem;
       line-height: 1.5;
     }
+    .chat-text + .chat-text { margin-top: 0.5rem; }
+    .chat-text + .chat-code, .chat-code + .chat-text, .chat-code + .chat-code { margin-top: 0.5rem; }
     .chat-summary-label {
       font-size: 0.625rem;
       text-transform: uppercase;
@@ -2695,58 +2697,105 @@
           bubble.appendChild(metaEl);
         }
 
-        // Split content into text vs code blocks
-        var lines = content.split("\n");
-        var currentBlock = [];
-        var currentIsCode = false;
+        // Render content with three layers of segmentation, in priority order:
+        //   1. Triple-backtick fenced code blocks become standalone <pre><code>.
+        //   2. Within remaining text, the existing diff/indent heuristic groups
+        //      consecutive code-shaped lines into <pre><code>.
+        //   3. Plain-text segments are split on blank lines so each paragraph
+        //      renders as its own <div> for readable spacing.
+        // Without this, agent replies arrive as one wall of text — fenced code,
+        // tool output, and prose all collapsed together.
+        function renderCodeBlock(blockText, lang) {
+          var pre = document.createElement("pre");
+          pre.className = "chat-code";
+          if (lang) pre.setAttribute("data-lang", lang);
+          var code = document.createElement("code");
+          code.textContent = blockText;
+          pre.appendChild(code);
+          var copyBtn = document.createElement("button");
+          copyBtn.className = "copy-btn";
+          copyBtn.textContent = "Copy";
+          copyBtn.addEventListener("click", (function(t) {
+            return function() {
+              navigator.clipboard.writeText(t).catch(function(){});
+              this.textContent = "Copied!";
+              var self = this;
+              setTimeout(function() { self.textContent = "Copy"; }, 1500);
+            };
+          })(blockText));
+          pre.appendChild(copyBtn);
+          bubble.appendChild(pre);
+        }
 
-        function flushBlock() {
-          if (currentBlock.length === 0) return;
-          var blockText = currentBlock.join("\n");
-          if (!blockText.trim()) { currentBlock = []; return; }
-          if (currentIsCode) {
-            var pre = document.createElement("pre");
-            pre.className = "chat-code";
-            var code = document.createElement("code");
-            code.textContent = blockText;
-            pre.appendChild(code);
-            var copyBtn = document.createElement("button");
-            copyBtn.className = "copy-btn";
-            copyBtn.textContent = "Copy";
-            copyBtn.addEventListener("click", (function(t) {
-              return function() {
-                navigator.clipboard.writeText(t).catch(function(){});
-                this.textContent = "Copied!";
-                var self = this;
-                setTimeout(function() { self.textContent = "Copy"; }, 1500);
-              };
-            })(blockText));
-            pre.appendChild(copyBtn);
-            bubble.appendChild(pre);
-          } else {
+        function renderTextParagraphs(text) {
+          // Split on runs of 2+ newlines so each paragraph gets its own div
+          // and inherits .chat-text's vertical spacing.
+          var paragraphs = text.split(/\n{2,}/);
+          for (var p = 0; p < paragraphs.length; p++) {
+            var para = paragraphs[p].replace(/^\n+|\n+$/g, "");
+            if (!para.trim()) continue;
             var div = document.createElement("div");
             div.className = "chat-text";
-            div.textContent = blockText;
+            div.textContent = para;
             bubble.appendChild(div);
           }
-          currentBlock = [];
         }
 
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-          var isCodeLine = /^[+\-<>]/.test(line) || /^@@/.test(line) || /^diff /.test(line) || /^\s{4,}\S/.test(line);
-          if (i === 0) {
-            currentIsCode = isCodeLine;
-            currentBlock.push(line);
-          } else if (isCodeLine !== currentIsCode) {
-            flushBlock();
-            currentIsCode = isCodeLine;
-            currentBlock.push(line);
-          } else {
-            currentBlock.push(line);
+        function renderTextSegment(text) {
+          // Apply the existing diff/indent heuristic to surface code-shaped
+          // runs that are NOT inside a fenced block.
+          var lines = text.split("\n");
+          var currentBlock = [];
+          var currentIsCode = false;
+          function flushBlock() {
+            if (currentBlock.length === 0) return;
+            var blockText = currentBlock.join("\n");
+            if (!blockText.trim()) { currentBlock = []; return; }
+            if (currentIsCode) {
+              renderCodeBlock(blockText, "");
+            } else {
+              renderTextParagraphs(blockText);
+            }
+            currentBlock = [];
           }
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            var isCodeLine = /^[+\-<>]/.test(line) || /^@@/.test(line) || /^diff /.test(line) || /^\s{4,}\S/.test(line);
+            if (i === 0) {
+              currentIsCode = isCodeLine;
+              currentBlock.push(line);
+            } else if (isCodeLine !== currentIsCode) {
+              flushBlock();
+              currentIsCode = isCodeLine;
+              currentBlock.push(line);
+            } else {
+              currentBlock.push(line);
+            }
+          }
+          flushBlock();
         }
-        flushBlock();
+
+        // Pass 1: peel off fenced code blocks (```lang\n...\n```) so they win
+        // over the heuristic and keep their language hint.
+        var fenceRe = /```([A-Za-z0-9_+\-.]*)\n([\s\S]*?)```/g;
+        var lastIdx = 0;
+        var fenceMatch;
+        var sawAnyFence = false;
+        while ((fenceMatch = fenceRe.exec(content)) !== null) {
+          sawAnyFence = true;
+          if (fenceMatch.index > lastIdx) {
+            renderTextSegment(content.slice(lastIdx, fenceMatch.index));
+          }
+          renderCodeBlock(fenceMatch[2], fenceMatch[1] || "");
+          lastIdx = fenceMatch.index + fenceMatch[0].length;
+        }
+        if (sawAnyFence) {
+          if (lastIdx < content.length) {
+            renderTextSegment(content.slice(lastIdx));
+          }
+        } else {
+          renderTextSegment(content);
+        }
 
         // Tap to copy entire bubble text
         (function(el, text) {
