@@ -160,19 +160,23 @@ export async function reconcile(
       );
     if (recoveredTransition && shouldApplyWorkerTransition(recoveredTransition, workerToolProcessRunning)) {
       const terminalTimestamp = effectiveHubResult?.timestamp ?? nowIso;
+      const interceptedStatus = applyValidationIntercept(worker, recoveredTransition.to);
       state.workers[workerId] = {
         ...worker,
         trace_id: effectiveHubResult?.trace_id || worker.trace_id,
         last_seen_at: terminalTimestamp,
-        status: recoveredTransition.to,
+        status: interceptedStatus,
         hub_result: effectiveHubResult
       };
-      lifecycleStore.logTransition(workerId, worker.status, recoveredTransition.to, recoveredTransition.trigger);
+      const trigger = interceptedStatus === recoveredTransition.to
+        ? recoveredTransition.trigger
+        : `${recoveredTransition.trigger}:validation_intercept`;
+      lifecycleStore.logTransition(workerId, worker.status, interceptedStatus, trigger);
       report.changed.push({
         workerId,
         from: worker.status,
-        to: recoveredTransition.to,
-        trigger: recoveredTransition.trigger
+        to: interceptedStatus,
+        trigger
       });
       continue;
     }
@@ -205,19 +209,23 @@ export async function reconcile(
       transition,
       nowIso
     );
+    const interceptedStatus = applyValidationIntercept(worker, transition.to);
     state.workers[workerId] = {
       ...worker,
       trace_id: transitionHubResult?.trace_id || worker.trace_id,
-      status: transition.to,
+      status: interceptedStatus,
       last_seen_at: transitionHubResult?.timestamp ?? nowIso,
       hub_result: transitionHubResult
     };
-    lifecycleStore.logTransition(workerId, worker.status, transition.to, transition.trigger);
+    const trigger = interceptedStatus === transition.to
+      ? transition.trigger
+      : `${transition.trigger}:validation_intercept`;
+    lifecycleStore.logTransition(workerId, worker.status, interceptedStatus, trigger);
     report.changed.push({
       workerId,
       from: worker.status,
-      to: transition.to,
-      trigger: transition.trigger
+      to: interceptedStatus,
+      trigger
     });
   }
 
@@ -645,6 +653,25 @@ function shouldApplyWorkerTransition(
     return true;
   }
   return !PROCESS_GUARDED_TERMINAL_STATUSES.has(transition.to);
+}
+
+// Mirrors the awaiting_validation intercept that lifecycle-store.recordWorkerResult
+// applies when a hub_result lands directly. Without this, reconciler-driven
+// completions (via output-artifact / hub-status / inline-report evidence) skip
+// validation entirely: the worker jumps to "completed" and the validator
+// orchestrator never spawns. Observed on V-03-A 2026-05-07.
+function applyValidationIntercept(
+  worker: DispatchWorkerState,
+  nextStatus: LifecycleStatus
+): LifecycleStatus {
+  if (
+    nextStatus === "completed"
+    && worker.validation
+    && (worker.status === "running" || worker.status === "fix_requested")
+  ) {
+    return "awaiting_validation";
+  }
+  return nextStatus;
 }
 
 function shouldDeferValidationReworkTransition(
