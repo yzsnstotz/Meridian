@@ -193,6 +193,7 @@ export async function reconcile(
       !transition
       || transition.to === worker.status
       || shouldDeferValidationReworkTransition(worker, effectiveHubResult, transition)
+      || !shouldApplyWorkerTransition(transition, workerToolProcessRunning)
     ) {
       report.unchanged.push(workerId);
       continue;
@@ -623,11 +624,27 @@ function readFirstOutputArtifact(
   return null;
 }
 
+// Terminal lifecycle statuses that must not be assigned while the worker's
+// underlying tool process is still alive. Hub-side state (failed / missing /
+// idle-stale) can lie when the agentapi has been unregistered or its SSE has
+// flapped, but the codex/claude/gemini CLI subprocess is still running and
+// emitting output. Marking the worker terminal in that window causes the
+// watchdog to spawn a duplicate worker thread on top of a still-live process.
+const PROCESS_GUARDED_TERMINAL_STATUSES = new Set<LifecycleStatus>([
+  "completed",
+  "failed",
+  "abandoned",
+  "blocked"
+]);
+
 function shouldApplyWorkerTransition(
   transition: Pick<ReconciliationChange, "to" | "trigger">,
   workerToolProcessRunning: boolean
 ): boolean {
-  return !(workerToolProcessRunning && transition.to === "completed");
+  if (!workerToolProcessRunning) {
+    return true;
+  }
+  return !PROCESS_GUARDED_TERMINAL_STATUSES.has(transition.to);
 }
 
 function shouldDeferValidationReworkTransition(
