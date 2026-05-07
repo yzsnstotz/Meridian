@@ -212,7 +212,7 @@ describe("reconcile", () => {
     });
   });
 
-  it("completes an initial validation-enabled worker from a fresh report when the HubResult is missing", async () => {
+  it("intercepts an initial validation-enabled worker into awaiting_validation from a fresh report when the HubResult is missing", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -240,18 +240,18 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["N-27"]?.status).toBe("completed");
+    expect(harness.store.load().workers["N-27"]?.status).toBe("awaiting_validation");
     expect(report.changed).toEqual([
       {
         workerId: "N-27",
         from: "running",
-        to: "completed",
-        trigger: "hub_status:completed:outputs_present"
+        to: "awaiting_validation",
+        trigger: "hub_status:completed:outputs_present:validation_intercept"
       }
     ]);
   });
 
-  it("completes a stale initial validation-enabled worker from a clean completion report even when Hub still reports running", async () => {
+  it("intercepts a stale initial validation-enabled worker into awaiting_validation from a clean completion report even when Hub still reports running", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -293,13 +293,13 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["N-27"]?.status).toBe("completed");
+    expect(harness.store.load().workers["N-27"]?.status).toBe("awaiting_validation");
     expect(report.changed).toEqual([
       {
         workerId: "N-27",
         from: "running",
-        to: "completed",
-        trigger: "output_artifact:completion_signal:stale"
+        to: "awaiting_validation",
+        trigger: "output_artifact:completion_signal:stale:validation_intercept"
       }
     ]);
   });
@@ -346,7 +346,7 @@ describe("reconcile", () => {
     expect(report.changed).toEqual([]);
   });
 
-  it("completes a stale worker from a recovered complete marker even when the narrative mentions failures", async () => {
+  it("intercepts a stale validation-enabled worker into awaiting_validation from a recovered complete marker even when the narrative mentions failures", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -422,13 +422,13 @@ describe("reconcile", () => {
 
     const report = await reconcile(harness.store, hubClient);
 
-    expect(harness.store.load().workers["N-27"]?.status).toBe("completed");
+    expect(harness.store.load().workers["N-27"]?.status).toBe("awaiting_validation");
     expect(report.changed).toEqual([
       {
         workerId: "N-27",
         from: "running",
-        to: "completed",
-        trigger: "hub_result:marker_complete"
+        to: "awaiting_validation",
+        trigger: "hub_result:marker_complete:validation_intercept"
       }
     ]);
   });
