@@ -754,6 +754,10 @@ function bindDispatchDetailActions(rootEl, feedbackEl, options) {
       const traceId = (typeof crypto !== "undefined" && crypto.randomUUID)
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      // Fire-and-forget: GUI talk-to-thread is "deliver, don't wait".
+      // Without `suppress_reply` the role-handlers hub-relay path waits up
+      // to 30s for the agent run to complete and surfaces a timeout error
+      // even though the message has already been delivered to the worker.
       const message = {
         trace_id: traceId,
         thread_id: threadIdAttr,
@@ -762,6 +766,7 @@ function bindDispatchDetailActions(rootEl, feedbackEl, options) {
         target: threadIdAttr,
         priority: 5,
         mode: "bridge",
+        suppress_reply: true,
         reply_channel: { channel: "web", chat_id: "service:meridian-roles" },
         payload: { content, attachments: [] }
       };
