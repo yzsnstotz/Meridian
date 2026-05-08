@@ -95,6 +95,65 @@ describe("buildPmResolverPrompt", () => {
     expect(prompt).toContain("worker_id: <worker_id>");
   });
 
+  it("retains the PM thread on a transport-class run rejection so a human can take over", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-stall-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "| Status | Batch | Worker | Task | Model | Depends On |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ⛔ BLOCKED | 1 | BATCH-1-GATE | Verify gates | CODEX | — |"
+    ].join("\n"), "utf8");
+
+    const kill = vi.fn(async () => ({ threadId: "pm-thread-stall", status: "killed", raw: {} }));
+    const meridianApi: MeridianApiClient = {
+      spawn: async () => ({ threadId: "pm-thread-stall" }),
+      run: async () => {
+        throw new Error("run failed: Request timed out — the hub may be overloaded");
+      },
+      kill
+    };
+
+    try {
+      await startPmResolver({
+        dispatcherId: "agent-dispatcher-pm",
+        config: {
+          ...config,
+          dispatch_plan_path: dispatchPlanPath
+        },
+        issue: {
+          status: "manual_intervention_required",
+          workerId: "BATCH-1-GATE",
+          source: "watchdog",
+          message: "Blocked gate needs PM"
+        }
+      }, { meridianApi });
+
+      await waitForExpect(async () => {
+        const state = JSON.parse(await fs.readFile(sidecarPath, "utf8")) as {
+          pm_resolvers?: Array<{
+            thread_id: string;
+            status: string;
+            transport_error?: string | null;
+            error?: string | null;
+          }>;
+        };
+        expect(state.pm_resolvers).toEqual([
+          expect.objectContaining({
+            thread_id: "pm-thread-stall",
+            status: "running",
+            transport_error: "run failed: Request timed out — the hub may be overloaded",
+            error: null
+          })
+        ]);
+      });
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("records PM resolver start and completion in the dispatch lifecycle sidecar", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

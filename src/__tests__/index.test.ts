@@ -188,7 +188,8 @@ function buildPmResolverGuardState(options: {
           source: "watchdog"
         },
         result: null,
-        error: null
+        error: null,
+        transport_error: null
       }
     ]
   };

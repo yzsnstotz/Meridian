@@ -655,7 +655,8 @@ export class LifecycleStore {
         auto_approve: options.autoApprove ?? existing?.auto_approve ?? null,
         issue: normalizePmResolverIssue(issue),
         result: existing?.result ?? null,
-        error: null
+        error: null,
+        transport_error: null
       };
 
       if (existing) {
@@ -746,7 +747,35 @@ export class LifecycleStore {
       entry.last_seen_at = this.now();
       entry.result = normalizePmResolverResult(result);
       entry.error = entry.status === "failed" ? entry.error : null;
+      // The run completed end-to-end (no transport rejection), so any prior
+      // transport-stall annotation is stale. Clear it.
+      entry.transport_error = null;
       appendPmResolverReportHistory(state, entry, entry.result?.content ?? null);
+    });
+  }
+
+  /**
+   * Record a transport-level rejection of the PM run promise (hub overload,
+   * Meridian-API unreachable, request timeout) WITHOUT killing the thread or
+   * flipping status to "failed". The PM session may still be alive at the
+   * agent-process level, so we keep `status: "running"` and let the operator
+   * talk into it via the GUI talk-box. The reconciler still promotes this
+   * entry to `completed` if the target worker reaches a healthy state.
+   */
+  recordPmResolverTransportStall(threadId: string, errorMessage: string): void {
+    this.mutate((state) => {
+      const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
+      if (!entry) {
+        return;
+      }
+      entry.last_seen_at = this.now();
+      entry.transport_error = errorMessage;
+      this.log.info("PM resolver transport stall — thread retained for human takeover", {
+        event: "pm_resolver_transport_stall",
+        thread_id: threadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        error: errorMessage
+      });
     });
   }
 

@@ -155,7 +155,12 @@ export const PmResolverLifecycleStateSchema = z.object({
   auto_approve: z.boolean().nullable().default(null),
   issue: PmResolverIssueStateSchema,
   result: PmResolverResultStateSchema.nullable().default(null),
-  error: z.string().nullable().default(null)
+  error: z.string().nullable().default(null),
+  // Transport-class failure of the PM run (hub overload, Meridian-API
+  // unreachable, request timeout, etc.) recorded WITHOUT killing the thread
+  // or flipping status to "failed", so a human can still talk into the PM
+  // session via the GUI talk-box. Cleared on successful PM run completion.
+  transport_error: z.string().nullable().default(null)
 });
 export type PmResolverLifecycleState = z.infer<typeof PmResolverLifecycleStateSchema>;
 
