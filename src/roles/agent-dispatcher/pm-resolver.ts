@@ -47,7 +47,10 @@ export type PmResolverResult =
 export interface PmResolverDeps {
   meridianApi?: MeridianApiClient;
   log?: Pick<typeof console, "warn">;
-  lifecycleStore?: Pick<LifecycleStore, "recordPmResolverStart" | "recordPmResolverResult" | "recordPmResolverFailure">;
+  lifecycleStore?: Pick<
+    LifecycleStore,
+    "recordPmResolverStart" | "recordPmResolverResult" | "recordPmResolverTransportStall"
+  >;
 }
 
 export async function startPmResolver(
@@ -87,23 +90,22 @@ export async function startPmResolver(
 
   run.then((result) => {
     safeRecordPmResolverResult(lifecycleStore, spawned.threadId, result, deps.log);
-  }).catch((error) => {
-    safeRecordPmResolverFailure(
-      lifecycleStore,
-      spawned.threadId,
-      error instanceof Error ? error.message : String(error),
-      deps.log
-    );
-  }).finally(() => {
     void safeKillPmResolver(meridianApi, spawned.threadId, request.dispatcherId, deps.log);
-  });
-
-  run.catch((error) => {
-    deps.log?.warn("PM resolver run failed", {
+  }).catch((error) => {
+    // Transport-class rejection (hub overload, Meridian-API unreachable,
+    // request timeout, IPC drop). The PM agent process may still be alive;
+    // retain the thread so a human can take over via the GUI talk-box, and
+    // record the transport stall WITHOUT flipping lifecycle status to
+    // "failed". The reconciler still promotes this entry to "completed" if
+    // the target worker reaches a healthy state via human-resolve, retry,
+    // or other recovery paths.
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    deps.log?.warn("PM resolver run rejected; retaining thread for human takeover", {
       dispatcherId: request.dispatcherId,
       threadId: spawned.threadId,
-      error: error instanceof Error ? error.message : String(error)
+      error: errorMessage
     });
+    safeRecordPmResolverTransportStall(lifecycleStore, spawned.threadId, errorMessage, deps.log);
   });
 
   return {
@@ -170,16 +172,16 @@ function safeRecordPmResolverResult(
   }
 }
 
-function safeRecordPmResolverFailure(
-  lifecycleStore: Pick<LifecycleStore, "recordPmResolverFailure">,
+function safeRecordPmResolverTransportStall(
+  lifecycleStore: Pick<LifecycleStore, "recordPmResolverTransportStall">,
   threadId: string,
   errorMessage: string,
   log: PmResolverDeps["log"]
 ): void {
   try {
-    lifecycleStore.recordPmResolverFailure(threadId, errorMessage);
+    lifecycleStore.recordPmResolverTransportStall(threadId, errorMessage);
   } catch (error) {
-    log?.warn("Failed to record PM resolver failure", {
+    log?.warn("Failed to record PM resolver transport stall", {
       threadId,
       error: error instanceof Error ? error.message : String(error)
     });

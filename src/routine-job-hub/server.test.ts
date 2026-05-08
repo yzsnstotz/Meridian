@@ -116,8 +116,9 @@ describe("routine job hub server", () => {
     expect(page.body).toContain("Clawso Desktop Maintenance");
     expect(page.body).toContain('data-clawso-build-mode="debug"');
     expect(page.body).toContain('data-clawso-build-mode="local"');
-    expect(page.body).toContain('data-clawso-build-mode="online"');
+    expect(page.body).toContain('data-clawso-build-mode="preview-online"');
     expect(page.body).toContain('data-clawso-build-mode="webwrap"');
+    expect(page.body).toContain('data-clawso-build-mode="prod-online"');
     expect(page.body).toContain("Mode 4: Web-app wrapper");
     expect(page.body).toContain("Script:</strong> user_scripts/release-desktop-client--webwrap.sh");
     expect(page.body).toContain("http://127.0.0.1:5173/");
@@ -127,8 +128,9 @@ describe("routine job hub server", () => {
     expect(page.body).toContain(`Script dir:</strong> ${clawsoRoot}/user_scripts`);
     expect(page.body).toContain('data-clawso-command-log="debug"');
     expect(page.body).toContain('data-clawso-command-log="local"');
-    expect(page.body).toContain('data-clawso-command-log="online"');
+    expect(page.body).toContain('data-clawso-command-log="preview-online"');
     expect(page.body).toContain('data-clawso-command-log="webwrap"');
+    expect(page.body).toContain('data-clawso-command-log="prod-online"');
     expect(page.body).toContain("grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));");
     expect(page.body).toContain(".maintenance-status pre {\n        box-sizing: border-box;");
     expect(page.body).toContain("overflow-wrap: anywhere;");
@@ -140,12 +142,14 @@ describe("routine job hub server", () => {
     expect(status.modes.map((mode) => [mode.id, mode.available, mode.artifactType])).toEqual([
       ["debug", true, "app"],
       ["local", true, "dmg"],
-      ["online", false, "dmg"],
-      ["webwrap", true, "url"]
+      ["preview-online", false, "dmg"],
+      ["webwrap", true, "url"],
+      ["prod-online", false, "dmg"]
     ]);
     expect(status.modes.every((mode) => mode.branch === "feat/client-rebuild--v3")).toBe(true);
     expect(status.modes.every((mode) => mode.scriptDirectoryDisplay === `${clawsoRoot}/user_scripts`)).toBe(true);
     expect(status.modes[2]?.unavailableReason).toContain("Missing script");
+    expect(status.modes[4]?.unavailableReason).toContain("Missing script");
 
     await fs.rm(root, { recursive: true, force: true });
   });

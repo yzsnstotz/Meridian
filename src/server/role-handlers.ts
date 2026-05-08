@@ -3125,6 +3125,9 @@ function buildPmResolverDetail(
     ?? normalizeConversationSection(entry.result?.summary_text ?? undefined)
     ?? normalizeConversationSection(entry.result?.content ?? undefined)
     ?? normalizeConversationSection(entry.error ?? undefined)
+    ?? (entry.status === "running" && entry.transport_error
+      ? `PM resolver run rejected (transport): ${entry.transport_error}\nThread retained — talk into the PM session via the bar's talk-box, or HUMAN-resolve the worker to unblock.`
+      : null)
     ?? (entry.status === "running" ? "PM resolver is running; waiting for its reply." : null);
   const commandContent =
     liveConversation.command
@@ -3234,7 +3237,8 @@ function buildRecoveredPmResolverDetails(
             timestamp: worker.hub_result.timestamp
           }
         : null,
-      error: null
+      error: null,
+      transport_error: null
     }, {
       roleId: context.roleId,
       liveDetail: null

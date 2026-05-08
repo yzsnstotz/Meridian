@@ -569,7 +569,8 @@ function buildRecoveredPmResolverEntry(
       trace_id: hubResult.trace_id,
       timestamp: hubResult.timestamp
     },
-    error: null
+    error: null,
+    transport_error: null
   };
 }
 
