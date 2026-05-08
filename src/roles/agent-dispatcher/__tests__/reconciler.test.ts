@@ -304,6 +304,102 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("intercepts a PASS_WITH_FINDINGS report into validation instead of treating finding language as blocked", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput(
+      "reports/V-04-A.md",
+      [
+        "# V-04-A Report",
+        "",
+        "## Decision",
+        "",
+        "PASS_WITH_FINDINGS.",
+        "",
+        "## Findings",
+        "",
+        "| ID | Severity | Summary | Status |",
+        "| --- | --- | --- | --- |",
+        "| F-V04-A-16 | P1 | Real transactional email send failed because the provider domain is unverified. | Open |",
+        "",
+        "## Sub-Task Evidence Matrix",
+        "",
+        "| Phase A item | Result | Evidence |",
+        "| --- | --- | --- |",
+        "| Email render parity | PASS_WITH_FINDINGS | Local render parity passed; transactional send was blocked by Resend domain verification. |"
+      ].join("\n")
+    );
+    harness.store.save(buildState({
+      workers: {
+        "V-04-A": {
+          ...buildRunningWorker("worker-thread-v04a", outputPath, "2026-04-03T11:45:00.000Z"),
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["V-04-A"]?.status).toBe("awaiting_validation");
+    expect(report.changed).toEqual([
+      {
+        workerId: "V-04-A",
+        from: "running",
+        to: "awaiting_validation",
+        trigger: "output_artifact:completion_signal:stale:validation_intercept"
+      }
+    ]);
+  });
+
+  it("keeps a non-stale PASS_WITH_FINDINGS worker running instead of escalating finding language to PM", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const outputPath = await harness.writeOutput(
+      "reports/V-04-A.md",
+      [
+        "# V-04-A Report",
+        "",
+        "## Decision",
+        "",
+        "PASS_WITH_FINDINGS.",
+        "",
+        "## Sub-Task Evidence Matrix",
+        "",
+        "| Phase A item | Result | Evidence |",
+        "| --- | --- | --- |",
+        "| Email render parity | PASS_WITH_FINDINGS | Local render parity passed; transactional send was blocked by Resend domain verification. |"
+      ].join("\n")
+    );
+    harness.store.save(buildState({
+      workers: {
+        "V-04-A": buildRunningWorker("worker-thread-v04a", outputPath, "2026-04-03T12:20:00.000Z")
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["V-04-A"]?.status).toBe("running");
+    expect(report.changed).toEqual([]);
+    expect(report.unchanged).toContain("V-04-A");
+  });
+
   it("does not complete a stale running worker when its completion report validation section contains FAIL", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

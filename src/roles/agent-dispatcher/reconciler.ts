@@ -24,8 +24,10 @@ import { parseMeridianStatusMarker } from "./meridian-status-marker";
 import {
   computeBasenameVariants,
   findExistingOutputArtifactPaths,
+  outputArtifactHasPassingDecision,
   outputArtifactsContain,
-  outputsExist as outputArtifactsExist
+  outputsExist as outputArtifactsExist,
+  sliceContentFromStartedAt
 } from "./output-artifacts";
 
 export interface ReconciliationChange {
@@ -1309,7 +1311,11 @@ function outputsExist(paths: string[], startedAt?: string): boolean {
 function outputArtifactsContainFailureSignal(paths: string[], startedAt?: string): boolean {
   return outputArtifactsContain(
     paths,
-    (content) => hubResultContainsFailureSignal({ content }),
+    (content) => {
+      const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
+      return !outputArtifactHasPassingDecision(currentAttemptContent)
+        && hubResultContainsFailureSignal({ content: currentAttemptContent });
+    },
     startedAt,
     reconciliationFs
   );
@@ -1318,7 +1324,11 @@ function outputArtifactsContainFailureSignal(paths: string[], startedAt?: string
 function outputArtifactsContainBlockSignal(paths: string[], startedAt?: string): boolean {
   return outputArtifactsContain(
     paths,
-    (content) => hubResultContainsBlockSignal({ content }),
+    (content) => {
+      const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
+      return !outputArtifactHasPassingDecision(currentAttemptContent)
+        && hubResultContainsBlockSignal({ content: currentAttemptContent });
+    },
     startedAt,
     reconciliationFs
   );
@@ -1327,13 +1337,17 @@ function outputArtifactsContainBlockSignal(paths: string[], startedAt?: string):
 function outputArtifactsContainCompletionSignal(paths: string[], workerId: string, startedAt?: string): boolean {
   return outputArtifactsContain(
     paths,
-    (content) => outputArtifactHasCompletionSignal(content, workerId),
+    (content) => outputArtifactHasCompletionSignal(sliceContentFromStartedAt(content, startedAt), workerId),
     startedAt,
     reconciliationFs
   );
 }
 
 function outputArtifactHasCompletionSignal(content: string, workerId: string): boolean {
+  if (outputArtifactReferencesWorker(content, workerId) && outputArtifactHasPassingDecision(content)) {
+    return true;
+  }
+
   return outputArtifactReferencesWorker(content, workerId)
     && /^#\s+.*\bCompletion Report\b/im.test(content)
     && validationSectionHasPassingEvidence(content)

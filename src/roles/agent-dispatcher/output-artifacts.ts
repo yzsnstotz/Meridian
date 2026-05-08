@@ -44,6 +44,41 @@ export function outputArtifactsContain(
   );
 }
 
+export function outputArtifactHasPassingDecision(content: string): boolean {
+  const decision = extractMarkdownSection(content, "Decision");
+  if (!decision) {
+    return false;
+  }
+
+  return decision
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, "").replace(/^`|`$/g, ""))
+    .filter(Boolean)
+    .some((line) => /^(?:PASS_WITH_FINDINGS|PASS\s+WITH\s+FINDINGS|PASSED|PASS)\b/i.test(line));
+}
+
+export function sliceContentFromStartedAt(content: string, startedAt?: string): string {
+  if (!startedAt || !content) {
+    return content;
+  }
+
+  const startedAtMs = Date.parse(startedAt);
+  if (Number.isNaN(startedAtMs)) {
+    return content;
+  }
+
+  const isoPattern = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = isoPattern.exec(content)) !== null) {
+    const ts = Date.parse(m[1]!);
+    if (!Number.isNaN(ts) && ts >= startedAtMs) {
+      return content.slice(m.index);
+    }
+  }
+
+  return content;
+}
+
 export function findExistingOutputArtifactPaths(
   filePath: string,
   startedAt?: string,
@@ -188,4 +223,21 @@ export function computeBasenameVariants(basename: string): string[] {
   }
 
   return [...new Set(variants)];
+}
+
+function extractMarkdownSection(content: string, heading: string): string | null {
+  const headingPattern = new RegExp(`(^|\\n)#{1,6}\\s+${escapeRegExp(heading)}\\s*\\n`, "i");
+  const match = headingPattern.exec(content);
+  if (!match || typeof match.index !== "number") {
+    return null;
+  }
+
+  const sectionStart = match.index + match[0].length;
+  const remaining = content.slice(sectionStart);
+  const nextHeading = remaining.search(/\n#{1,6}\s+\S/);
+  return nextHeading === -1 ? remaining : remaining.slice(0, nextHeading);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

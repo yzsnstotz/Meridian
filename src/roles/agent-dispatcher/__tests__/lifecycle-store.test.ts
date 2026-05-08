@@ -2580,6 +2580,68 @@ describe("LifecycleStore", () => {
         status: "blocked"
       });
     });
+
+    it("does not treat PASS_WITH_FINDINGS report findings as worker-level block or failure signals", async () => {
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "V-04-A.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "V-04-A",
+        "worker-thread-v04a",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      const startedAtMs = Date.parse(harness.store.load().workers["V-04-A"]!.started_at!);
+      const beforeIso = new Date(startedAtMs - 1000).toISOString();
+      const afterDate = new Date(startedAtMs + 1000);
+      const afterTimestamp = afterDate.toISOString();
+      const afterIso = new Date(afterDate.getTime() + 9 * 60 * 60 * 1000).toISOString().replace("Z", "+09:00");
+
+      const content = [
+        `## Attempt 0 - ${beforeIso} - role: worker`,
+        "",
+        "# V-04-A Report",
+        "",
+        "**Result**: BLOCKED",
+        "",
+        `## Attempt 1 - ${afterIso} - role: worker`,
+        "",
+        "# V-04-A Report",
+        "",
+        "## Decision",
+        "",
+        "PASS_WITH_FINDINGS.",
+        "",
+        "## Findings",
+        "",
+        "| ID | Severity | Summary | Status |",
+        "| --- | --- | --- | --- |",
+        "| F-V04-A-16 | P1 | Real transactional email send failed because the provider domain is unverified. | Open |",
+        "",
+        "## Sub-Task Evidence Matrix",
+        "",
+        "| Phase A item | Result | Evidence |",
+        "| --- | --- | --- |",
+        "| Email render parity | PASS_WITH_FINDINGS | Local render parity passed; transactional send was blocked by Resend domain verification. |"
+      ].join("\n");
+
+      await fsp.writeFile(reportPath, content, "utf8");
+
+      harness.store.recordWorkerResult("V-04-A", buildHubResult({
+        thread_id: "worker-thread-v04a",
+        status: "success",
+        run_state: "completed",
+        source: "output_artifact",
+        content,
+        timestamp: afterTimestamp
+      }));
+
+      expect(harness.store.load().workers["V-04-A"]).toMatchObject({
+        status: "completed"
+      });
+    });
   });
 
   describe("recordWorkerStart validation history preservation", () => {
