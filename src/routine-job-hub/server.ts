@@ -36,7 +36,7 @@ const DEFAULT_CLAWSO_SCRIPT_TIMEOUT_MS = 45 * 60_000;
 const RESTART_OUTPUT_MAX_BYTES = 64 * 1024;
 const CLAWSO_OUTPUT_MAX_BYTES = 256 * 1024;
 
-type ClawsoBuildModeId = "debug" | "local" | "online" | "webwrap";
+type ClawsoBuildModeId = "debug" | "local" | "preview-online" | "webwrap" | "prod-online";
 type ClawsoBuildArtifactType = "app" | "dmg" | "url";
 type ClawsoSizeReader = (absolutePath: string) => Promise<number>;
 type ClawsoArtifactOpener = (artifactPath: string) => Promise<void>;
@@ -144,15 +144,15 @@ const CLAWSO_BUILD_MODES: readonly ClawsoBuildMode[] = [
     description: "Codesigned and notarized DMG, no uploads."
   },
   {
-    id: "online",
+    id: "preview-online",
     modeNumber: 3,
-    title: "Online release",
-    actionLabel: "Run online release",
-    scriptRelPath: "user_scripts/release-desktop-client.sh",
+    title: "Preview online release",
+    actionLabel: "Run preview online release",
+    scriptRelPath: "user_scripts/release-desktop-client--preview-online.sh",
     args: ["--yes"],
     artifactType: "dmg",
     artifactDirRelPath: "apps/client/src-tauri/target/release/bundle/dmg",
-    description: "Full Supabase, GitHub, Cloudflare, and manifest release pipeline.",
+    description: "Full DMG → preview Supabase + clawso-app:preview Pages env. Targets clawso.pages.dev; production app.clawso.ai unaffected.",
     requiresOnlineConfirmation: true
   },
   {
@@ -165,6 +165,18 @@ const CLAWSO_BUILD_MODES: readonly ClawsoBuildMode[] = [
     artifactType: "url",
     artifactRelPath: ".dist/client-webwrap",
     description: "Builds the apps/client SPA plus Pages Functions worker for local browser testing; no Cloudflare deploy."
+  },
+  {
+    id: "prod-online",
+    modeNumber: 5,
+    title: "Production online release",
+    actionLabel: "Run production online release",
+    scriptRelPath: "user_scripts/release-desktop-client--prod-online.sh",
+    args: ["--yes"],
+    artifactType: "dmg",
+    artifactDirRelPath: "apps/client/src-tauri/target/release/bundle/dmg",
+    description: "Full DMG → production Supabase + clawso-app:production Pages env. Locked to main branch + clean tree; existing 1.x installs will see the upgrade prompt.",
+    requiresOnlineConfirmation: true
   }
 ];
 
@@ -911,7 +923,15 @@ function readRequestedClawsoMode(body: unknown): ClawsoBuildModeId {
   }
 
   const mode = (body as { mode?: unknown }).mode;
-  return mode === "debug" || mode === "local" || mode === "online" || mode === "webwrap" ? mode : "local";
+  // Legacy alias: "online" used to mean the production publish before the
+  // preview/prod split (2026-05-08). Map it to "prod-online" so any persisted
+  // UI state or external caller using the old id still hits the right script.
+  if (mode === "online") {
+    return "prod-online";
+  }
+  return mode === "debug" || mode === "local" || mode === "preview-online" || mode === "webwrap" || mode === "prod-online"
+    ? mode
+    : "local";
 }
 
 async function runClawsoDesktopBuild(
