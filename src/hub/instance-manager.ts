@@ -569,7 +569,15 @@ export class InstanceManager {
   }
 
   async rehydrateFromState(state: PersistedHubState): Promise<RehydrationResult> {
-    this.rememberPersistedThreadIds(state);
+    // Allocator counter is intentionally NOT seeded from persisted state.
+    // Carrying the historical max across a service restart preserves the
+    // running counter even though every original agent process is dead —
+    // the user never requested cumulative thread_id numbering, only that
+    // *currently-alive* threads keep stable ids. We seed the allocator
+    // below from instances that actually rehydrate (registry.list() is
+    // also consulted by nextThreadId as a floor), so live ids stay
+    // collision-free while purged ids do not extend the counter.
+    this.allocatedThreadMaxIndexByType.clear();
     this.registry.clear();
     this.children.clear();
     for (const threadId of this.paneCaptureByThread.keys()) {
@@ -589,6 +597,7 @@ export class InstanceManager {
       }
 
       this.registry.register(hydratedInstance);
+      this.rememberAllocatedThreadId(hydratedInstance.thread_id, hydratedInstance.agent_type);
       restoredThreadIds.push(hydratedInstance.thread_id);
       liveThreadIds.add(hydratedInstance.thread_id);
     }
@@ -1801,23 +1810,6 @@ export class InstanceManager {
     });
   }
 
-  private rememberPersistedThreadIds(state: PersistedHubState): void {
-    for (const persistedInstance of state.instances ?? []) {
-      this.rememberAllocatedThreadId(persistedInstance.thread_id, persistedInstance.agent_type);
-    }
-
-    for (const threadId of Object.values(state.session_bindings ?? {})) {
-      this.rememberAllocatedThreadId(threadId);
-    }
-
-    for (const threadId of Object.keys(state.push_subscriptions ?? {})) {
-      this.rememberAllocatedThreadId(threadId);
-    }
-
-    for (const threadId of Object.keys(state.conversation_history ?? {})) {
-      this.rememberAllocatedThreadId(threadId);
-    }
-  }
 
   private rememberAllocatedThreadId(threadId: string, fallbackType?: AgentType): void {
     const index = this.extractThreadIndex(threadId);
