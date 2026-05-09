@@ -25,6 +25,7 @@ import {
   computeBasenameVariants,
   findExistingOutputArtifactPaths,
   outputArtifactHasPassingDecision,
+  outputArtifactHasPassingWorkerMarker,
   outputArtifactsContain,
   outputsExist as outputArtifactsExist,
   sliceContentFromStartedAt
@@ -443,14 +444,14 @@ function determineWorkerTransition(
     return null;
   }
 
-  if (outputsPresent && outputArtifactsContainBlockSignal(expectedOutputs, startedAt)) {
+  if (outputsPresent && outputArtifactsContainBlockSignal(expectedOutputs, startedAt, workerId)) {
     return {
       to: "blocked",
       trigger: "output_artifact:block_signal"
     };
   }
 
-  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
+  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt, workerId)) {
     return {
       to: "failed",
       trigger: "output_artifact:failure_signal"
@@ -732,14 +733,14 @@ function determineRecordedResultTransition(
     return null;
   }
 
-  if (outputsPresent && outputArtifactsContainBlockSignal(expectedOutputs, startedAt)) {
+  if (outputsPresent && outputArtifactsContainBlockSignal(expectedOutputs, startedAt, workerId)) {
     return {
       to: "blocked",
       trigger: "output_artifact:block_signal"
     };
   }
 
-  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
+  if (outputsPresent && outputArtifactsContainFailureSignal(expectedOutputs, startedAt, workerId)) {
     return {
       to: "failed",
       trigger: "output_artifact:failure_signal"
@@ -1308,11 +1309,18 @@ function outputsExist(paths: string[], startedAt?: string): boolean {
   return outputArtifactsExist(paths, startedAt, reconciliationFs);
 }
 
-function outputArtifactsContainFailureSignal(paths: string[], startedAt?: string): boolean {
+function outputArtifactsContainFailureSignal(
+  paths: string[],
+  startedAt?: string,
+  workerId?: string
+): boolean {
   return outputArtifactsContain(
     paths,
     (content) => {
       const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
+      if (workerId && outputArtifactHasPassingWorkerMarker(currentAttemptContent, workerId)) {
+        return false;
+      }
       return !outputArtifactHasPassingDecision(currentAttemptContent)
         && hubResultContainsFailureSignal({ content: currentAttemptContent });
     },
@@ -1321,11 +1329,18 @@ function outputArtifactsContainFailureSignal(paths: string[], startedAt?: string
   );
 }
 
-function outputArtifactsContainBlockSignal(paths: string[], startedAt?: string): boolean {
+function outputArtifactsContainBlockSignal(
+  paths: string[],
+  startedAt?: string,
+  workerId?: string
+): boolean {
   return outputArtifactsContain(
     paths,
     (content) => {
       const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
+      if (workerId && outputArtifactHasPassingWorkerMarker(currentAttemptContent, workerId)) {
+        return false;
+      }
       return !outputArtifactHasPassingDecision(currentAttemptContent)
         && hubResultContainsBlockSignal({ content: currentAttemptContent });
     },

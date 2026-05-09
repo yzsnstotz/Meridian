@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import path from "node:path";
 
+import { parseMeridianStatusMarker } from "./meridian-status-marker";
+
 export interface OutputArtifactFs {
   existsSync: typeof fs.existsSync;
   statSync: typeof fs.statSync;
@@ -42,6 +44,20 @@ export function outputArtifactsContain(
       }
     })
   );
+}
+
+// Worker-authored MERIDIAN-STATUS marker is the authoritative claim about a
+// worker's final outcome. When a report file's current-attempt slice contains
+// `role: worker, worker_id: <id>, outcome: complete`, treat that as the truth
+// and ignore narrative block/fail words elsewhere in the slice. `allowFenced`
+// is true because workers sometimes wrap their final marker in a ``` fence
+// for readability — in chat replies that would be ambiguous, but in their own
+// report file it is unambiguously their final claim.
+export function outputArtifactHasPassingWorkerMarker(content: string, workerId: string): boolean {
+  const marker = parseMeridianStatusMarker(content, { allowFenced: true });
+  return marker?.role === "worker"
+    && marker.worker_id === workerId
+    && marker.outcome === "complete";
 }
 
 export function outputArtifactHasPassingDecision(content: string): boolean {

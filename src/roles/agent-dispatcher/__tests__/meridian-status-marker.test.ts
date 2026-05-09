@@ -152,6 +152,35 @@ describe("parseMeridianStatusMarker", () => {
     expect(parseMeridianStatusMarker(reply)).toBeNull();
   });
 
+  it("with allowFenced parses markers inside ``` fences (artifact-file context)", () => {
+    // Workers writing report files sometimes wrap their final marker in a
+    // ```text fence for readability. In the chat-reply context this would be
+    // ambiguous, but a worker's own report file unambiguously claims the
+    // outcome regardless of fencing — that is what allowFenced expresses.
+    const reportContent = [
+      "## Reply marker",
+      "",
+      "```text",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: C-01",
+      "role: worker",
+      "outcome: complete",
+      "report_path: /abs/reports/C-01.md",
+      "notes: shipped",
+      "<<<END>>>",
+      "```"
+    ].join("\n");
+
+    expect(parseMeridianStatusMarker(reportContent)).toBeNull();
+    expect(parseMeridianStatusMarker(reportContent, { allowFenced: true })).toEqual({
+      role: "worker",
+      worker_id: "C-01",
+      outcome: "complete",
+      report_path: "/abs/reports/C-01.md",
+      notes: "shipped"
+    });
+  });
+
   it("parses a validator marker with cycle, score, and multiline feedback", () => {
     const reply = [
       "<<<MERIDIAN-STATUS>>>",
