@@ -303,6 +303,86 @@ export async function reconcile(
     }
   }
 
+  // A blocked/failed worker can recover even when its `hub_result` is non-null
+  // but stale: PM resolution + validator feedback drive the worker through a
+  // fresh attempt that writes a clean `<<<MERIDIAN-STATUS>>> outcome: complete`
+  // marker to the report file, but the run-tool callback never delivers the
+  // new hub_result (transient IPC/transport drop — same fingerprint as
+  // PR #191's C-01). The earlier recovery loops do not catch this:
+  //   • The main loop scopes to RECONCILABLE_STATUSES = {running, abandoned}.
+  //   • The artifact-synthesis loop above is gated on `hub_result === null`.
+  // Without this sweep, the worker stays parked at `blocked` indefinitely
+  // even though the on-disk artifact unambiguously shows completion.
+  const staleHubResultOverrides = new Map<string, { hubResult: HubResult; staleTimestamp: string | null }>();
+  for (const [workerId, worker] of Object.entries(state.workers)) {
+    if (
+      (worker.status !== "blocked" && worker.status !== "failed")
+      || worker.hub_result === null
+      || justReconciledWorkerIds.has(workerId)
+    ) {
+      continue;
+    }
+
+    const artifact = readFirstOutputArtifact(worker.expected_outputs, worker.started_at);
+    if (!artifact) {
+      continue;
+    }
+
+    const slice = sliceContentFromStartedAt(artifact.content, worker.started_at);
+    if (!outputArtifactHasPassingWorkerMarker(slice, workerId)) {
+      continue;
+    }
+
+    // Confirm the artifact slice is genuinely newer than the stale hub_result
+    // we already have. If every timestamp in the slice predates or matches the
+    // stale hub_result, we have nothing new to recover and would re-trigger
+    // the recovery on every reconciler tick.
+    const staleHubTimestamp = worker.hub_result.timestamp ?? null;
+    const staleHubMs = staleHubTimestamp ? Date.parse(staleHubTimestamp) : NaN;
+    if (!Number.isNaN(staleHubMs) && !sliceHasTimestampNewerThan(slice, staleHubMs)) {
+      continue;
+    }
+
+    const synthesized: HubResult = {
+      trace_id: worker.trace_id ?? randomUUID(),
+      thread_id: worker.thread_id,
+      source: "output_artifact",
+      status: "success",
+      run_state: "completed",
+      content: [
+        `Recovered ${workerId} result from output artifact: ${artifact.path}`,
+        "",
+        artifact.content
+      ].join("\n"),
+      attachments: [
+        {
+          path: artifact.path,
+          filename: path.basename(artifact.path),
+          mime_type: "text/markdown"
+        }
+      ],
+      timestamp: nowIso
+    };
+    const nextStatus: LifecycleStatus = worker.validation ? "awaiting_validation" : "completed";
+    const trigger = `output_artifact:passing_worker_marker:postdates_stale_hub_result`;
+    const fromStatus = worker.status;
+    state.workers[workerId] = {
+      ...worker,
+      trace_id: synthesized.trace_id,
+      status: nextStatus,
+      last_seen_at: nowIso,
+      hub_result: synthesized
+    };
+    staleHubResultOverrides.set(workerId, { hubResult: synthesized, staleTimestamp: staleHubTimestamp });
+    lifecycleStore.logTransition(workerId, fromStatus, nextStatus, trigger);
+    report.changed.push({
+      workerId,
+      from: fromStatus,
+      to: nextStatus,
+      trigger
+    });
+  }
+
   // Re-read the fresh state before saving to avoid overwriting concurrent writes
   // from the run tool (fire-and-forget worker completions that landed between our
   // initial load and now). We merge only the reconciler's status transitions into
@@ -322,6 +402,18 @@ export async function reconcile(
     }
 
     const freshWorker = freshState.workers[change.workerId];
+    // For the stale-hub-result-override path, the synthesized hub_result must
+    // win against the freshState's stale one — but only if freshState still
+    // shows the same stale timestamp (i.e. no concurrent run-tool write
+    // landed). If freshState now has a different hub_result, the run tool
+    // delivered a real reply between our load and merge; that one wins.
+    const override = staleHubResultOverrides.get(change.workerId);
+    const freshShowsSameStaleResult =
+      override
+      && (freshWorker?.hub_result?.timestamp ?? null) === override.staleTimestamp;
+    const mergedHubResult = freshShowsSameStaleResult
+      ? override!.hubResult
+      : freshWorker?.hub_result ?? reconciledWorker.hub_result ?? null;
     freshState.workers[change.workerId] = {
       ...(freshWorker ?? reconciledWorker),
       status: reconciledWorker.status,
@@ -329,8 +421,9 @@ export async function reconcile(
       trace_id: reconciledWorker.trace_id || freshWorker?.trace_id || null,
       // Prefer the fresh hub_result (written by the run tool concurrently) over the
       // reconciler's stale view. Fall back to the reconciler's recovered result if
-      // no concurrent write occurred.
-      hub_result: freshWorker?.hub_result ?? reconciledWorker.hub_result ?? null
+      // no concurrent write occurred. The stale-override path above intentionally
+      // replaces a known-stale fresh hub_result with the synthesized one.
+      hub_result: mergedHubResult
     };
   }
 
@@ -610,6 +703,25 @@ function synthesizeOutputArtifactHubResult(
     ],
     timestamp: nowIso
   };
+}
+
+// Returns true when the provided text contains at least one ISO 8601 timestamp
+// strictly newer than `referenceMs`. Used to confirm that a recovered artifact
+// slice represents a fresh attempt and not the same content the stale
+// hub_result already reflected.
+function sliceHasTimestampNewerThan(slice: string, referenceMs: number): boolean {
+  if (Number.isNaN(referenceMs)) {
+    return true;
+  }
+  const isoPattern = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = isoPattern.exec(slice)) !== null) {
+    const ts = Date.parse(match[1]!);
+    if (!Number.isNaN(ts) && ts > referenceMs) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function readFirstOutputArtifact(

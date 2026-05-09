@@ -2035,6 +2035,150 @@ describe("reconcile", () => {
     expect(harness.store.load().workers["N-05"]?.status).toBe("running");
     expect(report.unchanged).toContain("N-05");
   });
+
+  it("recovers a blocked worker whose stale hub_result is masking a passing artifact marker from a fresh attempt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const startedAt = "2026-05-09T16:51:38.164Z";
+    const staleHubTimestamp = "2026-05-09T16:52:30.070Z";
+    const freshAttemptTimestamp = "2026-05-09T17:17:46.000Z";
+
+    const outputPath = await harness.writeOutput("reports/C-17.md", [
+      `## Attempt 1 — ${staleHubTimestamp} — role: worker`,
+      "",
+      "Blocked by the mandatory working-tree gate.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: C-17",
+      "role: worker",
+      "outcome: blocked",
+      "notes: dirty worktree",
+      "<<<END>>>",
+      "",
+      `## Attempt 2 — ${freshAttemptTimestamp} — role: worker`,
+      "",
+      "Addressed validator feedback and pushed runtime dispatch wiring.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: C-17",
+      "role: worker",
+      "outcome: complete",
+      `report_path: ${path.join("reports", "C-17.md")}`,
+      "notes: MCP adapter runtime wired and pushed.",
+      "<<<END>>>",
+      ""
+    ].join("\n"));
+
+    const blockedWorker = {
+      ...buildRunningWorker("codex_65", outputPath, startedAt),
+      status: "blocked" as const,
+      validation: {
+        current_cycle: 1,
+        max_fix_cycles: 3,
+        validator_thread_id: null,
+        last_score: 0.5,
+        last_feedback: "fix the runtime",
+        history: [{
+          cycle: 1,
+          score: 0.5,
+          feedback: "fix the runtime",
+          validator_thread_id: "codex_67",
+          timestamp: "2026-05-09T17:05:55.195Z"
+        }],
+        spawn_failure_count: 0,
+        last_spawn_failure_at: null
+      },
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "codex_65",
+        source: "codex",
+        status: "success" as const,
+        run_state: "completed" as const,
+        content: "Blocked by the mandatory working-tree gate.\n<<<MERIDIAN-STATUS>>>\nworker_id: C-17\nrole: worker\noutcome: blocked\n<<<END>>>",
+        attachments: [],
+        timestamp: staleHubTimestamp
+      }
+    };
+
+    harness.store.save(buildState({
+      workers: { "C-17": blockedWorker }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    const recovered = harness.store.load().workers["C-17"];
+    expect(recovered?.status).toBe("awaiting_validation");
+    expect(recovered?.hub_result).toMatchObject({
+      thread_id: "codex_65",
+      source: "output_artifact",
+      status: "success",
+      run_state: "completed",
+      content: expect.stringContaining("outcome: complete"),
+      timestamp: FIXED_NOW
+    });
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "C-17",
+        from: "blocked",
+        to: "awaiting_validation",
+        trigger: "output_artifact:passing_worker_marker:postdates_stale_hub_result"
+      })
+    );
+  });
+
+  it("does not re-recover when the artifact slice has no timestamp newer than the stale hub_result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const startedAt = "2026-05-09T16:51:38.164Z";
+    const staleHubTimestamp = "2026-05-09T17:30:00.000Z";
+
+    const outputPath = await harness.writeOutput("reports/C-17.md", [
+      `## Attempt 1 — 2026-05-09T16:52:30.070Z — role: worker`,
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: C-17",
+      "role: worker",
+      "outcome: complete",
+      "<<<END>>>",
+      ""
+    ].join("\n"));
+
+    const blockedWorker = {
+      ...buildRunningWorker("codex_65", outputPath, startedAt),
+      status: "blocked" as const,
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "codex_65",
+        source: "output_artifact",
+        status: "success" as const,
+        run_state: "completed" as const,
+        content: "already-recovered hub_result",
+        attachments: [],
+        timestamp: staleHubTimestamp
+      }
+    };
+
+    harness.store.save(buildState({
+      workers: { "C-17": blockedWorker }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["C-17"]?.status).toBe("blocked");
+    expect(report.changed).not.toContainEqual(
+      expect.objectContaining({
+        trigger: "output_artifact:passing_worker_marker:postdates_stale_hub_result"
+      })
+    );
+  });
 });
 
 async function createHarness() {
