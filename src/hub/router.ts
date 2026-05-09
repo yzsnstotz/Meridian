@@ -161,7 +161,15 @@ const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "runnin
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 const AGENT_ROLES = new Set(["agent", "assistant"]);
-const THREAD_HISTORY_LIMIT = 400;
+// Conversation history is recorded continuously by the router (independent
+// of any GUI subscriber), so the Hub knows what was said across the lifetime
+// of a thread. The cap below is the only thing standing between the recorded
+// stream and what the GUI can replay on `/api/history`. Operators reported
+// the terminal page only showing the tail of long-running threads — bumped
+// to 5000 so a multi-hour bridge session keeps its full transcript on hand.
+// At ~1KB per entry that's ~5MB per active thread in memory, which is fine
+// given the small per-host thread count.
+const THREAD_HISTORY_LIMIT = 5000;
 const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
 const ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT = 40_000;
 

@@ -1159,8 +1159,16 @@
       var SUMMARY_INCOMPLETE_LABEL = "summary incomplete";
       var CHAT_HISTORY_STORAGE_KEY = "meridian_chat_history:" + (threadId || "active");
       var CHAT_HISTORY_MAX_ITEMS = 200;
-      var CHAT_HISTORY_RESTORE_LIMIT = 60;
-      var CHAT_HISTORY_BOOTSTRAP_LIMIT = 60;
+      // Restore limit: how many entries we keep in localStorage between
+      // page reloads. Bumped from 60 → 1000 so closing/reopening a tab
+      // does not throw away the conversation tail an operator was reading.
+      var CHAT_HISTORY_RESTORE_LIMIT = 1000;
+      // Bootstrap limit: how many entries we ask the Hub for on page open.
+      // Bumped from 60 → 2000 (Hub-side cap is 5000 per
+      // src/hub/router.ts:THREAD_HISTORY_LIMIT) so long-running bridge
+      // threads no longer show up as "the chat starts from when I opened
+      // the page" — the full recorded transcript renders on first load.
+      var CHAT_HISTORY_BOOTSTRAP_LIMIT = 2000;
       var CHAT_HISTORY_MAX_CONTENT_CHARS = -1;
       var CHAT_HISTORY_MAX_DETAIL_CHARS = -1;
       var CHAT_HISTORY_MAX_RAW_CHARS = -1;

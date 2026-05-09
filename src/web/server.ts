@@ -95,7 +95,11 @@ const fileReadQuerySchema = z.object({
 
 const historyQuerySchema = z.object({
   thread_id: z.string().min(1),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  // Cap kept large so the terminal page can request up to the Hub's
+  // THREAD_HISTORY_LIMIT (5000) on a fresh open. Without this, long-lived
+  // threads would silently truncate to the previous 200 ceiling and the
+  // operator would only see the most recent slice of the conversation.
+  limit: z.coerce.number().int().min(1).max(5000).optional(),
   max_content_chars: z.coerce.number().int().min(0).max(200000).optional(),
   max_detail_chars: z.coerce.number().int().min(0).max(200000).optional(),
   max_raw_chars: z.coerce.number().int().min(0).max(200000).optional()
