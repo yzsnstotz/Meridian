@@ -389,6 +389,7 @@ describe("resume-worker tool", () => {
           started_at: "2026-04-05T00:00:00.000Z",
           last_seen_at: "2026-04-05T00:10:00.000Z",
           status: "failed",
+          expected_outputs: [],
           // Stale synthesized output_artifact hub_result that misread the
           // current attempt — the operator clicks Validate to let the
           // validator judge the report on disk instead of re-trusting this
