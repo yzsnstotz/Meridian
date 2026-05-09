@@ -101,6 +101,23 @@ export async function continueDispatchWorker(
       };
     }
 
+    // running workers with a recorded thread_id are already in flight.
+    // Returning the existing thread id (instead of falling through to
+    // launchWorkerFromDispatchPlan) prevents the dispatcher from spawning
+    // a parallel agent against the same task — the regression observed
+    // on agent-dispatcher-4db5c870 where continue ticks kept stacking new
+    // worker threads on C-01 even though the lifecycle already showed it
+    // running. The reconciler / watchdog is responsible for transitioning
+    // the worker to abandoned/failed if its Hub thread is actually dead;
+    // until that happens, this short-circuit is the correct behavior.
+    if (currentWorkerState?.status === "running" && currentWorkerState.thread_id?.trim()) {
+      return {
+        ok: true,
+        workerId,
+        threadId: currentWorkerState.thread_id
+      };
+    }
+
     if (shouldResetWorkerBeforeContinue(dispatchPlanRow)) {
       resumeResult = await executeResumeWorkerAction({
         planPath: config.dispatch_plan_path,
@@ -125,6 +142,31 @@ export async function continueDispatchWorker(
       }
 
       throw new Error(launchError);
+    }
+
+    // Synchronously bind the worker to the spawned thread in the lifecycle
+    // store BEFORE returning. launchDispatchWorker fires the run handoff as
+    // a microtask (Promise.resolve().then(...)), and the runTool's
+    // recordWorkerStart only lands after several async file reads — leaving
+    // a window where dispatch_threads.json shows no worker entry but the
+    // continue response already advertises `continued: <workerId>`. The
+    // dispatcher's next tick then sees "no entry" and spawns again. Writing
+    // a placeholder here closes that race; runTool's recordWorkerStart will
+    // overwrite the row with the full preamble + expected_outputs shortly
+    // after.
+    const launchedThreadId = normalizeThreadId(launched.threadId);
+    if (launchedThreadId) {
+      try {
+        lifecycleStore.recordWorkerLaunchInitiated(workerId, launchedThreadId);
+      } catch (lifecycleError) {
+        // Don't fail the launch if the lifecycle write fails — the run
+        // handoff will record the worker properly. Just log it.
+        console.warn("recordWorkerLaunchInitiated failed; relying on run handoff for lifecycle entry", {
+          workerId,
+          threadId: launchedThreadId,
+          error: getErrorMessage(lifecycleError)
+        });
+      }
     }
 
     return {

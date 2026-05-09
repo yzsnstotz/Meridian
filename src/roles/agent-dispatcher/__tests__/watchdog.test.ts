@@ -1707,11 +1707,18 @@ describe("continueDispatchWorker", () => {
         dispatchPlanPath,
         commandFilePath
       }));
+      // After the launch-initiated synchronous lifecycle write, the row
+      // reflects 🔄 immediately (no more pre-recordWorkerStart ⬜
+      // window). retry_count was bumped from 0→1 by resume_worker, then
+      // again would be bumped by the launch-initiated write — but the
+      // launch-initiated path sees previousStatus="pending" (set by
+      // resume_worker) and shouldIncrementRetry only fires for
+      // failed/blocked/abandoned, so retry_count stays at 1.
       await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
-        "| ⬜ | Ω+1 | R-04A | Recovery | CODEX | DELTA-CHECK | stale watchdog recovery |"
+        "| 🔄 | Ω+1 | R-04A | Recovery | CODEX | DELTA-CHECK | stale watchdog recovery |"
       );
       expect(lifecycleStore.load().workers["R-04A"]).toMatchObject({
-        status: "pending",
+        status: "running",
         retry_count: 1
       });
     } finally {
@@ -1803,7 +1810,7 @@ describe("continueDispatchWorker", () => {
     }
   });
 
-  it("does not resurrect a stale running worker when relaunch bootstrap fails", async () => {
+  it("does not relaunch a stale running worker at all (short-circuit on running+thread)", async () => {
     const harness = await createHarness("continue-worker-stale-running-");
     const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
     const commandFilePath = path.join(harness.directory, "agent_dispatch_command.md");
@@ -1876,28 +1883,32 @@ describe("continueDispatchWorker", () => {
         }
       ], "PRE-FLIGHT", launchWorker);
 
+      // New behavior (regression fix for agent-dispatcher-4db5c870): a
+      // worker already in lifecycle status `running` with a thread_id is
+      // assumed to be the responsibility of the reconciler / watchdog
+      // probe, not a candidate for relaunch. Short-circuit returns the
+      // existing thread without calling launchWorker, killing, or
+      // resetting any state. This is precisely the behavior that prevents
+      // the parallel-spawn footprint the operator reported (every
+      // continue tick stacking another agent on the same task).
       expect(result).toEqual({
-        ok: false,
+        ok: true,
         workerId: "PRE-FLIGHT",
-        error: "run launch failed: ENOENT",
-        localToolBootstrapFailure: true
+        threadId: "codex_03"
+      });
+      expect(launchWorker).not.toHaveBeenCalled();
+      expect(killSpy).not.toHaveBeenCalled();
+      // Lifecycle row is left untouched — same status, thread_id,
+      // retry_count, hub_result. Plan markdown row should also stay 🔄.
+      const preflightAfter = lifecycleStore.load().workers["PRE-FLIGHT"];
+      expect(preflightAfter).toMatchObject({
+        thread_id: "codex_03",
+        status: "running",
+        retry_count: 2
       });
       await expect(fsp.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
-        "| ⬜ | 0 | PRE-FLIGHT | Environment health check | OPUS | — | Report-only worker |"
+        "| 🔄 | 0 | PRE-FLIGHT | Environment health check | OPUS | — | Report-only worker |"
       );
-      expect(lifecycleStore.load().workers["PRE-FLIGHT"]).toMatchObject({
-        thread_id: "codex_03",
-        status: "pending",
-        retry_count: 3
-      });
-      expect(lifecycleStore.load().workers["PRE-FLIGHT"]?.hub_result).toMatchObject({
-        trace_id: "9639d2dd-431f-430a-81de-84c3c4b6d980",
-        thread_id: "codex_03",
-        status: "partial"
-      });
-      expect(killSpy).toHaveBeenCalledWith({
-        thread_id: "codex_03"
-      });
     } finally {
       killSpy.mockRestore();
     }

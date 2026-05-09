@@ -392,7 +392,11 @@ describe("continueDispatchWorker", () => {
           trace_id: "11111111-1111-4111-8111-111111111111",
           started_at: "2026-04-05T00:00:00.000Z",
           last_seen_at: "2026-04-05T00:10:00.000Z",
-          status: "running",
+          // Status is `abandoned` (not `running`) so the new
+          // running-with-thread short-circuit doesn't fire and we still
+          // exercise the relaunch path that the persisted override is
+          // meant to flow through.
+          status: "abandoned",
           expected_outputs: [],
           hub_result: null,
           command_preamble: null,
@@ -428,7 +432,7 @@ describe("continueDispatchWorker", () => {
           base_branch: "main"
         }
       },
-      [{ status: "⬜", worker: "N-04", model: "CODEX-HIGH", notes: "Single module" }],
+      [{ status: "⚠️ ABANDONED", worker: "N-04", model: "CODEX-HIGH", notes: "Single module" }],
       "N-04",
       launchWorker
     );
@@ -437,5 +441,69 @@ describe("continueDispatchWorker", () => {
       modelId: "gpt-5.5",
       effort: "xhigh"
     }));
+  });
+
+  it("does not relaunch a running worker that already owns a thread", async () => {
+    // Regression for agent-dispatcher-4db5c870: after a service restart
+    // the lifecycle could have C-01 recorded as `running` with a thread_id
+    // (possibly already dead per Hub, but the reconciler hadn't run yet).
+    // Without a short-circuit, continueDispatchWorker would happily reset
+    // the row and spawn a parallel agent every continue tick, producing
+    // the "endless new spawns for the same work" footprint the operator
+    // reported. The reconciler / watchdog is responsible for transitioning
+    // a stale running entry to abandoned; until then, leave it alone.
+    const { dir, commandPath, planPath } = await createTempDispatchPlan();
+    const sidecarPath = path.join(dir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath: planPath
+    });
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-running",
+        started_at: "2026-05-09T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "C-01": {
+          thread_id: "worker-thread-already-running",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-05-09T00:00:00.000Z",
+          last_seen_at: "2026-05-09T00:10:00.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "worker-thread-should-not-launch"
+    });
+
+    const result = await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: dir
+      },
+      [{ status: "🔄", worker: "C-01", model: "CODEX-HIGH" }],
+      "C-01",
+      launchWorker
+    );
+
+    expect(launchWorker).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      workerId: "C-01",
+      threadId: "worker-thread-already-running"
+    });
   });
 });
