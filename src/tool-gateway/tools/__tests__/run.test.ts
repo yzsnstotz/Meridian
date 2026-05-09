@@ -1824,6 +1824,53 @@ describe("run tool", () => {
     });
   });
 
+  it("keeps a worker running when the Hub IPC bridge drops the response (no synthetic failed)", async () => {
+    // Regression for agent-dispatcher-4db5c870: the Hub returned
+    // `Server error: IPC request completed without response body` for /api/run.
+    // The error was treated as non-transient, runTool recorded a synthetic
+    // `failed`, the worker became eligible again, and watchdog stalled into a
+    // spawn storm (codex_135..139 all alive against C-01 simultaneously).
+    // After the fix, the worker stays `running` so the reconciler validates
+    // the actual thread state instead of triggering another launch.
+    const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockRun.mockRejectedValue(new Error(
+      "run failed: Server error: IPC request completed without response body"
+    ));
+    readFileMock.mockResolvedValue("# command\n");
+
+    const result = await runTool.execute({
+      thread_id: "thread-ipc-drop",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "C-01"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    expect(lifecycleStore.recordWorkerResult).not.toHaveBeenCalled();
+    expect(lifecycleStore.setWorkerStatus).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["C-01"]).toMatchObject({
+      thread_id: "thread-ipc-drop",
+      status: "running",
+      hub_result: null
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: "run failed: Server error: IPC request completed without response body",
+      data: {
+        worker: "C-01",
+        thread_id: "thread-ipc-drop",
+        status: "failed"
+      }
+    });
+    expect(consoleErrorMock).toHaveBeenCalledWith("run tool execution failed", {
+      worker: "C-01",
+      threadId: "thread-ipc-drop",
+      error: "run failed: Server error: IPC request completed without response body"
+    });
+  });
+
   it("keeps a Meridian API headers timeout running because the worker may have started", async () => {
     const consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
