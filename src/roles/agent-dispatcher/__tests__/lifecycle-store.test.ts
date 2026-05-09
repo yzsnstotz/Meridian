@@ -1759,6 +1759,63 @@ describe("LifecycleStore", () => {
     expect(report).toContain("Headers Timeout Error");
   });
 
+  // Regression: after a service restart the previous PM agent process is
+  // gone, so the recorded `running` thread_id no longer routes through the
+  // Hub. Leaving the entry as `running` permanently blocks worker relaunch
+  // because `findActivePmResolversForWorker` reads it as live.
+  // `markPmResolverThreadMissing` demotes such entries to `failed` so the
+  // dispatcher can resume; the existing reconcile-on-recovery path still
+  // promotes them to `completed` if the worker later turns out to have
+  // already been resolved before the crash.
+  it("demotes a running PM resolver to failed when the Hub thread is missing", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart("C-01", "worker-thread-c01", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.setWorkerStatus("C-01", "blocked", "output_artifact:block_signal");
+    harness.store.recordPmResolverStart("pm-thread-c01", {
+      status: "manual_intervention_required",
+      workerId: "C-01",
+      message: "manual intervention required: C-01 reported a blocking failure",
+      source: "watchdog"
+    });
+
+    const beforePm = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-c01");
+    expect(beforePm?.status).toBe("running");
+
+    harness.store.markPmResolverThreadMissing(
+      "pm-thread-c01",
+      "service_restart_pm_thread_missing: unknown thread"
+    );
+
+    const afterPm = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-c01");
+    expect(afterPm?.status).toBe("failed");
+    expect(afterPm?.error).toContain("service_restart_pm_thread_missing");
+    expect(afterPm?.transport_error).toBeNull();
+  });
+
+  it("findActivePmResolversForWorker returns only running entries for that worker", async () => {
+    const { findActivePmResolversForWorker } = await import("../lifecycle-store");
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart("C-01", "worker-thread-c01", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.setWorkerStatus("C-01", "blocked", "output_artifact:block_signal");
+    harness.store.recordPmResolverStart("pm-thread-c01", {
+      status: "manual_intervention_required",
+      workerId: "C-01",
+      message: "manual intervention required: C-01 reported a blocking failure",
+      source: "watchdog"
+    });
+
+    const stateRunning = harness.store.load();
+    expect(findActivePmResolversForWorker(stateRunning, "C-01")).toHaveLength(1);
+    expect(findActivePmResolversForWorker(stateRunning, "C-01")[0]?.thread_id).toBe("pm-thread-c01");
+    expect(findActivePmResolversForWorker(stateRunning, "C-02")).toHaveLength(0);
+
+    harness.store.recordPmResolverFailure("pm-thread-c01", "any failure reason");
+    const stateFailed = harness.store.load();
+    expect(findActivePmResolversForWorker(stateFailed, "C-01")).toHaveLength(0);
+  });
+
   it("appends PM resolver replies to the target worker report", async () => {
     const harness = await createHarness();
     const reportPath = path.join(harness.directory, "reports", "N-57.md");
