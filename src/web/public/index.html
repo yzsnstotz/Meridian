@@ -1876,22 +1876,17 @@
         persistClosedStatelessCards();
       }
 
-      function cleanupClosedStatelessCards(instances) {
-        var list = Array.isArray(instances) ? instances : [];
-        var liveKeys = {};
-        list.forEach(function (inst) {
-          if (!isStatelessCallInstance(inst)) return;
-          var key = statelessCardKey(inst);
-          if (key) liveKeys[key] = true;
-        });
-        var changed = false;
-        Object.keys(closedStatelessAgentIds || {}).forEach(function (key) {
-          if (!liveKeys[key]) {
-            delete closedStatelessAgentIds[key];
-            changed = true;
-          }
-        });
-        if (changed) persistClosedStatelessCards();
+      // Closure records are intentionally kept for the lifetime of the
+      // sessionStorage entry instead of being garbage-collected against the
+      // live instance list. Hub does not reuse thread_ids within a session
+      // (see instance-manager.nextThreadId), so a once-dismissed key cannot
+      // legitimately re-attach to a new agent. The previous "if the key is
+      // not in the current poll, drop the closure" behavior caused cards to
+      // re-appear whenever the listing briefly missed an instance — exactly
+      // the regression the user reported ("keeps re-showing those cards
+      // after I closed them multiple times"). Leave the record alone.
+      function cleanupClosedStatelessCards() {
+        // intentionally empty — see comment above
       }
 
       function splitVisibleInstances(instances) {
@@ -2198,8 +2193,7 @@
 
       function renderGrid(instances) {
         lastRenderedInstances = Array.isArray(instances) ? instances : [];
-        cleanupClosedStatelessCards(lastRenderedInstances);
-
+        // No closure-record cleanup: see cleanupClosedStatelessCards comment.
         var split = splitVisibleInstances(lastRenderedInstances);
         renderCardGroup(gridEl, split.sessioned, {});
         renderCardGroup(statelessGridEl, split.stateless, {

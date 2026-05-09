@@ -1513,7 +1513,14 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   assert.equal(manager.getAttachedThread("777:chat-b"), null);
 });
 
-test("rehydrateFromState seeds thread allocation from persisted conversation history", async () => {
+test("rehydrateFromState does NOT carry the thread allocator counter across a restart with no live instances", async () => {
+  // Regression: previously, the allocator was seeded from every persisted
+  // thread_id (instances, session_bindings, push_subscriptions,
+  // conversation_history) — including ids whose underlying agent process
+  // had died with the prior service. That made the Hub keep stacking
+  // thread_ids (codex_142, codex_143, ...) across restarts even when the
+  // user expected a fresh counter. Now a restart with zero rehydrated
+  // instances allocates the next id from 01.
   const registry = new InstanceRegistry();
   const nowIso = new Date().toISOString();
 
@@ -1554,8 +1561,53 @@ test("rehydrateFromState seeds thread allocation from persisted conversation his
 
   const threadId = await manager.spawn("codex", "bridge");
 
-  assert.equal(threadId, "codex_15");
+  assert.equal(threadId, "codex_01");
 
+  await manager.kill(threadId);
+});
+
+test("rehydrateFromState keeps the allocator above live rehydrated instances to avoid id reuse", async () => {
+  const registry = new InstanceRegistry();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(6602) as never) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  await manager.rehydrateFromState({
+    version: 3,
+    updated_at: new Date().toISOString(),
+    instances: [
+      {
+        thread_id: "codex_07",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: socketPathForThread("codex_07"),
+        working_dir: "/tmp",
+        pid: 6700,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString(),
+        auto_approve: false
+      }
+    ],
+    session_bindings: {},
+    push_subscriptions: {}
+  });
+
+  // codex_07 successfully rehydrated, so the next spawn must skip past it
+  // even though the persisted-state seeding has been removed.
+  const threadId = await manager.spawn("codex", "bridge");
+
+  assert.equal(threadId, "codex_08");
+
+  await manager.kill("codex_07");
   await manager.kill(threadId);
 });
 

@@ -702,6 +702,62 @@ test("hub stateless card close helpers hide only stateless call cards", async ()
   assert.deepEqual(split.stateless, []);
 });
 
+test("hub closed stateless card stays closed even when a poll briefly omits the instance", async () => {
+  // Regression: cleanupClosedStatelessCards used to delete the closure
+  // entry whenever the live-instance list lacked the key, which made a
+  // dismissed card flash back as soon as a poll cycle dropped the entry
+  // (Hub restart, transient empty list, terminated->revived status flip).
+  // The fix removes the auto-purge; closures persist for the sessionStorage
+  // lifetime, so a closed card stays closed even after the instance later
+  // reappears in a subsequent poll.
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+  const stored: Record<string, string> = {};
+  const context: Record<string, unknown> = {
+    closedStatelessAgentIds: {},
+    sessionStorage: {
+      getItem(key: string): string | null {
+        return Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] ?? null : null;
+      },
+      setItem(key: string, value: string): void {
+        stored[key] = String(value);
+      },
+      removeItem(key: string): void {
+        delete stored[key];
+      }
+    }
+  };
+
+  bindTerminalFunctions(indexHtml, context, [
+    "readDisplayString",
+    "isStatelessCallInstance",
+    "statelessCardKey",
+    "isClosedStatelessCard",
+    "persistClosedStatelessCards",
+    "splitVisibleInstances",
+    "closeStatelessCard",
+    "cleanupClosedStatelessCards"
+  ]);
+
+  const initialInstances = [
+    { thread_id: "codex_stateless_99", mode: "stateless_call", status: "idle" }
+  ];
+
+  (context.closeStatelessCard as (item: unknown) => void)(initialInstances[0]);
+  let split = (context.splitVisibleInstances as (items: unknown[]) => { stateless: unknown[] })(initialInstances);
+  assert.deepEqual(split.stateless, []);
+
+  // Hub momentarily reports no stateless instances (e.g. status flipped to
+  // "stopped", or the list endpoint blipped). The closure record must NOT
+  // be purged by this transient empty list.
+  (context.cleanupClosedStatelessCards as (items: unknown[]) => void)([]);
+  assert.deepEqual(context.closedStatelessAgentIds, { codex_stateless_99: true });
+
+  // Same instance reappears (e.g. status flipped back to "idle"). The card
+  // must stay hidden because the user already dismissed it.
+  split = (context.splitVisibleInstances as (items: unknown[]) => { stateless: unknown[] })(initialInstances);
+  assert.deepEqual(split.stateless, []);
+});
+
 test("hub stateless card display helpers show provider default model and neutral status", async () => {
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
   const context: Record<string, unknown> = {};
