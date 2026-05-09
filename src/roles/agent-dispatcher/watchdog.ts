@@ -173,7 +173,7 @@ export class ReconciliationWatchdog {
 
         reports.push(report);
 
-        await this.cleanupTerminalWorkerThreads(lifecycleStore, dispatchPlanPath);
+        await this.cleanupTerminalWorkerThreads(lifecycleStore, dispatchPlanPath, dispatchPlanPaths);
 
         if (this.autoResolveConfig) {
           try {
@@ -228,7 +228,8 @@ export class ReconciliationWatchdog {
    */
   private async cleanupTerminalWorkerThreads(
     lifecycleStore: LifecycleStore,
-    dispatchPlanPath: string
+    dispatchPlanPath: string,
+    allDispatchPlanPaths: readonly string[]
   ): Promise<void> {
     if (!this.resolveKillPolicyForDispatchPlan) {
       return;
@@ -262,6 +263,18 @@ export class ReconciliationWatchdog {
 
     const dispatcherThreadId = lifecycleState.dispatcher.thread_id?.trim() ?? "";
     const activeThreadIds = collectCleanupBlockingThreadIds(lifecycleState);
+    // The Hub recycles freed thread_ids across the whole service, not per
+    // dispatch plan. PR #155 reserved validator/worker threads against the
+    // current plan's own terminal rows; this extends the same protection
+    // across every active plan the watchdog sweeps. Without it, plan B's
+    // stale terminal row pointing at a recycled id will kill plan A's live
+    // validator/worker. Observed dispatcher 9fd97803 C-11 codex_38 killed
+    // by hgd-growth-v1 BATCH-2-GATE stale row, producing a duplicate cycle
+    // 3 spawn (codex_39) and a regression score that put C-11 back to running.
+    const crossPlanActiveThreadIds = this.collectCrossPlanActiveThreadIds(
+      dispatchPlanPath,
+      allDispatchPlanPaths
+    );
 
     const attemptedThreadIds = new Set<string>();
     for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
@@ -281,7 +294,7 @@ export class ReconciliationWatchdog {
       if (threadId === dispatcherThreadId) {
         continue;
       }
-      if (activeThreadIds.has(threadId)) {
+      if (activeThreadIds.has(threadId) || crossPlanActiveThreadIds.has(threadId)) {
         continue;
       }
       if (!shouldKillTerminalWorker(killPolicy, worker)) {
@@ -314,6 +327,34 @@ export class ReconciliationWatchdog {
         });
       }
     }
+  }
+
+  private collectCrossPlanActiveThreadIds(
+    excludeDispatchPlanPath: string,
+    allDispatchPlanPaths: readonly string[]
+  ): Set<string> {
+    const ids = new Set<string>();
+    for (const otherPath of allDispatchPlanPaths) {
+      if (otherPath === excludeDispatchPlanPath) {
+        continue;
+      }
+      try {
+        const otherState = new LifecycleStore(resolveDispatchThreadPath(otherPath)).load();
+        const dispatcherThreadId = otherState.dispatcher.thread_id?.trim();
+        if (dispatcherThreadId && otherState.dispatcher.status === "running") {
+          ids.add(dispatcherThreadId);
+        }
+        for (const id of collectCleanupBlockingThreadIds(otherState)) {
+          ids.add(id);
+        }
+      } catch (error) {
+        this.log.warn("Watchdog: failed to read cross-plan lifecycle for cleanup reservation", {
+          dispatchPlanPath: otherPath,
+          error: asError(error).message
+        });
+      }
+    }
+    return ids;
   }
 
   private async checkForStalledDispatcher(

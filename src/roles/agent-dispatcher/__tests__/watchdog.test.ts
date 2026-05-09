@@ -1623,6 +1623,83 @@ describe("ReconciliationWatchdog", () => {
 
     expect(killThread).not.toHaveBeenCalledWith("codex_09");
   });
+
+  it("does not kill a validator thread that collides with another active dispatch plan's stale terminal row", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    // Reproduces dispatcher 9fd97803 C-11 cycle 2: the Hub recycled freed
+    // thread_id codex_38 to plan A's live validator while plan B still had
+    // a stale terminal row (BATCH-2-GATE) pointing at codex_38. The watchdog
+    // sweeps plan B and its cleanup must NOT kill codex_38 even though plan
+    // B's own state thinks codex_38 is a freed terminal-worker thread.
+    const harnessA = await createHarness("watchdog-cross-plan-validator-collision-A-");
+    const harnessB = await createHarness("watchdog-cross-plan-validator-collision-B-");
+    const dispatchPlanPathA = path.join(harnessA.directory, "dispatch_plan.md");
+    const dispatchPlanPathB = path.join(harnessB.directory, "dispatch_plan.md");
+
+    const storeA = new LifecycleStore(path.join(harnessA.directory, "dispatch_threads.json"));
+    storeA.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "dispatcher-A", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "C-11": {
+          thread_id: "worker-thread-A",
+          trace_id: null,
+          started_at: "2026-04-03T12:05:00.000Z",
+          last_seen_at: "2026-04-03T12:05:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 1,
+            max_fix_cycles: 3,
+            validator_thread_id: "codex_38",
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      }
+    });
+
+    const storeB = new LifecycleStore(path.join(harnessB.directory, "dispatch_threads.json"));
+    storeB.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "dispatcher-B", started_at: "2026-04-03T11:00:00.000Z", status: "running" },
+      workers: {
+        "BATCH-2-GATE": {
+          thread_id: "codex_38",
+          trace_id: null,
+          started_at: "2026-04-03T11:00:00.000Z",
+          last_seen_at: "2026-04-03T11:30:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("dispatcher-B", "running"));
+
+    const killThread = vi.fn(async () => {});
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPathA, dispatchPlanPathB],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "always",
+      killThread
+    });
+
+    await watchdog.sweep();
+
+    expect(killThread).not.toHaveBeenCalledWith("codex_38");
+  });
 });
 
 describe("continueDispatchWorker", () => {
