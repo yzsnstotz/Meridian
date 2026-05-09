@@ -2788,6 +2788,70 @@ describe("LifecycleStore", () => {
         status: "completed"
       });
     });
+
+    it("honors a worker's `outcome: complete` MERIDIAN-STATUS marker over narrative failure words in the same attempt", async () => {
+      // Regression: clawso C-01 on dispatcher 9fd97803 (2026-05-09). The
+      // worker emitted a clean `<<<MERIDIAN-STATUS>>> outcome: complete`
+      // marker (wrapped in a ```text fence in the report file). The
+      // current-attempt slice still contained the worker's TDD-narrative
+      // phrase "fixture validation failed", which tripped the broad
+      // `\bvalidation failed\b` regex and the synthesized output_artifact
+      // hub_result was classified `failed`. Worker stayed `failed` even
+      // though it had shipped the work. The marker is the worker's
+      // structured claim and must win over the narrative regex.
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "C-01.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "C-01",
+        "codex_06",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      const startedAtMs = Date.parse(harness.store.load().workers["C-01"]!.started_at!);
+      const beforeIso = new Date(startedAtMs - 60_000).toISOString();
+      const afterIso = new Date(startedAtMs + 60_000).toISOString();
+
+      const content = [
+        `## Attempt 1 - ${beforeIso} - role: worker`,
+        "",
+        "Outcome: blocked — dirty working tree.",
+        "",
+        `## Attempt 3 - ${afterIso} - role: worker`,
+        "",
+        "TDD red step: fixture validation failed before the schema existed.",
+        "Green step: added the schema and re-ran fixtures; all green.",
+        "",
+        "## Reply marker",
+        "",
+        "```text",
+        "<<<MERIDIAN-STATUS>>>",
+        "worker_id: C-01",
+        "role: worker",
+        "outcome: complete",
+        `report_path: ${reportPath}`,
+        "notes: shipped",
+        "<<<END>>>",
+        "```"
+      ].join("\n");
+
+      await fsp.writeFile(reportPath, content, "utf8");
+
+      harness.store.recordWorkerResult("C-01", buildHubResult({
+        thread_id: "codex_06",
+        status: "success",
+        run_state: "completed",
+        source: "output_artifact",
+        content,
+        timestamp: afterIso
+      }));
+
+      expect(harness.store.load().workers["C-01"]).toMatchObject({
+        status: "completed"
+      });
+    });
   });
 
   describe("recordWorkerStart validation history preservation", () => {

@@ -19,6 +19,7 @@ import {
 } from "../../types";
 import {
   outputArtifactHasPassingDecision,
+  outputArtifactHasPassingWorkerMarker,
   outputArtifactsContain,
   outputsExist as outputArtifactsExist,
   sliceContentFromStartedAt
@@ -521,7 +522,11 @@ export class LifecycleStore {
 
   // ─── Validation lifecycle transitions ──────────────────────────────────────
 
-  transitionToAwaitingValidation(workerId: string, maxFixCycles: number): void {
+  transitionToAwaitingValidation(
+    workerId: string,
+    maxFixCycles: number,
+    options: { clearHubResult?: boolean; trigger?: string } = {}
+  ): void {
     this.mutate((state) => {
       const worker = state.workers[workerId];
       if (!worker) return;
@@ -538,6 +543,9 @@ export class LifecycleStore {
 
       const prevStatus = worker.status;
       worker.status = "awaiting_validation";
+      if (options.clearHubResult) {
+        worker.hub_result = null;
+      }
       worker.validation = {
         current_cycle: worker.validation?.current_cycle ?? 0,
         max_fix_cycles: maxFixCycles,
@@ -554,7 +562,7 @@ export class LifecycleStore {
         spawn_failure_count: worker.validation?.spawn_failure_count ?? 0,
         last_spawn_failure_at: worker.validation?.last_spawn_failure_at ?? null
       };
-      this.logTransition(workerId, prevStatus, "awaiting_validation", "validation_intercept");
+      this.logTransition(workerId, prevStatus, "awaiting_validation", options.trigger ?? "validation_intercept");
     });
   }
 
@@ -1526,8 +1534,8 @@ function applyHeuristicFallback(
     && (!hubResult.run_state || hubResult.run_state === "completed")
     && deferSuccessUntilReconciled
     && expectedOutputsExist(expectedOutputs, startedAt)
-    && !outputArtifactsContainBlockSignal(expectedOutputs, startedAt)
-    && !outputArtifactsContainFailureSignal(expectedOutputs, startedAt)
+    && !outputArtifactsContainBlockSignal(expectedOutputs, startedAt, workerId)
+    && !outputArtifactsContainFailureSignal(expectedOutputs, startedAt, workerId)
   ) {
     return "completed";
   }
@@ -1540,11 +1548,11 @@ function applyHeuristicFallback(
     return "failed";
   }
 
-  if (outputArtifactsContainBlockSignal(expectedOutputs, startedAt)) {
+  if (outputArtifactsContainBlockSignal(expectedOutputs, startedAt, workerId)) {
     return "blocked";
   }
 
-  if (outputArtifactsContainFailureSignal(expectedOutputs, startedAt)) {
+  if (outputArtifactsContainFailureSignal(expectedOutputs, startedAt, workerId)) {
     return "failed";
   }
 
@@ -1914,11 +1922,18 @@ function expectedOutputsExist(expectedOutputs: string[], startedAt?: string): bo
   return outputArtifactsExist(expectedOutputs, startedAt);
 }
 
-function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedAt?: string): boolean {
+function outputArtifactsContainFailureSignal(
+  expectedOutputs: string[],
+  startedAt?: string,
+  workerId?: string
+): boolean {
   return outputArtifactsContain(
     expectedOutputs,
     (content) => {
       const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
+      if (workerId && outputArtifactHasPassingWorkerMarker(currentAttemptContent, workerId)) {
+        return false;
+      }
       return !outputArtifactHasPassingDecision(currentAttemptContent)
         && hubResultContainsFailureSignal({ content: currentAttemptContent });
     },
@@ -1926,11 +1941,18 @@ function outputArtifactsContainFailureSignal(expectedOutputs: string[], startedA
   );
 }
 
-function outputArtifactsContainBlockSignal(expectedOutputs: string[], startedAt?: string): boolean {
+function outputArtifactsContainBlockSignal(
+  expectedOutputs: string[],
+  startedAt?: string,
+  workerId?: string
+): boolean {
   return outputArtifactsContain(
     expectedOutputs,
     (content) => {
       const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
+      if (workerId && outputArtifactHasPassingWorkerMarker(currentAttemptContent, workerId)) {
+        return false;
+      }
       return !outputArtifactHasPassingDecision(currentAttemptContent)
         && hubResultContainsBlockSignal({ content: currentAttemptContent });
     },

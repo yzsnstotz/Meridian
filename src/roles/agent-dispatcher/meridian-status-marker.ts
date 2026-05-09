@@ -99,12 +99,23 @@ export type PmResolverStatusMarker = z.infer<typeof PmResolverMarkerSchema>;
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
-export function parseMeridianStatusMarker(text: string): MeridianStatusMarker | null {
+export interface ParseMeridianStatusMarkerOptions {
+  // When true, marker blocks inside fenced code regions are still parsed.
+  // Use this for report/artifact files, where the worker may legitimately wrap
+  // its final marker in a ``` fence for readability. Default false matches the
+  // chat-reply context where workers may quote example markers in narrative.
+  allowFenced?: boolean;
+}
+
+export function parseMeridianStatusMarker(
+  text: string,
+  options: ParseMeridianStatusMarkerOptions = {}
+): MeridianStatusMarker | null {
   if (typeof text !== "string" || text.length === 0) {
     return null;
   }
 
-  const scrubbed = stripFencedRegions(text);
+  const scrubbed = options.allowFenced ? text : stripFencedRegions(text);
   const blocks = findMarkerBlocks(scrubbed);
   if (blocks.length === 0) {
     return null;

@@ -9,7 +9,13 @@ import killTool from "./kill";
 import { executeUpdateWorkerStatusAction, updateWorkerStatusInMarkdown } from "./update-status";
 import type { ToolDefinition, ToolResult } from "../registry";
 
-const ResumeWorkerActionSchema = z.enum(["retry", "skip", "force-complete"]);
+const ResumeWorkerActionSchema = z.enum(["retry", "skip", "force-complete", "validate"]);
+
+// Default max_fix_cycles seeded when an operator triggers validate manually.
+// The dispatcher's actual validator_config.max_fix_cycles still governs Phase 1
+// disposition once cycles run; this seed only fills the validation skeleton so
+// Phase 2 can spawn the first validator cycle without a null-deref.
+const MANUAL_VALIDATE_MAX_FIX_CYCLES = 3;
 
 export const ResumeWorkerActionRequestSchema = z.object({
   action: ResumeWorkerActionSchema.default("retry"),
@@ -55,7 +61,7 @@ const resumeWorkerTool: ToolDefinition = {
     action: {
       type: "string",
       required: false,
-      description: "Recovery action: retry, skip, or force-complete"
+      description: "Recovery action: retry, skip, force-complete, or validate"
     },
     force: {
       type: "string",
@@ -162,25 +168,40 @@ export async function executeResumeWorkerAction(
 
   const nextStatus = mapActionToStatus(args.action);
   const autoIncrementRetryCount = args.action === "retry" && args.incrementRetryCountOnRetry === true;
-  // Clear hub_result on retry of failed/blocked workers, and on force-complete
-  // of any worker. Without clearing on force-complete, the lifecycle store's
+  // Clear hub_result on retry of failed/blocked workers, on force-complete of
+  // any worker, and on validate. Without clearing, the lifecycle store's
   // syncPlanView -> resolveDisplayStatus would re-derive the plan status from
   // the stale hub_result block/failure signal and immediately overwrite the
-  // ✅ written by forceUpdatePlanMarkdown back to ⛔ BLOCKED on the next save.
+  // status written by forceUpdatePlanMarkdown back to ⛔ BLOCKED on the next
+  // save. For validate this matters because the worker may be entering the
+  // validator from a synthesized output_artifact failure that misread the
+  // report; the validator must judge the report itself, not the stale signal.
   const clearFailureResult = (args.action === "retry"
       && worker.hub_result !== null
       && (worker.status === "failed" || worker.status === "blocked" || hubResultContainsFailureSignal(worker.hub_result)))
-    || (args.action === "force-complete" && worker.hub_result !== null);
-  lifecycleStore.setWorkerStatus(
-    args.workerId,
-    nextStatus,
-    `resume_worker:${args.action}`,
-    {
+    || (args.action === "force-complete" && worker.hub_result !== null)
+    || (args.action === "validate" && worker.hub_result !== null);
+  if (args.action === "validate") {
+    // Use the seeding transition so the validation block is initialized
+    // (current_cycle, max_fix_cycles, history). Without it, processValidationQueue
+    // Phase 2 spawns a validator on a worker whose validation skeleton is null
+    // and downstream feedback bookkeeping has nowhere to write.
+    lifecycleStore.transitionToAwaitingValidation(args.workerId, MANUAL_VALIDATE_MAX_FIX_CYCLES, {
       clearHubResult: clearFailureResult,
-      incrementRetryCount: autoIncrementRetryCount,
-      resetRetryCount: args.action === "retry" && !autoIncrementRetryCount
-    }
-  );
+      trigger: "resume_worker:validate"
+    });
+  } else {
+    lifecycleStore.setWorkerStatus(
+      args.workerId,
+      nextStatus,
+      `resume_worker:${args.action}`,
+      {
+        clearHubResult: clearFailureResult,
+        incrementRetryCount: autoIncrementRetryCount,
+        resetRetryCount: args.action === "retry" && !autoIncrementRetryCount
+      }
+    );
+  }
 
   // The lifecycle store's syncPlanView guard prevents overwriting
   // terminal-success plan statuses (✅, ⛔ SKIPPED). An explicit resume
@@ -220,6 +241,13 @@ function mapActionToStatus(action: ResumeWorkerAction): LifecycleStatus {
       return "skipped";
     case "force-complete":
       return "completed";
+    case "validate":
+      // Hand the worker to the validator orchestrator. processValidationQueue
+      // Phase 2 picks up awaiting_validation workers and spawns the validator;
+      // if the dispatcher's validator config is disabled, the worker will sit
+      // in this state until the operator either enables validation or applies
+      // a different resume action.
+      return "awaiting_validation";
   }
 }
 

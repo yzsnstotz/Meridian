@@ -3013,6 +3013,7 @@ function renderDispatchPlanActions(row) {
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
           ` : ""}
+          <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="validate">Validate</button>
           <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
         </div>
         ${statusEditor}
@@ -3026,6 +3027,7 @@ function renderDispatchPlanActions(row) {
         <div class="table-action-group">
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
           <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="skip">Skip</button>
+          <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="validate">Validate</button>
           <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
         </div>
         ${statusEditor}
@@ -3037,6 +3039,7 @@ function renderDispatchPlanActions(row) {
     <div class="table-action-stack">
       <div class="table-action-group">
         <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="retry">Redo</button>
+        <button type="button" class="ghost-button table-action-button" data-worker-id="${workerId}" data-resume-action="validate">Validate</button>
         <button type="button" class="danger-button table-action-button" data-worker-id="${workerId}" data-resume-action="force-complete">Force Complete</button>
       </div>
       ${statusEditor}
@@ -3742,6 +3745,8 @@ function formatResumeActionLabel(action) {
       return "Skipping";
     case "force-complete":
       return "Force completing";
+    case "validate":
+      return "Sending to validator for";
     default:
       return "Redoing";
   }
@@ -3753,6 +3758,8 @@ function formatResumeActionSuccess(action) {
       return "marked skipped";
     case "force-complete":
       return "marked complete";
+    case "validate":
+      return "queued for validator";
     default:
       return "reset to pending for another pass";
   }
