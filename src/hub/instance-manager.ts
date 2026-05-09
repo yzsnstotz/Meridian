@@ -1498,19 +1498,34 @@ export class InstanceManager {
 
   private async rehydrateInstance(instance: AgentInstance): Promise<AgentInstance | null> {
     if (instance.mode === "stateless_call") {
-      return {
-        ...instance,
-        status: instance.status === "running" ? "idle" : instance.status,
-        pid: 0,
-        socket_path: instance.socket_path.startsWith(STATELESS_SOCKET_PREFIX)
-          ? instance.socket_path
-          : `${STATELESS_SOCKET_PREFIX}${instance.thread_id}`,
-        tmux_pane: null,
-        supportsStream: true,
-        sandbox_mode: "read-only",
-        auto_approve: false,
-        codexSessionId: undefined
-      };
+      // Stateless calls are ephemeral by definition — the agent process exits
+      // as soon as the single Codex/Claude exec completes. A persisted
+      // stateless_call entry that survives into a Hub restart describes a
+      // process that was alive at the snapshot time but cannot be revived;
+      // there is no socket to reattach to and no tmux pane to inherit.
+      //
+      // Previously this branch unconditionally re-registered the instance
+      // with `pid: 0` and the original status, producing zombies that:
+      //   - kept showing in `/api/instances` (status !== "stopped" passes
+      //     `shouldListInstance`), so dismissed stateless cards revived
+      //     immediately on restart
+      //   - seeded `nextThreadId`'s `registry.list()` floor, so the thread
+      //     allocator counter never actually started fresh after a restart
+      //     even with the prior allocator-counter fix.
+      //
+      // Drop them entirely. Conversation history is a separate persisted
+      // field and continues to back the GUI replay on its own.
+      this.log.info(
+        {
+          operation: "rehydrate_drop_stateless",
+          thread_id: instance.thread_id,
+          socket_path: instance.socket_path,
+          pid: instance.pid,
+          prev_status: instance.status
+        },
+        "Dropping persisted stateless_call instance on rehydrate (ephemeral)"
+      );
+      return null;
     }
 
     const client = this.clientFactory(instance.thread_id);
