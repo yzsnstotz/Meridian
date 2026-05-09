@@ -1593,7 +1593,12 @@ async function setupRoleDetail() {
   const startHubBtn = document.getElementById("agent-dispatcher-start-hub-btn");
   const continueHubBtn = document.getElementById("agent-dispatcher-continue-btn");
   const lifecycleHubBtn = document.getElementById("agent-dispatcher-lifecycle-btn");
+  const deactivateBtn = document.getElementById("agent-dispatcher-deactivate-btn");
   const startHubFeedback = document.getElementById("agent-dispatcher-start-hub-feedback");
+  const dispatcherTalkbox = document.getElementById("agent-dispatcher-talkbox");
+  const dispatcherTalkForm = document.getElementById("agent-dispatcher-talk-form");
+  const dispatcherTalkInput = document.getElementById("agent-dispatcher-talk-input");
+  const dispatcherTalkFeedback = document.getElementById("agent-dispatcher-talk-feedback");
 
   if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink || !configLink) {
     return;
@@ -1602,6 +1607,8 @@ async function setupRoleDetail() {
   let startHubBound = false;
   let continueHubBound = false;
   let lifecycleHubBound = false;
+  let deactivateBound = false;
+  let dispatcherTalkBound = false;
   let dispatchPlanActionsBound = false;
 
   const defaultEmptyMessage = empty.textContent;
@@ -1751,6 +1758,98 @@ async function setupRoleDetail() {
             startHubFeedback.textContent = getErrorMessage(error);
           } finally {
             lifecycleHubBtn.disabled = false;
+          }
+        });
+      }
+
+      if (!deactivateBound && deactivateBtn && startHubFeedback) {
+        deactivateBound = true;
+        deactivateBtn.addEventListener("click", async () => {
+          if (!window.confirm(`Deactivate role ${threadId}? This removes the role entry; the dispatcher Hub thread is not killed automatically.`)) {
+            return;
+          }
+          try {
+            deactivateBtn.disabled = true;
+            startHubFeedback.textContent = "Deactivating role...";
+            await fetchJson(`/api/role/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+            startHubFeedback.textContent = `Role ${threadId} deactivated. Returning to dashboard...`;
+            window.setTimeout(() => {
+              window.location.assign("/");
+            }, 600);
+          } catch (error) {
+            startHubFeedback.textContent = getErrorMessage(error);
+            deactivateBtn.disabled = false;
+          }
+        });
+      }
+
+      // Reply-to-dispatcher talk-box: show whenever the dispatcher has a
+      // recorded thread id (including paused). The Hub will queue the
+      // message via /api/hub-relay; if the thread is dead the queue accepts
+      // but the agent never replies — that's an audit-trail outcome, not
+      // an error condition we can surface synchronously with suppress_reply.
+      const dispatcherThreadId = (detail.dispatcher_thread_id || "").trim();
+      if (dispatcherTalkbox) {
+        dispatcherTalkbox.hidden = dispatcherThreadId.length === 0;
+      }
+      if (!dispatcherTalkBound && dispatcherTalkForm && dispatcherTalkInput) {
+        dispatcherTalkBound = true;
+        dispatcherTalkForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const targetThread = (detail.dispatcher_thread_id || "").trim();
+          const content = dispatcherTalkInput.value.trim();
+          if (!targetThread) {
+            if (dispatcherTalkFeedback) {
+              dispatcherTalkFeedback.textContent = "No dispatcher thread to reply to yet.";
+            }
+            return;
+          }
+          if (!content) {
+            if (dispatcherTalkFeedback) {
+              dispatcherTalkFeedback.textContent = "Type a message before sending.";
+            }
+            return;
+          }
+          const submitBtn = dispatcherTalkForm.querySelector("button[type='submit']");
+          if (submitBtn instanceof HTMLButtonElement) {
+            submitBtn.disabled = true;
+          }
+          if (dispatcherTalkFeedback) {
+            dispatcherTalkFeedback.textContent = `Sending to ${targetThread}...`;
+          }
+          try {
+            const traceId = (typeof crypto !== "undefined" && crypto.randomUUID)
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            const message = {
+              trace_id: traceId,
+              thread_id: targetThread,
+              actor_id: "service:meridian-roles",
+              intent: "run",
+              target: targetThread,
+              priority: 5,
+              mode: "bridge",
+              suppress_reply: true,
+              reply_channel: { channel: "web", chat_id: "service:meridian-roles" },
+              payload: { content, attachments: [] }
+            };
+            await fetchJson("/api/hub-relay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(message)
+            });
+            dispatcherTalkInput.value = "";
+            if (dispatcherTalkFeedback) {
+              dispatcherTalkFeedback.textContent = `Sent to ${targetThread}.`;
+            }
+          } catch (error) {
+            if (dispatcherTalkFeedback) {
+              dispatcherTalkFeedback.textContent = getErrorMessage(error);
+            }
+          } finally {
+            if (submitBtn instanceof HTMLButtonElement) {
+              submitBtn.disabled = false;
+            }
           }
         });
       }
@@ -2267,15 +2366,17 @@ async function setupConfigEditor() {
   };
 
   const setStructuredFieldsDisabled = (disabled) => {
+    if (cfgDispatchPlanPath) cfgDispatchPlanPath.readOnly = disabled;
+    if (cfgCommandFilePath) cfgCommandFilePath.readOnly = disabled;
     if (cfgAgentType) cfgAgentType.disabled = disabled;
-    if (cfgModelId) cfgModelId.readOnly = disabled;
+    if (cfgModelId) cfgModelId.disabled = disabled;
     if (cfgMode) cfgMode.disabled = disabled;
     if (cfgKillPolicy) cfgKillPolicy.disabled = disabled;
     if (cfgAutoApprove) cfgAutoApprove.disabled = disabled;
     if (cfgValidatorEnabled) cfgValidatorEnabled.disabled = disabled;
     if (cfgValidatorAgentType) cfgValidatorAgentType.disabled = disabled;
     if (cfgValidatorMode) cfgValidatorMode.disabled = disabled;
-    if (cfgValidatorModelId) cfgValidatorModelId.readOnly = disabled;
+    if (cfgValidatorModelId) cfgValidatorModelId.disabled = disabled;
     if (cfgValidatorThresholdType) cfgValidatorThresholdType.disabled = disabled;
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.readOnly = disabled;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.readOnly = disabled;
@@ -2283,13 +2384,25 @@ async function setupConfigEditor() {
     if (cfgPmEnabled) cfgPmEnabled.disabled = disabled;
     if (cfgPmAgentType) cfgPmAgentType.disabled = disabled;
     if (cfgPmMode) cfgPmMode.disabled = disabled;
-    if (cfgPmModelId) cfgPmModelId.readOnly = disabled;
+    if (cfgPmModelId) cfgPmModelId.disabled = disabled;
     if (cfgPmAutoApprove) cfgPmAutoApprove.disabled = disabled;
     if (cfgPmReplyChannels) cfgPmReplyChannels.readOnly = disabled;
   };
 
   const collectStructuredPatch = () => {
     const patch = {};
+    // dispatch_plan_path / command_file_path are editable when the role is
+    // not actively running (server gates via can_edit). When set we forward
+    // them in the patch; when blanked we explicitly send null so the server
+    // knows the operator wants the field cleared rather than untouched.
+    if (cfgDispatchPlanPath) {
+      const v = cfgDispatchPlanPath.value.trim();
+      if (v.length > 0) patch.dispatch_plan_path = v;
+    }
+    if (cfgCommandFilePath) {
+      const v = cfgCommandFilePath.value.trim();
+      if (v.length > 0) patch.command_file_path = v;
+    }
     if (cfgAgentType) patch.agent_type = cfgAgentType.value;
     if (cfgModelId) patch.model_id = cfgModelId.value.trim() || null;
     if (cfgMode) patch.mode = cfgMode.value;
@@ -2336,12 +2449,12 @@ async function setupConfigEditor() {
     }
     if (lede) {
       lede.textContent = isAgentDispatcherConfig
-        ? "Edit launch settings for this agent dispatcher. Path fields and reply channels are read-only."
+        ? "Edit launch settings for this agent dispatcher. Path fields are editable while the dispatcher is paused or pending; reply channels are read-only."
         : "Edit dispatcher JSON for `tasks` and `taskspec`. Prompt content stays on the prompt editor.";
     }
     status.textContent = response.can_edit
       ? (isAgentDispatcherConfig
-        ? "Editable fields: agent_type, model_id, mode, kill_policy, auto_approve, validator, pm_resolver. Changes apply to subsequent launches."
+        ? "Editable fields: dispatch_plan_path, command_file_path, agent_type, model_id, mode, kill_policy, auto_approve, validator, pm_resolver. Changes apply to subsequent launches."
         : "Only tasks and taskspec are editable here. Runtime task fields are reset on save.")
       : response.blocked_reason || "Editing is temporarily unavailable.";
   };

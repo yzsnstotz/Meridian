@@ -164,6 +164,12 @@ const AgentDispatcherPromptPreviewBodySchema = z.object({
 });
 
 const AgentDispatcherConfigPatchSchema = z.object({
+  // Path fields: editable while can_edit is true (paused/pending); the
+  // existing canEditAgentDispatcherConfig check on the server gates this.
+  // The role-handlers patch path applies them to the persisted config so
+  // subsequent launches use the updated paths.
+  dispatch_plan_path: z.string().min(1).optional(),
+  command_file_path: z.string().min(1).optional(),
   agent_type: AgentTypeSchema.optional(),
   model_id: z.string().min(1).optional().nullable(),
   mode: StatefulBridgeModeSchema.optional(),

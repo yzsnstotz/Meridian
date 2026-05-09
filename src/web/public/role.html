@@ -49,11 +49,31 @@
             <button type="button" id="agent-dispatcher-start-hub-btn" class="primary-button">
               Start hub session
             </button>
+            <button type="button" id="agent-dispatcher-deactivate-btn" class="danger-button">
+              Deactivate
+            </button>
           </div>
           <p class="muted hub-controls-hint">
             Spawns or replaces the Hub dispatcher thread. Use when <code>dispatcher_thread_id</code> is
             <code>pending</code>, or after editing <code>dispatch_threads.json</code>. Pause/Resume only toggles
-            the control session and does not launch Hub.
+            the control session and does not launch Hub. Deactivate removes the role entry entirely.
+          </p>
+        </div>
+
+        <div id="agent-dispatcher-talkbox" class="dispatcher-hub-controls" hidden>
+          <h3 class="muted" style="margin: 0 0 0.5rem 0; font-size: 0.95rem;">Reply to dispatcher</h3>
+          <form id="agent-dispatcher-talk-form" class="dispatch-detail-talk">
+            <textarea id="agent-dispatcher-talk-input" class="dispatch-detail-talk-input"
+              name="content" rows="3"
+              placeholder="Send a message directly to the dispatcher controller thread..."></textarea>
+            <div class="dispatch-detail-talk-actions">
+              <button type="submit" class="ghost-button dispatch-detail-action-button">Send</button>
+              <span id="agent-dispatcher-talk-feedback" class="dispatch-detail-talk-status"></span>
+            </div>
+          </form>
+          <p class="muted hub-controls-hint">
+            Delivers a fire-and-forget <code>intent: "run"</code> message to the dispatcher's
+            <code>dispatcher_thread_id</code> via <code>/api/hub-relay</code>.
           </p>
         </div>
       </section>
