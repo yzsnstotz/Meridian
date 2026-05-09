@@ -1566,6 +1566,70 @@ test("rehydrateFromState does NOT carry the thread allocator counter across a re
   await manager.kill(threadId);
 });
 
+test("rehydrateFromState drops persisted stateless_call instances instead of zombie-restoring them", async () => {
+  // Regression: previously stateless_call instances unconditionally
+  // survived rehydrate with `pid: 0`, even though the actual ephemeral
+  // codex exec process had exited with the prior service. Those zombies
+  // (a) kept appearing in /api/instances → dismissed stateless cards
+  // revived on every restart, and (b) seeded nextThreadId via
+  // registry.list(), keeping the thread allocator counter elevated
+  // even after the prior allocator-counter fix.
+  const registry = new InstanceRegistry();
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(6603) as never) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await manager.rehydrateFromState({
+    version: 3,
+    updated_at: new Date().toISOString(),
+    instances: [
+      {
+        thread_id: "codex_05",
+        agent_type: "codex",
+        mode: "stateless_call",
+        socket_path: "stateless:codex_05",
+        working_dir: "/tmp",
+        pid: 6800,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString(),
+        auto_approve: false
+      },
+      {
+        thread_id: "codex_06",
+        agent_type: "codex",
+        mode: "stateless_call",
+        socket_path: "stateless:codex_06",
+        working_dir: "/tmp",
+        pid: 6801,
+        tmux_pane: null,
+        status: "running",
+        created_at: new Date().toISOString(),
+        auto_approve: false
+      }
+    ],
+    session_bindings: {}
+  });
+
+  assert.deepEqual(result.restored_thread_ids, []);
+  assert.deepEqual(result.pruned_thread_ids, ["codex_05", "codex_06"]);
+  assert.equal(registry.list().length, 0);
+
+  // Allocator must start fresh because no stateless instance survived.
+  const threadId = await manager.spawn("codex", "bridge");
+  assert.equal(threadId, "codex_01");
+
+  await manager.kill(threadId);
+});
+
 test("rehydrateFromState keeps the allocator above live rehydrated instances to avoid id reuse", async () => {
   const registry = new InstanceRegistry();
 
