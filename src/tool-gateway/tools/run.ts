@@ -34,7 +34,16 @@ const TRANSIENT_ERROR_PATTERNS = [
   /ECONNRESET/,
   /ETIMEDOUT/,
   /\bfetch failed\b/i,
-  /\bunreachable\b/i
+  /\bunreachable\b/i,
+  // Meridian Hub IPC bridge (src/shared/ipc.ts) drops the response when the
+  // Hub crashes mid-request, the response handler throws before write, or the
+  // socket times out. The worker may have started, may not have — so leaving
+  // the lifecycle status as `running` lets the reconciler probe the actual
+  // thread state instead of recording a synthetic `failed` and triggering
+  // another continue-dispatcher spawn (observed: agent-dispatcher-4db5c870
+  // stacked codex_135..139 against C-01 in a single retry storm).
+  /\bIPC request completed without response body\b/i,
+  /\bIPC request timed out\b/i
 ];
 
 const runTool: ToolDefinition = {

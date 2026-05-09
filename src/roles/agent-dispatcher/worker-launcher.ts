@@ -208,7 +208,11 @@ const SPAWN_TRANSIENT_PATTERNS = [
   /ECONNRESET/,
   /ETIMEDOUT/,
   /timed?\s*out/i,
-  /service.unavailable/i
+  /service.unavailable/i,
+  // Hub IPC bridge transport drops (src/shared/ipc.ts) — same class of
+  // transient as fetch failed; spawn is idempotent enough to retry safely.
+  /\bIPC request completed without response body\b/i,
+  /\bIPC request timed out\b/i
 ];
 
 interface SpawnRetryGuards {
