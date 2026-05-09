@@ -16,9 +16,11 @@ describe("scheduler detail public scripts", () => {
     expect(indexHtml).toContain('<option value="gpt-5.5 high">codex: gpt-5.5 high</option>');
     expect(indexHtml).toContain('<option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>');
     expect(indexHtml).toContain('<option value="claude-opus-4-7">claude: claude-opus-4-7</option>');
-    expect(indexHtml).not.toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
-    expect(indexHtml).not.toContain('<option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>');
-    expect(indexHtml).not.toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
+    // Model dropdowns include the full curated catalog (codex 5.2/5.3/5.4/5.5
+    // tiers + claude-opus 4.6/4.7 + claude-sonnet + gemini); the previous
+    // `not.toContain` assertions on `gpt-5.4 high|xhigh` and `claude-opus-4-6`
+    // were a tighter-than-needed gate that prevented operators from picking
+    // those models in the GUI even though they are valid provider entries.
     expect(indexHtml).not.toContain('id="new-scheduler-model-map"');
     expect(indexHtml).toContain('id="new-scheduler-scan-run-id-strategy" name="scan_run_id_strategy"');
     expect(indexHtml).toContain('id="new-scheduler-scan-run-id-prefix" name="scan_run_id_prefix"');
@@ -26,15 +28,18 @@ describe("scheduler detail public scripts", () => {
     expect(indexHtml).toMatch(/<input[^>]*id="agent-dispatcher-auto-approve"[^>]*name="auto_approve"[^>]*type="checkbox"[^>]*checked[^>]*\/>/);
     expect(indexHtml).toMatch(/<select id="new-scheduler-agent-mode" name="mode">\s*<option value="bridge">bridge<\/option>\s*<option value="pane_bridge">pane_bridge<\/option>/);
     expect(indexHtml).toMatch(/<input[^>]*id="new-scheduler-auto-approve"[^>]*name="auto_approve"[^>]*type="checkbox"[^>]*checked[^>]*\/>/);
+    // model_id text input fallbacks must be gone from index.html (regression:
+    // every former <input id="*-model-id" type="text"> is now a <select>).
+    expect(indexHtml).not.toMatch(/<input[^>]*id="agent-dispatcher-model-id"[^>]*type="text"/);
+    expect(indexHtml).not.toMatch(/<input[^>]*id="agent-dispatcher-validator-model-id"[^>]*type="text"/);
+    expect(indexHtml).not.toMatch(/<input[^>]*id="agent-dispatcher-pm-model-id"[^>]*type="text"/);
+    expect(indexHtml).not.toMatch(/<input[^>]*id="new-scheduler-pm-model-id"[^>]*type="text"/);
 
     expect(schedulerHtml).toContain('<select id="cfg-model-id" name="model_id">');
     expect(schedulerHtml).not.toContain('<input id="cfg-model-id"');
     expect(schedulerHtml).toContain('<option value="gpt-5.5 high">codex: gpt-5.5 high</option>');
     expect(schedulerHtml).toContain('<option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>');
     expect(schedulerHtml).toContain('<option value="claude-opus-4-7">claude: claude-opus-4-7</option>');
-    expect(schedulerHtml).not.toContain('<option value="gpt-5.4 high">codex: gpt-5.4 high</option>');
-    expect(schedulerHtml).not.toContain('<option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>');
-    expect(schedulerHtml).not.toContain('<option value="claude-opus-4-6">claude: claude-opus-4-6</option>');
     expect(schedulerHtml).not.toContain('id="cfg-model-map"');
     expect(schedulerHtml).toContain('id="cfg-scan-run-id-strategy" name="scan_run_id_strategy"');
     expect(schedulerHtml).toContain('id="cfg-scan-run-id-prefix" name="scan_run_id_prefix"');

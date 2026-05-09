@@ -230,7 +230,29 @@
               </label>
               <label class="field">
                 <span>model_id</span>
-                <input id="cfg-pm-model-id" name="pm_model_id" type="text" placeholder="(default)" />
+                <select id="cfg-pm-model-id" name="pm_model_id" data-model-select>
+                  <option value="">(provider default)</option>
+                  <optgroup label="codex">
+                    <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                    <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                    <option value="gpt-5.4">codex: gpt-5.4</option>
+                    <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                    <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                    <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                    <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                    <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                    <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                    <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                  </optgroup>
+                  <optgroup label="claude">
+                    <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                    <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                    <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                  </optgroup>
+                  <optgroup label="gemini">
+                    <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                  </optgroup>
+                </select>
               </label>
             </div>
             <div class="summary-grid">
