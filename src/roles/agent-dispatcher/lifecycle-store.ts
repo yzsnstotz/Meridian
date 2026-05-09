@@ -781,6 +781,44 @@ export class LifecycleStore {
     });
   }
 
+  /**
+   * Demote a PM resolver entry whose Hub thread is no longer registered
+   * (typically observed at startup probe after a meridian-roles or Hub
+   * restart killed the agent process while the PM was mid-resolution).
+   *
+   * Treated as a `failed` envelope: the PM run never delivered a verdict, so
+   * the dispatcher needs to be unblocked. The shared
+   * `reconcilePmStatusAgainstWorkerState` still promotes this to `completed`
+   * if the target worker has independently reached a healthy state — same
+   * contract as the post-recovery reconciliation path.
+   */
+  markPmResolverThreadMissing(threadId: string, reason: string): void {
+    this.mutate((state) => {
+      const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
+      if (!entry || entry.status !== "running") {
+        return;
+      }
+
+      const reconciled = reconcilePmStatusAgainstWorkerState(state, entry, "failed");
+      entry.status = reconciled;
+      entry.last_seen_at = this.now();
+      entry.error = reconciled === "failed" ? reason : null;
+      // Hub no longer routes to this thread id; clear transport_error so the
+      // GUI talk-box does not advertise a session that cannot receive input.
+      entry.transport_error = null;
+      appendPmResolverReportHistory(state, entry, reason);
+
+      this.log.info("PM resolver thread missing on probe", {
+        event: "pm_resolver_thread_missing_demotion",
+        thread_id: threadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        signal_source: "envelope",
+        result: entry.status,
+        reason
+      });
+    });
+  }
+
   recordPmResolverFailure(threadId: string, error: string): void {
     this.mutate((state) => {
       const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
@@ -1567,6 +1605,34 @@ const BENIGN_FAILURE_CONTEXT_PATTERNS = [
 
 export function isNonCompletionContent(content: string): boolean {
   return NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+/**
+ * Returns the PM resolver entries that own the worker — i.e. entries whose
+ * `status === "running"` and `issue.worker_id` matches `workerId`. The
+ * dispatcher must not relaunch a worker while a PM resolver is actively
+ * trying to unblock it; doing so produces parallel agents racing on the
+ * same task without any visible status update on the worker bar.
+ */
+export function findActivePmResolversForWorker(
+  state: Pick<DispatchThreadStateV2, "pm_resolvers">,
+  workerId: string | null | undefined
+): PmResolverLifecycleState[] {
+  const trimmed = workerId?.trim();
+  if (!trimmed) {
+    return [];
+  }
+  return (state.pm_resolvers ?? []).filter((entry) =>
+    entry.status === "running"
+    && (entry.issue?.worker_id ?? "").trim() === trimmed
+  );
+}
+
+export function hasActivePmResolverForWorker(
+  state: Pick<DispatchThreadStateV2, "pm_resolvers">,
+  workerId: string | null | undefined
+): boolean {
+  return findActivePmResolversForWorker(state, workerId).length > 0;
 }
 
 export function isExplicitCompletionContent(content: string): boolean {

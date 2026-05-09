@@ -1078,6 +1078,94 @@ describe("role config handlers", () => {
     }
   });
 
+  // Regression for agent-dispatcher-4db5c870: after a service restart the
+  // PM resolver lifecycle row stayed `running` (its Hub thread was already
+  // dead). The dispatcher's continue path had no PM-active gate, so it
+  // happily relaunched the same worker every tick, racing the dead PM and
+  // never updating the worker bar. The new gate refuses to launch while a
+  // PM is `running` for the same worker; the startup probe demotes truly-
+  // dead PMs to `failed` so they don't permanently block this path.
+  it("does not relaunch a worker while a PM resolver is still running for it", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pm-active-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-should-not-launch"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 1 | C-01 | Implement contract | CODEX | — | TaskSpec | failed once |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-c01",
+        started_at: "2026-05-09T03:59:17.681Z",
+        status: "running"
+      },
+      workers: {
+        "C-01": buildLifecycleWorker({
+          thread_id: "worker-thread-c01",
+          status: "failed",
+          retry_count: 1
+        })
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-c01",
+          status: "running",
+          started_at: "2026-05-09T04:00:46.316Z",
+          last_seen_at: "2026-05-09T04:00:46.316Z",
+          agent_type: "codex",
+          model_id: null,
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "C-01",
+            message: "PM is resolving C-01 block",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-pm-active", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-continue-pm-active/worker/C-01/continue"
+      )).resolves.toMatchObject({
+        ok: true,
+        status: "still_blocked",
+        worker: "C-01",
+        pm_resolver_thread_ids: ["pm-thread-c01"],
+        message: expect.stringContaining("PM resolver(s) pm-thread-c01 resolving worker C-01")
+      });
+
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+      expect(lifecycleStore.load().workers["C-01"]?.status).toBe("failed");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("kills orphaned worker threads and restores dispatch files when continue hits a detached run bootstrap failure", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-bootstrap-failure-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

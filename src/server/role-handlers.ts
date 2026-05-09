@@ -17,6 +17,7 @@ import { wrapForHub } from "../shared/caller-identity";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
 import {
   LifecycleStore,
+  findActivePmResolversForWorker,
   hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
   hubResultContainsHitLimit,
@@ -381,6 +382,7 @@ export interface ContinueDispatcherResponse {
   dispatcher_thread_id?: string;
   worker?: string;
   running_workers?: string[];
+  pm_resolver_thread_ids?: string[];
   resume_result?: Awaited<ReturnType<typeof executeResumeWorkerAction>>;
   error?: string;
   validation_outcome?: string;
@@ -828,6 +830,30 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         ...(effectiveWorkerId ? { worker: effectiveWorkerId } : {}),
         running_workers: runningWorkers
       };
+    }
+
+    // Don't relaunch a worker while a PM resolver is actively trying to
+    // unblock it. Without this guard, the watchdog and the dispatcher AI
+    // can both spawn fresh worker threads against the same row while the
+    // PM is still mid-resolution — observed on agent-dispatcher-4db5c870
+    // where a stale `running` PM (left over after a service restart) sat
+    // in dispatch_threads.json while a brand-new C-01 worker was spawned
+    // every continue tick. The startup PM probe demotes truly-dead PM
+    // threads to `failed`, and the on-recovery reconciler promotes them
+    // to `completed`, so a still-running PM here means a live (or at
+    // least dispatcher-believed-live) resolution is in flight.
+    if (effectiveWorkerId) {
+      const activePmResolvers = findActivePmResolversForWorker(lifecycleState, effectiveWorkerId);
+      if (activePmResolvers.length > 0) {
+        const pmThreadIds = activePmResolvers.map((entry) => entry.thread_id);
+        return {
+          ok: true,
+          status: "still_blocked",
+          message: `still blocked: PM resolver(s) ${pmThreadIds.join(", ")} resolving worker ${effectiveWorkerId}`,
+          worker: effectiveWorkerId,
+          pm_resolver_thread_ids: pmThreadIds
+        };
+      }
     }
 
     let effectiveDispatcherThreadId = (() => {

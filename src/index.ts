@@ -367,6 +367,7 @@ async function reconcileStartupDispatchers(
     dispatchPlanPaths.map(async (dispatchPlanPath) => {
       try {
         const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath));
+        await reconcileStartupPmResolvers(lifecycleStore, client, log, dispatchPlanPath);
         const report = await reconcile(lifecycleStore, createStartupHubClient(client));
         log.info("Startup reconciliation completed", {
           dispatchPlanPath,
@@ -381,6 +382,55 @@ async function reconcileStartupDispatchers(
       }
     })
   );
+}
+
+/**
+ * Probe each `running` PM resolver against the Hub on service startup.
+ * If the Hub no longer routes to the recorded `thread_id`, the PM agent
+ * died with the previous service process — there is no live session for
+ * the operator to talk into, and leaving the entry as `running` would
+ * permanently block worker relaunch via the
+ * `findActivePmResolversForWorker` gate. Demote those entries to `failed`
+ * via `markPmResolverThreadMissing` (same `reconcilePmStatusAgainstWorkerState`
+ * path that promotes back to `completed` if the worker independently
+ * recovered while the service was down).
+ */
+async function reconcileStartupPmResolvers(
+  lifecycleStore: LifecycleStore,
+  client: A2AClient,
+  log: typeof console,
+  dispatchPlanPath: string
+): Promise<void> {
+  const state = lifecycleStore.load();
+  const runningEntries = (state.pm_resolvers ?? []).filter((entry) => entry.status === "running");
+  if (runningEntries.length === 0) {
+    return;
+  }
+
+  for (const entry of runningEntries) {
+    try {
+      const probe = await sendStartupStatusRequest(client, entry.thread_id);
+      if (isLiveThreadStatus(probe)) {
+        continue;
+      }
+
+      const reason = `service_restart_pm_thread_missing: ${extractFailureReason(probe)}`;
+      lifecycleStore.markPmResolverThreadMissing(entry.thread_id, reason);
+      log.warn("Startup rehydration demoted stale PM resolver", {
+        dispatchPlanPath,
+        pm_thread_id: entry.thread_id,
+        worker_id: entry.issue?.worker_id ?? null,
+        reason
+      });
+    } catch (error) {
+      log.warn("Startup PM resolver probe failed", {
+        dispatchPlanPath,
+        pm_thread_id: entry.thread_id,
+        worker_id: entry.issue?.worker_id ?? null,
+        error: asError(error).message
+      });
+    }
+  }
 }
 
 async function activatePersistedRoles(
