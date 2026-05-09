@@ -114,6 +114,95 @@ describe("LifecycleStore", () => {
     expect(state.workers["N-01"]?.last_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  // Regression: launchDispatchWorker fires the run handoff as a microtask,
+  // so dispatch_threads.json had no entry for the worker between
+  // continue-dispatcher's "continued: <workerId>" reply and runTool's
+  // recordWorkerStart landing — the next dispatcher tick would re-spawn
+  // because it saw "no entry". recordWorkerLaunchInitiated closes the race
+  // by writing a placeholder synchronously the moment spawn returns.
+  it("recordWorkerLaunchInitiated writes a synchronous running placeholder before recordWorkerStart", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerLaunchInitiated("C-01", "worker-thread-launch-init");
+
+    const placeholderState = harness.store.load();
+    expect(placeholderState.workers["C-01"]).toMatchObject({
+      thread_id: "worker-thread-launch-init",
+      status: "running",
+      hub_result: null,
+      command_preamble: null,
+      retry_count: 0
+    });
+
+    // runTool.execute eventually calls recordWorkerStart with the full
+    // preamble + traceId. That must overwrite the placeholder cleanly
+    // without double-incrementing retry_count (placeholder already set
+    // status=running, so recordWorkerStart's shouldIncrementRetry path
+    // sees previousStatus=running and skips the bump).
+    harness.store.recordWorkerStart(
+      "C-01",
+      "worker-thread-launch-init",
+      "22222222-2222-4222-8222-222222222222",
+      ["report.md"],
+      "# Worker Identity\nC-01"
+    );
+
+    const finalState = harness.store.load();
+    expect(finalState.workers["C-01"]).toMatchObject({
+      thread_id: "worker-thread-launch-init",
+      status: "running",
+      command_preamble: "# Worker Identity\nC-01",
+      expected_outputs: ["report.md"],
+      retry_count: 0
+    });
+  });
+
+  it("recordWorkerLaunchInitiated bumps retry_count when relaunching from a terminal state", async () => {
+    const harness = await createHarness();
+
+    // Simulate a worker that previously failed.
+    harness.store.recordWorkerStart("C-01", "worker-thread-old", "11111111-1111-4111-8111-111111111111", []);
+    harness.store.setWorkerStatus("C-01", "failed", "synthetic_failure");
+    expect(harness.store.load().workers["C-01"]?.retry_count ?? 0).toBe(0);
+
+    // Relaunch: placeholder fires first (synchronous in launcher).
+    harness.store.recordWorkerLaunchInitiated("C-01", "worker-thread-new");
+    expect(harness.store.load().workers["C-01"]?.retry_count).toBe(1);
+
+    // recordWorkerStart afterwards must NOT double-count: it sees
+    // previousStatus=running because the placeholder already landed.
+    harness.store.recordWorkerStart(
+      "C-01",
+      "worker-thread-new",
+      "33333333-3333-4333-8333-333333333333",
+      [],
+      "# Worker Identity\nC-01"
+    );
+    expect(harness.store.load().workers["C-01"]?.retry_count).toBe(1);
+  });
+
+  it("recordWorkerLaunchInitiated is a no-op when a richer recordWorkerStart row already exists for the same thread", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart(
+      "C-01",
+      "worker-thread-x",
+      "44444444-4444-4444-8444-444444444444",
+      ["report.md"],
+      "# Worker Identity\nC-01"
+    );
+    const before = harness.store.load();
+    const beforePreamble = before.workers["C-01"]?.command_preamble;
+
+    // Race in the other direction: recordWorkerLaunchInitiated fires
+    // late and must NOT clobber the richer record.
+    harness.store.recordWorkerLaunchInitiated("C-01", "worker-thread-x");
+
+    const after = harness.store.load();
+    expect(after.workers["C-01"]?.command_preamble).toBe(beforePreamble);
+    expect(after.workers["C-01"]?.expected_outputs).toEqual(["report.md"]);
+  });
+
   it("maps a success HubResult to completed", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);

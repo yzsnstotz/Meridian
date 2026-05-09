@@ -1006,8 +1006,16 @@ describe("role config handlers", () => {
       expect(killSpy).toHaveBeenCalledWith({
         thread_id: "worker-thread-stale"
       });
-      expect(lifecycleStore.load().workers["R-08"]?.status).toBe("pending");
-      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⬜ | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |");
+      // After the launch-initiated synchronous lifecycle write
+      // (recordWorkerLaunchInitiated), the worker is bound to its fresh
+      // thread immediately on continue, so the row reflects "running"
+      // and the plan markdown syncs to 🔄. resume_worker still ran
+      // (retry_count incremented to 1) — the test's pre-existing
+      // assertion on resume_result captures that earlier transition.
+      const r08AfterContinue = lifecycleStore.load().workers["R-08"];
+      expect(r08AfterContinue?.status).toBe("running");
+      expect(r08AfterContinue?.thread_id?.trim().length ?? 0).toBeGreaterThan(0);
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| 🔄 | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |");
     } finally {
       killSpy.mockRestore();
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -2448,8 +2456,14 @@ describe("role config handlers", () => {
         }
       });
 
+      // After the launch-initiated synchronous lifecycle write the row
+      // reflects 🔄 (running) immediately, instead of the previous post-
+      // resume_worker ⬜ snapshot which only held until runTool's
+      // recordWorkerStart eventually landed. This matches the new
+      // contract that "continue: <worker>" is paired with a visible
+      // running row before the response returns.
       await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
-        "| ⬜ | Ω+2 | R-10 | Feature Branch Scope Isolation | CODEX-HIGH | PR-REVIEW | TaskSpec | pre-marked before spawn failed |"
+        "| 🔄 | Ω+2 | R-10 | Feature Branch Scope Isolation | CODEX-HIGH | PR-REVIEW | TaskSpec | pre-marked before spawn failed |"
       );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

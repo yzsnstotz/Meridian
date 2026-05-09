@@ -168,6 +168,83 @@ export class LifecycleStore {
     this.save(state);
   }
 
+  /**
+   * Synchronously bind a worker to a freshly-spawned thread_id WITHOUT
+   * the full preamble / expected_outputs / trace_id. Called by the
+   * dispatcher's launch path the moment `meridianApi.spawn` returns, so
+   * the lifecycle store reflects the assignment before the fire-and-
+   * forget run handoff completes its async prep work.
+   *
+   * Exists to close the race between `launchDispatchWorker` returning
+   * (which makes `continue-dispatcher` reply `continued: <workerId>`)
+   * and `runTool.execute` calling `recordWorkerStart` (which actually
+   * writes the row). Without this placeholder, the dispatcher's next
+   * tick or the AI's re-read of `dispatch_threads.json` could see "no
+   * entry for this worker" and spawn another thread, stacking parallel
+   * agents on the same task.
+   *
+   * `recordWorkerStart` (called shortly after by runTool.execute) will
+   * overwrite the row with the full attempt context. Callers must NOT
+   * use this method as a substitute for `recordWorkerStart` on a real
+   * launch — it intentionally leaves command_preamble/trace_id/expected
+   * _outputs at conservative defaults so reconciler and downstream
+   * consumers can still tell "we just spawned, full record pending".
+   */
+  recordWorkerLaunchInitiated(workerId: string, threadId: string): void {
+    const trimmedThreadId = threadId.trim();
+    if (!trimmedThreadId) {
+      return;
+    }
+    this.mutate((state) => {
+      const nowIso = this.now();
+      const previous = state.workers[workerId];
+      const previousStatus = previous?.status ?? "pending";
+      // Skip rewriting if we'd be overwriting a richer record from
+      // runTool.execute that already landed (race in the other direction).
+      if (
+        previous
+        && previous.status === "running"
+        && previous.thread_id === trimmedThreadId
+        && previous.command_preamble
+      ) {
+        return;
+      }
+
+      // Mirror recordWorkerStart's retry-count discipline: bumping the
+      // counter here means recordWorkerStart (which sees previousStatus
+      // === "running" after we land) won't double-count. If we skipped
+      // the bump, a relaunch from failed/abandoned/blocked would lose
+      // its retry charge against MAX_WORKER_RETRIES.
+      const previousRetryCount = previous?.retry_count ?? 0;
+      const shouldIncrementRetry = previousStatus === "failed"
+        || previousStatus === "blocked"
+        || previousStatus === "abandoned";
+
+      // Preserve any prior validation context so a relaunch from
+      // fix_requested -> running keeps history (mirrors recordWorkerStart).
+      const priorValidation = previous?.validation;
+
+      state.workers[workerId] = {
+        thread_id: trimmedThreadId,
+        trace_id: previous?.trace_id ?? null,
+        started_at: nowIso,
+        last_seen_at: nowIso,
+        status: "running",
+        expected_outputs: previous?.expected_outputs ?? [],
+        hub_result: null,
+        applied_model_id: previous?.applied_model_id,
+        applied_reasoning_effort: previous?.applied_reasoning_effort,
+        command_preamble: previous?.command_preamble ?? null,
+        retry_count: shouldIncrementRetry ? previousRetryCount + 1 : previousRetryCount,
+        ...(priorValidation
+          ? { validation: { ...priorValidation, validator_thread_id: null } }
+          : {})
+      };
+
+      this.logTransition(workerId, previousStatus, "running", "launch_initiated");
+    });
+  }
+
   recordWorkerStart(
     workerId: string,
     threadId: string,
