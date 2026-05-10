@@ -321,6 +321,70 @@ describe("service continuation", () => {
 
     expect(resolveManualInterventionWorker(rows, createLifecycleState())).toBe("N-12");
   });
+
+  it("does not flag manual intervention for a validator-decided terminal-failed worker (max cycles exhausted)", () => {
+    // Mirrors agent-dispatcher-9fd97803 / M-01: validator scored 0.5 across
+    // all 3 cycles, transitionToValidationFailed("max_cycles_exhausted")
+    // stamped status=failed, but resolveDisplayStatus still renders the
+    // plan row as ⛔ BLOCKED because the synthesized output_artifact
+    // hub_result contains block signals from earlier attempts.
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "4", worker: "M-01", model: "CODEX", depends_on: "—" },
+      { status: "🔍", batch: "4", worker: "M-02", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "M-01": {
+        status: "failed",
+        hub_result: createHubResult("Outcome: BLOCKED\n\n— stale block signal from earlier attempt"),
+        validation: {
+          current_cycle: 3,
+          max_fix_cycles: 3,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "still missing the runtime",
+          history: [
+            { cycle: 1, score: 0.5, feedback: "f1", validator_thread_id: "v1", timestamp: "2026-05-09T23:52:09Z" },
+            { cycle: 2, score: 0.5, feedback: "f2", validator_thread_id: "v2", timestamp: "2026-05-10T00:22:50Z" },
+            { cycle: 3, score: 0.5, feedback: "f3", validator_thread_id: "v3", timestamp: "2026-05-10T01:01:13Z" }
+          ],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      },
+      "M-02": {
+        status: "awaiting_validation"
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("still flags manual intervention for a failed worker that has not exhausted max cycles", () => {
+    // Worker reached `failed` via a non-validator path (e.g. transport
+    // error, hit_limit, outcome:failed marker) before the validator could
+    // decide. PM might still help — keep current behavior.
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-44", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-44": {
+        status: "failed",
+        hub_result: createHubResult("Outcome: FAILED — transient subprocess crash"),
+        validation: {
+          current_cycle: 0,
+          max_fix_cycles: 3,
+          validator_thread_id: null,
+          last_score: null,
+          last_feedback: null,
+          history: [],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-44");
+  });
 });
 
 function createHubResult(content: string): NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]> {

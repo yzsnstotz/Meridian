@@ -71,6 +71,24 @@ export function resolveManualInterventionWorker(
       continue;
     }
 
+    // Validator-decided terminal failure: the worker reached
+    // max_fix_cycles and the orchestrator stamped `failed`. The operator
+    // owns the verdict from this point (force-complete, skip, or accept
+    // the failure); the dispatcher cannot auto-recover and PM has no role
+    // here either. The plan row may still render as ⛔ BLOCKED because
+    // `resolveDisplayStatus` reflects a stale block-signal in
+    // `hub_result` for failed workers — without this skip, every continue
+    // tick re-flags the dead worker as `manual_intervention_required` and
+    // blocks every downstream worker (observed: M-01 wedged on
+    // agent-dispatcher-9fd97803, M-02 stuck `awaiting_validation` for
+    // 1.5h because Phase 1 of `processValidationQueue` never ran).
+    if (
+      workerState?.status === "failed"
+      && (workerState.validation?.history?.length ?? 0) >= (workerState.validation?.max_fix_cycles ?? Infinity)
+    ) {
+      continue;
+    }
+
     if (isBlockedDispatchStatus(row.status)) {
       return normalizedWorkerId;
     }
