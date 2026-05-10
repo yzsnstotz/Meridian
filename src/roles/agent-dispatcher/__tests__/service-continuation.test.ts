@@ -61,6 +61,42 @@ describe("service continuation", () => {
     ], createLifecycleState())).toBe("BATCH-4-GATE");
   });
 
+  it("resolves suffixed range dependency clauses such as BATCH-1..BATCH-6 GATEs", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "1", worker: "BATCH-1-GATE", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "2", worker: "BATCH-2-GATE", model: "CODEX-HIGH", depends_on: "BATCH-1-GATE" },
+      { status: "✅", batch: "3", worker: "BATCH-3-GATE", model: "CODEX-HIGH", depends_on: "BATCH-2-GATE" },
+      { status: "✅", batch: "4", worker: "BATCH-4-GATE", model: "CODEX-HIGH", depends_on: "BATCH-3-GATE" },
+      { status: "✅", batch: "5", worker: "BATCH-5-GATE", model: "CODEX-HIGH", depends_on: "BATCH-4-GATE" },
+      { status: "✅", batch: "6", worker: "BATCH-6-GATE", model: "CODEX-HIGH", depends_on: "BATCH-5-GATE" },
+      {
+        status: "⬜",
+        batch: "7",
+        worker: "BATCH-7-GATE",
+        model: "CODEX-HIGH",
+        depends_on: "BATCH-1..BATCH-6 GATEs"
+      }
+    ], createLifecycleState())).toBe("BATCH-7-GATE");
+  });
+
+  it("blocks suffixed range dependency clauses while any range member is pending", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "1", worker: "BATCH-1-GATE", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "2", worker: "BATCH-2-GATE", model: "CODEX-HIGH", depends_on: "BATCH-1-GATE" },
+      { status: "⬜", batch: "3", worker: "BATCH-3-GATE", model: "CODEX-HIGH", depends_on: "BATCH-2-GATE" },
+      { status: "⬜", batch: "4", worker: "BATCH-4-GATE", model: "CODEX-HIGH", depends_on: "BATCH-3-GATE" },
+      { status: "⬜", batch: "5", worker: "BATCH-5-GATE", model: "CODEX-HIGH", depends_on: "BATCH-4-GATE" },
+      { status: "⬜", batch: "6", worker: "BATCH-6-GATE", model: "CODEX-HIGH", depends_on: "BATCH-5-GATE" },
+      {
+        status: "⬜",
+        batch: "7",
+        worker: "BATCH-7-GATE",
+        model: "CODEX-HIGH",
+        depends_on: "BATCH-1..BATCH-6 GATEs"
+      }
+    ], createLifecycleState())).toBe("BATCH-3-GATE");
+  });
+
   it("resolves all above dependencies against rows before the current worker", () => {
     expect(resolveServiceContinueWorker([
       { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },

@@ -512,6 +512,11 @@ function resolveExplicitDependencyRows(
     return rangeMatches;
   }
 
+  const suffixedRangeMatches = resolveSuffixedRangeDependencyRows(dependencyClause, rows);
+  if (suffixedRangeMatches.length > 0) {
+    return suffixedRangeMatches;
+  }
+
   const parentheticalMatches = Array.from(
     dependencyClause.matchAll(/\(([^)]+)\)/g),
     (match) => match[1]
@@ -635,6 +640,47 @@ function resolveNumericBatchRanges(clause: string): Array<[number, number]> {
       return [Math.min(start, end), Math.max(start, end)];
     })
     .filter((range): range is [number, number] => range !== null);
+}
+
+// Resolves range dependency clauses that include a worker-id suffix word, e.g.
+// "BATCH-1..BATCH-6 GATEs" → BATCH-1-GATE..BATCH-6-GATE. The plain
+// `resolveRangeDependencyRows` strips whitespace before matching and therefore
+// drops the trailing suffix, leaving these clauses unresolved.
+function resolveSuffixedRangeDependencyRows(
+  dependencyClause: string,
+  rows: DispatchContinuationPlanRow[]
+): DispatchContinuationPlanRow[] {
+  const normalizedClause = normalizeDependencyText(dependencyClause)
+    .toUpperCase()
+    .replace(/[–—]/g, "-");
+  const match = normalizedClause.match(
+    /^([A-ZΩ][A-Z0-9+]*-)(\d+)\s*\.\.\s*(?:[A-ZΩ][A-Z0-9+]*-)?(\d+)\s+([A-Z][A-Z0-9-]*?)S?$/
+  );
+  if (!match) {
+    return [];
+  }
+
+  const prefix = match[1] ?? "";
+  const start = Number.parseInt(match[2] ?? "", 10);
+  const end = Number.parseInt(match[3] ?? "", 10);
+  const suffix = match[4] ?? "";
+  if (!prefix || !suffix || !Number.isFinite(start) || !Number.isFinite(end)) {
+    return [];
+  }
+
+  const lower = Math.min(start, end);
+  const upper = Math.max(start, end);
+  const matched: DispatchContinuationPlanRow[] = [];
+
+  for (let i = lower; i <= upper; i += 1) {
+    const targetId = `${prefix}${i}-${suffix}`;
+    const matchRow = rows.find((row) => normalizeWorkerIdentifier(row.worker) === targetId);
+    if (matchRow) {
+      matched.push(matchRow);
+    }
+  }
+
+  return matched;
 }
 
 function resolveRangeDependencyRows(

@@ -595,7 +595,16 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             writeJson(response, 200, await deleteRole(route.threadId));
             return true;
           case "hub-relay": {
-            const hubMessage = HubMessageSchema.parse(await readJsonBody(request));
+            const rawHubMessage = HubMessageSchema.parse(await readJsonBody(request));
+            // Long-running dispatcher hub sessions can lose track of which
+            // dispatch_plan_path they are anchored to once Codex compacts
+            // earlier turns of the conversation, so a freeform talkbox or
+            // Telegram message arriving via /api/hub-relay leaves the
+            // dispatcher unsure which project it owns. Prepend the
+            // role-id and plan path to the message body when the target
+            // thread is an active dispatcher hub thread. The reminder is
+            // a no-op for non-dispatcher targets.
+            const hubMessage = await augmentHubRelayForDispatcherTarget(rawHubMessage);
             // GUI talk-to-thread fires `intent: "run"` at a long-running
             // bridge worker; the hub does not reply until the agent run
             // resolves, so the request socket would otherwise hang for the
@@ -631,6 +640,64 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   };
 
   return handlers;
+
+  async function resolveDispatcherContextForHubThread(
+    hubThreadId: string
+  ): Promise<{ dispatcherRoleId: string; dispatchPlanPath: string } | null> {
+    const trimmed = hubThreadId.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    for (const [roleId, role] of activeRoles) {
+      if (role.roleType !== "agent-dispatcher") {
+        continue;
+      }
+      const config = parseAgentDispatcherConfig(role.config);
+      const dispatchPlanPath = config?.dispatch_plan_path?.trim();
+      if (!dispatchPlanPath) {
+        continue;
+      }
+      try {
+        const lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+        if (lifecycleState.dispatcher.thread_id?.trim() === trimmed) {
+          return { dispatcherRoleId: roleId, dispatchPlanPath };
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  async function augmentHubRelayForDispatcherTarget(message: HubMessage): Promise<HubMessage> {
+    const dispatcherContext = await resolveDispatcherContextForHubThread(message.thread_id);
+    if (!dispatcherContext) {
+      return message;
+    }
+
+    const originalContent = typeof message.payload?.content === "string" ? message.payload.content : "";
+    if (originalContent.startsWith("[Dispatcher reminder")) {
+      return message;
+    }
+
+    const reminder =
+      `[Dispatcher reminder — dispatcher_role_id=${dispatcherContext.dispatcherRoleId}; ` +
+      `dispatch_plan_path=${dispatcherContext.dispatchPlanPath}. ` +
+      `Use this exact plan path when calling meridian-tool; ignore any other project context.]`;
+    const augmentedContent = originalContent.length > 0
+      ? `${reminder}\n\n${originalContent}`
+      : reminder;
+
+    return {
+      ...message,
+      payload: {
+        ...message.payload,
+        content: augmentedContent
+      }
+    };
+  }
 
   async function startAgentDispatcher(body: unknown): Promise<{
     ok: true;
