@@ -1962,6 +1962,47 @@ describe("LifecycleStore", () => {
     expect(pmResolver?.result?.content).toContain("completed because worker BATCH-7-GATE recovered to completed");
   });
 
+  // Regression: PM that successfully called `resume-worker --action retry`
+  // moves the worker back to `pending` and then the run wrapper times out
+  // before the PM can emit a final marker. Without `pending` in
+  // PM_RESOLVED_TARGET_STATUSES, the PM entry stays `running`,
+  // `findActivePmResolversForWorker` keeps the relaunch gate closed, and the
+  // dispatcher deadlocks on the next continue tick until a service restart
+  // probes the dead PM thread (BATCH-7-GATE on agent-dispatcher-9fd97803).
+  it("reconciles a running PM resolver to completed when the worker is reset to pending for retry", async () => {
+    const harness = await createHarness();
+    const reportPath = path.join(harness.directory, "reports", "BATCH-7-GATE.md");
+    await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+    await fsp.writeFile(reportPath, "# BATCH-7-GATE Report\n\nAttempt 1 worker report.\n", "utf8");
+
+    harness.store.recordWorkerStart(
+      "BATCH-7-GATE",
+      "worker-thread-b7",
+      "11111111-1111-4111-8111-111111111111",
+      [reportPath]
+    );
+    harness.store.setWorkerStatus("BATCH-7-GATE", "blocked", "needs_pm");
+    harness.store.recordPmResolverStart("pm-thread-b7", {
+      status: "manual_intervention_required",
+      workerId: "BATCH-7-GATE",
+      message: "manual intervention required: BATCH-7-GATE requested PM resolution",
+      source: "watchdog"
+    });
+
+    // PM has called `resume-worker --action retry` which resets the worker
+    // back to pending so the dispatcher can relaunch it. The PM run wrapper
+    // never received a terminal marker (token cap / hub disconnect), so the
+    // PM entry is still recorded as `running`.
+    harness.store.setWorkerStatus("BATCH-7-GATE", "pending", "resume_worker:retry", {
+      clearHubResult: true
+    });
+
+    const pmResolver = harness.store.load().pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-b7");
+    expect(pmResolver?.status).toBe("completed");
+    expect(pmResolver?.error).toBeNull();
+    expect(pmResolver?.result?.content).toContain("completed because worker BATCH-7-GATE recovered to pending");
+  });
+
   // ─── MeridianStatusMarker primary-signal tests (Phase A, Task A2) ────────
   describe("MeridianStatusMarker primary signal", () => {
     it("marks worker completed when marker says complete and the expected report file is fresh, despite narrative block phrases", async () => {

@@ -1270,9 +1270,17 @@ function normalizePmResolverIssue(issue: {
 // since PM started, the orchestration intent was satisfied even when the run
 // envelope reports an error/timeout (e.g. token-cap stop, late hub disconnect
 // after the meridian-tool calls already succeeded).
+//
+// `pending` is included because a PM that calls `resume-worker --action retry`
+// resets the worker to `pending` so the dispatcher can relaunch it. Without
+// `pending` here, the PM stayed `running` after the retry tool call landed,
+// `findActivePmResolversForWorker` kept the relaunch gate closed, and the
+// dispatcher deadlocked on the next continue tick until a service restart
+// probed the dead PM thread (BATCH-7-GATE on agent-dispatcher-9fd97803).
 const PM_RESOLVED_TARGET_STATUSES = new Set<LifecycleStatus>([
   "completed",
   "running",
+  "pending",
   "awaiting_validation",
   "fix_requested",
   "skipped"
