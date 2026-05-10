@@ -2982,6 +2982,210 @@ describe("LifecycleStore", () => {
       expect(onDisk.workers["N-37"]?.thread_id).toBe("");
     });
   });
+
+  describe("recordWorkerResult validation re-entry intercept", () => {
+    // M-01 on agent-dispatcher-9fd97803: cycle 2 returned fix_requested,
+    // worker's next reply was outcome:blocked (dirty worktree gate),
+    // dispatcher escalated to PM, then later attempts produced complete
+    // markers. Without this intercept the recovering hub_result lands
+    // directly on "completed" and the validator never gets a third cycle
+    // until PR #194's reconciler tick — observed gap of >10 minutes.
+    it("routes blocked->completed back to awaiting_validation when prior validation history exists", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "M-01",
+        "worker-thread-m01",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+      harness.store.transitionToAwaitingValidation("M-01", 3);
+      harness.store.transitionToFixRequested(
+        "M-01",
+        0.5,
+        "address the runtime stub",
+        "validator-thread-cycle-1"
+      );
+      harness.store.transitionToAwaitingValidation("M-01", 3);
+      harness.store.transitionToFixRequested(
+        "M-01",
+        0.5,
+        "still missing the runtime",
+        "validator-thread-cycle-2"
+      );
+      // Worker reply between cycles 2 and 3 was outcome: blocked (dirty
+      // worktree). PM resolution then unblocks; the worker's *next* reply
+      // is the recovering complete attempt.
+      harness.store.recordWorkerResult("M-01", buildHubResult({
+        thread_id: "worker-thread-m01",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: M-01",
+          "role: worker",
+          "outcome: blocked",
+          "notes: dirty worktree from prior worker",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:39:29.000Z"
+      }));
+      expect(harness.store.load().workers["M-01"]?.status).toBe("blocked");
+      const validationAfterBlock = harness.store.load().workers["M-01"]?.validation;
+      expect(validationAfterBlock?.history?.length).toBe(2);
+
+      // Recovering attempt — outcome: complete. The intercept should route
+      // this to awaiting_validation so the validator gets cycle 3 instead
+      // of the dispatcher treating M-01 as terminally completed.
+      harness.store.recordWorkerResult("M-01", buildHubResult({
+        thread_id: "worker-thread-m01",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: M-01",
+          "role: worker",
+          "outcome: complete",
+          "report_path: /tmp/M-01.md",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:55:42.000Z"
+      }));
+
+      const recovered = harness.store.load().workers["M-01"];
+      expect(recovered?.status).toBe("awaiting_validation");
+      expect(recovered?.validation?.history?.length).toBe(2);
+      expect(recovered?.validation?.last_score).toBe(0.5);
+    });
+
+    it("routes failed->completed back to awaiting_validation when prior validation history exists", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "M-02",
+        "worker-thread-m02",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+      harness.store.transitionToAwaitingValidation("M-02", 3);
+      harness.store.transitionToFixRequested(
+        "M-02",
+        0.5,
+        "needs work",
+        "validator-thread-cycle-1"
+      );
+      // Simulate a prior failed attempt landing while in fix cycle.
+      harness.store.recordWorkerResult("M-02", buildHubResult({
+        thread_id: "worker-thread-m02",
+        status: "error",
+        run_state: "completed",
+        content: "Outcome: FAILED — transient subprocess crash",
+        timestamp: "2026-04-03T12:30:00.000Z"
+      }));
+      expect(harness.store.load().workers["M-02"]?.status).toBe("failed");
+
+      // Recovering attempt with passing marker.
+      harness.store.recordWorkerResult("M-02", buildHubResult({
+        thread_id: "worker-thread-m02",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: M-02",
+          "role: worker",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:45:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["M-02"]?.status).toBe("awaiting_validation");
+    });
+
+    it("does NOT intercept blocked->completed when validation history is empty", async () => {
+      const harness = await createHarness();
+      // First-attempt blocked worker: validation skeleton present but no
+      // cycle has ever recorded a verdict (history.length === 0). This
+      // worker has not been "in validation" yet — going to completed
+      // directly preserves the original first-entry behavior. PR #194's
+      // separate reconciler sweep handles the artifact-marker case.
+      harness.store.recordWorkerStart(
+        "M-03",
+        "worker-thread-m03",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+      harness.store.recordWorkerResult("M-03", buildHubResult({
+        thread_id: "worker-thread-m03",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: M-03",
+          "role: worker",
+          "outcome: blocked",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+      expect(harness.store.load().workers["M-03"]?.status).toBe("blocked");
+      expect(harness.store.load().workers["M-03"]?.validation?.history?.length).toBe(0);
+
+      harness.store.recordWorkerResult("M-03", buildHubResult({
+        thread_id: "worker-thread-m03",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: M-03",
+          "role: worker",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:10:00.000Z"
+      }));
+
+      // First-cycle entry into validation should still go through the
+      // running/fix_requested arm — but here the prior status is "blocked"
+      // with no history, so we land on "awaiting_validation" only via
+      // PR #194's reconciler artifact path on the next tick. Direct
+      // recordWorkerResult here lands on plain "completed" by design;
+      // history-gate exists to keep this preserved.
+      expect(harness.store.load().workers["M-03"]?.status).toBe("completed");
+    });
+
+    it("preserves the existing running->completed intercept", async () => {
+      const harness = await createHarness();
+      harness.store.recordWorkerStart(
+        "N-50",
+        "worker-thread-n50",
+        "11111111-1111-4111-8111-111111111111",
+        [],
+        null,
+        { validationMaxFixCycles: 3 }
+      );
+
+      harness.store.recordWorkerResult("N-50", buildHubResult({
+        thread_id: "worker-thread-n50",
+        status: "success",
+        run_state: "completed",
+        content: [
+          "<<<MERIDIAN-STATUS>>>",
+          "worker_id: N-50",
+          "role: worker",
+          "outcome: complete",
+          "<<<END>>>"
+        ].join("\n"),
+        timestamp: "2026-04-03T12:00:00.000Z"
+      }));
+
+      expect(harness.store.load().workers["N-50"]?.status).toBe("awaiting_validation");
+    });
+  });
 });
 
 async function createHarness(options: {
