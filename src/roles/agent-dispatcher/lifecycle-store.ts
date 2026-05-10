@@ -351,7 +351,7 @@ export class LifecycleStore {
     );
     const nextStatus = mappedStatus === "completed"
       && worker.validation
-      && (worker.status === "running" || worker.status === "fix_requested")
+      && shouldRouteCompletedToAwaitingValidation(worker)
       ? "awaiting_validation"
       : mappedStatus;
     state.workers[workerId] = {
@@ -938,6 +938,41 @@ interface ValidationTransitionResult {
   score: number;
   feedback: string;
   validatorThreadId: string;
+}
+
+// Gate for the awaiting_validation intercept on `completed` results.
+//
+// First-time entry: status `running` (fresh worker reply) or `fix_requested`
+// (validator-feedback rework reply landing through `recordWorkerResult`)
+// transition into `awaiting_validation` so the validator can score.
+//
+// Re-entry after a detour: a worker can reply `outcome: blocked` (or fail)
+// while in a fix cycle — e.g. dirty-worktree gate, transient build break.
+// `blocked` correctly routes to PM. When the worker subsequently produces a
+// passing reply (Attempts 5/6 etc. after PM/operator unblocks the gate),
+// `blocked → completed` would normally land directly on `completed`, skipping
+// validation entirely even though the validator already gave feedback (cycle
+// history > 0). The PR #194 reconciler sweep catches this on the next tick,
+// but only on a tick — observed M-01 sat ≥10min waiting for the next
+// reconcile while the dispatcher advanced to the next task. Routing the live
+// hub_result through the intercept makes the next cycle spawn synchronously.
+//
+// History-gate (`length > 0`) keeps the original first-entry semantics for
+// workers that were `blocked`/`failed` *before* validation ever ran — those
+// genuinely did not have a validator decision to revisit, and going to
+// `awaiting_validation` would create an unwanted cycle 1 from a status that
+// PR #194 will recover separately if appropriate.
+export function shouldRouteCompletedToAwaitingValidation(
+  worker: DispatchWorkerState
+): boolean {
+  if (!worker.validation) return false;
+  if (worker.status === "running" || worker.status === "fix_requested") {
+    return true;
+  }
+  if (worker.status === "blocked" || worker.status === "failed") {
+    return (worker.validation.history?.length ?? 0) > 0;
+  }
+  return false;
 }
 
 function recordValidationOutcome(

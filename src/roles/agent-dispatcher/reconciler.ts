@@ -11,7 +11,8 @@ import {
   hubResultContainsHitLimit,
   hubResultContainsInlineReport,
   isExplicitCompletionContent,
-  isNonCompletionContent
+  isNonCompletionContent,
+  shouldRouteCompletedToAwaitingValidation
 } from "./lifecycle-store";
 import {
   isWorkerToolProcessRunning,
@@ -779,11 +780,7 @@ function applyValidationIntercept(
   worker: DispatchWorkerState,
   nextStatus: LifecycleStatus
 ): LifecycleStatus {
-  if (
-    nextStatus === "completed"
-    && worker.validation
-    && (worker.status === "running" || worker.status === "fix_requested")
-  ) {
+  if (nextStatus === "completed" && shouldRouteCompletedToAwaitingValidation(worker)) {
     return "awaiting_validation";
   }
   return nextStatus;
