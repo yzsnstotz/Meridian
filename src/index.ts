@@ -20,6 +20,7 @@ import {
 } from "./roles/agent-dispatcher/validator-orchestrator";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
 import { FileRelayWatcher } from "./tool-gateway/file-relay";
+import killTool from "./tool-gateway/tools/kill";
 import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "./tool-gateway/tools/dispatch-status";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
 import { SchedulerRole } from "./roles/definitions/scheduler";
@@ -46,8 +47,10 @@ import {
   type AgentDispatcherConfig,
   type AppState,
   type DispatchThreadStateV2,
+  type DispatchWorkerState,
   type HubMessage,
   type HubResult,
+  type KillPolicy,
   type RoleState,
   type SchedulerConfig,
   type ValidatorConfig
@@ -113,8 +116,17 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     schedulerHandlers,
     log
   });
+  const settleKillThread = async (threadId: string): Promise<void> => {
+    const result = await killTool.execute({ thread_id: threadId });
+    if (!result.ok) {
+      throw new Error(result.error ?? `kill failed for thread ${threadId}`);
+    }
+  };
   const watchdog = new ReconciliationWatchdog({
-    resolveActiveDispatchPlanPaths: () => resolveDispatchPlanPathsFromState(stateStore),
+    resolveActiveDispatchPlanPaths: () => resolveDispatchPlanPathsFromState(stateStore, {
+      killThread: settleKillThread,
+      log
+    }),
     hubClient: client,
     log,
     intervalMs: RECONCILE_INTERVAL_MS,
@@ -244,7 +256,20 @@ async function buildStartupActivations(
   client: A2AClient,
   log: typeof console
 ): Promise<StartupActivation[]> {
-  const currentState = await settleTerminalAgentDispatcherRoles(stateStore, log);
+  // At startup, stale codex_NN threads for plans that finished while the
+  // service was down would otherwise leak — the watchdog only triggers settle
+  // for roles still in a non-terminal status, and once buildStartupActivations
+  // has flipped them we never get another chance. Best-effort kill via the
+  // Hub kill tool; missing-instance replies are swallowed inside the helper.
+  const startupSettleKillThread = async (threadId: string): Promise<void> => {
+    const result = await killTool.execute({ thread_id: threadId });
+    if (!result.ok) {
+      throw new Error(result.error ?? `kill failed for thread ${threadId}`);
+    }
+  };
+  const currentState = await settleTerminalAgentDispatcherRoles(stateStore, log, {
+    killThread: startupSettleKillThread
+  });
   const startupRoles = currentState.roles
     .map((roleState, index) => ({ roleState, index }))
     .filter(({ roleState }) => isStartupRehydratableRoleStatus(roleState.status));
@@ -961,8 +986,25 @@ async function persistAgentDispatcherRoleStatus(
   }
 }
 
-export async function resolveDispatchPlanPathsFromState(stateStore: StateStore): Promise<string[]> {
-  const state = await settleTerminalAgentDispatcherRoles(stateStore);
+export interface ResolveDispatchPlanPathsOptions {
+  /**
+   * Best-effort thread-kill hook invoked once per thread_id when a dispatcher
+   * role is freshly flipped to a terminal status. Production wires this to the
+   * Hub kill tool so threads recorded under a settled plan (dispatcher,
+   * worker, validator, pm-resolver) do not outlive the plan. Tests omit the
+   * hook to avoid touching the network.
+   */
+  killThread?: (threadId: string) => Promise<void>;
+  log?: Pick<Console, "info" | "warn">;
+}
+
+export async function resolveDispatchPlanPathsFromState(
+  stateStore: StateStore,
+  options: ResolveDispatchPlanPathsOptions = {}
+): Promise<string[]> {
+  const state = await settleTerminalAgentDispatcherRoles(stateStore, options.log, {
+    killThread: options.killThread
+  });
   const paths: string[] = [];
 
   for (const role of state.roles) {
@@ -997,9 +1039,22 @@ export async function resolveDispatchPlanPathsFromState(stateStore: StateStore):
   return [...new Set(paths)];
 }
 
+export interface SettleTerminalAgentDispatcherOptions {
+  /**
+   * Best-effort thread-kill hook invoked once per thread_id when a dispatcher
+   * role is flipped from non-terminal to terminal. Threads that survived the
+   * watchdog's per-tick `cleanupTerminalWorkerThreads` (e.g. a worker that
+   * settled in the same tick the plan completed, or a `kill_policy=on_success`
+   * worker that ended up `failed`) would otherwise leak in the Hub forever
+   * because the watchdog excludes settled paths from subsequent sweeps.
+   */
+  killThread?: (threadId: string) => Promise<void>;
+}
+
 export async function settleTerminalAgentDispatcherRoles(
   stateStore: StateStore,
-  log?: Pick<Console, "info" | "warn">
+  log?: Pick<Console, "info" | "warn">,
+  options: SettleTerminalAgentDispatcherOptions = {}
 ): Promise<AppState> {
   const state = await loadAppState(stateStore);
   let stateChanged = false;
@@ -1026,6 +1081,10 @@ export async function settleTerminalAgentDispatcherRoles(
       status: terminalStatus,
       dispatchPlanPath: config.dispatch_plan_path
     });
+
+    if (options.killThread) {
+      await cleanupSettledDispatchPlanThreads(config, options.killThread, log);
+    }
   }
 
   if (stateChanged) {
@@ -1033,6 +1092,98 @@ export async function settleTerminalAgentDispatcherRoles(
   }
 
   return state;
+}
+
+/**
+ * Best-effort terminate every Hub thread the lifecycle still records for a
+ * dispatch plan that has just settled (role flipped from non-terminal to
+ * `completed`/`failed`). Mirrors `AgentDispatcherRole.onDeactivate` but covers
+ * the gap that role.onDeactivate is never called on settle, and that its
+ * `loadTrackedThreads` only includes `running` workers — terminal-status
+ * workers whose threads outlived their work would slip through.
+ *
+ * The dispatcher's own thread is killed regardless of `kill_policy` (matches
+ * onDeactivate). Worker / validator / pm-resolver threads honor
+ * `kill_policy`: `never` leaves them intact (operator may want to inspect
+ * post-mortem), `always`/`on_success` kill anything still recorded.
+ *
+ * Kill failures are swallowed; the Hub's "no registered agent instance" reply
+ * is the expected response when a worker thread already exited cleanly.
+ */
+async function cleanupSettledDispatchPlanThreads(
+  config: AgentDispatcherConfig,
+  killThread: (threadId: string) => Promise<void>,
+  log?: Pick<Console, "info" | "warn">
+): Promise<void> {
+  let lifecycleState: DispatchThreadStateV2;
+  try {
+    lifecycleState = new LifecycleStore(resolveDispatchThreadPath(config.dispatch_plan_path)).load();
+  } catch {
+    return;
+  }
+
+  const threadIds = new Set<string>();
+
+  const dispatcherThreadId = lifecycleState.dispatcher.thread_id?.trim();
+  if (dispatcherThreadId) {
+    threadIds.add(dispatcherThreadId);
+  }
+
+  if (config.kill_policy !== "never") {
+    for (const worker of Object.values(lifecycleState.workers)) {
+      const workerThreadId = worker.thread_id?.trim();
+      if (workerThreadId && shouldKillSettledWorker(worker, config.kill_policy)) {
+        threadIds.add(workerThreadId);
+      }
+      const validatorThreadId = worker.validation?.validator_thread_id?.trim();
+      if (validatorThreadId) {
+        threadIds.add(validatorThreadId);
+      }
+    }
+    for (const pmResolver of lifecycleState.pm_resolvers ?? []) {
+      const pmThreadId = pmResolver.thread_id?.trim();
+      if (pmThreadId) {
+        threadIds.add(pmThreadId);
+      }
+    }
+  }
+
+  for (const threadId of threadIds) {
+    try {
+      await killThread(threadId);
+    } catch (error) {
+      const message = asError(error).message;
+      if (isMissingThreadKillReply(message)) {
+        continue;
+      }
+      log?.warn?.("Settle-time thread cleanup failed", {
+        dispatchPlanPath: config.dispatch_plan_path,
+        threadId,
+        error: message
+      });
+    }
+  }
+}
+
+function shouldKillSettledWorker(worker: DispatchWorkerState, killPolicy: KillPolicy): boolean {
+  if (killPolicy === "always") {
+    return worker.status === "completed"
+      || worker.status === "failed"
+      || worker.status === "blocked"
+      || worker.status === "abandoned"
+      || worker.status === "skipped";
+  }
+  if (killPolicy === "on_success") {
+    return worker.status === "completed";
+  }
+  return false;
+}
+
+function isMissingThreadKillReply(message: string): boolean {
+  return /\bnot found\b/i.test(message)
+    || /\bmissing\b/i.test(message)
+    || /\bunknown thread\b/i.test(message)
+    || /no registered agent instance/i.test(message);
 }
 
 export async function hasStartupRecoverableDispatchWork(config: AgentDispatcherConfig): Promise<boolean> {

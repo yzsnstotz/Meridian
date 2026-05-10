@@ -163,6 +163,215 @@ describe("resolveDispatchPlanPathsFromState", () => {
     await expect(resolveDispatchPlanPathsFromState(stateStore)).resolves.toEqual([dispatchPlanPath]);
   });
 
+  it("kills lingering codex threads when settling a freshly terminal dispatcher role", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-settle-kill-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ✅ | 1 | N-01 | Done | CODEX | - | delivered |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-05T21:42:51.459Z",
+        status: "running"
+      },
+      workers: {
+        "N-01": {
+          thread_id: "codex_55",
+          trace_id: null,
+          started_at: "2026-05-05T06:39:43.287Z",
+          last_seen_at: "2026-05-05T06:44:28.924Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 1,
+            max_fix_cycles: 3,
+            validator_thread_id: "codex_77",
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_99",
+          status: "completed",
+          started_at: "2026-05-05T07:00:00.000Z",
+          last_seen_at: "2026-05-05T07:05:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention",
+            worker_id: "N-01",
+            message: null,
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-settling",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        }
+      ],
+      promptStore: {}
+    });
+
+    const killed: string[] = [];
+    const killThread = async (threadId: string): Promise<void> => {
+      killed.push(threadId);
+    };
+
+    await expect(
+      resolveDispatchPlanPathsFromState(stateStore, { killThread })
+    ).resolves.toEqual([]);
+
+    expect(killed.sort()).toEqual(["codex_01", "codex_55", "codex_77", "codex_99"]);
+  });
+
+  it("honors kill_policy=never on settle by leaving worker threads alive (only dispatcher is killed)", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-settle-never-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ✅ | 1 | N-01 | Done | CODEX | - | delivered |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-05T21:42:51.459Z",
+        status: "running"
+      },
+      workers: {
+        "N-01": {
+          thread_id: "codex_55",
+          trace_id: null,
+          started_at: "2026-05-05T06:39:43.287Z",
+          last_seen_at: "2026-05-05T06:44:28.924Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-never",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: AgentDispatcherConfigSchema.parse({
+            ...buildAgentDispatcherConfig(dispatchPlanPath),
+            kill_policy: "never"
+          })
+        }
+      ],
+      promptStore: {}
+    });
+
+    const killed: string[] = [];
+    const killThread = async (threadId: string): Promise<void> => {
+      killed.push(threadId);
+    };
+
+    await expect(
+      resolveDispatchPlanPathsFromState(stateStore, { killThread })
+    ).resolves.toEqual([]);
+
+    expect(killed).toEqual(["codex_01"]);
+  });
+
+  it("does not invoke killThread on settle ticks that flip nothing (idempotent across watchdog ticks)", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-settle-idempotent-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ✅ | 1 | N-01 | Done | CODEX | - | delivered |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: { thread_id: "codex_01", started_at: "2026-05-05T21:42:51.459Z", status: "running" },
+      workers: {
+        "N-01": {
+          thread_id: "codex_55",
+          trace_id: null,
+          started_at: "2026-05-05T06:39:43.287Z",
+          last_seen_at: "2026-05-05T06:44:28.924Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-idem",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        }
+      ],
+      promptStore: {}
+    });
+
+    const killed: string[] = [];
+    const killThread = async (threadId: string): Promise<void> => {
+      killed.push(threadId);
+    };
+
+    await resolveDispatchPlanPathsFromState(stateStore, { killThread });
+    const firstSweepKills = [...killed];
+
+    await resolveDispatchPlanPathsFromState(stateStore, { killThread });
+    expect(killed).toEqual(firstSweepKills);
+  });
+
   it("includes active scheduler runs for watchdog reconciliation", async () => {
     const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-"));
     tempDirectories.add(directory);
