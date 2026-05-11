@@ -73,6 +73,27 @@ export function outputArtifactHasPassingDecision(content: string): boolean {
     .some((line) => /^(?:PASS_WITH_FINDINGS|PASS\s+WITH\s+FINDINGS|PASSED|PASS)\b/i.test(line));
 }
 
+// Worker report convention: `### Outcome` heading whose first non-empty line
+// is `complete` / `completed` / `success` / `passed`. The standard worker
+// report template emits this even when the worker forgets the trailing
+// `<<<MERIDIAN-STATUS>>>` marker. Treat the worker's own outcome claim as
+// structured evidence, parallel to validator `## Decision: PASS` and the
+// MERIDIAN-STATUS marker. Scans the LAST `Outcome` section so multi-attempt
+// reports use the latest attempt's claim; an earlier attempt's
+// `### Outcome \n `failed`` still trips STRUCTURED_FAILURE_SIGNAL_PATTERNS.
+export function outputArtifactHasPassingOutcome(content: string): boolean {
+  const section = extractLastMarkdownSection(content, "Outcome");
+  if (!section) {
+    return false;
+  }
+
+  return section
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim())
+    .filter(Boolean)
+    .some((line) => /^(?:COMPLETED?|SUCCESS|PASSED|PASS)\b/i.test(line));
+}
+
 export function sliceContentFromStartedAt(content: string, startedAt?: string): string {
   if (!startedAt || !content) {
     return content;
@@ -249,6 +270,25 @@ function extractMarkdownSection(content: string, heading: string): string | null
   }
 
   const sectionStart = match.index + match[0].length;
+  const remaining = content.slice(sectionStart);
+  const nextHeading = remaining.search(/\n#{1,6}\s+\S/);
+  return nextHeading === -1 ? remaining : remaining.slice(0, nextHeading);
+}
+
+function extractLastMarkdownSection(content: string, heading: string): string | null {
+  const headingPattern = new RegExp(`(^|\\n)#{1,6}\\s+${escapeRegExp(heading)}\\s*\\n`, "gi");
+  let lastMatchIndex = -1;
+  let lastMatchLength = 0;
+  let m: RegExpExecArray | null;
+  while ((m = headingPattern.exec(content)) !== null) {
+    lastMatchIndex = m.index;
+    lastMatchLength = m[0].length;
+  }
+  if (lastMatchIndex < 0) {
+    return null;
+  }
+
+  const sectionStart = lastMatchIndex + lastMatchLength;
   const remaining = content.slice(sectionStart);
   const nextHeading = remaining.search(/\n#{1,6}\s+\S/);
   return nextHeading === -1 ? remaining : remaining.slice(0, nextHeading);

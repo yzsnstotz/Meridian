@@ -19,6 +19,7 @@ import {
 } from "../../types";
 import {
   outputArtifactHasPassingDecision,
+  outputArtifactHasPassingOutcome,
   outputArtifactHasPassingWorkerMarker,
   outputArtifactsContain,
   outputsExist as outputArtifactsExist,
@@ -1977,6 +1978,9 @@ function outputArtifactsContainFailureSignal(
       if (workerId && outputArtifactHasPassingWorkerMarker(currentAttemptContent, workerId)) {
         return false;
       }
+      if (outputArtifactHasPassingOutcome(currentAttemptContent)) {
+        return false;
+      }
       return !outputArtifactHasPassingDecision(currentAttemptContent)
         && hubResultContainsFailureSignal({ content: currentAttemptContent });
     },
@@ -1994,6 +1998,9 @@ function outputArtifactsContainBlockSignal(
     (content) => {
       const currentAttemptContent = sliceContentFromStartedAt(content, startedAt);
       if (workerId && outputArtifactHasPassingWorkerMarker(currentAttemptContent, workerId)) {
+        return false;
+      }
+      if (outputArtifactHasPassingOutcome(currentAttemptContent)) {
         return false;
       }
       return !outputArtifactHasPassingDecision(currentAttemptContent)
