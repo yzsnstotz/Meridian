@@ -42,6 +42,12 @@ export type PmResolverResult =
       ok: true;
       status: "pm_resolver_disabled";
       message: string;
+    }
+  | {
+      ok: true;
+      status: "pm_resolver_already_running";
+      thread_id: string;
+      message: string;
     };
 
 export interface PmResolverDeps {

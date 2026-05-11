@@ -1045,12 +1045,39 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       throw createHttpError(400, "Invalid PM resolver payload");
     }
 
+    const issueWorkerId = parsed.data.worker_id ?? parsed.data.worker;
+
+    // Suppress duplicate PM spawn for the same worker. Watchdog auto-fires PM
+    // via `tryStartPmResolverForStall` (gated by hasPmResolverHandledCurrentWorkerIssue),
+    // while the dispatcher LLM independently fires PM via the meridian-tool
+    // `pm-resolve` command (this endpoint). Without a symmetric gate here, the
+    // two paths can stack PMs against the same worker — observed on
+    // agent-dispatcher-738fb284 (PRE-FLIGHT), where watchdog spawned codex_07
+    // and the dispatcher LLM spawned codex_08 ~47s later, both targeting the
+    // same `needs_pm` issue.
+    if (issueWorkerId) {
+      const lifecycleState = await loadDispatchLifecycleState(
+        context.effectiveConfig.dispatch_plan_path,
+        log
+      );
+      const activePmResolvers = findActivePmResolversForWorker(lifecycleState, issueWorkerId);
+      if (activePmResolvers.length > 0) {
+        const existing = activePmResolvers[0];
+        return {
+          ok: true,
+          status: "pm_resolver_already_running",
+          thread_id: existing.thread_id,
+          message: `PM resolver ${existing.thread_id} is already resolving worker ${issueWorkerId}`
+        };
+      }
+    }
+
     return startPmResolverImpl({
       dispatcherId: threadId,
       config: context.effectiveConfig,
       issue: {
         status: parsed.data.status,
-        workerId: parsed.data.worker_id ?? parsed.data.worker,
+        workerId: issueWorkerId,
         message: parsed.data.message,
         error: parsed.data.error,
         source: parsed.data.source ?? "dispatcher"

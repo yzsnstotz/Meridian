@@ -416,6 +416,115 @@ describe("role config handlers", () => {
     });
   });
 
+  // Regression: agent-dispatcher-738fb284 / PRE-FLIGHT spawned two PM resolvers
+  // for the same `needs_pm` issue — watchdog auto-fired codex_07 (source
+  // "watchdog") and the dispatcher LLM independently fired codex_08 via the
+  // meridian-tool `pm-resolve` command ~47s later. Both ran in parallel against
+  // the same worker. The /pm-resolve handler must refuse when a running PM
+  // already targets the requested worker.
+  it("does not spawn a second PM resolver while one is already running for the same worker", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolve-duplicate-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 1 | PRE-FLIGHT | Preflight checks | CODEX | — | TaskSpec | needs PM |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-preflight",
+        started_at: "2026-05-11T20:58:49.597Z",
+        status: "running"
+      },
+      workers: {
+        "PRE-FLIGHT": buildLifecycleWorker({
+          thread_id: "codex_06",
+          status: "blocked",
+          retry_count: 0
+        })
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_07",
+          status: "running",
+          started_at: "2026-05-11T21:03:28.935Z",
+          last_seen_at: "2026-05-11T21:03:28.935Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "PRE-FLIGHT",
+            message: "watchdog requested PM resolution",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: null
+    });
+
+    const startPmResolver = vi.fn(async (): Promise<PmResolverResult> => ({
+      ok: true,
+      status: "pm_resolver_started",
+      thread_id: "should-not-spawn",
+      message: "should-not-spawn"
+    }));
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        startPmResolver
+      );
+
+      await createAgentDispatcherRole(
+        harness.roleHandlers,
+        "agent-dispatcher-pm-duplicate",
+        dispatchPlanPath
+      );
+
+      await expect(invokeJson<PmResolverResult>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-pm-duplicate/pm-resolve",
+        {
+          status: "manual_intervention_required",
+          worker_id: "PRE-FLIGHT",
+          message: "PRE-FLIGHT needs PM",
+          source: "dispatcher"
+        }
+      )).resolves.toEqual({
+        ok: true,
+        status: "pm_resolver_already_running",
+        thread_id: "codex_07",
+        message: "PM resolver codex_07 is already resolving worker PRE-FLIGHT"
+      });
+
+      expect(startPmResolver).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("persists validator config when starting an agent-dispatcher", async () => {
     const harness = createHarness();
 
