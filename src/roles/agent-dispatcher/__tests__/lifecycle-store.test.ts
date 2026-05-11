@@ -2893,6 +2893,77 @@ describe("LifecycleStore", () => {
         status: "completed"
       });
     });
+
+    it("honors a worker's narrative `### Outcome \\n complete` claim over a 'tool ... exited 1' false-positive in test report prose", async () => {
+      // Regression: clawso ranked-data-search-100k R-01 on dispatcher
+      // 738fb284 (2026-05-11). The worker shipped (PR merged, commit pushed),
+      // wrote a clean report with `### Outcome \n `complete`.`, but did NOT
+      // emit a `<<<MERIDIAN-STATUS>>>` marker in the file. The report quoted
+      // an audit reporter line:
+      //   [audit-bundled-tool-page-app-root] PASS (eslint exited 1 on the negative fixture; ...)
+      // which matches the CONTEXTUAL_FAILURE_SIGNAL_PATTERNS regex
+      // `\b(?:command|process|script|tool|test|build|check|run)\b...\bexited 1\b`
+      // because hyphen-bounded `tool` inside `audit-bundled-tool-page-app-root`
+      // is a word match and "exited 1" follows within 80 chars. The benign
+      // filter did not recognize "negative fixture" or the "[name] PASS"
+      // bracket pattern. PR #186's `## Decision` short-circuit covers
+      // validators, PR #191's MERIDIAN-STATUS short-circuit covers workers
+      // that emit the marker — but workers writing narrative
+      // `### Outcome \n complete` had no structured-claim short-circuit and
+      // fell through to the narrative-regex layer. Result: lifecycle flipped
+      // `running → failed (output_artifact:failure_signal)`, watchdog killed
+      // the worker thread, and a PM resolver was spawned to handle a
+      // non-existent block. The worker's own outcome claim must win.
+      const harness = await createHarness();
+      const reportPath = path.join(harness.directory, "reports", "R-01.md");
+      await fsp.mkdir(path.dirname(reportPath), { recursive: true });
+
+      harness.store.recordWorkerStart(
+        "R-01",
+        "codex_10",
+        "11111111-1111-4111-8111-111111111111",
+        [reportPath]
+      );
+
+      const startedAtIso = harness.store.load().workers["R-01"]!.started_at!;
+
+      const content = [
+        "# R-01 Report — Behavior baseline + `FakeDb.rpc` test harness",
+        "",
+        `## Attempt 1 — ${startedAtIso} — role: worker`,
+        "",
+        "### Outcome",
+        "",
+        "`complete`.",
+        "",
+        "Implemented and shipped R-01 on branch `ranked-data-search-100k/R-01`.",
+        "",
+        "### Validation",
+        "",
+        "```text",
+        "$ npm run lint:boundaries 2>&1 | tail -15",
+        "[audit-bundled-tool-page-app-root] PASS (eslint exited 1 on the negative fixture; output contained \"BundledToolPage\" and the fixture path)",
+        "[lint-fixture-namespace.test] PASS",
+        "[lint-investigation-isolation.test] PASS",
+        "```",
+        ""
+      ].join("\n");
+
+      await fsp.writeFile(reportPath, content, "utf8");
+
+      harness.store.recordWorkerResult("R-01", buildHubResult({
+        thread_id: "codex_10",
+        status: "success",
+        run_state: "completed",
+        source: "output_artifact",
+        content,
+        timestamp: startedAtIso
+      }));
+
+      expect(harness.store.load().workers["R-01"]).toMatchObject({
+        status: "completed"
+      });
+    });
   });
 
   describe("recordWorkerStart validation history preservation", () => {
