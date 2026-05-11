@@ -117,7 +117,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "   Use runtime `user_reply_channels` to fan out notifications.",
     "",
     `5. \`${TOOL_ENTRYPOINT} pm-resolve --dispatcher ${dispatcherRoleId} --status <status> [--worker <worker_id>] [--message \"<summary>\"] [--error \"<details>\"]\``,
-    "   Starts the configured PM resolver for abnormal orchestration states. Response status is `pm_resolver_started` or `pm_resolver_disabled`.",
+    "   Starts the configured PM resolver for abnormal orchestration states. Response status is `pm_resolver_started`, `pm_resolver_already_running` (a PM is already resolving this worker — pause and wait, do not retry), or `pm_resolver_disabled`.",
     "",
     "# Workflow",
     "Step 1. Read `dispatch_plan_path` before each control action.",
