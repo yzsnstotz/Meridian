@@ -936,6 +936,77 @@ test("HubRouter handles list intent", async () => {
   assert.match(result.content, /No active agent instances/);
 });
 
+test("HubRouter list surfaces error-status bridge instances so operators can act on them", async () => {
+  // Bridge instances that the monitor flipped to `error` (SSE reconnect
+  // exhaustion, watchdog miss, etc.) or that crashed without being reaped
+  // still have a registry entry, and their codex CLI subprocess may still
+  // be alive in its own process group. Hiding them from `/api/instances`
+  // was the original "GUI hides the alive thread" symptom: there was no UI
+  // surface to kill, attach, or even acknowledge the broken thread.
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_05",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "http://127.0.0.1:52209",
+    pid: 12345,
+    tmux_pane: null,
+    status: "error",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "error" })
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({ intent: "list", target: "all", thread_id: "global" })
+  );
+  assert.equal(result.status, "success");
+  const list = JSON.parse(result.content) as Array<Record<string, unknown>>;
+  assert.equal(list.length, 1);
+  assert.equal(list[0]?.thread_id, "codex_05");
+  assert.equal(list[0]?.status, "error");
+});
+
+test("HubRouter list still hides stopped bridge instances", async () => {
+  // Counterpart guard: `stopped` instances have been fully reaped — there is
+  // nothing for an operator to act on, and surfacing them would clutter the
+  // GUI with already-cleaned-up threads. The error-status patch must not
+  // accidentally widen the listing to fully terminal entries.
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_06",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "http://127.0.0.1:52210",
+    pid: 0,
+    tmux_pane: null,
+    status: "stopped",
+    created_at: new Date().toISOString()
+  });
+
+  const router = new HubRouter(registry, {
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ content: "unused" }),
+      getStatus: async () => ({ status: "stopped" })
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({ intent: "list", target: "all", thread_id: "global" })
+  );
+  assert.equal(result.status, "success");
+  assert.match(result.content, /No active agent instances/);
+});
+
 test("HubRouter routes restart intent through InstanceManager", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -1245,7 +1316,14 @@ test("HubRouter list omits stopped instances", async () => {
   assert.doesNotMatch(result.content, /codex_01/);
 });
 
-test("HubRouter list keeps errored stateless calls visible", async () => {
+test("HubRouter list keeps errored instances visible across mode kinds", async () => {
+  // Stateless `error` already surfaced (the `status !== stopped` branch).
+  // Bridge / pane_bridge `error` previously hid — a crashed or
+  // monitor-flagged thread left no GUI handle to kill or attach. Updated
+  // contract: any non-`stopped` registry entry stays listed regardless of
+  // mode, because an entry's presence in the registry is the signal that
+  // *something* still needs operator attention. `stopped` is fully reaped
+  // and stays hidden.
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "codex_session_error_01",
@@ -1297,7 +1375,7 @@ test("HubRouter list keeps errored stateless calls visible", async () => {
 
   assert.equal(result.status, "success");
   assert.match(result.content, /codex_stateless_error_01/);
-  assert.doesNotMatch(result.content, /codex_session_error_01/);
+  assert.match(result.content, /codex_session_error_01/);
   assert.doesNotMatch(result.content, /codex_stateless_stopped_01/);
 });
 
