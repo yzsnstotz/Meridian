@@ -54,7 +54,8 @@ export async function continueDispatchWorker(
   dispatchPlanRows: ContinueDispatchPlanRow[],
   workerId: string,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult> = launchDispatchWorker,
-  killThread: (threadId: string) => Promise<KillThreadResult> = defaultKillThread
+  killThread: (threadId: string) => Promise<KillThreadResult> = defaultKillThread,
+  otherDispatchPlanPaths: readonly string[] = []
 ): Promise<ContinueDispatchWorkerResult> {
   const dispatchPlanRow = dispatchPlanRows.find((row) => row.worker === workerId) ?? null;
   let resumeResult: ResumeWorkerResult | undefined;
@@ -128,7 +129,13 @@ export async function continueDispatchWorker(
       });
     }
 
-    const launched = await launchWorkerFromDispatchPlan(config, dispatchPlanRow, launchWorker, currentWorkerState);
+    const launched = await launchWorkerFromDispatchPlan(
+      config,
+      dispatchPlanRow,
+      launchWorker,
+      currentWorkerState,
+      otherDispatchPlanPaths
+    );
     if (!launched.ok) {
       const launchError = launched.error ?? "Failed to launch dispatch worker";
       orphanedLaunchThreadId = normalizeThreadId(launched.threadId);
@@ -202,7 +209,8 @@ async function launchWorkerFromDispatchPlan(
   config: ContinueWorkerConfig,
   dispatchPlanRow: ContinueDispatchPlanRow,
   launchWorker: (config: LaunchDispatchWorkerConfig) => Promise<LaunchDispatchWorkerResult>,
-  currentWorkerState?: DispatchWorkerState | null
+  currentWorkerState?: DispatchWorkerState | null,
+  otherDispatchPlanPaths: readonly string[] = []
 ): Promise<LaunchDispatchWorkerResult> {
   const markdown = await fs.readFile(config.dispatch_plan_path, "utf8");
   const resolvedModelMap = resolveDispatchModelMapFromMarkdown(markdown, config.model_map);
@@ -234,7 +242,8 @@ async function launchWorkerFromDispatchPlan(
     workerId: dispatchPlanRow.worker,
     modelId,
     effort: resolvedEffort,
-    validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow)
+    validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow),
+    otherDispatchPlanPaths
   });
 }
 

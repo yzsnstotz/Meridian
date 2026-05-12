@@ -10,6 +10,7 @@ import {
   createLifecycleThreadIdCollisionError,
   isLifecycleThreadIdLiveWorkerThread,
   isLifecycleThreadIdReserved,
+  isThreadIdReservedAcrossOtherDispatchPlans,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
@@ -27,6 +28,16 @@ export interface LaunchDispatchWorkerConfig {
   modelId?: string;
   effort?: string;
   validationMaxFixCycles?: number;
+  /**
+   * Dispatch plan paths of OTHER active agent-dispatcher roles. Used to refuse
+   * a freshly-spawned `thread_id` that another role's `dispatch_threads.json`
+   * still reserves on disk. After a Meridian Hub restart wraps the allocator
+   * back to low ids, a worker spawn from plan B can otherwise be handed plan
+   * A's live worker thread (observed live: ranked-data-search-100k BATCH-3-GATE
+   * and client-runtime-lifecycle-and-resource-fix W-09 both bound to codex_05
+   * after PR #207 only fixed the dispatcher-level analogue).
+   */
+  otherDispatchPlanPaths?: readonly string[];
 }
 
 export interface LaunchDispatchWorkerResult {
@@ -140,7 +151,12 @@ export async function launchDispatchWorker(
       isPersistedThreadIdReserved: (candidateThreadId) =>
         isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId),
       isPersistedThreadIdLiveWorker: (candidateThreadId) =>
-        isLifecycleThreadIdLiveWorkerThread(config.dispatchPlanPath, candidateThreadId)
+        isLifecycleThreadIdLiveWorkerThread(config.dispatchPlanPath, candidateThreadId),
+      isThreadIdReservedAcrossOtherPlans: (candidateThreadId) =>
+        isThreadIdReservedAcrossOtherDispatchPlans(
+          config.otherDispatchPlanPaths ?? [],
+          candidateThreadId
+        )
     });
   } catch (error) {
     return {
@@ -218,6 +234,13 @@ const SPAWN_TRANSIENT_PATTERNS = [
 interface SpawnRetryGuards {
   isPersistedThreadIdReserved: (threadId: string) => boolean;
   isPersistedThreadIdLiveWorker?: (threadId: string) => boolean;
+  /**
+   * Returns true when the candidate thread_id is currently reserved by another
+   * dispatcher role's lifecycle sidecar. Cross-plan collisions skip the
+   * orphan-kill branch: the colliding id is the *other* plan's live resource,
+   * so killing it would terminate that plan's worker/validator/dispatcher.
+   */
+  isThreadIdReservedAcrossOtherPlans?: (threadId: string) => boolean;
 }
 
 async function spawnWithRetry(
@@ -248,15 +271,19 @@ async function spawnWithRetry(
         }
         throw lastError;
       }
-      if (resolvedGuards.isPersistedThreadIdReserved(result.threadId)) {
-        // Skip the orphan-kill when the colliding id is a live worker thread.
-        // Killing it would terminate that worker agent (observed: Hub recycles
-        // a freed validator/worker id back into the spawn pool while another
-        // worker still holds it as `worker.thread_id`; PR #134's kill then
-        // takes out the live worker). Prefer an orphan leak over taking out a
-        // live worker.
+      const reservedHere = resolvedGuards.isPersistedThreadIdReserved(result.threadId);
+      const reservedCrossPlan = resolvedGuards.isThreadIdReservedAcrossOtherPlans?.(result.threadId) ?? false;
+      if (reservedHere || reservedCrossPlan) {
+        // Skip the orphan-kill when the colliding id is a live worker thread on
+        // our own plan (PR #175 — killing terminates the live worker mid-flight)
+        // OR when the id is reserved by ANOTHER plan's lifecycle (the colliding
+        // agent is the other plan's live worker/validator/dispatcher, not an
+        // orphan from our perspective — observed: BATCH-3-GATE in plan B and
+        // W-09 in plan A both bound to codex_05 after the Hub allocator wrapped
+        // post-restart, see learnings/dispatcher/cross-plan-dispatcher-thread-id-reservation-gap.md).
         const collidesWithLiveWorker = resolvedGuards.isPersistedThreadIdLiveWorker?.(result.threadId) ?? false;
-        if (!collidesWithLiveWorker) {
+        const skipKill = collidesWithLiveWorker || reservedCrossPlan;
+        if (!skipKill) {
           await killCollidedSpawnedThread(meridianApi, result.threadId, "worker spawn");
         }
         lastError = createLifecycleThreadIdCollisionError(result.threadId);
@@ -264,7 +291,8 @@ async function spawnWithRetry(
           console.warn("worker spawn returned reserved lifecycle thread id, retrying", {
             attempt: attempt + 1,
             threadId: result.threadId,
-            skippedKill: collidesWithLiveWorker,
+            skippedKill: skipKill,
+            crossPlan: reservedCrossPlan,
             error: lastError.message
           });
           continue;
