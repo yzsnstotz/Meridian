@@ -268,6 +268,102 @@ describe("executeValidationCycle", () => {
     expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
   });
 
+  describe("feedback delivery transport-class rejection", () => {
+    async function buildFixRequestedHarness() {
+      const harness = await createHarness();
+      const state = harness.lifecycleStore.load();
+      state.workers["N-02"]!.status = "fix_requested";
+      state.workers["N-02"]!.validation = {
+        current_cycle: 1,
+        max_fix_cycles: 3,
+        validator_thread_id: "validator-thread-cycle-1",
+        last_score: 0.5,
+        last_feedback: "Fix the missing symbol map.",
+        history: [
+          {
+            cycle: 1,
+            score: 0.5,
+            feedback: "Fix the missing symbol map.",
+            validator_thread_id: "validator-thread-cycle-1",
+            timestamp: "2026-04-27T00:11:00.000Z"
+          }
+        ]
+      };
+      harness.lifecycleStore.save(state);
+      return harness;
+    }
+
+    it("returns transport_stall (not delivery_error) when meridianApi.run rejects with hub-overload language", async () => {
+      const harness = await buildFixRequestedHarness();
+      harness.run.mockRejectedValueOnce(
+        new Error("run failed: Request timed out — the hub may be overloaded.")
+      );
+
+      const outcome = await deliverValidatorFeedback(harness.deps, "N-02");
+
+      expect(outcome).toEqual({
+        delivered: false,
+        reason: "transport_stall",
+        error: "run failed: Request timed out — the hub may be overloaded."
+      });
+    });
+
+    it("preserves worker thread id and validator cycle history on transport-class failure (so the next tick can retry delivery)", async () => {
+      const harness = await buildFixRequestedHarness();
+      harness.run.mockRejectedValueOnce(new Error("fetch failed"));
+
+      await deliverValidatorFeedback(harness.deps, "N-02");
+
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      // Worker stays in fix_requested so the next continue-dispatcher tick
+      // attempts delivery again instead of falling through to launch path.
+      expect(worker?.status).toBe("fix_requested");
+      // Worker thread id must NOT be cleared — the live codex thread is most
+      // likely still alive (only the request-side promise rejected), and
+      // clearing it would needlessly spawn a fresh worker.
+      expect(worker?.thread_id).toBe("worker-thread-n02");
+      // Validator cycle-1 evidence stays intact for the retry.
+      expect(worker?.validation?.last_feedback).toBe("Fix the missing symbol map.");
+      expect(worker?.validation?.current_cycle).toBe(1);
+      expect(worker?.validation?.history).toHaveLength(1);
+    });
+
+    it("logs validator_feedback_transport_stall (not validator_feedback_error) for transport-class rejections", async () => {
+      const harness = await buildFixRequestedHarness();
+      harness.run.mockRejectedValueOnce(new Error("ETIMEDOUT"));
+
+      await deliverValidatorFeedback(harness.deps, "N-02");
+
+      const warn = harness.deps.log.warn as ReturnType<typeof vi.fn>;
+      const transportStallCall = warn.mock.calls.find(
+        ([, meta]) => meta && (meta as { event?: string }).event === "validator_feedback_transport_stall"
+      );
+      expect(transportStallCall).toBeDefined();
+      const errorCall = warn.mock.calls.find(
+        ([, meta]) => meta && (meta as { event?: string }).event === "validator_feedback_error"
+      );
+      expect(errorCall).toBeUndefined();
+    });
+
+    it("still returns delivery_error for non-transport feedback delivery failures (preserves relaunch path for genuinely dead threads)", async () => {
+      const harness = await buildFixRequestedHarness();
+      harness.run.mockRejectedValueOnce(new Error("worker thread not found: codex_zz"));
+
+      const outcome = await deliverValidatorFeedback(harness.deps, "N-02");
+
+      expect(outcome).toEqual({
+        delivered: false,
+        reason: "delivery_error",
+        error: "worker thread not found: codex_zz"
+      });
+      const warn = harness.deps.log.warn as ReturnType<typeof vi.fn>;
+      const errorCall = warn.mock.calls.find(
+        ([, meta]) => meta && (meta as { event?: string }).event === "validator_feedback_error"
+      );
+      expect(errorCall).toBeDefined();
+    });
+  });
+
   it("returns completed rework to awaiting validation after feedback delivery", async () => {
     const harness = await createHarness();
     const state = harness.lifecycleStore.load();
