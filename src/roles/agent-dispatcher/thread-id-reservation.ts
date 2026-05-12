@@ -124,6 +124,49 @@ export function isLifecycleThreadIdLiveWorkerThread(
   });
 }
 
+/**
+ * Returns true when the candidate thread_id is currently reserved by a
+ * *different* dispatch plan's lifecycle sidecar. The Meridian Hub allocator
+ * is service-wide, not per-plan: after a Hub restart it wraps back to low
+ * ids and can hand `codex_NN` to a fresh dispatcher spawn even though another
+ * active plan still pins that id on disk. Without this guard the two plans'
+ * `dispatch_threads.json` files converge on the same id and silently share a
+ * single Hub dispatcher session across two role lifecycles (kill on settle
+ * from one plan terminates the other; talk-box context injection interleaves
+ * transcripts).
+ *
+ * Callers pass the dispatch_plan_paths of *other* dispatcher roles (their
+ * own path must be excluded by the caller). Unreadable sidecars are skipped
+ * — a missing/stale plan cannot block our spawn.
+ */
+export function isThreadIdReservedAcrossOtherDispatchPlans(
+  otherDispatchPlanPaths: readonly string[],
+  candidateThreadId: string
+): boolean {
+  const normalizedCandidate = candidateThreadId.trim();
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  for (const dispatchPlanPath of otherDispatchPlanPaths) {
+    if (!dispatchPlanPath?.trim()) {
+      continue;
+    }
+    try {
+      const store = new LifecycleStore(
+        path.join(path.dirname(dispatchPlanPath), "dispatch_threads.json"),
+        { dispatchPlanPath }
+      );
+      if (isThreadIdReservedInLifecycleState(store.load(), normalizedCandidate)) {
+        return true;
+      }
+    } catch {
+      // Unreadable cross-plan sidecar — cannot block our spawn.
+    }
+  }
+  return false;
+}
+
 export function isThreadIdKnownInLifecycleState(
   state: DispatchThreadStateV2,
   candidateThreadId: string

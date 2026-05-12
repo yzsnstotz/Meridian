@@ -241,6 +241,58 @@ describe("launchDispatcher", () => {
     expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
+  it("retries (and skips orphan-kill) when Meridian returns a thread id reserved by ANOTHER dispatch plan", async () => {
+    // Mirror the post-Hub-restart scenario: a sibling dispatcher role's
+    // dispatch_threads.json already pins `codex_01` (status=running), the Hub
+    // allocator wraps and hands the same id back to *our* spawn. Without the
+    // cross-plan guard, both sidecars would converge on codex_01 and silently
+    // share a single Hub session across two role lifecycles.
+    const harness = await createHarness();
+    const siblingDirectory = await fs.mkdtemp("/tmp/meridian-roles-launcher-sibling-");
+    tempDirectories.push(siblingDirectory);
+    const siblingDispatchPlanPath = path.join(siblingDirectory, "dispatch_plan.md");
+    await fs.writeFile(siblingDispatchPlanPath, "# sibling plan\n", "utf8");
+    const siblingStore = new LifecycleStore(
+      path.join(siblingDirectory, "dispatch_threads.json"),
+      { dispatchPlanPath: siblingDispatchPlanPath }
+    );
+    siblingStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-12T13:21:55.521Z",
+        status: "running"
+      },
+      workers: {},
+      last_reconciled_at: null
+    });
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "codex_01" })
+      .mockResolvedValueOnce({ threadId: "codex_02" });
+
+    const result = await launchDispatcher(
+      {
+        ...buildConfig(harness.planDirectory, "System prompt text"),
+        otherDispatchPlanPaths: [siblingDispatchPlanPath]
+      },
+      harness.deps
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      threadId: "codex_02"
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    // Cross-plan collisions MUST skip the orphan-kill: `codex_01` is the
+    // sibling's live dispatcher session, not an orphan from our perspective.
+    expect(harness.kill).not.toHaveBeenCalled();
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
+      threadId: "codex_02",
+      commandFilePath: harness.expectedCommandPath,
+      workerId: "DISPATCHER"
+    });
+  });
+
   it("fails before /api/spawn when the dispatch repo root cannot be resolved", async () => {
     const spawn = vi.fn();
     const dispatchRunHandoff = vi.fn();
