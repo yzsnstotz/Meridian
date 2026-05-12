@@ -421,7 +421,8 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
 export type FeedbackDeliveryOutcome =
   | { delivered: true }
   | { delivered: false; reason: "no-op"; detail: string }
-  | { delivered: false; reason: "delivery_error"; error: string };
+  | { delivered: false; reason: "delivery_error"; error: string }
+  | { delivered: false; reason: "transport_stall"; error: string };
 
 export async function deliverValidatorFeedback(
   deps: ValidatorOrchestratorDeps,
@@ -467,15 +468,36 @@ export async function deliverValidatorFeedback(
     }
   } catch (error) {
     const errorMessage = asErrorMessage(error);
+    const transportClass = isTransportClassRunError(errorMessage);
     if (markedRunning) {
       try {
         const latestWorker = lifecycleStore.load().workers[workerId];
         if (latestWorker?.status === "running") {
-          lifecycleStore.setWorkerStatus(workerId, "fix_requested", "validator_feedback_error");
+          lifecycleStore.setWorkerStatus(
+            workerId,
+            "fix_requested",
+            transportClass ? "validator_feedback_transport_stall" : "validator_feedback_error"
+          );
         }
       } catch {
         // Leave the original delivery error as the observable failure.
       }
+    }
+    if (transportClass) {
+      // Hub overload / request timeout / fetch failed / IPC drop. The worker
+      // thread is most likely still alive — only the request-side promise
+      // rejected. Do NOT signal a relaunch: clearing the worker thread would
+      // needlessly spawn a fresh codex session and lose the live thread that
+      // already received the original task prompt. Let the next continue
+      // tick re-attempt feedback delivery; lifecycle is already back in
+      // fix_requested. Mirrors the validator-spawn transport-stall path
+      // (clearValidatorStartTransportStall, PR #203).
+      log.warn("Validator feedback delivery hit transport-class error; will retry next tick", {
+        event: "validator_feedback_transport_stall",
+        worker_id: workerId,
+        error: errorMessage
+      });
+      return { delivered: false, reason: "transport_stall", error: errorMessage };
     }
     log.warn("Validator feedback delivery failed", {
       event: "validator_feedback_error",

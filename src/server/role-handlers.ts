@@ -2573,6 +2573,28 @@ async function buildValidatorFeedbackDeliveryResponse(
     };
   }
 
+  if (outcome.reason === "transport_stall") {
+    // Hub overload / request timeout. The worker thread is most likely
+    // still alive — only the request-side promise rejected. Do NOT clear
+    // the worker thread or fall through to the launch path: that would
+    // spawn a fresh codex session and lose the live thread (which has
+    // already received the original task prompt and may be mid-fix).
+    // Lifecycle is already back in fix_requested via the orchestrator's
+    // revert; the next continue tick will re-attempt delivery.
+    log.warn("Validator feedback transport-stalled; will retry next tick", {
+      event: "validator_feedback_transport_stall",
+      worker_id: workerId,
+      error: outcome.error
+    });
+    return {
+      ok: true,
+      status: "validation_in_progress",
+      message: `validator feedback delivery transport-stalled for ${workerId}; will retry next tick`,
+      worker: workerId,
+      validation_outcome: "transport_stall"
+    };
+  }
+
   if (outcome.reason === "delivery_error") {
     // The retained worker thread is unreachable (expired, killed, hub
     // disconnect). Validator feedback is preserved in worker.validation;
@@ -2774,9 +2796,9 @@ async function runValidationCycleWithFeedbackLoop(
         event: "validator_feedback_not_delivered",
         worker_id: workerId,
         reason: delivered.reason,
-        ...(delivered.reason === "delivery_error"
-          ? { error: delivered.error }
-          : { detail: delivered.detail })
+        ...(delivered.reason === "no-op"
+          ? { detail: delivered.detail }
+          : { error: delivered.error })
       });
       return;
     }
