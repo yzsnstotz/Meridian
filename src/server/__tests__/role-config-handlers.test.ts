@@ -2165,6 +2165,142 @@ describe("role config handlers", () => {
     }
   });
 
+  it("respawns validation when the recorded validator thread is in error state", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-validation-errored-validator-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔍 | 1 | N-05 | Findings D | CODEX-XHIGH | N-01 | TaskSpec | validator errored in hub registry |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-12T10:10:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-05": buildLifecycleWorker({
+          thread_id: "worker-thread-n05",
+          status: "awaiting_validation",
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: "validator-thread-errored",
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    // Validator thread is *attachable* in the hub (so the legacy attach
+    // probe alone would consider it alive), but the hub-reported status is
+    // `error` — exactly the wedged state produced when the monitor cannot
+    // probe a stateless instance's agentapi socket and emits a spurious
+    // agent_error. The validator orchestration must classify this as
+    // inactive and clear+respawn rather than report validation_in_progress
+    // forever.
+    const attachToThread = vi.fn(async () => undefined);
+    const sendHubRequest = vi.fn(async (message: HubMessage): Promise<HubResult> => {
+      if (message.intent === "status" && message.target === "validator-thread-errored") {
+        return {
+          trace_id: "trace-status-errored",
+          thread_id: "validator-thread-errored",
+          source: "codex",
+          status: "success",
+          content: '{"status":"error"}',
+          attachments: [],
+          timestamp: "2026-05-12T10:11:00.000Z"
+        };
+      }
+      throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
+    });
+
+    const fetchSpy = vi.fn((input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      const url = input instanceof Request
+        ? input.url
+        : input instanceof URL
+          ? input.href
+          : input.toString();
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/spawn") {
+        return Promise.resolve(new Response(JSON.stringify({
+          ok: true,
+          thread_id: "validator-thread-n05-fresh"
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }));
+      }
+
+      if (pathname === "/api/run") {
+        return new Promise<Response>(() => undefined);
+      }
+
+      throw new Error(`unexpected Meridian API request: ${pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, attachToThread, sendHubRequest);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-continue-validation-errored-validator",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          pass_threshold: 0.85,
+          max_fix_cycles: 3,
+          base_branch: "main"
+        }
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-validation-errored-validator/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "validation_in_progress",
+        message: "validation started for N-05",
+        worker: "N-05",
+        validation_outcome: "started"
+      });
+
+      expect(sendHubRequest).toHaveBeenCalledWith(expect.objectContaining({
+        intent: "status",
+        target: "validator-thread-errored"
+      }));
+      await waitForExpect(() => {
+        expect(lifecycleStore.load().workers["N-05"]?.validation?.validator_thread_id).toBe("validator-thread-n05-fresh");
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("blocks continuation when a worker reply reported hit limit", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-hit-limit-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
