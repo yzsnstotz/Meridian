@@ -56,6 +56,29 @@ const VALIDATE_THRESHOLD_PATTERN = /\bvalidate\s*:\s*threshold\s*=\s*([\d.]+)/i;
 const EXCLUDED_MODEL_CODES = new Set(["HUMAN", "PM"]);
 const VALIDATOR_SPAWN_MAX_ATTEMPTS = 3;
 
+// Transport-class patterns: when meridianApi.run rejects with one of these,
+// the validator agent was spawned successfully but the hub/transport closed
+// the request side before delivering a verdict. Treat this as transient (do
+// not increment the spawn-failure backoff counter, do not kill the validator
+// thread) so a temporarily overloaded hub does not push the worker into a
+// 10-minute validation backoff window. Mirrors `SPAWN_TRANSIENT_PATTERNS` in
+// `launcher.ts` and the PM-resolver transport-stall pattern.
+const VALIDATOR_RUN_TRANSPORT_PATTERNS: readonly RegExp[] = [
+  /\bhub may be overloaded\b/i,
+  /\bHeaders Timeout\b/i,
+  /Meridian API unreachable/i,
+  /\bfetch failed\b/i,
+  /ECONNREFUSED/,
+  /ECONNRESET/,
+  /ETIMEDOUT/,
+  /\btimed?\s*out\b/i,
+  /service.unavailable/i
+];
+
+function isTransportClassRunError(message: string): boolean {
+  return VALIDATOR_RUN_TRANSPORT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
 export function isValidationEnabledForWorker(
   config: ValidatorConfig,
   planRow: DispatchContinuationPlanRow
@@ -177,7 +200,27 @@ export async function executeValidationCycle(
       content: prompt
     });
   } catch (error) {
-    const reason = `validator run failed: ${asErrorMessage(error)}`;
+    const errorMessage = asErrorMessage(error);
+    const reason = `validator run failed: ${errorMessage}`;
+    // Transport-class rejection (hub overload, Meridian-API unreachable,
+    // request timeout, IPC drop). The validator agent process may still be
+    // alive — only the request-side promise rejected. Do NOT count this
+    // toward the spawn-failure backoff (otherwise 3 hub-overload responses in
+    // a row drive the worker into a 10-minute stall even though the validator
+    // never had a chance to verdict). The validator is ephemeral, so we
+    // still safeKill the thread; we just skip the backoff bump and let the
+    // next continue tick re-spawn cleanly. Mirrors PR #185.
+    if (isTransportClassRunError(errorMessage)) {
+      log.warn("Validator run hit transport-class error; not counting as spawn failure", {
+        event: "validator_run_transport_stall",
+        worker_id: workerId,
+        validator_thread_id: validatorThreadId,
+        error: reason
+      });
+      await safeKill(meridianApi, validatorThreadId, log);
+      lifecycleStore.clearValidatorStartTransportStall(workerId, validatorThreadId);
+      return { status: "error", reason };
+    }
     log.warn("Validator run failed", { event: "validator_run_error", worker_id: workerId, error: reason });
     await safeKill(meridianApi, validatorThreadId, log);
     lifecycleStore.clearValidatorStart(workerId, validatorThreadId);

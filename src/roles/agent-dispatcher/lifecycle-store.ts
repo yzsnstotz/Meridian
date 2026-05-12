@@ -605,6 +605,24 @@ export class LifecycleStore {
     });
   }
 
+  // Like clearValidatorStart, but does NOT bump the spawn-failure backoff
+  // counter. Used when the validator run rejected with a transport-class error
+  // (e.g. "hub may be overloaded", "Headers Timeout", "fetch failed",
+  // "ECONNREFUSED") — the validator was successfully spawned and the failure
+  // is on the talk-side, not the spawn-side. Counting this toward backoff
+  // wedges the worker in a 10-minute timeout the moment hub load is elevated
+  // (observed on dispatcher agent-dispatcher-257976f8, worker N-01:
+  // 4 consecutive run timeouts → permanent validation_in_progress stall).
+  // Mirrors the PM-resolver transport-stall pattern from PR #185.
+  clearValidatorStartTransportStall(workerId: string, validatorThreadId: string): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker?.validation || worker.validation.validator_thread_id !== validatorThreadId) return;
+
+      worker.validation.validator_thread_id = null;
+    });
+  }
+
   // Test/debug hook: reset the validator backoff counters so the next tick
   // re-attempts immediately. Not currently called by production code, but
   // exposed for explicit recovery flows.

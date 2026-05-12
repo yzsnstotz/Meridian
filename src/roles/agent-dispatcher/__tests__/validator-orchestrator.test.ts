@@ -791,6 +791,81 @@ describe("executeValidationCycle", () => {
       });
     });
   });
+
+  describe("transport-class run rejection", () => {
+    it("does NOT bump spawn_failure_count when meridianApi.run rejects with hub-overload language", async () => {
+      const harness = await createHarness();
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-transport" });
+      harness.run.mockRejectedValueOnce(
+        new Error("run failed: Request timed out — the hub may be overloaded.")
+      );
+
+      const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(outcome.status).toBe("error");
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      // Validator thread id is cleared so the next tick can re-spawn cleanly...
+      expect(worker?.validation?.validator_thread_id).toBeNull();
+      // ...but the spawn-failure backoff counter is NOT bumped — a hub-overload
+      // run rejection is a transient transport error, not a real spawn failure.
+      expect(worker?.validation?.spawn_failure_count ?? 0).toBe(0);
+      expect(worker?.validation?.last_spawn_failure_at ?? null).toBeNull();
+      // The validator thread is still killed (validator is ephemeral) but
+      // counts as a successful kill, not a failed spawn.
+      expect(harness.kill).toHaveBeenCalledWith("validator-thread-transport");
+    });
+
+    it("logs validator_run_transport_stall (not validator_run_error) for transport-class rejections", async () => {
+      const harness = await createHarness();
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-stall" });
+      harness.run.mockRejectedValueOnce(new Error("fetch failed"));
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      const warn = harness.deps.log.warn as ReturnType<typeof vi.fn>;
+      const transportStallCall = warn.mock.calls.find(
+        ([, meta]) => meta && (meta as { event?: string }).event === "validator_run_transport_stall"
+      );
+      expect(transportStallCall).toBeDefined();
+      const runErrorCall = warn.mock.calls.find(
+        ([, meta]) => meta && (meta as { event?: string }).event === "validator_run_error"
+      );
+      expect(runErrorCall).toBeUndefined();
+    });
+
+    it("still bumps spawn_failure_count for non-transport run failures (preserves backoff for genuinely wedged transports)", async () => {
+      const harness = await createHarness();
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-real-fail" });
+      harness.run.mockRejectedValueOnce(new Error("validator agent crashed: protocol violation"));
+
+      const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(outcome.status).toBe("error");
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      expect(worker?.validation?.validator_thread_id).toBeNull();
+      expect(worker?.validation?.spawn_failure_count ?? 0).toBe(1);
+      expect(worker?.validation?.last_spawn_failure_at ?? null).not.toBeNull();
+    });
+
+    it("three consecutive hub-overload rejections do NOT trip the validator backoff threshold", async () => {
+      const harness = await createHarness();
+      harness.spawn
+        .mockResolvedValueOnce({ threadId: "validator-thread-t1" })
+        .mockResolvedValueOnce({ threadId: "validator-thread-t2" })
+        .mockResolvedValueOnce({ threadId: "validator-thread-t3" });
+      harness.run
+        .mockRejectedValueOnce(new Error("run failed: Request timed out — the hub may be overloaded."))
+        .mockRejectedValueOnce(new Error("run failed: Request timed out — the hub may be overloaded."))
+        .mockRejectedValueOnce(new Error("run failed: Request timed out — the hub may be overloaded."));
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      expect(worker?.validation?.spawn_failure_count ?? 0).toBe(0);
+    });
+  });
 });
 
 describe("buildDefaultValidatorPrompt", () => {
