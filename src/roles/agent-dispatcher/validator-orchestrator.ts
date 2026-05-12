@@ -12,6 +12,7 @@ import {
   createLifecycleThreadIdCollisionError,
   isLifecycleThreadIdLiveWorkerThread,
   isLifecycleThreadIdReserved,
+  isThreadIdReservedAcrossOtherDispatchPlans,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import { buildDefaultValidatorPrompt, type ValidatorPromptContext } from "./validator-prompt-builder";
@@ -31,6 +32,14 @@ export interface ValidatorOrchestratorDeps {
   killPolicy?: KillPolicy;
   spawnDir: string;
   dispatchPlanPath: string;
+  /**
+   * Dispatch plan paths of OTHER active agent-dispatcher roles. Used to refuse
+   * a validator spawn whose returned `thread_id` is already reserved by another
+   * role's lifecycle sidecar; without it the Hub allocator wrap after a service
+   * restart can hand the same `codex_NN` to a validator spawn that another plan
+   * still owns as its live worker/validator.
+   */
+  otherDispatchPlanPaths?: readonly string[];
   taskspecPath: string | null;
   buildPrompt?: (context: ValidatorPromptContext) => string;
   log: Pick<Logger, "info" | "warn">;
@@ -382,23 +391,28 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
     // known ID, so a long-running dispatcher with many completed workers
     // exhausted the usable ID space and the spawn-retry loop never escaped.
     // Terminal workers' thread IDs are safe to reuse — the agents are dead.
-    const isCollision = isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId);
-    if (!isCollision) {
+    const reservedHere = isLifecycleThreadIdReserved(deps.dispatchPlanPath, spawnResult.threadId);
+    const reservedCrossPlan = isThreadIdReservedAcrossOtherDispatchPlans(
+      deps.otherDispatchPlanPaths ?? [],
+      spawnResult.threadId
+    );
+    if (!reservedHere && !reservedCrossPlan) {
       return spawnResult.threadId;
     }
 
     // The freshly spawned validator landed on a thread id that is already an
-    // active reservation in lifecycle. PR #134 kills the orphan spawn here to
-    // prevent leaks. But when the colliding id is the *live worker thread* we
-    // are about to validate, killing it terminates the worker agent itself
-    // (observed in the Hub UI as "the worker had been killed before validator
-    // approval"). Skip the kill in that case and just retry — preferring an
-    // orphan leak over taking out the worker we are validating.
+    // active reservation. PR #134 kills the orphan spawn here to prevent leaks.
+    // But when the colliding id is the *live worker thread* we are about to
+    // validate, killing it terminates the worker agent itself (observed in the
+    // Hub UI as "the worker had been killed before validator approval"). The
+    // same applies cross-plan: if another role's lifecycle still reserves the
+    // id, killing it would take out that plan's live worker/validator.
     const collidesWithLiveWorker = isLifecycleThreadIdLiveWorkerThread(
       deps.dispatchPlanPath,
       spawnResult.threadId
     );
-    if (!collidesWithLiveWorker) {
+    const skipKill = collidesWithLiveWorker || reservedCrossPlan;
+    if (!skipKill) {
       await killCollidedSpawnedThread(deps.meridianApi, spawnResult.threadId, "validator spawn");
     }
     lastError = createLifecycleThreadIdCollisionError(spawnResult.threadId);
@@ -407,7 +421,8 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
         event: "validator_spawn_thread_id_collision_retry",
         thread_id: spawnResult.threadId,
         attempt: attempt + 1,
-        skipped_kill: collidesWithLiveWorker,
+        skipped_kill: skipKill,
+        cross_plan: reservedCrossPlan,
         error: lastError.message
       });
     }

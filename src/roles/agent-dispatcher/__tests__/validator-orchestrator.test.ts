@@ -115,6 +115,60 @@ describe("executeValidationCycle", () => {
     expect(worker?.validation?.history[0]?.validator_thread_id).toBe("validator-thread-fresh");
   });
 
+  it("retries (and skips orphan-kill) when Meridian returns a validator thread id reserved by ANOTHER dispatch plan", async () => {
+    // Validator-level cross-plan analogue of the worker-launcher cross-plan
+    // fix. After a Hub restart wraps the allocator, a fresh validator spawn
+    // can be handed another plan's still-live worker/validator thread.
+    const harness = await createHarness();
+    const siblingDirectory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-validator-sibling-"));
+    tempDirectories.add(siblingDirectory);
+    const siblingDispatchPlanPath = path.join(siblingDirectory, "dispatch_plan.md");
+    await fs.writeFile(siblingDispatchPlanPath, "# sibling plan\n", "utf8");
+    new LifecycleStore(path.join(siblingDirectory, "dispatch_threads.json"), {
+      dispatchPlanPath: siblingDispatchPlanPath
+    }).save({
+      version: 2,
+      dispatcher: {
+        thread_id: "sibling-dispatcher",
+        started_at: "2026-05-12T13:21:55.521Z",
+        status: "running"
+      },
+      workers: {
+        "W-09": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-12T13:30:00.000Z",
+          last_seen_at: "2026-05-12T14:00:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    harness.deps.otherDispatchPlanPaths = [siblingDispatchPlanPath];
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "codex_05" })
+      .mockResolvedValueOnce({ threadId: "validator-thread-fresh" });
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "passed",
+      score: 0.9
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    // codex_05 belongs to the SIBLING plan's live worker (status=awaiting_validation).
+    // Killing it would take out that plan's worker mid-flight, so the
+    // orphan-kill branch is suppressed.
+    expect(harness.kill).not.toHaveBeenCalledWith("codex_05");
+    expect(harness.run).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "validator-thread-fresh"
+    }));
+  });
+
   it("spawns stateless codex validator calls in read-only mode", async () => {
     const harness = await createHarness({
       validatorConfig: {

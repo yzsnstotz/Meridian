@@ -15,6 +15,7 @@ import {
 } from "../roles/agent-dispatcher/dispatch-paths";
 import { wrapForHub } from "../shared/caller-identity";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
+import { resolveOtherDispatcherPlanPaths } from "../roles/agent-dispatcher/cross-plan-paths";
 import {
   LifecycleStore,
   findActivePmResolversForWorker,
@@ -867,6 +868,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     // ─── Validation processing ────────────────────────────────────────────
     const validatorConfig = context.effectiveConfig.validator;
     if (validatorConfig?.enabled) {
+      const otherDispatchPlanPathsForValidator = await resolveOtherDispatcherPlanPaths(stateStore, threadId);
       const validatorResult = await processValidationQueue(
         context.effectiveConfig,
         dispatchPlanData.rows as DispatchContinuationPlanRow[],
@@ -875,7 +877,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         attachToThread,
         options.meridianApi,
         effectiveWorkerId,
-        sendHubRequestImpl
+        sendHubRequestImpl,
+        otherDispatchPlanPathsForValidator
       );
       if (validatorResult) {
         return validatorResult;
@@ -951,11 +954,14 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     try {
       if (effectiveWorkerId) {
+        const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, threadId);
         const continued = await continueDispatchWorker(
           context.effectiveConfig,
           dispatchPlanData.rows,
           effectiveWorkerId,
-          launchDispatchWorkerImpl
+          launchDispatchWorkerImpl,
+          undefined,
+          otherDispatchPlanPaths
         );
         if (!continued.ok) {
           if (continued.localToolBootstrapFailure) {
@@ -2394,7 +2400,8 @@ async function processValidationQueue(
   attachToThread?: (threadId: string) => Promise<void>,
   meridianApi?: MeridianApiClient,
   preferredWorkerId?: string | null,
-  sendHubRequest?: (message: HubMessage) => Promise<HubResult>
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>,
+  otherDispatchPlanPaths: readonly string[] = []
 ): Promise<ContinueDispatcherResponse | null> {
   const validatorConfig = config.validator;
   if (!validatorConfig?.enabled) {
@@ -2432,7 +2439,7 @@ async function processValidationQueue(
   if (preferredFixWorkerId) {
     const preferredWorker = lifecycleStore.load().workers[preferredFixWorkerId];
     if (preferredWorker?.status === "fix_requested" && preferredWorker.thread_id?.trim()) {
-      const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi);
+      const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi, otherDispatchPlanPaths);
       const response = await buildValidatorFeedbackDeliveryResponse(deps, preferredFixWorkerId, log);
       if (response) {
         return response;
@@ -2493,7 +2500,7 @@ async function processValidationQueue(
       };
     }
 
-    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi);
+    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi, otherDispatchPlanPaths);
 
     void runValidationCycleWithFeedbackLoop(deps, workerId, row, log)
       .catch((error) => {
@@ -2530,7 +2537,7 @@ async function processValidationQueue(
     // thread via buildPreviousAttemptContext.
     if (!worker.thread_id?.trim()) continue;
 
-    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi);
+    const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi, otherDispatchPlanPaths);
 
     const response = await buildValidatorFeedbackDeliveryResponse(deps, workerId, log);
     if (response === null) {
@@ -2628,7 +2635,8 @@ function buildValidatorDeps(
   validatorConfig: ValidatorConfig,
   dispatchPlanPath: string,
   log: Logger,
-  meridianApi?: MeridianApiClient
+  meridianApi?: MeridianApiClient,
+  otherDispatchPlanPaths: readonly string[] = []
 ): ValidatorOrchestratorDeps {
   return {
     lifecycleStore,
@@ -2637,6 +2645,7 @@ function buildValidatorDeps(
     killPolicy: config.kill_policy,
     spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),
     dispatchPlanPath,
+    otherDispatchPlanPaths,
     taskspecPath: resolveTaskspecPath(config),
     log
   };

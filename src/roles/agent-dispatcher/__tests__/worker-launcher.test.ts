@@ -360,6 +360,67 @@ describe("launchDispatchWorker", () => {
     });
   });
 
+  it("retries (and skips orphan-kill) when Meridian returns a thread id reserved by ANOTHER dispatch plan", async () => {
+    // Worker-level analogue of the dispatcher cross-plan fix (PR #207). After a
+    // Hub restart wraps the allocator, plan B's worker spawn can land on plan
+    // A's still-live worker thread (observed: BATCH-3-GATE and W-09 both bound
+    // to codex_05).
+    const harness = await createHarness({ gitRoot: true, nestedDocsBranch: true });
+    const siblingDirectory = await fs.mkdtemp("/tmp/meridian-roles-worker-sibling-");
+    tempDirectories.add(siblingDirectory);
+    const siblingDispatchPlanPath = path.join(siblingDirectory, "dispatch_plan.md");
+    await fs.writeFile(siblingDispatchPlanPath, "# sibling plan\n", "utf8");
+    new LifecycleStore(path.join(siblingDirectory, "dispatch_threads.json"), {
+      dispatchPlanPath: siblingDispatchPlanPath
+    }).save({
+      version: 2,
+      dispatcher: {
+        thread_id: "sibling-dispatcher",
+        started_at: "2026-05-12T13:21:55.521Z",
+        status: "running"
+      },
+      workers: {
+        "W-09": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-12T13:30:00.000Z",
+          last_seen_at: "2026-05-12T14:00:00.000Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    harness.spawn
+      .mockResolvedValueOnce({ threadId: "codex_05" })
+      .mockResolvedValueOnce({ threadId: "codex_14" });
+
+    const result = await launchDispatchWorker(
+      {
+        ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+        workerId: "BATCH-3-GATE",
+        otherDispatchPlanPaths: [siblingDispatchPlanPath]
+      },
+      harness.deps
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      threadId: "codex_14"
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    // codex_05 is the SIBLING plan's live worker thread; killing it would take
+    // out the other plan's W-09 mid-flight. Skip the orphan-kill branch.
+    expect(harness.kill).not.toHaveBeenCalled();
+    expect(harness.dispatchRunHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "codex_14",
+      workerId: "BATCH-3-GATE"
+    }));
+  });
+
   it("does not kill the colliding thread when the collision is with an in-process active handoff", async () => {
     const harness = await createHarness({
       gitRoot: true,
