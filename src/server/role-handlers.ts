@@ -41,7 +41,7 @@ import {
   type PmResolverRequest,
   type PmResolverResult
 } from "../roles/agent-dispatcher/pm-resolver";
-import { reconcile } from "../roles/agent-dispatcher/reconciler";
+import { queryHubThreadObservation, reconcile } from "../roles/agent-dispatcher/reconciler";
 import { SchedulerStateStore } from "../roles/scheduler/scheduler-state-store";
 import {
   hasRecoverableDispatchWork,
@@ -874,7 +874,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         log,
         attachToThread,
         options.meridianApi,
-        effectiveWorkerId
+        effectiveWorkerId,
+        sendHubRequestImpl
       );
       if (validatorResult) {
         return validatorResult;
@@ -2392,7 +2393,8 @@ async function processValidationQueue(
   log: Logger,
   attachToThread?: (threadId: string) => Promise<void>,
   meridianApi?: MeridianApiClient,
-  preferredWorkerId?: string | null
+  preferredWorkerId?: string | null,
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>
 ): Promise<ContinueDispatcherResponse | null> {
   const validatorConfig = config.validator;
   if (!validatorConfig?.enabled) {
@@ -2453,7 +2455,8 @@ async function processValidationQueue(
         workerId,
         validatorThreadId,
         attachToThread,
-        log
+        log,
+        sendHubRequest
       );
       if (validatorStillActive) {
         return {
@@ -2666,8 +2669,57 @@ async function isRecordedValidatorThreadActive(
   workerId: string,
   validatorThreadId: string,
   attachToThread: ((threadId: string) => Promise<void>) | undefined,
-  log: Logger
+  log: Logger,
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>
 ): Promise<boolean> {
+  // First-line check: ask the hub for the validator thread's current status.
+  // `attachToThread` alone is insufficient — the hub still accepts attach
+  // requests for threads whose underlying agent has died and whose status was
+  // flipped to `error` (e.g. when the monitor probe fails for a stateless
+  // instance). Treating those as "still alive" leaves the worker pinned in
+  // `awaiting_validation` indefinitely with no recovery path. By classifying
+  // the thread observation (running/idle/completed/failed/missing) we route
+  // `failed` and `missing` to the same "clear and respawn" branch that
+  // missing-thread detection already provides.
+  if (sendHubRequest) {
+    try {
+      const observation = await queryHubThreadObservation(
+        { sendRequest: sendHubRequest, serviceId: ROLES_SERVICE_ID } as unknown as Parameters<typeof queryHubThreadObservation>[0],
+        validatorThreadId
+      );
+      if (observation.kind === "missing") {
+        log.warn("Clearing missing validator thread id before continue", {
+          event: "validator_thread_missing",
+          worker_id: workerId,
+          validator_thread_id: validatorThreadId,
+          observed_status: observation.rawStatus
+        });
+        return false;
+      }
+      if (observation.kind === "failed") {
+        log.warn("Clearing failed/errored validator thread id before continue", {
+          event: "validator_thread_failed",
+          worker_id: workerId,
+          validator_thread_id: validatorThreadId,
+          observed_status: observation.rawStatus
+        });
+        return false;
+      }
+      // running / idle / completed → treat the validator as still in flight
+      // (or about to deliver a final result). Fall through to the legacy
+      // attach probe below so any transport-layer disagreement still surfaces
+      // as missing-thread evidence and triggers a clean respawn.
+    } catch (error) {
+      log.warn("Failed to probe validator thread status before continue", {
+        event: "validator_thread_status_probe_error",
+        worker_id: workerId,
+        validator_thread_id: validatorThreadId,
+        error: getErrorMessage(error)
+      });
+      // Status probe is best-effort; fall through to the attach probe.
+    }
+  }
+
   if (!attachToThread) {
     return true;
   }
