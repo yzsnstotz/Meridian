@@ -13,6 +13,7 @@ import {
   createLifecycleThreadIdCollisionError,
   isLifecycleThreadIdLiveWorkerThread,
   isLifecycleThreadIdReserved,
+  isThreadIdReservedAcrossOtherDispatchPlans,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
@@ -33,6 +34,14 @@ export interface LaunchConfig {
   /** Meridian-roles role thread_id; used for a stable on-disk prompt filename next to the plan. */
   dispatcherRoleId: string;
   userReplyChannel: ReplyChannel;
+  /**
+   * Dispatch plan paths of OTHER active agent-dispatcher roles. Used to refuse
+   * a freshly-spawned `thread_id` that another role's lifecycle sidecar still
+   * reserves on disk; without this guard two dispatcher sidecars can converge
+   * on the same `codex_NN` after a Meridian Hub restart and silently share one
+   * Hub session across two role lifecycles.
+   */
+  otherDispatchPlanPaths?: readonly string[];
 }
 
 export interface LaunchResult {
@@ -112,7 +121,12 @@ export async function launchDispatcher(
       isPersistedThreadIdReserved: (candidateThreadId) =>
         isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId),
       isPersistedThreadIdLiveWorker: (candidateThreadId) =>
-        isLifecycleThreadIdLiveWorkerThread(config.dispatchPlanPath, candidateThreadId)
+        isLifecycleThreadIdLiveWorkerThread(config.dispatchPlanPath, candidateThreadId),
+      isThreadIdReservedAcrossOtherPlans: (candidateThreadId) =>
+        isThreadIdReservedAcrossOtherDispatchPlans(
+          config.otherDispatchPlanPaths ?? [],
+          candidateThreadId
+        )
     });
   } catch (error) {
     return {
@@ -199,6 +213,13 @@ const SPAWN_TRANSIENT_PATTERNS = [
 interface DispatcherSpawnRetryGuards {
   isPersistedThreadIdReserved: (threadId: string) => boolean;
   isPersistedThreadIdLiveWorker?: (threadId: string) => boolean;
+  /**
+   * Returns true when the candidate thread_id is currently reserved by another
+   * dispatcher role's lifecycle sidecar. Cross-plan collisions skip the
+   * orphan-kill branch: the colliding id belongs to the *other* plan's live
+   * resource, so killing it would terminate that plan's dispatcher/worker.
+   */
+  isThreadIdReservedAcrossOtherPlans?: (threadId: string) => boolean;
 }
 
 async function spawnWithRetry(
@@ -214,12 +235,18 @@ async function spawnWithRetry(
   for (let attempt = 0; attempt <= SPAWN_RETRY_DELAYS_MS.length; attempt++) {
     try {
       const result = await meridianApi.spawn(request);
-      if (resolvedGuards.isPersistedThreadIdReserved(result.threadId)) {
+      const reservedHere = resolvedGuards.isPersistedThreadIdReserved(result.threadId);
+      const reservedCrossPlan = resolvedGuards.isThreadIdReservedAcrossOtherPlans?.(result.threadId) ?? false;
+      if (reservedHere || reservedCrossPlan) {
         // Skip the orphan-kill when the colliding id is currently a live worker
-        // thread: killing it would terminate the worker agent that the lifecycle
-        // store still has in `awaiting_validation`/`fix_requested`/`running`.
+        // thread on our own plan (killing terminates the live worker that the
+        // lifecycle store still has in awaiting_validation/fix_requested/running)
+        // OR when the id is reserved by ANOTHER dispatcher's lifecycle (killing
+        // would terminate that plan's dispatcher/worker — the colliding agent is
+        // theirs, not an orphan from our perspective).
         const collidesWithLiveWorker = resolvedGuards.isPersistedThreadIdLiveWorker?.(result.threadId) ?? false;
-        if (!collidesWithLiveWorker) {
+        const skipKill = collidesWithLiveWorker || reservedCrossPlan;
+        if (!skipKill) {
           await killCollidedSpawnedThread(meridianApi, result.threadId, "dispatcher spawn");
         }
         lastError = createLifecycleThreadIdCollisionError(result.threadId);
@@ -227,7 +254,8 @@ async function spawnWithRetry(
           console.warn("dispatcher spawn returned reserved lifecycle thread id, retrying", {
             attempt: attempt + 1,
             threadId: result.threadId,
-            skippedKill: collidesWithLiveWorker,
+            skippedKill: skipKill,
+            crossPlan: reservedCrossPlan,
             error: lastError.message
           });
           continue;

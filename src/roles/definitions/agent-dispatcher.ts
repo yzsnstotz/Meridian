@@ -147,6 +147,7 @@ export class AgentDispatcherRole implements BaseRole {
     }
 
     const systemPrompt = this.resolveDispatcherSystemPrompt();
+    const otherDispatchPlanPaths = await this.resolveOtherDispatchPlanPaths();
     const launched = await this.launch({
       agentType: this.config.agent_type,
       modelId: this.config.model_id,
@@ -157,7 +158,8 @@ export class AgentDispatcherRole implements BaseRole {
       dispatchPlanPath: this.config.dispatch_plan_path,
       commandFilePath: this.config.command_file_path,
       dispatcherRoleId: this.threadId,
-      userReplyChannel: this.getPrimaryReplyChannel()
+      userReplyChannel: this.getPrimaryReplyChannel(),
+      otherDispatchPlanPaths
     });
     if (!launched.ok || !launched.threadId.trim()) {
       const launchError = launched.error ?? "Failed to launch dispatcher agent";
@@ -292,6 +294,52 @@ export class AgentDispatcherRole implements BaseRole {
 
   getDispatcherThreadId(): string | null {
     return this.sessionManager?.getDispatcherThreadId() ?? null;
+  }
+
+  /**
+   * Returns dispatch_plan_paths of *other* persisted agent-dispatcher roles.
+   * Used to refuse a spawn whose returned `thread_id` is already reserved by
+   * a different role's lifecycle sidecar — a real hazard after a Meridian Hub
+   * restart wraps the allocator back to low ids and two dispatchers converge
+   * on the same `codex_NN`.
+   */
+  private async resolveOtherDispatchPlanPaths(): Promise<string[]> {
+    let raw: unknown;
+    try {
+      raw = await this.stateStore.load();
+    } catch {
+      return [];
+    }
+    if (!raw) {
+      return [];
+    }
+    let parsed: AppState;
+    try {
+      parsed = AppStateSchema.parse(raw);
+    } catch {
+      return [];
+    }
+    const paths: string[] = [];
+    for (const role of parsed.roles) {
+      if (role.roleType !== "agent-dispatcher") {
+        continue;
+      }
+      if (role.threadId === this.threadId) {
+        continue;
+      }
+      try {
+        const cfg =
+          parseNormalizedAgentDispatcherConfig(role.config, { threadId: role.threadId })
+          ?? AgentDispatcherConfigSchema.parse(role.config);
+        const planPath = cfg.dispatch_plan_path?.trim();
+        if (planPath) {
+          paths.push(planPath);
+        }
+      } catch {
+        // Skip unparseable persisted role config.
+      }
+    }
+    return paths;
   }
 
   private getPrimaryReplyChannel() {

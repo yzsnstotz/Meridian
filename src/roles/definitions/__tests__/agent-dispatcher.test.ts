@@ -84,7 +84,8 @@ describe("AgentDispatcherRole", () => {
       userReplyChannel: {
         channel: "telegram",
         chat_id: "telegram:pm"
-      }
+      },
+      otherDispatchPlanPaths: []
     });
     expect(harness.sessionManager.initSession).toHaveBeenCalledWith("dispatcher-thread-123", "/tmp/dispatch_plan.md");
 
@@ -106,6 +107,55 @@ describe("AgentDispatcherRole", () => {
         })
       })
     ]);
+  });
+
+  it("onActivate forwards other persisted dispatcher plan paths so spawn-retry can refuse cross-plan reserved thread ids", async () => {
+    const harness = createHarness();
+    await harness.stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-sibling",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: "/tmp/sibling_dispatch_plan.md",
+            command_file_path: "/tmp/sibling_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:pm"
+              }
+            ],
+            agent_type: "codex",
+            kill_policy: "always"
+          }
+        },
+        {
+          threadId: "agent-dispatcher-role",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:pm"
+              }
+            ],
+            agent_type: "codex",
+            kill_policy: "always"
+          }
+        }
+      ],
+      promptStore: {}
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.launchDispatcher).toHaveBeenCalledWith(expect.objectContaining({
+      otherDispatchPlanPaths: ["/tmp/sibling_dispatch_plan.md"]
+    }));
   });
 
   it("onActivate forwards configured dispatcher model_id to launchDispatcher", async () => {

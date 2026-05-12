@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
+import path from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import type { DispatchThreadStateV2, DispatchWorkerState, LifecycleStatus } from "../../../types";
+import { LifecycleStore } from "../lifecycle-store";
 import {
   isActiveThreadReservationStatus,
   isThreadIdKnownInLifecycleState,
+  isThreadIdReservedAcrossOtherDispatchPlans,
   isThreadIdReservedInLifecycleState
 } from "../thread-id-reservation";
 
@@ -182,3 +188,67 @@ function validatorState(overrides: { validator_thread_id: string }) {
     history: []
   };
 }
+
+describe("isThreadIdReservedAcrossOtherDispatchPlans", () => {
+  const tempRoots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempRoots.map((dir) => fsPromises.rm(dir, { recursive: true, force: true })));
+    tempRoots.length = 0;
+  });
+
+  it("returns true when another plan reserves the candidate id with status=running", async () => {
+    const otherPlan = await writePlanState({
+      dispatcher: { thread_id: "codex_01", status: "running" }
+    });
+
+    expect(isThreadIdReservedAcrossOtherDispatchPlans([otherPlan], "codex_01")).toBe(true);
+  });
+
+  it("returns false when the other plan's dispatcher is in a terminal status", async () => {
+    const otherPlan = await writePlanState({
+      dispatcher: { thread_id: "codex_01", status: "completed" }
+    });
+
+    expect(isThreadIdReservedAcrossOtherDispatchPlans([otherPlan], "codex_01")).toBe(false);
+  });
+
+  it("returns true when another plan's active worker pins the id", async () => {
+    const otherPlan = await writePlanState({
+      workers: {
+        "W-01": worker({ thread_id: "codex_42", status: "running" })
+      }
+    });
+
+    expect(isThreadIdReservedAcrossOtherDispatchPlans([otherPlan], "codex_42")).toBe(true);
+  });
+
+  it("returns false for an empty candidate or empty plan list", async () => {
+    expect(isThreadIdReservedAcrossOtherDispatchPlans([], "codex_01")).toBe(false);
+    expect(isThreadIdReservedAcrossOtherDispatchPlans(["/nonexistent/plan.md"], "")).toBe(false);
+    expect(isThreadIdReservedAcrossOtherDispatchPlans(["/nonexistent/plan.md"], "   ")).toBe(false);
+  });
+
+  it("skips unreadable plans without throwing", async () => {
+    const okPlan = await writePlanState({
+      dispatcher: { thread_id: "codex_03", status: "running" }
+    });
+
+    expect(
+      isThreadIdReservedAcrossOtherDispatchPlans(["/nonexistent/plan.md", okPlan], "codex_03")
+    ).toBe(true);
+    expect(
+      isThreadIdReservedAcrossOtherDispatchPlans(["", "  ", okPlan], "codex_03")
+    ).toBe(true);
+  });
+
+  async function writePlanState(overrides: Parameters<typeof buildState>[0]): Promise<string> {
+    const directory = await fsPromises.mkdtemp(path.join(fs.realpathSync("/tmp"), "meridian-roles-xplan-"));
+    tempRoots.push(directory);
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    await fsPromises.writeFile(dispatchPlanPath, "# plan\n", "utf8");
+    new LifecycleStore(path.join(directory, "dispatch_threads.json"), { dispatchPlanPath })
+      .save(buildState(overrides));
+    return dispatchPlanPath;
+  }
+});
