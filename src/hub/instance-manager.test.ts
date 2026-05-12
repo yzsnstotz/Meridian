@@ -2050,3 +2050,44 @@ test("spawn without caller leaves spawned_by undefined", async () => {
 
   await manager.kill(threadId);
 });
+
+test("waitForChildExit does not short-circuit on child.killed before the process actually exits", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {});
+
+  // Node's `subprocess.killed` becomes true as soon as `kill(sig)` successfully
+  // delivers a signal — it does NOT mean the process has exited. This child
+  // mirrors that: kill() flips `killed` and the public exit fields stay null
+  // until we explicitly emit exit. PID is set to an arbitrary unreachable
+  // value so the escalation path's process.kill probes are no-ops.
+  const stuckChild = new FakeChildProcess(2_147_483_640);
+  stuckChild.kill = function (): boolean {
+    this.killed = true;
+    return true;
+  };
+
+  stuckChild.kill("SIGTERM");
+
+  let resolved = false;
+  const wait = (manager as unknown as {
+    waitForChildExit: (child: unknown, threadId: string, timeoutMs?: number) => Promise<void>;
+  })
+    .waitForChildExit(stuckChild, "stuck_thread", 200)
+    .then(() => {
+      resolved = true;
+    });
+
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    resolved,
+    false,
+    "waitForChildExit returned before child exited — child.killed early-return regression"
+  );
+
+  stuckChild.exitCode = 0;
+  stuckChild.signalCode = "SIGKILL";
+  stuckChild.emit("exit", 0, "SIGKILL");
+
+  await wait;
+  assert.equal(resolved, true);
+});

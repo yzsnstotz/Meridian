@@ -1690,7 +1690,12 @@ export class InstanceManager {
 
   /** Wait for a managed child process to exit, escalating to SIGKILL on timeout. */
   private async waitForChildExit(child: ChildProcess, threadId: string, timeoutMs = 10_000): Promise<void> {
-    if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+    // Do NOT short-circuit on `child.killed`. Node sets it to true as soon as
+    // child.kill(sig) successfully *delivers* a signal — it does not indicate
+    // the process actually exited. killInternal sends SIGTERM immediately
+    // before this wait, so checking child.killed would return instantly every
+    // time and the SIGKILL escalation below would never fire.
+    if (child.exitCode !== null || child.signalCode !== null) {
       return;
     }
     const exited = await new Promise<boolean>((resolve) => {
