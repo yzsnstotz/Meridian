@@ -25,6 +25,7 @@ import { parseMeridianStatusMarker } from "./meridian-status-marker";
 import {
   computeBasenameVariants,
   findExistingOutputArtifactPaths,
+  hasRecentOutputArtifactActivity,
   outputArtifactHasPassingDecision,
   outputArtifactHasPassingOutcome,
   outputArtifactHasPassingWorkerMarker,
@@ -50,6 +51,14 @@ export interface ReconcileOptions {
 }
 
 export const DEFAULT_RECONCILE_STALE_TIMEOUT_MS = 30 * 60 * 1000;
+// A worker writing to its expected_output file within this window is treated
+// as still alive, even when the hub registry has dropped the thread or the
+// monitor flipped it to `error`. The reconciler defers `abandoned` transitions
+// until output activity actually stops. Five minutes is long enough that codex
+// thinking pauses or tool-call gaps do not trip a premature abandon, and short
+// enough that genuinely-dead workers progress to abandon before the next
+// continue-dispatcher cycle stacks a duplicate spawn.
+export const RECENT_OUTPUT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 export const DISPATCHER_ENTRY_ID = "dispatcher";
 export const reconciliationFs = {
   existsSync: fs.existsSync,
@@ -645,20 +654,58 @@ function determineWorkerTransition(
     // when we cannot determine the thread's state (e.g. hub unreachable).
     // When the hub explicitly says "not found", waiting is pointless and
     // blocks the dispatcher from retrying the worker.
+    //
+    // Exception: PR #180's `workerToolProcessRunning` ps-guard only matches
+    // workers whose dispatch_plan task code-span carries a `--scan-run-id`
+    // option, so it is a no-op for agentapi-bridge workers (which have no
+    // such token). When the hub registry has dropped the thread — manual
+    // kill from the GUI, monitor `agent_error` flap, or a kill that did not
+    // propagate to the codex CLI subprocess — but the worker's report file
+    // is still being written, the codex CLI is unambiguously alive. Defer
+    // the abandon until on-disk activity also stops; the report-mtime probe
+    // is independent of hub state and works for every worker type.
+    if (
+      hasRecentOutputArtifactActivity(
+        expectedOutputs,
+        nowMs,
+        RECENT_OUTPUT_ACTIVITY_WINDOW_MS,
+        reconciliationFs
+      )
+    ) {
+      return null;
+    }
     return {
       to: "abandoned",
       trigger: "thread_missing:no_evidence"
     };
   }
 
-  // Worker thread exists but is idle with no hub result — the run command never
-  // reached the agent (e.g. fire-and-forget HTTP handoff failed silently).
-  // Transition to abandoned after stale timeout so the watchdog can recover.
+  // Worker thread exists but is idle with no hub result. Historically we
+  // abandoned here once the stale timeout (default 30 min) lapsed, under the
+  // theory that the run-tool's fire-and-forget handoff may have been lost.
+  //
+  // That heuristic over-fires: agentapi reports the thread as `idle` whenever
+  // nothing is streaming via SSE, even while the codex CLI subprocess is
+  // still doing real work between tool calls. With run-tool's PR #203/#206
+  // transient-transport tolerance leaving the worker `running` after a hub
+  // timeout, a normally-progressing worker can sit in
+  // (running, idle, no hub_result) for far longer than 30 minutes and then
+  // get false-abandoned — observed on W-09 codex_05 (dispatcher 810b6be2):
+  // the agentapi-bridge worker was idle in the hub registry, the codex CLI
+  // was still writing its report, but the reconciler flipped W-09 to
+  // `abandoned` via `hub_idle:no_result:stale_timeout`. That settled the
+  // dispatcher role as terminal-failed (via `resolveSettledDispatchRowStatus`)
+  // and excluded it from the watchdog sweep, so the eventual on-disk report
+  // never advanced the plan.
+  //
+  // Trust the hub's `idle` signal: as long as the thread is alive in the
+  // registry, do not abandon. The hub flips to `failed` / `missing` when the
+  // thread genuinely dies, and those branches already handle abandon. Stuck
+  // workers (run command silently lost) require operator `resume-worker` —
+  // the cost of slower manual recovery is much smaller than the cost of
+  // wrongly settling an in-flight dispatcher.
   if (observation.kind === "idle" && !hubResult && !outputsPresent && isStale(startedAt, nowMs, staleTimeoutMs)) {
-    return {
-      to: "abandoned",
-      trigger: "hub_idle:no_result:stale_timeout"
-    };
+    return null;
   }
 
   return null;

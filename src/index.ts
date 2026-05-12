@@ -8,6 +8,7 @@ import { A2AServer } from "./a2a/server";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
+import { findMostRecentOutputArtifactMtimeMs } from "./roles/agent-dispatcher/output-artifacts";
 import {
   MAX_AUTOMATIC_RECOVERY_RETRIES,
   hasRecoverableDispatchWork,
@@ -1271,10 +1272,44 @@ function resolveSettledDispatchRowStatus(
     (worker.status === "failed" || worker.status === "blocked" || worker.status === "abandoned")
     && (planStatus === "❌" || planStatus === "⛔ BLOCKED" || planStatus === "⚠️ ABANDONED" || planStatus === "🔄")
   ) {
+    // Forgotten-worker recovery: an `abandoned` judgment can be wrong when the
+    // codex CLI survived a kill that did not propagate, or when the hub
+    // registry dropped the thread while the worker was still writing. If the
+    // expected_output file has fresh mtime > worker.last_seen_at, the worker
+    // accomplished the task after we wrote it off — keep the dispatcher role
+    // out of the terminal-settled set so the watchdog re-includes the plan,
+    // runs reconcile, and lets `thread_missing:outputs_present` advance the
+    // worker to `completed`/`awaiting_validation` instead of leaving the
+    // entire dispatcher permanently stuck.
+    if (
+      worker.status === "abandoned"
+      && hasFreshExpectedOutputsAfterLastSeen(worker)
+    ) {
+      return null;
+    }
     return "failed";
   }
 
   return null;
+}
+
+function hasFreshExpectedOutputsAfterLastSeen(worker: DispatchWorkerState): boolean {
+  if (!worker.expected_outputs || worker.expected_outputs.length === 0) {
+    return false;
+  }
+  const latestMtimeMs = findMostRecentOutputArtifactMtimeMs(worker.expected_outputs, worker.started_at);
+  if (latestMtimeMs <= 0) {
+    return false;
+  }
+  const referenceMs = (() => {
+    const lastSeenMs = worker.last_seen_at ? Date.parse(worker.last_seen_at) : NaN;
+    if (!Number.isNaN(lastSeenMs)) {
+      return lastSeenMs;
+    }
+    const startedMs = worker.started_at ? Date.parse(worker.started_at) : NaN;
+    return Number.isNaN(startedMs) ? 0 : startedMs;
+  })();
+  return latestMtimeMs > referenceMs;
 }
 
 function isCompletedWorkerValidationSatisfied(
