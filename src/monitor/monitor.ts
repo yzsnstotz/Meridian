@@ -100,6 +100,28 @@ export class MonitorManager {
     const instance = AgentInstanceSchema.parse(instanceInput);
     this.unregister(instance.thread_id);
 
+    // Stateless one-shot instances have no agentapi socket — their lifecycle is
+    // driven entirely by direct stdio piping in `spawnStreamAgent`. The
+    // recorded `socket_path` for these instances is the literal placeholder
+    // `stateless:<thread_id>`, not a connectable Unix socket. Calling
+    // `client.connect(socket_path)` on this fails with ENOENT and fires
+    // `agent_error`, which flips the hub registry status to `error` for a
+    // thread whose underlying process is actually running fine — a state
+    // downstream consumers (notably Meridian-roles validator orchestration)
+    // cannot distinguish from a real crash and stay wedged on indefinitely.
+    if (instance.mode === "stateless_call") {
+      this.log.info(
+        {
+          trace_id: null,
+          thread_id: instance.thread_id,
+          socket_path: instance.socket_path,
+          mode: instance.mode
+        },
+        "Skipping monitor registration for stateless instance"
+      );
+      return;
+    }
+
     let task: MonitorTask;
     const callbacks: MonitorClientCallbacks = {
       onSseReconnectAttempt: (context) => {
