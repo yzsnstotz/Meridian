@@ -517,6 +517,7 @@ export class WebInterfaceServer {
   private readonly logger: WebInterfaceLogger;
   private readonly bridges = new Set<WebSocketBridge>();
   private server: http.Server | https.Server | null = null;
+  private loopbackSentinels: Array<http.Server | https.Server> = [];
 
   constructor(options: WebInterfaceServerOptions = {}) {
     this.enabled = options.enabled ?? config.WEB_GUI_ENABLED;
@@ -591,7 +592,42 @@ export class WebInterfaceServer {
       },
       "Web Interface Server listening"
     );
+
+    if (this.listenHost === "0.0.0.0" || this.listenHost === "::") {
+      await this.reserveLoopbackSentinels(requestListener);
+    }
     return true;
+  }
+
+  private async reserveLoopbackSentinels(requestListener: http.RequestListener): Promise<void> {
+    const upgradeHandler = (request: http.IncomingMessage, socket: net.Socket, head: Buffer): void => {
+      void this.handleUpgrade(request, socket, head).catch((error) => {
+        this.logger.error({ err: error instanceof Error ? error.message : String(error) }, "WebSocket upgrade failed");
+        if (!socket.destroyed) {
+          socket.end("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
+        }
+      });
+    };
+    for (const sentinelHost of ["127.0.0.1", "::1"]) {
+      const sentinel = this.httpsEnabled
+        ? await this.createHttpsServer(requestListener)
+        : http.createServer(requestListener);
+      sentinel.on("upgrade", (request, socket, head) => upgradeHandler(request, socket as net.Socket, head));
+      try {
+        await new Promise<void>((resolve, reject) => {
+          sentinel.once("error", reject);
+          sentinel.listen(this.port, sentinelHost, () => resolve());
+        });
+        this.loopbackSentinels.push(sentinel);
+        this.logger.info({ host: sentinelHost, port: this.port }, "Web Interface Server reserved loopback");
+      } catch (error) {
+        this.logger.warn(
+          { host: sentinelHost, port: this.port, err: error instanceof Error ? error.message : String(error) },
+          "Failed to reserve loopback port (another process may be shadowing the live service)"
+        );
+        sentinel.close();
+      }
+    }
   }
 
   async stop(): Promise<void> {
@@ -605,15 +641,24 @@ export class WebInterfaceServer {
 
     const server = this.server;
     this.server = null;
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") {
-          resolve();
-          return;
-        }
-        reject(error);
-      });
-    });
+    const sentinels = this.loopbackSentinels;
+    this.loopbackSentinels = [];
+    await Promise.all([
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") {
+            resolve();
+            return;
+          }
+          reject(error);
+        });
+      }),
+      ...sentinels.map((sentinel) =>
+        new Promise<void>((resolve) => {
+          sentinel.close(() => resolve());
+        })
+      )
+    ]);
   }
 
   address(): net.AddressInfo | null {
