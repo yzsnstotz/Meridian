@@ -158,6 +158,21 @@ export interface PushDeliveryTarget {
 }
 
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
+// Statuses whose entries surface in `/api/instances` (and downstream GUI /
+// monitor consumers). Strict superset of LIVE_INSTANCE_STATUSES — adds
+// `error` so an instance that crashed, that the monitor flagged via an
+// `agent_error` SSE event, or that the kill path failed to fully reap stays
+// visible to operators. Hiding error-state bridge instances was the original
+// "GUI hides the alive thread" symptom: the registry entry exists (and the
+// codex CLI subprocess may still be alive in its own process group), but the
+// GUI list returned nothing so there was no surface to kill or attach.
+//
+// `stopped` is still hidden — those instances have been fully reaped and
+// unregistered, there is nothing for an operator to act on.
+const LISTED_INSTANCE_STATUSES = new Set<AgentInstance["status"]>([
+  ...LIVE_INSTANCE_STATUSES,
+  "error"
+]);
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
 const SUMMARY_MARKER_END = "[[MERIDIAN_SUMMARY_END";
 const AGENT_ROLES = new Set(["agent", "assistant"]);
@@ -178,7 +193,7 @@ function shouldListInstance(instance: AgentInstance): boolean {
     return instance.status !== "stopped";
   }
 
-  return LIVE_INSTANCE_STATUSES.has(instance.status);
+  return LISTED_INSTANCE_STATUSES.has(instance.status);
 }
 
 function conversationEntryTypeForEventKind(eventKind: ConversationEventKind): "user" | "agent" {
