@@ -16,6 +16,7 @@ import {
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import { buildDefaultValidatorPrompt, type ValidatorPromptContext } from "./validator-prompt-builder";
+import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -161,9 +162,6 @@ export async function executeValidationCycle(
   }
 
   const thresholdType = validatorConfig.threshold_type ?? "score";
-  const threshold = thresholdType === "score"
-    ? resolveThresholdForWorker(validatorConfig, planRow)
-    : null;
   const baseBranch = validatorConfig.base_branch;
   const taskBranch = resolveTaskBranch(workerId);
   const cycle = validation.current_cycle + 1;
@@ -216,10 +214,24 @@ export async function executeValidationCycle(
     // alive — only the request-side promise rejected. Do NOT count this
     // toward the spawn-failure backoff (otherwise 3 hub-overload responses in
     // a row drive the worker into a 10-minute stall even though the validator
-    // never had a chance to verdict). The validator is ephemeral, so we
-    // still safeKill the thread; we just skip the backoff bump and let the
-    // next continue tick re-spawn cleanly. Mirrors PR #185.
+    // never had a chance to verdict). Mirrors PR #185.
     if (isTransportClassRunError(errorMessage)) {
+      // If the agentapi process is still alive on the host, the validator is
+      // mid-flight and may produce a verdict that the hub later exposes via
+      // history. Preserve validator_thread_id so the next continue tick's
+      // Phase 2 can re-probe liveness and, when codex exits, recover the
+      // verdict from hub history instead of respawning a parallel validator
+      // (the codex_06 → codex_09 / codex_03 → codex_07 stack observed on
+      // dispatchers 257976f8 and 810b6be2).
+      if (isAgentapiProcessAliveForThread(validatorThreadId)) {
+        log.warn("Validator run hit transport-class error but agentapi process is still alive; preserving validator thread for late-verdict recovery", {
+          event: "validator_run_transport_stall_codex_alive",
+          worker_id: workerId,
+          validator_thread_id: validatorThreadId,
+          error: reason
+        });
+        return { status: "error", reason };
+      }
       log.warn("Validator run hit transport-class error; not counting as spawn failure", {
         event: "validator_run_transport_stall",
         worker_id: workerId,
@@ -241,6 +253,53 @@ export async function executeValidationCycle(
 
   // Parse result — marker first, JSON fallback (gated)
   const content = runResult.content ?? "";
+  const outcome = await applyValidatorVerdictFromContent(deps, workerId, validatorThreadId, content, planRow);
+  if (outcome) {
+    return outcome;
+  }
+  // applyValidatorVerdictFromContent returns null when the worker is no
+  // longer in awaiting_validation by the time we re-read the lifecycle (a
+  // concurrent path applied a verdict first — e.g. the watchdog's recovery
+  // branch). The in-flight cycle has nothing to do in that case.
+  return { status: "error", reason: "worker state changed during verdict application" };
+}
+
+// Apply a validator's textual reply (marker or JSON heuristic) to the
+// lifecycle. Used both by the in-flight orchestrator (immediately after
+// `meridianApi.run` resolves) and by the late-verdict recovery path in Phase 2
+// (when the orchestrator's `meridianApi.run` rejected with a transport-class
+// error while the agentapi/codex process was still alive — the validator
+// eventually produced a verdict that the hub exposes via history). The
+// recovery caller fetches the content via hub history and passes it here so
+// the verdict-application logic stays in one place.
+//
+// Returns null when the worker is no longer in a state where a verdict can be
+// applied (e.g. validation was already recorded by another path); otherwise
+// returns the resulting ValidatorCycleOutcome.
+export async function applyValidatorVerdictFromContent(
+  deps: ValidatorOrchestratorDeps,
+  workerId: string,
+  validatorThreadId: string,
+  content: string,
+  planRow: DispatchContinuationPlanRow
+): Promise<ValidatorCycleOutcome | null> {
+  const { lifecycleStore, validatorConfig, log } = deps;
+  const state = lifecycleStore.load();
+  const worker = state.workers[workerId];
+  if (!worker || worker.status !== "awaiting_validation") {
+    return null;
+  }
+  const validation = worker.validation;
+  if (!validation) {
+    return null;
+  }
+
+  const thresholdType = validatorConfig.threshold_type ?? "score";
+  const threshold = thresholdType === "score"
+    ? resolveThresholdForWorker(validatorConfig, planRow)
+    : null;
+  const cycle = validation.current_cycle + 1;
+
   const marker = parseMeridianStatusMarker(content);
 
   if (marker && marker.role === "validator" && marker.worker_id === workerId) {
