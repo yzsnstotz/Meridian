@@ -828,6 +828,89 @@ describe("reconcile", () => {
     ]);
   });
 
+  it("does not abandon a hub-idle worker on stale timeout when no result has landed", async () => {
+    // Hub reports `idle` whenever agentapi is not streaming, even while the
+    // codex CLI subprocess is still doing real work between tool calls.
+    // With run-tool's transient-transport tolerance leaving the worker
+    // `running` after a hub timeout, a normally-progressing worker can sit
+    // in (running, idle, no hub_result) past the 30-minute stale timeout
+    // and historically got false-abandoned. As long as the hub still says
+    // the thread is alive, the reconciler must wait — observed regression
+    // on W-09 codex_05 (dispatcher 810b6be2) where the stale-timeout abandon
+    // settled the entire dispatcher as terminal-failed.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    harness.store.save(buildState({
+      workers: {
+        "W-09": buildRunningWorker(
+          "codex_05",
+          path.join(harness.directory, "reports/W-09.md"),
+          "2026-04-03T11:00:00.000Z" // 90 min ago — well past any sensible stale timeout
+        )
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) =>
+      buildStatusResult(message.thread_id, "idle")
+    );
+
+    const report = await reconcile(harness.store, hubClient, {
+      staleTimeoutMs: 5 * 60 * 1000
+    });
+
+    expect(harness.store.load().workers["W-09"]?.status).toBe("running");
+    expect(report.changed).toEqual([]);
+    expect(report.unchanged).toContain("W-09");
+  });
+
+  it("defers thread_missing abandon when expected_output is being actively written", async () => {
+    // The agentapi PID can die while the codex CLI subprocess survives in a
+    // separate process group — observed when a kill-from-GUI does not
+    // propagate. The hub then unregisters the thread (so `kind: missing`),
+    // but the codex CLI is still writing partial output. Catch that via
+    // recent on-disk mtime — `outputsPresent` is false (the partial file's
+    // mtime can be older than the started_at slice baseline if the worker
+    // was appending to a prior attempt), but the file is being touched right
+    // now, which is unambiguous proof of life. PR #180's `--scan-run-id`
+    // ps-guard does not cover agentapi-bridge workers; this guard does.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const reportPath = await harness.writeOutput("reports/W-09.md", "partial\n");
+    // mtime ~ 1 minute ago — well inside the recent-activity window — but
+    // older than started_at so `outputsPresent` filters it out.
+    const nowMs = Date.parse(FIXED_NOW);
+    const recentMtimeSec = Math.floor((nowMs - 60 * 1000) / 1000);
+    await fsp.utimes(reportPath, recentMtimeSec, recentMtimeSec);
+
+    harness.store.save(buildState({
+      workers: {
+        "W-09": buildRunningWorker(
+          "codex_05",
+          reportPath,
+          // started_at is just after the file mtime so the started_at filter
+          // in findExistingOutputArtifactPaths drops this candidate from
+          // `outputsPresent`. The activity probe (which does not apply the
+          // started_at filter) still sees it.
+          new Date(nowMs - 30 * 1000).toISOString()
+        )
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+
+    const report = await reconcile(harness.store, hubClient, {
+      staleTimeoutMs: 5 * 60 * 1000
+    });
+
+    expect(harness.store.load().workers["W-09"]?.status).toBe("running");
+    expect(report.changed).toEqual([]);
+    expect(report.unchanged).toContain("W-09");
+  });
+
   it("promotes an abandoned worker to completed when outputs exist on disk", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

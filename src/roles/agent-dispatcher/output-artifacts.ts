@@ -46,6 +46,91 @@ export function outputArtifactsContain(
   );
 }
 
+// Freshest mtime across the worker's expected_output candidates that pass the
+// started_at freshness baseline. Returns 0 when no candidate from this attempt
+// exists on disk.
+//
+// Used by `resolveSettledDispatchRowStatus` to detect that an `abandoned`
+// worker actually produced output for the current attempt after we wrote it
+// off, so the dispatcher role should remain reconcilable instead of settling
+// as terminal-failed.
+export function findMostRecentOutputArtifactMtimeMs(
+  paths: string[],
+  startedAt?: string,
+  artifactFs: OutputArtifactFs = defaultOutputArtifactFs
+): number {
+  let latestMtimeMs = 0;
+  for (const filePath of paths) {
+    for (const artifactPath of findExistingOutputArtifactPaths(filePath, startedAt, artifactFs)) {
+      try {
+        const stats = artifactFs.statSync(artifactPath);
+        if (stats.mtimeMs > latestMtimeMs) {
+          latestMtimeMs = stats.mtimeMs;
+        }
+      } catch {
+        // ignore; missing/unreadable files don't bump activity
+      }
+    }
+  }
+  return latestMtimeMs;
+}
+
+// Freshest mtime across the worker's expected_output candidates *or any
+// basename-variant artifact in the configured search directories*, with NO
+// started_at freshness filter. This catches the case where a partial report
+// from this attempt has been touched recently but the started_at filter
+// excludes it (clock skew, slow filesystem, or a writer that calls utimes
+// with an older timestamp). For the abandon-deferral guard the question is
+// "is the worker process alive right now," not "is this file from this
+// attempt"; the started_at filter is wrong for that question.
+export function findMostRecentOutputArtifactActivityMtimeMs(
+  paths: string[],
+  artifactFs: OutputArtifactFs = defaultOutputArtifactFs
+): number {
+  let latestMtimeMs = 0;
+  for (const filePath of paths) {
+    // Pass undefined startedAt so the freshness filter is disabled. This
+    // walks the same set of candidate paths (direct path, subdirectory
+    // sweep, sibling report-directory sweep) used elsewhere, so we cover
+    // workers whose actual report ends up in a layout the path literal
+    // doesn't describe (e.g. expected `reports/W-09.md` but report landed
+    // in `dev_history/v1_round/W-09_report.md`).
+    for (const artifactPath of findExistingOutputArtifactPaths(filePath, undefined, artifactFs)) {
+      try {
+        const stats = artifactFs.statSync(artifactPath);
+        if (stats.mtimeMs > latestMtimeMs) {
+          latestMtimeMs = stats.mtimeMs;
+        }
+      } catch {
+        // ignore; missing/unreadable files don't bump activity
+      }
+    }
+  }
+  return latestMtimeMs;
+}
+
+// True when at least one expected_output (or basename variant) has been
+// touched within the recent activity window. Caller picks the window — short
+// enough that genuinely-dead workers don't get repeatedly granted reprieve,
+// long enough that quiet phases (codex thinking between tool calls) don't
+// trip a false abandon. The reconciler defaults to
+// RECENT_OUTPUT_ACTIVITY_WINDOW_MS.
+export function hasRecentOutputArtifactActivity(
+  paths: string[],
+  nowMs: number,
+  windowMs: number,
+  artifactFs: OutputArtifactFs = defaultOutputArtifactFs
+): boolean {
+  if (windowMs <= 0) {
+    return false;
+  }
+  const mtimeMs = findMostRecentOutputArtifactActivityMtimeMs(paths, artifactFs);
+  if (mtimeMs <= 0) {
+    return false;
+  }
+  return (nowMs - mtimeMs) <= windowMs;
+}
+
 // Worker-authored MERIDIAN-STATUS marker is the authoritative claim about a
 // worker's final outcome. When a report file's current-attempt slice contains
 // `role: worker, worker_id: <id>, outcome: complete`, treat that as the truth

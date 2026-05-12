@@ -400,6 +400,153 @@ describe("resolveDispatchPlanPathsFromState", () => {
 
     await expect(resolveDispatchPlanPathsFromState(stateStore)).resolves.toEqual([dispatchPlanPath]);
   });
+
+  it("keeps an abandoned dispatcher in watchdog scope when a forgotten worker produced fresh expected_output after last_seen_at", async () => {
+    // Scenario: the reconciler wrongly judged W-09 abandoned (hub idle + run-
+    // tool transport stall + 30-min stale timeout) while codex_05 was still
+    // alive. The codex CLI later finished and wrote the expected report file
+    // after last_seen_at, so the worker really did complete. Without this
+    // gate, `resolveSettledDispatchRowStatus` would still return "failed"
+    // (worker.status=abandoned + plan=⚠️ ABANDONED), the role would settle
+    // as terminal-failed, and the watchdog would stop reconciling — so the
+    // `thread_missing:outputs_present → completed` transition never fires
+    // and the entire dispatcher wedges. Observed on dispatcher 810b6be2.
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-forgotten-recovery-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const reportPath = path.join(directory, "reports", "W-09.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ⚠️ ABANDONED | 1 | W-09 | OBS-01 | CODEX | - | retry exhausted |"
+    ].join("\n"), "utf8");
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(reportPath, "## Attempt 3\n\nimplementation delivered\n", "utf8");
+    // Bump report mtime past last_seen_at to model "forgotten worker
+    // accomplished the task after we wrote it off".
+    const recoveredMs = Date.parse("2026-05-05T22:30:00.000Z");
+    await fs.utimes(reportPath, recoveredMs / 1000, recoveredMs / 1000);
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-05T21:42:51.459Z",
+        status: "running"
+      },
+      workers: {
+        "W-09": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-05T21:42:51.470Z",
+          last_seen_at: "2026-05-05T22:00:00.000Z",
+          status: "abandoned",
+          expected_outputs: [reportPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 2
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-forgotten-recovery",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        }
+      ],
+      promptStore: {}
+    });
+
+    // Must remain in watchdog scope so reconcile() can pick up the fresh
+    // report via `thread_missing:outputs_present` and finalize the worker.
+    await expect(resolveDispatchPlanPathsFromState(stateStore)).resolves.toEqual([dispatchPlanPath]);
+    await expect(stateStore.load()).resolves.toMatchObject({
+      roles: [
+        {
+          threadId: "agent-dispatcher-forgotten-recovery",
+          status: "active"
+        }
+      ]
+    });
+  });
+
+  it("still settles an abandoned dispatcher when the expected_output mtime did not advance past last_seen_at", async () => {
+    // Sanity check that the new recovery gate is scoped: a stale prior-
+    // attempt artifact that has NOT been touched since last_seen_at must not
+    // override the terminal settlement, otherwise abandoned dispatchers with
+    // leftover artifacts would never settle.
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-no-fresh-output-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const reportPath = path.join(directory, "reports", "W-09.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ⚠️ ABANDONED | 1 | W-09 | OBS-01 | CODEX | - | retry exhausted |"
+    ].join("\n"), "utf8");
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(reportPath, "## Attempt 1 (stale)\n", "utf8");
+    // mtime predates last_seen_at — this is a prior-attempt leftover, not
+    // proof of recovery.
+    const staleMs = Date.parse("2026-05-05T21:50:00.000Z");
+    await fs.utimes(reportPath, staleMs / 1000, staleMs / 1000);
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-05T21:42:51.459Z",
+        status: "running"
+      },
+      workers: {
+        "W-09": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-05T21:42:51.470Z",
+          last_seen_at: "2026-05-05T22:00:00.000Z",
+          status: "abandoned",
+          expected_outputs: [reportPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 2
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-no-fresh-output",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        }
+      ],
+      promptStore: {}
+    });
+
+    await expect(resolveDispatchPlanPathsFromState(stateStore)).resolves.toEqual([]);
+    await expect(stateStore.load()).resolves.toMatchObject({
+      roles: [
+        {
+          threadId: "agent-dispatcher-no-fresh-output",
+          status: "failed"
+        }
+      ]
+    });
+  });
 });
 
 describe("hasStartupRecoverableDispatchWork", () => {
