@@ -42,7 +42,8 @@ import {
   type PmResolverRequest,
   type PmResolverResult
 } from "../roles/agent-dispatcher/pm-resolver";
-import { queryHubThreadObservation, reconcile } from "../roles/agent-dispatcher/reconciler";
+import { isAgentapiProcessAliveForThread } from "../roles/agent-dispatcher/active-tool-process";
+import { queryHubThreadObservation, recoverHubResultFromHistory, reconcile } from "../roles/agent-dispatcher/reconciler";
 import { SchedulerStateStore } from "../roles/scheduler/scheduler-state-store";
 import {
   hasRecoverableDispatchWork,
@@ -57,6 +58,7 @@ import {
   interceptCompletionForValidation,
   executeValidationCycle,
   deliverValidatorFeedback,
+  applyValidatorVerdictFromContent,
   type ValidatorOrchestratorDeps
 } from "../roles/agent-dispatcher/validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "../roles/agent-dispatcher/worker-launcher";
@@ -2475,6 +2477,33 @@ async function processValidationQueue(
         };
       }
 
+      // The recorded validator is no longer active (process gone, hub no
+      // longer tracks it). Before clearing validator_thread_id and spawning a
+      // replacement, try to recover the verdict the validator emitted before
+      // it exited. This closes the "codex_06 finished but its work doesn't
+      // get pushed to the task" gap that left workers wedged in
+      // awaiting_validation while a parallel validator was respawned for the
+      // same cycle (observed on dispatchers 257976f8 R-01 codex_04→codex_09
+      // and 810b6be2 W-06 codex_03→codex_07 after a hub-overload transport
+      // stall preserved the original validator_thread_id).
+      const recovered = await tryRecoverLateValidatorVerdict(
+        config,
+        lifecycleStore,
+        validatorConfig,
+        dispatchPlanPath,
+        otherDispatchPlanPaths,
+        log,
+        meridianApi,
+        workerId,
+        validatorThreadId,
+        row,
+        worker.started_at ?? null,
+        sendHubRequest
+      );
+      if (recovered) {
+        return recovered;
+      }
+
       lifecycleStore.clearValidatorStart(workerId, validatorThreadId);
     }
 
@@ -2696,6 +2725,94 @@ function describeValidationMaxCycleFailure(validatorConfig: ValidatorConfig): st
     : "validator score remained below threshold";
 }
 
+// Attempt to recover a validator's verdict from hub conversation history when
+// the recorded validator_thread_id is no longer active (process gone, hub
+// registry has dropped it) but the validator successfully delivered a final
+// reply before exiting. Returns a ContinueDispatcherResponse describing the
+// applied verdict on success, or null when no recoverable verdict was found
+// (caller should fall through to the normal clear+respawn path).
+//
+// Why this exists: when `meridianApi.run` rejects with a transport-class
+// error mid-validation (hub overload), the dispatcher's request-side promise
+// is dead but the validator agent process keeps running. The orchestrator's
+// transport-stall branch (PR #205) preserves validator_thread_id when ps
+// confirms the agentapi process is still alive. Eventually that process
+// exits — having delivered its reply to the hub. Without this recovery, the
+// hub-side reply is invisible to the dispatcher: Phase 2 would clear the
+// preserved validator_thread_id and spawn a replacement (codex_06 → codex_09
+// on dispatcher 257976f8). This recovery reads the hub's conversation
+// history for the recorded validator thread, picks the latest final_reply,
+// and routes it through the same verdict-application path the in-flight
+// orchestrator uses.
+async function tryRecoverLateValidatorVerdict(
+  config: AgentDispatcherConfig,
+  lifecycleStore: LifecycleStore,
+  validatorConfig: ValidatorConfig,
+  dispatchPlanPath: string,
+  otherDispatchPlanPaths: readonly string[],
+  log: Logger,
+  meridianApi: MeridianApiClient | undefined,
+  workerId: string,
+  validatorThreadId: string,
+  row: DispatchContinuationPlanRow,
+  startedAt: string | null,
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>
+): Promise<ContinueDispatcherResponse | null> {
+  if (!sendHubRequest) {
+    return null;
+  }
+  let recovered;
+  try {
+    recovered = await recoverHubResultFromHistory(
+      { sendRequest: sendHubRequest, serviceId: ROLES_SERVICE_ID } as unknown as Parameters<typeof recoverHubResultFromHistory>[0],
+      validatorThreadId,
+      null,
+      startedAt
+    );
+  } catch (error) {
+    log.warn("Failed to fetch validator thread history for late-verdict recovery", {
+      event: "validator_late_verdict_history_error",
+      worker_id: workerId,
+      validator_thread_id: validatorThreadId,
+      error: getErrorMessage(error)
+    });
+    return null;
+  }
+  if (!recovered) {
+    return null;
+  }
+  const content = (recovered.content ?? recovered.details_text ?? recovered.summary_text ?? "").trim();
+  if (!content) {
+    return null;
+  }
+
+  const deps = buildValidatorDeps(config, lifecycleStore, validatorConfig, dispatchPlanPath, log, meridianApi, otherDispatchPlanPaths);
+  const outcome = await applyValidatorVerdictFromContent(deps, workerId, validatorThreadId, content, row);
+  if (!outcome) {
+    return null;
+  }
+  log.info("Recovered late validator verdict from hub history", {
+    event: "validator_late_verdict_recovered",
+    worker_id: workerId,
+    validator_thread_id: validatorThreadId,
+    outcome_status: outcome.status,
+    recovered_timestamp: recovered.timestamp
+  });
+  if (outcome.status === "error") {
+    // Recovered content could not be parsed into a verdict. The
+    // verdict-application path already cleared validator_thread_id via
+    // clearValidatorStart, so falling through to a fresh spawn is safe.
+    return null;
+  }
+  return {
+    ok: true,
+    status: "validation_in_progress",
+    message: `late validator verdict recovered for ${workerId} (${outcome.status})`,
+    worker: workerId,
+    validation_outcome: `late_verdict_${outcome.status}`
+  };
+}
+
 async function isRecordedValidatorThreadActive(
   workerId: string,
   validatorThreadId: string,
@@ -2719,6 +2836,20 @@ async function isRecordedValidatorThreadActive(
         validatorThreadId
       );
       if (observation.kind === "missing") {
+        // Hub registry may have evicted the thread under overload while the
+        // underlying agentapi/codex process is still alive. Spawning a
+        // replacement now would leak the original CLI (PR #206 documented
+        // the orphan-codex pattern). Probe the host process table before
+        // agreeing the validator is gone.
+        if (isAgentapiProcessAliveForThread(validatorThreadId)) {
+          log.warn("Validator thread missing from hub registry but agentapi process is still alive; preserving validator_thread_id", {
+            event: "validator_thread_missing_codex_alive",
+            worker_id: workerId,
+            validator_thread_id: validatorThreadId,
+            observed_status: observation.rawStatus
+          });
+          return true;
+        }
         log.warn("Clearing missing validator thread id before continue", {
           event: "validator_thread_missing",
           worker_id: workerId,
@@ -2728,6 +2859,15 @@ async function isRecordedValidatorThreadActive(
         return false;
       }
       if (observation.kind === "failed") {
+        if (isAgentapiProcessAliveForThread(validatorThreadId)) {
+          log.warn("Validator thread reported failed by hub but agentapi process is still alive; preserving validator_thread_id", {
+            event: "validator_thread_failed_codex_alive",
+            worker_id: workerId,
+            validator_thread_id: validatorThreadId,
+            observed_status: observation.rawStatus
+          });
+          return true;
+        }
         log.warn("Clearing failed/errored validator thread id before continue", {
           event: "validator_thread_failed",
           worker_id: workerId,
@@ -2761,6 +2901,20 @@ async function isRecordedValidatorThreadActive(
   } catch (error) {
     const message = getErrorMessage(error);
     if (isMissingThreadEvidence(message)) {
+      // Same orphan-codex defense as the hub-probe branch: even when the
+      // attach probe reports the thread missing, do not respawn if the host
+      // still has a live agentapi process for this thread_id. The next tick
+      // will retry the probe; meanwhile the live validator can finish and
+      // deliver its verdict.
+      if (isAgentapiProcessAliveForThread(validatorThreadId)) {
+        log.warn("Validator attach reports missing but agentapi process is still alive; preserving validator_thread_id", {
+          event: "validator_thread_attach_missing_codex_alive",
+          worker_id: workerId,
+          validator_thread_id: validatorThreadId,
+          error: message
+        });
+        return true;
+      }
       log.warn("Clearing stale validator thread id before continue", {
         event: "validator_thread_missing",
         worker_id: workerId,

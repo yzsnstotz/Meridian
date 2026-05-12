@@ -1101,7 +1101,7 @@ export async function queryHubThreadObservation(
   return classifyStatusResult(result);
 }
 
-async function recoverHubResultFromHistory(
+export async function recoverHubResultFromHistory(
   hubClient: A2AClient,
   threadId: string | null,
   traceId: string | null,

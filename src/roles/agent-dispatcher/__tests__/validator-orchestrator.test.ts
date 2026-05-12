@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LifecycleStore } from "../lifecycle-store";
 import {
+  applyValidatorVerdictFromContent,
   deliverValidatorFeedback,
   executeValidationCycle,
   parseValidatorOutputFromJson,
   type ValidatorOrchestratorDeps
 } from "../validator-orchestrator";
+import * as activeToolProcess from "../active-tool-process";
 import { buildDefaultValidatorPrompt } from "../validator-prompt-builder";
 import type { MeridianApiClient } from "../meridian-api-client";
 import type { DispatchContinuationPlanRow } from "../service-continuation";
@@ -1015,6 +1017,125 @@ describe("executeValidationCycle", () => {
       const worker = harness.lifecycleStore.load().workers["N-02"];
       expect(worker?.validation?.spawn_failure_count ?? 0).toBe(0);
     });
+  });
+
+  describe("transport-class run rejection with live agentapi process", () => {
+    // Closes the codex_06 → codex_09 / codex_03 → codex_07 spawn-storm gap:
+    // when meridianApi.run rejects with hub-overload language but ps still
+    // shows the agentapi process for the validator thread, the orchestrator
+    // must preserve validator_thread_id (don't safeKill, don't clear) so the
+    // next continue tick can re-probe liveness and recover the late verdict
+    // from hub history once the live codex exits.
+    it("preserves validator_thread_id and skips safeKill when ps shows the agentapi process is still alive", async () => {
+      const harness = await createHarness();
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-live" });
+      harness.run.mockRejectedValueOnce(
+        new Error("run failed: Request timed out — the hub may be overloaded.")
+      );
+      const probe = vi
+        .spyOn(activeToolProcess, "isAgentapiProcessAliveForThread")
+        .mockReturnValueOnce(true);
+
+      const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      expect(outcome.status).toBe("error");
+      expect(probe).toHaveBeenCalledWith("validator-thread-live");
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      // validator_thread_id MUST stay set so Phase 2's next-tick liveness
+      // probe sees the same thread id and routes through the recovery path.
+      expect(worker?.validation?.validator_thread_id).toBe("validator-thread-live");
+      // safeKill must NOT fire — killing a live codex would defeat the
+      // recovery (and create an orphan kill failure log).
+      expect(harness.kill).not.toHaveBeenCalled();
+      // Backoff counters must remain at zero: this is neither a spawn
+      // failure nor a transport-stall that needs throttling, because the
+      // live codex will deliver a verdict on its own timeline.
+      expect(worker?.validation?.spawn_failure_count ?? 0).toBe(0);
+      expect(worker?.validation?.last_spawn_failure_at ?? null).toBeNull();
+    });
+
+    it("logs validator_run_transport_stall_codex_alive (not validator_run_transport_stall) when ps shows the agentapi process alive", async () => {
+      const harness = await createHarness();
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-live-2" });
+      harness.run.mockRejectedValueOnce(new Error("fetch failed"));
+      vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread").mockReturnValueOnce(true);
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      const warn = harness.deps.log.warn as ReturnType<typeof vi.fn>;
+      expect(
+        warn.mock.calls.find(([, meta]) => meta && (meta as { event?: string }).event === "validator_run_transport_stall_codex_alive")
+      ).toBeDefined();
+      expect(
+        warn.mock.calls.find(([, meta]) => meta && (meta as { event?: string }).event === "validator_run_transport_stall")
+      ).toBeUndefined();
+    });
+
+    it("falls through to existing clear+safeKill path when ps shows no live agentapi process", async () => {
+      const harness = await createHarness();
+      harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-dead" });
+      harness.run.mockRejectedValueOnce(
+        new Error("run failed: Request timed out — the hub may be overloaded.")
+      );
+      vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread").mockReturnValueOnce(false);
+
+      await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+      const worker = harness.lifecycleStore.load().workers["N-02"];
+      expect(worker?.validation?.validator_thread_id).toBeNull();
+      expect(harness.kill).toHaveBeenCalledWith("validator-thread-dead");
+    });
+  });
+});
+
+describe("applyValidatorVerdictFromContent", () => {
+  // Hole-2 recovery: when the dispatcher fetches the validator's reply from
+  // hub conversation history (after the orchestrator's meridianApi.run
+  // rejected mid-flight but the codex CLI subsequently exited cleanly), the
+  // verdict-application path must produce the same lifecycle outcome it
+  // would have produced inline.
+  it("applies a marker pass verdict and records cycle history (recovery path)", async () => {
+    const harness = await createHarness();
+    const markerContent = [
+      "<<<MERIDIAN-STATUS>>>",
+      "role: validator",
+      `worker_id: N-02`,
+      "outcome: pass",
+      "score: 0.95",
+      "feedback: looks great",
+      "<<<END>>>"
+    ].join("\n");
+
+    const outcome = await applyValidatorVerdictFromContent(
+      harness.deps,
+      "N-02",
+      "validator-thread-recovered",
+      markerContent,
+      buildPlanRow()
+    );
+
+    expect(outcome).toEqual({ status: "passed", score: 0.95 });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("completed");
+    expect(worker?.validation?.history[0]).toMatchObject({
+      validator_thread_id: "validator-thread-recovered",
+      score: 0.95
+    });
+  });
+
+  it("returns null when the worker is no longer in awaiting_validation (idempotent against a concurrent transition)", async () => {
+    const harness = await createHarness();
+    harness.lifecycleStore.setWorkerStatus("N-02", "completed", "validation_passed");
+
+    const outcome = await applyValidatorVerdictFromContent(
+      harness.deps,
+      "N-02",
+      "validator-thread-late",
+      '{"score":0.9,"feedback":"x"}',
+      buildPlanRow()
+    );
+
+    expect(outcome).toBeNull();
   });
 });
 

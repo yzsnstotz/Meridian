@@ -31,6 +31,31 @@ export function listActiveProcessCommands(): string[] {
   }
 }
 
+// Meridian Hub spawns the agentapi server bound to `/tmp/agentapi-<thread_id>.sock`
+// when the host kernel supports the agentapi --socket flag. That socket path is
+// embedded in argv, so a `ps` scan can confirm the underlying CLI is still alive
+// even after the hub registry has evicted the thread (observed under sustained
+// hub overload: `kill failed: No registered agent instance found for
+// thread_id=codex_06` while `ps` still shows `agentapi --socket=/tmp/agentapi-codex_06.sock`).
+// Returns true on a definite match. Returns false on no-match or when the ps
+// probe itself fails — callers that need liveness confirmation should treat false
+// as "no evidence", not "definitely gone".
+export function isAgentapiProcessAliveForThread(
+  threadId: string,
+  activeProcessCommands?: string[]
+): boolean {
+  const trimmed = threadId.trim();
+  if (!trimmed) {
+    return false;
+  }
+  const commands = activeProcessCommands ?? listActiveProcessCommands();
+  if (commands.length === 0) {
+    return false;
+  }
+  const socketNeedle = `agentapi-${trimmed}.sock`;
+  return commands.some((command) => command.includes(socketNeedle));
+}
+
 export function isWorkerToolProcessRunning(
   row: DispatchPlanWorkerRow | undefined,
   scanRunId: string | null,
