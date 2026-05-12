@@ -1107,8 +1107,13 @@ export async function settleTerminalAgentDispatcherRoles(
  * `kill_policy`: `never` leaves them intact (operator may want to inspect
  * post-mortem), `always`/`on_success` kill anything still recorded.
  *
- * Kill failures are swallowed; the Hub's "no registered agent instance" reply
- * is the expected response when a worker thread already exited cleanly.
+ * A "no registered agent instance" reply is the expected response when a
+ * worker thread already exited cleanly, but it is also the symptom of a
+ * fake-kill leak (Hub unregistered the thread without waiting for the
+ * agentapi process group to exit; the codex/claude CLI subprocess stays
+ * alive). We emit a `lifecycle_cleanup_missing_thread` info entry so that
+ * operators can grep for orphan codex CLIs (`ps -axo pid,lstart,command |
+ * rg 'codex exec'`) after a settle that should have reaped everything.
  */
 async function cleanupSettledDispatchPlanThreads(
   config: AgentDispatcherConfig,
@@ -1123,27 +1128,32 @@ async function cleanupSettledDispatchPlanThreads(
   }
 
   const threadIds = new Set<string>();
+  const threadIdToWorkerId = new Map<string, string>();
 
   const dispatcherThreadId = lifecycleState.dispatcher.thread_id?.trim();
   if (dispatcherThreadId) {
     threadIds.add(dispatcherThreadId);
+    threadIdToWorkerId.set(dispatcherThreadId, "DISPATCHER");
   }
 
   if (config.kill_policy !== "never") {
-    for (const worker of Object.values(lifecycleState.workers)) {
+    for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
       const workerThreadId = worker.thread_id?.trim();
       if (workerThreadId && shouldKillSettledWorker(worker, config.kill_policy)) {
         threadIds.add(workerThreadId);
+        threadIdToWorkerId.set(workerThreadId, workerId);
       }
       const validatorThreadId = worker.validation?.validator_thread_id?.trim();
       if (validatorThreadId) {
         threadIds.add(validatorThreadId);
+        threadIdToWorkerId.set(validatorThreadId, `${workerId}:validator`);
       }
     }
     for (const pmResolver of lifecycleState.pm_resolvers ?? []) {
       const pmThreadId = pmResolver.thread_id?.trim();
       if (pmThreadId) {
         threadIds.add(pmThreadId);
+        threadIdToWorkerId.set(pmThreadId, `${pmResolver.issue?.worker_id ?? "?"}:pm`);
       }
     }
   }
@@ -1154,11 +1164,18 @@ async function cleanupSettledDispatchPlanThreads(
     } catch (error) {
       const message = asError(error).message;
       if (isMissingThreadKillReply(message)) {
+        log?.info?.("lifecycle_cleanup_missing_thread", {
+          dispatchPlanPath: config.dispatch_plan_path,
+          threadId,
+          workerId: threadIdToWorkerId.get(threadId) ?? null,
+          hint: "Hub returned no-such-instance. Expected if the thread already exited cleanly; if the underlying codex/claude CLI is still in `ps`, the kill path leaked (Meridian kill did not wait for process exit)."
+        });
         continue;
       }
       log?.warn?.("Settle-time thread cleanup failed", {
         dispatchPlanPath: config.dispatch_plan_path,
         threadId,
+        workerId: threadIdToWorkerId.get(threadId) ?? null,
         error: message
       });
     }
