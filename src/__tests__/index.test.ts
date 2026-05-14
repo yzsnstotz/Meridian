@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildWatchdogPmResolverIssueKey,
   hasPmResolverHandledCurrentWorkerIssue,
   resolveRetryExhaustedWorkerNeedingPm,
   tryContinueDispatchWorker,
@@ -148,6 +149,55 @@ describe("watchdog PM resolver repeat guard", () => {
     });
 
     expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(false);
+  });
+});
+
+describe("buildWatchdogPmResolverIssueKey", () => {
+  // Regression: a successful PM that recovered a worker to `pending` used to
+  // leave the dedupe key cached forever. When the worker re-ran and re-emitted
+  // needs_pm, the cached key short-circuited the watchdog before the
+  // time-aware lifecycle gate ran. Folding the current worker's `started_at`
+  // into the key makes a fresh run produce a fresh key.
+  it("produces a fresh key for a relaunched worker (different started_at)", () => {
+    const first = buildWatchdogPmResolverIssueKey(
+      "agent-dispatcher-8eb13a31",
+      "manual_intervention_required",
+      "BATCH-3-GATE",
+      "2026-05-13T20:00:00.000Z"
+    );
+    const second = buildWatchdogPmResolverIssueKey(
+      "agent-dispatcher-8eb13a31",
+      "manual_intervention_required",
+      "BATCH-3-GATE",
+      "2026-05-14T03:02:26.742Z"
+    );
+
+    expect(first).not.toBe(second);
+  });
+
+  it("dedupes within the same worker run (same started_at)", () => {
+    const startedAt = "2026-05-14T03:02:26.742Z";
+    const first = buildWatchdogPmResolverIssueKey(
+      "agent-dispatcher-8eb13a31",
+      "manual_intervention_required",
+      "BATCH-3-GATE",
+      startedAt
+    );
+    const second = buildWatchdogPmResolverIssueKey(
+      "agent-dispatcher-8eb13a31",
+      "manual_intervention_required",
+      "BATCH-3-GATE",
+      startedAt
+    );
+
+    expect(first).toBe(second);
+  });
+
+  it("treats missing worker / started_at as stable keys (legacy behavior)", () => {
+    const a = buildWatchdogPmResolverIssueKey("agent-dispatcher-x", "manual_intervention_required", null, null);
+    const b = buildWatchdogPmResolverIssueKey("agent-dispatcher-x", "manual_intervention_required", null, undefined);
+
+    expect(a).toBe(b);
   });
 });
 
