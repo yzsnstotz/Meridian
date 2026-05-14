@@ -1,7 +1,8 @@
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { exec, execSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { buildClaudeSpawnArgs } from "../agents/claude";
 import { buildCodexExecArgs, buildCodexSpawnArgs } from "../agents/codex";
@@ -34,7 +35,13 @@ import { buildPersistedHubState, type PersistedHubState } from "./state-store";
 
 type SpawnFn = typeof spawn;
 type ExecSyncFn = typeof execSync;
+type ExecAsyncFn = (
+  command: string,
+  options?: { encoding?: BufferEncoding }
+) => Promise<{ stdout: string; stderr: string }>;
 type SocketPathFactory = (threadId: string) => string;
+
+const defaultExecAsyncFn: ExecAsyncFn = promisify(exec) as ExecAsyncFn;
 
 interface StatusClient {
   connect: (endpoint: string) => Promise<void>;
@@ -84,6 +91,7 @@ export interface InstanceManagerOptions {
   agentWorkdir?: string;
   spawnFn?: SpawnFn;
   execSyncFn?: ExecSyncFn;
+  execAsyncFn?: ExecAsyncFn;
   socketPathFactory?: SocketPathFactory;
   agentapiSocketSupport?: boolean;
   agentapiAttachSocketSupport?: boolean;
@@ -125,6 +133,7 @@ interface PaneCaptureState {
   tmuxSession: string;
   logPath: string;
   lastSnapshot: string;
+  inFlight: boolean;
 }
 
 export class InstanceManager {
@@ -134,6 +143,7 @@ export class InstanceManager {
   private readonly agentWorkdir: string;
   private readonly spawnFn: SpawnFn;
   private readonly execSyncFn: ExecSyncFn;
+  private readonly execAsyncFn: ExecAsyncFn;
   private readonly socketPathFactory: SocketPathFactory;
   private readonly forcedAgentapiSocketSupport: boolean | null;
   private readonly forcedAgentapiAttachSocketSupport: boolean | null;
@@ -166,6 +176,7 @@ export class InstanceManager {
     this.agentWorkdir = this.resolveWorkdir(options.agentWorkdir ?? DEFAULT_AGENT_WORKDIR);
     this.spawnFn = options.spawnFn ?? spawn;
     this.execSyncFn = options.execSyncFn ?? execSync;
+    this.execAsyncFn = options.execAsyncFn ?? defaultExecAsyncFn;
     this.socketPathFactory = options.socketPathFactory ?? ((threadId: string) => this.formatAgentSocketPath(threadId));
     this.forcedAgentapiSocketSupport = options.agentapiSocketSupport ?? null;
     this.forcedAgentapiAttachSocketSupport = options.agentapiAttachSocketSupport ?? null;
@@ -1972,14 +1983,15 @@ export class InstanceManager {
       const paneLogPath = path.join(this.logDir, `pane-${threadId}.log`);
       this.stopTmuxPaneCapture(threadId);
       const timer = setInterval(() => {
-        this.capturePaneSnapshot(threadId);
+        void this.capturePaneSnapshot(threadId);
       }, this.paneCaptureIntervalMs);
       timer.unref();
       this.paneCaptureByThread.set(threadId, {
         timer,
         tmuxSession,
         logPath: paneLogPath,
-        lastSnapshot: ""
+        lastSnapshot: "",
+        inFlight: false
       });
     } catch (error) {
       this.log.warn(
@@ -2009,7 +2021,7 @@ export class InstanceManager {
     for (const [threadId, capture] of this.paneCaptureByThread.entries()) {
       clearInterval(capture.timer);
       const timer = setInterval(() => {
-        this.capturePaneSnapshot(threadId);
+        void this.capturePaneSnapshot(threadId);
       }, this.paneCaptureIntervalMs);
       timer.unref();
       capture.timer = timer;
@@ -2068,21 +2080,22 @@ export class InstanceManager {
     return deltaLines.join("\n") + (deltaLines.length > 0 ? "\n" : "");
   }
 
-  private capturePaneSnapshot(threadId: string): void {
+  private async capturePaneSnapshot(threadId: string): Promise<void> {
     const capture = this.paneCaptureByThread.get(threadId);
-    if (!capture) {
+    if (!capture || capture.inFlight) {
+      // Skip overlapping ticks: a slow tmux capture would otherwise stack
+      // ticks across many agents and starve the hub event loop, which
+      // causes /tmp/hub-core.sock to refuse new IPC connections.
       return;
     }
+    capture.inFlight = true;
 
     try {
-      // Capture currently visible pane content so the log gets output as soon as it
-      // appears (scrollback-only capture wrote only when lines scrolled off, so the
-      // log stayed empty on large panes or low output).
-      const rawSnapshot = this.execSyncFn(
+      const { stdout } = await this.execAsyncFn(
         `tmux capture-pane -e -p -t ${this.shellEscape(capture.tmuxSession)}`,
-        { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }
+        { encoding: "utf8" }
       );
-      const snapshot = this.toText(rawSnapshot).trimEnd();
+      const snapshot = this.toText(stdout).trimEnd();
       const delta = this.computePaneDelta(capture.lastSnapshot, snapshot);
       capture.lastSnapshot = snapshot;
 
@@ -2091,7 +2104,11 @@ export class InstanceManager {
       }
 
       const timestamp = this.now().toISOString();
-      fs.appendFileSync(capture.logPath, `\n--- ${timestamp} ---\n${delta}\n`, "utf8");
+      await fs.promises.appendFile(
+        capture.logPath,
+        `\n--- ${timestamp} ---\n${delta}\n`,
+        "utf8"
+      );
     } catch (error) {
       this.log.warn(
         {
@@ -2102,6 +2119,8 @@ export class InstanceManager {
         },
         "Failed to capture tmux pane snapshot"
       );
+    } finally {
+      capture.inFlight = false;
     }
   }
 

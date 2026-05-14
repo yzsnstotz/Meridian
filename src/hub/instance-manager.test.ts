@@ -721,10 +721,14 @@ test("pane capture uses visible pane with -e to preserve ANSI/controls", async (
     paneBridgeUsePtyWrapper: false,
     execSyncFn: ((command: string) => {
       execCalls.push(command);
-      if (command.includes("capture-pane")) {
-        return Buffer.from("line1\nline2\nline3\nline4\nline5\n", "utf8");
-      }
       return Buffer.from("", "utf8");
+    }) as never,
+    execAsyncFn: (async (command: string) => {
+      execCalls.push(command);
+      if (command.includes("capture-pane")) {
+        return { stdout: "line1\nline2\nline3\nline4\nline5\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
     }) as never,
     spawnFn: ((command: string, args: string[]) => {
       void command;
@@ -741,7 +745,7 @@ test("pane capture uses visible pane with -e to preserve ANSI/controls", async (
   const threadId = await manager.spawn("claude", "pane_bridge");
 
   // Invoke a capture tick directly to inspect the capture-pane command.
-  (manager as unknown as { capturePaneSnapshot: (id: string) => void }).capturePaneSnapshot(threadId);
+  await (manager as unknown as { capturePaneSnapshot: (id: string) => Promise<void> }).capturePaneSnapshot(threadId);
 
   const captureCommands = execCalls.filter((cmd) => cmd.includes("capture-pane"));
   assert.ok(captureCommands.length > 0);
