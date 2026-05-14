@@ -633,26 +633,49 @@ function bindSchedulerWorkerActions(schedulerId, poll) {
                 throw new Error(`No status selector found for ${workerId}`);
               }
               const statusValue = statusSelect.value;
-              const payload = { status: statusValue };
-              if (modelSelect instanceof HTMLSelectElement && modelSelect.value.trim()) {
-                payload.model = modelSelect.value.trim();
-              }
-              if (effortSelect instanceof HTMLSelectElement && effortSelect.value.trim()) {
-                payload.reasoning_effort = effortSelect.value.trim();
-              }
+              const modelOverride = modelSelect instanceof HTMLSelectElement && modelSelect.value.trim()
+                ? modelSelect.value.trim()
+                : null;
+              const effortOverride = effortSelect instanceof HTMLSelectElement && effortSelect.value.trim()
+                ? effortSelect.value.trim()
+                : null;
 
               if (dispatchPlanFeedback) {
                 dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusValue)}...`;
               }
 
-              await fetchJson(
-                `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/status`,
-                {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(payload)
+              // Reset-to-pending must clear hub_result, otherwise the lifecycle
+              // store re-derives ⛔ BLOCKED from the stale signal and overwrites
+              // the plan markdown back. resume-worker (action=retry) clears it;
+              // update-status does not.
+              if (statusValue === "pending") {
+                await fetchJson(
+                  `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/resume`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "retry" })
+                  }
+                );
+              }
+
+              if (statusValue !== "pending" || modelOverride || effortOverride) {
+                const payload = { status: statusValue };
+                if (modelOverride) {
+                  payload.model = modelOverride;
                 }
-              );
+                if (effortOverride) {
+                  payload.reasoning_effort = effortOverride;
+                }
+                await fetchJson(
+                  `/api/scheduler/${encodeURIComponent(schedulerId)}/worker/${encodeURIComponent(workerId)}/status`,
+                  {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                  }
+                );
+              }
 
               if (dispatchPlanFeedback) {
                 dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusValue)}.`;
@@ -1947,26 +1970,49 @@ async function setupRoleDetail() {
                 throw new Error(`No status selector found for ${workerId}`);
               }
               const statusValue = statusSelect.value;
-              const payload = { status: statusValue };
-              if (modelSelect instanceof HTMLSelectElement && modelSelect.value.trim()) {
-                payload.model = modelSelect.value.trim();
-              }
-              if (effortSelect instanceof HTMLSelectElement && effortSelect.value.trim()) {
-                payload.reasoning_effort = effortSelect.value.trim();
-              }
+              const modelOverride = modelSelect instanceof HTMLSelectElement && modelSelect.value.trim()
+                ? modelSelect.value.trim()
+                : null;
+              const effortOverride = effortSelect instanceof HTMLSelectElement && effortSelect.value.trim()
+                ? effortSelect.value.trim()
+                : null;
 
               if (dispatchPlanFeedback) {
                 dispatchPlanFeedback.textContent = `Updating ${workerId} to ${formatDispatchStatusLabel(statusValue)}...`;
               }
 
-              await fetchJson(
-                `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/status`,
-                {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(payload)
+              // Reset-to-pending must clear hub_result, otherwise the lifecycle
+              // store re-derives ⛔ BLOCKED from the stale signal and overwrites
+              // the plan markdown back. resume-worker (action=retry) clears it;
+              // update-status does not.
+              if (statusValue === "pending") {
+                await fetchJson(
+                  `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/resume`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "retry" })
+                  }
+                );
+              }
+
+              if (statusValue !== "pending" || modelOverride || effortOverride) {
+                const payload = { status: statusValue };
+                if (modelOverride) {
+                  payload.model = modelOverride;
                 }
-              );
+                if (effortOverride) {
+                  payload.reasoning_effort = effortOverride;
+                }
+                await fetchJson(
+                  `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/status`,
+                  {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                  }
+                );
+              }
 
               if (dispatchPlanFeedback) {
                 dispatchPlanFeedback.textContent = `${workerId} ${formatDispatchStatusSuccess(statusValue)}.`;
