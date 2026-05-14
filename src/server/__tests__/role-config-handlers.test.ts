@@ -1283,6 +1283,245 @@ describe("role config handlers", () => {
     }
   });
 
+  // Regression: agent-dispatcher-8eb13a31 / BATCH-3-GATE wedged on a PM
+  // resolver thread_id (codex_11) that the Hub had no record of. The PM had
+  // been registered briefly and then the agentapi spawn-retry got allocated
+  // a different thread_id (codex_12), so dispatch_threads.json kept pointing
+  // at the orphaned codex_11 while the relaunch gate read it as live. The
+  // continue path now probes the Hub for each `running` PM and demotes
+  // hub-missing entries before the gate decision so the dispatcher can
+  // resume.
+  it("evicts a hub-missing PM resolver so the worker is no longer wedged", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pm-hub-missing-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-c01-relaunched"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 1 | C-01 | Implement contract | CODEX | — | TaskSpec | wedged behind a PM |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-c01",
+        started_at: "2026-05-13T03:59:17.681Z",
+        status: "running"
+      },
+      workers: {
+        "C-01": buildLifecycleWorker({
+          thread_id: "worker-thread-c01",
+          status: "failed",
+          retry_count: 0
+        })
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-c01-orphan",
+          status: "running",
+          started_at: "2026-05-13T04:00:46.316Z",
+          last_seen_at: "2026-05-13T04:00:46.316Z",
+          agent_type: "codex",
+          model_id: null,
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "C-01",
+            message: "PM is resolving C-01 block",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: null
+    });
+
+    const sendHubRequest = vi.fn(async (message: HubMessage): Promise<HubResult> => {
+      if (message.intent === "status" && message.target === "pm-thread-c01-orphan") {
+        return {
+          trace_id: "trace-status-pm-missing",
+          thread_id: "pm-thread-c01-orphan",
+          source: "codex",
+          status: "error",
+          content: "No registered agent instance found for thread_id=pm-thread-c01-orphan",
+          attachments: [],
+          timestamp: "2026-05-13T04:05:00.000Z"
+        };
+      }
+      throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        null,
+        sendHubRequest,
+        null,
+        launchDispatchWorker
+      );
+      await createAgentDispatcherRole(
+        harness.roleHandlers,
+        "agent-dispatcher-continue-pm-hub-missing",
+        dispatchPlanPath
+      );
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-continue-pm-hub-missing/worker/C-01/continue"
+      )).resolves.toMatchObject({
+        ok: true,
+        status: "continued",
+        worker: "C-01"
+      });
+
+      expect(launchDispatchWorker).toHaveBeenCalledTimes(1);
+      const after = lifecycleStore.load();
+      const orphanPm = after.pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-c01-orphan");
+      // Eviction transitions the PM out of `running`. The exact terminal
+      // status depends on whether the worker has independently recovered by
+      // the time `markPmResolverThreadMissing` runs: when the dispatcher
+      // immediately relaunches C-01 (as in this test), `recordWorkerStart`
+      // promotes the demoted-to-failed PM up to `completed` via the shared
+      // `reconcilePmResolversForRecoveredWorker` path. Both terminal outcomes
+      // are valid — the gate's contract is "no longer wedged on running".
+      expect(orphanPm?.status).not.toBe("running");
+      expect(["failed", "completed"]).toContain(orphanPm?.status);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // Regression companion to the eviction test: when the Hub still routes to
+  // the recorded PM thread (status="running"/"idle"), the gate must keep the
+  // worker wedged. Without this assertion the eviction path could regress
+  // into eagerly demoting still-live PMs every continue tick.
+  it("preserves a hub-live PM resolver and keeps the worker wedged", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-pm-hub-live-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-should-not-launch"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 1 | C-01 | Implement contract | CODEX | — | TaskSpec | failed once |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-c01",
+        started_at: "2026-05-13T03:59:17.681Z",
+        status: "running"
+      },
+      workers: {
+        "C-01": buildLifecycleWorker({
+          thread_id: "worker-thread-c01",
+          status: "failed",
+          retry_count: 1
+        })
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-c01-live",
+          status: "running",
+          started_at: "2026-05-13T04:00:46.316Z",
+          last_seen_at: "2026-05-13T04:00:46.316Z",
+          agent_type: "codex",
+          model_id: null,
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "C-01",
+            message: "PM is resolving C-01 block",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: null
+    });
+
+    const sendHubRequest = vi.fn(async (message: HubMessage): Promise<HubResult> => {
+      if (message.intent === "status" && message.target === "pm-thread-c01-live") {
+        return {
+          trace_id: "trace-status-pm-live",
+          thread_id: "pm-thread-c01-live",
+          source: "codex",
+          status: "success",
+          content: '{"status":"running"}',
+          attachments: [],
+          timestamp: "2026-05-13T04:05:00.000Z"
+        };
+      }
+      throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        null,
+        sendHubRequest,
+        null,
+        launchDispatchWorker
+      );
+      await createAgentDispatcherRole(
+        harness.roleHandlers,
+        "agent-dispatcher-continue-pm-hub-live",
+        dispatchPlanPath
+      );
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-continue-pm-hub-live/worker/C-01/continue"
+      )).resolves.toMatchObject({
+        ok: true,
+        status: "still_blocked",
+        worker: "C-01",
+        pm_resolver_thread_ids: ["pm-thread-c01-live"]
+      });
+
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+      const after = lifecycleStore.load();
+      const livePm = after.pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-c01-live");
+      expect(livePm?.status).toBe("running");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("kills orphaned worker threads and restores dispatch files when continue hits a detached run bootstrap failure", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-bootstrap-failure-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
