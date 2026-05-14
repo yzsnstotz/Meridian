@@ -1054,6 +1054,46 @@ describe("scheduler detail public scripts", () => {
     });
   });
 
+  it("routes reset-to-pending status apply through resume-worker to clear hub_result", async () => {
+    const publicDir = path.resolve(process.cwd(), "src/web/public");
+    const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const elements = new Map<string, Record<string, unknown>>();
+    const handlers: { domContentLoaded?: () => void } = {};
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+
+    const context = createSchedulerDetailContext(elements, handlers, requests);
+    vm.runInContext(appScript, context, { filename: "app.js" });
+    const domContentLoaded = handlers.domContentLoaded;
+    if (!domContentLoaded) {
+      throw new Error("app.js did not register a DOMContentLoaded handler");
+    }
+    domContentLoaded();
+    await flushAsync();
+    await flushAsync();
+
+    const dispatchBody = getElementStub(elements, "dispatch-progress-body");
+    const clickHandler = getElementHandlers(dispatchBody).click;
+    if (!clickHandler) {
+      throw new Error("scheduler worker action handler was not registered");
+    }
+
+    await clickHandler({
+      target: new FakeButton({
+        workerId: "R-01",
+        statusApply: true,
+        selectedStatus: "pending"
+      })
+    });
+
+    expect(requests).toContainEqual({
+      url: "/api/scheduler/scheduler-gui-actions/worker/R-01/resume",
+      method: "POST",
+      body: { action: "retry" }
+    });
+    const statusPatch = requests.find((entry) => entry.url.endsWith("/status") && entry.method === "PATCH");
+    expect(statusPatch).toBeUndefined();
+  });
+
   it("sends model and effort overrides when set in the scheduler dispatch status controls", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
