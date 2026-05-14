@@ -922,9 +922,17 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     // to `completed`, so a still-running PM here means a live (or at
     // least dispatcher-believed-live) resolution is in flight.
     if (effectiveWorkerId) {
-      const activePmResolvers = findActivePmResolversForWorker(lifecycleState, effectiveWorkerId);
-      if (activePmResolvers.length > 0) {
-        const pmThreadIds = activePmResolvers.map((entry) => entry.thread_id);
+      const lifecycleStoreForPmGate = new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath));
+      const { live: livePmResolvers, evictedCount } = await findLivePmResolversForWorker(
+        lifecycleState,
+        effectiveWorkerId,
+        lifecycleStoreForPmGate,
+        attachToThread,
+        log,
+        sendHubRequestImpl
+      );
+      if (livePmResolvers.length > 0) {
+        const pmThreadIds = livePmResolvers.map((entry) => entry.thread_id);
         return {
           ok: true,
           status: "still_blocked",
@@ -932,6 +940,11 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           worker: effectiveWorkerId,
           pm_resolver_thread_ids: pmThreadIds
         };
+      }
+      if (evictedCount > 0) {
+        // Eviction wrote to lifecycle store; reload so the rest of this tick
+        // sees the demoted PM entries (and any reconciled worker status).
+        lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
       }
     }
 
@@ -1069,9 +1082,19 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         context.effectiveConfig.dispatch_plan_path,
         log
       );
-      const activePmResolvers = findActivePmResolversForWorker(lifecycleState, issueWorkerId);
-      if (activePmResolvers.length > 0) {
-        const existing = activePmResolvers[0];
+      const lifecycleStoreForPmGate = new LifecycleStore(
+        resolveDispatchThreadPath(context.effectiveConfig.dispatch_plan_path)
+      );
+      const { live: livePmResolvers } = await findLivePmResolversForWorker(
+        lifecycleState,
+        issueWorkerId,
+        lifecycleStoreForPmGate,
+        attachToThread,
+        log,
+        sendHubRequestImpl
+      );
+      if (livePmResolvers.length > 0) {
+        const existing = livePmResolvers[0]!;
         return {
           ok: true,
           status: "pm_resolver_already_running",
@@ -2932,6 +2955,155 @@ async function isRecordedValidatorThreadActive(
     });
     return true;
   }
+}
+
+// Steady-state liveness probe for a recorded PM resolver thread, mirroring
+// the validator counterpart `isRecordedValidatorThreadActive`. The startup
+// probe (`reconcileStartupPmResolvers`) only fires on service boot, so a PM
+// whose Hub thread is evicted mid-run stays `running` indefinitely and
+// silently blocks worker relaunch via the `findActivePmResolversForWorker`
+// gate. Observed on agent-dispatcher-8eb13a31 BATCH-3-GATE: an agentapi
+// readiness-probe failure drove the Hub allocator to a different thread_id on
+// the spawn retry (codex_11 → codex_12), so dispatch_threads.json kept
+// pointing at the now-orphaned codex_11 while the live PM session ran under a
+// thread the dispatcher never learned about.
+async function isRecordedPmResolverThreadActive(
+  workerId: string,
+  pmThreadId: string,
+  attachToThread: ((threadId: string) => Promise<void>) | undefined,
+  log: Logger,
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>
+): Promise<boolean> {
+  if (sendHubRequest) {
+    try {
+      const observation = await queryHubThreadObservation(
+        { sendRequest: sendHubRequest, serviceId: ROLES_SERVICE_ID } as unknown as Parameters<typeof queryHubThreadObservation>[0],
+        pmThreadId
+      );
+      if (observation.kind === "missing") {
+        if (isAgentapiProcessAliveForThread(pmThreadId)) {
+          log.warn("PM resolver thread missing from hub registry but agentapi process is still alive; preserving pm thread_id", {
+            event: "pm_resolver_thread_missing_codex_alive",
+            worker_id: workerId,
+            pm_thread_id: pmThreadId,
+            observed_status: observation.rawStatus
+          });
+          return true;
+        }
+        log.warn("PM resolver thread missing from hub registry", {
+          event: "pm_resolver_thread_missing",
+          worker_id: workerId,
+          pm_thread_id: pmThreadId,
+          observed_status: observation.rawStatus
+        });
+        return false;
+      }
+      if (observation.kind === "failed") {
+        if (isAgentapiProcessAliveForThread(pmThreadId)) {
+          log.warn("PM resolver thread reported failed by hub but agentapi process is still alive; preserving pm thread_id", {
+            event: "pm_resolver_thread_failed_codex_alive",
+            worker_id: workerId,
+            pm_thread_id: pmThreadId,
+            observed_status: observation.rawStatus
+          });
+          return true;
+        }
+        log.warn("PM resolver thread reported failed/errored by hub", {
+          event: "pm_resolver_thread_failed",
+          worker_id: workerId,
+          pm_thread_id: pmThreadId,
+          observed_status: observation.rawStatus
+        });
+        return false;
+      }
+      // running/idle/completed → still in flight; fall through to attach probe
+      // so transport-layer disagreement still surfaces as missing-thread evidence.
+    } catch (error) {
+      log.warn("Failed to probe PM resolver thread status before continue", {
+        event: "pm_resolver_thread_status_probe_error",
+        worker_id: workerId,
+        pm_thread_id: pmThreadId,
+        error: getErrorMessage(error)
+      });
+      // Status probe is best-effort; fall through to the attach probe.
+    }
+  }
+
+  if (!attachToThread) {
+    return true;
+  }
+
+  try {
+    await attachToThread(pmThreadId);
+    return true;
+  } catch (error) {
+    const message = getErrorMessage(error);
+    if (isMissingThreadEvidence(message)) {
+      if (isAgentapiProcessAliveForThread(pmThreadId)) {
+        log.warn("PM resolver attach reports missing but agentapi process is still alive; preserving pm thread_id", {
+          event: "pm_resolver_thread_attach_missing_codex_alive",
+          worker_id: workerId,
+          pm_thread_id: pmThreadId,
+          error: message
+        });
+        return true;
+      }
+      log.warn("Clearing stale PM resolver thread id before continue", {
+        event: "pm_resolver_thread_missing",
+        worker_id: workerId,
+        pm_thread_id: pmThreadId,
+        error: message
+      });
+      return false;
+    }
+    log.warn("Failed to verify PM resolver thread before continue", {
+      event: "pm_resolver_thread_attach_error",
+      worker_id: workerId,
+      pm_thread_id: pmThreadId,
+      error: message
+    });
+    return true;
+  }
+}
+
+// Returns the active PM resolvers for `workerId` that pass the steady-state
+// liveness probe. Demotes hub-missing entries to `failed` via
+// `markPmResolverThreadMissing` so the next continue tick is not blocked by a
+// wedged PM. `evictedCount` signals callers to reload lifecycle state if they
+// rely on the prior snapshot.
+async function findLivePmResolversForWorker(
+  state: DispatchThreadStateV2,
+  workerId: string,
+  lifecycleStore: LifecycleStore,
+  attachToThread: ((threadId: string) => Promise<void>) | undefined,
+  log: Logger,
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>
+): Promise<{ live: PmResolverLifecycleState[]; evictedCount: number }> {
+  const candidates = findActivePmResolversForWorker(state, workerId);
+  if (candidates.length === 0) {
+    return { live: [], evictedCount: 0 };
+  }
+  const live: PmResolverLifecycleState[] = [];
+  let evictedCount = 0;
+  for (const entry of candidates) {
+    const alive = await isRecordedPmResolverThreadActive(
+      workerId,
+      entry.thread_id,
+      attachToThread,
+      log,
+      sendHubRequest
+    );
+    if (alive) {
+      live.push(entry);
+      continue;
+    }
+    lifecycleStore.markPmResolverThreadMissing(
+      entry.thread_id,
+      "steady_state_pm_thread_missing: hub registry no longer routes to thread_id"
+    );
+    evictedCount += 1;
+  }
+  return { live, evictedCount };
 }
 
 async function runValidationCycleWithFeedbackLoop(
