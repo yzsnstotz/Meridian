@@ -1104,6 +1104,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       }
     }
 
+    const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, threadId);
+
     return startPmResolverImpl({
       dispatcherId: threadId,
       config: context.effectiveConfig,
@@ -1113,7 +1115,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         message: parsed.data.message,
         error: parsed.data.error,
         source: parsed.data.source ?? "dispatcher"
-      }
+      },
+      otherDispatchPlanPaths
     });
   }
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
+import { resolveOtherDispatcherPlanPaths } from "./roles/agent-dispatcher/cross-plan-paths";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
@@ -849,6 +850,7 @@ async function maybeStartPmResolverForWatchdogRecovery(
   }
 
   seenIssueKeys.add(issueKey);
+  const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, threadId);
   try {
     const result = await startPmResolver({
       dispatcherId: threadId,
@@ -858,7 +860,8 @@ async function maybeStartPmResolverForWatchdogRecovery(
         workerId: issueWorkerId ?? undefined,
         message: issueMessage,
         source: "watchdog"
-      }
+      },
+      otherDispatchPlanPaths
     });
     log.info("Watchdog stall: PM resolver handoff completed", {
       threadId,

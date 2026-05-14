@@ -1,6 +1,10 @@
 import path from "node:path";
 
-import type { DispatchThreadStateV2, LifecycleStatus } from "../../types";
+import type {
+  DispatchThreadStateV2,
+  LifecycleStatus,
+  PmResolverLifecycleStatus
+} from "../../types";
 import { LifecycleStore } from "./lifecycle-store";
 import type { MeridianApiClient } from "./meridian-api-client";
 
@@ -19,6 +23,18 @@ const ACTIVE_THREAD_RESERVATION_STATUSES: ReadonlySet<LifecycleStatus> = new Set
 
 export function isActiveThreadReservationStatus(status: LifecycleStatus): boolean {
   return ACTIVE_THREAD_RESERVATION_STATUSES.has(status);
+}
+
+// PM resolver lifecycle has a smaller status enum (running | completed |
+// failed). Only `running` keeps the underlying codex thread plausibly alive
+// in the hub; the terminal statuses leave audit records whose thread_ids are
+// free for the Hub allocator to recycle.
+const ACTIVE_PM_RESOLVER_RESERVATION_STATUSES: ReadonlySet<PmResolverLifecycleStatus> = new Set([
+  "running"
+]);
+
+export function isActivePmResolverReservationStatus(status: PmResolverLifecycleStatus): boolean {
+  return ACTIVE_PM_RESOLVER_RESERVATION_STATUSES.has(status);
 }
 
 export class ThreadIdCollisionError extends Error {
@@ -79,13 +95,29 @@ export function isThreadIdReservedInLifecycleState(
     return true;
   }
 
-  return Object.values(state.workers).some((worker) => {
+  const workerOrValidatorReserved = Object.values(state.workers).some((worker) => {
     if (!isActiveThreadReservationStatus(worker.status)) {
       return false;
     }
     return worker.thread_id === normalizedCandidate
       || worker.validation?.validator_thread_id === normalizedCandidate;
   });
+  if (workerOrValidatorReserved) {
+    return true;
+  }
+
+  // PM resolver threads also occupy a Hub slot while running; without this
+  // check, a stale `running` PM resolver in another plan can be silently
+  // re-handed to a fresh PM/worker/validator/dispatcher spawn whose prompt
+  // then lands on the stale agent's session (root cause of the
+  // agent-dispatcher-8eb13a31 BATCH-3-GATE → codex_19 N-02-validator-bleed
+  // incident on 2026-05-14: codex_19 was reserved as a `running` PM resolver
+  // in `promotion-job/branch/hgd-growth-v1` since 2026-05-06, the Hub
+  // allocator wrapped, and the BATCH-3-GATE PM prompt landed on it).
+  return (state.pm_resolvers ?? []).some((entry) => (
+    entry.thread_id === normalizedCandidate
+    && isActivePmResolverReservationStatus(entry.status)
+  ));
 }
 
 /**

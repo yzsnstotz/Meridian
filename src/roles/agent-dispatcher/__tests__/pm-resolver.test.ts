@@ -154,6 +154,105 @@ describe("buildPmResolverPrompt", () => {
     }
   });
 
+  it("retries the PM resolver spawn when Meridian returns a thread id reserved by another plan (regression: BATCH-3-GATE codex_19 N-02 bleed)", async () => {
+    // Models the agent-dispatcher-8eb13a31 BATCH-3-GATE incident on
+    // 2026-05-14. Without this protection, a Hub allocator wrap can re-hand a
+    // `codex_NN` whose underlying agent session is still running another role
+    // (here a stale `running` PM resolver in another plan); the new PM prompt
+    // then lands on the live session and the codex agent emits content for
+    // the stale task instead of resolving the new one.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-collision-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    await fs.writeFile(dispatchPlanPath, "# plan\n", "utf8");
+
+    // Other plan that pins the colliding thread id as a `running` PM resolver.
+    const otherDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-collision-other-"));
+    const otherDispatchPlanPath = path.join(otherDir, "dispatch_plan.md");
+    await fs.writeFile(otherDispatchPlanPath, "# other plan\n", "utf8");
+    const otherStore = new LifecycleStore(
+      path.join(otherDir, "dispatch_threads.json"),
+      { dispatchPlanPath: otherDispatchPlanPath }
+    );
+    otherStore.save({
+      version: 2,
+      dispatcher: { thread_id: null, started_at: null, status: "pending" },
+      workers: {},
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-collision",
+          status: "running",
+          started_at: "2026-05-06T00:00:00.000Z",
+          last_seen_at: "2026-05-06T00:00:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5",
+          mode: "bridge",
+          auto_approve: true,
+          issue: { status: "manual_intervention_required", worker_id: null, message: null, error: null, source: "watchdog" },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: null
+    });
+
+    const spawn = vi.fn()
+      .mockResolvedValueOnce({ threadId: "pm-thread-collision" })
+      .mockResolvedValueOnce({ threadId: "pm-thread-collision" })
+      .mockResolvedValueOnce({ threadId: "pm-thread-fresh" });
+    const run = vi.fn(async () => ({
+      threadId: "pm-thread-fresh",
+      status: "success" as const,
+      runState: "completed" as const,
+      content: "PM resolved.",
+      raw: {
+        trace_id: "55555555-5555-4555-8555-555555555555",
+        timestamp: "2026-05-14T06:00:00.000Z"
+      }
+    }));
+    const kill = vi.fn(async () => ({ threadId: "pm-thread-fresh", status: "killed", raw: {} }));
+    const meridianApi: MeridianApiClient = { spawn, run, kill };
+
+    try {
+      const result = await startPmResolver({
+        dispatcherId: "agent-dispatcher-pm",
+        config: {
+          ...config,
+          dispatch_plan_path: dispatchPlanPath
+        },
+        issue: {
+          status: "manual_intervention_required",
+          workerId: "BATCH-3-GATE",
+          source: "watchdog",
+          message: "BATCH-3-GATE reported a blocking failure"
+        },
+        otherDispatchPlanPaths: [otherDispatchPlanPath]
+      }, { meridianApi });
+
+      expect(result).toEqual({
+        ok: true,
+        status: "pm_resolver_started",
+        thread_id: "pm-thread-fresh",
+        message: "PM resolver started for BATCH-3-GATE"
+      });
+      expect(spawn).toHaveBeenCalledTimes(3);
+      // Cross-plan collision must NOT kill the colliding thread (it's the
+      // other plan's live agent). Only the post-run kill of the fresh thread
+      // is expected.
+      await waitForExpect(() => {
+        expect(kill).toHaveBeenCalledTimes(1);
+        expect(kill).toHaveBeenCalledWith("pm-thread-fresh");
+      });
+      expect(run).toHaveBeenCalledWith({
+        threadId: "pm-thread-fresh",
+        content: expect.stringContaining("BATCH-3-GATE")
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+      await fs.rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
   it("records PM resolver start and completion in the dispatch lifecycle sidecar", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

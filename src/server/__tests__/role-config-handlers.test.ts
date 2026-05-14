@@ -412,7 +412,8 @@ describe("role config handlers", () => {
         message: "Worker is blocked",
         error: "Missing credentials",
         source: "dispatcher"
-      }
+      },
+      otherDispatchPlanPaths: []
     });
   });
 
