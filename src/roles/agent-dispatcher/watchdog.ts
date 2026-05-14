@@ -12,6 +12,7 @@ import type {
   KillPolicy
 } from "../../types";
 import type { Logger } from "../base-role";
+import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 import { autoResolve } from "./auto-resolver";
 import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
 import {
@@ -173,6 +174,8 @@ export class ReconciliationWatchdog {
 
         reports.push(report);
 
+        await this.reconcilePmResolverLiveness(lifecycleStore, dispatchPlanPath);
+
         await this.cleanupTerminalWorkerThreads(lifecycleStore, dispatchPlanPath, dispatchPlanPaths);
 
         if (this.autoResolveConfig) {
@@ -217,6 +220,91 @@ export class ReconciliationWatchdog {
 
     return reports;
   }
+  /**
+   * Steady-state PM resolver liveness reconciliation. Mirrors
+   * `findLivePmResolversForWorker` (PR #212) but runs on every watchdog sweep
+   * instead of only at the relaunch / duplicate-spawn gate, so a PM resolver
+   * killed externally (operator kill via Hub GUI, hub spawn-retry id-swap,
+   * etc.) gets evicted from the lifecycle even when nothing has triggered a
+   * continue tick. Without this sweep step, the dispatcher AI can be idle
+   * (DISPATCHER worker terminal, hub thread alive but quiescent) and the
+   * stale `running` PM record sits forever blocking worker relaunch — observed
+   * on agent-dispatcher-67f6a3fc W-01 codex_04 (operator killed PM via hub
+   * GUI at 13:28:20; relaunch gate never re-probed because no continue tick
+   * fired). The orphan-codex guard (`isAgentapiProcessAliveForThread`) keeps
+   * the entry if the agentapi socket is still owned by a live codex CLI, so
+   * we don't race ahead of a PM that hasn't delivered yet.
+   */
+  private async reconcilePmResolverLiveness(
+    lifecycleStore: LifecycleStore,
+    dispatchPlanPath: string
+  ): Promise<void> {
+    let state: DispatchThreadStateV2;
+    try {
+      state = lifecycleStore.load();
+    } catch (error) {
+      this.log.warn("Watchdog: failed to read lifecycle state for PM resolver liveness sweep", {
+        dispatchPlanPath,
+        error: asError(error).message
+      });
+      return;
+    }
+
+    const runningEntries = (state.pm_resolvers ?? []).filter(
+      (entry) => entry.status === "running"
+    );
+    if (runningEntries.length === 0) {
+      return;
+    }
+
+    for (const entry of runningEntries) {
+      const pmThreadId = entry.thread_id?.trim();
+      if (!pmThreadId) {
+        continue;
+      }
+
+      let observationKind: "missing" | "failed" | "running" | "idle" | "completed";
+      try {
+        const observation = await queryHubThreadObservation(this.hubClient, pmThreadId);
+        observationKind = observation.kind;
+      } catch (error) {
+        this.log.warn("Watchdog: PM resolver liveness probe failed", {
+          event: "watchdog_pm_resolver_liveness_probe_error",
+          dispatchPlanPath,
+          pm_thread_id: pmThreadId,
+          worker_id: entry.issue?.worker_id ?? null,
+          error: asError(error).message
+        });
+        continue;
+      }
+
+      if (observationKind !== "missing" && observationKind !== "failed") {
+        continue;
+      }
+
+      if (isAgentapiProcessAliveForThread(pmThreadId)) {
+        this.log.warn("Watchdog: PM resolver missing from hub registry but agentapi process is still alive; preserving entry", {
+          event: "watchdog_pm_resolver_hub_missing_codex_alive",
+          dispatchPlanPath,
+          pm_thread_id: pmThreadId,
+          worker_id: entry.issue?.worker_id ?? null,
+          observed_status: observationKind
+        });
+        continue;
+      }
+
+      const reason = `watchdog_pm_thread_missing: hub_status=${observationKind}`;
+      lifecycleStore.markPmResolverThreadMissing(pmThreadId, reason);
+      this.log.info("Watchdog: evicted stale PM resolver thread from lifecycle", {
+        event: "watchdog_pm_resolver_evicted",
+        dispatchPlanPath,
+        pm_thread_id: pmThreadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        observed_status: observationKind
+      });
+    }
+  }
+
   /**
    * Enforce kill_policy for any worker that has settled into a terminal
    * lifecycle status with a still-recorded thread id. The run-tool's
