@@ -5277,7 +5277,7 @@ describe("role config handlers", () => {
     }
   });
 
-  it("does not project completed while a finished worker still needs validation", async () => {
+  it("projects completed when a force-complete worker is in status=completed without a validator score (regression: agent-dispatcher-8eb13a31 V-01-A 2026-05-14)", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-list-validation-pending-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -5349,18 +5349,26 @@ describe("role config handlers", () => {
     try {
       const harness = createHarness(persistedState);
 
+      // Force-complete is a legitimate operator override path (update-status
+      // --status completed, resume-worker --action force-complete, PM
+      // pm_action: force_complete). It produces `status: completed` without
+      // populating validation.last_score. The settle predicate must trust
+      // the authoritative `completed` lifecycle state — without this carve-
+      // out the dispatcher role pinned at `active` indefinitely on
+      // agent-dispatcher-8eb13a31 V-01-A 2026-05-14 after all plan rows
+      // were ✅ and every worker was status: completed.
       await expect(invokeJson<Array<{ thread_id: string; status: string }>>(harness.roleHandlers, "GET", "/api/roles")).resolves.toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             thread_id: "agent-dispatcher-validation-pending",
-            status: "active",
+            status: "completed",
             task_count: 1
           })
         ])
       );
       await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-validation-pending")).resolves.toMatchObject({
         thread_id: "agent-dispatcher-validation-pending",
-        status: "active"
+        status: "completed"
       });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

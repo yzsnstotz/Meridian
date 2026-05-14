@@ -1904,12 +1904,15 @@ function isCompletedWorkerValidationSatisfied(
     return false;
   }
 
-  const score = worker.validation?.last_score;
-  if (typeof score !== "number") {
-    return false;
-  }
-
-  return isValidatorResultPassing(validatorConfig, row, score);
+  // Lifecycle wins: a force-complete operator override (`update-status`,
+  // `resume-worker --action force-complete`, PM `pm_action: force_complete`)
+  // writes `worker.status === "completed"` WITHOUT producing a numeric
+  // `validation.last_score`. The settle/role-status predicate must trust the
+  // authoritative `completed` lifecycle state — see the index.ts twin for
+  // the BATCH-3-GATE / V-01-A 2026-05-14 incident motivating this carve-out.
+  // Without it, the GUI status pinned at `active` indefinitely after every
+  // plan row was terminal.
+  return true;
 }
 
 async function persistAgentDispatcherRoleStatus(

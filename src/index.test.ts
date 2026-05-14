@@ -478,6 +478,124 @@ describe("resolveDispatchPlanPathsFromState", () => {
     });
   });
 
+  it("settles a dispatcher whose only outstanding row is `completed` via force-complete (no validator score) — regression: agent-dispatcher-8eb13a31 V-01-A 2026-05-14", async () => {
+    // Scenario: validator is enabled at the role level, every plan row is ✅,
+    // every lifecycle worker is `status: completed`. One row reached
+    // `completed` via a force-complete operator override (`update-status
+    // --status completed` / `resume-worker --action force-complete` / PM
+    // `pm_action: force_complete`), so `validation.last_score` is null.
+    // Without trusting `worker.status === "completed"` as authoritative,
+    // `isCompletedWorkerValidationSatisfied` returned false and the role
+    // stayed `active` indefinitely after every other row settled normally.
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-index-force-complete-settle-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| ✅ | 1 | R-01 | impl | CODEX | - | normal validator pass |",
+      "| ✅ | 2 | V-01-A | observation | CODEX | R-01 | force-completed via update-status |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(path.join(directory, "dispatch_threads.json"), `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "codex_01",
+        started_at: "2026-05-14T05:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-01": {
+          thread_id: "codex_02",
+          trace_id: null,
+          started_at: "2026-05-14T05:01:00.000Z",
+          last_seen_at: "2026-05-14T05:30:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 1,
+            max_fix_cycles: 5,
+            validator_thread_id: "codex_validator_r01",
+            last_score: 1,
+            last_feedback: "pass",
+            history: []
+          }
+        },
+        "V-01-A": {
+          thread_id: "codex_03",
+          trace_id: null,
+          started_at: "2026-05-14T06:55:00.000Z",
+          last_seen_at: "2026-05-14T07:21:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 5,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-force-complete-settle",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: AgentDispatcherConfigSchema.parse({
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: path.join(directory, "dispatch_command.md"),
+            dispatch_repo_root: directory,
+            docs_root: directory,
+            user_reply_channels: [{ channel: "web", chat_id: "web:ops" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            auto_approve: true,
+            validator: {
+              enabled: true,
+              agent_type: "codex",
+              model_id: "gpt-5.5 xhigh",
+              mode: "stateless_call",
+              auto_approve: false,
+              threshold_type: "binary",
+              pass_threshold: 0.7,
+              max_fix_cycles: 5,
+              base_branch: "main"
+            }
+          })
+        }
+      ],
+      promptStore: {}
+    });
+
+    // Plan should NOT be returned for further reconciliation, and the role
+    // should be flipped to terminal `completed`.
+    await expect(resolveDispatchPlanPathsFromState(stateStore)).resolves.toEqual([]);
+    await expect(stateStore.load()).resolves.toMatchObject({
+      roles: [
+        {
+          threadId: "agent-dispatcher-force-complete-settle",
+          status: "completed"
+        }
+      ]
+    });
+  });
+
   it("still settles an abandoned dispatcher when the expected_output mtime did not advance past last_seen_at", async () => {
     // Sanity check that the new recovery gate is scoped: a stale prior-
     // attempt artifact that has NOT been touched since last_seen_at must not
