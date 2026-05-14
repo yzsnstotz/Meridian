@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { A2AClient } from "../../../a2a/client";
 import type { HubMessage, HubResult } from "../../../types";
 import killTool from "../../../tool-gateway/tools/kill";
+import * as activeToolProcess from "../active-tool-process";
 import { continueDispatchWorker } from "../continue-worker";
 import { buildEmptyDispatchThreadStateV2, LifecycleStore } from "../lifecycle-store";
 import { reconciliationFs } from "../reconciler";
@@ -1699,6 +1700,223 @@ describe("ReconciliationWatchdog", () => {
     await watchdog.sweep();
 
     expect(killThread).not.toHaveBeenCalledWith("codex_38");
+  });
+});
+
+describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
+  it("evicts a stale PM resolver whose hub thread is missing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const storePath = path.join(harness.directory, "dispatch_threads.json");
+    const store = new LifecycleStore(storePath);
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-stale",
+          status: "running",
+          started_at: "2026-04-03T12:30:00.000Z",
+          last_seen_at: "2026-04-03T12:30:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ]
+    });
+
+    const { hubClient } = createHubClient((message) => ({
+      trace_id: "trace",
+      thread_id: message.target,
+      source: "codex",
+      status: "error",
+      content: `unknown thread: no registered agent instance found for thread_id=${message.target}`,
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+
+    vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread").mockReturnValue(false);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find((e) => e.thread_id === "pm-thread-stale");
+    expect(entry?.status).toBe("failed");
+  });
+
+  it("preserves a hub-missing PM resolver whose agentapi codex process is still alive", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-orphan",
+          status: "running",
+          started_at: "2026-04-03T12:30:00.000Z",
+          last_seen_at: "2026-04-03T12:30:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ]
+    });
+
+    const { hubClient } = createHubClient((message) => ({
+      trace_id: "trace",
+      thread_id: message.target,
+      source: "codex",
+      status: "error",
+      content: `unknown thread: no registered agent instance found for thread_id=${message.target}`,
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+
+    vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread").mockReturnValue(true);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find((e) => e.thread_id === "pm-thread-orphan");
+    expect(entry?.status).toBe("running");
+  });
+
+  it("preserves a PM resolver whose hub thread is still live", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-live",
+          status: "running",
+          started_at: "2026-04-03T12:30:00.000Z",
+          last_seen_at: "2026-04-03T12:30:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ]
+    });
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.target, "running"));
+    const aliveSpy = vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread");
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find((e) => e.thread_id === "pm-thread-live");
+    expect(entry?.status).toBe("running");
+    expect(aliveSpy).not.toHaveBeenCalled();
   });
 });
 
