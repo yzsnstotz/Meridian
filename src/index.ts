@@ -750,6 +750,20 @@ const PM_RESOLVER_WATCHDOG_STATUSES = new Set<ContinueDispatcherResponse["status
   "local_tool_bootstrap_failed"
 ]);
 
+export function buildWatchdogPmResolverIssueKey(
+  threadId: string,
+  issueStatus: ContinueDispatcherResponse["status"],
+  issueWorkerId: string | null | undefined,
+  workerStartedAt: string | null | undefined
+): string {
+  return [
+    threadId,
+    issueStatus,
+    issueWorkerId ?? "",
+    workerStartedAt ?? ""
+  ].join("\u0000");
+}
+
 async function maybeStartPmResolverForWatchdogRecovery(
   stateStore: StateStore,
   threadId: string,
@@ -796,11 +810,25 @@ async function maybeStartPmResolverForWatchdogRecovery(
     issueMessage = `manual intervention required: ${exhaustedWorkerId} exhausted automatic retries after ${exhaustedStatus}`;
   }
 
-  const issueKey = [
+  // The set is process-lifetime and previously was only deleted on PM spawn
+  // failure, so a successful PM that "recovered" a worker to `pending` left
+  // its key cached forever. The next worker run that re-emitted needs_pm /
+  // blocked short-circuited here before reaching the time-aware lifecycle
+  // gate `hasPmResolverHandledCurrentWorkerIssue` below (observed on
+  // agent-dispatcher-8eb13a31 BATCH-3-GATE: PM codex_11 recovered the worker,
+  // codex_17 relaunched, re-emitted needs_pm, then no new PM ever spawned).
+  // Folding `worker.started_at` into the key mirrors the same time semantics
+  // the lifecycle gate already enforces, so a fresh worker run gets a fresh
+  // key. Fall back to the legacy key when the worker is absent.
+  const workerStartedAtForKey = issueWorkerId
+    ? lifecycleState?.workers[issueWorkerId]?.started_at ?? null
+    : null;
+  const issueKey = buildWatchdogPmResolverIssueKey(
     threadId,
     issueStatus,
-    issueWorkerId ?? ""
-  ].join("\u0000");
+    issueWorkerId,
+    workerStartedAtForKey
+  );
   if (seenIssueKeys.has(issueKey)) {
     log.info("Watchdog stall: PM resolver already requested for this issue", {
       threadId,
