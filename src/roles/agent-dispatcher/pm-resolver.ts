@@ -4,7 +4,8 @@ import type { AgentDispatcherConfig } from "../../types";
 import { LifecycleStore } from "./lifecycle-store";
 import {
   createMeridianApiClient,
-  type MeridianApiClient
+  type MeridianApiClient,
+  type MeridianSpawnRequest
 } from "./meridian-api-client";
 import {
   resolveConfiguredDispatchRepoRoot,
@@ -15,6 +16,13 @@ import {
   PM_RESOLVER_ACTIONS,
   PM_RESOLVER_MARKER_OUTCOMES
 } from "./meridian-status-marker";
+import {
+  createLifecycleThreadIdCollisionError,
+  isLifecycleThreadIdLiveWorkerThread,
+  isLifecycleThreadIdReserved,
+  isThreadIdReservedAcrossOtherDispatchPlans,
+  killCollidedSpawnedThread
+} from "./thread-id-reservation";
 import { MERIDIAN_TOOL_DISPLAY_COMMAND } from "./tool-entrypoint";
 
 export interface PmResolverIssueContext {
@@ -29,7 +37,25 @@ export interface PmResolverRequest {
   dispatcherId: string;
   config: AgentDispatcherConfig;
   issue: PmResolverIssueContext;
+  /**
+   * Dispatch plan paths of OTHER active agent-dispatcher roles. Used to refuse
+   * a PM resolver spawn whose returned `thread_id` is already reserved by
+   * another role's lifecycle sidecar. Without this, a Hub allocator wrap can
+   * hand back a `codex_NN` whose underlying agent session is still serving
+   * another role (worker, validator, dispatcher, or PM resolver) — the new PM
+   * prompt then lands on the live session and the agent emits content for the
+   * stale task instead of resolving the new one (observed on
+   * `agent-dispatcher-8eb13a31` BATCH-3-GATE: PM resolver `codex_19` produced
+   * an N-02 validator MERIDIAN-STATUS block while another plan kept `codex_19`
+   * reserved as a `running` PM resolver since 2026-05-06).
+   *
+   * Optional for backward compatibility — callers that omit this fall back to
+   * same-plan collision protection only.
+   */
+  otherDispatchPlanPaths?: readonly string[];
 }
+
+const PM_RESOLVER_SPAWN_MAX_ATTEMPTS = 3;
 
 export type PmResolverResult =
   | {
@@ -79,24 +105,30 @@ export async function startPmResolver(
     });
   const spawnDir = resolveConfiguredDispatchRepoRoot(request.config) ?? path.dirname(request.config.dispatch_plan_path);
   const { modelId, effort } = parseModelIdWithEffort(pmConfig.model_id);
-  const spawned = await meridianApi.spawn({
-    agentType: pmConfig.agent_type,
-    mode: pmConfig.mode,
-    spawnDir,
-    modelId,
-    effort,
-    autoApprove: pmConfig.auto_approve
+  const spawnedThreadId = await spawnPmResolverWithReservedThreadRetry({
+    meridianApi,
+    spawnRequest: {
+      agentType: pmConfig.agent_type,
+      mode: pmConfig.mode,
+      spawnDir,
+      modelId,
+      effort,
+      autoApprove: pmConfig.auto_approve
+    },
+    dispatchPlanPath: request.config.dispatch_plan_path,
+    otherDispatchPlanPaths: request.otherDispatchPlanPaths ?? [],
+    log: deps.log
   });
-  safeRecordPmResolverStart(lifecycleStore, request, spawned.threadId, deps.log);
+  safeRecordPmResolverStart(lifecycleStore, request, spawnedThreadId, deps.log);
   const prompt = buildPmResolverPrompt(request);
   const run = meridianApi.run({
-    threadId: spawned.threadId,
+    threadId: spawnedThreadId,
     content: prompt
   });
 
   run.then((result) => {
-    safeRecordPmResolverResult(lifecycleStore, spawned.threadId, result, deps.log);
-    void safeKillPmResolver(meridianApi, spawned.threadId, request.dispatcherId, deps.log);
+    safeRecordPmResolverResult(lifecycleStore, spawnedThreadId, result, deps.log);
+    void safeKillPmResolver(meridianApi, spawnedThreadId, request.dispatcherId, deps.log);
   }).catch((error) => {
     // Transport-class rejection (hub overload, Meridian-API unreachable,
     // request timeout, IPC drop). The PM agent process may still be alive;
@@ -108,18 +140,90 @@ export async function startPmResolver(
     const errorMessage = error instanceof Error ? error.message : String(error);
     deps.log?.warn("PM resolver run rejected; retaining thread for human takeover", {
       dispatcherId: request.dispatcherId,
-      threadId: spawned.threadId,
+      threadId: spawnedThreadId,
       error: errorMessage
     });
-    safeRecordPmResolverTransportStall(lifecycleStore, spawned.threadId, errorMessage, deps.log);
+    safeRecordPmResolverTransportStall(lifecycleStore, spawnedThreadId, errorMessage, deps.log);
   });
 
   return {
     ok: true,
     status: "pm_resolver_started",
-    thread_id: spawned.threadId,
+    thread_id: spawnedThreadId,
     message: `PM resolver started for ${request.issue.workerId ?? request.issue.status}`
   };
+}
+
+interface SpawnPmResolverWithReservedThreadRetryOptions {
+  meridianApi: MeridianApiClient;
+  spawnRequest: MeridianSpawnRequest;
+  dispatchPlanPath: string;
+  otherDispatchPlanPaths: readonly string[];
+  log?: Pick<typeof console, "warn">;
+}
+
+/**
+ * Spawn a PM resolver thread, refusing thread ids that are still reserved by
+ * the same plan's lifecycle sidecar or by another active dispatcher plan.
+ *
+ * Mirrors `spawnValidatorWithReservedThreadRetry` in
+ * `validator-orchestrator.ts` and the worker / dispatcher launcher equivalents.
+ * Without this guard the Hub allocator can wrap back to a low `codex_NN` whose
+ * underlying agent session is still serving another role; the new PM prompt
+ * would then land on that live session instead of a fresh one (root cause of
+ * the agent-dispatcher-8eb13a31 BATCH-3-GATE → codex_19 N-02-validator-bleed
+ * incident on 2026-05-14).
+ */
+async function spawnPmResolverWithReservedThreadRetry(
+  options: SpawnPmResolverWithReservedThreadRetryOptions
+): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < PM_RESOLVER_SPAWN_MAX_ATTEMPTS; attempt += 1) {
+    const spawnResult = await options.meridianApi.spawn(options.spawnRequest);
+
+    const reservedHere = isLifecycleThreadIdReserved(
+      options.dispatchPlanPath,
+      spawnResult.threadId
+    );
+    const reservedCrossPlan = isThreadIdReservedAcrossOtherDispatchPlans(
+      options.otherDispatchPlanPaths,
+      spawnResult.threadId
+    );
+    if (!reservedHere && !reservedCrossPlan) {
+      return spawnResult.threadId;
+    }
+
+    // Mirrors the validator/worker carve-out: if the colliding id is the live
+    // worker thread on our own plan, killing it would terminate the worker
+    // mid-flight; if it is reserved by another plan, killing it would take out
+    // that plan's live agent. Skip the orphan-kill in either case.
+    const collidesWithLiveWorker = isLifecycleThreadIdLiveWorkerThread(
+      options.dispatchPlanPath,
+      spawnResult.threadId
+    );
+    const skipKill = collidesWithLiveWorker || reservedCrossPlan;
+    if (!skipKill) {
+      await killCollidedSpawnedThread(
+        options.meridianApi,
+        spawnResult.threadId,
+        "PM resolver spawn"
+      );
+    }
+    lastError = createLifecycleThreadIdCollisionError(spawnResult.threadId);
+    if (attempt < PM_RESOLVER_SPAWN_MAX_ATTEMPTS - 1) {
+      options.log?.warn("PM resolver spawn returned reserved lifecycle thread id, retrying", {
+        event: "pm_resolver_spawn_thread_id_collision_retry",
+        thread_id: spawnResult.threadId,
+        attempt: attempt + 1,
+        skipped_kill: skipKill,
+        cross_plan: reservedCrossPlan,
+        error: lastError.message
+      });
+    }
+  }
+
+  throw lastError ?? new Error("PM resolver spawn failed: no attempts completed");
 }
 
 async function safeKillPmResolver(

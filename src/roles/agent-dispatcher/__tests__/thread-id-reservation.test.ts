@@ -4,9 +4,16 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { DispatchThreadStateV2, DispatchWorkerState, LifecycleStatus } from "../../../types";
+import type {
+  DispatchThreadStateV2,
+  DispatchWorkerState,
+  LifecycleStatus,
+  PmResolverLifecycleState,
+  PmResolverLifecycleStatus
+} from "../../../types";
 import { LifecycleStore } from "../lifecycle-store";
 import {
+  isActivePmResolverReservationStatus,
   isActiveThreadReservationStatus,
   isThreadIdKnownInLifecycleState,
   isThreadIdReservedAcrossOtherDispatchPlans,
@@ -26,6 +33,16 @@ describe("isActiveThreadReservationStatus", () => {
     ["skipped", false]
   ])("status %s reserves: %s", (status, expected) => {
     expect(isActiveThreadReservationStatus(status)).toBe(expected);
+  });
+});
+
+describe("isActivePmResolverReservationStatus", () => {
+  it.each<[PmResolverLifecycleStatus, boolean]>([
+    ["running", true],
+    ["completed", false],
+    ["failed", false]
+  ])("status %s reserves: %s", (status, expected) => {
+    expect(isActivePmResolverReservationStatus(status)).toBe(expected);
   });
 });
 
@@ -109,6 +126,20 @@ describe("isThreadIdReservedInLifecycleState", () => {
     expect(isThreadIdReservedInLifecycleState(state, "")).toBe(false);
     expect(isThreadIdReservedInLifecycleState(state, "   ")).toBe(false);
   });
+
+  it("reserves a running PM resolver thread id but not terminal ones", () => {
+    const state = buildState({
+      pm_resolvers: [
+        pmResolver({ thread_id: "codex_pm_running", status: "running" }),
+        pmResolver({ thread_id: "codex_pm_done", status: "completed" }),
+        pmResolver({ thread_id: "codex_pm_failed", status: "failed" })
+      ]
+    });
+
+    expect(isThreadIdReservedInLifecycleState(state, "codex_pm_running")).toBe(true);
+    expect(isThreadIdReservedInLifecycleState(state, "codex_pm_done")).toBe(false);
+    expect(isThreadIdReservedInLifecycleState(state, "codex_pm_failed")).toBe(false);
+  });
 });
 
 describe("isThreadIdKnownInLifecycleState", () => {
@@ -146,6 +177,7 @@ describe("isThreadIdKnownInLifecycleState", () => {
 function buildState(overrides: {
   dispatcher?: Partial<DispatchThreadStateV2["dispatcher"]>;
   workers?: DispatchThreadStateV2["workers"];
+  pm_resolvers?: PmResolverLifecycleState[];
 }): DispatchThreadStateV2 {
   return {
     version: 2,
@@ -156,7 +188,28 @@ function buildState(overrides: {
       ...overrides.dispatcher
     },
     workers: overrides.workers ?? {},
+    pm_resolvers: overrides.pm_resolvers,
     last_reconciled_at: null
+  };
+}
+
+function pmResolver(overrides: {
+  thread_id: string;
+  status: PmResolverLifecycleStatus;
+}): PmResolverLifecycleState {
+  return {
+    thread_id: overrides.thread_id,
+    status: overrides.status,
+    started_at: "2026-05-04T00:00:00.000Z",
+    last_seen_at: "2026-05-04T00:00:00.000Z",
+    agent_type: "codex",
+    model_id: "gpt-5",
+    mode: "bridge",
+    auto_approve: true,
+    issue: { status: "manual_intervention_required", worker_id: null, message: null, error: null, source: "watchdog" },
+    result: null,
+    error: null,
+    transport_error: null
   };
 }
 
@@ -221,6 +274,18 @@ describe("isThreadIdReservedAcrossOtherDispatchPlans", () => {
     });
 
     expect(isThreadIdReservedAcrossOtherDispatchPlans([otherPlan], "codex_42")).toBe(true);
+  });
+
+  it("returns true when another plan's running PM resolver pins the id (regression: BATCH-3-GATE codex_19 N-02 bleed)", async () => {
+    // Models the agent-dispatcher-8eb13a31 incident: codex_19 was reserved as
+    // a `running` PM resolver in `promotion-job/branch/hgd-growth-v1` since
+    // 2026-05-06; the Hub allocator wrapped and a fresh PM spawn for
+    // BATCH-3-GATE landed on it.
+    const otherPlan = await writePlanState({
+      pm_resolvers: [pmResolver({ thread_id: "codex_19", status: "running" })]
+    });
+
+    expect(isThreadIdReservedAcrossOtherDispatchPlans([otherPlan], "codex_19")).toBe(true);
   });
 
   it("returns false for an empty candidate or empty plan list", async () => {
