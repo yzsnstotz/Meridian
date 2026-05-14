@@ -1353,7 +1353,25 @@ function isCompletedWorkerValidationSatisfied(
     return true;
   }
 
-  const score = lifecycleState.workers[row.worker_id]?.validation?.last_score;
+  const worker = lifecycleState.workers[row.worker_id];
+
+  // Lifecycle wins: when `worker.status === "completed"` the lifecycle store
+  // has authoritatively recorded the row as done. Force-complete operator
+  // overrides — `meridian-tool update-status --status completed`,
+  // `resume-worker --action force-complete`, and PM resolver
+  // `pm_action: force_complete` — all reach this state WITHOUT producing a
+  // numeric `validation.last_score`. Re-litigating validator policy here
+  // pins the entire dispatcher role at `active` even when every plan row is
+  // ✅ and every lifecycle worker is `completed` (observed on
+  // agent-dispatcher-8eb13a31 V-01-A on 2026-05-14: one force-completed row
+  // kept the role active indefinitely after all 14 rows were terminal). The
+  // settle predicate must trust an authoritative `completed` lifecycle state
+  // the same way it already trusts `skipped`.
+  if (worker?.status === "completed") {
+    return true;
+  }
+
+  const score = worker?.validation?.last_score;
   return typeof score === "number" && isValidatorResultPassing(validatorConfig, continuationRow, score);
 }
 
