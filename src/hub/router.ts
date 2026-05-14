@@ -1113,12 +1113,13 @@ export class HubRouter {
     const instances = this.instanceManager
       .list()
       .filter((instance) => shouldListInstance(instance));
+    let __statusRefreshed = false;
     const listedInstances = await Promise.all(instances.map(async (instance) => {
       let currentInstance = instance;
       if (typeof this.instanceManager.status === "function") {
         try {
           currentInstance = (await this.instanceManager.status(currentInstance.thread_id)).instance;
-          this.persistStateSafely();
+          __statusRefreshed = true;
         } catch (error) {
           this.log.debug(
             {
@@ -1167,6 +1168,9 @@ export class HubRouter {
         last_interaction_at: lastEntry?.timestamp ?? null
       };
     }));
+    if (__statusRefreshed) {
+      this.persistStateSafely();
+    }
     const content = listedInstances.length === 0 ? "No active agent instances." : JSON.stringify(listedInstances, null, 2);
     return this.buildResult(message, "success", this.resolveResultSource(message), content);
   }
