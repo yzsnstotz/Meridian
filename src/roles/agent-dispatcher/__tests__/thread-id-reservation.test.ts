@@ -209,7 +209,9 @@ function pmResolver(overrides: {
     issue: { status: "manual_intervention_required", worker_id: null, message: null, error: null, source: "watchdog" },
     result: null,
     error: null,
-    transport_error: null
+    transport_error: null,
+    marker_outcome: null,
+    marker_pm_action: null
   };
 }
 

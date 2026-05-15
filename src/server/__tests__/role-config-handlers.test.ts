@@ -471,7 +471,9 @@ describe("role config handlers", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: null
@@ -584,7 +586,9 @@ describe("role config handlers", () => {
           },
           result: null,
           error: null,
-          transport_error: "run failed: Request timed out — the hub may be overloaded."
+          transport_error: "run failed: Request timed out — the hub may be overloaded.",
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: null
@@ -1377,7 +1381,9 @@ describe("role config handlers", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: null
@@ -1466,7 +1472,9 @@ describe("role config handlers", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: null
@@ -1587,7 +1595,9 @@ describe("role config handlers", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: null

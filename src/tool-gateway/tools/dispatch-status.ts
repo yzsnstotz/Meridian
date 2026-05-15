@@ -570,7 +570,9 @@ function buildRecoveredPmResolverEntry(
       timestamp: hubResult.timestamp
     },
     error: null,
-    transport_error: null
+    transport_error: null,
+    marker_outcome: null,
+    marker_pm_action: null
   };
 }
 

@@ -1746,7 +1746,9 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ]
     });
@@ -1820,7 +1822,9 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ]
     });
@@ -1894,7 +1898,9 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ]
     });
@@ -1970,7 +1976,9 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
           },
           result: null,
           error: null,
-          transport_error: "run failed: Request timed out — the hub may be overloaded."
+          transport_error: "run failed: Request timed out — the hub may be overloaded.",
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ]
     });

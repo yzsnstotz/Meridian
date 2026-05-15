@@ -156,6 +156,62 @@ describe("watchdog PM resolver repeat guard", () => {
 
     expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(false);
   });
+
+  // Regression: agent-dispatcher-67f6a3fc W-15 on 2026-05-15 piled up 7 PM
+  // resolvers within ~30 minutes against the same unresolvable Cloudflare
+  // credential blocker because each `resume-worker --action retry --force true`
+  // advanced worker.started_at past the prior escalation entry, reopening the
+  // started_at-based gate. The escalation verdict must close the gate until a
+  // human acknowledges via /human-resolve, regardless of how many times the
+  // worker has been retried since.
+  it("treats an escalate_human PM resolver as handled even when the worker has been retried since", () => {
+    const state = buildPmResolverGuardState({
+      // Worker has been retried well AFTER the PM ran — pre-patch this would
+      // have reopened the gate.
+      workerStartedAt: "2026-05-15T11:00:00.000Z",
+      pmStartedAt: "2026-05-15T10:19:00.000Z",
+      pmLastSeenAt: "2026-05-15T10:19:30.000Z",
+      pmStatus: "completed",
+      markerOutcome: "escalated",
+      markerPmAction: "escalate_human"
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(true);
+  });
+
+  it("releases the escalation freeze once /human-resolve stamps human_resolution after the PM entry", () => {
+    const state = buildPmResolverGuardState({
+      // Worker retried after the human acknowledged.
+      workerStartedAt: "2026-05-15T11:00:00.000Z",
+      pmStartedAt: "2026-05-15T10:19:00.000Z",
+      pmLastSeenAt: "2026-05-15T10:19:30.000Z",
+      pmStatus: "completed",
+      markerOutcome: "escalated",
+      markerPmAction: "escalate_human",
+      humanResolvedAt: "2026-05-15T10:45:00.000Z"
+    });
+
+    // Human acknowledged AND worker.started_at advanced past pmStartedAt: gate
+    // falls back to the normal started_at timing semantics, which says this
+    // run is unhandled and a fresh PM may spawn.
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(false);
+  });
+
+  it("keeps the escalation freeze when human_resolution predates the escalation entry", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-15T11:00:00.000Z",
+      pmStartedAt: "2026-05-15T10:19:00.000Z",
+      pmLastSeenAt: "2026-05-15T10:19:30.000Z",
+      pmStatus: "completed",
+      markerOutcome: "escalated",
+      markerPmAction: "escalate_human",
+      // Stale acknowledgement from a prior escalation cycle — must not
+      // release the current freeze.
+      humanResolvedAt: "2026-05-15T09:00:00.000Z"
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(true);
+  });
 });
 
 describe("buildWatchdogPmResolverIssueKey", () => {
@@ -274,7 +330,9 @@ describe("maybeStartPmResolverForWatchdogRecovery cache eviction", () => {
           },
           result: null,
           error: "watchdog_pm_thread_missing: hub_status=missing",
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: "2026-05-15T03:49:59.964Z"
@@ -387,7 +445,9 @@ describe("maybeStartPmResolverForWatchdogRecovery cache eviction", () => {
           },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: "2026-05-15T03:45:00.000Z"
@@ -443,6 +503,10 @@ function buildPmResolverGuardState(options: {
   workerStartedAt: string;
   pmStartedAt: string;
   pmStatus: "running" | "completed" | "failed";
+  pmLastSeenAt?: string;
+  markerOutcome?: "resolved" | "escalated" | null;
+  markerPmAction?: "retry" | "skip" | "force_complete" | "wait" | "escalate_human" | null;
+  humanResolvedAt?: string | null;
 }): Pick<DispatchThreadStateV2, "workers" | "pm_resolvers"> {
   return {
     workers: {
@@ -455,7 +519,10 @@ function buildPmResolverGuardState(options: {
         expected_outputs: [],
         hub_result: null,
         command_preamble: null,
-        retry_count: 0
+        retry_count: 0,
+        human_resolution: options.humanResolvedAt
+          ? { resolved_at: options.humanResolvedAt, note: null }
+          : undefined
       }
     },
     pm_resolvers: [
@@ -463,7 +530,7 @@ function buildPmResolverGuardState(options: {
         thread_id: "codex_45",
         status: options.pmStatus,
         started_at: options.pmStartedAt,
-        last_seen_at: "2026-05-02T18:00:49.572Z",
+        last_seen_at: options.pmLastSeenAt ?? "2026-05-02T18:00:49.572Z",
         agent_type: "codex",
         model_id: null,
         mode: "bridge",
@@ -477,7 +544,9 @@ function buildPmResolverGuardState(options: {
         },
         result: null,
         error: null,
-        transport_error: null
+        transport_error: null,
+        marker_outcome: options.markerOutcome ?? null,
+        marker_pm_action: options.markerPmAction ?? null
       }
     ]
   };

@@ -3302,7 +3302,7 @@ describe("LifecycleStore", () => {
 
 async function createHarness(options: {
   dispatchPlanPath?: string;
-  log?: { info: (...args: unknown[]) => void };
+  log?: { info: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void };
   planTemplate?: string;
   fallbackHeuristicsEnabled?: boolean;
 } = {}): Promise<{
@@ -3332,7 +3332,9 @@ async function createHarness(options: {
     dispatchPlanPath,
     store: new LifecycleStore(filePath, {
       dispatchPlanPath: options.dispatchPlanPath,
-      log: options.log,
+      log: options.log
+        ? { info: options.log.info, warn: options.log.warn ?? (() => undefined) }
+        : undefined,
       fallbackHeuristicsEnabled: options.fallbackHeuristicsEnabled
     })
   };
