@@ -526,6 +526,128 @@ describe("role config handlers", () => {
     }
   });
 
+  // Regression: agent-dispatcher-67f6a3fc V-01-A 2026-05-15. The PM run
+  // rejected with "Request timed out — the hub may be overloaded", which
+  // `recordPmResolverTransportStall` retains as a `running` entry with
+  // `transport_error` set so the operator can take over via the GUI
+  // talk-box. The /pm-resolve handler probed hub via
+  // `findLivePmResolversForWorker`, hub returned `missing` (agent never
+  // attached), the entry was demoted to `failed`, and a brand-new PM was
+  // spawned — straight into the same overloaded hub. The handler must
+  // honor the transport-stall retention and short-circuit with
+  // `pm_resolver_already_running` so the spawn storm cannot start.
+  it("does not respawn when the existing PM is transport-stalled (hub overloaded)", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolve-transport-stall-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath
+    });
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ❌ | 5 | V-01-A | Validation | CODEX | — | TaskSpec | failed |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-transport-stall",
+        started_at: "2026-05-15T04:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "V-01-A": buildLifecycleWorker({
+          thread_id: "codex_06",
+          status: "failed",
+          retry_count: 0
+        })
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_08",
+          status: "running",
+          started_at: "2026-05-15T04:54:03.316Z",
+          last_seen_at: "2026-05-15T04:54:03.316Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "V-01-A",
+            message: "manual intervention required: V-01-A reported a failed outcome",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: "run failed: Request timed out — the hub may be overloaded."
+        }
+      ],
+      last_reconciled_at: null
+    });
+
+    const startPmResolver = vi.fn(async (): Promise<PmResolverResult> => ({
+      ok: true,
+      status: "pm_resolver_started",
+      thread_id: "should-not-spawn",
+      message: "should-not-spawn"
+    }));
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        startPmResolver
+      );
+
+      await createAgentDispatcherRole(
+        harness.roleHandlers,
+        "agent-dispatcher-pm-transport-stall",
+        dispatchPlanPath
+      );
+
+      await expect(invokeJson<PmResolverResult>(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-pm-transport-stall/pm-resolve",
+        {
+          status: "manual_intervention_required",
+          worker_id: "V-01-A",
+          message: "V-01-A needs PM",
+          source: "dispatcher"
+        }
+      )).resolves.toEqual({
+        ok: true,
+        status: "pm_resolver_already_running",
+        thread_id: "codex_08",
+        message: "PM resolver codex_08 is already resolving worker V-01-A"
+      });
+
+      expect(startPmResolver).not.toHaveBeenCalled();
+
+      // The transport-stalled entry must remain `running` with its
+      // transport_error intact so the GUI surfaces it for human takeover.
+      const after = lifecycleStore.load();
+      const entry = (after.pm_resolvers ?? []).find((e) => e.thread_id === "codex_08");
+      expect(entry?.status).toBe("running");
+      expect(entry?.transport_error).toBe(
+        "run failed: Request timed out — the hub may be overloaded."
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("persists validator config when starting an agent-dispatcher", async () => {
     const harness = createHarness();
 

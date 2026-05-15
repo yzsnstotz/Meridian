@@ -3092,6 +3092,28 @@ async function findLivePmResolversForWorker(
   const live: PmResolverLifecycleState[] = [];
   let evictedCount = 0;
   for (const entry of candidates) {
+    // `recordPmResolverTransportStall` (pm-resolver.ts) explicitly retains the
+    // thread on a transport-class run rejection (hub overload, request timeout,
+    // IPC drop) so the operator can take over via the GUI talk-box. The PM
+    // agent never attached, so a hub-status probe here will always return
+    // `missing` and demote the entry to `failed` — which then allows the
+    // watchdog / pm-resolve handler to spawn a fresh PM that hits the same
+    // overloaded hub and re-stalls, producing the 2-minute PM respawn storm
+    // observed on agent-dispatcher-67f6a3fc V-01-A (codex_08→codex_10→codex_11
+    // within 4 min, each on the same `Request timed out — the hub may be
+    // overloaded.` rejection). Treat transport-stalled entries as live so the
+    // gate blocks respawn; the operator surfaces the transport_error in the
+    // GUI and resolves via talk-box, retry, or human-resolve.
+    if (entry.transport_error) {
+      log.info("PM resolver transport-stalled; preserving entry for human takeover", {
+        event: "pm_resolver_transport_stall_preserved",
+        worker_id: workerId,
+        pm_thread_id: entry.thread_id,
+        transport_error: entry.transport_error
+      });
+      live.push(entry);
+      continue;
+    }
     const alive = await isRecordedPmResolverThreadActive(
       workerId,
       entry.thread_id,

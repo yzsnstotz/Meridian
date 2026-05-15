@@ -1918,6 +1918,92 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
     expect(entry?.status).toBe("running");
     expect(aliveSpy).not.toHaveBeenCalled();
   });
+
+  // Regression: agent-dispatcher-67f6a3fc V-01-A 2026-05-15 PM respawn storm.
+  // `recordPmResolverTransportStall` retains a `running` entry with
+  // `transport_error` set when meridianApi.run rejects with hub-overload /
+  // request-timeout language. The PM agent never attached, so a hub probe
+  // returns `missing` and the unguarded sweep used to demote the entry to
+  // `failed`. That re-opened the watchdog/pm-resolve respawn gate, which
+  // spawned a fresh PM that hit the same overloaded hub and re-stalled —
+  // observed as codex_08→codex_10→codex_11 stacked within 4 minutes. The
+  // sweep must now honor the transport-stall retention so the operator can
+  // take over via the GUI talk-box.
+  it("preserves a transport-stalled PM resolver without probing hub", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-transport-stalled",
+          status: "running",
+          started_at: "2026-04-03T12:30:00.000Z",
+          last_seen_at: "2026-04-03T12:30:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: "run failed: Request timed out — the hub may be overloaded."
+        }
+      ]
+    });
+
+    const hubSend = vi.fn();
+    const { hubClient } = createHubClient(hubSend as never);
+    const aliveSpy = vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread");
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find(
+      (e) => e.thread_id === "pm-thread-transport-stalled"
+    );
+    expect(entry?.status).toBe("running");
+    expect(entry?.transport_error).toBe(
+      "run failed: Request timed out — the hub may be overloaded."
+    );
+    const pmTargetedCalls = hubSend.mock.calls.filter(
+      ([message]) => (message as { target?: string } | undefined)?.target === "pm-thread-transport-stalled"
+    );
+    expect(pmTargetedCalls).toHaveLength(0);
+    expect(aliveSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("continueDispatchWorker", () => {
