@@ -765,7 +765,7 @@ export function buildWatchdogPmResolverIssueKey(
   ].join("\u0000");
 }
 
-async function maybeStartPmResolverForWatchdogRecovery(
+export async function maybeStartPmResolverForWatchdogRecovery(
   stateStore: StateStore,
   threadId: string,
   recovery: WatchdogContinueResult,
@@ -831,12 +831,26 @@ async function maybeStartPmResolverForWatchdogRecovery(
     workerStartedAtForKey
   );
   if (seenIssueKeys.has(issueKey)) {
-    log.info("Watchdog stall: PM resolver already requested for this issue", {
-      threadId,
-      workerId: issueWorkerId,
-      status: issueStatus
-    });
-    return;
+    // Lifecycle state is authoritative for whether the previously-spawned PM
+    // is still alive. When `reconcilePmResolverLiveness` (PR #214) evicts a
+    // PM after a hub-missing observation, the lifecycle entry flips to
+    // `failed`, but the process-lifetime `seenIssueKeys` cache survives —
+    // observed on agent-dispatcher-67f6a3fc BATCH-5-GATE where PM codex_13's
+    // spawn ran into a hub-run transport timeout, the watchdog evicted the
+    // missing PM thread, and every later sweep then short-circuited here
+    // instead of firing a replacement PM. If the lifecycle gate now says the
+    // current worker issue has not been handled, drop the stale cache entry
+    // and fall through to a fresh spawn rather than wedging on stale memory.
+    if (lifecycleState && !hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {
+      seenIssueKeys.delete(issueKey);
+    } else {
+      log.info("Watchdog stall: PM resolver already requested for this issue", {
+        threadId,
+        workerId: issueWorkerId,
+        status: issueStatus
+      });
+      return;
+    }
   }
 
   if (lifecycleState && hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {

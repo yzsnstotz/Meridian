@@ -4,13 +4,19 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../roles/agent-dispatcher/pm-resolver", () => ({
+  startPmResolver: vi.fn()
+}));
+
 import {
   buildWatchdogPmResolverIssueKey,
   hasPmResolverHandledCurrentWorkerIssue,
+  maybeStartPmResolverForWatchdogRecovery,
   resolveRetryExhaustedWorkerNeedingPm,
   tryContinueDispatchWorker,
   type WatchdogContinueDispatcher
 } from "../index";
+import { startPmResolver } from "../roles/agent-dispatcher/pm-resolver";
 import { StateStore } from "../state-store";
 import type { AppState, DispatchThreadStateV2 } from "../types";
 
@@ -198,6 +204,238 @@ describe("buildWatchdogPmResolverIssueKey", () => {
     const b = buildWatchdogPmResolverIssueKey("agent-dispatcher-x", "manual_intervention_required", null, undefined);
 
     expect(a).toBe(b);
+  });
+});
+
+describe("maybeStartPmResolverForWatchdogRecovery cache eviction", () => {
+  let tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((directory) => fs.rm(directory, { recursive: true, force: true })));
+    tempDirs = [];
+    vi.mocked(startPmResolver).mockReset();
+  });
+
+  // Regression: `reconcilePmResolverLiveness` (PR #214) evicts a PM whose hub
+  // thread has gone missing, flipping its lifecycle entry to `failed`. The
+  // process-lifetime `seenIssueKeys` cache used to outlive that eviction, so
+  // every later watchdog sweep short-circuited at "PM resolver already
+  // requested for this issue" and never spawned a replacement PM. Observed on
+  // agent-dispatcher-67f6a3fc BATCH-5-GATE where PM codex_13's spawn hit a
+  // hub-run transport timeout, the watchdog evicted the missing thread, and
+  // the dispatcher then wedged indefinitely. The fix drops the cached key when
+  // the lifecycle gate says the worker issue is no longer handled.
+  it("drops a stale seen-issue cache entry when the prior PM resolver was evicted as failed", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-watchdog-pm-cache-"));
+    tempDirs.push(tempDir);
+
+    const dispatcherThreadId = "agent-dispatcher-67f6a3fc-test";
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const dispatchThreadsPath = path.join(tempDir, "dispatch_threads.json");
+    const workerId = "BATCH-5-GATE";
+    const workerStartedAt = "2026-05-15T03:00:00.000Z";
+
+    const lifecycle: DispatchThreadStateV2 = {
+      version: 2,
+      dispatcher: {
+        thread_id: dispatcherThreadId,
+        started_at: workerStartedAt,
+        status: "running"
+      },
+      workers: {
+        [workerId]: {
+          thread_id: "codex_11",
+          trace_id: null,
+          started_at: workerStartedAt,
+          last_seen_at: "2026-05-15T03:41:30.662Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_13",
+          status: "failed",
+          started_at: "2026-05-15T03:42:59.927Z",
+          last_seen_at: "2026-05-15T03:49:59.964Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: workerId,
+            message: "manual intervention required: BATCH-5-GATE reported a blocking outcome",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: "watchdog_pm_thread_missing: hub_status=missing",
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: "2026-05-15T03:49:59.964Z"
+    };
+    await fs.writeFile(dispatchThreadsPath, JSON.stringify(lifecycle, null, 2), "utf8");
+
+    const stateStore = new StateStore(path.join(tempDir, "state.json"));
+    const state: AppState = {
+      roles: [
+        {
+          threadId: dispatcherThreadId,
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: path.join(tempDir, "dispatch_command.md"),
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          }
+        }
+      ],
+      promptStore: {}
+    };
+    await stateStore.save(state);
+
+    const issueKey = buildWatchdogPmResolverIssueKey(
+      dispatcherThreadId,
+      "manual_intervention_required",
+      workerId,
+      workerStartedAt
+    );
+    const seenIssueKeys = new Set<string>([issueKey]);
+
+    vi.mocked(startPmResolver).mockResolvedValue({
+      ok: true,
+      status: "pm_resolver_started",
+      thread_id: "codex_99",
+      message: "PM resolver started for BATCH-5-GATE"
+    });
+
+    await maybeStartPmResolverForWatchdogRecovery(
+      stateStore,
+      dispatcherThreadId,
+      {
+        status: "manual_intervention_required",
+        workerId,
+        message: "manual intervention required: BATCH-5-GATE reported a blocking outcome"
+      },
+      seenIssueKeys,
+      silentLog()
+    );
+
+    expect(vi.mocked(startPmResolver)).toHaveBeenCalledTimes(1);
+    expect(seenIssueKeys.has(issueKey)).toBe(true);
+  });
+
+  it("still short-circuits when the prior PM resolver is still running", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-watchdog-pm-cache-"));
+    tempDirs.push(tempDir);
+
+    const dispatcherThreadId = "agent-dispatcher-cache-still-active";
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const dispatchThreadsPath = path.join(tempDir, "dispatch_threads.json");
+    const workerId = "BATCH-5-GATE";
+    const workerStartedAt = "2026-05-15T03:00:00.000Z";
+
+    const lifecycle: DispatchThreadStateV2 = {
+      version: 2,
+      dispatcher: {
+        thread_id: dispatcherThreadId,
+        started_at: workerStartedAt,
+        status: "running"
+      },
+      workers: {
+        [workerId]: {
+          thread_id: "codex_11",
+          trace_id: null,
+          started_at: workerStartedAt,
+          last_seen_at: "2026-05-15T03:41:30.662Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_13",
+          status: "running",
+          started_at: "2026-05-15T03:42:59.927Z",
+          last_seen_at: "2026-05-15T03:45:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: workerId,
+            message: "manual intervention required: BATCH-5-GATE reported a blocking outcome",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null
+        }
+      ],
+      last_reconciled_at: "2026-05-15T03:45:00.000Z"
+    };
+    await fs.writeFile(dispatchThreadsPath, JSON.stringify(lifecycle, null, 2), "utf8");
+
+    const stateStore = new StateStore(path.join(tempDir, "state.json"));
+    await stateStore.save({
+      roles: [
+        {
+          threadId: dispatcherThreadId,
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: path.join(tempDir, "dispatch_command.md"),
+            user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          }
+        }
+      ],
+      promptStore: {}
+    });
+
+    const issueKey = buildWatchdogPmResolverIssueKey(
+      dispatcherThreadId,
+      "manual_intervention_required",
+      workerId,
+      workerStartedAt
+    );
+    const seenIssueKeys = new Set<string>([issueKey]);
+
+    await maybeStartPmResolverForWatchdogRecovery(
+      stateStore,
+      dispatcherThreadId,
+      {
+        status: "manual_intervention_required",
+        workerId,
+        message: "manual intervention required: BATCH-5-GATE reported a blocking outcome"
+      },
+      seenIssueKeys,
+      silentLog()
+    );
+
+    expect(vi.mocked(startPmResolver)).not.toHaveBeenCalled();
+    expect(seenIssueKeys.has(issueKey)).toBe(true);
   });
 });
 
