@@ -212,6 +212,88 @@ describe("watchdog PM resolver repeat guard", () => {
 
     expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(true);
   });
+
+  // Regression: agent-dispatcher-67f6a3fc E-03 on 2026-05-15 piled up three
+  // PM resolvers within 12 minutes (codex_66 → 67 → 68) against the same
+  // unresolvable Cloudflare credential blocker. `recordPmResolverResult`
+  // writes `status: "failed"` for escalation markers so the reconciler can
+  // later promote on worker recovery, but the gate's `status === "failed"`
+  // short-circuit was excluding those entries BEFORE the
+  // `marker_pm_action === "escalate_human"` freeze ran, so each watchdog
+  // sweep saw no handled PM and spawned a fresh one. The marker is
+  // authoritative over envelope status: the freeze must apply even when
+  // status is "failed".
+  it("treats an escalate_human PM resolver as handled even when the recording path wrote status=failed", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-15T12:01:23.494Z",
+      pmStartedAt: "2026-05-15T12:25:25.091Z",
+      pmLastSeenAt: "2026-05-15T12:29:43.844Z",
+      // Real recording path for an escalate_human marker against a "blocked"
+      // worker: reconcilePmStatusAgainstWorkerState returns "failed" because
+      // "blocked" is not in PM_RESOLVED_TARGET_STATUSES.
+      pmStatus: "failed",
+      markerOutcome: "escalated",
+      markerPmAction: "escalate_human"
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(true);
+  });
+
+  // Regression (backward-compat): a meridian-roles service restart that
+  // lands after a pre-#219 binary persisted PM entries leaves
+  // `marker_pm_action: null` on disk even though the PM's stored reply
+  // content contains a valid `<<<MERIDIAN-STATUS>>> pm_action: escalate_human`
+  // marker. Without a content-fallback path, the new gate logic would not
+  // see those entries as handled and the dispatcher would respawn another
+  // PM on the next watchdog sweep — the exact loop observed on E-03.
+  it("recovers escalate_human from stored reply content when marker_pm_action is null (pre-#219 entry)", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-15T12:01:23.494Z",
+      pmStartedAt: "2026-05-15T12:25:25.091Z",
+      pmLastSeenAt: "2026-05-15T12:29:43.844Z",
+      pmStatus: "failed",
+      markerOutcome: null,
+      markerPmAction: null,
+      resultContent: [
+        "PM verified the blocker is external Cloudflare credentials.",
+        "",
+        "<<<MERIDIAN-STATUS>>>",
+        "worker_id: N-07",
+        "role: pm-resolver",
+        "outcome: escalated",
+        "pm_action: escalate_human",
+        "notes: blocked on credential rotation",
+        "<<<END>>>"
+      ].join("\n")
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(true);
+  });
+
+  // Defence in depth for the same backward-compat path: a marker emitted
+  // for a different worker (thread-id-collision bleed shape) MUST NOT
+  // close the gate. The fallback parser enforces role + worker_id match,
+  // mirroring `recordPmResolverResult`.
+  it("ignores stored content marker when its worker_id does not match the entry's target", () => {
+    const state = buildPmResolverGuardState({
+      workerStartedAt: "2026-05-15T12:01:23.494Z",
+      pmStartedAt: "2026-05-15T12:25:25.091Z",
+      pmLastSeenAt: "2026-05-15T12:29:43.844Z",
+      pmStatus: "failed",
+      markerOutcome: null,
+      markerPmAction: null,
+      resultContent: [
+        "<<<MERIDIAN-STATUS>>>",
+        "worker_id: OTHER-99",
+        "role: pm-resolver",
+        "outcome: escalated",
+        "pm_action: escalate_human",
+        "<<<END>>>"
+      ].join("\n")
+    });
+
+    expect(hasPmResolverHandledCurrentWorkerIssue(state, "N-07")).toBe(false);
+  });
 });
 
 describe("buildWatchdogPmResolverIssueKey", () => {
@@ -507,6 +589,11 @@ function buildPmResolverGuardState(options: {
   markerOutcome?: "resolved" | "escalated" | null;
   markerPmAction?: "retry" | "skip" | "force_complete" | "wait" | "escalate_human" | null;
   humanResolvedAt?: string | null;
+  // Stored reply content for the PM run. Used by the gate's
+  // backward-compat fallback that re-parses a `<<<MERIDIAN-STATUS>>>`
+  // marker when the persisted `marker_pm_action` field is null (pre-#219
+  // binaries did not have that schema field).
+  resultContent?: string;
 }): Pick<DispatchThreadStateV2, "workers" | "pm_resolvers"> {
   return {
     workers: {
@@ -542,7 +629,17 @@ function buildPmResolverGuardState(options: {
           error: null,
           source: "watchdog"
         },
-        result: null,
+        result: options.resultContent
+          ? {
+              status: "success",
+              run_state: null,
+              content: options.resultContent,
+              summary_text: null,
+              details_text: null,
+              trace_id: null,
+              timestamp: options.pmLastSeenAt ?? "2026-05-02T18:00:49.572Z"
+            }
+          : null,
         error: null,
         transport_error: null,
         marker_outcome: options.markerOutcome ?? null,

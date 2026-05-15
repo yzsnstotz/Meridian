@@ -7,6 +7,7 @@ import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
 import { resolveOtherDispatcherPlanPaths } from "./roles/agent-dispatcher/cross-plan-paths";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
+import { parseMeridianStatusMarker } from "./roles/agent-dispatcher/meridian-status-marker";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { findMostRecentOutputArtifactMtimeMs } from "./roles/agent-dispatcher/output-artifacts";
@@ -919,10 +920,6 @@ export function hasPmResolverHandledCurrentWorkerIssue(
   const humanResolvedAtMs = humanResolvedAt ? Date.parse(humanResolvedAt) : NaN;
 
   return (state.pm_resolvers ?? []).some((entry) => {
-    if (entry.status === "failed") {
-      return false;
-    }
-
     if ((entry.issue.worker_id ?? "").trim() !== normalizedWorkerId) {
       return false;
     }
@@ -935,18 +932,41 @@ export function hasPmResolverHandledCurrentWorkerIssue(
     // escalation entry and reopens the gate, producing the PM-storm shape
     // observed on agent-dispatcher-67f6a3fc W-15 on 2026-05-15 (codex_49 →
     // 51 → 52 → 54 escalate_human → 55 → 56 → 58 within 30 minutes against
-    // an unresolvable Cloudflare credential blocker). Released only when
-    // /human-resolve stamps a `human_resolution.resolved_at` newer than
-    // this entry's last_seen_at.
-    if (entry.marker_pm_action === "escalate_human") {
+    // an unresolvable Cloudflare credential blocker) and recurring on E-03
+    // on the same dispatcher (codex_66 → 67 → 68 within 12 minutes against
+    // an unresolvable Cloudflare credential blocker).
+    //
+    // This check runs BEFORE the `status === "failed"` short-circuit because
+    // `recordPmResolverResult` writes status="failed" for escalation markers
+    // (so `reconcilePmResolversForRecoveredWorker` can later promote on
+    // worker recovery). The marker is the authoritative signal; envelope
+    // status alone must not be allowed to drop the freeze.
+    //
+    // `effectivePmAction` also falls back to re-parsing `entry.result.content`
+    // when the persisted `marker_pm_action` field is null. This recovers
+    // entries that were written by pre-#219 binaries (no schema for the
+    // marker fields) but whose reply text still contains a valid
+    // `<<<MERIDIAN-STATUS>>> pm_action: escalate_human` block. Without this
+    // backfill, a meridian-roles restart that lands while an escalation is
+    // already on disk would not see those entries as handled and would
+    // respawn another PM on the next watchdog sweep.
+    //
+    // Released only when /human-resolve stamps a
+    // `human_resolution.resolved_at` newer than this entry's last_seen_at.
+    const effectivePmAction = effectivePmResolverAction(entry, normalizedWorkerId);
+    if (effectivePmAction === "escalate_human") {
       const entryLastSeenAtMs = Date.parse(entry.last_seen_at);
-      if (!Number.isNaN(humanResolvedAtMs) && !Number.isNaN(entryLastSeenAtMs)
-        && humanResolvedAtMs >= entryLastSeenAtMs) {
-        // Human acknowledged this escalation — let the gate evaluate on
-        // started_at timing like a normal completed PM.
-      } else {
+      const released = !Number.isNaN(humanResolvedAtMs)
+        && !Number.isNaN(entryLastSeenAtMs)
+        && humanResolvedAtMs >= entryLastSeenAtMs;
+      if (!released) {
         return true;
       }
+      // Released: fall through to the normal status / timing checks below.
+    }
+
+    if (entry.status === "failed") {
+      return false;
     }
 
     if (Number.isNaN(workerStartedAtMs)) {
@@ -956,6 +976,34 @@ export function hasPmResolverHandledCurrentWorkerIssue(
     const entryStartedAtMs = Date.parse(entry.started_at);
     return !Number.isNaN(entryStartedAtMs) && entryStartedAtMs >= workerStartedAtMs;
   });
+}
+
+/**
+ * Return the PM resolver action for a lifecycle entry, preferring the
+ * persisted `marker_pm_action` field and falling back to re-parsing the
+ * stored reply content. The fallback handles entries written by pre-#219
+ * binaries (where the field did not exist on the schema). The re-parsed
+ * marker is only honoured when its role is `pm-resolver` AND its worker_id
+ * matches the entry's target — same constraint as `recordPmResolverResult`,
+ * so cross-talk content from a thread-id-collision bleed cannot synthesise a
+ * false escalation freeze.
+ */
+function effectivePmResolverAction(
+  entry: NonNullable<DispatchThreadStateV2["pm_resolvers"]>[number],
+  targetWorkerId: string
+): string | null {
+  if (entry.marker_pm_action !== null) {
+    return entry.marker_pm_action;
+  }
+  const content = entry.result?.content;
+  if (typeof content !== "string" || content.length === 0) {
+    return null;
+  }
+  const marker = parseMeridianStatusMarker(content);
+  if (!marker || marker.role !== "pm-resolver" || marker.worker_id !== targetWorkerId) {
+    return null;
+  }
+  return marker.pm_action ?? null;
 }
 
 export function resolveRetryExhaustedWorkerNeedingPm(
