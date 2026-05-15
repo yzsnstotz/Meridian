@@ -263,6 +263,29 @@ export class ReconciliationWatchdog {
         continue;
       }
 
+      // `recordPmResolverTransportStall` (pm-resolver.ts) explicitly retains
+      // the thread on a transport-class run rejection (hub overload, request
+      // timeout, IPC drop) so the operator can take over via the GUI
+      // talk-box. The PM agent never attached, so a hub probe here will
+      // always return `missing` and demote to `failed` — letting the
+      // watchdog / pm-resolve handler spawn a fresh PM that hits the same
+      // overloaded hub and re-stalls. Observed on
+      // agent-dispatcher-67f6a3fc V-01-A as a 2-minute PM respawn storm
+      // (codex_08→codex_10→codex_11, all on the same `Request timed out —
+      // the hub may be overloaded.` rejection). Preserve transport-stalled
+      // entries; the operator surfaces `transport_error` in the GUI and
+      // resolves via talk-box, retry, or human-resolve.
+      if (entry.transport_error) {
+        this.log.info("Watchdog: PM resolver transport-stalled; preserving entry for human takeover", {
+          event: "watchdog_pm_resolver_transport_stall_preserved",
+          dispatchPlanPath,
+          pm_thread_id: pmThreadId,
+          worker_id: entry.issue?.worker_id ?? null,
+          transport_error: entry.transport_error
+        });
+        continue;
+      }
+
       let observationKind: "missing" | "failed" | "running" | "idle" | "completed";
       try {
         const observation = await queryHubThreadObservation(this.hubClient, pmThreadId);
