@@ -144,6 +144,8 @@ describe("buildPmResolverPrompt", () => {
             thread_id: "pm-thread-stall",
             status: "running",
             transport_error: "run failed: Request timed out — the hub may be overloaded",
+            marker_outcome: null,
+            marker_pm_action: null,
             error: null
           })
         ]);
@@ -190,7 +192,9 @@ describe("buildPmResolverPrompt", () => {
           issue: { status: "manual_intervention_required", worker_id: null, message: null, error: null, source: "watchdog" },
           result: null,
           error: null,
-          transport_error: null
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
         }
       ],
       last_reconciled_at: null
@@ -425,7 +429,7 @@ describe("LifecycleStore.recordPmResolverResult — marker primary signal", () =
     }
   });
 
-  it("falls back to envelope mapping and logs pm_resolver_marker_mismatch when marker.worker_id does not match the issue's target worker", async () => {
+  it("force-fails the PM entry with a thread-id collision bleed error when marker.worker_id does not match the issue's target worker", async () => {
     const harness = await createPmResolverLifecycleHarness();
     try {
       seedPmResolverEntry(harness.store, PM_THREAD_ID, TARGET_WORKER_ID);
@@ -441,30 +445,37 @@ describe("LifecycleStore.recordPmResolverResult — marker primary signal", () =
       ].join("\n");
 
       harness.store.recordPmResolverResult(PM_THREAD_ID, buildPmRunResult({
-        status: "error",
-        runState: "error",
+        status: "success",
+        runState: "completed",
         content
       }));
 
       const entry = loadPmResolverEntry(harness.store, PM_THREAD_ID);
-      // Envelope said error → mapPmResolverRunStatus → "failed"; target worker
-      // not seeded so reconcile leaves it failed.
+      // Worker-id mismatch is treated as a thread-id collision bleed: force
+      // `failed` (regardless of envelope status) so the dispatcher's gate
+      // reopens and a fresh PM can spawn on a different id.
       expect(entry?.status).toBe("failed");
+      expect(entry?.error).toBe("thread_id_collision_pm_resolver_worker_mismatch");
+      expect(entry?.marker_outcome).toBeNull();
+      expect(entry?.marker_pm_action).toBeNull();
 
-      expect(harness.info).toHaveBeenCalledWith("PM resolver marker mismatch", {
-        event: "pm_resolver_marker_mismatch",
-        thread_id: PM_THREAD_ID,
-        target_worker_id: TARGET_WORKER_ID,
-        marker_worker_id: "BATCH-9-WRONG",
-        marker_role: "pm-resolver",
-        content_length: content.length
-      });
+      expect(harness.warn).toHaveBeenCalledWith(
+        "PM resolver marker worker mismatch — treating as thread-id collision bleed",
+        {
+          event: "pm_resolver_marker_worker_mismatch_bleed",
+          thread_id: PM_THREAD_ID,
+          target_worker_id: TARGET_WORKER_ID,
+          marker_worker_id: "BATCH-9-WRONG",
+          marker_role: "pm-resolver",
+          content_length: content.length
+        }
+      );
     } finally {
       await harness.cleanup();
     }
   });
 
-  it("falls back to envelope mapping and logs pm_resolver_marker_wrong_role when a non-pm-resolver marker lands in the PM channel", async () => {
+  it("force-fails the PM entry with a thread-id collision bleed error when a non-pm-resolver marker lands in the PM channel", async () => {
     const harness = await createPmResolverLifecycleHarness();
     try {
       seedPmResolverEntry(harness.store, PM_THREAD_ID, TARGET_WORKER_ID);
@@ -486,16 +497,26 @@ describe("LifecycleStore.recordPmResolverResult — marker primary signal", () =
       }));
 
       const entry = loadPmResolverEntry(harness.store, PM_THREAD_ID);
-      // Envelope success → "completed" via fallback.
-      expect(entry?.status).toBe("completed");
+      // Wrong-role marker = Hub thread-id collision bleed (the canonical
+      // agent-dispatcher-67f6a3fc W-15 codex_58 R-01-validator-bleed shape).
+      // Force `failed` with a specific error so the gate reopens and the
+      // tainted entry cannot be silently reconciled to `completed` later.
+      expect(entry?.status).toBe("failed");
+      expect(entry?.error).toBe("thread_id_collision_worker_bleed");
+      expect(entry?.marker_outcome).toBeNull();
+      expect(entry?.marker_pm_action).toBeNull();
 
-      expect(harness.info).toHaveBeenCalledWith("PM resolver marker wrong role", {
-        event: "pm_resolver_marker_wrong_role",
-        thread_id: PM_THREAD_ID,
-        marker_role: "worker",
-        marker_worker_id: TARGET_WORKER_ID,
-        content_length: content.length
-      });
+      expect(harness.warn).toHaveBeenCalledWith(
+        "PM resolver marker wrong role — treating as thread-id collision bleed",
+        {
+          event: "pm_resolver_marker_wrong_role_bleed",
+          thread_id: PM_THREAD_ID,
+          target_worker_id: TARGET_WORKER_ID,
+          marker_role: "worker",
+          marker_worker_id: TARGET_WORKER_ID,
+          content_length: content.length
+        }
+      );
     } finally {
       await harness.cleanup();
     }
@@ -634,6 +655,7 @@ interface PmResolverLifecycleHarness {
   directory: string;
   store: LifecycleStore;
   info: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
   cleanup: () => Promise<void>;
 }
 
@@ -644,9 +666,10 @@ async function createPmResolverLifecycleHarness(
   const filePath = path.join(directory, "dispatch_threads.json");
   const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
   const info = vi.fn();
+  const warn = vi.fn();
   const store = new LifecycleStore(filePath, {
     dispatchPlanPath,
-    log: { info },
+    log: { info, warn },
     fallbackHeuristicsEnabled: options.fallbackHeuristicsEnabled
   });
 
@@ -654,6 +677,7 @@ async function createPmResolverLifecycleHarness(
     directory,
     store,
     info,
+    warn,
     cleanup: async () => {
       await fs.rm(directory, { recursive: true, force: true });
     }
@@ -687,9 +711,23 @@ function seedCompletedWorker(store: LifecycleStore, workerId: string): void {
 function loadPmResolverEntry(
   store: LifecycleStore,
   threadId: string
-): { status: string } | null {
+): {
+  status: string;
+  error: string | null;
+  marker_outcome: string | null;
+  marker_pm_action: string | null;
+} | null {
   const state = store.load();
-  return state.pm_resolvers?.find((entry) => entry.thread_id === threadId) ?? null;
+  const entry = state.pm_resolvers?.find((candidate) => candidate.thread_id === threadId);
+  if (!entry) {
+    return null;
+  }
+  return {
+    status: entry.status,
+    error: entry.error ?? null,
+    marker_outcome: entry.marker_outcome ?? null,
+    marker_pm_action: entry.marker_pm_action ?? null
+  };
 }
 
 function buildPmRunResult(overrides: {

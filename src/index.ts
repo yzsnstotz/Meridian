@@ -908,8 +908,15 @@ export function hasPmResolverHandledCurrentWorkerIssue(
     return false;
   }
 
-  const workerStartedAt = state.workers[normalizedWorkerId]?.started_at;
+  const worker = state.workers[normalizedWorkerId];
+  const workerStartedAt = worker?.started_at;
   const workerStartedAtMs = workerStartedAt ? Date.parse(workerStartedAt) : NaN;
+  // Operator override: once a human explicitly resumes via /human-resolve, the
+  // escalation verdict is consumed. Subsequent escalation-style PM entries
+  // that pre-date the human acknowledgement stop closing the gate so the
+  // dispatcher can spawn a fresh PM if the worker re-blocks after recovery.
+  const humanResolvedAt = worker?.human_resolution?.resolved_at ?? null;
+  const humanResolvedAtMs = humanResolvedAt ? Date.parse(humanResolvedAt) : NaN;
 
   return (state.pm_resolvers ?? []).some((entry) => {
     if (entry.status === "failed") {
@@ -918,6 +925,28 @@ export function hasPmResolverHandledCurrentWorkerIssue(
 
     if ((entry.issue.worker_id ?? "").trim() !== normalizedWorkerId) {
       return false;
+    }
+
+    // Escalation freeze: when the PM marker emitted `escalate_human` and no
+    // human has acknowledged via /human-resolve since that entry, the
+    // dispatcher must stop spawning further PM resolvers regardless of how
+    // many times the worker has since been retried. Without this, each
+    // operator (or force-true) retry advances worker.started_at past the
+    // escalation entry and reopens the gate, producing the PM-storm shape
+    // observed on agent-dispatcher-67f6a3fc W-15 on 2026-05-15 (codex_49 →
+    // 51 → 52 → 54 escalate_human → 55 → 56 → 58 within 30 minutes against
+    // an unresolvable Cloudflare credential blocker). Released only when
+    // /human-resolve stamps a `human_resolution.resolved_at` newer than
+    // this entry's last_seen_at.
+    if (entry.marker_pm_action === "escalate_human") {
+      const entryLastSeenAtMs = Date.parse(entry.last_seen_at);
+      if (!Number.isNaN(humanResolvedAtMs) && !Number.isNaN(entryLastSeenAtMs)
+        && humanResolvedAtMs >= entryLastSeenAtMs) {
+        // Human acknowledged this escalation — let the gate evaluate on
+        // started_at timing like a normal completed PM.
+      } else {
+        return true;
+      }
     }
 
     if (Number.isNaN(workerStartedAtMs)) {

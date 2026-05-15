@@ -89,7 +89,7 @@ const PLAN_STATUS_SYMBOLS: Record<LifecycleStatus, string> = {
 export interface LifecycleStoreOptions {
   beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
   dispatchPlanPath?: string;
-  log?: Pick<Logger, "info">;
+  log?: Pick<Logger, "info" | "warn">;
   now?: () => string;
   /**
    * Phase A6 kill-switch override. Production code reads
@@ -104,7 +104,7 @@ export class LifecycleStore {
 
   private readonly beforeCommit?: (tempFilePath: string, targetFilePath: string) => void;
   private readonly dispatchPlanPath: string;
-  private readonly log: Pick<Logger, "info">;
+  private readonly log: Pick<Logger, "info" | "warn">;
   private readonly now: () => string;
   private readonly fallbackHeuristicsEnabled: boolean;
 
@@ -762,7 +762,9 @@ export class LifecycleStore {
         issue: normalizePmResolverIssue(issue),
         result: existing?.result ?? null,
         error: null,
-        transport_error: null
+        transport_error: null,
+        marker_outcome: null,
+        marker_pm_action: null
       };
 
       if (existing) {
@@ -800,28 +802,48 @@ export class LifecycleStore {
 
       let resolvedStatus: PmResolverLifecycleStatus;
       let signalSource: "marker" | "envelope" = "envelope";
+      let bleedError: string | null = null;
+      let markerOutcome: PmResolverLifecycleState["marker_outcome"] = null;
+      let markerPmAction: PmResolverLifecycleState["marker_pm_action"] = null;
       // top-level if (marker) is intentional — keeps marker.role un-narrowed
       // so the wrong-role branch is type-safe (mirrors validator-orchestrator).
       if (marker) {
         if (marker.role !== "pm-resolver") {
-          this.log.info("PM resolver marker wrong role", {
-            event: "pm_resolver_marker_wrong_role",
+          // Wrong-role marker: the agent at this PM's thread_id replied with
+          // a worker/validator marker, which is the canonical signature of a
+          // Hub thread-id collision where our PM prompt landed on a live
+          // session belonging to another role (root cause of
+          // agent-dispatcher-67f6a3fc W-15 codex_58 R-01-validator-bleed,
+          // 2026-05-15: codex_58 was spawned as PM for W-15 but emitted a
+          // validator marker for the unrelated `in-client-debug-system/R-01`
+          // task whose lifecycle had already been torn down so the cross-plan
+          // reservation guard returned false). Force-fail the entry with a
+          // specific bleed error so the dispatcher gate (which excludes
+          // `failed` PMs) reopens and a fresh PM can spawn on a different id.
+          // safeKillPmResolver in pm-resolver.ts then evicts the stale thread.
+          bleedError = `thread_id_collision_${marker.role}_bleed`;
+          this.log.warn("PM resolver marker wrong role — treating as thread-id collision bleed", {
+            event: "pm_resolver_marker_wrong_role_bleed",
             thread_id: threadId,
+            target_worker_id: targetWorkerId,
             marker_role: marker.role,
             marker_worker_id: marker.worker_id,
             content_length: content.length
           });
-          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+          resolvedStatus = "failed";
         } else if (targetWorkerId !== null && marker.worker_id !== targetWorkerId) {
-          this.log.info("PM resolver marker mismatch", {
-            event: "pm_resolver_marker_mismatch",
+          // Right-role but worker_id points to a different worker: same bleed
+          // shape — the agent's prior context drove its reply, not our prompt.
+          bleedError = `thread_id_collision_pm_resolver_worker_mismatch`;
+          this.log.warn("PM resolver marker worker mismatch — treating as thread-id collision bleed", {
+            event: "pm_resolver_marker_worker_mismatch_bleed",
             thread_id: threadId,
             target_worker_id: targetWorkerId,
             marker_worker_id: marker.worker_id,
             marker_role: marker.role,
             content_length: content.length
           });
-          resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, mapPmResolverRunStatus(result));
+          resolvedStatus = "failed";
         } else {
           this.log.info("PM resolver decided via marker", {
             event: "pm_resolver_marker_decision",
@@ -836,6 +858,8 @@ export class LifecycleStore {
           // escalation that succeeds in parallel doesn't show "failed".
           resolvedStatus = reconcilePmStatusAgainstWorkerState(state, entry, markerStatus);
           signalSource = "marker";
+          markerOutcome = marker.outcome;
+          markerPmAction = marker.pm_action ?? null;
         }
       } else {
         // No marker — use envelope mapping (existing behavior).
@@ -852,7 +876,13 @@ export class LifecycleStore {
       entry.status = resolvedStatus;
       entry.last_seen_at = this.now();
       entry.result = normalizePmResolverResult(result);
-      entry.error = entry.status === "failed" ? entry.error : null;
+      if (bleedError) {
+        entry.error = bleedError;
+      } else {
+        entry.error = entry.status === "failed" ? entry.error : null;
+      }
+      entry.marker_outcome = markerOutcome;
+      entry.marker_pm_action = markerPmAction;
       // The run completed end-to-end (no transport rejection), so any prior
       // transport-stall annotation is stale. Clear it.
       entry.transport_error = null;
@@ -1336,7 +1366,7 @@ function reconcilePmStatusAgainstWorkerState(
 function reconcilePmResolversForRecoveredWorker(
   state: DispatchThreadStateV2,
   workerId: string,
-  log: Pick<Logger, "info">,
+  log: Pick<Logger, "info" | "warn">,
   now: () => string
 ): void {
   const target = state.workers[workerId];
@@ -1353,6 +1383,14 @@ function reconcilePmResolversForRecoveredWorker(
       continue;
     }
     if ((entry.issue?.worker_id ?? "").trim() !== workerId) {
+      continue;
+    }
+    // Thread-id collision bleed failures must stay `failed` even if the
+    // worker subsequently recovers via a different PM/operator — promoting
+    // them to `completed` would hide the underlying Hub-allocator collision
+    // from the dispatcher's "PM already handled" gate and risk the same
+    // wrong-context PM reply being treated as a real verdict.
+    if (entry.error && entry.error.startsWith("thread_id_collision_")) {
       continue;
     }
     const previousStatus = entry.status;
@@ -1441,7 +1479,7 @@ function mapHubResultToLifecycleStatus(
   hubResult: HubResult,
   expectedOutputs: string[],
   startedAt: string,
-  log?: Pick<Logger, "info">,
+  log?: Pick<Logger, "info" | "warn">,
   fallbackHeuristicsEnabled: boolean = true
 ): LifecycleStatusDecision {
   const deferSuccessUntilReconciled = requiresOutputVerification(expectedOutputs);

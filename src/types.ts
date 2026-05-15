@@ -144,6 +144,21 @@ export type PmResolverResultState = z.infer<typeof PmResolverResultStateSchema>;
 export const PmResolverLifecycleStatusSchema = z.enum(["running", "completed", "failed"]);
 export type PmResolverLifecycleStatus = z.infer<typeof PmResolverLifecycleStatusSchema>;
 
+// Canonical decision the PM resolver agent emitted in its MeridianStatusMarker
+// reply. Persisted on the lifecycle entry so the dispatcher can gate respawn
+// behavior on operator-relevant verdicts (notably `escalate_human`) without
+// re-parsing prose content on every sweep.
+export const PmResolverMarkerOutcomeSchema = z.enum(["resolved", "escalated"]);
+export type PmResolverMarkerOutcome = z.infer<typeof PmResolverMarkerOutcomeSchema>;
+export const PmResolverMarkerActionSchema = z.enum([
+  "retry",
+  "skip",
+  "force_complete",
+  "wait",
+  "escalate_human"
+]);
+export type PmResolverMarkerAction = z.infer<typeof PmResolverMarkerActionSchema>;
+
 export const PmResolverLifecycleStateSchema = z.object({
   thread_id: z.string().min(1),
   status: PmResolverLifecycleStatusSchema,
@@ -160,7 +175,13 @@ export const PmResolverLifecycleStateSchema = z.object({
   // unreachable, request timeout, etc.) recorded WITHOUT killing the thread
   // or flipping status to "failed", so a human can still talk into the PM
   // session via the GUI talk-box. Cleared on successful PM run completion.
-  transport_error: z.string().nullable().default(null)
+  transport_error: z.string().nullable().default(null),
+  // Marker decision extracted from the PM resolver's MeridianStatusMarker
+  // reply. Populated only when the marker validates and matches this PM's
+  // target worker_id; absent for envelope-mapped or wrong-role outcomes so
+  // downstream gates do not confuse cross-talk with a real PM verdict.
+  marker_outcome: PmResolverMarkerOutcomeSchema.nullable().default(null),
+  marker_pm_action: PmResolverMarkerActionSchema.nullable().default(null)
 });
 export type PmResolverLifecycleState = z.infer<typeof PmResolverLifecycleStateSchema>;
 

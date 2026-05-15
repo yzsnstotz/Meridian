@@ -3109,7 +3109,9 @@ async function findLivePmResolversForWorker(
         event: "pm_resolver_transport_stall_preserved",
         worker_id: workerId,
         pm_thread_id: entry.thread_id,
-        transport_error: entry.transport_error
+        transport_error: entry.transport_error,
+        marker_outcome: null,
+        marker_pm_action: null
       });
       live.push(entry);
       continue;
@@ -3801,7 +3803,9 @@ function buildRecoveredPmResolverDetails(
           }
         : null,
       error: null,
-      transport_error: null
+      transport_error: null,
+      marker_outcome: null,
+      marker_pm_action: null
     }, {
       roleId: context.roleId,
       liveDetail: null
