@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { GUI_LISTEN_HOST, GUI_PORT } from "../config";
 import type { Logger } from "../roles/base-role";
+import type { ProcessHandlers } from "./process-handlers";
 import type { PromptHandlers } from "./prompt-handlers";
 import type { RoleHandlers } from "./role-handlers";
 import type { SchedulerHandlers } from "./scheduler-handlers";
@@ -15,6 +16,7 @@ export interface HttpServerOptions {
   roleHandlers: RoleHandlers;
   promptHandlers: PromptHandlers;
   schedulerHandlers?: SchedulerHandlers;
+  processHandlers?: ProcessHandlers;
   publicDir?: string;
   log?: Logger;
 }
@@ -27,6 +29,7 @@ export class HttpServer {
   private readonly roleHandlers: RoleHandlers;
   private readonly promptHandlers: PromptHandlers;
   private readonly schedulerHandlers: SchedulerHandlers | null;
+  private readonly processHandlers: ProcessHandlers | null;
   private server: Server | null = null;
 
   constructor(options: HttpServerOptions) {
@@ -37,6 +40,7 @@ export class HttpServer {
     this.roleHandlers = options.roleHandlers;
     this.promptHandlers = options.promptHandlers;
     this.schedulerHandlers = options.schedulerHandlers ?? null;
+    this.processHandlers = options.processHandlers ?? null;
   }
 
   async listen(): Promise<void> {
@@ -90,6 +94,10 @@ export class HttpServer {
       }
 
       if (this.schedulerHandlers && await this.schedulerHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.processHandlers && await this.processHandlers.handle(request, response)) {
         return;
       }
 

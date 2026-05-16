@@ -1209,3 +1209,54 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 .panel:nth-child(3) { animation-delay: 80ms; }
 .panel:nth-child(4) { animation-delay: 120ms; }
 .panel:nth-child(5) { animation-delay: 160ms; }
+
+/* ---- Live agentapi process monitor ---- */
+.process-summary {
+  display: inline-flex;
+  gap: 0.9rem;
+  align-items: baseline;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+}
+.process-summary > span { white-space: nowrap; }
+
+.leak-callout {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.leak-dot, .warn-dot, .ok-dot {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.leak-dot {
+  background: #d92d20;
+  box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.18);
+  animation: leakPulse 1.4s ease-in-out infinite;
+}
+.warn-dot { background: #f79009; }
+.ok-dot   { background: #16803c; }
+
+.row-leak {
+  background: rgba(217, 45, 32, 0.07);
+}
+.row-leak td { border-color: rgba(217, 45, 32, 0.18); }
+
+.nav-tab-leak-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #d92d20;
+  margin-left: 0.4rem;
+  box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.18);
+  animation: leakPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes leakPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.18); opacity: 0.75; }
+}
