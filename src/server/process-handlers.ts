@@ -170,22 +170,31 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           }
         }
 
-        // Origin classification — ORDER MATTERS.
-        //   1. If this is an agentapi OR a codex/claude with an agentapi
-        //      PPID ancestor → managed, even when Meridian Hub is further up
-        //      the chain (meridian-roles asks Hub to spawn agentapi, so Hub
-        //      will always be an ancestor of legitimately-managed processes).
-        //   2. Else if there's a Meridian-hub ancestor → external (Hub
-        //      spawned codex/claude DIRECTLY for its own work, without
-        //      going through agentapi-bridge).
-        //   3. Else if argv has meridian-roles spawn markers → orphan (a
-        //      codex/claude whose agentapi parent died — leak).
-        //   4. Else external (terminal, Claude Code, unrelated).
+        // Origin classification. The Meridian Hub never autonomously spawns
+        // anything — `handleSpawn` in Meridian/src/hub/router.ts only fires
+        // in response to inbound HubMessage { intent: "spawn" } from a caller.
+        // So ANY agent-shaped process whose PPID chain reaches the Hub was
+        // *requested* by something (overwhelmingly meridian-roles itself, via
+        // worker launcher / validator-orchestrator / pm-resolver paths). All
+        // such processes are `managed`, not external.
+        //
+        // Order (each rule is sufficient by itself):
+        //   1. This IS agentapi → managed.
+        //   2. Has an agentapi PPID ancestor → managed (codex/claude child).
+        //   3. Has a Meridian Hub PPID ancestor → managed (Hub-direct spawn
+        //      requested by meridian-roles or another caller; pattern: codex
+        //      `exec --json` for stateless validator calls).
+        //   4. Argv has meridian-roles spawn markers but no agentapi/Hub
+        //      ancestor → orphan (agentapi died, child reparented to init).
+        //   5. Else external (user terminal, Claude Code session, etc.).
         let origin: ProcessOrigin;
         if (isAgentapi || ancestorAgentapi) {
           origin = "managed";
-        } else if (!isAgentapi && findMeridianHubAncestor(p, byPid, meridianHubPids)) {
-          origin = "external";
+        } else if (findMeridianHubAncestor(p, byPid, meridianHubPids)) {
+          // Hub-direct spawn (e.g. `codex exec --json`). Caller is recorded by
+          // the Hub but isn't visible from `ps` alone. Treated as managed —
+          // operator sees them and decides if the count is unexpectedly high.
+          origin = "managed";
         } else if (
           (agentType === "codex" || agentType === "claude")
           && looksLikeMeridianOrphan(p.command)

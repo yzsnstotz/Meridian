@@ -260,14 +260,22 @@ describe("/api/agentapi-processes — origin classification", () => {
     ]);
   });
 
-  it("classifies codex parented to calling-hub as external (NOT orphan)", async () => {
-    // Real observed pattern 2026-05-16: Meridian hub (PM2 `calling-hub`)
-    // spawns codex for short-lived turns. These have meridian-roles spawn
-    // flags but are NOT meridian-roles' processes — they're the hub's.
+  it("classifies codex parented to calling-hub as MANAGED (Hub-direct spawn from meridian-roles)", async () => {
+    // Confirmed in Meridian/src/hub/router.ts:1185: Hub.handleSpawn ONLY
+    // fires from inbound HubMessage { intent: "spawn" }. Hub does not
+    // autonomously spawn. So a codex with PPID chain reaching the Hub was
+    // REQUESTED by a caller — almost always meridian-roles' validator /
+    // PM-resolver / launcher paths spawning `codex exec --json` for
+    // stateless validator calls. These belong to meridian-roles; flagging
+    // them external would hide spawn-loops that go through this pattern.
+    //
+    // No agentapi parent → no thread_id parseable from argv → unbound →
+    // is_leak=true. Operator sees them surface in red; if the hold is in
+    // effect they shouldn't be spawning at all.
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
-        { pid: 90810, ppid: 1, etime: "01:00", command: "PM2 v6: God Daemon (/Users/yzliu/.pm2) - calling-hub" },
+        { pid: 90810, ppid: 1, etime: "01:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
         { pid: 91163, ppid: 90810, etime: "00:15", command: "node /Users/yzliu/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
         { pid: 91170, ppid: 91163, etime: "00:15", command: "/Users/yzliu/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
       ]
@@ -275,11 +283,12 @@ describe("/api/agentapi-processes — origin classification", () => {
     const { res, body } = makeResponse();
     await handlers.handle(makeRequest("/api/agentapi-processes"), res);
     const payload = JSON.parse(body());
-    // Both codex were under calling-hub → external, NOT orphan, NOT leak.
+    // Both codex have a Hub ancestor → managed (not external, not orphan).
+    // No agentapi → no thread_id → unbound → leak (operator should see).
+    expect(payload.external).toBe(0);
     expect(payload.orphan).toBe(0);
-    expect(payload.leak).toBe(0);
-    expect(payload.external).toBe(2);
-    expect(payload.processes.every((p: { origin: string; is_leak: boolean }) => p.origin === "external" && !p.is_leak)).toBe(true);
+    expect(payload.processes.filter((p: { origin: string }) => p.origin === "managed")).toHaveLength(2);
+    expect(payload.leak).toBe(2);
   });
 
   it("resolves thread_id for TCP-port agentapi via fetchAgentapiInstanceIndex", async () => {
