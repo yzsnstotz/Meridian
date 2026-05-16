@@ -1260,3 +1260,54 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
   0%, 100% { transform: scale(1); opacity: 1; }
   50%      { transform: scale(1.18); opacity: 0.75; }
 }
+
+/* ---- origin tags + external indicator ---- */
+.origin-tag {
+  display: inline-block;
+  padding: 0.06rem 0.5rem;
+  border-radius: 0.32rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.origin-managed {
+  background: rgba(22, 128, 60, 0.12);
+  color: #166534;
+  border: 1px solid rgba(22, 128, 60, 0.45);
+}
+.origin-orphan {
+  background: rgba(217, 45, 32, 0.10);
+  color: #b42318;
+  border: 1px solid rgba(217, 45, 32, 0.45);
+}
+.origin-external {
+  background: rgba(107, 114, 128, 0.10);
+  color: #6b7280;
+  border: 1px solid rgba(107, 114, 128, 0.45);
+}
+
+.external-dot {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: #cbd5e1;
+  vertical-align: middle;
+}
+
+.row-external td { color: #6b7280; }
+
+.process-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem 0;
+  font-size: 0.92rem;
+  color: #4b5563;
+  user-select: none;
+  cursor: pointer;
+}
+.process-filter-toggle input[type="checkbox"] { cursor: pointer; }

@@ -684,33 +684,39 @@
         <section class="panel">
           <div class="panel-heading">
             <div>
-              <h2>Live agentapi Processes</h2>
+              <h2>Live agentapi / codex / claude processes</h2>
               <p class="muted">
-                Every <code>agentapi server</code> process on the host, mapped to its owning worker/dispatcher.
-                <strong class="leak-callout">Red dot = leak</strong> — the process exists but no dispatcher's
-                <code>dispatch_threads.json</code> claims its <code>thread_id</code> as currently running.
-                Auto-refreshes every 3 seconds.
+                Every agent-shaped process on the host. Each row is classified:
+                <strong class="origin-tag origin-managed">meridian-roles</strong>
+                <span> — spawned by meridian-roles, parented or bound to a dispatcher;</span>
+                <strong class="origin-tag origin-orphan">orphan</strong>
+                <span> — codex/claude survived after its agentapi parent died (treated as a leak);</span>
+                <strong class="origin-tag origin-external">external</strong>
+                <span> — terminal sessions, Claude Code, other tools — NOT spawned by meridian-roles, safe to ignore.</span>
+                <br>
+                <strong class="leak-callout">Pulsing red dot = leak.</strong> Auto-refreshes every 3 seconds.
               </p>
             </div>
-            <div class="process-summary">
-              <span id="process-summary-total">total: 0</span>
-              <span id="process-summary-bound" class="muted">bound: 0</span>
-              <span id="process-summary-leak" class="leak-callout">leak: 0</span>
-            </div>
+            <div id="process-summary" class="process-summary"></div>
           </div>
-          <div id="processes-empty" class="empty-state">No agentapi processes detected.</div>
+          <label class="process-filter-toggle">
+            <input type="checkbox" id="process-hide-external">
+            Hide external (terminal sessions, Claude Code, unrelated tools)
+          </label>
+          <div id="processes-empty" class="empty-state">No agentapi/codex/claude processes detected on the host.</div>
           <div id="processes-table-shell" class="table-shell" hidden>
             <table class="status-table">
               <thead>
                 <tr>
                   <th></th>
+                  <th>origin</th>
                   <th>PID</th>
+                  <th>PPID</th>
+                  <th>agent</th>
                   <th>thread_id</th>
                   <th>worker</th>
                   <th>dispatcher</th>
-                  <th>kind</th>
                   <th>uptime</th>
-                  <th>agent_type</th>
                 </tr>
               </thead>
               <tbody id="processes-table-body"></tbody>

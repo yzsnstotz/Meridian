@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
@@ -13,7 +13,7 @@ function makeResponse(): { res: ServerResponse; statusCode: () => number; body: 
   let captured = "";
   const harness: {
     statusCode: number;
-    setHeader: (name: string, value: string | number | readonly string[]) => ServerResponse;
+    setHeader: (n: string, v: string | number | readonly string[]) => ServerResponse;
     end: (payload?: string) => ServerResponse;
   } = {
     statusCode: 0,
@@ -32,7 +32,6 @@ function makeRequest(url: string, method = "GET"): IncomingMessage {
 }
 
 const tempDirs = new Set<string>();
-
 async function createSidecarFixture(state: DispatchThreadStateV2): Promise<{ planPath: string; sidecarPath: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "process-handlers-test-"));
   tempDirs.add(dir);
@@ -43,116 +42,176 @@ async function createSidecarFixture(state: DispatchThreadStateV2): Promise<{ pla
   return { planPath, sidecarPath };
 }
 
-describe("createProcessHandlers /api/agentapi-processes", () => {
-  it("returns 404-via-noop for unrelated routes", async () => {
+function emptyState(): AppState {
+  return { roles: [], promptStore: {} };
+}
+
+function appStateWithDispatcher(fixture: { planPath: string }): AppState {
+  return {
+    roles: [
+      {
+        threadId: "agent-dispatcher-abc",
+        roleType: "agent-dispatcher",
+        status: "active",
+        config: {
+          dispatcher_role_id: "agent-dispatcher-abc",
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          dispatch_plan_path: fixture.planPath,
+          command_file_path: path.join(path.dirname(fixture.planPath), "agent_dispatch_command.md"),
+          dispatch_repo_root: path.dirname(fixture.planPath),
+          kill_policy: "always",
+          user_reply_channels: [{ channel: "telegram", chat_id: "telegram:test" }]
+        }
+      }
+    ],
+    promptStore: {}
+  };
+}
+
+afterAll(async () => {
+  await Promise.all(Array.from(tempDirs, async (d) => fs.rm(d, { recursive: true, force: true })));
+  tempDirs.clear();
+});
+
+describe("/api/agentapi-processes — origin classification", () => {
+  it("returns false for unrelated routes", async () => {
     const handlers = createProcessHandlers({
-      stateStore: { load: async () => ({ roles: [], promptStore: {} }) },
+      stateStore: { load: async () => emptyState() },
       listProcesses: () => []
     });
     const { res } = makeResponse();
-    const handled = await handlers.handle(makeRequest("/api/something-else"), res);
-    expect(handled).toBe(false);
+    expect(await handlers.handle(makeRequest("/api/foo"), res)).toBe(false);
   });
 
-  it("returns an empty snapshot when no agentapi processes exist", async () => {
+  it("classifies agentapi server as managed", async () => {
     const handlers = createProcessHandlers({
-      stateStore: { load: async () => ({ roles: [], promptStore: {} }) },
-      listProcesses: () => [
-        { pid: 100, etime: "00:01", command: "/usr/bin/foo --bar" }
-      ]
-    });
-    const { res, statusCode, body } = makeResponse();
-    const handled = await handlers.handle(makeRequest("/api/agentapi-processes"), res);
-    expect(handled).toBe(true);
-    expect(statusCode()).toBe(200);
-    const payload = JSON.parse(body());
-    expect(payload.total).toBe(0);
-    expect(payload.processes).toEqual([]);
-  });
-
-  it("binds an agentapi process to the matching DISPATCHER row", async () => {
-    const fixture = await createSidecarFixture({
-      version: 2,
-      dispatcher: {
-        thread_id: "codex_42",
-        started_at: "2026-05-16T10:00:00.000Z",
-        status: "running"
-      },
-      workers: {},
-      last_reconciled_at: null
-    });
-
-    const appState: AppState = {
-      roles: [
-        {
-          threadId: "agent-dispatcher-abc",
-          roleType: "agent-dispatcher",
-          status: "active",
-          config: {
-            dispatcher_role_id: "agent-dispatcher-abc",
-            agent_type: "codex",
-            mode: "bridge",
-            auto_approve: false,
-            dispatch_plan_path: fixture.planPath,
-            command_file_path: path.join(path.dirname(fixture.planPath), "agent_dispatch_command.md"),
-            dispatch_repo_root: path.dirname(fixture.planPath),
-            kill_policy: "always",
-            user_reply_channels: [{ channel: "telegram", chat_id: "telegram:test" }]
-          }
-        }
-      ],
-      promptStore: {}
-    };
-
-    const handlers = createProcessHandlers({
-      stateStore: { load: async () => appState },
-      listProcesses: () => [
-        { pid: 555, etime: "00:02:30", command: "agentapi server --socket=/tmp/agentapi-codex_42.sock --type=codex" }
-      ]
-    });
-    const { res, statusCode, body } = makeResponse();
-    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
-    expect(statusCode()).toBe(200);
-    const payload = JSON.parse(body());
-    expect(payload.total).toBe(1);
-    expect(payload.bound).toBe(1);
-    expect(payload.leak).toBe(0);
-    expect(payload.processes[0]).toMatchObject({
-      pid: 555,
-      thread_id: "codex_42",
-      agent_type: "codex",
-      binding: {
-        dispatcher_role_id: "agent-dispatcher-abc",
-        worker_id: "DISPATCHER",
-        role: "dispatcher",
-        status: "running"
-      }
-    });
-  });
-
-  it("flags as leak when no dispatcher claims the thread_id", async () => {
-    const handlers = createProcessHandlers({
-      stateStore: { load: async () => ({ roles: [], promptStore: {} }) },
-      listProcesses: () => [
-        { pid: 999, etime: "01:23", command: "agentapi server --socket=/tmp/agentapi-codex_99.sock --type=codex" }
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 500, ppid: 1, etime: "00:10", command: "agentapi server --socket=/tmp/agentapi-codex_42.sock --type=codex -- codex" }
       ]
     });
     const { res, body } = makeResponse();
     await handlers.handle(makeRequest("/api/agentapi-processes"), res);
     const payload = JSON.parse(body());
-    expect(payload.leak).toBe(1);
-    expect(payload.bound).toBe(0);
-    expect(payload.processes[0].binding).toBeNull();
+    expect(payload.processes[0].origin).toBe("managed");
+    expect(payload.processes[0].agent_type).toBe("agentapi");
+    expect(payload.processes[0].thread_id).toBe("codex_42");
   });
 
-  it("does not bind to completed workers (so their stale thread_id can't mask a leak)", async () => {
+  it("classifies codex with agentapi PPID as managed (and inherits parent thread_id)", async () => {
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 500, ppid: 1, etime: "00:10", command: "agentapi server --socket=/tmp/agentapi-codex_07.sock --type=codex -- codex" },
+        { pid: 600, ppid: 500, etime: "00:09", command: "codex -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const codex = payload.processes.find((p: { agent_type: string }) => p.agent_type === "codex");
+    expect(codex.origin).toBe("managed");
+    expect(codex.thread_id).toBe("codex_07");
+  });
+
+  it("classifies codex spawned from a terminal as external (NOT a leak)", async () => {
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 100, ppid: 1, etime: "10:00", command: "-zsh" },
+        { pid: 101, ppid: 100, etime: "01:00", command: "node /Users/yzliu/.local/state/fnm_multishells/x/bin/codex" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes).toHaveLength(1);
+    expect(payload.processes[0].origin).toBe("external");
+    expect(payload.processes[0].is_leak).toBe(false);
+    expect(payload.external).toBe(1);
+    expect(payload.leak).toBe(0);
+  });
+
+  it("classifies orphan codex with meridian-roles spawn markers (no agentapi parent) as orphan + leak", async () => {
+    // Same scenario as the documented active-tool-process.ts:39 pattern:
+    // agentapi parent died, codex CLI child reparented to PID 1.
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 700, ppid: 1, etime: "12:00", command: "codex -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].origin).toBe("orphan");
+    expect(payload.processes[0].is_leak).toBe(true);
+    expect(payload.orphan).toBe(1);
+    expect(payload.leak).toBe(1);
+  });
+
+  it("classifies interactive claude (no agentapi parent, no meridian-roles markers) as external", async () => {
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 900, ppid: 1, etime: "06:00:00", command: "claude --dangerously-skip-permissions" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].origin).toBe("external");
+    expect(payload.processes[0].is_leak).toBe(false);
+    expect(payload.external).toBe(1);
+  });
+
+  it("flags managed agentapi with no dispatcher claim as leak", async () => {
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 999, ppid: 1, etime: "01:23", command: "agentapi server --socket=/tmp/agentapi-codex_99.sock --type=codex" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].origin).toBe("managed");
+    expect(payload.processes[0].is_leak).toBe(true);
+    expect(payload.managed_leak).toBe(1);
+  });
+
+  it("binds managed agentapi to a DISPATCHER row", async () => {
     const fixture = await createSidecarFixture({
       version: 2,
-      dispatcher: {
-        thread_id: null,
-        started_at: null,
-        status: "pending"
-      },
+      dispatcher: { thread_id: "codex_42", started_at: "2026-05-16T10:00:00.000Z", status: "running" },
+      workers: {},
+      last_reconciled_at: null
+    });
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 500, ppid: 1, etime: "00:10", command: "agentapi server --socket=/tmp/agentapi-codex_42.sock --type=codex" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].is_leak).toBe(false);
+    expect(payload.processes[0].binding).toMatchObject({
+      dispatcher_role_id: "agent-dispatcher-abc",
+      worker_id: "DISPATCHER",
+      role: "dispatcher"
+    });
+    expect(payload.managed_bound).toBe(1);
+    expect(payload.leak).toBe(0);
+  });
+
+  it("does not bind to a completed worker's stale thread_id (still treats matching agentapi as leak)", async () => {
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: null, started_at: null, status: "pending" },
       workers: {
         "W-01": {
           thread_id: "codex_77",
@@ -168,77 +227,52 @@ describe("createProcessHandlers /api/agentapi-processes", () => {
       },
       last_reconciled_at: null
     });
-    const appState: AppState = {
-      roles: [
-        {
-          threadId: "agent-dispatcher-xyz",
-          roleType: "agent-dispatcher",
-          status: "active",
-          config: {
-            dispatcher_role_id: "agent-dispatcher-xyz",
-            agent_type: "codex",
-            mode: "bridge",
-            auto_approve: false,
-            dispatch_plan_path: fixture.planPath,
-            command_file_path: path.join(path.dirname(fixture.planPath), "agent_dispatch_command.md"),
-            dispatch_repo_root: path.dirname(fixture.planPath),
-            kill_policy: "always",
-            user_reply_channels: [{ channel: "telegram", chat_id: "telegram:test" }]
-          }
-        }
-      ],
-      promptStore: {}
-    };
     const handlers = createProcessHandlers({
-      stateStore: { load: async () => appState },
-      listProcesses: () => [
-        { pid: 777, etime: "12:00", command: "agentapi server --socket=/tmp/agentapi-codex_77.sock --type=codex" }
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 777, ppid: 1, etime: "12:00", command: "agentapi server --socket=/tmp/agentapi-codex_77.sock --type=codex" }
       ]
     });
     const { res, body } = makeResponse();
     await handlers.handle(makeRequest("/api/agentapi-processes"), res);
     const payload = JSON.parse(body());
-    expect(payload.leak).toBe(1);
-    expect(payload.bound).toBe(0);
+    expect(payload.processes[0].is_leak).toBe(true);
+    expect(payload.managed_leak).toBe(1);
   });
 
-  it("ignores non-agentapi processes", async () => {
+  it("sorts leaks before managed-bound before external", async () => {
     const handlers = createProcessHandlers({
-      stateStore: { load: async () => ({ roles: [], promptStore: {} }) },
-      listProcesses: () => [
-        { pid: 100, etime: "00:01", command: "/usr/bin/node dist/index.js" },
-        { pid: 200, etime: "00:01", command: "agentapi server --socket=/tmp/agentapi-x.sock" }
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 100, ppid: 1, etime: "01:00", command: "claude --dangerously-skip-permissions" },        // external
+        { pid: 200, ppid: 1, etime: "01:00", command: "agentapi server --socket=/tmp/agentapi-x.sock" }, // leak (no binding)
+        { pid: 300, ppid: 1, etime: "01:00", command: "codex -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox" } // orphan leak
       ]
     });
     const { res, body } = makeResponse();
     await handlers.handle(makeRequest("/api/agentapi-processes"), res);
     const payload = JSON.parse(body());
-    expect(payload.total).toBe(1);
+    // Order: leaks (origin=managed-no-binding pid=200, origin=orphan pid=300), then external pid=100
+    expect(payload.processes.map((p: { pid: number; is_leak: boolean }) => [p.pid, p.is_leak])).toEqual([
+      [200, true],
+      [300, true],
+      [100, false]
+    ]);
   });
 
-  it("sorts leaks ahead of bound entries", async () => {
+  it("ignores non-agent processes entirely (zsh, node-not-codex, ...)", async () => {
     const handlers = createProcessHandlers({
-      stateStore: { load: async () => ({ roles: [], promptStore: {} }) },
-      listProcesses: () => [
-        { pid: 100, etime: "00:01", command: "agentapi server --socket=/tmp/agentapi-codex_01.sock" },
-        { pid: 200, etime: "00:01", command: "agentapi server --socket=/tmp/agentapi-codex_02.sock" }
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 1, ppid: 0, etime: "10:00:00", command: "/sbin/launchd" },
+        { pid: 2, ppid: 1, etime: "10:00:00", command: "-zsh" },
+        { pid: 3, ppid: 1, etime: "10:00:00", command: "/opt/homebrew/opt/node/bin/node /opt/homebrew/lib/node_modules/openclaw/dist/index.js" }
       ]
     });
     const { res, body } = makeResponse();
     await handlers.handle(makeRequest("/api/agentapi-processes"), res);
     const payload = JSON.parse(body());
-    // Both unbound → leak — order is by PID ascending
-    expect(payload.processes.map((p: { pid: number }) => p.pid)).toEqual([100, 200]);
+    expect(payload.total).toBe(0);
+    expect(payload.processes).toEqual([]);
   });
-});
-
-// cleanup after all tests
-import { afterAll } from "vitest";
-afterAll(async () => {
-  await Promise.all(
-    Array.from(tempDirs, async (d) => {
-      await fs.rm(d, { recursive: true, force: true });
-    })
-  );
-  tempDirs.clear();
 });

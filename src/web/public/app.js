@@ -130,13 +130,34 @@ function setupProcessMonitor() {
   const tableBody = document.getElementById("processes-table-body");
   const empty = document.getElementById("processes-empty");
   const feedback = document.getElementById("processes-feedback");
-  const totalEl = document.getElementById("process-summary-total");
-  const boundEl = document.getElementById("process-summary-bound");
-  const leakEl = document.getElementById("process-summary-leak");
-  const navCount = document.getElementById("nav-process-count");
+  const summaryEl = document.getElementById("process-summary");
   const navLeakDot = document.getElementById("nav-process-leak-dot");
+  const hideExternalToggle = document.getElementById("process-hide-external");
   if (!tableShell || !tableBody) {
     return;
+  }
+
+  let lastProcesses = [];
+
+  function render() {
+    const hideExternal = hideExternalToggle ? hideExternalToggle.checked : false;
+    const visible = hideExternal
+      ? lastProcesses.filter((p) => p.origin !== "external")
+      : lastProcesses;
+
+    if (visible.length === 0) {
+      tableShell.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = lastProcesses.length === 0
+          ? "No agentapi/codex/claude processes detected on the host."
+          : "Only external (non-meridian-roles) processes — hidden by filter. Uncheck the box to see them.";
+      }
+      return;
+    }
+    if (empty) empty.hidden = true;
+    tableShell.hidden = false;
+    tableBody.innerHTML = visible.map(renderProcessRow).join("");
   }
 
   async function refresh() {
@@ -145,28 +166,26 @@ function setupProcessMonitor() {
       if (!data || !Array.isArray(data.processes)) {
         return;
       }
-      const total = Number(data.total ?? data.processes.length);
-      const bound = Number(data.bound ?? 0);
-      const leak = Number(data.leak ?? 0);
+      lastProcesses = data.processes;
 
-      if (totalEl) totalEl.textContent = `total: ${total}`;
-      if (boundEl) boundEl.textContent = `bound: ${bound}`;
-      if (leakEl) leakEl.textContent = `leak: ${leak}`;
-
-      setTabCount("nav-process-count", total);
-      if (navLeakDot) {
-        navLeakDot.hidden = leak === 0;
+      if (summaryEl) {
+        const total = Number(data.total ?? data.processes.length);
+        const managedBound = Number(data.managed_bound ?? 0);
+        const managedLeak = Number(data.managed_leak ?? 0);
+        const orphan = Number(data.orphan ?? 0);
+        const external = Number(data.external ?? 0);
+        const leak = Number(data.leak ?? 0);
+        summaryEl.innerHTML =
+          `<span>total: <strong>${total}</strong></span>`
+          + `<span class="muted">meridian-roles bound: ${managedBound}</span>`
+          + `<span class="${leak > 0 ? "leak-callout" : "muted"}">leak: ${leak}</span>`
+          + `<span class="muted">orphan: ${orphan}</span>`
+          + `<span class="muted">external: ${external}</span>`;
+        setTabCount("nav-process-count", total);
+        if (navLeakDot) navLeakDot.hidden = leak === 0;
       }
 
-      if (total === 0) {
-        tableShell.hidden = true;
-        if (empty) empty.hidden = false;
-      } else {
-        if (empty) empty.hidden = true;
-        tableShell.hidden = false;
-        tableBody.innerHTML = data.processes.map(renderProcessRow).join("");
-      }
-
+      render();
       if (feedback) feedback.textContent = "";
     } catch (err) {
       if (feedback) feedback.textContent = `Failed to refresh: ${(err && err.message) || err}`;
@@ -174,35 +193,48 @@ function setupProcessMonitor() {
   }
 
   function renderProcessRow(entry) {
-    const isLeak = entry.binding === null && entry.thread_id !== null;
-    const isUnidentified = entry.thread_id === null;
-    const indicator = isLeak
-      ? '<span class="leak-dot" title="No worker in any active dispatcher claims this thread_id"></span>'
-      : isUnidentified
-        ? '<span class="warn-dot" title="agentapi process with unparseable socket path"></span>'
-        : '<span class="ok-dot" title="bound to a running worker"></span>';
+    const dot = entry.is_leak
+      ? '<span class="leak-dot" title="LEAK — meridian-roles spawned this process but no dispatcher claims its thread_id"></span>'
+      : entry.origin === "managed"
+        ? '<span class="ok-dot" title="meridian-roles managed; bound to a running worker"></span>'
+        : entry.origin === "orphan"
+          ? '<span class="leak-dot" title="ORPHAN — codex/claude survived after its agentapi parent died"></span>'
+          : '<span class="external-dot" title="external — not spawned by meridian-roles (terminal session, Claude Code, etc.)"></span>';
+
+    const originTag = entry.origin === "managed"
+      ? '<span class="origin-tag origin-managed">meridian-roles</span>'
+      : entry.origin === "orphan"
+        ? '<span class="origin-tag origin-orphan">orphan</span>'
+        : '<span class="origin-tag origin-external">external</span>';
+
     const worker = entry.binding
       ? `<code>${escapeHtml(entry.binding.worker_id)}</code> <span class="muted">(${escapeHtml(entry.binding.role)})</span>`
-      : isLeak
-        ? '<span class="leak-callout">— leaked —</span>'
+      : entry.is_leak
+        ? '<span class="leak-callout">— no dispatcher claim —</span>'
         : '<span class="muted">—</span>';
     const dispatcher = entry.binding
       ? `<code>${escapeHtml(entry.binding.dispatcher_role_id)}</code>`
       : '<span class="muted">—</span>';
     const threadId = entry.thread_id
       ? `<code>${escapeHtml(entry.thread_id)}</code>`
-      : '<span class="muted">(unparsed)</span>';
-    const klass = isLeak ? "row-leak" : "";
+      : '<span class="muted">—</span>';
+    const klass = entry.is_leak ? "row-leak" : entry.origin === "external" ? "row-external" : "";
+
     return `<tr class="${klass}">`
-      + `<td>${indicator}</td>`
+      + `<td>${dot}</td>`
+      + `<td>${originTag}</td>`
       + `<td><code>${entry.pid}</code></td>`
+      + `<td><code class="muted">${entry.ppid}</code></td>`
+      + `<td>${escapeHtml(entry.agent_type ?? "?")}</td>`
       + `<td>${threadId}</td>`
       + `<td>${worker}</td>`
       + `<td>${dispatcher}</td>`
-      + `<td>${entry.binding ? escapeHtml(entry.binding.role) : "—"}</td>`
       + `<td>${escapeHtml(entry.etime ?? "")}</td>`
-      + `<td>${escapeHtml(entry.agent_type ?? "?")}</td>`
       + "</tr>";
+  }
+
+  if (hideExternalToggle) {
+    hideExternalToggle.addEventListener("change", render);
   }
 
   refresh();
