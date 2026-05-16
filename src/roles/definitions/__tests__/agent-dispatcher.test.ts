@@ -51,6 +51,46 @@ describe("AgentDispatcherRole", () => {
     }).toThrow();
   });
 
+  it("onActivate SKIPS launchDispatcher when the session is paused (restart-hold)", async () => {
+    const harness = createHarness();
+    harness.sessionManager.isPaused.mockReturnValue(true);
+    harness.sessionManager.getDispatcherThreadId.mockReturnValue(null as unknown as string);
+
+    await harness.role.onActivate(harness.context);
+
+    // Critical: NO codex spawn, NO initSession, NO prompt build — just persist paused.
+    expect(harness.launchDispatcher).not.toHaveBeenCalled();
+    expect(harness.sessionManager.initSession).not.toHaveBeenCalled();
+    const savedState = await harness.stateStore.load();
+    expect(savedState?.roles?.[0]?.status).toBe("paused");
+  });
+
+  it("onStatusChange('active') from paused triggers launchDispatcher (Resume = continue)", async () => {
+    const harness = createHarness();
+    // Start paused, no thread yet
+    harness.sessionManager.isPaused.mockReturnValue(true);
+    harness.sessionManager.getDispatcherThreadId.mockReturnValue(null as unknown as string);
+    await harness.role.onActivate(harness.context);
+    expect(harness.launchDispatcher).not.toHaveBeenCalled();
+
+    // Simulate Resume: wasPaused=true at function entry, getDispatcherThreadId
+    // still null (no codex yet) → launch fires. After launch, initSession
+    // would have set the id, so signalDispatcherThread sees a non-null id.
+    harness.sessionManager.setPaused.mockImplementation(() => {
+      harness.sessionManager.isPaused.mockReturnValue(false);
+    });
+    harness.sessionManager.getDispatcherThreadId.mockReturnValue(null as unknown as string);
+    harness.launchDispatcher.mockImplementationOnce(async () => {
+      // Mimic executeDispatcherHubLaunch -> sessionManager.initSession setting the id
+      harness.sessionManager.getDispatcherThreadId.mockReturnValue("dispatcher-thread-fresh");
+      return { ok: true, threadId: "dispatcher-thread-fresh" };
+    });
+
+    await harness.role.onStatusChange("agent-dispatcher-role", "active");
+
+    expect(harness.launchDispatcher).toHaveBeenCalledTimes(1);
+  });
+
   it("onActivate launches the dispatcher and records the dispatcher thread id", async () => {
     const harness = createHarness();
 
@@ -348,7 +388,8 @@ function createHarness(options: {
       dispatcherRestarted: true
     })),
     setPaused: vi.fn(() => undefined),
-    awaitPendingPauseWork: vi.fn(async () => undefined)
+    awaitPendingPauseWork: vi.fn(async () => undefined),
+    awaitInitialPauseState: vi.fn(async () => undefined)
   };
   const buildSystemPrompt = vi.fn(() => "dispatcher prompt");
   const launchDispatcher = vi.fn(async (): Promise<LaunchResult> => ({

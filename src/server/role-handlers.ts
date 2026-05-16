@@ -77,6 +77,7 @@ import {
   isReconcilableAgentDispatcherRoleStatus,
   isTerminalAgentDispatcherRoleStatus,
   NEEDS_REACTIVATION_ROLE_STATUS,
+  PAUSED_ROLE_STATUS,
   StateStore
 } from "../state-store";
 import {
@@ -734,6 +735,21 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
     }
 
+    // Operator hold: paused role MUST NOT launch from any HTTP path. The
+    // explicit Resume button (setAgentDispatcherStatus("active")) is the only
+    // way to transition out of paused; that path triggers launchDispatcher via
+    // onStatusChange. GUI auto-refresh of /api/agent-dispatcher/.../continue
+    // and /start-hub-session were silently bypassing pause and re-spawning
+    // every poll cycle — that's the leak the user kept observing despite
+    // state.json showing paused.
+    if (context.status === PAUSED_ROLE_STATUS) {
+      return {
+        ok: true,
+        status: "still_blocked",
+        message: "still blocked: dispatcher is paused — hit Resume to continue"
+      };
+    }
+
     if (!await hasRecoverableDispatchWorkForConfig(context.effectiveConfig, log)) {
       return {
         ok: true,
@@ -838,6 +854,18 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
     if (context.roleType !== "agent-dispatcher") {
       throw createHttpError(404, `Agent dispatcher not found for thread_id=${threadId}`);
+    }
+
+    // Same operator-hold guard as startAgentDispatcherHubSession — see the
+    // comment there. continue-dispatcher is the GUI's auto-refresh endpoint
+    // and was the main launch-loop driver pre-fix because every poll spawned
+    // a fresh agentapi when the persisted status was paused.
+    if (context.status === PAUSED_ROLE_STATUS) {
+      return {
+        ok: true,
+        status: "still_blocked",
+        message: "still blocked: dispatcher is paused — hit Resume to continue"
+      };
     }
 
     const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
