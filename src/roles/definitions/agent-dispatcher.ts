@@ -150,6 +150,14 @@ export class AgentDispatcherRole implements BaseRole {
 
     const systemPrompt = this.resolveDispatcherSystemPrompt();
     const otherDispatchPlanPaths = await this.resolveOtherDispatchPlanPaths();
+
+    // Capture sessionManager up-front; the closure inside onBeforeRunHandoff
+    // needs a stable reference (this.sessionManager is null'd in the catch
+    // block at onActivate if anything throws).
+    const onBeforeRunHandoff = async (request: { threadId: string }) => {
+      await sessionManager.initSession(request.threadId, this.config.dispatch_plan_path);
+    };
+
     const launched = await this.launch({
       agentType: this.config.agent_type,
       modelId: this.config.model_id,
@@ -161,7 +169,8 @@ export class AgentDispatcherRole implements BaseRole {
       commandFilePath: this.config.command_file_path,
       dispatcherRoleId: this.threadId,
       userReplyChannel: this.getPrimaryReplyChannel(),
-      otherDispatchPlanPaths
+      otherDispatchPlanPaths,
+      onBeforeRunHandoff
     });
     if (!launched.ok || !launched.threadId.trim()) {
       const launchError = launched.error ?? "Failed to launch dispatcher agent";
@@ -178,6 +187,11 @@ export class AgentDispatcherRole implements BaseRole {
     }
 
     const dispatcherThreadId = launched.threadId;
+    // initSession has already been called via onBeforeRunHandoff at this
+    // point. Calling again here is harmless (recordDispatcher just overwrites
+    // the same thread_id) and preserves the legacy ordering for any path
+    // that doesn't route through onBeforeRunHandoff (e.g. mocked launches in
+    // tests).
     await sessionManager.initSession(dispatcherThreadId, this.config.dispatch_plan_path);
     return dispatcherThreadId;
   }

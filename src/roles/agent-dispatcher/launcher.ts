@@ -42,6 +42,15 @@ export interface LaunchConfig {
    * Hub session across two role lifecycles.
    */
   otherDispatchPlanPaths?: readonly string[];
+  /**
+   * Awaited synchronously after the spawn returns a thread_id but BEFORE the
+   * dispatcher run handoff fires. Used by the orchestrator to persist the
+   * DISPATCHER lifecycle entry so the codex CLI's first run-tool callback
+   * can find it. See launcher.ts inline comment and
+   * LaunchDispatcherDeps.onBeforeRunHandoff for the failure mode this
+   * prevents.
+   */
+  onBeforeRunHandoff?: (request: DispatcherRunHandoffRequest) => Promise<void>;
 }
 
 export interface LaunchResult {
@@ -68,6 +77,17 @@ export interface LaunchDispatcherDeps {
   unlink(filePath: string): Promise<void>;
   /** Override for tests; production uses the path next to dispatch_plan.md. */
   resolveDispatcherCommandPath?: (config: LaunchConfig) => string;
+  /**
+   * Awaited synchronously between the spawn returning a thread_id and the
+   * run-handoff firing. The orchestrator (agent-dispatcher.ts) uses this to
+   * record the DISPATCHER lifecycle entry so the run-tool callback from the
+   * freshly-started codex CLI doesn't race past lifecycle-store initialization
+   * and fail with "Worker not found in lifecycle state: DISPATCHER". Observed
+   * causing a respawn loop with 50+ launches per HTTP continue-dispatcher
+   * burst when the Hub was slow enough that codex got its first tool call out
+   * before sessionManager.initSession persisted (logs at 2026-05-16).
+   */
+  onBeforeRunHandoff?(request: DispatcherRunHandoffRequest): Promise<void>;
   onBackgroundRunError?(error: Error, request: DispatcherRunHandoffRequest): void;
 }
 
@@ -150,6 +170,16 @@ export async function launchDispatcher(
       commandFilePath: commandPath,
       workerId: DISPATCHER_WORKER_ID
     };
+    // Persist the DISPATCHER lifecycle entry BEFORE firing the handoff so the
+    // codex CLI's first run-tool callback can find it. Without this, a fast
+    // Hub + slow Meridian-roles produces "Worker not found in lifecycle state:
+    // DISPATCHER" → dispatcher dies → next caller respawns it.
+    // Config-level callback wins over deps-level (the orchestrator-supplied
+    // initSession needs to fire here; deps is for tests).
+    const beforeHandoff = config.onBeforeRunHandoff ?? deps.onBeforeRunHandoff;
+    if (beforeHandoff) {
+      await beforeHandoff(handoffRequest);
+    }
     const handoff = deps.dispatchRunHandoff(handoffRequest);
     detachedRunStarted = true;
 

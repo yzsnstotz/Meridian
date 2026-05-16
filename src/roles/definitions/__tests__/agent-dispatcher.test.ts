@@ -85,7 +85,8 @@ describe("AgentDispatcherRole", () => {
         channel: "telegram",
         chat_id: "telegram:pm"
       },
-      otherDispatchPlanPaths: []
+      otherDispatchPlanPaths: [],
+      onBeforeRunHandoff: expect.any(Function)
     });
     expect(harness.sessionManager.initSession).toHaveBeenCalledWith("dispatcher-thread-123", "/tmp/dispatch_plan.md");
 

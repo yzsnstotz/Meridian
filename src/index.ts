@@ -82,7 +82,28 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   const runner = new RoleRunner({
     sendToHub: (message) => client.send(message),
     listInstances: () => client.listInstances(),
-    log
+    log,
+    // On launch-breaker trip: persist PAUSED to the state store so the GUI's
+    // role detail page reflects reality (the role is no longer being
+    // launched) instead of looping users through reactivation that just
+    // re-trips. Operator must explicitly resume after fixing the underlying
+    // cause (typically Meridian Hub at :3000 unreachable / overloaded).
+    onLaunchBreakerTripped: async (dispatcherRoleId) => {
+      try {
+        const appState = await loadAppState(stateStore);
+        const nextRoles = appState.roles.map((role) =>
+          role.threadId === dispatcherRoleId
+            ? { ...role, status: PAUSED_ROLE_STATUS }
+            : role
+        );
+        await stateStore.save({ roles: nextRoles, promptStore: appState.promptStore });
+      } catch (e) {
+        log.warn("Failed to persist PAUSED on launch breaker trip", {
+          dispatcherRoleId,
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
   });
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });
   const watchdogPmResolverIssueKeys = new Set<string>();
