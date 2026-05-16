@@ -169,6 +169,311 @@ describe("SessionManager", () => {
     await waitForRoleStatus(harness.stateStore, "agent-dispatcher-role-2", "active");
   });
 
+  describe("setPaused — real pause kills attached threads", () => {
+    it("kills the dispatcher controller + every running worker on transition to paused", async () => {
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: FIXED_NOW,
+          status: "running"
+        },
+        workers: {
+          "BATCH-3-GATE": {
+            thread_id: "codex_42",
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            started_at: FIXED_NOW,
+            last_seen_at: FIXED_NOW,
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          "N-07": {
+            thread_id: "codex_55",
+            trace_id: "22222222-2222-4222-8222-222222222222",
+            started_at: FIXED_NOW,
+            last_seen_at: FIXED_NOW,
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          "DONE-WORKER": {
+            thread_id: "codex_99",
+            trace_id: "33333333-3333-4333-8333-333333333333",
+            started_at: FIXED_NOW,
+            last_seen_at: FIXED_NOW,
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      });
+
+      const killAttachedThread = vi.fn(async (threadId: string) => ({
+        threadId,
+        pidsKilled: [100],
+        pidsResistedTerm: [],
+        socketsRemoved: [`/tmp/agentapi-${threadId}.sock`],
+        errors: []
+      }));
+
+      const manager = new SessionManager("agent-dispatcher-role-kill-1", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread
+      });
+      await manager.initSession("dispatcher-thread-123", harness.dispatchPlanPath);
+
+      manager.setPaused(true);
+      await manager.awaitPendingPauseWork();
+
+      const killedIds = killAttachedThread.mock.calls.map((call) => call[0]).sort();
+      // Dispatcher controller + the two running workers; the completed worker is skipped.
+      expect(killedIds).toEqual(["codex_42", "codex_55", "dispatcher-thread-123"]);
+      await waitForRoleStatus(harness.stateStore, "agent-dispatcher-role-kill-1", "paused");
+    });
+
+    it("does NOT invoke killer on transition to resumed", async () => {
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-resume",
+          started_at: FIXED_NOW,
+          status: "running"
+        },
+        workers: {},
+        last_reconciled_at: null
+      });
+
+      const killAttachedThread = vi.fn(async (threadId: string) => ({
+        threadId,
+        pidsKilled: [],
+        pidsResistedTerm: [],
+        socketsRemoved: [],
+        errors: []
+      }));
+
+      const manager = new SessionManager("agent-dispatcher-role-kill-2", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread
+      });
+      await manager.initSession("dispatcher-thread-resume", harness.dispatchPlanPath);
+
+      manager.setPaused(true);
+      await manager.awaitPendingPauseWork();
+      killAttachedThread.mockClear();
+
+      manager.setPaused(false);
+      await manager.awaitPendingPauseWork();
+
+      expect(killAttachedThread).not.toHaveBeenCalled();
+    });
+
+    it("does not re-kill when setPaused(true) is called while already paused", async () => {
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-idem",
+          started_at: FIXED_NOW,
+          status: "running"
+        },
+        workers: {},
+        last_reconciled_at: null
+      });
+
+      const killAttachedThread = vi.fn(async (threadId: string) => ({
+        threadId,
+        pidsKilled: [],
+        pidsResistedTerm: [],
+        socketsRemoved: [],
+        errors: []
+      }));
+
+      const manager = new SessionManager("agent-dispatcher-role-kill-3", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread
+      });
+      await manager.initSession("dispatcher-thread-idem", harness.dispatchPlanPath);
+
+      manager.setPaused(true);
+      await manager.awaitPendingPauseWork();
+      expect(killAttachedThread).toHaveBeenCalledTimes(1);
+
+      killAttachedThread.mockClear();
+      manager.setPaused(true);
+      await manager.awaitPendingPauseWork();
+      expect(killAttachedThread).not.toHaveBeenCalled();
+    });
+
+    it("skipPersist=true still runs the kill phase (the role owns the outer state write)", async () => {
+      // This is the operator-initiated path: GUI/CLI pause -> runner.pauseRole
+      // -> role.onStatusChange -> sessionManager.setPaused(true, { skipPersist: true }).
+      // skipPersist suppresses the inner state-store write only — the kill
+      // must still happen, otherwise pause stays "fake".
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock();
+      const killAttachedThread = vi.fn(async (threadId: string) => ({
+        threadId,
+        pidsKilled: [],
+        pidsResistedTerm: [],
+        socketsRemoved: [],
+        errors: []
+      }));
+
+      const manager = new SessionManager("agent-dispatcher-role-kill-4", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread
+      });
+      await manager.initSession("dispatcher-thread-skip", harness.dispatchPlanPath);
+
+      manager.setPaused(true, { skipPersist: true });
+      await manager.awaitPendingPauseWork();
+
+      expect(killAttachedThread).toHaveBeenCalledWith("dispatcher-thread-skip");
+      expect(manager.isPaused()).toBe(true);
+    });
+
+    it("skipKill=true is the no-side-effect hydration path: flag flips, no kill, no persist", async () => {
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock();
+      const killAttachedThread = vi.fn();
+
+      const manager = new SessionManager("agent-dispatcher-role-kill-4b", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread
+      });
+      await manager.initSession("dispatcher-thread-skipkill", harness.dispatchPlanPath);
+
+      manager.setPaused(true, { skipPersist: true, skipKill: true });
+      await manager.awaitPendingPauseWork();
+
+      expect(killAttachedThread).not.toHaveBeenCalled();
+      expect(manager.isPaused()).toBe(true);
+    });
+
+    it("emits a structured summary via onPauseKillSummary", async () => {
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-sum",
+          started_at: FIXED_NOW,
+          status: "running"
+        },
+        workers: {
+          "W-01": {
+            thread_id: "codex_77",
+            trace_id: "44444444-4444-4444-8444-444444444444",
+            started_at: FIXED_NOW,
+            last_seen_at: FIXED_NOW,
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      });
+
+      const summaries: unknown[] = [];
+      const manager = new SessionManager("agent-dispatcher-role-kill-5", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread: async (threadId) => ({
+          threadId,
+          pidsKilled: [1],
+          pidsResistedTerm: [],
+          socketsRemoved: [`/tmp/agentapi-${threadId}.sock`],
+          errors: []
+        }),
+        onPauseKillSummary: (s) => {
+          summaries.push(s);
+        }
+      });
+      await manager.initSession("dispatcher-thread-sum", harness.dispatchPlanPath);
+
+      manager.setPaused(true);
+      await manager.awaitPendingPauseWork();
+
+      expect(summaries).toHaveLength(1);
+      const summary = summaries[0] as {
+        dispatcherId: string;
+        killedThreadIds: string[];
+        perThreadResults: Array<{ threadId: string; pidsKilled: number[] }>;
+      };
+      expect(summary.dispatcherId).toBe("dispatcher-thread-sum");
+      expect(summary.killedThreadIds.sort()).toEqual(["codex_77", "dispatcher-thread-sum"]);
+      expect(summary.perThreadResults).toHaveLength(2);
+    });
+
+    it("isolates per-thread kill errors without breaking the chain", async () => {
+      const harness = await createHarness();
+      const lifecycle = createLifecycleStoreMock({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-err",
+          started_at: FIXED_NOW,
+          status: "running"
+        },
+        workers: {
+          "W-01": {
+            thread_id: "codex_aa",
+            trace_id: "55555555-5555-4555-8555-555555555555",
+            started_at: FIXED_NOW,
+            last_seen_at: FIXED_NOW,
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      });
+
+      const killAttachedThread = vi.fn(async (threadId: string) => {
+        if (threadId === "codex_aa") {
+          throw new Error("ps probe segfaulted");
+        }
+        return {
+          threadId,
+          pidsKilled: [],
+          pidsResistedTerm: [],
+          socketsRemoved: [],
+          errors: []
+        };
+      });
+
+      const manager = new SessionManager("agent-dispatcher-role-kill-6", {
+        stateStore: harness.stateStore,
+        lifecycleStore: lifecycle.store,
+        killAttachedThread
+      });
+      await manager.initSession("dispatcher-thread-err", harness.dispatchPlanPath);
+
+      manager.setPaused(true);
+      // Should not throw, status flag should still get written.
+      await manager.awaitPendingPauseWork();
+      await waitForRoleStatus(harness.stateStore, "agent-dispatcher-role-kill-6", "paused");
+      expect(killAttachedThread).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("kills running lifecycle workers during restart and reconciles their status from evidence", async () => {
     const harness = await createHarness();
     const lifecycle = createLifecycleStoreMock({

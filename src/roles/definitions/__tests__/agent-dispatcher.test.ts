@@ -346,7 +346,8 @@ function createHarness(options: {
       staleWorkersKilled: [],
       dispatcherRestarted: true
     })),
-    setPaused: vi.fn(() => undefined)
+    setPaused: vi.fn(() => undefined),
+    awaitPendingPauseWork: vi.fn(async () => undefined)
   };
   const buildSystemPrompt = vi.fn(() => "dispatcher prompt");
   const launchDispatcher = vi.fn(async (): Promise<LaunchResult> => ({

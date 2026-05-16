@@ -6,6 +6,10 @@ import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
 import { resolveOtherDispatcherPlanPaths } from "./roles/agent-dispatcher/cross-plan-paths";
+import {
+  DispatcherWorkerBreaker,
+  computeWorkerLifecycleSig
+} from "./roles/agent-dispatcher/circuit-breaker";
 import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
 import { parseMeridianStatusMarker } from "./roles/agent-dispatcher/meridian-status-marker";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
@@ -82,6 +86,11 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   });
   const resultServer = new A2AServer((result) => runner.dispatch(result), { log });
   const watchdogPmResolverIssueKeys = new Set<string>();
+  // Per-(dispatcherId, workerId) circuit breaker — kills the runaway
+  // continueDispatcher loop that drove agent-dispatcher-67f6a3fc to ~3,500
+  // wasted LLM dispatches before pause was reliable. See
+  // docs/plans/2026-05-16-dispatcher-circuit-breaker-and-real-pause-design.md.
+  const dispatcherWorkerBreaker = new DispatcherWorkerBreaker();
 
   registry.register("dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
   registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
@@ -169,6 +178,32 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
         log.warn("Watchdog stall: no persisted agent-dispatcher found for plan", {
           dispatchPlanPath: info.dispatchPlanPath
         });
+        return;
+      }
+
+      // Circuit breaker gate: bound how often the watchdog can re-fire
+      // continueDispatcher against the same stuck worker. A worker that's
+      // genuinely making progress will see its lifecycleSig change and the
+      // breaker counter reset; only true loops accumulate to the trip
+      // threshold (10 calls / 10 min by default).
+      const breakerVerdict = await evaluateBreakerForWatchdog(
+        info.dispatchPlanPath,
+        info.continueWorkerId,
+        threadId,
+        dispatcherWorkerBreaker,
+        log
+      );
+      if (breakerVerdict && !breakerVerdict.allowed) {
+        await handleBreakerTrip(
+          threadId,
+          info.continueWorkerId,
+          info.dispatchPlanPath,
+          breakerVerdict.countAfter,
+          breakerVerdict.lifecycleSig,
+          runner,
+          stateStore,
+          log
+        );
         return;
       }
 
@@ -736,6 +771,120 @@ async function resolveThreadIdForDispatchPlanPath(
   return null;
 }
 
+// Reads the worker's current lifecycle entry to derive a stable signature, then
+// asks the breaker whether the next watchdog continuation is allowed. Returns
+// null when there's no candidate workerId — the breaker only meaningfully gates
+// per-worker continuations.
+async function evaluateBreakerForWatchdog(
+  dispatchPlanPath: string,
+  candidateWorkerId: string | null,
+  dispatcherThreadId: string,
+  breaker: DispatcherWorkerBreaker,
+  log: typeof console
+): Promise<{ allowed: boolean; countAfter: number; lifecycleSig: string } | null> {
+  if (!candidateWorkerId) {
+    return null;
+  }
+  let startedAt: string | null = null;
+  let status: string | null = null;
+  try {
+    const lifecycleState = new LifecycleStore(
+      path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME)
+    ).load();
+    const worker = lifecycleState.workers[candidateWorkerId];
+    startedAt = worker?.started_at ?? null;
+    status = worker?.status ?? null;
+  } catch (error) {
+    // If we can't read the lifecycle file, fall back to a sig that only
+    // captures the workerId. That degrades the breaker's progress-detection
+    // (the counter won't reset on a status flip) but keeps it functional.
+    log.warn("Watchdog stall: breaker fell back to workerId-only sig", {
+      dispatchPlanPath,
+      workerId: candidateWorkerId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+  const lifecycleSig = computeWorkerLifecycleSig(candidateWorkerId, startedAt, status);
+  return breaker.shouldAllow(dispatcherThreadId, candidateWorkerId, lifecycleSig, Date.now());
+}
+
+// Stamp circuit_open on the worker's lifecycle entry, force-pause the
+// dispatcher (real pause kills attached agentapi threads), and emit a loud
+// structured log so the operator sees it in the GUI's role log stream.
+async function handleBreakerTrip(
+  dispatcherThreadId: string,
+  workerId: string | null,
+  dispatchPlanPath: string,
+  countAfter: number,
+  lifecycleSig: string,
+  runner: RoleRunner,
+  stateStore: StateStore,
+  log: typeof console
+): Promise<void> {
+  log.error("Watchdog stall: circuit breaker tripped — force-pausing dispatcher", {
+    dispatcherThreadId,
+    workerId,
+    countAfter,
+    lifecycleSig
+  });
+
+  try {
+    const lifecycleStore = new LifecycleStore(
+      path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME)
+    );
+    const state = lifecycleStore.load();
+    if (workerId && state.workers[workerId]) {
+      const worker = state.workers[workerId];
+      (worker as DispatchWorkerState & { circuit_open?: unknown }).circuit_open = {
+        since: new Date().toISOString(),
+        count: countAfter,
+        lifecycle_sig: lifecycleSig,
+        reason: "watchdog_continue_loop_without_progress"
+      };
+      lifecycleStore.save(state);
+    }
+  } catch (error) {
+    log.warn("Watchdog stall: failed to stamp circuit_open marker", {
+      dispatcherThreadId,
+      workerId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  // Force-pause via the runner — this triggers session-manager's real-pause
+  // path which enumerates attached threads and SIGTERM/SIGKILLs them.
+  try {
+    const paused = await runner.pauseRole(dispatcherThreadId);
+    if (!paused) {
+      log.warn("Watchdog stall: pauseRole returned false during circuit trip", {
+        dispatcherThreadId
+      });
+    }
+  } catch (error) {
+    log.error("Watchdog stall: pauseRole threw during circuit trip", {
+      dispatcherThreadId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  // Also reflect the paused status in the state store directly so operators
+  // see it immediately, in case the role's own persist path was interrupted.
+  try {
+    const appState = await loadAppState(stateStore);
+    const nextRoles = appState.roles.map((role) =>
+      role.threadId === dispatcherThreadId
+        ? { ...role, status: PAUSED_ROLE_STATUS }
+        : role
+    );
+    await stateStore.save({ roles: nextRoles, promptStore: appState.promptStore });
+  } catch (error) {
+    log.warn("Watchdog stall: failed to write paused status to state store", {
+      dispatcherThreadId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
 export type WatchdogContinueDispatcher = (
   threadId: string,
   workerId?: string
@@ -764,6 +913,70 @@ export function buildWatchdogPmResolverIssueKey(
     issueWorkerId ?? "",
     workerStartedAt ?? ""
   ].join("\u0000");
+}
+
+export interface AssertPmResolverSpawnAllowedInput {
+  threadId: string;
+  issueStatus: ContinueDispatcherResponse["status"];
+  issueWorkerId: string | null;
+  lifecycleState: DispatchThreadStateV2 | null;
+  seenIssueKeys: Set<string>;
+  log: typeof console;
+}
+
+export interface AssertPmResolverSpawnAllowedVerdict {
+  allowed: boolean;
+  issueKey: string;
+}
+
+/**
+ * Single source of truth for whether a PM resolver spawn is allowed on this
+ * (threadId, workerId, issueStatus) tuple. Encapsulates the dedupe-cache
+ * check, the lifecycle-eviction-aware stale-cache recovery (PR #214 follow-up
+ * for agent-dispatcher-67f6a3fc BATCH-5-GATE), and the "PM already handled
+ * this worker run" short-circuit. Every PM resolver spawn entry must funnel
+ * through this helper so the invariants cannot drift between sites.
+ *
+ * Side effect: may mutate `seenIssueKeys` (delete on stale-cache recovery,
+ * add when short-circuiting because PM already handled the issue).
+ */
+export function assertPmResolverSpawnAllowed(
+  input: AssertPmResolverSpawnAllowedInput
+): AssertPmResolverSpawnAllowedVerdict {
+  const { threadId, issueStatus, issueWorkerId, lifecycleState, seenIssueKeys, log } = input;
+  const workerStartedAtForKey = issueWorkerId
+    ? lifecycleState?.workers[issueWorkerId]?.started_at ?? null
+    : null;
+  const issueKey = buildWatchdogPmResolverIssueKey(
+    threadId,
+    issueStatus,
+    issueWorkerId,
+    workerStartedAtForKey
+  );
+  if (seenIssueKeys.has(issueKey)) {
+    if (lifecycleState && !hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {
+      seenIssueKeys.delete(issueKey);
+    } else {
+      log.info("Watchdog stall: PM resolver already requested for this issue", {
+        threadId,
+        workerId: issueWorkerId,
+        status: issueStatus
+      });
+      return { allowed: false, issueKey };
+    }
+  }
+
+  if (lifecycleState && hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {
+    seenIssueKeys.add(issueKey);
+    log.info("Watchdog stall: PM resolver already handled current worker issue", {
+      threadId,
+      workerId: issueWorkerId,
+      status: issueStatus
+    });
+    return { allowed: false, issueKey };
+  }
+
+  return { allowed: true, issueKey };
 }
 
 export async function maybeStartPmResolverForWatchdogRecovery(
@@ -822,47 +1035,18 @@ export async function maybeStartPmResolverForWatchdogRecovery(
   // Folding `worker.started_at` into the key mirrors the same time semantics
   // the lifecycle gate already enforces, so a fresh worker run gets a fresh
   // key. Fall back to the legacy key when the worker is absent.
-  const workerStartedAtForKey = issueWorkerId
-    ? lifecycleState?.workers[issueWorkerId]?.started_at ?? null
-    : null;
-  const issueKey = buildWatchdogPmResolverIssueKey(
+  const verdict = assertPmResolverSpawnAllowed({
     threadId,
     issueStatus,
     issueWorkerId,
-    workerStartedAtForKey
-  );
-  if (seenIssueKeys.has(issueKey)) {
-    // Lifecycle state is authoritative for whether the previously-spawned PM
-    // is still alive. When `reconcilePmResolverLiveness` (PR #214) evicts a
-    // PM after a hub-missing observation, the lifecycle entry flips to
-    // `failed`, but the process-lifetime `seenIssueKeys` cache survives —
-    // observed on agent-dispatcher-67f6a3fc BATCH-5-GATE where PM codex_13's
-    // spawn ran into a hub-run transport timeout, the watchdog evicted the
-    // missing PM thread, and every later sweep then short-circuited here
-    // instead of firing a replacement PM. If the lifecycle gate now says the
-    // current worker issue has not been handled, drop the stale cache entry
-    // and fall through to a fresh spawn rather than wedging on stale memory.
-    if (lifecycleState && !hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {
-      seenIssueKeys.delete(issueKey);
-    } else {
-      log.info("Watchdog stall: PM resolver already requested for this issue", {
-        threadId,
-        workerId: issueWorkerId,
-        status: issueStatus
-      });
-      return;
-    }
-  }
-
-  if (lifecycleState && hasPmResolverHandledCurrentWorkerIssue(lifecycleState, issueWorkerId)) {
-    seenIssueKeys.add(issueKey);
-    log.info("Watchdog stall: PM resolver already handled current worker issue", {
-      threadId,
-      workerId: issueWorkerId,
-      status: issueStatus
-    });
+    lifecycleState,
+    seenIssueKeys,
+    log
+  });
+  if (!verdict.allowed) {
     return;
   }
+  const issueKey = verdict.issueKey;
 
   seenIssueKeys.add(issueKey);
   const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, threadId);

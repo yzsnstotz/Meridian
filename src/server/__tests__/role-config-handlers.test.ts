@@ -5830,7 +5830,8 @@ function createHarness(
         staleWorkersKilled: [],
         dispatcherRestarted: true
       }),
-      setPaused: () => undefined
+      setPaused: () => undefined,
+      awaitPendingPauseWork: async () => undefined
     }),
     readWorkersByStatus: async () => [],
     lifecycleStoreFactory: () => ({
