@@ -18,6 +18,7 @@
         <button class="nav-tab active" data-tab="dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></button>
         <button class="nav-tab" data-tab="schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></button>
         <button class="nav-tab" data-tab="roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></button>
+        <button class="nav-tab" data-tab="processes">Processes<span id="nav-process-count" class="nav-tab-count" hidden>0</span><span id="nav-process-leak-dot" class="nav-tab-leak-dot" hidden title="agentapi processes with no matching worker"></span></button>
       </div>
     </nav>
 
@@ -673,6 +674,49 @@
           </div>
           <div id="roles-empty" class="empty-state">No active roles.</div>
           <div id="roles-list" class="card-grid"></div>
+        </section>
+      </div>
+
+      <!-- ════════════════════════════════════════════════════
+           TAB: PROCESSES
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-processes" class="tab-panel">
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Live agentapi Processes</h2>
+              <p class="muted">
+                Every <code>agentapi server</code> process on the host, mapped to its owning worker/dispatcher.
+                <strong class="leak-callout">Red dot = leak</strong> — the process exists but no dispatcher's
+                <code>dispatch_threads.json</code> claims its <code>thread_id</code> as currently running.
+                Auto-refreshes every 3 seconds.
+              </p>
+            </div>
+            <div class="process-summary">
+              <span id="process-summary-total">total: 0</span>
+              <span id="process-summary-bound" class="muted">bound: 0</span>
+              <span id="process-summary-leak" class="leak-callout">leak: 0</span>
+            </div>
+          </div>
+          <div id="processes-empty" class="empty-state">No agentapi processes detected.</div>
+          <div id="processes-table-shell" class="table-shell" hidden>
+            <table class="status-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>PID</th>
+                  <th>thread_id</th>
+                  <th>worker</th>
+                  <th>dispatcher</th>
+                  <th>kind</th>
+                  <th>uptime</th>
+                  <th>agent_type</th>
+                </tr>
+              </thead>
+              <tbody id="processes-table-body"></tbody>
+            </table>
+          </div>
+          <p id="processes-feedback" class="feedback" role="status" aria-live="polite"></p>
         </section>
       </div>
     </main>

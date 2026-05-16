@@ -35,6 +35,7 @@ import { SchedulerStateStore } from "./roles/scheduler/scheduler-state-store";
 import { PromptStore } from "./roles/prompt-store";
 import { RoleRegistry } from "./roles/role-registry";
 import { RoleRunner, type RehydrationContext } from "./roles/role-runner";
+import { createProcessHandlers } from "./server/process-handlers";
 import { createPromptHandlers } from "./server/prompt-handlers";
 import { HttpServer } from "./server/http-server";
 import { createRoleHandlers, type ContinueDispatcherResponse } from "./server/role-handlers";
@@ -120,6 +121,19 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   const startupActivations = await buildStartupActivations(stateStore, client, log);
   await reconcileStartupDispatchers(startupActivations, client, log);
 
+  // Safety hold: force every persisted agent-dispatcher role to PAUSED before
+  // activating it. Prevents the loop class where ANY auto-spawn on restart
+  // (dispatcher controller, watchdog respawn, PM resolver liveness sweep,
+  // worker-launcher off a rehydrated dispatch_plan) can fire before the
+  // operator has verified the host is healthy (Hub up, no orphans, etc.).
+  // Opt out by setting MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART=true.
+  const autoResume = (process.env.MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART ?? "").toLowerCase() === "true";
+  if (!autoResume) {
+    await forcePauseAllDispatchersOnStartup(stateStore, log);
+  } else {
+    log.warn("MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART=true — skipping restart hold; dispatchers will auto-activate");
+  }
+
   await resultServer.listen();
   await activatePersistedRoles(startupActivations, registry, runner, log);
 
@@ -142,11 +156,13 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     stateStore,
     log
   });
+  const processHandlers = createProcessHandlers({ stateStore, log });
   const httpServer = new HttpServer({
     port: GUI_PORT,
     roleHandlers,
     promptHandlers,
     schedulerHandlers,
+    processHandlers,
     log
   });
   const settleKillThread = async (threadId: string): Promise<void> => {
@@ -514,6 +530,53 @@ async function reconcileStartupPmResolvers(
         error: asError(error).message
       });
     }
+  }
+}
+
+/**
+ * Restart safety hold: flips every non-terminal agent-dispatcher role to
+ * PAUSED in state.json BEFORE activation. Subsequent activate() reads PAUSED
+ * via SessionManager.loadPauseState and the role enters paused, so the
+ * watchdog's isDispatcherPaused gate prevents any spawn (controller relaunch,
+ * worker spawn, PM resolver, validator) until the operator explicitly hits
+ * Resume on each role.
+ *
+ * This is the safety net for the class of restart-time spawn loops that
+ * neither the launch breaker nor the worker circuit breaker can prevent —
+ * because the loop's first iteration already happened by the time those
+ * breakers see their first request.
+ */
+export async function forcePauseAllDispatchersOnStartup(
+  stateStore: StateStore,
+  log: typeof console
+): Promise<void> {
+  let pausedCount = 0;
+  let skippedTerminal = 0;
+  const state = await loadAppState(stateStore);
+  const TERMINAL_STATUSES = new Set(["completed", "failed", "deactivated", "terminated"]);
+  const nextRoles = state.roles.map((role) => {
+    if (role.roleType !== "agent-dispatcher") {
+      return role;
+    }
+    if (TERMINAL_STATUSES.has(role.status)) {
+      skippedTerminal += 1;
+      return role;
+    }
+    if (role.status === PAUSED_ROLE_STATUS) {
+      return role; // already paused
+    }
+    pausedCount += 1;
+    return { ...role, status: PAUSED_ROLE_STATUS };
+  });
+  if (pausedCount > 0) {
+    await stateStore.save({ roles: nextRoles, promptStore: state.promptStore });
+    log.warn("Restart safety hold: forced PAUSED on agent-dispatcher roles", {
+      paused: pausedCount,
+      skippedTerminal,
+      hint: "Resume each dispatcher via the GUI/CLI once you've verified Hub is healthy. Set MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART=true to disable this hold."
+    });
+  } else {
+    log.info("Restart safety hold: no non-paused dispatchers to hold", { skippedTerminal });
   }
 }
 

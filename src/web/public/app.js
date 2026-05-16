@@ -119,6 +119,105 @@ async function refreshGlobalNavCounts() {
    Validator Toggle (dispatcher creation form)
    ═══════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════
+   Live agentapi process monitor (tab: Processes)
+   ═══════════════════════════════════════════════════════════════ */
+
+const PROCESS_POLL_INTERVAL_MS = 3000;
+
+function setupProcessMonitor() {
+  const tableShell = document.getElementById("processes-table-shell");
+  const tableBody = document.getElementById("processes-table-body");
+  const empty = document.getElementById("processes-empty");
+  const feedback = document.getElementById("processes-feedback");
+  const totalEl = document.getElementById("process-summary-total");
+  const boundEl = document.getElementById("process-summary-bound");
+  const leakEl = document.getElementById("process-summary-leak");
+  const navCount = document.getElementById("nav-process-count");
+  const navLeakDot = document.getElementById("nav-process-leak-dot");
+  if (!tableShell || !tableBody) {
+    return;
+  }
+
+  async function refresh() {
+    try {
+      const data = await fetchJson("/api/agentapi-processes");
+      if (!data || !Array.isArray(data.processes)) {
+        return;
+      }
+      const total = Number(data.total ?? data.processes.length);
+      const bound = Number(data.bound ?? 0);
+      const leak = Number(data.leak ?? 0);
+
+      if (totalEl) totalEl.textContent = `total: ${total}`;
+      if (boundEl) boundEl.textContent = `bound: ${bound}`;
+      if (leakEl) leakEl.textContent = `leak: ${leak}`;
+
+      setTabCount("nav-process-count", total);
+      if (navLeakDot) {
+        navLeakDot.hidden = leak === 0;
+      }
+
+      if (total === 0) {
+        tableShell.hidden = true;
+        if (empty) empty.hidden = false;
+      } else {
+        if (empty) empty.hidden = true;
+        tableShell.hidden = false;
+        tableBody.innerHTML = data.processes.map(renderProcessRow).join("");
+      }
+
+      if (feedback) feedback.textContent = "";
+    } catch (err) {
+      if (feedback) feedback.textContent = `Failed to refresh: ${(err && err.message) || err}`;
+    }
+  }
+
+  function renderProcessRow(entry) {
+    const isLeak = entry.binding === null && entry.thread_id !== null;
+    const isUnidentified = entry.thread_id === null;
+    const indicator = isLeak
+      ? '<span class="leak-dot" title="No worker in any active dispatcher claims this thread_id"></span>'
+      : isUnidentified
+        ? '<span class="warn-dot" title="agentapi process with unparseable socket path"></span>'
+        : '<span class="ok-dot" title="bound to a running worker"></span>';
+    const worker = entry.binding
+      ? `<code>${escapeHtml(entry.binding.worker_id)}</code> <span class="muted">(${escapeHtml(entry.binding.role)})</span>`
+      : isLeak
+        ? '<span class="leak-callout">— leaked —</span>'
+        : '<span class="muted">—</span>';
+    const dispatcher = entry.binding
+      ? `<code>${escapeHtml(entry.binding.dispatcher_role_id)}</code>`
+      : '<span class="muted">—</span>';
+    const threadId = entry.thread_id
+      ? `<code>${escapeHtml(entry.thread_id)}</code>`
+      : '<span class="muted">(unparsed)</span>';
+    const klass = isLeak ? "row-leak" : "";
+    return `<tr class="${klass}">`
+      + `<td>${indicator}</td>`
+      + `<td><code>${entry.pid}</code></td>`
+      + `<td>${threadId}</td>`
+      + `<td>${worker}</td>`
+      + `<td>${dispatcher}</td>`
+      + `<td>${entry.binding ? escapeHtml(entry.binding.role) : "—"}</td>`
+      + `<td>${escapeHtml(entry.etime ?? "")}</td>`
+      + `<td>${escapeHtml(entry.agent_type ?? "?")}</td>`
+      + "</tr>";
+  }
+
+  refresh();
+  window.setInterval(refresh, PROCESS_POLL_INTERVAL_MS);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function setupValidatorToggle() {
   const toggle = document.getElementById("agent-dispatcher-validator-enabled");
   const fields = document.getElementById("agent-dispatcher-validator-fields");
@@ -1018,6 +1117,7 @@ async function setupDashboard() {
   setupPmResolverToggle("agent-dispatcher-pm-enabled", "agent-dispatcher-pm-fields");
   setupPmResolverToggle("new-scheduler-pm-enabled", "new-scheduler-pm-fields");
   setupSchedulerCreation();
+  setupProcessMonitor();
 
   const list = document.getElementById("roles-list");
   const empty = document.getElementById("roles-empty");
