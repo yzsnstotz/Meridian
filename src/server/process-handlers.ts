@@ -12,6 +12,13 @@ export interface ProcessHandlersOptions {
   log?: Logger;
   // Test seam — defaults to `ps -A -o pid,ppid,etime,command`.
   listProcesses?: () => ProcInfo[];
+  // Optional: when Meridian Hub spawns agentapi via TCP port (the host kernel
+  // doesn't support --socket), the agentapi argv has no /tmp/agentapi-<id>.sock
+  // marker. The handler calls this once per request to fetch the Hub's
+  // instance registry, then looks up `pid → thread_id` from it. If the call
+  // throws or returns nothing, attribution falls back to socket-path parsing
+  // only and unbound agentapi will (correctly) be flagged as a leak.
+  fetchAgentapiInstanceIndex?: () => Promise<Map<number, string>>;
 }
 
 export interface ProcInfo {
@@ -60,6 +67,7 @@ export interface ProcessHandlers {
 
 // argv markers
 const AGENTAPI_SOCKET_PATTERN = /\/agentapi-([^/\s]+?)\.sock/;
+const AGENTAPI_PORT_PATTERN = /--port=(\d+)/;
 const AGENTAPI_TYPE_PATTERN = /--type=([a-zA-Z][\w-]*)/;
 // `agentapi server` parent (real or symlinked binary path)
 const AGENTAPI_COMMAND_PATTERN = /(?:^|[\s/])agentapi\s+server(?:\s|$)/;
@@ -69,6 +77,17 @@ const AGENTAPI_COMMAND_PATTERN = /(?:^|[\s/])agentapi\s+server(?:\s|$)/;
 const CODEX_COMMAND_PATTERN = /(?:^|[\s/])codex(?:\s|$)/;
 // Claude CLI — `claude --flag` or path-prefixed `.../claude --flag`.
 const CLAUDE_COMMAND_PATTERN = /(?:^|[\s/])claude(?:\s|$)/;
+
+// Meridian hub PM2 process names. codex/claude spawned BY the Meridian hub
+// itself (calling-hub spawns codex for short-lived notification / scheduler
+// turns) are NOT meridian-roles' responsibility — without this exclusion they
+// look like orphans because they have meridian-roles spawn markers
+// (--dangerously-bypass-approvals-and-sandbox) but live under the hub
+// process tree.
+const MERIDIAN_HUB_PROCESS_PATTERN = /(?:^|[\s/])(?:calling-hub|calling-interface|calling-monitor|calling-web)(?:\s|$|\b)/;
+// `node .../hub/index.js` etc — PM2 spawns these as `PM2 calling-hub` but the
+// actual node invocation shows `node /Users/.../Meridian/dist/hub/index.js`.
+const MERIDIAN_HUB_NODE_PATTERN = /\/Meridian\/(?:dist|src)\/(?:hub|interface|monitor|web)\//;
 
 export function createProcessHandlers(options: ProcessHandlersOptions): ProcessHandlers {
   const log = options.log ?? console;
@@ -81,27 +100,59 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       byPid.set(p.pid, p);
     }
 
-    // Pre-classify every process so we can detect agentapi ancestors.
+    // Pre-classify every process so we can detect agentapi ancestors AND
+    // meridian-hub ancestors (codex/claude under calling-hub are the hub's,
+    // not meridian-roles').
     const agentapiPids = new Set<number>();
+    const meridianHubPids = new Set<number>();
     for (const p of procs) {
       if (AGENTAPI_COMMAND_PATTERN.test(p.command)) {
         agentapiPids.add(p.pid);
       }
+      if (MERIDIAN_HUB_PROCESS_PATTERN.test(p.command) || MERIDIAN_HUB_NODE_PATTERN.test(p.command)) {
+        meridianHubPids.add(p.pid);
+      }
     }
 
     const candidates = procs.filter((p) => isAgentShaped(p.command));
-
     const index = await buildThreadIndex(options.stateStore, log);
+
+    // Build the pid → thread_id map ONCE per request from the Hub instance
+    // registry (when wired). Used as the TCP-port fallback for agentapi
+    // processes whose argv lacks the canonical socket marker.
+    let pidToThreadId: Map<number, string> | null = null;
+    if (options.fetchAgentapiInstanceIndex) {
+      try {
+        pidToThreadId = await options.fetchAgentapiInstanceIndex();
+      } catch (error) {
+        log.debug?.("processes: fetchAgentapiInstanceIndex failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        pidToThreadId = null;
+      }
+    }
+    const resolveByPid = pidToThreadId
+      ? (pid: number, _port: number | null): string | null => pidToThreadId?.get(pid) ?? null
+      : null;
 
     return candidates
       .map((p) => {
         const agentType = detectAgentType(p.command);
         const isAgentapi = agentType === "agentapi";
         const directSocketMatch = p.command.match(AGENTAPI_SOCKET_PATTERN);
+        const portMatch = p.command.match(AGENTAPI_PORT_PATTERN);
+        const port = portMatch ? Number.parseInt(portMatch[1] ?? "", 10) : null;
         let threadId: string | null = directSocketMatch?.[1] ?? null;
 
+        // Fallback: when agentapi runs on a TCP port (kernel didn't support
+        // --socket), the socket marker is absent. Use the resolver hook
+        // (Hub instance registry) keyed by PID/port.
+        if (isAgentapi && !threadId && resolveByPid) {
+          threadId = resolveByPid(p.pid, Number.isFinite(port) ? port : null);
+        }
+
         // Walk the PPID chain to find an agentapi ancestor (codex/claude CLI
-        // is the agentapi *child*; the parent argv carries the socket marker).
+        // is the agentapi *child*).
         let ancestorAgentapi: ProcInfo | null = null;
         if (!isAgentapi) {
           ancestorAgentapi = findAgentapiAncestor(p, byPid, agentapiPids);
@@ -110,20 +161,43 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
             if (ancestorSocket && !threadId) {
               threadId = ancestorSocket[1];
             }
+            // TCP-port fallback for the ancestor too.
+            if (!threadId && resolveByPid) {
+              const ancestorPortMatch = ancestorAgentapi.command.match(AGENTAPI_PORT_PATTERN);
+              const ancestorPort = ancestorPortMatch ? Number.parseInt(ancestorPortMatch[1] ?? "", 10) : null;
+              threadId = resolveByPid(ancestorAgentapi.pid, Number.isFinite(ancestorPort) ? ancestorPort : null);
+            }
           }
         }
 
-        const origin: ProcessOrigin =
-          isAgentapi || ancestorAgentapi
-            ? "managed"
-            : (!isAgentapi && (agentType === "codex" || agentType === "claude")
-                && looksLikeMeridianOrphan(p.command))
-              ? "orphan"
-              : "external";
+        // Origin classification — ORDER MATTERS.
+        //   1. If this is an agentapi OR a codex/claude with an agentapi
+        //      PPID ancestor → managed, even when Meridian Hub is further up
+        //      the chain (meridian-roles asks Hub to spawn agentapi, so Hub
+        //      will always be an ancestor of legitimately-managed processes).
+        //   2. Else if there's a Meridian-hub ancestor → external (Hub
+        //      spawned codex/claude DIRECTLY for its own work, without
+        //      going through agentapi-bridge).
+        //   3. Else if argv has meridian-roles spawn markers → orphan (a
+        //      codex/claude whose agentapi parent died — leak).
+        //   4. Else external (terminal, Claude Code, unrelated).
+        let origin: ProcessOrigin;
+        if (isAgentapi || ancestorAgentapi) {
+          origin = "managed";
+        } else if (!isAgentapi && findMeridianHubAncestor(p, byPid, meridianHubPids)) {
+          origin = "external";
+        } else if (
+          (agentType === "codex" || agentType === "claude")
+          && looksLikeMeridianOrphan(p.command)
+        ) {
+          origin = "orphan";
+        } else {
+          origin = "external";
+        }
 
         const binding = threadId ? (index.get(threadId) ?? null) : null;
         const isLeak =
-          (origin === "managed" && threadId !== null && binding === null)
+          (origin === "managed" && binding === null)
           || origin === "orphan";
 
         return {
@@ -139,8 +213,6 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         };
       })
       .sort((a, b) => {
-        // Leaks first, then managed, then external. Within each bucket, oldest
-        // (longer etime) first so long-running surprises stand out.
         const order = (e: ProcessSnapshotEntry) =>
           e.is_leak ? 0 : e.origin === "managed" ? 1 : 2;
         const diff = order(a) - order(b);
@@ -231,6 +303,32 @@ function findAgentapiAncestor(
       return null;
     }
     if (agentapiPids.has(parent.pid)) {
+      return parent;
+    }
+    cursor = parent;
+  }
+  return null;
+}
+
+// Like findAgentapiAncestor, but searches for a Meridian hub process
+// (calling-hub PM2 wrapper or the underlying node /Meridian/dist/hub/...
+// invocation). Used to exclude hub-spawned codex/claude from the
+// orphan/leak classification.
+function findMeridianHubAncestor(
+  start: ProcInfo,
+  byPid: Map<number, ProcInfo>,
+  meridianHubPids: Set<number>
+): ProcInfo | null {
+  let cursor: ProcInfo | undefined = start;
+  for (let depth = 0; depth < 8 && cursor; depth += 1) {
+    if (cursor.ppid === 0 || cursor.ppid === 1) {
+      return null;
+    }
+    const parent = byPid.get(cursor.ppid);
+    if (!parent) {
+      return null;
+    }
+    if (meridianHubPids.has(parent.pid)) {
       return parent;
     }
     cursor = parent;

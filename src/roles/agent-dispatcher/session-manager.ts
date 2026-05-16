@@ -269,6 +269,20 @@ export class SessionManager {
     return this.pauseWriteChain.catch(() => undefined);
   }
 
+  /**
+   * Resolves when the constructor's loadPauseState() finishes hydrating
+   * `this.paused` from the state store. Callers that need to check
+   * isPaused() AT activation time (before any setPaused call) MUST await
+   * this first — otherwise isPaused() returns the default `false` and the
+   * "paused on disk" status is silently ignored. Discovered when the
+   * restart-hold appeared to leak: forcePauseAllDispatchersOnStartup
+   * correctly flipped state.json to paused, but the role's onActivate
+   * called isPaused() synchronously and missed the persisted status.
+   */
+  awaitInitialPauseState(): Promise<void> {
+    return this.pauseStateReady.catch(() => undefined);
+  }
+
   private async killAttachedThreadsForPause(): Promise<void> {
     const startedAt = Date.now();
     const dispatcherId = this.dispatcherThreadId ?? this.roleThreadId;

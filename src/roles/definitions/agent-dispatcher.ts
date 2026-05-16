@@ -51,6 +51,7 @@ type SessionManagerLike = Pick<
   | "prepareFreshDispatcherLaunch"
   | "setPaused"
   | "awaitPendingPauseWork"
+  | "awaitInitialPauseState"
 > & {
   setPaused(paused: boolean, options?: { skipPersist?: boolean; skipKill?: boolean }): void;
 };
@@ -122,6 +123,30 @@ export class AgentDispatcherRole implements BaseRole {
     let dispatcherThreadId: string | null = null;
 
     try {
+      // The hold actually holds. If the persisted status is paused (the
+      // restart-hold default OR an explicit operator pause), DO NOT launch a
+      // fresh agentapi. The role binds in memory so HTTP handlers can find it,
+      // but no codex spawns. Resume (operator hits the GUI button) explicitly
+      // calls onStatusChange("active") which triggers the launch below.
+      //
+      // Without this gate, every restart would activate every persisted
+      // dispatcher and launch its agentapi controller regardless of pause
+      // state — exactly the spawn surge observed 2026-05-16 right after PR #223
+      // shipped: 4 agentapi + 6 codex spawned within ~15s on a host with 3
+      // active-but-supposedly-paused dispatchers, because pause only ever
+      // gated the watchdog, not the activation path.
+      // CRITICAL ordering: awaitInitialPauseState hydrates `this.paused` from
+      // the state store. awaitPendingPauseWork only awaits the write chain
+      // (kills/persist). Both are needed before isPaused() can be trusted:
+      // the read first, then the write chain (in case a setPaused was queued
+      // during constructor).
+      await sessionManager.awaitInitialPauseState();
+      await sessionManager.awaitPendingPauseWork().catch(() => undefined);
+      if (sessionManager.isPaused()) {
+        await this.persistState("paused");
+        return;
+      }
+
       dispatcherThreadId = await this.executeDispatcherHubLaunch();
       await this.persistState(sessionManager.isPaused() ? "paused" : "active");
     } catch (error) {
@@ -290,10 +315,30 @@ export class AgentDispatcherRole implements BaseRole {
     }
 
     const sessionManager = this.requireSessionManager();
+    const wasPaused = sessionManager.isPaused();
     sessionManager.setPaused(status === "paused", { skipPersist: true });
     await this.persistState(status);
 
-    const dispatcherThreadId = sessionManager.getDispatcherThreadId();
+    let dispatcherThreadId = sessionManager.getDispatcherThreadId();
+
+    // Resume = "continue" command. When the role was paused with no dispatcher
+    // thread (restart-hold default + no explicit Start Hub Session yet), the
+    // single click that flips status to active should ALSO launch the codex —
+    // otherwise the operator has to click twice (Resume, then Start Hub
+    // Session). The launch breaker still gates the launch rate.
+    const transitioningToActive = status === "active" && wasPaused;
+    if (transitioningToActive && !dispatcherThreadId) {
+      try {
+        dispatcherThreadId = await this.executeDispatcherHubLaunch();
+      } catch (error) {
+        this.requireContext().log.error("Agent dispatcher resume launch failed", {
+          roleThreadId: this.threadId,
+          error: asError(error).message
+        });
+        throw error;
+      }
+    }
+
     if (!dispatcherThreadId) {
       return;
     }

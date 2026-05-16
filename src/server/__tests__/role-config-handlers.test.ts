@@ -1736,7 +1736,7 @@ describe("role config handlers", () => {
     }
   });
 
-  it("continues a paused dispatcher and returns it to active state", async () => {
+  it("refuses to continue a paused dispatcher (operator hold)", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-paused-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
 
@@ -1759,15 +1759,20 @@ describe("role config handlers", () => {
         status: "paused"
       });
 
+      // PR 2026-05-16: continue-dispatcher MUST refuse to launch when paused.
+      // Pre-fix, GUI auto-refresh hitting this endpoint silently re-spawned
+      // agentapi on every poll, defeating the operator's pause and burning
+      // tokens. The only way out of paused is the explicit Resume button
+      // (setAgentDispatcherStatus('active')), which goes through onStatusChange
+      // and triggers the launch from that path.
       await expect(invokeJson(
         harness.roleHandlers,
         "POST",
         "/api/agent-dispatcher/agent-dispatcher-continue-paused/continue"
       )).resolves.toEqual({
         ok: true,
-        status: "plan_complete",
-        message: "plan complete: all non-human workers are terminal",
-        dispatcher_thread_id: "dispatcher-thread-123"
+        status: "still_blocked",
+        message: "still blocked: dispatcher is paused — hit Resume to continue"
       });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -5831,7 +5836,8 @@ function createHarness(
         dispatcherRestarted: true
       }),
       setPaused: () => undefined,
-      awaitPendingPauseWork: async () => undefined
+      awaitPendingPauseWork: async () => undefined,
+      awaitInitialPauseState: async () => undefined
     }),
     readWorkersByStatus: async () => [],
     lifecycleStoreFactory: () => ({

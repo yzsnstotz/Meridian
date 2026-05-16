@@ -156,7 +156,23 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     stateStore,
     log
   });
-  const processHandlers = createProcessHandlers({ stateStore, log });
+  const processHandlers = createProcessHandlers({
+    stateStore,
+    log,
+    // Hub TCP-port path: agentapi argv has no /tmp/agentapi-<id>.sock when
+    // --socket isn't supported, so we fall back to the Hub's instance
+    // registry (pid → thread_id) to attribute processes to dispatchers.
+    fetchAgentapiInstanceIndex: async () => {
+      const instances = await client.listInstances();
+      const map = new Map<number, string>();
+      for (const inst of instances) {
+        if (typeof inst.pid === "number" && inst.pid > 0 && inst.thread_id) {
+          map.set(inst.pid, inst.thread_id);
+        }
+      }
+      return map;
+    }
+  });
   const httpServer = new HttpServer({
     port: GUI_PORT,
     roleHandlers,
