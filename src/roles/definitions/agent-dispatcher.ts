@@ -50,8 +50,9 @@ type SessionManagerLike = Pick<
   | "onRestart"
   | "prepareFreshDispatcherLaunch"
   | "setPaused"
+  | "awaitPendingPauseWork"
 > & {
-  setPaused(paused: boolean, options?: { skipPersist?: boolean }): void;
+  setPaused(paused: boolean, options?: { skipPersist?: boolean; skipKill?: boolean }): void;
 };
 type LifecycleStoreLike = Pick<LifecycleStore, "load" | "save">;
 

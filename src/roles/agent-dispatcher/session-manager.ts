@@ -13,6 +13,7 @@ import {
   outputArtifactsContain,
   outputsExist as outputArtifactsExist
 } from "./output-artifacts";
+import { killAttachedAgentapiThread, type KillResult } from "./thread-killer";
 import { buildMeridianToolArgs, MERIDIAN_TOOL_EXECUTABLE } from "./tool-entrypoint";
 
 const ACTIVE_STATUS = "active";
@@ -65,6 +66,22 @@ export interface SessionManagerOptions {
   stateStore?: PersistableStateStore;
   lifecycleStore?: LifecycleStoreLike;
   execFile?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  // Injected for tests; defaults to the real killAttachedAgentapiThread.
+  killAttachedThread?: (threadId: string) => Promise<KillResult>;
+  // Injected for tests; receives a structured summary at the end of each pause
+  // kill sweep so test assertions don't have to mock console.
+  onPauseKillSummary?: (summary: PauseKillSummary) => void;
+  // Called on a paused -> active transition with the role's threadId. The
+  // src/index.ts wiring uses this to clear circuit-breaker entries so a
+  // post-resume run starts with a fresh counter.
+  onResume?: (roleThreadId: string) => void;
+}
+
+export interface PauseKillSummary {
+  dispatcherId: string;
+  killedThreadIds: string[];
+  perThreadResults: KillResult[];
+  durationMs: number;
 }
 
 const defaultExecFile = (command: string, args: string[]): Promise<{ stdout: string; stderr: string }> =>
@@ -154,6 +171,9 @@ export class SessionManager {
   private readonly roleThreadId: string;
   private readonly stateStore: PersistableStateStore;
   private readonly execFile: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  private readonly killAttachedThread: (threadId: string) => Promise<KillResult>;
+  private readonly onPauseKillSummary: ((summary: PauseKillSummary) => void) | null;
+  private readonly onResume: ((roleThreadId: string) => void) | null;
 
   private lifecycleStore: LifecycleStoreLike | null;
   private dispatchPlanPath: string | null;
@@ -171,6 +191,9 @@ export class SessionManager {
     this.execFile = options.execFile ?? defaultExecFile;
     this.lifecycleStore = options.lifecycleStore ?? null;
     this.dispatchPlanPath = options.dispatchPlanPath ?? null;
+    this.killAttachedThread = options.killAttachedThread ?? ((threadId) => killAttachedAgentapiThread(threadId));
+    this.onPauseKillSummary = options.onPauseKillSummary ?? null;
+    this.onResume = options.onResume ?? null;
     this.pauseStateReady = this.loadPauseState();
   }
 
@@ -193,21 +216,135 @@ export class SessionManager {
     return this.paused;
   }
 
-  setPaused(paused: boolean, options?: { skipPersist?: boolean }): void {
+  setPaused(paused: boolean, options?: { skipPersist?: boolean; skipKill?: boolean }): void {
+    const wasPaused = this.paused;
     this.paused = paused;
 
-    if (options?.skipPersist) {
+    // `skipPersist` and `skipKill` are independent gates. The role-internal
+    // hydration / status-change path passes skipPersist=true because it owns
+    // the outer state write — but it still wants real-pause to kill threads.
+    // skipKill=true is reserved for tests and future hydration paths that need
+    // to mirror on-disk state into the in-memory flag without side effects.
+    const shouldKill = paused && !wasPaused && !options?.skipKill;
+    const shouldPersist = !options?.skipPersist;
+    const isResume = !paused && wasPaused;
+
+    if (isResume && this.onResume) {
+      try {
+        this.onResume(this.roleThreadId);
+      } catch {
+        // Resume hooks are best-effort. Never block resume on a callback error.
+      }
+    }
+
+    if (!shouldKill && !shouldPersist) {
       return;
     }
 
     const status = paused ? PAUSED_STATUS : ACTIVE_STATUS;
-    const persist = async () => {
+    const work = async () => {
       await this.pauseStateReady;
-      await this.writeRoleStatus(status);
+      if (shouldKill) {
+        // Kill before the status flag write so observers in-flight see the
+        // dispatcher as still active during the (brief) kill phase, matching
+        // the actual on-host reality at that instant.
+        await this.killAttachedThreadsForPause();
+      }
+      if (shouldPersist) {
+        await this.writeRoleStatus(status);
+      }
     };
 
-    this.pauseWriteChain = this.pauseWriteChain.then(persist, persist);
+    this.pauseWriteChain = this.pauseWriteChain.then(work, work);
     void this.pauseWriteChain.catch(() => undefined);
+  }
+
+  /**
+   * Test/wiring seam: await any in-flight pause work (kill phase + status
+   * write) chained by setPaused. Returns immediately if nothing is queued.
+   * Used by the watchdog wiring to confirm the kill sweep completed before
+   * sending the operator alert.
+   */
+  awaitPendingPauseWork(): Promise<void> {
+    return this.pauseWriteChain.catch(() => undefined);
+  }
+
+  private async killAttachedThreadsForPause(): Promise<void> {
+    const startedAt = Date.now();
+    const dispatcherId = this.dispatcherThreadId ?? this.roleThreadId;
+    const threadIds = await this.enumerateAttachedThreadIds();
+    const perThreadResults: KillResult[] = [];
+    for (const threadId of threadIds) {
+      try {
+        const result = await this.killAttachedThread(threadId);
+        perThreadResults.push(result);
+      } catch (error) {
+        perThreadResults.push({
+          threadId,
+          pidsKilled: [],
+          pidsResistedTerm: [],
+          socketsRemoved: [],
+          errors: [`kill failed: ${asMessage(error)}`]
+        });
+      }
+    }
+
+    if (this.onPauseKillSummary) {
+      this.onPauseKillSummary({
+        dispatcherId,
+        killedThreadIds: threadIds,
+        perThreadResults,
+        durationMs: Date.now() - startedAt
+      });
+    }
+  }
+
+  /**
+   * Collect every thread_id attached to this dispatcher that may have a live
+   * agentapi process: the dispatcher controller, every running worker, and
+   * every PM resolver / validator currently in `running` lifecycle state.
+   * Silent on errors — pause must never hang because the sidecar JSON is bad.
+   */
+  private async enumerateAttachedThreadIds(): Promise<string[]> {
+    const ids: string[] = [];
+    let lifecycleStore: LifecycleStoreLike | null = this.lifecycleStore;
+    if (!lifecycleStore && this.dispatchPlanPath) {
+      try {
+        lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(this.dispatchPlanPath));
+      } catch {
+        return ids;
+      }
+    }
+    if (!lifecycleStore) {
+      // Fall back to the in-memory dispatcher thread id; we have no view into
+      // workers without a lifecycle store.
+      if (this.dispatcherThreadId) {
+        ids.push(this.dispatcherThreadId);
+      }
+      return uniqueNonEmpty(ids);
+    }
+
+    try {
+      const state = lifecycleStore.load();
+      if (state.dispatcher.thread_id) {
+        ids.push(state.dispatcher.thread_id);
+      }
+      for (const worker of Object.values(state.workers)) {
+        if (worker.status === "running" && worker.thread_id) {
+          ids.push(worker.thread_id);
+        }
+      }
+    } catch {
+      // Sidecar unreadable; fall back to the in-memory dispatcher thread id.
+      if (this.dispatcherThreadId) {
+        ids.push(this.dispatcherThreadId);
+      }
+    }
+    if (this.dispatcherThreadId) {
+      ids.push(this.dispatcherThreadId);
+    }
+
+    return uniqueNonEmpty(ids);
   }
 
   /**
@@ -559,6 +696,25 @@ function isSeparatorRow(cells: string[]): boolean {
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function uniqueNonEmpty(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (value && !seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+function asMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
 
 /**
