@@ -22,6 +22,13 @@ log "Building project"
   npm run build
 )
 
+# Always tear down stragglers before relaunching. Without this, restart inherits
+# any agentapi/codex processes from the previous generation, including ones the
+# previous service crashed and left orphaned. terminate.sh now delegates the
+# agentapi sweep to kill_all_agentapi.sh.
+log "Terminating previous-generation services and stragglers"
+"${ROOT_DIR}/user_scripts/terminate.sh" || true
+
 log "Restarting services"
 "${ROOT_DIR}/user_scripts/restart.sh"
 

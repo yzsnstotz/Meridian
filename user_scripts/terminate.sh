@@ -196,11 +196,24 @@ kill_runtime_service "hub" "start:hub" "src/hub/index.ts" "dist/hub/index.js"
 kill_runtime_service "interface" "start:interface" "src/interface/index.ts" "dist/interface/index.js"
 kill_runtime_service "monitor" "start:monitor" "src/monitor/index.ts" "dist/monitor/index.js"
 kill_runtime_service "web-gui" "start:web" "src/web/server.ts" "dist/web/server.js"
-kill_by_pattern "agentapi( |$).*server|${ROOT_DIR}/bin/agentapi" "agentapi"
+# Comprehensive agentapi/codex sweep: kills the agentapi parent + its codex CLI
+# children + any orphan codex processes whose agentapi parent already exited
+# (the failure mode that left ~209 stranded codex_NN threads during the
+# 67f6a3fc runaway). Replaces the narrower kill_by_pattern call that used to
+# live here.
+if [[ -x "${ROOT_DIR}/user_scripts/kill_all_agentapi.sh" ]]; then
+  log "sweep agentapi processes (parent + codex children + orphans)"
+  "${ROOT_DIR}/user_scripts/kill_all_agentapi.sh" || true
+else
+  log "kill_all_agentapi.sh missing — falling back to narrow agentapi pkill"
+  kill_by_pattern "agentapi( |$).*server|${ROOT_DIR}/bin/agentapi" "agentapi"
+fi
 cleanup_tmux_agent_sessions
 
 log "remove sockets"
 rm -f "${HUB_SOCKET_PATH}" >/dev/null 2>&1 || true
+# /tmp/agentapi-*.sock is also swept by kill_all_agentapi.sh; keep this line
+# as belt-and-suspenders for the fallback path above.
 rm -f /tmp/agentapi-*.sock >/dev/null 2>&1 || true
 if [[ "${RESET_STATE}" -eq 1 ]]; then
   log "reset persisted hub state: ${MERIDIAN_STATE_PATH}"
