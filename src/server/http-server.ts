@@ -9,6 +9,7 @@ import type { ProcessHandlers } from "./process-handlers";
 import type { PromptHandlers } from "./prompt-handlers";
 import type { RoleHandlers } from "./role-handlers";
 import type { SchedulerHandlers } from "./scheduler-handlers";
+import type { SystemMonitorHandlers } from "./system-monitor";
 
 export interface HttpServerOptions {
   port?: number;
@@ -17,6 +18,7 @@ export interface HttpServerOptions {
   promptHandlers: PromptHandlers;
   schedulerHandlers?: SchedulerHandlers;
   processHandlers?: ProcessHandlers;
+  systemMonitorHandlers?: SystemMonitorHandlers;
   publicDir?: string;
   log?: Logger;
 }
@@ -30,6 +32,7 @@ export class HttpServer {
   private readonly promptHandlers: PromptHandlers;
   private readonly schedulerHandlers: SchedulerHandlers | null;
   private readonly processHandlers: ProcessHandlers | null;
+  private readonly systemMonitorHandlers: SystemMonitorHandlers | null;
   private server: Server | null = null;
 
   constructor(options: HttpServerOptions) {
@@ -41,6 +44,7 @@ export class HttpServer {
     this.promptHandlers = options.promptHandlers;
     this.schedulerHandlers = options.schedulerHandlers ?? null;
     this.processHandlers = options.processHandlers ?? null;
+    this.systemMonitorHandlers = options.systemMonitorHandlers ?? null;
   }
 
   async listen(): Promise<void> {
@@ -98,6 +102,10 @@ export class HttpServer {
       }
 
       if (this.processHandlers && await this.processHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.systemMonitorHandlers && await this.systemMonitorHandlers.handle(request, response)) {
         return;
       }
 
@@ -181,6 +189,10 @@ export function mapPublicAsset(pathname: string): { fileName: string; contentTyp
     return { fileName: "index.html", contentType: "text/html; charset=utf-8" };
   }
 
+  if (pathname === "/monitor" || pathname === "/monitor.html") {
+    return { fileName: "monitor.html", contentType: "text/html; charset=utf-8" };
+  }
+
   if (/^\/role\/scheduler-[^/]+$/.test(pathname)) {
     return { fileName: "scheduler.html", contentType: "text/html; charset=utf-8" };
   }
@@ -203,6 +215,10 @@ export function mapPublicAsset(pathname: string): { fileName: string; contentTyp
 
   if (pathname === "/app.js") {
     return { fileName: "app.js", contentType: "text/javascript; charset=utf-8" };
+  }
+
+  if (pathname === "/monitor.js") {
+    return { fileName: "monitor.js", contentType: "text/javascript; charset=utf-8" };
   }
 
   if (pathname === "/style.css") {

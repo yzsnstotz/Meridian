@@ -49,7 +49,7 @@ export interface ProcInfo {
 //               Treated as a leak because operator needs to clean these up.
 export type ProcessOrigin = "managed" | "external" | "orphan";
 
-interface ProcessSnapshotEntry {
+export interface ProcessSnapshotEntry {
   pid: number;
   ppid: number;
   etime: string;
@@ -62,7 +62,7 @@ interface ProcessSnapshotEntry {
   token_usage: TokenUsage | null;
 }
 
-interface BindingSnapshot {
+export interface BindingSnapshot {
   dispatcher_role_id: string;
   worker_id: string;
   role: "dispatcher" | "worker" | "pm_resolver" | "validator";
@@ -77,7 +77,6 @@ export interface ProcessHandlers {
 // argv markers
 const AGENTAPI_SOCKET_PATTERN = /\/agentapi-([^/\s]+?)\.sock/;
 const AGENTAPI_PORT_PATTERN = /--port=(\d+)/;
-const AGENTAPI_TYPE_PATTERN = /--type=([a-zA-Z][\w-]*)/;
 // `agentapi server` parent (real or symlinked binary path)
 const AGENTAPI_COMMAND_PATTERN = /(?:^|[\s/])agentapi\s+server(?:\s|$)/;
 // Codex CLI — bare `codex `, native binary path `.../codex/codex` or `.../codex`,
@@ -172,7 +171,10 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       }
     }
     const resolveByPid = pidToThreadId
-      ? (pid: number, _port: number | null): string | null => pidToThreadId?.get(pid) ?? null
+      ? (pid: number, port: number | null): string | null => {
+          void port;
+          return pidToThreadId?.get(pid) ?? null;
+        }
       : null;
 
     return candidates
@@ -336,6 +338,32 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       return true;
     }
   };
+}
+
+export async function buildProcessSnapshot(options: ProcessHandlersOptions): Promise<ProcessSnapshotEntry[]> {
+  let captured = "";
+  const response = {
+    statusCode: 0,
+    setHeader() {
+      return response as unknown as ServerResponse;
+    },
+    end(payload?: string) {
+      captured = payload ?? "";
+      return response as unknown as ServerResponse;
+    }
+  };
+  const handled = await createProcessHandlers(options).handle(
+    { method: "GET", url: "/api/agentapi-processes" } as IncomingMessage,
+    response as unknown as ServerResponse
+  );
+  if (!handled) {
+    throw new Error("process snapshot route was not handled");
+  }
+  if (response.statusCode !== 200) {
+    throw new Error("process snapshot failed");
+  }
+  const payload = JSON.parse(captured) as { processes?: unknown };
+  return Array.isArray(payload.processes) ? payload.processes as ProcessSnapshotEntry[] : [];
 }
 
 interface TokenTotals {

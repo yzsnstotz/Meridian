@@ -40,6 +40,7 @@ import { createPromptHandlers } from "./server/prompt-handlers";
 import { HttpServer } from "./server/http-server";
 import { createRoleHandlers, type ContinueDispatcherResponse } from "./server/role-handlers";
 import { createSchedulerHandlers } from "./server/scheduler-handlers";
+import { createSystemMonitorHandlers } from "./server/system-monitor";
 import {
   ACTIVE_ROLE_STATUS,
   PAUSED_ROLE_STATUS,
@@ -156,22 +157,28 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     stateStore,
     log
   });
+  // Hub TCP-port path: agentapi argv has no /tmp/agentapi-<id>.sock when
+  // --socket isn't supported, so we fall back to the Hub's instance
+  // registry (pid → thread_id) to attribute processes to dispatchers.
+  const fetchAgentapiInstanceIndex = async () => {
+    const instances = await client.listInstances();
+    const map = new Map<number, string>();
+    for (const inst of instances) {
+      if (typeof inst.pid === "number" && inst.pid > 0 && inst.thread_id) {
+        map.set(inst.pid, inst.thread_id);
+      }
+    }
+    return map;
+  };
   const processHandlers = createProcessHandlers({
     stateStore,
     log,
-    // Hub TCP-port path: agentapi argv has no /tmp/agentapi-<id>.sock when
-    // --socket isn't supported, so we fall back to the Hub's instance
-    // registry (pid → thread_id) to attribute processes to dispatchers.
-    fetchAgentapiInstanceIndex: async () => {
-      const instances = await client.listInstances();
-      const map = new Map<number, string>();
-      for (const inst of instances) {
-        if (typeof inst.pid === "number" && inst.pid > 0 && inst.thread_id) {
-          map.set(inst.pid, inst.thread_id);
-        }
-      }
-      return map;
-    }
+    fetchAgentapiInstanceIndex
+  });
+  const systemMonitorHandlers = createSystemMonitorHandlers({
+    stateStore,
+    log,
+    fetchAgentapiInstanceIndex
   });
   const httpServer = new HttpServer({
     port: GUI_PORT,
@@ -179,6 +186,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     promptHandlers,
     schedulerHandlers,
     processHandlers,
+    systemMonitorHandlers,
     log
   });
   const settleKillThread = async (threadId: string): Promise<void> => {
