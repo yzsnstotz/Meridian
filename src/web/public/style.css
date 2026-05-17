@@ -1300,6 +1300,44 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 
 .row-external td { color: #6b7280; }
 
+/* One-shot green flash when a process's cumulative token total grew vs the
+   previous poll. CSS keyframes run once on row mount (the tbody re-renders
+   per poll, so each new increase mounts a fresh node and restarts the
+   animation). Designed to feel like a trading-tape uptick. */
+@keyframes process-token-flash {
+  0%   { background-color: rgba(34, 197, 94, 0.55); }
+  60%  { background-color: rgba(34, 197, 94, 0.30); }
+  100% { background-color: transparent; }
+}
+.row-token-flash td {
+  animation: process-token-flash 2s ease-out 1;
+}
+
+/* Departed-processes history table below the live table. Visually demoted
+   so it doesn't compete with the live state for attention. */
+.history-shell {
+  margin-top: 1.75rem;
+  opacity: 0.92;
+}
+.history-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #4b5563;
+  margin: 0 0 0.25rem 0;
+}
+.history-help {
+  font-size: 0.8rem;
+  margin: 0 0 0.5rem 0;
+}
+.row-history td {
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+.history-cmd, .history-session-file {
+  font-size: 0.78rem;
+  color: #9ca3af;
+}
+
 .process-filter-toggle {
   display: inline-flex;
   align-items: center;

@@ -124,6 +124,10 @@ async function refreshGlobalNavCounts() {
    ═══════════════════════════════════════════════════════════════ */
 
 const PROCESS_POLL_INTERVAL_MS = 3000;
+// Browser-session-scoped cap on the per-tab history list. Plenty for normal
+// debugging and bounded so an op leaving the tab open for hours can't OOM the
+// page.
+const PROCESS_HISTORY_CAP = 100;
 
 function setupProcessMonitor() {
   const tableShell = document.getElementById("processes-table-shell");
@@ -138,6 +142,49 @@ function setupProcessMonitor() {
   }
 
   let lastProcesses = [];
+  // pid -> last observed total_tokens. On each poll, a PID whose total grew
+  // since the previous tick is flagged with `_tokenIncreased` so the row gets
+  // a one-shot green flash via CSS animation (the "trading sign" effect).
+  const prevTokenTotals = new Map();
+  // pid -> history entry { entry, finalUsage, lastSeenAt }. Populated on each
+  // poll for any PID that appeared in the previous snapshot but is gone in
+  // the current one. Browser-session-scoped only; cleared on reload. Capped
+  // at PROCESS_HISTORY_CAP to bound memory.
+  const processHistory = new Map();
+
+  function applyTokenFlashing(processes) {
+    const livePids = new Set();
+    for (const p of processes) {
+      livePids.add(p.pid);
+      const cur = p.token_usage ? Number(p.token_usage.total_tokens) : null;
+      const prev = prevTokenTotals.get(p.pid);
+      p._tokenIncreased = (cur !== null && Number.isFinite(cur) && prev !== undefined && cur > prev);
+      if (cur !== null && Number.isFinite(cur)) {
+        prevTokenTotals.set(p.pid, cur);
+      }
+    }
+    for (const pid of [...prevTokenTotals.keys()]) {
+      if (!livePids.has(pid)) prevTokenTotals.delete(pid);
+    }
+  }
+
+  function captureDepartedProcesses(currentProcesses, previousProcesses) {
+    if (!Array.isArray(previousProcesses) || previousProcesses.length === 0) return;
+    const curPids = new Set(currentProcesses.map((p) => p.pid));
+    const nowIso = new Date().toISOString();
+    for (const prev of previousProcesses) {
+      if (curPids.has(prev.pid)) continue;
+      processHistory.set(prev.pid, {
+        entry: prev,
+        finalUsage: prev.token_usage ?? null,
+        lastSeenAt: nowIso
+      });
+    }
+    while (processHistory.size > PROCESS_HISTORY_CAP) {
+      const oldestKey = processHistory.keys().next().value;
+      processHistory.delete(oldestKey);
+    }
+  }
 
   function render() {
     const hideExternal = hideExternalToggle ? hideExternalToggle.checked : false;
@@ -153,11 +200,51 @@ function setupProcessMonitor() {
           ? "No agentapi/codex/claude processes detected on the host."
           : "Only external (non-meridian-roles) processes — hidden by filter. Uncheck the box to see them.";
       }
+    } else {
+      if (empty) empty.hidden = true;
+      tableShell.hidden = false;
+      tableBody.innerHTML = visible.map(renderProcessRow).join("");
+    }
+
+    renderHistory();
+  }
+
+  function renderHistory() {
+    const historyShell = document.getElementById("processes-history-shell");
+    const historyBody = document.getElementById("processes-history-body");
+    if (!historyShell || !historyBody) return;
+    if (processHistory.size === 0) {
+      historyShell.hidden = true;
       return;
     }
-    if (empty) empty.hidden = true;
-    tableShell.hidden = false;
-    tableBody.innerHTML = visible.map(renderProcessRow).join("");
+    historyShell.hidden = false;
+    // Sort newest-departed first.
+    const rows = [...processHistory.values()]
+      .sort((a, b) => (b.lastSeenAt || "").localeCompare(a.lastSeenAt || ""));
+    historyBody.innerHTML = rows.map(renderHistoryRow).join("");
+  }
+
+  function renderHistoryRow(h) {
+    const entry = h.entry || {};
+    const finalUsage = h.finalUsage;
+    const tokens = finalUsage
+      ? `<code>${formatTokens(finalUsage.input_tokens)}</code> in / <code>${formatTokens(finalUsage.output_tokens)}</code> out / <code>${formatTokens(finalUsage.total_tokens)}</code> total`
+      : '<span class="muted">—</span>';
+    const sessionFile = finalUsage?.session_file
+      ? `<span class="muted history-session-file" title="${escapeHtml(finalUsage.session_file)}">${escapeHtml(truncateMiddle(finalUsage.session_file, 60))}</span>`
+      : '<span class="muted">—</span>';
+    const cmd = entry.command || "";
+    const lastSeenLocal = h.lastSeenAt ? new Date(h.lastSeenAt).toLocaleTimeString() : "—";
+    return '<tr class="row-history">'
+      + `<td><code>${entry.pid ?? "—"}</code></td>`
+      + `<td>${escapeHtml(entry.origin ?? "—")}</td>`
+      + `<td>${escapeHtml(entry.agent_type ?? "?")}</td>`
+      + `<td>${entry.thread_id ? `<code>${escapeHtml(entry.thread_id)}</code>` : '<span class="muted">—</span>'}</td>`
+      + `<td>${tokens}</td>`
+      + `<td>${sessionFile}</td>`
+      + `<td><span class="muted">${escapeHtml(lastSeenLocal)}</span></td>`
+      + `<td title="${escapeHtml(cmd)}"><code class="history-cmd">${escapeHtml(truncateMiddle(cmd, 70))}</code></td>`
+      + "</tr>";
   }
 
   async function refresh() {
@@ -166,6 +253,9 @@ function setupProcessMonitor() {
       if (!data || !Array.isArray(data.processes)) {
         return;
       }
+      const previousSnapshot = lastProcesses;
+      applyTokenFlashing(data.processes);
+      captureDepartedProcesses(data.processes, previousSnapshot);
       lastProcesses = data.processes;
 
       if (summaryEl) {
@@ -223,7 +313,12 @@ function setupProcessMonitor() {
     const threadId = entry.thread_id
       ? `<code>${escapeHtml(entry.thread_id)}</code>`
       : '<span class="muted">—</span>';
-    const klass = entry.is_leak ? "row-leak" : entry.origin === "external" ? "row-external" : "";
+    const baseClass = entry.is_leak ? "row-leak" : entry.origin === "external" ? "row-external" : "";
+    // One-shot green flash when total_tokens grew vs the previous tick. The
+    // CSS animation runs once on row mount; since the tbody is re-rendered
+    // per poll, each new increase naturally restarts it (no manual reset).
+    const flashClass = entry._tokenIncreased ? "row-token-flash" : "";
+    const klass = [baseClass, flashClass].filter(Boolean).join(" ");
 
     const tokens = renderTokenCell(entry);
 
@@ -267,6 +362,15 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function truncateMiddle(value, max) {
+  const s = String(value ?? "");
+  if (s.length <= max || max < 6) return s;
+  const keep = max - 1;
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return s.slice(0, head) + "…" + s.slice(s.length - tail);
 }
 
 function formatTokens(value) {
