@@ -723,10 +723,11 @@
               <tbody id="processes-table-body"></tbody>
             </table>
           </div>
-          <div id="processes-history-shell" class="table-shell history-shell" hidden>
+          <div id="processes-history-shell" class="table-shell history-shell">
             <h3 class="history-title">Departed processes (this browser session)</h3>
             <p class="history-help muted">PIDs that were live in a previous poll but are no longer present. Capped at 100 entries, newest first; clears on page reload.</p>
-            <table class="status-table">
+            <div id="processes-history-empty" class="empty-state">No departed processes recorded yet. Keep this Processes tab open; only PIDs observed by this page can be captured.</div>
+            <table id="processes-history-table" class="status-table" hidden>
               <thead>
                 <tr>
                   <th>PID</th>
