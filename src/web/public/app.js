@@ -175,12 +175,17 @@ function setupProcessMonitor() {
         const orphan = Number(data.orphan ?? 0);
         const external = Number(data.external ?? 0);
         const leak = Number(data.leak ?? 0);
+        const tokenTotals = data.token_totals || null;
+        const tokenSpan = tokenTotals && tokenTotals.sessions > 0
+          ? `<span class="muted" title="cumulative tokens across ${tokenTotals.sessions} active session(s); paired shim+native rows counted once">tokens: ${formatTokens(tokenTotals.input_tokens)} in / ${formatTokens(tokenTotals.output_tokens)} out / ${formatTokens(tokenTotals.total_tokens)} total</span>`
+          : "";
         summaryEl.innerHTML =
           `<span>total: <strong>${total}</strong></span>`
           + `<span class="muted">meridian-roles bound: ${managedBound}</span>`
           + `<span class="${leak > 0 ? "leak-callout" : "muted"}">leak: ${leak}</span>`
           + `<span class="muted">orphan: ${orphan}</span>`
-          + `<span class="muted">external: ${external}</span>`;
+          + `<span class="muted">external: ${external}</span>`
+          + tokenSpan;
         setTabCount("nav-process-count", total);
         if (navLeakDot) navLeakDot.hidden = leak === 0;
       }
@@ -220,6 +225,8 @@ function setupProcessMonitor() {
       : '<span class="muted">—</span>';
     const klass = entry.is_leak ? "row-leak" : entry.origin === "external" ? "row-external" : "";
 
+    const tokens = renderTokenCell(entry);
+
     return `<tr class="${klass}">`
       + `<td>${dot}</td>`
       + `<td>${originTag}</td>`
@@ -230,7 +237,19 @@ function setupProcessMonitor() {
       + `<td>${worker}</td>`
       + `<td>${dispatcher}</td>`
       + `<td>${escapeHtml(entry.etime ?? "")}</td>`
+      + `<td>${tokens}</td>`
       + "</tr>";
+  }
+
+  function renderTokenCell(entry) {
+    const u = entry.token_usage;
+    if (!u) return '<span class="muted">—</span>';
+    const inn = formatTokens(u.input_tokens);
+    const out = formatTokens(u.output_tokens);
+    const tot = formatTokens(u.total_tokens);
+    const cached = u.cached_input_tokens > 0 ? ` <span class="muted">(${formatTokens(u.cached_input_tokens)} cached)</span>` : "";
+    const tip = `source: ${u.source}\nsession_id: ${u.session_id || "(n/a)"}\nfile: ${u.session_file}\ninput: ${u.input_tokens}\ncached_input: ${u.cached_input_tokens}\noutput: ${u.output_tokens}\nreasoning_output: ${u.reasoning_output_tokens}\ntotal: ${u.total_tokens}`;
+    return `<span title="${escapeHtml(tip)}"><code>${inn}</code> in / <code>${out}</code> out / <code>${tot}</code> total${cached}</span>`;
   }
 
   if (hideExternalToggle) {
@@ -248,6 +267,15 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function formatTokens(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}k`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k`;
+  return String(Math.round(n));
 }
 
 function setupValidatorToggle() {

@@ -7,7 +7,8 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { AppState, DispatchThreadStateV2 } from "../../types";
-import { createProcessHandlers, type ProcInfo } from "../process-handlers";
+import { _internals, createProcessHandlers, type ProcInfo } from "../process-handlers";
+import { TokenUsageCollector, type TokenUsage } from "../token-usage";
 
 function makeResponse(): { res: ServerResponse; statusCode: () => number; body: () => string } {
   let captured = "";
@@ -324,6 +325,96 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.processes[0].origin).toBe("managed");
     expect(payload.processes[0].thread_id).toBeNull();
     expect(payload.processes[0].is_leak).toBe(true);  // managed with no binding = leak
+  });
+
+  it("attaches token_usage to codex entries via the collector and dedupes shim+native in token_totals", async () => {
+    const usage: TokenUsage = {
+      source: "codex",
+      input_tokens: 18222,
+      cached_input_tokens: 7552,
+      output_tokens: 625,
+      reasoning_output_tokens: 511,
+      total_tokens: 18847,
+      session_file: "/fake/.codex/sessions/2026/05/17/rollout-x.jsonl",
+      session_id: "sess-x"
+    };
+    // Stub collector: returns the same TokenUsage for both shim and native;
+    // null for agentapi (matching reality — only codex processes carry it).
+    const stub: Pick<TokenUsageCollector, "lookup" | "retain"> = {
+      lookup: (pid: number) => (pid === 34386 || pid === 34387) ? usage : null,
+      retain: () => undefined
+    };
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      tokenUsageCollector: stub as TokenUsageCollector,
+      listProcesses: (): ProcInfo[] => [
+        { pid: 34385, ppid: 1, etime: "00:30", command: "agentapi server --socket=/tmp/agentapi-codex_01.sock --type=codex -- codex" },
+        { pid: 34386, ppid: 34385, etime: "00:30", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 34387, ppid: 34386, etime: "00:30", command: "/Users/y/.local/share/fnm/.../codex-darwin-arm64/.../codex/codex --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const byPid = new Map<number, { token_usage: TokenUsage | null }>(
+      payload.processes.map((p: { pid: number; token_usage: TokenUsage | null }) => [p.pid, p])
+    );
+    expect(byPid.get(34385)?.token_usage).toBeNull();             // agentapi has none
+    expect(byPid.get(34386)?.token_usage?.total_tokens).toBe(18847); // shim
+    expect(byPid.get(34387)?.token_usage?.total_tokens).toBe(18847); // native
+    // Shim + native point to the same session_file, so totals dedupe to one
+    // session and one set of cumulative numbers.
+    expect(payload.token_totals).toEqual({
+      input_tokens: 18222,
+      cached_input_tokens: 7552,
+      output_tokens: 625,
+      reasoning_output_tokens: 511,
+      total_tokens: 18847,
+      sessions: 1
+    });
+  });
+
+  it("token_totals is zero/empty when no codex/claude processes carry usage", async () => {
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      tokenUsageCollector: null,
+      listProcesses: (): ProcInfo[] => [
+        { pid: 500, ppid: 1, etime: "00:10", command: "agentapi server --socket=/tmp/agentapi-codex_42.sock --type=codex -- codex" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.token_totals.sessions).toBe(0);
+    expect(payload.token_totals.total_tokens).toBe(0);
+  });
+
+  it("summarizeTokenUsage dedupes by session_file across multiple snapshot rows", () => {
+    const u1: TokenUsage = {
+      source: "codex",
+      input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 0, total_tokens: 12,
+      session_file: "/a", session_id: "a"
+    };
+    const u2: TokenUsage = {
+      source: "claude",
+      input_tokens: 5, cached_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0, total_tokens: 8,
+      session_file: "/b", session_id: "b"
+    };
+    const totals = _internals.summarizeTokenUsage([
+      // two rows pointing at /a (shim + native) — counted once
+      { token_usage: u1 } as never,
+      { token_usage: u1 } as never,
+      { token_usage: u2 } as never,
+      { token_usage: null } as never
+    ]);
+    expect(totals).toEqual({
+      input_tokens: 15,
+      cached_input_tokens: 1,
+      output_tokens: 5,
+      reasoning_output_tokens: 0,
+      total_tokens: 20,
+      sessions: 2
+    });
   });
 
   it("ignores non-agent processes entirely (zsh, node-not-codex, ...)", async () => {
