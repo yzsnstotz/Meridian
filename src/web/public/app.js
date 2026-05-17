@@ -22,6 +22,8 @@ const WORKER_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"];
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
 
+  setupMonitorNavAlarm();
+
   if (page !== "dashboard") {
     void refreshGlobalNavCounts();
   }
@@ -112,6 +114,31 @@ async function refreshGlobalNavCounts() {
     }
   } catch {
     // Navigation counts are non-critical on detail pages.
+  }
+}
+
+function setupMonitorNavAlarm() {
+  const dot = document.getElementById("nav-monitor-red-dot");
+  if (!dot) {
+    return;
+  }
+
+  async function refresh() {
+    try {
+      const data = await fetchJson("/api/system-monitor");
+      dot.hidden = !data?.any_red;
+    } catch {
+      // The monitor page itself shows connection failures. Other pages keep
+      // the nav unobtrusive unless the endpoint provides a real red state.
+      dot.hidden = true;
+    }
+  }
+
+  refresh();
+  if (typeof window !== "undefined" && typeof window.setInterval === "function") {
+    window.setInterval(refresh, 5000);
+  } else if (typeof setInterval === "function") {
+    setInterval(refresh, 5000);
   }
 }
 
@@ -4393,13 +4420,4 @@ function normalizeText(value) {
 
 function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }

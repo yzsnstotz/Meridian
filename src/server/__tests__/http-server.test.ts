@@ -20,6 +20,17 @@ describe("mapPublicAsset", () => {
       contentType: "text/html; charset=utf-8"
     });
   });
+
+  it("serves the system monitor page and script as top-level public assets", () => {
+    expect(mapPublicAsset("/monitor")).toEqual({
+      fileName: "monitor.html",
+      contentType: "text/html; charset=utf-8"
+    });
+    expect(mapPublicAsset("/monitor.js")).toEqual({
+      fileName: "monitor.js",
+      contentType: "text/javascript; charset=utf-8"
+    });
+  });
 });
 
 describe("selectPublicDir", () => {
