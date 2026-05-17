@@ -421,6 +421,81 @@ describe("TokenUsageCollector — claude", () => {
     expect(usage?.cached_input_tokens).toBe(11_000);
   });
 
+  it("resolves a long-running claude session whose mtime drifted far past startMs (birthtime stays near startMs)", () => {
+    // Live obs 2026-05-17: 6 claude CLIs in /Users/yzliu/work/projects/clawso-v3-build,
+    // most started 23h+ ago and still active. Old code keyed the open-window
+    // check off mtime, which an active session pushes forward on every turn:
+    // mtime - startMs grew to ~23h, far past the 5-min window, so resolver
+    // returned null and only 1 of 6 rows ever showed token totals.
+    // New code keys off birthtime (created when session begins), which stays
+    // constant — so all 6 resolve correctly.
+    const cwd = "/Users/yzliu/work/projects/clawso-v3-build";
+    const startMs = Date.parse("2026-05-16T14:00:00Z"); // pid started 23h ago
+    const sessionId = "long-running-1234-5678-aaaaaaaaaaaa";
+    const projectDir = path.join(CLAUDE_ROOT, encodeClaudeProjectPath(cwd));
+    const jsonlPath = path.join(projectDir, `${sessionId}.jsonl`);
+    const files = new Map<string, string>([
+      [jsonlPath, claudeJsonl(sessionId, [{ in: 100, out: 50, cacheR: 1000, cacheC: 0 }])]
+    ]);
+    const baseFs = makeFs(files);
+    const fs = {
+      ...baseFs,
+      stat: (p: string) => {
+        const c = files.get(p);
+        if (c === undefined) return null;
+        return {
+          mtimeMs: startMs + 23 * 60 * 60 * 1000, // 23h after start (active)
+          birthtimeMs: startMs + 2_000,           // session created 2s after pid start
+          size: Buffer.byteLength(c)
+        };
+      }
+    };
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs, cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    const usage = collector.lookup(15261, "claude");
+    expect(usage?.session_file).toBe(jsonlPath);
+    expect(usage?.input_tokens).toBe(100);
+  });
+
+  it("picks the claude jsonl with closest birthtime when multiple sessions share a cwd", () => {
+    // Multiple concurrent claude CLIs in the same project dir. Each creates
+    // its own session jsonl. Active sessions all have mtime ≈ now; only
+    // birthtime distinguishes them.
+    const cwd = "/Users/yzliu/work/projects/clawso-v3-build";
+    const startMs = Date.parse("2026-05-17T13:50:00Z");
+    const projectDir = path.join(CLAUDE_ROOT, encodeClaudeProjectPath(cwd));
+    const nearPath = path.join(projectDir, "near.jsonl");
+    const farPath = path.join(projectDir, "far.jsonl");
+    const files = new Map<string, string>([
+      [nearPath, claudeJsonl("near", [{ in: 1, out: 1 }])],
+      [farPath, claudeJsonl("far", [{ in: 999, out: 999 }])]
+    ]);
+    const baseFs = makeFs(files);
+    const fs = {
+      ...baseFs,
+      stat: (p: string) => {
+        const c = files.get(p);
+        if (c === undefined) return null;
+        const nowMs = startMs + 60 * 60 * 1000; // both files actively written
+        if (p === nearPath) {
+          return { mtimeMs: nowMs, birthtimeMs: startMs + 1_000, size: Buffer.byteLength(c) };
+        }
+        return { mtimeMs: nowMs, birthtimeMs: startMs + 2 * 60 * 1000, size: Buffer.byteLength(c) };
+      }
+    };
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs, cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    expect(collector.lookup(1, "claude")?.session_file).toBe(nearPath);
+  });
+
   it("returns null when the project directory has no jsonl", () => {
     const cwd = "/Users/yzliu/work/nothing-here";
     const startMs = Date.now();

@@ -43,7 +43,7 @@ export interface CollectorDeps {
   // fs.openSync+readSync to avoid pulling 50MB session rollouts just to read
   // the first JSON line; tests can implement via readFile().subarray(0, n).
   readHead?: (p: string, length: number) => Buffer;
-  stat?: (p: string) => { mtimeMs: number; size: number } | null;
+  stat?: (p: string) => { mtimeMs: number; size: number; birthtimeMs?: number } | null;
   codexSessionsRoot?: string;     // default: ~/.codex/sessions
   claudeProjectsRoot?: string;    // default: ~/.claude/projects
   now?: () => Date;
@@ -164,8 +164,17 @@ export class TokenUsageCollector {
 
   // claude writes ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl, one
   // jsonl per session. The encoded-cwd is the absolute cwd with `/` replaced
-  // by `-`. We list jsonl files in that directory whose ctime/mtime are after
-  // the process start, and pick the one with the smallest start-delta.
+  // by `-`. We list jsonl files in that directory whose birthtime falls inside
+  // the open window around pid.startMs and pick the closest by birthtime.
+  //
+  // Why birthtime, not mtime: an active claude session is rewritten on every
+  // turn, so its mtime drifts forward indefinitely. A session that started
+  // 23h ago and is still being typed in has mtime ≈ now and mtime - startMs
+  // ≈ 23h, far outside the 5-min open window — so it would resolve to null
+  // and never show token totals. Birthtime is the session-creation moment and
+  // stays constant; matching against it is robust across session lifetimes.
+  // On platforms where birthtime is unavailable (some Linux filesystems),
+  // we fall back to mtime to preserve previous behavior.
   private resolveClaudeSessionFile(attrs: ProcessAttrs): string | null {
     if (!attrs.cwd) return null;
     const dir = path.join(this.deps.claudeProjectsRoot, encodeClaudeProjectPath(attrs.cwd));
@@ -176,25 +185,22 @@ export class TokenUsageCollector {
       return null;
     }
 
-    let best: { path: string; mtime: number } | null = null;
+    let best: { path: string; createdMs: number } | null = null;
     for (const name of entries) {
       if (!name.endsWith(".jsonl")) continue;
       const full = path.join(dir, name);
       const st = this.deps.stat(full);
       if (!st) continue;
-      // Session file should be modified at or after pid start; tolerate small
-      // clock skew. Anything ≥30s before the start can't be this session.
-      if (st.mtimeMs < attrs.startMs - 30_000) continue;
-      if (best === null || Math.abs(st.mtimeMs - attrs.startMs) < Math.abs(best.mtime - attrs.startMs)) {
-        best = { path: full, mtime: st.mtimeMs };
+      const createdMs = st.birthtimeMs && st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs;
+      // Session file should be created at or after pid start; tolerate small
+      // clock skew. Outside [start - 1s, start + window] can't be this session.
+      if (createdMs < attrs.startMs - 1_000) continue;
+      if (createdMs > attrs.startMs + CLAUDE_SESSION_OPEN_WINDOW_MS) continue;
+      if (best === null || Math.abs(createdMs - attrs.startMs) < Math.abs(best.createdMs - attrs.startMs)) {
+        best = { path: full, createdMs };
       }
     }
-    // Require the chosen file to be within the open window — otherwise we're
-    // likely picking an unrelated older session that happened to be touched.
-    if (best && best.mtime - attrs.startMs <= CLAUDE_SESSION_OPEN_WINDOW_MS) {
-      return best.path;
-    }
-    return null;
+    return best?.path ?? null;
   }
 
   private readUsage(filePath: string, source: "codex" | "claude"): TokenUsage | null {
@@ -441,10 +447,10 @@ function defaultReadHead(p: string, length: number): Buffer {
   }
 }
 
-function defaultStat(p: string): { mtimeMs: number; size: number } | null {
+function defaultStat(p: string): { mtimeMs: number; size: number; birthtimeMs?: number } | null {
   try {
     const st = fs.statSync(p);
-    return { mtimeMs: st.mtimeMs, size: st.size };
+    return { mtimeMs: st.mtimeMs, size: st.size, birthtimeMs: st.birthtimeMs };
   } catch {
     return null;
   }
