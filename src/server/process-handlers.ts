@@ -15,10 +15,11 @@ export interface ProcessHandlersOptions {
   listProcesses?: () => ProcInfo[];
   // Optional: when Meridian Hub spawns agentapi via TCP port (the host kernel
   // doesn't support --socket), the agentapi argv has no /tmp/agentapi-<id>.sock
-  // marker. The handler calls this once per request to fetch the Hub's
+  // marker. Hub-direct `codex exec` validator/PM calls also have no agentapi
+  // parent at all. The handler calls this once per request to fetch the Hub's
   // instance registry, then looks up `pid → thread_id` from it. If the call
   // throws or returns nothing, attribution falls back to socket-path parsing
-  // only and unbound agentapi will (correctly) be flagged as a leak.
+  // only and unbound managed processes will be flagged as leaks.
   fetchAgentapiInstanceIndex?: () => Promise<Map<number, string>>;
   // Optional: attaches cumulative LLM token totals to each codex/claude
   // snapshot entry by resolving the process to its on-disk session file.
@@ -184,9 +185,9 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         let threadId: string | null = directSocketMatch?.[1] ?? null;
 
         // Fallback: when agentapi runs on a TCP port (kernel didn't support
-        // --socket), the socket marker is absent. Use the resolver hook
-        // (Hub instance registry) keyed by PID/port.
-        if (isAgentapi && !threadId && resolveByPid) {
+        // --socket), or when a validator/PM is Hub-direct `codex exec`, argv
+        // has no thread marker. Use the Hub instance registry keyed by PID.
+        if (!threadId && resolveByPid) {
           threadId = resolveByPid(p.pid, Number.isFinite(port) ? port : null);
         }
 
@@ -206,6 +207,9 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
               const ancestorPort = ancestorPortMatch ? Number.parseInt(ancestorPortMatch[1] ?? "", 10) : null;
               threadId = resolveByPid(ancestorAgentapi.pid, Number.isFinite(ancestorPort) ? ancestorPort : null);
             }
+          }
+          if (!threadId && resolveByPid) {
+            threadId = resolveThreadIdFromPidMappedAncestor(p, byPid, resolveByPid);
           }
         }
 
@@ -491,6 +495,37 @@ function findMeridianHubAncestor(
   return null;
 }
 
+// Hub-direct `codex exec` spawns a node shim (registered in the Hub instance
+// index) plus a native codex child (not registered). Let the child inherit the
+// shim's thread_id so the two rows bind to the same validator/PM owner.
+function resolveThreadIdFromPidMappedAncestor(
+  start: ProcInfo,
+  byPid: Map<number, ProcInfo>,
+  resolveByPid: (pid: number, port: number | null) => string | null
+): string | null {
+  let cursor: ProcInfo | undefined = start;
+  for (let depth = 0; depth < 8 && cursor; depth += 1) {
+    if (cursor.ppid === 0 || cursor.ppid === 1) {
+      return null;
+    }
+    const parent = byPid.get(cursor.ppid);
+    if (!parent) {
+      return null;
+    }
+    const portMatch = parent.command.match(AGENTAPI_PORT_PATTERN);
+    const port = portMatch ? Number.parseInt(portMatch[1] ?? "", 10) : null;
+    const threadId = resolveByPid(parent.pid, Number.isFinite(port) ? port : null);
+    if (threadId) {
+      return threadId;
+    }
+    if (!isAgentShaped(parent.command)) {
+      return null;
+    }
+    cursor = parent;
+  }
+  return null;
+}
+
 async function buildThreadIndex(
   stateStore: Pick<StateStore, "load">,
   log: Logger
@@ -554,6 +589,23 @@ async function buildThreadIndex(
         role: "worker",
         status: w.status,
         started_at: w.started_at ?? null
+      });
+    }
+
+    for (const [workerId, w] of Object.entries(lifecycleState.workers)) {
+      const validation = (w as unknown as {
+        validation?: { validator_thread_id?: string | null };
+      }).validation;
+      const validatorThreadId = validation?.validator_thread_id?.trim();
+      if (!validatorThreadId || w.status !== "awaiting_validation") {
+        continue;
+      }
+      index.set(validatorThreadId, {
+        dispatcher_role_id: role.threadId,
+        worker_id: workerId,
+        role: "validator",
+        status: "running",
+        started_at: w.last_seen_at ?? w.started_at ?? null
       });
     }
 
