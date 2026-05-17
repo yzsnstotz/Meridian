@@ -3634,7 +3634,7 @@ function resolveDispatcherCardControl(detail) {
     return { action: "continue", label: "Continue", disabled: false, showStartHub };
   }
 
-  if (status === "paused" && hasLiveThread) {
+  if (status === "paused") {
     return { action: "resume", label: "Resume", disabled: false, showStartHub };
   }
 
@@ -3755,11 +3755,17 @@ function resolveDispatcherLifecycleControls(status, hasLiveThread) {
   if (isTerminalDispatcherStatus(status)) {
     return { showLifecycle: false, lifecycleAction: null, lifecycleLabel: "" };
   }
-  if (!hasLiveThread || status === "needs_reactivation") {
-    return { showLifecycle: false, lifecycleAction: null, lifecycleLabel: "" };
-  }
+  // Paused dispatchers must expose Resume even without a live hub thread.
+  // /resume hits setAgentDispatcherStatus, which calls
+  // reactivatePersistedAgentDispatcher before flipping status — so the
+  // no-live-thread case is recoverable from the GUI and shouldn't be silently
+  // locked out (operator otherwise sees only Continue/Start hub session, both
+  // of which return "still blocked: dispatcher is paused — hit Resume").
   if (status === "paused") {
     return { showLifecycle: true, lifecycleAction: "resume", lifecycleLabel: "Resume" };
+  }
+  if (!hasLiveThread || status === "needs_reactivation") {
+    return { showLifecycle: false, lifecycleAction: null, lifecycleLabel: "" };
   }
   return { showLifecycle: true, lifecycleAction: "pause", lifecycleLabel: "Pause" };
 }
