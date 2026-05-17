@@ -143,8 +143,8 @@ function setupProcessMonitor() {
 
   let lastProcesses = [];
   // pid -> last observed total_tokens. On each poll, a PID whose total grew
-  // since the previous tick is flagged with `_tokenIncreased` so the row gets
-  // a one-shot green flash via CSS animation (the "trading sign" effect).
+  // since the previous tick (or first appears with tokens already attached)
+  // is flagged with `_tokenIncreased` so the row gets a one-shot green flash.
   const prevTokenTotals = new Map();
   // pid -> history entry { entry, finalUsage, lastSeenAt }. Populated on each
   // poll for any PID that appeared in the previous snapshot but is gone in
@@ -158,7 +158,7 @@ function setupProcessMonitor() {
       livePids.add(p.pid);
       const cur = p.token_usage ? Number(p.token_usage.total_tokens) : null;
       const prev = prevTokenTotals.get(p.pid);
-      p._tokenIncreased = (cur !== null && Number.isFinite(cur) && prev !== undefined && cur > prev);
+      p._tokenIncreased = (cur !== null && Number.isFinite(cur) && (prev === undefined || cur > prev));
       if (cur !== null && Number.isFinite(cur)) {
         prevTokenTotals.set(p.pid, cur);
       }

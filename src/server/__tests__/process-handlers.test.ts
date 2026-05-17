@@ -390,6 +390,67 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.processes.filter((p: { origin: string }) => p.origin === "managed")).toHaveLength(2);
   });
 
+  it("binds a Hub-direct current validator codex exec pair via the Hub PID index", async () => {
+    // Regression for agent-dispatcher-00f759ff / BATCH-10-GATE: the live
+    // validator runs as Hub-direct `codex exec --json`, so there is no agentapi
+    // socket/parent in ps. The Hub instance registry maps the shim PID to
+    // codex_03, while dispatch_threads.json stores that id on
+    // validation.validator_thread_id until the verdict is recorded.
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "codex_01", started_at: "2026-05-17T08:56:40.631Z", status: "running" },
+      workers: {
+        "BATCH-10-GATE": {
+          thread_id: "codex_02",
+          trace_id: null,
+          started_at: "2026-05-17T08:56:44.527Z",
+          last_seen_at: "2026-05-17T09:04:02.953Z",
+          status: "awaiting_validation",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: "codex_03",
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      },
+      last_reconciled_at: null
+    });
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      fetchAgentapiInstanceIndex: async () => new Map([[40502, "codex_03"]]),
+      listProcesses: (): ProcInfo[] => [
+        { pid: 38500, ppid: 1, etime: "10:00", command: "node dist/hub/index.js" },
+        { pid: 40502, ppid: 38500, etime: "00:42", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json --sandbox read-only --skip-git-repo-check" },
+        { pid: 40503, ppid: 40502, etime: "00:42", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json --sandbox read-only --skip-git-repo-check" }
+      ]
+    });
+
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const codexRows = payload.processes.filter((p: { agent_type: string }) => p.agent_type === "codex");
+    expect(codexRows).toHaveLength(2);
+    expect(codexRows.every((p: { thread_id: string }) => p.thread_id === "codex_03")).toBe(true);
+    expect(codexRows.every((p: { is_leak: boolean }) => p.is_leak === false)).toBe(true);
+    expect(codexRows.every((p: { binding: { dispatcher_role_id: string; worker_id: string; role: string; status: string } }) =>
+      p.binding?.dispatcher_role_id === "agent-dispatcher-abc"
+      && p.binding?.worker_id === "BATCH-10-GATE"
+      && p.binding?.role === "validator"
+      && p.binding?.status === "running"
+    )).toBe(true);
+    expect(payload.managed_bound).toBe(2);
+    expect(payload.leak).toBe(0);
+  });
+
   it("also matches `tsx src/hub/index.ts` (dev-mode hub) as a hub ancestor", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },

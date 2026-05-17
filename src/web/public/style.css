@@ -1306,7 +1306,7 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
    animation). Designed to feel like a trading-tape uptick. */
 @keyframes process-token-flash {
   0%   { background-color: rgba(34, 197, 94, 0.55); }
-  60%  { background-color: rgba(34, 197, 94, 0.30); }
+  85%  { background-color: rgba(34, 197, 94, 0.30); }
   100% { background-color: transparent; }
 }
 .row-token-flash td {

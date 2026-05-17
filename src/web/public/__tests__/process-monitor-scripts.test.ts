@@ -48,6 +48,7 @@ describe("processes tab — token flash + history", () => {
     expect(css).toContain("@keyframes process-token-flash");
     expect(css).toContain(".row-token-flash td");
     expect(css).toMatch(/animation:\s*process-token-flash\s+2s/);
+    expect(css).toContain("85%  { background-color: rgba(34, 197, 94, 0.30); }");
     // Green hue at start of animation. Exact rgba is mutable but the
     // green-ish channel should dominate.
     expect(css).toMatch(/process-token-flash[\s\S]{0,200}rgba\(\s*34\s*,\s*197\s*,\s*94/);
@@ -65,11 +66,11 @@ describe("processes tab — token flash + history", () => {
     // setupProcessMonitor (the only function that owns them).
     expect(js).toContain("const prevTokenTotals = new Map();");
     expect(js).toContain("const processHistory = new Map();");
-    // Capture functions. The applyTokenFlashing function must set the
-    // _tokenIncreased flag based on a strict > comparison (not >=, which
-    // would flash on every poll for inactive processes).
+    // Capture functions. The applyTokenFlashing function must flash the first
+    // observed token-carrying row and later only on strict growth (not >=,
+    // which would flash on every poll for inactive processes).
     expect(js).toContain("function applyTokenFlashing");
-    expect(js).toMatch(/_tokenIncreased\s*=\s*\(cur !== null && Number\.isFinite\(cur\) && prev !== undefined && cur > prev\)/);
+    expect(js).toMatch(/_tokenIncreased\s*=\s*\(cur !== null && Number\.isFinite\(cur\) && \(prev === undefined \|\| cur > prev\)\)/);
     expect(js).toContain("function captureDepartedProcesses");
     // Renderer must consult the flag and add the row-token-flash class.
     expect(js).toContain('row-token-flash');
