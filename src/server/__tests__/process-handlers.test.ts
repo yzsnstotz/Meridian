@@ -268,6 +268,56 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.managed_leak).toBe(1);
   });
 
+  // Regression: agent-dispatcher-00f759ff codex_15 was painted "no dispatcher
+  // claim" while in awaiting_validation — but run-tool (tool-gateway/tools/
+  // run.ts:335) intentionally keeps the worker thread alive in
+  // running/awaiting_validation/fix_requested/blocked because the validator
+  // may REJECT and the dispatcher delivers feedback to the SAME codex thread
+  // (validator-orchestrator.ts:530) to reuse the rollout cache. The binding
+  // index must mirror that liveness contract.
+  it.each([
+    ["awaiting_validation" as const],
+    ["fix_requested" as const],
+    ["blocked" as const]
+  ])("binds a worker in %s status (its codex thread is intentionally still alive)", async (status) => {
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: null, started_at: null, status: "pending" },
+      workers: {
+        "W-01": {
+          thread_id: "codex_15",
+          trace_id: null,
+          started_at: "2026-05-17T00:00:00.000Z",
+          last_seen_at: "2026-05-17T00:00:00.000Z",
+          status,
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 1515, ppid: 1, etime: "00:30", command: "agentapi server --socket=/tmp/agentapi-codex_15.sock --type=codex" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].is_leak).toBe(false);
+    expect(payload.processes[0].binding).toMatchObject({
+      dispatcher_role_id: "agent-dispatcher-abc",
+      worker_id: "W-01",
+      role: "worker",
+      status
+    });
+    expect(payload.managed_bound).toBe(1);
+    expect(payload.leak).toBe(0);
+  });
+
   it("sorts leaks before managed-bound before external", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },

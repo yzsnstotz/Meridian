@@ -86,6 +86,21 @@ const CODEX_COMMAND_PATTERN = /(?:^|[\s/])codex(?:\s|$)/;
 // Claude CLI — `claude --flag` or path-prefixed `.../claude --flag`.
 const CLAUDE_COMMAND_PATTERN = /(?:^|[\s/])claude(?:\s|$)/;
 
+// Worker lifecycle statuses where the codex worker thread is intentionally
+// kept alive (mirrors tool-gateway/tools/run.ts:335 cleanupWorkerThread). Any
+// row in this set with a non-empty thread_id is a legitimate binding for the
+// Processes tab — NOT a leak.
+const LIVE_WORKER_STATUSES = new Set<string>([
+  "running",
+  "awaiting_validation",
+  "fix_requested",
+  "blocked"
+]);
+
+function isLiveWorkerStatus(status: string | undefined | null): boolean {
+  return status !== undefined && status !== null && LIVE_WORKER_STATUSES.has(status);
+}
+
 // Meridian hub PM2 process names. codex/claude spawned BY the Meridian hub
 // itself (calling-hub spawns codex for short-lived notification / scheduler
 // turns) are NOT meridian-roles' responsibility — without this exclusion they
@@ -516,7 +531,21 @@ async function buildThreadIndex(
     }
 
     for (const [workerId, w] of Object.entries(lifecycleState.workers)) {
-      if (!w.thread_id || w.status !== "running") {
+      // Bind whenever the worker thread is one the run-tool intentionally
+      // keeps alive (see tool-gateway/tools/run.ts:335 cleanupWorkerThread).
+      // `awaiting_validation` / `fix_requested` / `blocked` all keep the
+      // codex worker process alive on purpose: awaiting_validation hands the
+      // session to the validator (and on validator REJECT the dispatcher
+      // delivers feedback to the SAME thread to reuse the rollout cache —
+      // validator-orchestrator.ts:530), fix_requested may be either mid-
+      // feedback-delivery or transport-stall-preserved, blocked may be
+      // PM-resolver-pending. Treating these as unbound paints the live
+      // worker as "no dispatcher claim" in the Processes tab and is a false
+      // leak signal. The bug was originally observed on
+      // agent-dispatcher-00f759ff codex_15. Terminal states (`completed` /
+      // `failed` / `abandoned` / `skipped`) deliberately remain unbound:
+      // their `thread_id` is an audit row and a surviving codex IS a leak.
+      if (!w.thread_id || !isLiveWorkerStatus(w.status)) {
         continue;
       }
       index.set(w.thread_id, {
