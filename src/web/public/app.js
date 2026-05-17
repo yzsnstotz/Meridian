@@ -212,12 +212,18 @@ function setupProcessMonitor() {
   function renderHistory() {
     const historyShell = document.getElementById("processes-history-shell");
     const historyBody = document.getElementById("processes-history-body");
+    const historyEmpty = document.getElementById("processes-history-empty");
+    const historyTable = document.getElementById("processes-history-table");
     if (!historyShell || !historyBody) return;
+    historyShell.hidden = false;
     if (processHistory.size === 0) {
-      historyShell.hidden = true;
+      if (historyEmpty) historyEmpty.hidden = false;
+      if (historyTable) historyTable.hidden = true;
+      historyBody.innerHTML = "";
       return;
     }
-    historyShell.hidden = false;
+    if (historyEmpty) historyEmpty.hidden = true;
+    if (historyTable) historyTable.hidden = false;
     // Sort newest-departed first.
     const rows = [...processHistory.values()]
       .sort((a, b) => (b.lastSeenAt || "").localeCompare(a.lastSeenAt || ""));

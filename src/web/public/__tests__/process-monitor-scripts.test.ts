@@ -16,11 +16,16 @@ describe("processes tab — token flash + history", () => {
   it("HTML exposes the departed-processes history table with the documented columns", async () => {
     const html = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
     expect(html).toContain('id="processes-history-shell"');
+    expect(html).toContain('id="processes-history-empty"');
+    expect(html).toContain('id="processes-history-table"');
     expect(html).toContain('id="processes-history-body"');
     // Title + help line establish what this section means; if either gets
     // dropped the section becomes mysterious without changing functionality.
     expect(html).toContain("Departed processes");
     expect(html).toContain("Capped at 100 entries");
+    expect(html).toContain("No departed processes recorded yet");
+    expect(html).toContain("Keep this Processes tab open");
+    expect(html).toContain('<div id="processes-history-shell" class="table-shell history-shell">');
     // Column headers — order matters for the renderHistoryRow string output.
     const headersOrder = [
       "<th>PID</th>",
@@ -76,6 +81,9 @@ describe("processes tab — token flash + history", () => {
     expect(js).toContain('row-token-flash');
     expect(js).toContain("function renderHistory");
     expect(js).toContain("function renderHistoryRow");
+    expect(js).toContain('document.getElementById("processes-history-empty")');
+    expect(js).toContain('document.getElementById("processes-history-table")');
+    expect(js).toMatch(/historyTable\.hidden\s*=\s*true/);
     // Cap enforcement (FIFO) — the cap constant must be referenced so the
     // history map can't grow without bound.
     expect(js).toContain("PROCESS_HISTORY_CAP");
