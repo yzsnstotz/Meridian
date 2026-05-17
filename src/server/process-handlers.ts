@@ -222,7 +222,15 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         } else if (
           (agentType === "codex" || agentType === "claude")
           && looksLikeMeridianOrphan(p.command)
+          && isReparentedToInit(p, byPid)
         ) {
+          // Argv looks like a meridian-roles spawn template AND the process
+          // (or one of its ancestors) was reparented to init — i.e. the
+          // original agentapi parent really did die. Without the reparenting
+          // check, a user running `codex --dangerously-bypass-approvals-and-sandbox`
+          // from their own shell (PPID chain leads to a live -zsh, never to
+          // PID 1) would be misclassified as orphan. Observed live 2026-05-17:
+          // codex 8701 PPID=81108 (-zsh, alive) flagged orphan.
           origin = "orphan";
         } else {
           origin = "external";
@@ -404,6 +412,44 @@ function findAgentapiAncestor(
   return null;
 }
 
+// Walks the PPID chain looking for reparenting to PID 1 *while still inside
+// the codex/claude/shim chain*. A real "orphan" has its agentapi parent
+// killed, leaving the codex shim with PPID=1 (and the native binary still
+// childed to the shim). A user-launched codex has a real shell ancestor —
+// when we step out of the agent chain to a non-agent process, that process
+// is the owner, so it's external regardless of whether the shell eventually
+// reaches launchd (PID 1) further up the tree.
+//
+// Note: a naive "any ancestor has PPID=1" check is wrong on macOS because
+// the user's terminal app (iTerm, Terminal.app) is itself a child of
+// launchd (PID 1). The check must stop as soon as a non-agent owner appears.
+function isReparentedToInit(
+  start: ProcInfo,
+  byPid: Map<number, ProcInfo>
+): boolean {
+  let cursor: ProcInfo | undefined = start;
+  for (let depth = 0; depth < 8 && cursor; depth += 1) {
+    if (cursor.ppid === 1) {
+      return true;
+    }
+    if (cursor.ppid === 0) {
+      return false;
+    }
+    const parent = byPid.get(cursor.ppid);
+    if (!parent) {
+      // Parent vanished from ps mid-snapshot — treat as reparented.
+      return true;
+    }
+    if (!isAgentShaped(parent.command)) {
+      // Stepped out of the agent chain to a real owner (shell, terminal,
+      // hub, etc). Not a reparented orphan.
+      return false;
+    }
+    cursor = parent;
+  }
+  return false;
+}
+
 // Like findAgentapiAncestor, but searches for a Meridian hub process
 // (calling-hub PM2 wrapper or the underlying node /Meridian/dist/hub/...
 // invocation). Used to exclude hub-spawned codex/claude from the
@@ -572,6 +618,7 @@ export const _internals = {
   isAgentShaped,
   detectAgentType,
   looksLikeMeridianOrphan,
+  isReparentedToInit,
   findAgentapiAncestor,
   parseLine,
   summarizeTokenUsage

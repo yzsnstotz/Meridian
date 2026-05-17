@@ -135,6 +135,33 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.leak).toBe(0);
   });
 
+  it("classifies user-launched codex (meridian-style flags BUT alive shell parent, not reparented) as external", async () => {
+    // Live obs 2026-05-17: codex pid=8701 ppid=81108 with command
+    // `node .../codex --dangerously-bypass-approvals-and-sandbox` was
+    // misclassified as orphan because looksLikeMeridianOrphan matched the
+    // --dangerously flag. The user runs codex manually with that flag too.
+    // A real orphan reparents to PID=1; this one's chain leads to a live
+    // -zsh, so it should be `external`, not `orphan`.
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 81105, ppid: 1, etime: "10:00:00", command: "/Applications/iTerm.app/Contents/MacOS/iTerm2" },
+        { pid: 81108, ppid: 81105, etime: "10:00:00", command: "-zsh" },
+        { pid: 8701, ppid: 81108, etime: "08:59", command: "node /Users/yzliu/.local/state/fnm_multishells/81113/bin/codex --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 8702, ppid: 8701, etime: "08:59", command: "/Users/yzliu/.local/share/fnm/.../codex --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const codex = payload.processes.filter((p: { agent_type: string }) => p.agent_type === "codex");
+    expect(codex).toHaveLength(2);
+    expect(codex.every((p: { origin: string }) => p.origin === "external")).toBe(true);
+    expect(payload.external).toBe(2);
+    expect(payload.orphan).toBe(0);
+    expect(payload.leak).toBe(0);
+  });
+
   it("classifies orphan codex with meridian-roles spawn markers (no agentapi parent) as orphan + leak", async () => {
     // Same scenario as the documented active-tool-process.ts:39 pattern:
     // agentapi parent died, codex CLI child reparented to PID 1.
