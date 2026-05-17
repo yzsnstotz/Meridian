@@ -723,6 +723,25 @@
               <tbody id="processes-table-body"></tbody>
             </table>
           </div>
+          <div id="processes-history-shell" class="table-shell history-shell" hidden>
+            <h3 class="history-title">Departed processes (this browser session)</h3>
+            <p class="history-help muted">PIDs that were live in a previous poll but are no longer present. Capped at 100 entries, newest first; clears on page reload.</p>
+            <table class="status-table">
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>origin</th>
+                  <th>agent</th>
+                  <th>thread_id</th>
+                  <th title="final cumulative tokens at last sighting">tokens (final)</th>
+                  <th>session file</th>
+                  <th>last seen</th>
+                  <th>command</th>
+                </tr>
+              </thead>
+              <tbody id="processes-history-body"></tbody>
+            </table>
+          </div>
           <p id="processes-feedback" class="feedback" role="status" aria-live="polite"></p>
         </section>
       </div>
