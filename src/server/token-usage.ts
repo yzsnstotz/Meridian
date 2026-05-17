@@ -103,18 +103,27 @@ export class TokenUsageCollector {
   }
 
   lookup(pid: number, agentType: "codex" | "claude"): TokenUsage | null {
+    // Only POSITIVE resolutions are cached. A failed lookup (null) must
+    // re-resolve on the next poll, because codex creates the rollout file a
+    // few seconds AFTER the process starts (observed ~14s gap on live PIDs).
+    // Caching negatives would permanently mask every codex/claude session
+    // whose first /api/agentapi-processes poll lands before the rollout file
+    // exists, and would also hide every short-lived stateless validator
+    // (which dies before re-resolution would have happened).
     const cached = this.pidToFile.get(pid);
     let filePath: string | null;
-    if (cached === undefined) {
+    if (cached !== undefined) {
+      filePath = cached;
+    } else {
       const attrs = this.deps.getProcessAttrs(pid);
       filePath = attrs
         ? agentType === "codex"
           ? this.resolveCodexSessionFile(attrs)
           : this.resolveClaudeSessionFile(attrs)
         : null;
-      this.pidToFile.set(pid, filePath);
-    } else {
-      filePath = cached;
+      if (filePath !== null) {
+        this.pidToFile.set(pid, filePath);
+      }
     }
 
     if (!filePath) return null;
@@ -126,21 +135,31 @@ export class TokenUsageCollector {
   // timestamp and cwd. We pick the matching session file by:
   //   1. listing rollout files whose path date is on or after pid_start_date,
   //   2. peeking the session_meta line for each candidate,
-  //   3. requiring cwd match AND session_meta.timestamp within [start, start+window].
-  // First match wins.
+  //   3. requiring cwd match AND session_meta.timestamp within [start - 1s, start + window],
+  //   4. among survivors, choosing the one with the smallest |meta.ts - pid.start|.
+  //
+  // The closest-match selection matters when multiple codex sessions share
+  // a cwd (the Meridian hub forks every codex from `/Users/yzliu/work`, so an
+  // agentapi-bound codex and a stateless `codex exec --json` validator can
+  // be alive concurrently with the same cwd). First-match could mis-attribute
+  // one session's tokens to a different process's row.
   private resolveCodexSessionFile(attrs: ProcessAttrs): string | null {
     if (!attrs.cwd) return null;
 
     const candidates = listCodexRolloutFiles(this.deps.codexSessionsRoot, attrs.startMs, this.deps.listDir);
+    let best: { path: string; delta: number } | null = null;
     for (const filePath of candidates) {
       const meta = peekCodexSessionMeta(filePath, this.deps.readHead);
       if (!meta) continue;
       if (meta.cwd !== attrs.cwd) continue;
       if (meta.timestampMs < attrs.startMs - 1_000) continue;
       if (meta.timestampMs > attrs.startMs + CODEX_SESSION_OPEN_WINDOW_MS) continue;
-      return filePath;
+      const delta = Math.abs(meta.timestampMs - attrs.startMs);
+      if (best === null || delta < best.delta) {
+        best = { path: filePath, delta };
+      }
     }
-    return null;
+    return best?.path ?? null;
   }
 
   // claude writes ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl, one

@@ -96,6 +96,13 @@ const MERIDIAN_HUB_PROCESS_PATTERN = /(?:^|[\s/])(?:calling-hub|calling-interfac
 // `node .../hub/index.js` etc — PM2 spawns these as `PM2 calling-hub` but the
 // actual node invocation shows `node /Users/.../Meridian/dist/hub/index.js`.
 const MERIDIAN_HUB_NODE_PATTERN = /\/Meridian\/(?:dist|src)\/(?:hub|interface|monitor|web)\//;
+// Hub launched from its own cwd shows up in `ps` with a RELATIVE script path,
+// e.g. `node dist/hub/index.js` or `tsx src/hub/index.ts`. Without this pattern,
+// codex/claude that the hub spawns directly (e.g. `codex exec --json` for a
+// stateless validator turn) are misclassified as `orphan` because
+// `findMeridianHubAncestor` doesn't recognise the hub parent. Observed live
+// 2026-05-17 on agent-dispatcher-67f6a3fc.
+const MERIDIAN_HUB_RELATIVE_NODE_PATTERN = /(?:^|\s)(?:node|tsx|ts-node)\s+(?:dist|src)\/(?:hub|interface|monitor|web)\/index\.(?:js|ts|mjs|cjs)(?:\s|$)/;
 
 export function createProcessHandlers(options: ProcessHandlersOptions): ProcessHandlers {
   const log = options.log ?? console;
@@ -122,7 +129,11 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       if (AGENTAPI_COMMAND_PATTERN.test(p.command)) {
         agentapiPids.add(p.pid);
       }
-      if (MERIDIAN_HUB_PROCESS_PATTERN.test(p.command) || MERIDIAN_HUB_NODE_PATTERN.test(p.command)) {
+      if (
+        MERIDIAN_HUB_PROCESS_PATTERN.test(p.command)
+        || MERIDIAN_HUB_NODE_PATTERN.test(p.command)
+        || MERIDIAN_HUB_RELATIVE_NODE_PATTERN.test(p.command)
+      ) {
         meridianHubPids.add(p.pid);
       }
     }
@@ -556,6 +567,8 @@ export const _internals = {
   AGENTAPI_COMMAND_PATTERN,
   CODEX_COMMAND_PATTERN,
   CLAUDE_COMMAND_PATTERN,
+  MERIDIAN_HUB_NODE_PATTERN,
+  MERIDIAN_HUB_RELATIVE_NODE_PATTERN,
   isAgentShaped,
   detectAgentType,
   looksLikeMeridianOrphan,

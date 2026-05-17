@@ -267,7 +267,7 @@ describe("TokenUsageCollector — codex", () => {
     expect(shim?.total_tokens).toBe(native?.total_tokens);
   });
 
-  it("caches per-pid resolution; retain() drops dead pids", () => {
+  it("caches POSITIVE per-pid resolution; retain() drops dead pids", () => {
     const { files, startMs, cwd } = setup();
     const fs = makeFs(files);
     let getCalls = 0;
@@ -283,6 +283,105 @@ describe("TokenUsageCollector — codex", () => {
     collector.retain(new Set([])); // pid 100 is gone
     collector.lookup(100, "codex");
     expect(getCalls).toBe(2);
+  });
+
+  it("does NOT cache negative resolution — retries when rollout file appears later", () => {
+    // codex creates the rollout file ~14s after process start (live obs).
+    // The first poll can hit BEFORE the file exists; we must re-resolve on
+    // subsequent polls instead of permanently caching null. Otherwise every
+    // codex session whose first poll preceded the rollout — and every short
+    // stateless validator — would silently have no tokens forever.
+    const sessionId = "019e3442-8352-7282-bc7f-31ea41f2a0fa";
+    const startIso = "2026-05-17T13:47:14Z";
+    const cwd = "/Users/yzliu/work";
+    const startMs = Date.parse(startIso) - 14_000; // pid started 14s before session_meta
+    const rolloutPath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      `rollout-2026-05-17T13-47-14-${sessionId}.jsonl`
+    );
+
+    // Phase 1: rollout file doesn't exist yet.
+    const files = new Map<string, string>();
+    let fs = makeFs(files);
+    let getCalls = 0;
+    const collector = new TokenUsageCollector({
+      listDir: (dir: string) => { try { return fs.listDir(dir); } catch { return []; } },
+      readFile: (p: string) => fs.readFile(p),
+      readHead: (p: string, n: number) => fs.readHead(p, n),
+      stat: (p: string) => fs.stat(p),
+      getProcessAttrs: () => { getCalls += 1; return { startMs, cwd }; },
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    expect(collector.lookup(99, "codex")).toBeNull();
+    expect(getCalls).toBe(1);
+
+    // Phase 2: rollout file appears. Same PID, should re-resolve and succeed.
+    files.set(rolloutPath, codexRollout(sessionId, startIso, cwd));
+    fs = makeFs(files);
+    const usage = collector.lookup(99, "codex");
+    expect(usage?.session_file).toBe(rolloutPath);
+    expect(getCalls).toBe(2); // re-resolved, not served from negative cache
+  });
+
+  it("picks the CLOSEST start-time match when multiple rollouts share cwd in-window", () => {
+    // Concurrent codex sessions in the same cwd (Meridian hub forks all codex
+    // from `/Users/yzliu/work`): the resolver must pick the rollout whose
+    // session_meta.timestamp is closest to the pid's start, not just the
+    // first one in readdir order.
+    const cwd = "/Users/yzliu/work";
+    const pidStartIso = "2026-05-17T13:50:00Z";
+    const farSessionIso = "2026-05-17T13:47:14Z"; // 2m46s before pid start — rejected: before pid_start - 1s
+    const nearSessionIso = "2026-05-17T13:50:08Z"; // 8s after pid start — kept
+    const farPath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      "rollout-2026-05-17T13-47-14-far.jsonl"
+    );
+    const nearPath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      "rollout-2026-05-17T13-50-08-near.jsonl"
+    );
+    const files = new Map<string, string>([
+      [farPath, codexRollout("far", farSessionIso, cwd)],
+      [nearPath, codexRollout("near", nearSessionIso, cwd)]
+    ]);
+    const fs = makeFs(files);
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs: Date.parse(pidStartIso), cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    expect(collector.lookup(1, "codex")?.session_file).toBe(nearPath);
+  });
+
+  it("closest-match still applies when both candidates are after pid_start", () => {
+    // Stricter version of the previous test: both candidates inside the
+    // window, but one is closer than the other.
+    const cwd = "/Users/yzliu/work";
+    const pidStartIso = "2026-05-17T13:50:00Z";
+    const closeIso = "2026-05-17T13:50:05Z"; // +5s
+    const farIso = "2026-05-17T13:53:00Z";   // +3min, still in 5-min window
+    const closePath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      "rollout-2026-05-17T13-50-05-close.jsonl"
+    );
+    const farPath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      "rollout-2026-05-17T13-53-00-far.jsonl"
+    );
+    const files = new Map<string, string>([
+      [farPath, codexRollout("far", farIso, cwd)],
+      [closePath, codexRollout("close", closeIso, cwd)]
+    ]);
+    const fs = makeFs(files);
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs: Date.parse(pidStartIso), cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    expect(collector.lookup(1, "codex")?.session_file).toBe(closePath);
   });
 });
 
