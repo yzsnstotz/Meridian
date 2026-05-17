@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import type { Logger } from "../roles/base-role";
 import type { StateStore } from "../state-store";
+import { TokenUsageCollector, type TokenUsage } from "./token-usage";
 import { AgentDispatcherConfigSchema, type DispatchThreadStateV2, type AppState } from "../types";
 
 export interface ProcessHandlersOptions {
@@ -19,6 +20,12 @@ export interface ProcessHandlersOptions {
   // throws or returns nothing, attribution falls back to socket-path parsing
   // only and unbound agentapi will (correctly) be flagged as a leak.
   fetchAgentapiInstanceIndex?: () => Promise<Map<number, string>>;
+  // Optional: attaches cumulative LLM token totals to each codex/claude
+  // snapshot entry by resolving the process to its on-disk session file.
+  // When omitted, a default TokenUsageCollector is constructed; pass `null`
+  // explicitly (via createProcessHandlers({ tokenUsageCollector: null }))
+  // to disable enrichment entirely (e.g. tests that don't care).
+  tokenUsageCollector?: TokenUsageCollector | null;
 }
 
 export interface ProcInfo {
@@ -51,6 +58,7 @@ interface ProcessSnapshotEntry {
   binding: BindingSnapshot | null;
   is_leak: boolean;
   command: string;
+  token_usage: TokenUsage | null;
 }
 
 interface BindingSnapshot {
@@ -92,6 +100,11 @@ const MERIDIAN_HUB_NODE_PATTERN = /\/Meridian\/(?:dist|src)\/(?:hub|interface|mo
 export function createProcessHandlers(options: ProcessHandlersOptions): ProcessHandlers {
   const log = options.log ?? console;
   const listProcesses = options.listProcesses ?? defaultListProcesses;
+  // Explicit `null` disables enrichment; `undefined` falls back to the default
+  // collector (live ps + fs). Tests pass null when they don't want to mock the
+  // file system; the GUI/server path lets the default fire.
+  const tokenUsageCollector: TokenUsageCollector | null =
+    options.tokenUsageCollector === undefined ? new TokenUsageCollector() : options.tokenUsageCollector;
 
   async function buildSnapshot(): Promise<ProcessSnapshotEntry[]> {
     const procs = listProcesses();
@@ -209,6 +222,22 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           (origin === "managed" && binding === null)
           || origin === "orphan";
 
+        // Token usage: only meaningful for codex/claude. agentapi rows
+        // never consume tokens themselves — the codex/claude child does.
+        // The shim+native pair both resolve to the same session file via
+        // cwd + start-time match, so they correctly show identical totals.
+        let tokenUsage: TokenUsage | null = null;
+        if (tokenUsageCollector && (agentType === "codex" || agentType === "claude")) {
+          try {
+            tokenUsage = tokenUsageCollector.lookup(p.pid, agentType);
+          } catch (error) {
+            log.debug?.("processes: token usage lookup failed", {
+              pid: p.pid,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+
         return {
           pid: p.pid,
           ppid: p.ppid,
@@ -218,7 +247,8 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           origin,
           binding,
           is_leak: isLeak,
-          command: p.command
+          command: p.command,
+          token_usage: tokenUsage
         };
       })
       .sort((a, b) => {
@@ -238,10 +268,16 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       }
       try {
         const snapshot = await buildSnapshot();
+        if (tokenUsageCollector) {
+          tokenUsageCollector.retain(new Set(snapshot.map((e) => e.pid)));
+        }
         const managed = snapshot.filter((e) => e.origin === "managed");
         const external = snapshot.filter((e) => e.origin === "external");
         const orphan = snapshot.filter((e) => e.origin === "orphan");
         const leak = snapshot.filter((e) => e.is_leak).length;
+        // Dedupe token totals per session file — shim + native + (rarely)
+        // sibling agentapi rows would otherwise multi-count one session.
+        const tokenTotals = summarizeTokenUsage(snapshot);
         writeJson(response, 200, {
           captured_at: new Date().toISOString(),
           total: snapshot.length,
@@ -250,6 +286,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           orphan: orphan.length,
           external: external.length,
           leak,
+          token_totals: tokenTotals,
           processes: snapshot
         });
       } catch (error) {
@@ -261,6 +298,43 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       return true;
     }
   };
+}
+
+interface TokenTotals {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+  sessions: number;
+}
+
+// Sum cumulative token totals across snapshot rows, deduping by session_file
+// so paired shim+native rows (which both surface the same session) contribute
+// only once.
+function summarizeTokenUsage(entries: ProcessSnapshotEntry[]): TokenTotals {
+  const perFile = new Map<string, TokenUsage>();
+  for (const e of entries) {
+    if (e.token_usage) {
+      perFile.set(e.token_usage.session_file, e.token_usage);
+    }
+  }
+  const totals: TokenTotals = {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    total_tokens: 0,
+    sessions: perFile.size
+  };
+  for (const u of perFile.values()) {
+    totals.input_tokens += u.input_tokens;
+    totals.cached_input_tokens += u.cached_input_tokens;
+    totals.output_tokens += u.output_tokens;
+    totals.reasoning_output_tokens += u.reasoning_output_tokens;
+    totals.total_tokens += u.total_tokens;
+  }
+  return totals;
 }
 
 function isAgentShaped(command: string): boolean {
@@ -486,5 +560,6 @@ export const _internals = {
   detectAgentType,
   looksLikeMeridianOrphan,
   findAgentapiAncestor,
-  parseLine
+  parseLine,
+  summarizeTokenUsage
 };
