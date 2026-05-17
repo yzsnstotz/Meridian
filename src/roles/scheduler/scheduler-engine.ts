@@ -21,6 +21,7 @@ import {
 } from "../agent-dispatcher/active-tool-process";
 import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
 import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
+import { isMissingThreadEvidence } from "../agent-dispatcher/missing-thread";
 import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { nextCronFire } from "./cron-parser";
@@ -595,7 +596,7 @@ export class SchedulerEngine {
         this.cleanedTerminalThreadIds.add(threadId);
       } catch (error) {
         const message = asError(error).message;
-        if (isMissingThreadCleanupError(message)) {
+        if (isMissingThreadEvidence(message)) {
           this.cleanedTerminalThreadIds.add(threadId);
           continue;
         }
@@ -789,10 +790,6 @@ function isCleanupBlockingLifecycleStatus(status: LifecycleStatus): boolean {
 function normalizeThreadId(threadId: string | null | undefined): string | null {
   const normalized = threadId?.trim();
   return normalized ? normalized : null;
-}
-
-function isMissingThreadCleanupError(message: string): boolean {
-  return /\bnot found\b/i.test(message) || /\bmissing\b/i.test(message) || /\bunknown thread\b/i.test(message);
 }
 
 function isManualInterventionBlocker(worker: DispatchStatusWorker): boolean {
