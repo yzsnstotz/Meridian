@@ -22,7 +22,7 @@ describe("system monitor public assets", () => {
     expect(monitorHtml).toContain('<script defer src="/monitor.js"></script>');
   });
 
-  it("polls /api/system-monitor and includes red/yellow/unknown card states", async () => {
+  it("polls /api/system-monitor and renders expandable high-contrast cards", async () => {
     const publicDir = path.resolve(process.cwd(), "src/web/public");
     const monitorScript = await fs.readFile(path.join(publicDir, "monitor.js"), "utf8");
     const appScript = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
@@ -30,7 +30,10 @@ describe("system monitor public assets", () => {
 
     expect(monitorScript).toContain('fetchJson("/api/system-monitor")');
     expect(monitorScript).toContain("setInterval(refresh, MONITOR_POLL_INTERVAL_MS)");
-    expect(monitorScript).toContain('role="status"');
+    expect(monitorScript).toContain('<details class="monitor-indicator-card');
+    expect(monitorScript).toContain('<summary class="monitor-card-summary"');
+    expect(monitorScript).toContain('aria-label="Open indicator details for');
+    expect(monitorScript).toContain("renderMonitorCardDetails");
     expect(monitorScript).toContain("monitor-card-state-red");
     expect(monitorScript).toContain("monitor-card-state-yellow");
     expect(monitorScript).toContain("monitor-card-state-unknown");
@@ -38,6 +41,10 @@ describe("system monitor public assets", () => {
     expect(appScript).toContain("setupMonitorNavAlarm");
     expect(appScript).toContain('fetchJson("/api/system-monitor")');
     expect(styleCss).toContain(".monitor-card-state-red");
+    expect(styleCss).toContain("--monitor-card-bg:");
+    expect(styleCss).toContain("--monitor-card-text:");
+    expect(styleCss).toContain("color: var(--monitor-card-text);");
+    expect(styleCss).toContain(".monitor-card-details");
     expect(styleCss).toContain("@keyframes monitorAlarmPulse");
   });
 });

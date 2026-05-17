@@ -22,6 +22,18 @@ const MONITOR_CARD_STATE_CLASSES = new Set([
   "monitor-card-state-unknown",
   "monitor-card-state-info"
 ]);
+const MONITOR_DETAIL_HINTS = {
+  C1: "Log detector: counts terminal worker cleanup kill failures in the meridian-roles log.",
+  C2: "Log detector: counts A2A hub-registration retry lines in the meridian-roles log.",
+  C3: "Log detector: counts validator transport-stall lines in the meridian-roles log.",
+  C4: "Log detector: counts PM resolver start events in the meridian-roles log.",
+  C5: "Log detector: counts watchdog stall-detection lines in the meridian-roles log.",
+  C6: "Log detector: counts dispatcher launch-breaker trips in the meridian-roles log.",
+  C7: "Log detector: counts worker-breaker trips in the meridian-roles log.",
+  D2: "Log file metric: measures the current meridian-roles log file size.",
+  D3: "Log file metric: compares the meridian-roles log size with the previous monitor poll.",
+  D4: "Log file metric: measures the current Meridian hub log file size."
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   if (document.body.dataset.page === "system-monitor") {
@@ -151,20 +163,60 @@ function renderMonitorCard(indicator) {
   const source = indicator.source_learning || "";
   const value = formatMonitorValue(indicator.value, indicator.unit);
   const threshold = renderThreshold(indicator);
-  const detail = indicator.detail ? `<div class="monitor-card-detail">${escapeHtml(indicator.detail)}</div>` : "";
+  const evidence = renderMonitorEvidence(indicator);
   return `
-    <article class="monitor-indicator-card ${stateClass}" role="status" aria-live="polite">
-      <div class="monitor-card-top">
-        <span class="monitor-state-dot" aria-label="${escapeHtml(state)}"></span>
-        <span class="monitor-card-id">${escapeHtml(indicator.id)}</span>
+    <details class="monitor-indicator-card ${stateClass}" data-monitor-state="${escapeHtml(state)}" aria-live="polite">
+      <summary class="monitor-card-summary" aria-label="Open indicator details for ${escapeHtml(indicator.id)}">
+        <div class="monitor-card-top">
+          <span class="monitor-state-dot" aria-label="${escapeHtml(state)}"></span>
+          <span class="monitor-card-id">${escapeHtml(indicator.id)}</span>
+        </div>
+        <h3>${escapeHtml(indicator.name)}</h3>
+        <div class="monitor-card-value">${value}</div>
+        <div class="monitor-card-threshold">${threshold}</div>
+        <span class="monitor-card-expand" aria-hidden="true">+</span>
+      </summary>
+      <div class="monitor-card-details">
+        ${renderMonitorCardDetails(indicator, { value, threshold, source, evidence })}
       </div>
-      <h3>${escapeHtml(indicator.name)}</h3>
-      <div class="monitor-card-value">${value}</div>
-      <div class="monitor-card-threshold">${threshold}</div>
-      ${detail}
-      <button type="button" class="monitor-info-button" title="${escapeHtml(source)}" aria-label="Source learning">i</button>
-    </article>
+    </details>
   `;
+}
+
+function renderMonitorCardDetails(indicator, { value, threshold, source, evidence }) {
+  return `
+    <dl class="monitor-detail-list">
+      <div class="monitor-card-detail-row">
+        <dt>State</dt>
+        <dd>${escapeHtml(indicator.state || "unknown")}</dd>
+      </div>
+      <div class="monitor-card-detail-row">
+        <dt>Value</dt>
+        <dd>${value}</dd>
+      </div>
+      <div class="monitor-card-detail-row">
+        <dt>Threshold</dt>
+        <dd>${threshold}</dd>
+      </div>
+      ${evidence ? `
+        <div class="monitor-card-detail-row">
+          <dt>Evidence</dt>
+          <dd>${escapeHtml(evidence)}</dd>
+        </div>
+      ` : ""}
+      <div class="monitor-card-detail-row">
+        <dt>Source</dt>
+        <dd>${source ? `<code>${escapeHtml(source)}</code>` : '<span class="muted">none</span>'}</dd>
+      </div>
+    </dl>
+  `;
+}
+
+function renderMonitorEvidence(indicator) {
+  if (indicator.detail) {
+    return indicator.detail;
+  }
+  return MONITOR_DETAIL_HINTS[indicator.id] || "";
 }
 
 function renderThreshold(indicator) {
