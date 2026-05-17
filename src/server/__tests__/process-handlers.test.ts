@@ -292,6 +292,41 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.leak).toBe(2);
   });
 
+  it("classifies hub-spawned codex as MANAGED when hub argv is the relative `node dist/hub/index.js`", async () => {
+    // The live hub is launched from its own cwd (`/Users/yzliu/work/Meridian`),
+    // so `ps` shows it without the absolute path — just `node dist/hub/index.js`.
+    // Before MERIDIAN_HUB_RELATIVE_NODE_PATTERN, codex spawned by such a hub
+    // failed the ancestor check and got tagged `orphan` (observed 2026-05-17
+    // on PIDs 40502/40503 doing stateless validation for agent-dispatcher-67f6a3fc).
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 38500, ppid: 1, etime: "10:00", command: "node dist/hub/index.js" },
+        { pid: 40502, ppid: 38500, etime: "00:42", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"xhigh\" --model gpt-5.5 --sandbox read-only --skip-git-repo-check" },
+        { pid: 40503, ppid: 40502, etime: "00:42", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"xhigh\" --model gpt-5.5 --sandbox read-only --skip-git-repo-check" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.orphan).toBe(0);
+    expect(payload.processes.filter((p: { origin: string }) => p.origin === "managed")).toHaveLength(2);
+  });
+
+  it("also matches `tsx src/hub/index.ts` (dev-mode hub) as a hub ancestor", async () => {
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 100, ppid: 1, etime: "10:00", command: "tsx src/hub/index.ts" },
+        { pid: 200, ppid: 100, etime: "00:30", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes.find((p: { agent_type: string }) => p.agent_type === "codex").origin).toBe("managed");
+  });
+
   it("resolves thread_id for TCP-port agentapi via fetchAgentapiInstanceIndex", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
