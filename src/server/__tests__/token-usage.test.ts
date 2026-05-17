@@ -4,9 +4,11 @@ import * as path from "node:path";
 import {
   TokenUsageCollector,
   encodeClaudeProjectPath,
+  isCodexExecCommand,
   listCodexRolloutFiles,
   parseClaudeUsage,
   parseCodexUsage,
+  peekCodexSessionMeta,
   type ProcessAttrs
 } from "../token-usage";
 
@@ -18,11 +20,18 @@ const CLAUDE_ROOT = "/fake/.claude/projects";
 // One representative codex rollout file. Two `token_count` events: an earlier
 // one (cumulative) and a later one (the canonical "last" value the collector
 // should pick).
-const codexRollout = (sessionId: string, startIso: string, cwd: string, lastInput = 18222, lastOutput = 625): string => [
+const codexRollout = (
+  sessionId: string,
+  startIso: string,
+  cwd: string,
+  lastInput = 18222,
+  lastOutput = 625,
+  source: "exec" | "cli" | undefined = undefined
+): string => [
   JSON.stringify({
     timestamp: startIso,
     type: "session_meta",
-    payload: { id: sessionId, cwd, timestamp: startIso, originator: "codex_exec" }
+    payload: { id: sessionId, cwd, timestamp: startIso, originator: source === "cli" ? "codex-tui" : "codex_exec", ...(source ? { source } : {}) }
   }),
   // a stray non-usage event in between
   JSON.stringify({
@@ -355,6 +364,84 @@ describe("TokenUsageCollector — codex", () => {
     expect(collector.lookup(1, "codex")?.session_file).toBe(nearPath);
   });
 
+  it("interactive codex (no `exec` in argv) skips a stateless source=exec rollout in the same cwd/time window", () => {
+    // Live obs 2026-05-17 (agent-dispatcher-00f759ff): codex_01 pid 77365
+    // (agentapi-bound, argv `node .../codex --dangerously...`) had no rollout
+    // yet (no LLM turn) but a stateless `codex exec --json` rollout existed
+    // in the same cwd 16s after its start. Without source filtering, 77365
+    // mis-attributed the stateless call's 92.6k totals as its own — every
+    // shim in the cwd showed identical tokens.
+    const cwd = "/Users/yzliu/work";
+    const startMs = Date.parse("2026-05-17T14:47:53Z");
+    const execMetaIso = "2026-05-17T14:48:09Z"; // 16s after pid start, in window
+    const execPath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      "rollout-2026-05-17T14-48-09-exec.jsonl"
+    );
+    const files = new Map<string, string>([
+      [execPath, codexRollout("exec-sess", execMetaIso, cwd, 92600, 1770, "exec")]
+    ]);
+    const fs = makeFs(files);
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs, cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    // Interactive argv (NO `exec` subcommand) — must NOT match the exec rollout.
+    const interactive = collector.lookup(77365, "codex", "node /Users/y/.local/share/fnm/aliases/default/bin/codex --dangerously-bypass-approvals-and-sandbox");
+    expect(interactive).toBeNull();
+    // Stateless exec argv in the same cwd/window — SHOULD match.
+    const exec = collector.lookup(77539, "codex", "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox");
+    expect(exec?.session_file).toBe(execPath);
+    expect(exec?.input_tokens).toBe(92600);
+  });
+
+  it("stateless exec codex skips a source=cli rollout in the same cwd/time window", () => {
+    // Mirror of the above: when a cli rollout exists but the live process
+    // is `codex exec --json`, we must skip the cli rollout.
+    const cwd = "/Users/yzliu/work";
+    const startMs = Date.parse("2026-05-17T14:50:00Z");
+    const cliMetaIso = "2026-05-17T14:50:05Z";
+    const cliPath = path.join(
+      CODEX_ROOT, "2026", "05", "17",
+      "rollout-2026-05-17T14-50-05-cli.jsonl"
+    );
+    const files = new Map<string, string>([
+      [cliPath, codexRollout("cli-sess", cliMetaIso, cwd, 1234, 56, "cli")]
+    ]);
+    const fs = makeFs(files);
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs, cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    expect(collector.lookup(99, "codex", "node /codex exec --json")).toBeNull();
+    expect(collector.lookup(100, "codex", "node /codex --dangerously-bypass-approvals-and-sandbox")?.session_file).toBe(cliPath);
+  });
+
+  it("legacy rollouts without a `source` field still resolve (no regression)", () => {
+    // Pre-source-field rollouts must continue to match — the filter only
+    // kicks in when the rollout's session_meta actually carries `source`.
+    const { files, rolloutPath, startMs, cwd } = (() => {
+      const sessionId = "legacy";
+      const startIso = "2026-05-17T16:00:00Z";
+      const cwd = "/Users/yzliu/work";
+      const rolloutPath = path.join(CODEX_ROOT, "2026", "05", "17", `rollout-2026-05-17T16-00-00-${sessionId}.jsonl`);
+      const files = new Map<string, string>([[rolloutPath, codexRollout(sessionId, startIso, cwd)]]);
+      return { files, rolloutPath, startMs: Date.parse(startIso) - 5_000, cwd };
+    })();
+    const fs = makeFs(files);
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({ startMs, cwd }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+    expect(collector.lookup(1, "codex", "codex --some-flag")?.session_file).toBe(rolloutPath);
+  });
+
   it("closest-match still applies when both candidates are after pid_start", () => {
     // Stricter version of the previous test: both candidates inside the
     // window, but one is closer than the other.
@@ -509,6 +596,43 @@ describe("TokenUsageCollector — claude", () => {
       claudeProjectsRoot: CLAUDE_ROOT
     });
     expect(collector.lookup(1, "claude")).toBeNull();
+  });
+});
+
+describe("isCodexExecCommand", () => {
+  it("matches `codex exec --json` invocations and the node-shim variant", () => {
+    expect(isCodexExecCommand("codex exec --json")).toBe(true);
+    expect(isCodexExecCommand("node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json -c x=y")).toBe(true);
+    expect(isCodexExecCommand("/path/codex exec")).toBe(true);
+  });
+  it("returns false for interactive / agentapi-bound codex", () => {
+    expect(isCodexExecCommand("codex --dangerously-bypass-approvals-and-sandbox")).toBe(false);
+    expect(isCodexExecCommand("node /path/codex --dangerously-bypass-approvals-and-sandbox")).toBe(false);
+    expect(isCodexExecCommand("agentapi server --type=codex -- codex")).toBe(false);
+  });
+});
+
+describe("peekCodexSessionMeta — source field", () => {
+  it("returns source='exec' when present in payload", () => {
+    const head = Buffer.from(JSON.stringify({
+      type: "session_meta",
+      payload: { id: "x", cwd: "/x", timestamp: "2026-05-17T00:00:00Z", source: "exec" }
+    }) + "\n");
+    expect(peekCodexSessionMeta("/p", () => head)?.source).toBe("exec");
+  });
+  it("returns source='cli' when present in payload", () => {
+    const head = Buffer.from(JSON.stringify({
+      type: "session_meta",
+      payload: { id: "x", cwd: "/x", timestamp: "2026-05-17T00:00:00Z", source: "cli" }
+    }) + "\n");
+    expect(peekCodexSessionMeta("/p", () => head)?.source).toBe("cli");
+  });
+  it("returns source=null for legacy rollouts without the field", () => {
+    const head = Buffer.from(JSON.stringify({
+      type: "session_meta",
+      payload: { id: "x", cwd: "/x", timestamp: "2026-05-17T00:00:00Z" }
+    }) + "\n");
+    expect(peekCodexSessionMeta("/p", () => head)?.source).toBeNull();
   });
 });
 

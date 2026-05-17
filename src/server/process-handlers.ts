@@ -248,7 +248,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         let tokenUsage: TokenUsage | null = null;
         if (tokenUsageCollector && (agentType === "codex" || agentType === "claude")) {
           try {
-            tokenUsage = tokenUsageCollector.lookup(p.pid, agentType);
+            tokenUsage = tokenUsageCollector.lookup(p.pid, agentType, p.command);
           } catch (error) {
             log.debug?.("processes: token usage lookup failed", {
               pid: p.pid,
