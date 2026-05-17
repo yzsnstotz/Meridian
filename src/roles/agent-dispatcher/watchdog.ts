@@ -15,6 +15,7 @@ import type { Logger } from "../base-role";
 import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 import { autoResolve } from "./auto-resolver";
 import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
+import { isMissingThreadEvidence } from "./missing-thread";
 import {
   DEFAULT_RECONCILE_STALE_TIMEOUT_MS,
   queryHubThreadObservation,
@@ -426,7 +427,7 @@ export class ReconciliationWatchdog {
         });
       } catch (error) {
         const message = asError(error).message;
-        if (isMissingThreadCleanupError(message)) {
+        if (isMissingThreadEvidence(message)) {
           this.cleanedTerminalThreadIds.add(threadId);
           continue;
         }
@@ -740,12 +741,6 @@ function shouldKillTerminalWorker(killPolicy: KillPolicy, worker: DispatchWorker
     return killPolicy === "always";
   }
   return false;
-}
-
-function isMissingThreadCleanupError(message: string): boolean {
-  return /\bnot found\b/i.test(message)
-    || /\bmissing\b/i.test(message)
-    || /\bunknown thread\b/i.test(message);
 }
 
 async function defaultKillThread(threadId: string): Promise<void> {

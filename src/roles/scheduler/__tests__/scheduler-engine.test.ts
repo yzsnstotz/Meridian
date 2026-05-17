@@ -1021,6 +1021,101 @@ describe("SchedulerEngine", () => {
       dispatch_plan_path: planPath
     }), "W-02");
   });
+
+  it("does not retry a terminal-worker kill after the hub reports the thread is no longer registered", async () => {
+    // Regression: the scheduler engine kept its own local missing-thread
+    // matcher (mirror of the watchdog bug fixed alongside this test). Both
+    // now share the canonical matcher so a hub "No registered agent
+    // instance found" reply marks the thread cleaned instead of looping.
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-scheduler-engine-"));
+    tempDirectories.add(directory);
+
+    const planPath = path.join(directory, "dispatch_plan.md");
+    await fs.writeFile(planPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends on | Notes |",
+      "|--------|-------|--------|------|-------|------------|-------|",
+      "| 🔄 | 1 | W-01 | First worker | CODEX-HIGH | — | |",
+      "| ⬜ | 2 | W-02 | Second worker | CODEX-HIGH | W-01 | |"
+    ].join("\n"), "utf8");
+
+    const runReportDir = path.join(directory, "reports", "runs", "run-001");
+    await fs.mkdir(runReportDir, { recursive: true });
+    const reportPath = path.join(runReportDir, "W-01.md");
+    await fs.writeFile(reportPath, [
+      "# W-01 Completion Report",
+      "",
+      "## Outcome",
+      "",
+      "✅"
+    ].join("\n"), "utf8");
+
+    const lifecycleStore = new LifecycleStore(path.join(directory, "dispatch_threads.json"));
+    lifecycleStore.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      workers: {
+        "W-01": {
+          thread_id: "thread-w01-stale",
+          trace_id: null,
+          started_at: "2026-04-26T06:00:00.000Z",
+          last_seen_at: "2026-04-26T06:01:00.000Z",
+          status: "running",
+          expected_outputs: [reportPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const stateStore = new SchedulerStateStore(planPath);
+    stateStore.save({
+      ...buildEmptyRunState(),
+      status: "active_run",
+      current_run_id: "run-001",
+      current_run_report_dir: null
+    });
+
+    const killDispatcher = vi.fn(async () => {
+      throw new Error(
+        "kill failed: Routing failed: No registered agent instance found for thread_id=thread-w01-stale"
+      );
+    });
+    const continueWorker = vi.fn(async () => ({
+      ok: true,
+      workerId: "W-02",
+      threadId: "thread-w02"
+    }));
+    const engine = new SchedulerEngine({
+      schedulerThreadId: "scheduler-test",
+      config: buildConfig(planPath),
+      stateStore,
+      callbacks: {
+        launchDispatcher: vi.fn(),
+        killDispatcher,
+        notifyChannels: vi.fn(),
+        continueWorker
+      },
+      log: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      }
+    });
+
+    const runCycleCompletion = () =>
+      (engine as unknown as { checkCycleCompletion(): Promise<void> }).checkCycleCompletion();
+
+    await runCycleCompletion();
+    expect(killDispatcher).toHaveBeenCalledTimes(1);
+
+    // Second invocation must not re-attempt the same kill — the hub already
+    // said the thread is gone, so it must be considered cleaned.
+    await runCycleCompletion();
+    expect(killDispatcher).toHaveBeenCalledTimes(1);
+  });
 });
 
 function buildConfig(dispatchPlanPath: string): SchedulerConfig {

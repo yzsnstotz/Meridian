@@ -1701,6 +1701,72 @@ describe("ReconciliationWatchdog", () => {
 
     expect(killThread).not.toHaveBeenCalledWith("codex_38");
   });
+
+  it("marks a terminal thread cleaned when the hub reports it is no longer registered", async () => {
+    // Regression: the watchdog's local missing-thread matcher only knew about
+    // /not found/, /missing/, /unknown thread/ — it did not recognise the
+    // hub's actual response wording (`Routing failed: No registered agent
+    // instance found for thread_id=...`). Each watchdog tick therefore
+    // re-attempted the same kill, producing the 315k+ "terminal worker
+    // cleanup kill failed" warnings observed during 2026-05-18 incident.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness("watchdog-terminal-cleanup-missing-thread-");
+    const outputPath = await harness.writeOutput("dev_history/W-01_report.md");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "running",
+          expected_outputs: [outputPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient((message) =>
+      buildStatusResult(message.thread_id, "completed")
+    );
+
+    vi.spyOn(reconciliationFs, "existsSync").mockReturnValue(true);
+    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({
+      size: 100,
+      mtimeMs: Date.parse(FIXED_NOW)
+    } as ReturnType<typeof reconciliationFs.statSync>);
+
+    const killThread = vi.fn(async () => {
+      throw new Error(
+        "kill failed: Routing failed: No registered agent instance found for thread_id=w-thread-01"
+      );
+    });
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "always",
+      killThread
+    });
+
+    await watchdog.sweep();
+    expect(killThread).toHaveBeenCalledTimes(1);
+
+    // The hub no longer knows about this thread; subsequent sweeps must not
+    // re-attempt the same kill or the cleanup loop hammers the hub forever.
+    await watchdog.sweep();
+    expect(killThread).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
