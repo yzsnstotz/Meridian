@@ -102,7 +102,7 @@ export class TokenUsageCollector {
     }
   }
 
-  lookup(pid: number, agentType: "codex" | "claude"): TokenUsage | null {
+  lookup(pid: number, agentType: "codex" | "claude", command?: string): TokenUsage | null {
     // Only POSITIVE resolutions are cached. A failed lookup (null) must
     // re-resolve on the next poll, because codex creates the rollout file a
     // few seconds AFTER the process starts (observed ~14s gap on live PIDs).
@@ -110,6 +110,12 @@ export class TokenUsageCollector {
     // whose first /api/agentapi-processes poll lands before the rollout file
     // exists, and would also hide every short-lived stateless validator
     // (which dies before re-resolution would have happened).
+    //
+    // `command` is the live argv. For codex it disambiguates `codex exec --json`
+    // (stateless, source="exec" rollouts) from interactive/agentapi-bound
+    // codex (source="cli" rollouts). Without this filter, an interactive
+    // codex that hasn't written its rollout yet would mis-attribute to a
+    // nearby stateless exec rollout in the same cwd.
     const cached = this.pidToFile.get(pid);
     let filePath: string | null;
     if (cached !== undefined) {
@@ -118,7 +124,7 @@ export class TokenUsageCollector {
       const attrs = this.deps.getProcessAttrs(pid);
       filePath = attrs
         ? agentType === "codex"
-          ? this.resolveCodexSessionFile(attrs)
+          ? this.resolveCodexSessionFile(attrs, command ?? "")
           : this.resolveClaudeSessionFile(attrs)
         : null;
       if (filePath !== null) {
@@ -132,26 +138,43 @@ export class TokenUsageCollector {
 
   // codex writes ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO-with-dashes>-<uuid>.jsonl.
   // The first line is `session_meta` with the canonical session start
-  // timestamp and cwd. We pick the matching session file by:
+  // timestamp, cwd, and source ("exec" for stateless `codex exec --json`,
+  // "cli" for interactive TUI / agentapi-bound). We pick the matching
+  // session file by:
   //   1. listing rollout files whose path date is on or after pid_start_date,
   //   2. peeking the session_meta line for each candidate,
-  //   3. requiring cwd match AND session_meta.timestamp within [start - 1s, start + window],
+  //   3. requiring source ↔ argv match (live argv has `exec` ⇒ source="exec";
+  //      otherwise ⇒ source="cli") AND cwd match AND session_meta.timestamp
+  //      within [start - 1s, start + window],
   //   4. among survivors, choosing the one with the smallest |meta.ts - pid.start|.
   //
-  // The closest-match selection matters when multiple codex sessions share
-  // a cwd (the Meridian hub forks every codex from `/Users/yzliu/work`, so an
-  // agentapi-bound codex and a stateless `codex exec --json` validator can
-  // be alive concurrently with the same cwd). First-match could mis-attribute
-  // one session's tokens to a different process's row.
-  private resolveCodexSessionFile(attrs: ProcessAttrs): string | null {
+  // The source-↔-argv filter matters when multiple codex sessions share a
+  // cwd. The hub forks every codex from `/Users/yzliu/work` regardless of
+  // whether it's agentapi-bound (interactive `cli`) or a stateless
+  // `codex exec --json` (`exec`) validator/pm-resolver call. Live obs
+  // 2026-05-17 (agent-dispatcher-00f759ff): codex_01 dispatcher (pid 77365)
+  // and codex_02 worker (pid 77505) hadn't yet processed a turn, so no
+  // `source=cli` rollouts existed. A stateless exec call at 14:48:09
+  // wrote a `source=exec` rollout in the same cwd. Without the source
+  // filter, all interactive shims and the stateless pair (77539/77540)
+  // collapsed onto that one rollout's totals — every row showed
+  // identical 92.6k tokens. With the filter, interactive shims correctly
+  // resolve to null (no rollout yet) and only the stateless exec pair
+  // shows its real totals.
+  private resolveCodexSessionFile(attrs: ProcessAttrs, command: string): string | null {
     if (!attrs.cwd) return null;
 
+    const wantSource: "exec" | "cli" = isCodexExecCommand(command) ? "exec" : "cli";
     const candidates = listCodexRolloutFiles(this.deps.codexSessionsRoot, attrs.startMs, this.deps.listDir);
     let best: { path: string; delta: number } | null = null;
     for (const filePath of candidates) {
       const meta = peekCodexSessionMeta(filePath, this.deps.readHead);
       if (!meta) continue;
       if (meta.cwd !== attrs.cwd) continue;
+      // Source filter: only enforce when the rollout actually carries one.
+      // Older rollout schemas may omit `source`; allow them through so we
+      // don't regress historical data.
+      if (meta.source !== null && meta.source !== wantSource) continue;
       if (meta.timestampMs < attrs.startMs - 1_000) continue;
       if (meta.timestampMs > attrs.startMs + CODEX_SESSION_OPEN_WINDOW_MS) continue;
       const delta = Math.abs(meta.timestampMs - attrs.startMs);
@@ -267,6 +290,10 @@ interface CodexSessionMeta {
   id: string | null;
   cwd: string;
   timestampMs: number;
+  // "exec" for stateless `codex exec --json`, "cli" for interactive (TUI /
+  // agentapi-bound). Older rollout schemas may not include this field; null
+  // means "unknown, do not filter on source".
+  source: "exec" | "cli" | null;
 }
 
 export function peekCodexSessionMeta(filePath: string, readHead: (p: string, length: number) => Buffer): CodexSessionMeta | null {
@@ -278,7 +305,7 @@ export function peekCodexSessionMeta(filePath: string, readHead: (p: string, len
   }
   const nl = head.indexOf(0x0a);
   const firstLine = nl >= 0 ? head.subarray(0, nl).toString("utf8") : head.toString("utf8");
-  let obj: { type?: string; payload?: { id?: string; cwd?: string; timestamp?: string } };
+  let obj: { type?: string; payload?: { id?: string; cwd?: string; timestamp?: string; source?: string } };
   try {
     obj = JSON.parse(firstLine);
   } catch {
@@ -287,7 +314,18 @@ export function peekCodexSessionMeta(filePath: string, readHead: (p: string, len
   if (obj.type !== "session_meta" || !obj.payload) return null;
   const ts = obj.payload.timestamp ? Date.parse(obj.payload.timestamp) : NaN;
   if (!Number.isFinite(ts) || !obj.payload.cwd) return null;
-  return { id: obj.payload.id ?? null, cwd: obj.payload.cwd, timestampMs: ts };
+  const rawSource = obj.payload.source;
+  const source: "exec" | "cli" | null = rawSource === "exec" || rawSource === "cli" ? rawSource : null;
+  return { id: obj.payload.id ?? null, cwd: obj.payload.cwd, timestampMs: ts, source };
+}
+
+// Detect `codex exec` invocations (e.g. `codex exec --json -c ...`). The
+// `exec` subcommand is the canonical stateless one-shot mode the Meridian
+// Hub spawns for validators and PM-resolvers. Live argv that contains it
+// must only match rollouts with source="exec"; everything else must match
+// source="cli" (interactive / agentapi-bound).
+export function isCodexExecCommand(command: string): boolean {
+  return /(?:^|[\s/])codex\s+exec(?:\s|$)/.test(command);
 }
 
 // Walk lines from the end; the last `token_count` event carries the cumulative
