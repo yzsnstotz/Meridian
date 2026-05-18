@@ -693,6 +693,8 @@ export class HubRouter {
           return this.handleUpdateCallerAuthority(message);
         case "list_callers":
           return this.handleListCallers(message);
+        case "list_credentials":
+          return this.handleListCredentials(message);
         case "reply":
           return this.handleReply(message);
         default:
@@ -2208,6 +2210,46 @@ export class HubRouter {
         callers,
         bootstrap_key_set: !!process.env.MERIDIAN_INTERNAL_BOOTSTRAP_KEY
       }),
+      message.thread_id
+    );
+  }
+
+  private handleListCredentials(message: HubMessage): HubResult {
+    const store = this.credentialStore;
+    if (!store) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        "list_credentials failed: credential_store_unavailable",
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    const all = store.list();
+    const isAdmin = caller?.caller_authority === "admin";
+    const filtered = isAdmin
+      ? all
+      : all.filter((r) => r.owner_caller_id === caller?.caller_id);
+    // Project response: omit codex_home_path (filesystem detail). Secrets live in env.json
+    // on disk and are NOT carried on CredentialRecord, so the remaining fields are safe.
+    const credentials = filtered.map((r) => ({
+      credential_id: r.credential_id,
+      credential_label: r.credential_label,
+      provider: r.provider,
+      kind: r.kind,
+      owner_caller_id: r.owner_caller_id,
+      is_default: r.is_default,
+      created_at: r.created_at,
+      last_used_at: r.last_used_at,
+      revoked_at: r.revoked_at,
+      api_key_metadata: r.api_key_metadata
+    }));
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({ credentials }),
       message.thread_id
     );
   }
