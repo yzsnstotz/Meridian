@@ -177,7 +177,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         }
       : null;
 
-    return candidates
+    const entries: ProcessSnapshotEntry[] = candidates
       .map((p) => {
         const agentType = detectAgentType(p.command);
         const isAgentapi = agentType === "agentapi";
@@ -258,8 +258,24 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         }
 
         const binding = threadId ? (index.get(threadId) ?? null) : null;
+        // Leak classification (managed origin, no binding):
+        //   - agentapi: always a leak when unbound. An agentapi process exists
+        //     to wrap exactly one agent session for one thread_id; an alive
+        //     agentapi we can't bind is either a spawn-orphan (see
+        //     learnings/dispatcher/spawn-http-timeout-too-short-and-retry-orphans.md)
+        //     or a TCP-port agentapi with no fetchAgentapiInstanceIndex wired
+        //     (the canonical "unbindable agentapi" pattern).
+        //   - codex / claude with a parseable thread_id: leak (the same
+        //     spawn-orphan fingerprint, applied to the CLI child).
+        //   - codex / claude with NO thread_id: NOT a leak. These are
+        //     Hub-direct stateless calls (`codex exec --json` forked by
+        //     Meridian Hub for validator turns, `claude --print` for one-shot
+        //     subprocess work) — no agentapi wrapper, no thread_id by design,
+        //     they self-reap when the call finishes. Pre-this-fix they were
+        //     flagged red and obscured the real leaks they sit next to.
+        const isLeakable = agentType === "agentapi" || threadId !== null;
         const isLeak =
-          (origin === "managed" && binding === null)
+          (origin === "managed" && binding === null && isLeakable)
           || origin === "orphan";
 
         // Token usage: only meaningful for codex/claude. agentapi rows
@@ -290,14 +306,41 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           command: p.command,
           token_usage: tokenUsage
         };
-      })
-      .sort((a, b) => {
-        const order = (e: ProcessSnapshotEntry) =>
-          e.is_leak ? 0 : e.origin === "managed" ? 1 : 2;
-        const diff = order(a) - order(b);
-        if (diff !== 0) return diff;
-        return a.pid - b.pid;
       });
+
+    // Token-attribution dedupe: claude resolves via cwd + birthtime match, so
+    // a Hub-direct `claude --print` started near the same time in the same
+    // cwd as a bound agentapi-managed claude often resolves to the SAME
+    // session_file (the closest-birthtime match wins for both). The agentapi
+    // shim+native pair sharing a file is legitimate (PPID-paired, both bound
+    // to the same codex_NN); an unrelated Hub-direct call grabbing a bound
+    // peer's session_file is misattribution and inflates the per-row token
+    // display. When a session_file is claimed by ANY bound row, strip the
+    // attribution from unbound rows pointing at the same file so the totals
+    // surface against the actually-responsible thread only.
+    const sessionFilesClaimedByBound = new Set<string>();
+    for (const entry of entries) {
+      if (entry.binding !== null && entry.token_usage) {
+        sessionFilesClaimedByBound.add(entry.token_usage.session_file);
+      }
+    }
+    for (const entry of entries) {
+      if (
+        entry.binding === null
+        && entry.token_usage
+        && sessionFilesClaimedByBound.has(entry.token_usage.session_file)
+      ) {
+        entry.token_usage = null;
+      }
+    }
+
+    return entries.sort((a, b) => {
+      const order = (e: ProcessSnapshotEntry) =>
+        e.is_leak ? 0 : e.origin === "managed" ? 1 : 2;
+      const diff = order(a) - order(b);
+      if (diff !== 0) return diff;
+      return a.pid - b.pid;
+    });
   }
 
   return {
@@ -322,7 +365,12 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           captured_at: new Date().toISOString(),
           total: snapshot.length,
           managed_bound: managed.filter((e) => e.binding !== null).length,
-          managed_leak: managed.filter((e) => e.binding === null).length,
+          // managed_leak must agree with the per-row is_leak so the GUI summary
+          // badge ("N leaks") matches what the row-level red dots show. Pre-
+          // fix this was `binding === null`, which counted Hub-direct stateless
+          // calls (no thread_id) as managed_leak even though is_leak excludes
+          // them — the badge and the row indicators contradicted each other.
+          managed_leak: managed.filter((e) => e.is_leak).length,
           orphan: orphan.length,
           external: external.length,
           leak,
@@ -638,7 +686,17 @@ async function buildThreadIndex(
     }
 
     const pmResolvers = (lifecycleState as unknown as {
-      pm_resolvers?: Array<{ thread_id?: string; worker_id?: string; status?: string; started_at?: string }>;
+      pm_resolvers?: Array<{
+        thread_id?: string;
+        // Top-level `worker_id` is never written by the production recording
+        // paths (startPmResolverForRole / recordPmResolverResult); the worker
+        // the PM is targeting always lives at `issue.worker_id`. The top-level
+        // alias is read defensively in case a future call site adopts it.
+        worker_id?: string;
+        status?: string;
+        started_at?: string;
+        issue?: { worker_id?: string };
+      }>;
     }).pm_resolvers ?? [];
     for (const pm of pmResolvers) {
       if (!pm.thread_id || pm.status !== "running") {
@@ -646,7 +704,7 @@ async function buildThreadIndex(
       }
       index.set(pm.thread_id, {
         dispatcher_role_id: role.threadId,
-        worker_id: pm.worker_id ?? "(unknown)",
+        worker_id: pm.worker_id ?? pm.issue?.worker_id ?? "(unknown)",
         role: "pm_resolver",
         status: pm.status,
         started_at: pm.started_at ?? null
