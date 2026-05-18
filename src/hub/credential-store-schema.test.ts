@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CredentialRecordSchema } from "./state-store";
+import { CredentialRecordSchema, PersistedHubStateSchema, buildEmptyPersistedHubState } from "./state-store";
 
 test("CredentialRecordSchema accepts a minimal OAuth credential", () => {
   const result = CredentialRecordSchema.safeParse({
@@ -40,4 +40,10 @@ test("CredentialRecordSchema accepts api_key kind with valid api_key_metadata", 
     api_key_metadata: { base_url: "https://api.openai.com/v1", model_id: "gpt-4o", env_var: "OPENAI_API_KEY" }
   });
   assert.equal(result.success, true);
+});
+
+test("PersistedHubStateSchema (v4) defaults credentials to []", () => {
+  const state = buildEmptyPersistedHubState("2026-05-19T00:00:00.000Z");
+  assert.equal(state.version, 4);
+  assert.deepEqual(state.credentials, []);
 });

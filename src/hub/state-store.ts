@@ -106,7 +106,7 @@ const PersistedHubStateV2Schema = z.object({
   conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntryV2Schema)).default({})
 });
 
-const PersistedHubStateSchema = z.object({
+const PersistedHubStateV3Schema = z.object({
   version: z.literal(3),
   updated_at: z.string().datetime(),
   instances: z.array(AgentInstanceSchema).default([]),
@@ -115,6 +115,19 @@ const PersistedHubStateSchema = z.object({
   conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntrySchema)).default({}),
   callers: z.array(CallerRecordSchema).default([])
 });
+
+export const PersistedHubStateSchema = z.object({
+  version: z.literal(4),
+  updated_at: z.string().datetime(),
+  instances: z.array(AgentInstanceSchema).default([]),
+  session_bindings: z.record(z.string(), z.string().min(1)).default({}),
+  push_subscriptions: z.record(z.string(), z.array(PersistedPushSubscriptionSchema)).default({}),
+  conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntrySchema)).default({}),
+  callers: z.array(CallerRecordSchema).default([]),
+  credentials: z.array(CredentialRecordSchema).default([])
+});
+
+type PersistedHubStateV3 = z.input<typeof PersistedHubStateV3Schema>;
 
 type LegacyPersistedHubState = z.input<typeof LegacyPersistedHubStateSchema>;
 type LegacyPersistedConversationHistoryEntry = z.input<typeof LegacyPersistedConversationHistoryEntrySchema>;
@@ -310,13 +323,14 @@ function seedCallersFromLegacyEnv(rawJson: string, nowIso: string): CallerRecord
 
 export function buildEmptyPersistedHubState(nowIso: string): PersistedHubState {
   return {
-    version: 3,
+    version: 4,
     updated_at: nowIso,
     instances: [],
     session_bindings: {},
     push_subscriptions: {},
     conversation_history: {},
-    callers: []
+    callers: [],
+    credentials: []
   };
 }
 
@@ -329,13 +343,14 @@ export function buildPersistedHubState(
   callers: CallerRecord[] = []
 ): PersistedHubState {
   return PersistedHubStateSchema.parse({
-    version: 3,
+    version: 4,
     updated_at: nowIso,
     instances,
     session_bindings: sessionBindings,
     push_subscriptions: pushSubscriptions,
     conversation_history: conversationHistory,
-    callers
+    callers,
+    credentials: []
   });
 }
 
