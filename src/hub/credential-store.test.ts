@@ -1,6 +1,44 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CredentialStore } from "./credential-store";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  CredentialStore,
+  CredentialNotFoundError,
+  CredentialRevokedError,
+  CredentialForbiddenError
+} from "./credential-store";
+import type { CredentialRecord } from "./state-store";
+import type { CallerIdentity } from "../types";
+
+function makeCaller(
+  caller_id: string,
+  caller_authority: "read" | "write" | "stateless_call" | "admin" = "write"
+): CallerIdentity {
+  return { caller_id, caller_label: caller_id, caller_authority };
+}
+
+function makeOAuth(
+  credential_id: string,
+  owner_caller_id: string,
+  opts: Partial<CredentialRecord> = {}
+): CredentialRecord {
+  return {
+    credential_id,
+    credential_label: credential_id,
+    provider: "codex",
+    kind: "oauth",
+    owner_caller_id,
+    codex_home_path: `/tmp/${credential_id}`,
+    is_default: false,
+    created_at: "2026-05-19T00:00:00.000Z",
+    last_used_at: null,
+    revoked_at: null,
+    api_key_metadata: null,
+    ...opts
+  };
+}
 
 test("CredentialStore.list returns empty when registry is empty", () => {
   const store = new CredentialStore({
@@ -38,4 +76,79 @@ test("CredentialStore.list returns the records seeded at construction", () => {
   });
   assert.equal(store.list().length, 1);
   assert.equal(store.get("c-A")?.credential_id, "c-A");
+});
+
+test("resolve returns null when credential_id is null/undefined", () => {
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: "/tmp" });
+  assert.equal(store.resolve(null, makeCaller("c1")), null);
+  assert.equal(store.resolve(undefined, makeCaller("c1")), null);
+});
+
+test("resolve throws CredentialNotFoundError for unknown id", () => {
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: "/tmp" });
+  assert.throws(
+    () => store.resolve("missing", makeCaller("c1")),
+    CredentialNotFoundError
+  );
+});
+
+test("resolve throws CredentialRevokedError for revoked credential", () => {
+  const rec = makeOAuth("c-rev", "c1", { revoked_at: "2026-05-18T00:00:00.000Z" });
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.throws(
+    () => store.resolve("c-rev", makeCaller("c1")),
+    CredentialRevokedError
+  );
+});
+
+test("resolve throws CredentialForbiddenError for non-owner non-admin", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.throws(
+    () => store.resolve("c-A", makeCaller("other")),
+    CredentialForbiddenError
+  );
+});
+
+test("resolve succeeds for owner; OAuth returns codex_home + empty env_overrides", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  const resolved = store.resolve("c-A", makeCaller("owner-1"));
+  assert.deepEqual(resolved, {
+    codex_home: "/tmp/c-A",
+    env_overrides: {},
+    credential_id: "c-A"
+  });
+});
+
+test("resolve succeeds for admin even if owner mismatches", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  const resolved = store.resolve("c-A", makeCaller("admin-x", "admin"));
+  assert.equal(resolved?.credential_id, "c-A");
+});
+
+test("resolve for api_key returns env_overrides from env.json", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "cred-b2-"));
+  fs.writeFileSync(path.join(tmpdir, "env.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test" }));
+  const rec: CredentialRecord = {
+    credential_id: "c-K",
+    credential_label: "k",
+    provider: "codex",
+    kind: "api_key",
+    owner_caller_id: "owner-1",
+    codex_home_path: tmpdir,
+    is_default: false,
+    created_at: "2026-05-19T00:00:00.000Z",
+    last_used_at: null,
+    revoked_at: null,
+    api_key_metadata: {
+      base_url: "https://x/v1",
+      model_id: "gpt-4o",
+      env_var: "OPENAI_API_KEY"
+    }
+  };
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  const resolved = store.resolve("c-K", makeCaller("owner-1"));
+  assert.deepEqual(resolved?.env_overrides, { OPENAI_API_KEY: "sk-test" });
 });
