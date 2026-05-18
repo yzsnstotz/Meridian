@@ -41,6 +41,7 @@ import { HttpServer } from "./server/http-server";
 import { createRoleHandlers, type ContinueDispatcherResponse } from "./server/role-handlers";
 import { createSchedulerHandlers } from "./server/scheduler-handlers";
 import { createSystemMonitorHandlers } from "./server/system-monitor";
+import { createTimestampedLogger } from "./timestamped-logger";
 import {
   ACTIVE_ROLE_STATUS,
   PAUSED_ROLE_STATUS,
@@ -77,7 +78,15 @@ const STARTUP_STATUS_PROBE_TIMEOUT_MS = 4_500;
 const LIVE_THREAD_STATUSES = new Set(["running", "waiting", "queued", "starting", "in_progress", "idle", "stable"]);
 
 export async function startMeridianRolesService(): Promise<MeridianRolesService> {
-  const log = console;
+  // Prepend an ISO timestamp to every debug/info/warn/error so the monitor's
+  // LogPatternCounter can window-filter events; without this prefix, matches
+  // in the log are counted regardless of age (false-positive C1/C4/C5 cards).
+  // Object.create(console) preserves the remaining Console surface so existing
+  // `log: typeof console` parameters in this file still accept the value.
+  const log: typeof console = Object.assign(
+    Object.create(console) as typeof console,
+    createTimestampedLogger(console)
+  );
   const stateStore = new StateStore();
   const client = new A2AClient({ log });
   const registry = new RoleRegistry();

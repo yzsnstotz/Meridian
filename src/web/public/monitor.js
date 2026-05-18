@@ -54,6 +54,7 @@ function setupSystemMonitor() {
 
   let failureCount = 0;
   let lastSnapshot = null;
+  let openIndicatorIds = new Set();
 
   async function refresh() {
     if (spinner) spinner.classList.add("monitor-spinner-active");
@@ -92,6 +93,7 @@ function setupSystemMonitor() {
       lastPoll.textContent = `last poll: ${time}`;
     }
 
+    openIndicatorIds = getOpenMonitorCardIds(grid);
     const groups = groupIndicators(snapshot.indicators);
     grid.replaceChildren();
     for (const group of MONITOR_GROUP_ORDER) {
@@ -107,7 +109,7 @@ function setupSystemMonitor() {
           <span class="monitor-group-count">${indicators.length}</span>
         </div>
         <div class="monitor-card-grid">
-          ${indicators.map(renderMonitorCard).join("")}
+          ${indicators.map((indicator) => renderMonitorCard(indicator, { open: openIndicatorIds.has(indicator.id) })).join("")}
         </div>
       `;
       grid.appendChild(section);
@@ -155,7 +157,21 @@ function groupIndicators(indicators) {
   return groups;
 }
 
-function renderMonitorCard(indicator) {
+function getOpenMonitorCardIds(root) {
+  const ids = new Set();
+  if (!root || typeof root.querySelectorAll !== "function") {
+    return ids;
+  }
+  root.querySelectorAll(".monitor-indicator-card[open][data-monitor-id]").forEach((card) => {
+    const id = card.getAttribute("data-monitor-id");
+    if (id) {
+      ids.add(id);
+    }
+  });
+  return ids;
+}
+
+function renderMonitorCard(indicator, options = {}) {
   const state = indicator.state || "unknown";
   const stateClass = MONITOR_CARD_STATE_CLASSES.has(`monitor-card-state-${state}`)
     ? `monitor-card-state-${state}`
@@ -164,8 +180,10 @@ function renderMonitorCard(indicator) {
   const value = formatMonitorValue(indicator.value, indicator.unit);
   const threshold = renderThreshold(indicator);
   const evidence = renderMonitorEvidence(indicator);
+  const open = Boolean(options.open);
+  const openAttr = open ? " open" : "";
   return `
-    <details class="monitor-indicator-card ${stateClass}" data-monitor-state="${escapeHtml(state)}" aria-live="polite">
+    <details class="monitor-indicator-card ${stateClass}" data-monitor-id="${escapeHtml(indicator.id)}" data-monitor-state="${escapeHtml(state)}"${openAttr} aria-live="polite">
       <summary class="monitor-card-summary" aria-label="Open indicator details for ${escapeHtml(indicator.id)}">
         <div class="monitor-card-top">
           <span class="monitor-state-dot" aria-label="${escapeHtml(state)}"></span>
@@ -177,13 +195,13 @@ function renderMonitorCard(indicator) {
         <span class="monitor-card-expand" aria-hidden="true">+</span>
       </summary>
       <div class="monitor-card-details">
-        ${renderMonitorCardDetails(indicator, { value, threshold, source, evidence })}
+        ${renderMonitorCardDetails(indicator, { value, threshold, source, evidence, items: renderMonitorItems(indicator.items) })}
       </div>
     </details>
   `;
 }
 
-function renderMonitorCardDetails(indicator, { value, threshold, source, evidence }) {
+function renderMonitorCardDetails(indicator, { value, threshold, source, evidence, items }) {
   return `
     <dl class="monitor-detail-list">
       <div class="monitor-card-detail-row">
@@ -204,6 +222,12 @@ function renderMonitorCardDetails(indicator, { value, threshold, source, evidenc
           <dd>${escapeHtml(evidence)}</dd>
         </div>
       ` : ""}
+      ${items ? `
+        <div class="monitor-card-detail-row monitor-card-detail-row-wide">
+          <dt>Tracked</dt>
+          <dd>${items}</dd>
+        </div>
+      ` : ""}
       <div class="monitor-card-detail-row">
         <dt>Source</dt>
         <dd>${source ? `<code>${escapeHtml(source)}</code>` : '<span class="muted">none</span>'}</dd>
@@ -217,6 +241,35 @@ function renderMonitorEvidence(indicator) {
     return indicator.detail;
   }
   return MONITOR_DETAIL_HINTS[indicator.id] || "";
+}
+
+function renderMonitorItems(items) {
+  const list = Array.isArray(items)
+    ? items.filter((item) => item && typeof item.label === "string" && item.label.trim().length > 0)
+    : [];
+  if (list.length === 0) {
+    return "";
+  }
+  return `<ul class="monitor-item-list">${list.map(renderMonitorItem).join("")}</ul>`;
+}
+
+function renderMonitorItem(item) {
+  const label = escapeHtml(item.label);
+  const href = safeMonitorHref(item.href);
+  const detail = typeof item.detail === "string" && item.detail.trim().length > 0
+    ? `<div class="monitor-item-detail">${escapeHtml(item.detail)}</div>`
+    : "";
+  const labelHtml = href
+    ? `<a href="${escapeHtml(href)}">${label}</a>`
+    : `<span>${label}</span>`;
+  return `<li><div class="monitor-item-label">${labelHtml}</div>${detail}</li>`;
+}
+
+function safeMonitorHref(href) {
+  if (typeof href !== "string" || !href.startsWith("/") || href.startsWith("//")) {
+    return "";
+  }
+  return href;
 }
 
 function renderThreshold(indicator) {

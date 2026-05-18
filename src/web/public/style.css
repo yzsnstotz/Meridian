@@ -1592,6 +1592,11 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
   line-height: 1.35;
 }
 
+.monitor-card-detail-row-wide {
+  grid-template-columns: 1fr;
+  gap: 0.35rem;
+}
+
 .monitor-card-detail-row dt {
   color: var(--monitor-card-muted);
   font-weight: 800;
@@ -1612,6 +1617,39 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 
 .monitor-indicator-card .muted {
   color: var(--monitor-card-muted);
+}
+
+.monitor-item-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.monitor-item-list li {
+  padding: 0.5rem;
+  border: 1px solid var(--monitor-card-detail-border);
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.monitor-item-label {
+  font-weight: 800;
+}
+
+.monitor-item-label a {
+  color: var(--monitor-card-text);
+  text-decoration: underline;
+  text-underline-offset: 0.14rem;
+}
+
+.monitor-item-detail {
+  margin-top: 0.2rem;
+  color: var(--monitor-card-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .monitor-card-state-green {
