@@ -44,6 +44,7 @@ import {
 } from "../types";
 import type { WireAuth } from "../shared/caller-wire";
 import { CallerRegistry, type CallerRecord } from "./caller-registry";
+import { CredentialStore } from "./credential-store";
 import { InstanceManager } from "./instance-manager";
 import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
@@ -219,6 +220,7 @@ export interface HubRouterOptions {
   outputBus?: OutputBus;
   statePath?: string;
   serviceRegistry?: ServiceRegistry;
+  credentialStore?: CredentialStore;
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
@@ -228,7 +230,26 @@ const ADMIN_ONLY_INTENTS = new Set<string>([
   "rotate_caller_key",
   "update_caller_authority"
 ]);
-const READ_AUTHORITY_INTENTS = new Set<string>(["status", "list", "list_models", "detail", "gui", "history", "list_callers"]);
+const READ_AUTHORITY_INTENTS = new Set<string>([
+  "status",
+  "list",
+  "list_models",
+  "detail",
+  "gui",
+  "history",
+  "list_callers",
+  "list_credentials"
+]);
+export const CREDENTIAL_READ_INTENTS = new Set<string>(["list_credentials"]);
+export const CREDENTIAL_WRITE_INTENTS = new Set<string>([
+  "register_credential_oauth_start",
+  "register_credential_oauth_poll",
+  "register_credential_oauth_cancel",
+  "register_credential_api_key",
+  "update_credential",
+  "set_default_credential",
+  "revoke_credential"
+]);
 const ADMIN_CALLER_ID = "meridian-admin";
 
 const RegisterCallerPayloadSchema = z
@@ -489,6 +510,7 @@ export class HubRouter {
   private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
   private readonly pendingRunFollowups = new Set<string>();
   private callerRegistry: CallerRegistry | null = null;
+  private readonly credentialStore: CredentialStore | undefined;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -504,6 +526,11 @@ export class HubRouter {
     this.outputBus = options.outputBus ?? new OutputBus();
     this.statePath = options.statePath ?? config.MERIDIAN_STATE_PATH;
     this.serviceRegistry = options.serviceRegistry ?? new ServiceRegistry();
+    this.credentialStore = options.credentialStore;
+  }
+
+  getCredentialStore(): CredentialStore | undefined {
+    return this.credentialStore;
   }
 
   async initialize(): Promise<void> {
