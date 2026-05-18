@@ -70,6 +70,13 @@ export type Priority = z.infer<typeof PrioritySchema>;
 
 export const OptionalUuidSchema = z.string().uuid().optional();
 
+export const ChatterTurnEnvelopeSchema = z.object({
+  mode: z.enum(["stateless", "session"]),
+  chatter_session_id: z.string().min(1).optional(),
+  control: z.enum(["new", "interrupt"]).optional()
+});
+export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
+
 export const HubPayloadSchema = z.object({
   content: z.string(),
   attachments: z.array(FileAttachmentSchema).default([]),
@@ -82,7 +89,8 @@ export const HubPayloadSchema = z.object({
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   gui_host_port_override: z.string().min(1).optional(),
-  push_enabled: z.boolean().optional()
+  push_enabled: z.boolean().optional(),
+  chatter: ChatterTurnEnvelopeSchema.optional()
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;
 
@@ -313,7 +321,7 @@ export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
 // ─── meridian-roles specific types ──────────────────────────────────────────────
 
-export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher", "scheduler"]);
+export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher", "scheduler", "chatter"]);
 export type RoleType = z.infer<typeof RoleTypeSchema>;
 
 export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed", "blocked"]);
@@ -644,3 +652,22 @@ function normalizePmResolverConfig(
     user_reply_channels: replyChannels
   };
 }
+
+export const ChatterTemplateNameSchema = z.enum(["flat-log", "topic-tree", "indexed-kb"]);
+export type ChatterTemplateName = z.infer<typeof ChatterTemplateNameSchema>;
+
+export const ChatterAllowedModesSchema = z.array(z.enum(["stateless", "session"])).min(1);
+
+export const ChatterRoleConfigSchema = z.object({
+  chatter_id: z.string().min(1).regex(/^[a-z0-9][a-z0-9_-]*$/i, "chatter_id must be slug-like"),
+  memory_folder: z.string().refine((p) => p.startsWith("/"), "memory_folder must be an absolute path"),
+  template: ChatterTemplateNameSchema.optional(),
+  manifest_path: z.string().refine((p) => p.startsWith("/"), "manifest_path must be absolute").optional(),
+  allowed_modes: ChatterAllowedModesSchema,
+  skill_allowlist: z.array(z.string().min(1)).default([]),
+  llm_agent_kind: z.enum(["claude-code"]).default("claude-code"),
+  user_reply_channel: ReplyChannelSchema.optional()
+}).refine((v) => v.template !== undefined || v.manifest_path !== undefined, {
+  message: "Either template or manifest_path must be provided"
+});
+export type ChatterRoleConfig = z.infer<typeof ChatterRoleConfigSchema>;
