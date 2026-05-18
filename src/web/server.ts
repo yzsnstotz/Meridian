@@ -869,6 +869,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/credentials/api-key" && request.method === "POST") {
+      await this.handleRegisterApiKeyRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname.startsWith("/api/credentials/")) {
       const credentialSuffix = requestUrl.pathname.slice("/api/credentials/".length);
       if (request.method === "POST" && credentialSuffix.endsWith("/default")) {
@@ -2306,6 +2311,40 @@ export class WebInterfaceServer {
       return;
     }
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleRegisterApiKeyRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await this.readJsonBody(request);
+      body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    } catch (err) {
+      this.respondJson(response, 400, { error_code: "invalid_payload", error_message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_api_key",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify(body),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 201, JSON.parse(result.content) as unknown);
   }
 
   private isPublicStaticAsset(pathname: string): boolean {
