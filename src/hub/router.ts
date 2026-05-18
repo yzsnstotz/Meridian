@@ -44,7 +44,13 @@ import {
 } from "../types";
 import type { WireAuth } from "../shared/caller-wire";
 import { CallerRegistry, type CallerRecord } from "./caller-registry";
-import { CredentialStore } from "./credential-store";
+import {
+  CredentialStore,
+  CredentialNotFoundError,
+  CredentialRevokedError,
+  CredentialForbiddenError,
+  type ResolvedCredential
+} from "./credential-store";
 import { InstanceManager } from "./instance-manager";
 import { OAuthLoginCapExceededError, OAuthLoginJobRegistry } from "./oauth-login-registry";
 import { OutputBus } from "./output-bus";
@@ -1276,6 +1282,54 @@ export class HubRouter {
     const modelId = modelReference.modelId || undefined;
     const integrationProfile = message.payload.integration_profile;
     const sandboxMode = message.payload.sandbox_mode;
+
+    let resolvedCredential: ResolvedCredential | null = null;
+    const requestedCredentialId = message.payload?.credential_id;
+    if (requestedCredentialId !== undefined && requestedCredentialId !== null) {
+      if (!this.credentialStore) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({
+            error_code: "credential_store_unavailable",
+            error_message: "CredentialStore not configured"
+          }),
+          message.thread_id
+        );
+      }
+      if (!message.caller) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({
+            error_code: "caller_required",
+            error_message: "spawn with credential_id requires an authenticated caller"
+          }),
+          message.thread_id
+        );
+      }
+      try {
+        resolvedCredential = this.credentialStore.resolve(requestedCredentialId, message.caller);
+      } catch (err) {
+        let code = "spawn_credential_failed";
+        if (err instanceof CredentialNotFoundError) code = "credential_not_found";
+        else if (err instanceof CredentialRevokedError) code = "credential_revoked";
+        else if (err instanceof CredentialForbiddenError) code = "credential_forbidden";
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({
+            error_code: code,
+            error_message: err instanceof Error ? err.message : String(err)
+          }),
+          message.thread_id
+        );
+      }
+    }
+
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
@@ -1286,7 +1340,8 @@ export class HubRouter {
       message.trace_id,
       integrationProfile,
       sandboxMode,
-      message.caller
+      message.caller,
+      resolvedCredential
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
