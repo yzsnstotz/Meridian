@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   RoleTypeSchema,
   ChatterRoleConfigSchema,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  ChatterTurnEnvelopeSchema,
   HubPayloadSchema
 } from "../../../types";
 
