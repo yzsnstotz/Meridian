@@ -182,6 +182,7 @@ export const HubPayloadSchema = z.object({
   reply_to: z.string().nullable().optional(),
   spawn_dir: z.string().min(1).optional(),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().optional(),
   integration_profile: IntegrationProfileSchema.optional(),
@@ -289,7 +290,8 @@ export const AgentInstanceSchema = z.object({
   spawn_trace_id: z.string().nullable().optional(),
   spawned_by: CallerIdentitySchema.optional(),
   last_caller: CallerIdentitySchema.optional(),
-  last_caller_at: z.string().datetime().optional()
+  last_caller_at: z.string().datetime().optional(),
+  credential_id: z.string().nullable().default(null)
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
