@@ -28,6 +28,15 @@ test("registry.start returns {job_id, job} and registers the job", () => {
   assert.equal(registry.get(job_id), job);
 });
 
+test("registry.getOwner returns the caller_id that started the job", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "registry-c5-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const registry = new OAuthLoginJobRegistry();
+  const { job_id } = registry.start("c1", makeJobOpts(store, "a"));
+  assert.equal(registry.getOwner(job_id), "c1");
+  assert.equal(registry.getOwner("nonexistent"), undefined);
+});
+
 test("registry: caller c1 can start 3 concurrent jobs", () => {
   // Use a long auth.json delay so jobs stay in awaiting_browser
   const prev = process.env.FAKE_CODEX_DELAY_MS;

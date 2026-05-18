@@ -13,6 +13,7 @@ const IN_FLIGHT: OAuthLoginStatus[] = ["pending", "awaiting_browser"];
 export class OAuthLoginJobRegistry {
   private jobs = new Map<string, OAuthLoginJob>();
   private idsByCaller = new Map<string, Set<string>>();
+  private ownerByJobId = new Map<string, string>();
   private readonly perCallerCap = 3;
 
   start(callerId: string, opts: OAuthLoginJobOptions): { job_id: string; job: OAuthLoginJob } {
@@ -27,6 +28,7 @@ export class OAuthLoginJobRegistry {
     const jobId = crypto.randomUUID();
     const job = new OAuthLoginJob(opts);
     this.jobs.set(jobId, job);
+    this.ownerByJobId.set(jobId, callerId);
     inflightIds.add(jobId);
     this.idsByCaller.set(callerId, inflightIds);
     job.start().catch(() => {});
@@ -35,6 +37,10 @@ export class OAuthLoginJobRegistry {
 
   get(jobId: string): OAuthLoginJob | undefined {
     return this.jobs.get(jobId);
+  }
+
+  getOwner(jobId: string): string | undefined {
+    return this.ownerByJobId.get(jobId);
   }
 
   async cancel(jobId: string): Promise<void> {

@@ -46,6 +46,7 @@ import type { WireAuth } from "../shared/caller-wire";
 import { CallerRegistry, type CallerRecord } from "./caller-registry";
 import { CredentialStore } from "./credential-store";
 import { InstanceManager } from "./instance-manager";
+import { OAuthLoginCapExceededError, OAuthLoginJobRegistry } from "./oauth-login-registry";
 import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { ServiceRegistry } from "./service-registry";
@@ -221,6 +222,7 @@ export interface HubRouterOptions {
   statePath?: string;
   serviceRegistry?: ServiceRegistry;
   credentialStore?: CredentialStore;
+  oauthLoginRegistry?: OAuthLoginJobRegistry;
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
@@ -282,6 +284,15 @@ const RegisterCredentialApiKeyPayloadSchema = z.object({
   key_value: z.string().min(1)
   // owner_caller_id intentionally NOT accepted — hub injects it from the authenticated caller.
 });
+
+const OAuthLoginStartPayloadSchema = z.object({
+  credential_label: z.string().min(1).max(64),
+  codexLoginCommand: z.string().optional(),
+  codexLoginArgs: z.array(z.string()).optional()
+});
+
+const OAuthLoginPollPayloadSchema = z.object({ job_id: z.string().min(1) });
+const OAuthLoginCancelPayloadSchema = z.object({ job_id: z.string().min(1) });
 
 class RunInterruptedError extends Error {
   constructor(readonly threadId: string) {
@@ -520,6 +531,7 @@ export class HubRouter {
   private readonly pendingRunFollowups = new Set<string>();
   private callerRegistry: CallerRegistry | null = null;
   private readonly credentialStore: CredentialStore | undefined;
+  private readonly oauthLoginRegistry: OAuthLoginJobRegistry | undefined;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -536,10 +548,15 @@ export class HubRouter {
     this.statePath = options.statePath ?? config.MERIDIAN_STATE_PATH;
     this.serviceRegistry = options.serviceRegistry ?? new ServiceRegistry();
     this.credentialStore = options.credentialStore;
+    this.oauthLoginRegistry = options.oauthLoginRegistry;
   }
 
   getCredentialStore(): CredentialStore | undefined {
     return this.credentialStore;
+  }
+
+  getOAuthLoginRegistry(): OAuthLoginJobRegistry | undefined {
+    return this.oauthLoginRegistry;
   }
 
   async initialize(): Promise<void> {
@@ -706,6 +723,12 @@ export class HubRouter {
           return this.handleListCredentials(message);
         case "register_credential_api_key":
           return this.handleRegisterCredentialApiKey(message);
+        case "register_credential_oauth_start":
+          return this.handleRegisterCredentialOAuthStart(message);
+        case "register_credential_oauth_poll":
+          return this.handleRegisterCredentialOAuthPoll(message);
+        case "register_credential_oauth_cancel":
+          return this.handleRegisterCredentialOAuthCancel(message);
         case "reply":
           return this.handleReply(message);
         default:
@@ -2339,6 +2362,221 @@ export class HubRouter {
         message.thread_id
       );
     }
+  }
+
+  private handleRegisterCredentialOAuthStart(message: HubMessage): HubResult {
+    const store = this.credentialStore;
+    const reg = this.oauthLoginRegistry;
+    if (!store || !reg) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "oauth_subsystem_unavailable",
+          error_message: "credentialStore or oauthLoginRegistry not configured"
+        }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    if (!caller) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "caller_required",
+          error_message: "register_credential_oauth_start requires an authenticated caller"
+        }),
+        message.thread_id
+      );
+    }
+    let parsed: z.infer<typeof OAuthLoginStartPayloadSchema>;
+    try {
+      parsed = OAuthLoginStartPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+    try {
+      const { job_id, job } = reg.start(caller.caller_id, {
+        credentialStore: store,
+        owner_caller_id: caller.caller_id,
+        credential_label: parsed.credential_label,
+        codexLoginCommand: parsed.codexLoginCommand,
+        codexLoginArgs: parsed.codexLoginArgs
+      });
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ job_id, status: job.status }),
+        message.thread_id
+      );
+    } catch (err) {
+      const code = err instanceof OAuthLoginCapExceededError ? "oauth_login_cap_exceeded" : "oauth_start_failed";
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: code,
+          error_message: err instanceof Error ? err.message : "oauth start failed"
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private handleRegisterCredentialOAuthPoll(message: HubMessage): HubResult {
+    const reg = this.oauthLoginRegistry;
+    if (!reg) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "oauth_subsystem_unavailable",
+          error_message: "oauthLoginRegistry not configured"
+        }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    let parsed: z.infer<typeof OAuthLoginPollPayloadSchema>;
+    try {
+      parsed = OAuthLoginPollPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+    const job = reg.get(parsed.job_id);
+    if (!job) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "job_not_found",
+          error_message: `oauth job ${parsed.job_id} not found`
+        }),
+        message.thread_id
+      );
+    }
+    const owner = reg.getOwner(parsed.job_id);
+    const isAdmin = caller?.caller_authority === "admin";
+    if (!isAdmin && owner !== caller?.caller_id) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "credential_forbidden",
+          error_message: "caller is not the owner of this oauth job"
+        }),
+        message.thread_id
+      );
+    }
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({
+        job_id: parsed.job_id,
+        status: job.status,
+        login_url: job.login_url ?? undefined,
+        expires_at: job.expires_at ?? undefined,
+        credential_id: job.credential_id ?? undefined,
+        error_code: job.error_code ?? undefined,
+        error_message: job.error_message ?? undefined,
+        log_excerpt: job.log_excerpt
+      }),
+      message.thread_id
+    );
+  }
+
+  private async handleRegisterCredentialOAuthCancel(message: HubMessage): Promise<HubResult> {
+    const reg = this.oauthLoginRegistry;
+    if (!reg) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "oauth_subsystem_unavailable",
+          error_message: "oauthLoginRegistry not configured"
+        }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    let parsed: z.infer<typeof OAuthLoginCancelPayloadSchema>;
+    try {
+      parsed = OAuthLoginCancelPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+    const job = reg.get(parsed.job_id);
+    if (!job) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "job_not_found",
+          error_message: `oauth job ${parsed.job_id} not found`
+        }),
+        message.thread_id
+      );
+    }
+    const owner = reg.getOwner(parsed.job_id);
+    const isAdmin = caller?.caller_authority === "admin";
+    if (!isAdmin && owner !== caller?.caller_id) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "credential_forbidden",
+          error_message: "caller is not the owner of this oauth job"
+        }),
+        message.thread_id
+      );
+    }
+    await reg.cancel(parsed.job_id);
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({ job_id: parsed.job_id, status: "cancelled" }),
+      message.thread_id
+    );
   }
 
   private async dispatchToService(endpoint: ServiceEndpoint, message: HubMessage): Promise<HubResult> {
