@@ -106,7 +106,7 @@ const PersistedHubStateV2Schema = z.object({
   conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntryV2Schema)).default({})
 });
 
-const PersistedHubStateV3Schema = z.object({
+export const PersistedHubStateV3Schema = z.object({
   version: z.literal(3),
   updated_at: z.string().datetime(),
   instances: z.array(AgentInstanceSchema).default([]),
@@ -127,7 +127,7 @@ export const PersistedHubStateSchema = z.object({
   credentials: z.array(CredentialRecordSchema).default([])
 });
 
-type PersistedHubStateV3 = z.input<typeof PersistedHubStateV3Schema>;
+export type PersistedHubStateV3 = z.input<typeof PersistedHubStateV3Schema>;
 
 type LegacyPersistedHubState = z.input<typeof LegacyPersistedHubStateSchema>;
 type LegacyPersistedConversationHistoryEntry = z.input<typeof LegacyPersistedConversationHistoryEntrySchema>;
@@ -246,8 +246,8 @@ function migrateLegacyConversationHistory(
   return migrated;
 }
 
-function migrateLegacyPersistedHubState(state: LegacyPersistedHubState): PersistedHubState {
-  return PersistedHubStateSchema.parse({
+function migrateLegacyPersistedHubState(state: LegacyPersistedHubState): PersistedHubStateV3 {
+  return PersistedHubStateV3Schema.parse({
     version: 3,
     updated_at: state.updated_at,
     instances: state.instances,
@@ -260,8 +260,8 @@ function migrateLegacyPersistedHubState(state: LegacyPersistedHubState): Persist
 
 function migrateConversationHistoryV2EntriesToV3(
   v2History: PersistedHubStateV2["conversation_history"]
-): PersistedHubState["conversation_history"] {
-  const result: PersistedHubState["conversation_history"] = {};
+): PersistedHubStateV3["conversation_history"] {
+  const result: PersistedHubStateV3["conversation_history"] = {};
   for (const [threadId, entries] of Object.entries(v2History ?? {})) {
     result[threadId] = (entries ?? []).map((entry) => ({
       ...entry,
@@ -272,8 +272,8 @@ function migrateConversationHistoryV2EntriesToV3(
   return result;
 }
 
-export function migrateLegacyConversationHistoryV2ToV3(state: unknown): PersistedHubState {
-  const asV3 = PersistedHubStateSchema.safeParse(state);
+export function migrateLegacyConversationHistoryV2ToV3(state: unknown): PersistedHubStateV3 {
+  const asV3 = PersistedHubStateV3Schema.safeParse(state);
   if (asV3.success) {
     return asV3.data;
   }
@@ -281,7 +281,7 @@ export function migrateLegacyConversationHistoryV2ToV3(state: unknown): Persiste
   if (!asV2.success) {
     throw new Error("invalid_state_for_v2_to_v3_migration");
   }
-  return PersistedHubStateSchema.parse({
+  return PersistedHubStateV3Schema.parse({
     version: 3,
     updated_at: asV2.data.updated_at,
     instances: asV2.data.instances,
@@ -289,6 +289,14 @@ export function migrateLegacyConversationHistoryV2ToV3(state: unknown): Persiste
     push_subscriptions: asV2.data.push_subscriptions,
     conversation_history: migrateConversationHistoryV2EntriesToV3(asV2.data.conversation_history),
     callers: []
+  });
+}
+
+function migrateV3ToV4(state: PersistedHubStateV3): PersistedHubState {
+  return PersistedHubStateSchema.parse({
+    ...state,
+    version: 4,
+    credentials: []
   });
 }
 
@@ -358,17 +366,21 @@ function loadAndMigrate(statePath: string, nowIso: string): PersistedHubState {
   try {
     const raw = fs.readFileSync(statePath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
-    const v3 = PersistedHubStateSchema.safeParse(parsed);
+    const v4 = PersistedHubStateSchema.safeParse(parsed);
+    if (v4.success) {
+      return v4.data;
+    }
+    const v3 = PersistedHubStateV3Schema.safeParse(parsed);
     if (v3.success) {
-      return v3.data;
+      return migrateV3ToV4(v3.data);
     }
     const v2 = PersistedHubStateV2Schema.safeParse(parsed);
     if (v2.success) {
-      return migrateLegacyConversationHistoryV2ToV3(v2.data);
+      return migrateV3ToV4(migrateLegacyConversationHistoryV2ToV3(v2.data));
     }
     const v1 = LegacyPersistedHubStateSchema.safeParse(parsed);
     if (v1.success) {
-      return migrateLegacyPersistedHubState(v1.data);
+      return migrateV3ToV4(migrateLegacyPersistedHubState(v1.data));
     }
     return buildEmptyPersistedHubState(nowIso);
   } catch (error) {

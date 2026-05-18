@@ -47,3 +47,26 @@ test("PersistedHubStateSchema (v4) defaults credentials to []", () => {
   assert.equal(state.version, 4);
   assert.deepEqual(state.credentials, []);
 });
+
+test("v3-shaped state should be rejected by current PersistedHubStateSchema (v4)", () => {
+  const v3State = {
+    version: 3,
+    updated_at: "2026-05-01T00:00:00.000Z",
+    instances: [], session_bindings: {}, push_subscriptions: {},
+    conversation_history: {}, callers: []
+  };
+  const result = PersistedHubStateSchema.safeParse(v3State);
+  assert.equal(result.success, false);
+});
+
+test("migrateLegacyPersistedHubState returns a valid v3 object (not v4)", async () => {
+  const { PersistedHubStateV3Schema } = await import("./state-store");
+  // We don't call the function directly (it's internal) — we just verify the schema is exported and validates v3 shape.
+  const v3State = {
+    version: 3, updated_at: "2026-05-01T00:00:00.000Z",
+    instances: [], session_bindings: {}, push_subscriptions: {},
+    conversation_history: {}, callers: []
+  };
+  const result = PersistedHubStateV3Schema.safeParse(v3State);
+  assert.equal(result.success, true);
+});
