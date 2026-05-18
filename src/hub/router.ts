@@ -4330,7 +4330,8 @@ export class HubRouter {
           snapshot.session_bindings ?? {},
           this.serializePushSubscriptions(),
           this.serializeConversationHistory(),
-          this.callerRegistry?.list() ?? []
+          this.callerRegistry?.list() ?? [],
+          this.credentialStore?.list() ?? []
         )
       );
     } catch (error) {

@@ -348,7 +348,8 @@ export function buildPersistedHubState(
   sessionBindings: Record<string, string>,
   pushSubscriptions: Record<string, PersistedPushSubscription[]> = {},
   conversationHistory: Record<string, PersistedConversationHistoryEntry[]> = {},
-  callers: CallerRecord[] = []
+  callers: CallerRecord[] = [],
+  credentials: CredentialRecord[] = []
 ): PersistedHubState {
   return PersistedHubStateSchema.parse({
     version: 4,
@@ -358,7 +359,7 @@ export function buildPersistedHubState(
     push_subscriptions: pushSubscriptions,
     conversation_history: conversationHistory,
     callers,
-    credentials: []
+    credentials
   });
 }
 

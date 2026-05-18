@@ -38,7 +38,10 @@ import { InstanceRegistry } from "./registry";
 import { classifyAgentOutput } from "../shared/agent-output";
 import type { OutputDelta } from "../shared/stream-adapter";
 import { OutputBus } from "./output-bus";
-import { HubRouter, type MonitorUpdateDispatch, type PushDeliveryTarget } from "./router";
+import { HubRouter, type HubRouterOptions, type MonitorUpdateDispatch, type PushDeliveryTarget } from "./router";
+import { CredentialStore } from "./credential-store";
+import { OAuthLoginJobRegistry } from "./oauth-login-registry";
+import { loadPersistedHubState, type CredentialRecord } from "./state-store";
 
 interface InboundEnvelope {
   chatId?: string;
@@ -245,9 +248,43 @@ export class HubServer {
 
   constructor(options: HubServerOptions = {}) {
     this.socketPath = options.socketPath ?? config.HUB_SOCKET_PATH;
-    this.router =
-      options.router ??
-      new HubRouter(new InstanceRegistry(), options.outputBus ? { outputBus: options.outputBus } : {});
+    if (options.router) {
+      this.router = options.router;
+    } else {
+      const statePath = config.MERIDIAN_STATE_PATH;
+      const credentialsRoot = path.join(path.dirname(statePath), "credentials");
+      const nowIso = new Date().toISOString();
+      let initialCredentials: CredentialRecord[] = [];
+      try {
+        initialCredentials = (loadPersistedHubState(statePath, nowIso).credentials ?? []) as CredentialRecord[];
+      } catch {
+        initialCredentials = [];
+      }
+      const credentialStore = new CredentialStore({
+        initialRecords: initialCredentials,
+        credentialsRoot
+      });
+      try {
+        credentialStore.reconcile();
+      } catch (err) {
+        this.log.warn(
+          {
+            trace_id: null,
+            thread_id: null,
+            credentials_root: credentialsRoot,
+            err: err instanceof Error ? err.message : String(err)
+          },
+          "CredentialStore reconcile failed (continuing)"
+        );
+      }
+      const oauthLoginRegistry = new OAuthLoginJobRegistry();
+      const routerOptions: HubRouterOptions = {
+        credentialStore,
+        oauthLoginRegistry
+      };
+      if (options.outputBus) routerOptions.outputBus = options.outputBus;
+      this.router = new HubRouter(new InstanceRegistry(), routerOptions);
+    }
     this.resultSender = options.resultSender ?? new ResultSender([
       new SocketChannelAdapter(),
       new TelegramChannelAdapter(),
@@ -259,6 +296,11 @@ export class HubServer {
     this.outputBus.setAdapterOutput((traceId, _message, delta) => this.dispatchOutputBusDelta(traceId, delta));
     this.outputBus.setWebsocketOutput((traceId, message) => this.dispatchOutputBusWebsocketMessage(traceId, message));
     this.outputBus.setRecordOutput((traceId) => this.recordMonitorProgressSnapshot(traceId));
+  }
+
+  /** Test seam: returns the underlying router for assertion in bootstrap tests. */
+  getRouter(): HubRouter {
+    return this.router;
   }
 
   async start(): Promise<void> {
