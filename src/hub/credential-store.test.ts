@@ -408,3 +408,35 @@ test("setDefault does NOT affect records owned by a different caller", async () 
   assert.equal(store.get(b)?.is_default, true);
   assert.equal(store.get(a)?.is_default, true);
 });
+
+test("reconcile removes dirs whose UUID is not in the registry", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b7-"));
+  fs.mkdirSync(path.join(tmpdir, "orphan-uuid-1"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(tmpdir, "orphan-uuid-2"), { recursive: true, mode: 0o700 });
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  store.reconcile();
+  assert.equal(fs.existsSync(path.join(tmpdir, "orphan-uuid-1")), false);
+  assert.equal(fs.existsSync(path.join(tmpdir, "orphan-uuid-2")), false);
+});
+
+test("reconcile keeps dirs that match registered credentials", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b7-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v"
+  });
+  const dir = store.get(id)!.codex_home_path;
+  // Drop an orphan alongside
+  fs.mkdirSync(path.join(tmpdir, "orphan"), { recursive: true });
+  store.reconcile();
+  assert.equal(fs.existsSync(dir), true);
+  assert.equal(fs.existsSync(path.join(tmpdir, "orphan")), false);
+});
+
+test("reconcile is a no-op if credentialsRoot does not exist", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b7-"));
+  fs.rmSync(tmpdir, { recursive: true });
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  assert.doesNotThrow(() => store.reconcile());
+});

@@ -292,6 +292,16 @@ export class CredentialStore {
     await this.onChange(this.list());
   }
 
+  reconcile(): void {
+    if (!fs.existsSync(this.credentialsRoot)) return;
+    const onDisk = fs.readdirSync(this.credentialsRoot);
+    for (const name of onDisk) {
+      if (!this.records.has(name)) {
+        fs.rmSync(path.join(this.credentialsRoot, name), { recursive: true, force: true });
+      }
+    }
+  }
+
   private generateApiKeyConfigToml(args: {
     base_url: string;
     model_id: string;
