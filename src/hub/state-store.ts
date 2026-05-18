@@ -18,6 +18,29 @@ export const CallerRecordSchema = z.object({
 });
 export type CallerRecord = z.input<typeof CallerRecordSchema>;
 
+export const CredentialKindSchema = z.enum(["oauth", "api_key"]);
+export const CredentialProviderSchema = z.enum(["codex"]);
+
+export const CredentialRecordSchema = z.object({
+  credential_id: z.string().min(1),
+  credential_label: z.string().min(1).max(64),
+  provider: CredentialProviderSchema,
+  kind: CredentialKindSchema,
+  owner_caller_id: z.string().min(1),
+  codex_home_path: z.string().min(1),
+  is_default: z.boolean().default(false),
+  created_at: z.string().datetime(),
+  last_used_at: z.string().datetime().nullable().default(null),
+  revoked_at: z.string().datetime().nullable().default(null),
+  api_key_metadata: z.object({
+    base_url: z.string().url(),
+    model_id: z.string().min(1),
+    env_var: z.string().min(1)
+  }).nullable().default(null)
+});
+
+export type CredentialRecord = z.input<typeof CredentialRecordSchema>;
+
 const PersistedPushSubscriptionSchema = z.object({
   session_id: z.string().min(1),
   chat_id: z.string().min(1),
