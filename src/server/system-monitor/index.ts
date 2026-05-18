@@ -17,6 +17,12 @@ export interface SystemMonitorThresholds {
   red?: number | string;
 }
 
+export interface SystemMonitorIndicatorItem {
+  label: string;
+  detail?: string;
+  href?: string;
+}
+
 export interface SystemMonitorIndicator {
   id: string;
   group: string;
@@ -27,6 +33,7 @@ export interface SystemMonitorIndicator {
   thresholds?: SystemMonitorThresholds;
   source_learning: string;
   detail?: string;
+  items?: SystemMonitorIndicatorItem[];
 }
 
 export interface SystemMonitorSnapshot {
@@ -141,16 +148,16 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   const leakProcesses = processes.filter((process) => process.is_leak);
   const leakedTokenTotal = sumLeakedTokens(leakProcesses);
   const tokenVelocity = computeTokenVelocity(processes, nowMs, runtime);
-  const completedAlive = processes.filter((process) =>
+  const completedAliveProcesses = processes.filter((process) =>
     (process.agent_type === "codex" || process.agent_type === "claude")
     && process.thread_id
     && lifecycle.terminalThreadIds.has(process.thread_id)
-  ).length;
+  );
 
-  push(indicators, aboveIndicator("A1", "process_pressure", "Leaked process count", leakProcesses.length, "processes", 1, 3, "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md"));
-  push(indicators, aboveIndicator("A2", "process_pressure", "Leaked process token total", leakedTokenTotal, "tokens", 10_000, 100_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md"));
-  push(indicators, aboveIndicator("A3", "process_pressure", "Per-process token velocity", Math.round(tokenVelocity), "tokens/min", 5_000, 50_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md"));
-  push(indicators, aboveIndicator("A4", "process_pressure", "Orphan dispatcher-completed codex CLIs", completedAlive, "processes", 1, 5, "dispatcher/settle-time-terminal-thread-cleanup-gap.md"));
+  push(indicators, aboveIndicator("A1", "process_pressure", "Leaked process count", leakProcesses.length, "processes", 1, 3, "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md", processItems(leakProcesses)));
+  push(indicators, aboveIndicator("A2", "process_pressure", "Leaked process token total", leakedTokenTotal, "tokens", 10_000, 100_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenSessionItems(leakProcesses)));
+  push(indicators, aboveIndicator("A3", "process_pressure", "Per-process token velocity", Math.round(tokenVelocity), "tokens/min", 5_000, 50_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenProcessItems(processes)));
+  push(indicators, aboveIndicator("A4", "process_pressure", "Orphan dispatcher-completed codex CLIs", completedAliveProcesses.length, "processes", 1, 5, "dispatcher/settle-time-terminal-thread-cleanup-gap.md", processItems(completedAliveProcesses)));
 
   const hubFailureStreak = updateHubRuntime(hubProbe, runtime);
   push(indicators, hubReachabilityIndicator(hubProbe, hubFailureStreak));
@@ -174,15 +181,15 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, aboveIndicator("D3", "system_resources", "meridian-roles log growth rate", Math.round(computeGrowthRate(rolesLogPath, rolesLogStat, nowMs, runtime)), "bytes/s", 20 * 1024, 200 * 1024, "session/2026-05-18-enospc.md"));
   push(indicators, fileSizeIndicator("D4", "system_resources", "meridian hub log size", hubLogStat, "bytes", 100 * 1024 * 1024, 500 * 1024 * 1024, "session/2026-05-18-enospc.md"));
 
-  push(indicators, aboveIndicator("E1", "lifecycle_anomaly", "Active role with all-terminal plan", lifecycle.activeAllTerminalPlans, "roles", 1, 3, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md"));
-  push(indicators, aboveIndicator("E2", "lifecycle_anomaly", "Workers stuck blocked > 30 min", lifecycle.blockedWorkersOver30m, "workers", 1, 3, "dispatcher/watchdog-pm-evicted-failed-seenissuekeys-cache-respawn-gap.md"));
-  push(indicators, aboveIndicator("E3", "lifecycle_anomaly", "Workers stuck awaiting_validation > 30 min without validator", lifecycle.awaitingValidationWithoutValidatorOver30m, "workers", 1, 3, "dispatcher/validator-thread-error-status-not-classified-as-inactive.md"));
-  push(indicators, aboveIndicator("E4", "lifecycle_anomaly", "Cross-plan running thread_id collision", lifecycle.runningThreadCollisions, "collisions", 1, 1, "dispatcher/cross-plan-dispatcher-thread-id-reservation-gap.md"));
-  push(indicators, infoIndicator("E5", "lifecycle_anomaly", "HUMAN-row open gate idling dispatchers", lifecycle.humanGateIdlingDispatchers, "roles", "dispatcher/dispatcher-human-row-open-gate-idle.md"));
+  push(indicators, aboveIndicator("E1", "lifecycle_anomaly", "Active role with all-terminal plan", lifecycle.activeAllTerminalPlans, "roles", 1, 3, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", lifecycle.activeAllTerminalPlanItems));
+  push(indicators, aboveIndicator("E2", "lifecycle_anomaly", "Workers stuck blocked > 30 min", lifecycle.blockedWorkersOver30m, "workers", 1, 3, "dispatcher/watchdog-pm-evicted-failed-seenissuekeys-cache-respawn-gap.md", lifecycle.blockedWorkerItems));
+  push(indicators, aboveIndicator("E3", "lifecycle_anomaly", "Workers stuck awaiting_validation > 30 min without validator", lifecycle.awaitingValidationWithoutValidatorOver30m, "workers", 1, 3, "dispatcher/validator-thread-error-status-not-classified-as-inactive.md", lifecycle.awaitingValidationWithoutValidatorItems));
+  push(indicators, aboveIndicator("E4", "lifecycle_anomaly", "Cross-plan running thread_id collision", lifecycle.runningThreadCollisions, "collisions", 1, 1, "dispatcher/cross-plan-dispatcher-thread-id-reservation-gap.md", lifecycle.runningThreadCollisionItems));
+  push(indicators, infoIndicator("E5", "lifecycle_anomaly", "HUMAN-row open gate idling dispatchers", lifecycle.humanGateIdlingDispatchers, "roles", "dispatcher/dispatcher-human-row-open-gate-idle.md", lifecycle.humanGateIdlingDispatcherItems));
 
   push(indicators, infoIndicator("F1", "wedge_staleness", "Pre-existing test-suite failures on main", "not checked", null, "meridian/targeted-test-invocation.md"));
-  push(indicators, infoIndicator("F2", "wedge_staleness", "Restart-hold paused dispatcher count", lifecycle.pausedDispatchers, "dispatchers", "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md"));
-  push(indicators, infoIndicator("F3", "wedge_staleness", "Stateless-mode validator card count", lifecycle.statelessValidatorCards, "validators", "dispatcher/validator-thread-error-status-not-classified-as-inactive.md"));
+  push(indicators, infoIndicator("F2", "wedge_staleness", "Restart-hold paused dispatcher count", lifecycle.pausedDispatchers, "dispatchers", "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md", lifecycle.pausedDispatcherItems));
+  push(indicators, infoIndicator("F3", "wedge_staleness", "Stateless-mode validator card count", lifecycle.statelessValidatorCards, "validators", "dispatcher/validator-thread-error-status-not-classified-as-inactive.md", lifecycle.statelessValidatorItems));
 
   return {
     polled_at: now.toISOString(),
@@ -399,9 +406,10 @@ function aboveIndicator(
   unit: string,
   yellow: number,
   red: number,
-  source: string
+  source: string,
+  items?: SystemMonitorIndicatorItem[]
 ): SystemMonitorIndicator {
-  return {
+  return withItems({
     id,
     group,
     name,
@@ -410,7 +418,7 @@ function aboveIndicator(
     state: value >= red ? "red" : value >= yellow ? "yellow" : "green",
     thresholds: { yellow, red },
     source_learning: source
-  };
+  }, items);
 }
 
 function belowIndicator(
@@ -421,9 +429,10 @@ function belowIndicator(
   unit: string,
   yellow: number,
   red: number,
-  source: string
+  source: string,
+  items?: SystemMonitorIndicatorItem[]
 ): SystemMonitorIndicator {
-  return {
+  return withItems({
     id,
     group,
     name,
@@ -432,7 +441,7 @@ function belowIndicator(
     state: value <= red ? "red" : value <= yellow ? "yellow" : "green",
     thresholds: { yellow, red },
     source_learning: source
-  };
+  }, items);
 }
 
 function unknownIndicator(id: string, group: string, name: string, unit: string | null, source: string): SystemMonitorIndicator {
@@ -453,9 +462,10 @@ function infoIndicator(
   name: string,
   value: number | string,
   unit: string | null,
-  source: string
+  source: string,
+  items?: SystemMonitorIndicatorItem[]
 ): SystemMonitorIndicator {
-  return {
+  return withItems({
     id,
     group,
     name,
@@ -463,7 +473,7 @@ function infoIndicator(
     unit,
     state: "info",
     source_learning: source
-  };
+  }, items);
 }
 
 function logCount(counts: Map<string, number>, key: string): number {
@@ -472,6 +482,85 @@ function logCount(counts: Map<string, number>, key: string): number {
 
 function push(indicators: SystemMonitorIndicator[], indicator: SystemMonitorIndicator): void {
   indicators.push(indicator);
+}
+
+function withItems(indicator: SystemMonitorIndicator, items?: SystemMonitorIndicatorItem[]): SystemMonitorIndicator {
+  const cleanItems = (items ?? []).filter((item) => item.label.trim().length > 0);
+  if (cleanItems.length === 0) {
+    return indicator;
+  }
+  return { ...indicator, items: cleanItems.slice(0, 50) };
+}
+
+function processItems(processes: SystemMonitorProcess[]): SystemMonitorIndicatorItem[] {
+  return processes.map((process) => ({
+    label: `pid ${process.pid} ${process.agent_type ?? "unknown"}`,
+    href: process.binding?.dispatcher_role_id ? roleDetailHref(process.binding.dispatcher_role_id) : undefined,
+    detail: processDetail(process)
+  }));
+}
+
+function tokenProcessItems(processes: SystemMonitorProcess[]): SystemMonitorIndicatorItem[] {
+  return processes
+    .filter((process) => process.token_usage)
+    .map((process) => ({
+      label: `pid ${process.pid} ${process.agent_type ?? "unknown"} ${process.token_usage?.total_tokens.toLocaleString()} tokens`,
+      href: process.binding?.dispatcher_role_id ? roleDetailHref(process.binding.dispatcher_role_id) : undefined,
+      detail: processDetail(process)
+    }));
+}
+
+function tokenSessionItems(processes: SystemMonitorProcess[]): SystemMonitorIndicatorItem[] {
+  const sessions = new Map<string, { tokens: number; pids: number[]; href?: string; detailParts: string[] }>();
+  for (const process of processes) {
+    if (!process.token_usage) {
+      continue;
+    }
+    const key = process.token_usage.session_file;
+    const current = sessions.get(key) ?? {
+      tokens: process.token_usage.total_tokens,
+      pids: [],
+      href: process.binding?.dispatcher_role_id ? roleDetailHref(process.binding.dispatcher_role_id) : undefined,
+      detailParts: []
+    };
+    current.tokens = Math.max(current.tokens, process.token_usage.total_tokens);
+    current.pids.push(process.pid);
+    current.detailParts.push(processDetail(process));
+    if (!current.href && process.binding?.dispatcher_role_id) {
+      current.href = roleDetailHref(process.binding.dispatcher_role_id);
+    }
+    sessions.set(key, current);
+  }
+  return [...sessions.entries()].map(([sessionFile, session]) => ({
+    label: `${path.basename(sessionFile)} ${session.tokens.toLocaleString()} tokens`,
+    href: session.href,
+    detail: `session ${sessionFile}; pids ${session.pids.join(", ")}; ${session.detailParts.join(" | ")}`
+  }));
+}
+
+function processDetail(process: SystemMonitorProcess): string {
+  const binding = process.binding
+    ? `binding ${process.binding.dispatcher_role_id}/${process.binding.worker_id} ${process.binding.role} ${process.binding.status}`
+    : "no binding";
+  const tokenUsage = process.token_usage
+    ? `${process.token_usage.total_tokens.toLocaleString()} tokens in ${process.token_usage.session_file}`
+    : "no token usage";
+  return [
+    `origin ${process.origin}`,
+    `thread ${process.thread_id || "none"}`,
+    `etime ${process.etime || "unknown"}`,
+    binding,
+    tokenUsage,
+    `command ${truncate(process.command, 180)}`
+  ].join("; ");
+}
+
+function roleDetailHref(roleId: string): string {
+  return `/role/${encodeURIComponent(roleId)}`;
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
 function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {

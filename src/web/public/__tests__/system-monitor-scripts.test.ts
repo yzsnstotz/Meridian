@@ -31,9 +31,15 @@ describe("system monitor public assets", () => {
     expect(monitorScript).toContain('fetchJson("/api/system-monitor")');
     expect(monitorScript).toContain("setInterval(refresh, MONITOR_POLL_INTERVAL_MS)");
     expect(monitorScript).toContain('<details class="monitor-indicator-card');
+    expect(monitorScript).toContain('data-monitor-id="');
+    expect(monitorScript).toContain("getOpenMonitorCardIds");
+    expect(monitorScript).toContain('open ? " open" : ""');
     expect(monitorScript).toContain('<summary class="monitor-card-summary"');
     expect(monitorScript).toContain('aria-label="Open indicator details for');
     expect(monitorScript).toContain("renderMonitorCardDetails");
+    expect(monitorScript).toContain("renderMonitorItems");
+    expect(monitorScript).toContain("safeMonitorHref");
+    expect(monitorScript).toContain("monitor-item-list");
     expect(monitorScript).toContain("monitor-card-state-red");
     expect(monitorScript).toContain("monitor-card-state-yellow");
     expect(monitorScript).toContain("monitor-card-state-unknown");
@@ -45,6 +51,7 @@ describe("system monitor public assets", () => {
     expect(styleCss).toContain("--monitor-card-text:");
     expect(styleCss).toContain("color: var(--monitor-card-text);");
     expect(styleCss).toContain(".monitor-card-details");
+    expect(styleCss).toContain(".monitor-item-list");
     expect(styleCss).toContain("@keyframes monitorAlarmPulse");
   });
 });

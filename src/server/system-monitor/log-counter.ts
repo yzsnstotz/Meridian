@@ -73,8 +73,16 @@ export function countPatternsInText(text: string, nowMs: number, patterns = MONI
       if (!pattern.pattern.test(line)) {
         continue;
       }
+      // A matching line without a parseable timestamp cannot be window-judged,
+      // so don't count it. The previous behavior over-counted: every match
+      // inside the read tail with no ISO/numeric time field accumulated into
+      // the windowed indicator, even when the events were hours old (e.g.
+      // C1 in PR #236 still reported thousands of "Terminal-cleanup kill
+      // failed" events after the matcher fix landed because the pre-fix log
+      // lines had no timestamps). Skipping here is the conservative answer;
+      // the upstream fix is to emit timestamps from the logger.
       const lineTimeMs = extractLineTimeMs(line);
-      if (lineTimeMs !== null && nowMs - lineTimeMs > pattern.windowMs) {
+      if (lineTimeMs === null || nowMs - lineTimeMs > pattern.windowMs) {
         continue;
       }
       counts.set(pattern.key, (counts.get(pattern.key) ?? 0) + 1);

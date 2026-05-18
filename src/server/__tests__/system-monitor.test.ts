@@ -219,6 +219,45 @@ describe("buildSystemMonitorSnapshot", () => {
     expect(snapshot.indicators.find((i) => i.id === "E3")).toMatchObject({ value: 1, state: "yellow" });
     expect(snapshot.indicators.find((i) => i.id === "E4")).toMatchObject({ value: 1, state: "red" });
     expect(snapshot.indicators.find((i) => i.id === "E5")).toMatchObject({ value: 1, state: "info" });
+    expect(snapshot.indicators.find((i) => i.id === "F2")).toMatchObject({ value: 1, state: "info" });
+
+    expect(snapshot.indicators.find((i) => i.id === "A1")?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "pid 100 codex", detail: expect.stringContaining("completed-thread") }),
+      expect.objectContaining({ label: "pid 101 claude" })
+    ]));
+    expect(snapshot.indicators.find((i) => i.id === "A4")?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "pid 100 codex", detail: expect.stringContaining("completed-thread") })
+    ]));
+    expect(snapshot.indicators.find((i) => i.id === "E2")?.items).toEqual([
+      expect.objectContaining({
+        label: "agent-dispatcher-0 / W-2",
+        href: "/role/agent-dispatcher-0",
+        detail: expect.stringContaining("blocked-thread")
+      })
+    ]);
+    expect(snapshot.indicators.find((i) => i.id === "E3")?.items).toEqual([
+      expect.objectContaining({
+        label: "agent-dispatcher-0 / W-3",
+        href: "/role/agent-dispatcher-0",
+        detail: expect.stringContaining("awaiting-thread")
+      })
+    ]);
+    expect(snapshot.indicators.find((i) => i.id === "E4")?.items).toEqual([
+      expect.objectContaining({
+        label: "thread shared-running-thread",
+        detail: expect.stringContaining("agent-dispatcher-0")
+      })
+    ]);
+    expect(snapshot.indicators.find((i) => i.id === "E5")?.items).toEqual([
+      expect.objectContaining({ label: "agent-dispatcher-0", href: "/role/agent-dispatcher-0" })
+    ]);
+    expect(snapshot.indicators.find((i) => i.id === "F2")?.items).toEqual([
+      expect.objectContaining({ label: "agent-dispatcher-1", href: "/role/agent-dispatcher-1" })
+    ]);
+    expect(snapshot.indicators.find((i) => i.id === "F3")?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "agent-dispatcher-0", href: "/role/agent-dispatcher-0" }),
+      expect.objectContaining({ label: "agent-dispatcher-1", href: "/role/agent-dispatcher-1" })
+    ]));
 
     await fs.rm(fixtureA.dir, { recursive: true, force: true });
     await fs.rm(fixtureB.dir, { recursive: true, force: true });
