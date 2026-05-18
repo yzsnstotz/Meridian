@@ -152,3 +152,65 @@ test("resolve for api_key returns env_overrides from env.json", () => {
   const resolved = store.resolve("c-K", makeCaller("owner-1"));
   assert.deepEqual(resolved?.env_overrides, { OPENAI_API_KEY: "sk-test" });
 });
+
+test("createApiKey writes config.toml + env.json with 0600 perms and registers record", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b3-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "openai",
+    owner_caller_id: "caller-1",
+    base_url: "https://api.openai.com/v1",
+    model_id: "gpt-4o",
+    env_var: "OPENAI_API_KEY",
+    key_value: "sk-test"
+  });
+  const rec = store.get(id);
+  assert.ok(rec);
+  assert.equal(rec!.kind, "api_key");
+  assert.equal(rec!.owner_caller_id, "caller-1");
+  assert.equal(rec!.api_key_metadata?.model_id, "gpt-4o");
+
+  const envJson = JSON.parse(fs.readFileSync(path.join(rec!.codex_home_path, "env.json"), "utf8"));
+  assert.deepEqual(envJson, { OPENAI_API_KEY: "sk-test" });
+
+  const configToml = fs.readFileSync(path.join(rec!.codex_home_path, "config.toml"), "utf8");
+  assert.match(configToml, /model = "gpt-4o"/);
+  assert.match(configToml, /base_url = "https:\/\/api\.openai\.com\/v1"/);
+  assert.match(configToml, /env_key = "OPENAI_API_KEY"/);
+
+  const envStat = fs.statSync(path.join(rec!.codex_home_path, "env.json"));
+  assert.equal(envStat.mode & 0o777, 0o600);
+});
+
+test("createApiKey rolls back dir and record on onChange failure", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b3-fail-"));
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: tmpdir,
+    onChange: async () => { throw new Error("simulated persist failure"); }
+  });
+  await assert.rejects(() => store.createApiKey({
+    credential_label: "openai", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "gpt-4o",
+    env_var: "OPENAI_API_KEY", key_value: "sk-1"
+  }));
+  assert.equal(fs.readdirSync(tmpdir).length, 0); // dir removed
+  assert.equal(store.list().length, 0);            // record removed
+});
+
+test("createApiKey escapes quotes in TOML values to prevent injection", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b3-esc-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "test",
+    owner_caller_id: "c1",
+    base_url: "https://x/v1",
+    model_id: 'gpt"injected\\quote',
+    env_var: "OPENAI_API_KEY",
+    key_value: "sk-x"
+  });
+  const configToml = fs.readFileSync(
+    path.join(store.get(id)!.codex_home_path, "config.toml"), "utf8"
+  );
+  assert.match(configToml, /model = "gpt\\"injected\\\\quote"/);
+});

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { CredentialRecord } from "./state-store";
@@ -92,5 +93,76 @@ export class CredentialStore {
     if (!rec) return;
     rec.last_used_at = new Date().toISOString();
     await this.onChange(this.list());
+  }
+
+  async createApiKey(args: {
+    credential_label: string;
+    owner_caller_id: string;
+    base_url: string;
+    model_id: string;
+    env_var: string;
+    key_value: string;
+  }): Promise<string> {
+    const credentialId = crypto.randomUUID();
+    const dir = path.join(this.credentialsRoot, credentialId);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+    try {
+      const configToml = this.generateApiKeyConfigToml({
+        base_url: args.base_url,
+        model_id: args.model_id,
+        env_var: args.env_var
+      });
+      fs.writeFileSync(path.join(dir, "config.toml"), configToml, { mode: 0o600 });
+      fs.writeFileSync(
+        path.join(dir, "env.json"),
+        JSON.stringify({ [args.env_var]: args.key_value }),
+        { mode: 0o600 }
+      );
+
+      const rec: CredentialRecord = {
+        credential_id: credentialId,
+        credential_label: args.credential_label,
+        provider: "codex",
+        kind: "api_key",
+        owner_caller_id: args.owner_caller_id,
+        codex_home_path: dir,
+        is_default: false,
+        created_at: new Date().toISOString(),
+        last_used_at: null,
+        revoked_at: null,
+        api_key_metadata: {
+          base_url: args.base_url,
+          model_id: args.model_id,
+          env_var: args.env_var
+        }
+      };
+      this.records.set(credentialId, rec);
+      await this.onChange(this.list());
+      return credentialId;
+    } catch (err) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      this.records.delete(credentialId);
+      throw err;
+    }
+  }
+
+  private generateApiKeyConfigToml(args: {
+    base_url: string;
+    model_id: string;
+    env_var: string;
+  }): string {
+    const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return [
+      `model = "${esc(args.model_id)}"`,
+      `model_provider = "meridian-managed"`,
+      ``,
+      `[model_providers.meridian-managed]`,
+      `name = "meridian-managed"`,
+      `base_url = "${esc(args.base_url)}"`,
+      `wire_api = "chat"`,
+      `env_key = "${esc(args.env_var)}"`,
+      ``
+    ].join("\n");
   }
 }
