@@ -294,6 +294,21 @@ const OAuthLoginStartPayloadSchema = z.object({
 const OAuthLoginPollPayloadSchema = z.object({ job_id: z.string().min(1) });
 const OAuthLoginCancelPayloadSchema = z.object({ job_id: z.string().min(1) });
 
+const UpdateCredentialPayloadSchema = z.object({
+  credential_id: z.string().min(1),
+  credential_label: z.string().min(1).max(64).optional(),
+  base_url: z.string().url().optional(),
+  model_id: z.string().min(1).optional(),
+  env_var: z.string().min(1).optional(),
+  key_value: z.string().min(1).optional()
+});
+const SetDefaultCredentialPayloadSchema = z.object({
+  credential_id: z.string().min(1)
+});
+const RevokeCredentialPayloadSchema = z.object({
+  credential_id: z.string().min(1)
+});
+
 class RunInterruptedError extends Error {
   constructor(readonly threadId: string) {
     super(`Agent run interrupted for thread_id=${threadId}`);
@@ -729,6 +744,12 @@ export class HubRouter {
           return this.handleRegisterCredentialOAuthPoll(message);
         case "register_credential_oauth_cancel":
           return this.handleRegisterCredentialOAuthCancel(message);
+        case "update_credential":
+          return this.handleUpdateCredential(message);
+        case "set_default_credential":
+          return this.handleSetDefaultCredential(message);
+        case "revoke_credential":
+          return this.handleRevokeCredential(message);
         case "reply":
           return this.handleReply(message);
         default:
@@ -2577,6 +2598,165 @@ export class HubRouter {
       JSON.stringify({ job_id: parsed.job_id, status: "cancelled" }),
       message.thread_id
     );
+  }
+
+  private checkCredentialOwnerOrAdmin(message: HubMessage, credentialId: string): HubResult | null {
+    const store = this.credentialStore;
+    if (!store) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({ error_code: "credential_store_unavailable" }),
+        message.thread_id
+      );
+    }
+    const rec = store.get(credentialId);
+    if (!rec) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({ error_code: "credential_not_found", credential_id: credentialId }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    const isAdmin = caller?.caller_authority === "admin";
+    if (!isAdmin && rec.owner_caller_id !== caller?.caller_id) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({ error_code: "credential_forbidden", credential_id: credentialId }),
+        message.thread_id
+      );
+    }
+    return null;
+  }
+
+  private async handleUpdateCredential(message: HubMessage): Promise<HubResult> {
+    let parsed: z.infer<typeof UpdateCredentialPayloadSchema>;
+    try {
+      parsed = UpdateCredentialPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+    const guard = this.checkCredentialOwnerOrAdmin(message, parsed.credential_id);
+    if (guard) return guard;
+    const { credential_id, ...patch } = parsed;
+    try {
+      await this.credentialStore!.update(credential_id, patch);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id, updated: true }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "update_failed",
+          error_message: err instanceof Error ? err.message : "update failed"
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private async handleSetDefaultCredential(message: HubMessage): Promise<HubResult> {
+    let parsed: z.infer<typeof SetDefaultCredentialPayloadSchema>;
+    try {
+      parsed = SetDefaultCredentialPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+    const guard = this.checkCredentialOwnerOrAdmin(message, parsed.credential_id);
+    if (guard) return guard;
+    try {
+      await this.credentialStore!.setDefault(parsed.credential_id);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id: parsed.credential_id, is_default: true }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "set_default_failed",
+          error_message: err instanceof Error ? err.message : "set default failed"
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private async handleRevokeCredential(message: HubMessage): Promise<HubResult> {
+    let parsed: z.infer<typeof RevokeCredentialPayloadSchema>;
+    try {
+      parsed = RevokeCredentialPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+    const guard = this.checkCredentialOwnerOrAdmin(message, parsed.credential_id);
+    if (guard) return guard;
+    try {
+      await this.credentialStore!.revoke(parsed.credential_id);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id: parsed.credential_id, revoked: true }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "revoke_failed",
+          error_message: err instanceof Error ? err.message : "revoke failed"
+        }),
+        message.thread_id
+      );
+    }
   }
 
   private async dispatchToService(endpoint: ServiceEndpoint, message: HubMessage): Promise<HubResult> {

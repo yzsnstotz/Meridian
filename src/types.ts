@@ -37,7 +37,10 @@ export const BUILT_IN_INTENTS = [
   "register_credential_api_key",
   "register_credential_oauth_start",
   "register_credential_oauth_poll",
-  "register_credential_oauth_cancel"
+  "register_credential_oauth_cancel",
+  "update_credential",
+  "set_default_credential",
+  "revoke_credential"
 ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
