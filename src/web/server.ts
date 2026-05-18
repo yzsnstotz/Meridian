@@ -864,6 +864,32 @@ export class WebInterfaceServer {
       }
     }
 
+    if (requestUrl.pathname === "/api/credentials" && request.method === "GET") {
+      await this.handleListCredentialsRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/credentials/")) {
+      const credentialSuffix = requestUrl.pathname.slice("/api/credentials/".length);
+      if (request.method === "POST" && credentialSuffix.endsWith("/default")) {
+        const credentialId = decodeURIComponent(credentialSuffix.slice(0, -"/default".length));
+        if (credentialId && !credentialId.includes("/")) {
+          await this.handleSetDefaultCredentialRequest(request, response, credentialId);
+          return;
+        }
+      }
+      if (request.method === "PATCH" && credentialSuffix && !credentialSuffix.includes("/")) {
+        const credentialId = decodeURIComponent(credentialSuffix);
+        await this.handleUpdateCredentialRequest(request, response, credentialId);
+        return;
+      }
+      if (request.method === "DELETE" && credentialSuffix && !credentialSuffix.includes("/")) {
+        const credentialId = decodeURIComponent(credentialSuffix);
+        await this.handleRevokeCredentialRequest(request, response, credentialId);
+        return;
+      }
+    }
+
     await this.serveStaticAsset(requestUrl.pathname, response);
   }
 
@@ -2118,6 +2144,165 @@ export class WebInterfaceServer {
     if (result.status !== "success") {
       const isNotFound = result.content.includes("caller_unknown");
       this.respondJson(response, isNotFound ? 404 : 400, { error: result.content });
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  /**
+   * Translates a credential-intent HubResult error_code into an HTTP status code.
+   * Owner-or-admin auth and existence checks happen inside the intent handlers
+   * (router.ts), so we only translate; we don't re-enforce.
+   */
+  private credentialErrorStatus(errorCode: string | undefined): number {
+    switch (errorCode) {
+      case "credential_not_found":
+        return 404;
+      case "credential_revoked":
+        return 410;
+      case "credential_forbidden":
+        return 403;
+      case "credential_store_unavailable":
+      case "oauth_subsystem_unavailable":
+        return 503;
+      case "oauth_login_cap_exceeded":
+        return 429;
+      case "job_not_found":
+        return 404;
+      case "invalid_payload":
+      case "caller_required":
+        return 400;
+      default:
+        return 500;
+    }
+  }
+
+  private parseCredentialErrorBody(raw: string): { error_code?: string; error_message?: string; [key: string]: unknown } {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") {
+        return parsed as { error_code?: string; error_message?: string };
+      }
+    } catch {
+      // fall through
+    }
+    return { error_message: raw };
+  }
+
+  private async handleListCredentialsRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "list_credentials",
+          thread_id: "global",
+          target: "global",
+          content: "",
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const body = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleRevokeCredentialRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    credentialId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "revoke_credential",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ credential_id: credentialId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const body = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleUpdateCredentialRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    credentialId: string
+  ): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await this.readJsonBody(request);
+      body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    } catch (err) {
+      this.respondJson(response, 400, { error_code: "invalid_payload", error_message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const payload: Record<string, unknown> = { credential_id: credentialId };
+    for (const key of ["credential_label", "base_url", "model_id", "env_var", "key_value"]) {
+      if (body[key] !== undefined) payload[key] = body[key];
+    }
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "update_credential",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify(payload),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleSetDefaultCredentialRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    credentialId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "set_default_credential",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ credential_id: credentialId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const body = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
       return;
     }
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
