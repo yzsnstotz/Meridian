@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CredentialRecordSchema, PersistedHubStateSchema, buildEmptyPersistedHubState } from "./state-store";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { CredentialRecordSchema, PersistedHubStateSchema, buildEmptyPersistedHubState, loadPersistedHubState } from "./state-store";
 
 test("CredentialRecordSchema accepts a minimal OAuth credential", () => {
   const result = CredentialRecordSchema.safeParse({
@@ -69,4 +72,38 @@ test("migrateLegacyPersistedHubState returns a valid v3 object (not v4)", async 
   };
   const result = PersistedHubStateV3Schema.safeParse(v3State);
   assert.equal(result.success, true);
+});
+
+test("loading a v3 state file from disk upgrades it to v4 with empty credentials", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "hub-state-mig-v3-v4-"));
+  const statePath = path.join(tmpdir, "hub-state.json");
+  const v3 = {
+    version: 3,
+    updated_at: "2026-05-01T00:00:00.000Z",
+    instances: [],
+    session_bindings: {},
+    push_subscriptions: {},
+    conversation_history: {},
+    callers: [
+      {
+        caller_id: "c1",
+        caller_label: "Caller One",
+        caller_kind: "external",
+        caller_authority: "write",
+        key_hash: "h1",
+        created_at: "2026-05-01T00:00:00.000Z",
+        last_seen_at: null,
+        revoked_at: null
+      }
+    ]
+  };
+  fs.writeFileSync(statePath, JSON.stringify(v3));
+  const loaded = loadPersistedHubState(statePath, "2026-05-19T00:00:00.000Z");
+  assert.equal(loaded.version, 4);
+  assert.deepEqual(loaded.credentials, []);
+  assert.equal(loaded.callers.length, 1);
+  assert.equal(loaded.callers[0].caller_id, "c1");
+
+  // Cleanup
+  fs.rmSync(tmpdir, { recursive: true, force: true });
 });
