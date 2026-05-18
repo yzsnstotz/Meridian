@@ -40,6 +40,11 @@ export interface ResolvedCredential {
   credential_id: string;
 }
 
+export interface OAuthSlot {
+  credential_id: string;
+  codex_home: string;
+}
+
 export class CredentialStore {
   private readonly records: Map<string, CredentialRecord>;
   private readonly credentialsRoot: string;
@@ -145,6 +150,46 @@ export class CredentialStore {
       this.records.delete(credentialId);
       throw err;
     }
+  }
+
+  createOAuthSlot(): OAuthSlot {
+    const credentialId = crypto.randomUUID();
+    const dir = path.join(this.credentialsRoot, credentialId);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return { credential_id: credentialId, codex_home: dir };
+  }
+
+  async completeOAuth(args: {
+    slot: OAuthSlot;
+    credential_label: string;
+    owner_caller_id: string;
+  }): Promise<string> {
+    const authPath = path.join(args.slot.codex_home, "auth.json");
+    if (!fs.existsSync(authPath)) {
+      throw new Error(`auth.json missing in slot ${args.slot.credential_id}`);
+    }
+    JSON.parse(fs.readFileSync(authPath, "utf8")); // throws on malformed
+
+    const rec: CredentialRecord = {
+      credential_id: args.slot.credential_id,
+      credential_label: args.credential_label,
+      provider: "codex",
+      kind: "oauth",
+      owner_caller_id: args.owner_caller_id,
+      codex_home_path: args.slot.codex_home,
+      is_default: false,
+      created_at: new Date().toISOString(),
+      last_used_at: null,
+      revoked_at: null,
+      api_key_metadata: null
+    };
+    this.records.set(rec.credential_id, rec);
+    await this.onChange(this.list());
+    return rec.credential_id;
+  }
+
+  abandonOAuthSlot(slot: OAuthSlot): void {
+    fs.rmSync(slot.codex_home, { recursive: true, force: true });
   }
 
   private generateApiKeyConfigToml(args: {

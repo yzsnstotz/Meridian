@@ -214,3 +214,65 @@ test("createApiKey escapes quotes in TOML values to prevent injection", async ()
   );
   assert.match(configToml, /model = "gpt\\"injected\\\\quote"/);
 });
+
+test("createOAuthSlot allocates dir but registers no record yet", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b4-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const slot = store.createOAuthSlot();
+  assert.ok(fs.statSync(slot.codex_home).isDirectory());
+  assert.equal(slot.codex_home.startsWith(tmpdir), true);
+  assert.equal(store.list().length, 0);
+  const stat = fs.statSync(slot.codex_home);
+  assert.equal(stat.mode & 0o777, 0o700);
+});
+
+test("completeOAuth registers a record once auth.json is present and parseable", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b4-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const slot = store.createOAuthSlot();
+  fs.writeFileSync(
+    path.join(slot.codex_home, "auth.json"),
+    JSON.stringify({ tokens: { access_token: "x", refresh_token: "y" }, version: "1.0" })
+  );
+  const id = await store.completeOAuth({
+    slot,
+    credential_label: "work",
+    owner_caller_id: "c1"
+  });
+  const rec = store.get(id);
+  assert.ok(rec);
+  assert.equal(rec!.kind, "oauth");
+  assert.equal(rec!.owner_caller_id, "c1");
+  assert.equal(rec!.credential_label, "work");
+  assert.equal(rec!.codex_home_path, slot.codex_home);
+  assert.equal(rec!.api_key_metadata, null);
+  assert.equal(id, slot.credential_id);
+});
+
+test("completeOAuth rejects if auth.json is missing", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b4-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const slot = store.createOAuthSlot();
+  await assert.rejects(() =>
+    store.completeOAuth({ slot, credential_label: "x", owner_caller_id: "c1" })
+  );
+});
+
+test("completeOAuth rejects if auth.json is malformed JSON", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b4-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const slot = store.createOAuthSlot();
+  fs.writeFileSync(path.join(slot.codex_home, "auth.json"), "{not json");
+  await assert.rejects(() =>
+    store.completeOAuth({ slot, credential_label: "x", owner_caller_id: "c1" })
+  );
+});
+
+test("abandonOAuthSlot removes the slot dir", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b4-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const slot = store.createOAuthSlot();
+  assert.equal(fs.existsSync(slot.codex_home), true);
+  store.abandonOAuthSlot(slot);
+  assert.equal(fs.existsSync(slot.codex_home), false);
+});
