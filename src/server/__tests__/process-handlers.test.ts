@@ -338,7 +338,7 @@ describe("/api/agentapi-processes — origin classification", () => {
     ]);
   });
 
-  it("classifies codex parented to calling-hub as MANAGED (Hub-direct spawn from meridian-roles)", async () => {
+  it("classifies codex parented to calling-hub as MANAGED, NOT a leak when thread_id is null (Hub-direct stateless call)", async () => {
     // Confirmed in Meridian/src/hub/router.ts:1185: Hub.handleSpawn ONLY
     // fires from inbound HubMessage { intent: "spawn" }. Hub does not
     // autonomously spawn. So a codex with PPID chain reaching the Hub was
@@ -347,9 +347,14 @@ describe("/api/agentapi-processes — origin classification", () => {
     // stateless validator calls. These belong to meridian-roles; flagging
     // them external would hide spawn-loops that go through this pattern.
     //
-    // No agentapi parent → no thread_id parseable from argv → unbound →
-    // is_leak=true. Operator sees them surface in red; if the hold is in
-    // effect they shouldn't be spawning at all.
+    // No agentapi parent → no thread_id parseable from argv → unbound. The
+    // pre-fix behavior flagged these as leaks (red), but Hub-direct
+    // `codex exec --json` is BY DESIGN a transient stateless call (no
+    // agentapi, no thread_id) — it self-reaps when the call finishes. The
+    // operator's leak panel was overrun with this transient noise sitting
+    // next to actual spawn-orphans (the codex_NN-bearing kind), and the
+    // signal got drowned. Updated rule: only leak when thread_id is parseable
+    // OR the row is agentapi itself.
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
@@ -361,12 +366,13 @@ describe("/api/agentapi-processes — origin classification", () => {
     const { res, body } = makeResponse();
     await handlers.handle(makeRequest("/api/agentapi-processes"), res);
     const payload = JSON.parse(body());
-    // Both codex have a Hub ancestor → managed (not external, not orphan).
-    // No agentapi → no thread_id → unbound → leak (operator should see).
     expect(payload.external).toBe(0);
     expect(payload.orphan).toBe(0);
     expect(payload.processes.filter((p: { origin: string }) => p.origin === "managed")).toHaveLength(2);
-    expect(payload.leak).toBe(2);
+    expect(payload.processes.every((p: { thread_id: string | null }) => p.thread_id === null)).toBe(true);
+    // Each codex row stays visible as managed, but no longer marked red.
+    expect(payload.leak).toBe(0);
+    expect(payload.managed_leak).toBe(0);
   });
 
   it("classifies hub-spawned codex as MANAGED when hub argv is the relative `node dist/hub/index.js`", async () => {
@@ -588,6 +594,172 @@ describe("/api/agentapi-processes — origin classification", () => {
       total_tokens: 20,
       sessions: 2
     });
+  });
+
+  it("binds pm_resolver row via issue.worker_id when top-level worker_id is absent (production shape)", async () => {
+    // Production recording paths (startPmResolverForRole /
+    // recordPmResolverResult) never set a top-level `worker_id` on the
+    // pm_resolvers[] entry — the target worker lives at `issue.worker_id`.
+    // Pre-fix, buildThreadIndex only read `pm.worker_id` so EVERY live
+    // pm_resolver displayed as `worker: "(unknown)"`, making the Processes
+    // tab unreadable for the canonical PM-running-against-blocked-worker
+    // scenario. Observed live on agent-dispatcher-98b73906 codex_05
+    // resolving PRE-FLIGHT.
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "claude_02", started_at: "2026-05-18T18:41:41.697Z", status: "running" },
+      workers: {
+        "PRE-FLIGHT": {
+          thread_id: "codex_04",
+          trace_id: null,
+          started_at: "2026-05-18T18:42:11.461Z",
+          last_seen_at: "2026-05-18T18:42:11.461Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_05",
+          status: "running",
+          started_at: "2026-05-18T18:46:35.409Z",
+          last_seen_at: "2026-05-18T18:53:35.462Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "PRE-FLIGHT",
+            message: "PRE-FLIGHT reported blocking outcome",
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: "run failed: Request timed out — the hub may be overloaded.",
+          marker_outcome: null,
+          marker_pm_action: null
+        }
+      ],
+      last_reconciled_at: null
+    } as unknown as DispatchThreadStateV2);
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 63585, ppid: 1, etime: "10:00", command: "agentapi server --socket=/tmp/agentapi-codex_05.sock --type=codex -- codex --model gpt-5.5" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].binding).toMatchObject({
+      dispatcher_role_id: "agent-dispatcher-abc",
+      worker_id: "PRE-FLIGHT",
+      role: "pm_resolver",
+      status: "running"
+    });
+    expect(payload.processes[0].is_leak).toBe(false);
+  });
+
+  it("does NOT flag thread_id-less Hub-direct codex/claude as leaks (they self-reap; only agentapi or thread_id-bearing rows can leak)", async () => {
+    // Mirrors the openclaw-h20-user-visible incident: 5 leak rows visible
+    // in the Processes tab, 3 of which were Hub-direct stateless calls
+    // (codex exec --json / claude --print) with no thread_id. Those are
+    // legitimate transient work and should NOT be red. Compare against an
+    // unbindable agentapi in the same snapshot, which IS still a leak.
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 54988, ppid: 1, etime: "20:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        // Hub-direct stateless codex (no thread_id, no binding) — was a leak pre-fix
+        { pid: 64893, ppid: 54988, etime: "03:07", command: "node /Users/yzliu/.local/share/fnm/aliases/default/bin/codex exec --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 64894, ppid: 64893, etime: "03:07", command: "/Users/yzliu/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        // Hub-direct stateless claude (no thread_id, no binding) — was a leak pre-fix
+        { pid: 99659, ppid: 54988, etime: "08:01", command: "claude --print --output-format stream-json --verbose --include-partial-messages --allowedTools Bash Edit Replace --dangerously-skip-permissions" },
+        // Unbindable agentapi (no socket marker, no fetchAgentapiInstanceIndex wired) — STILL a leak
+        { pid: 91030, ppid: 1, etime: "00:17", command: "/Users/yzliu/work/Meridian/bin/agentapi server --type=codex --port=56616 -- codex --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const byPid = new Map<number, { is_leak: boolean; thread_id: string | null; agent_type: string | null }>(
+      payload.processes.map((p: { pid: number; is_leak: boolean; thread_id: string | null; agent_type: string | null }) => [p.pid, p])
+    );
+    // Hub-direct stateless calls: NOT leaks (the fix's whole point)
+    expect(byPid.get(64893)?.is_leak).toBe(false);
+    expect(byPid.get(64894)?.is_leak).toBe(false);
+    expect(byPid.get(99659)?.is_leak).toBe(false);
+    // Unbindable agentapi: still a leak (agentapi without a thread_id is broken regardless)
+    expect(byPid.get(91030)?.is_leak).toBe(true);
+    expect(byPid.get(91030)?.agent_type).toBe("agentapi");
+    // Total leak count is 1 (the agentapi), not 4 (was 4 pre-fix).
+    expect(payload.leak).toBe(1);
+  });
+
+  it("strips token_usage from unbound rows that resolve to the same session_file as a bound row (claude shared-cwd collision)", async () => {
+    // Two claude processes both write to ~/.claude/projects/<encoded-cwd>/
+    // and the resolver picks the closest-birthtime jsonl. When one claude is
+    // agentapi-managed (bound to claude_NN DISPATCHER) and a sibling
+    // Hub-direct `claude --print` started near the same time in the same
+    // cwd, the resolver maps BOTH to the bound peer's session file →
+    // unbound row inherits the bound row's 1.69M token total visually.
+    // The summarizeTokenUsage already dedupes the sum; this strips the
+    // misleading per-row display so the per-process numbers add up to the
+    // displayed total.
+    const sharedUsage: TokenUsage = {
+      source: "claude",
+      input_tokens: 100,
+      cached_input_tokens: 50,
+      output_tokens: 200,
+      reasoning_output_tokens: 0,
+      total_tokens: 300,
+      session_file: "/Users/y/.claude/projects/-Users-yzliu-work/abc.jsonl",
+      session_id: "claude-sess-abc"
+    };
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "claude_02", started_at: "2026-05-18T18:41:41.697Z", status: "running" },
+      workers: {},
+      last_reconciled_at: null
+    });
+    const stub: Pick<TokenUsageCollector, "lookup" | "retain"> = {
+      // Both the bound (99656) and the Hub-direct sibling (99659) resolve
+      // to the same session file via cwd+birthtime collision.
+      lookup: (pid: number) => (pid === 99656 || pid === 99659) ? sharedUsage : null,
+      retain: () => undefined
+    };
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      tokenUsageCollector: stub as TokenUsageCollector,
+      listProcesses: (): ProcInfo[] => [
+        { pid: 54988, ppid: 1, etime: "20:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 99655, ppid: 1, etime: "08:01", command: "agentapi server --socket=/tmp/agentapi-claude_02.sock --type=claude" },
+        { pid: 99656, ppid: 99655, etime: "08:01", command: "claude --print --output-format stream-json --verbose --include-partial-messages" },
+        // Hub-direct claude --print: NOT a child of the agentapi above
+        { pid: 99659, ppid: 54988, etime: "08:01", command: "claude --print --output-format stream-json --verbose --include-partial-messages --allowedTools Bash Edit Replace --dangerously-skip-permissions" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const byPid = new Map<number, { token_usage: TokenUsage | null; binding: unknown }>(
+      payload.processes.map((p: { pid: number; token_usage: TokenUsage | null; binding: unknown }) => [p.pid, p])
+    );
+    // The bound DISPATCHER claude keeps its real total.
+    expect(byPid.get(99656)?.binding).not.toBeNull();
+    expect(byPid.get(99656)?.token_usage?.total_tokens).toBe(300);
+    // The Hub-direct sibling is unbound and was sharing the same session_file;
+    // its token_usage is now nulled so the totals are not double-displayed.
+    expect(byPid.get(99659)?.binding).toBeNull();
+    expect(byPid.get(99659)?.token_usage).toBeNull();
+    // The aggregate is unaffected (was already deduping by session_file).
+    expect(payload.token_totals.sessions).toBe(1);
+    expect(payload.token_totals.total_tokens).toBe(300);
   });
 
   it("ignores non-agent processes entirely (zsh, node-not-codex, ...)", async () => {
