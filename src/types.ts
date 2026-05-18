@@ -33,7 +33,8 @@ export const BUILT_IN_INTENTS = [
   "rotate_caller_key",
   "update_caller_authority",
   "list_callers",
-  "list_credentials"
+  "list_credentials",
+  "register_credential_api_key"
 ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);

@@ -274,6 +274,15 @@ const UpdateCallerAuthorityPayloadSchema = z
   })
   .strict();
 
+const RegisterCredentialApiKeyPayloadSchema = z.object({
+  credential_label: z.string().min(1).max(64),
+  base_url: z.string().url(),
+  model_id: z.string().min(1),
+  env_var: z.string().min(1),
+  key_value: z.string().min(1)
+  // owner_caller_id intentionally NOT accepted — hub injects it from the authenticated caller.
+});
+
 class RunInterruptedError extends Error {
   constructor(readonly threadId: string) {
     super(`Agent run interrupted for thread_id=${threadId}`);
@@ -695,6 +704,8 @@ export class HubRouter {
           return this.handleListCallers(message);
         case "list_credentials":
           return this.handleListCredentials(message);
+        case "register_credential_api_key":
+          return this.handleRegisterCredentialApiKey(message);
         case "reply":
           return this.handleReply(message);
         default:
@@ -2252,6 +2263,82 @@ export class HubRouter {
       JSON.stringify({ credentials }),
       message.thread_id
     );
+  }
+
+  private async handleRegisterCredentialApiKey(message: HubMessage): Promise<HubResult> {
+    const store = this.credentialStore;
+    if (!store) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "credential_store_unavailable",
+          error_message: "CredentialStore not configured"
+        }),
+        message.thread_id
+      );
+    }
+
+    const caller = message.caller;
+    if (!caller) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "caller_required",
+          error_message: "register_credential_api_key requires an authenticated caller"
+        }),
+        message.thread_id
+      );
+    }
+
+    let parsed: z.infer<typeof RegisterCredentialApiKeyPayloadSchema>;
+    try {
+      const raw = JSON.parse(message.payload.content);
+      parsed = RegisterCredentialApiKeyPayloadSchema.parse(raw);
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: err instanceof Error ? err.message : "invalid payload"
+        }),
+        message.thread_id
+      );
+    }
+
+    try {
+      const credential_id = await store.createApiKey({
+        credential_label: parsed.credential_label,
+        owner_caller_id: caller.caller_id,
+        base_url: parsed.base_url,
+        model_id: parsed.model_id,
+        env_var: parsed.env_var,
+        key_value: parsed.key_value
+      });
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "create_failed",
+          error_message: err instanceof Error ? err.message : "createApiKey failed"
+        }),
+        message.thread_id
+      );
+    }
   }
 
   private async dispatchToService(endpoint: ServiceEndpoint, message: HubMessage): Promise<HubResult> {
