@@ -153,6 +153,31 @@ describe("launchDispatchWorker", () => {
     expect(harness.dispatchRunHandoff).not.toHaveBeenCalled();
   });
 
+  it("does NOT retry when /api/spawn fails with an HTTP-spawn-timeout error", async () => {
+    // Hub may have completed the spawn server-side after our 60s HTTP client
+    // aborted; a retry would allocate a NEW thread_id and leave the first
+    // agentapi+codex pair as a managed leak (no binding, surfaces in the
+    // Processes tab). Other transport errors (ECONNREFUSED, fetch failed
+    // pre-request, etc.) still retry — those prove the connection produced
+    // no request. See SPAWN_HTTP_TIMEOUT_PATTERN in worker-launcher.ts.
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true,
+      spawnError: new MeridianApiError(
+        "spawn failed: Meridian API unreachable at http://127.0.0.1:3000/: spawn request timed out after 60000ms"
+      )
+    });
+
+    const result = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("spawn request timed out after 60000ms");
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("fails before /api/spawn when the dispatch repo root cannot be resolved from artifacts", async () => {
     const spawn = vi.fn();
     const dispatchRunHandoff = vi.fn();

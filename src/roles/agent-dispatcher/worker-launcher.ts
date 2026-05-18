@@ -223,13 +223,19 @@ const SPAWN_TRANSIENT_PATTERNS = [
   /ECONNREFUSED/,
   /ECONNRESET/,
   /ETIMEDOUT/,
-  /timed?\s*out/i,
   /service.unavailable/i,
   // Hub IPC bridge transport drops (src/shared/ipc.ts) — same class of
   // transient as fetch failed; spawn is idempotent enough to retry safely.
-  /\bIPC request completed without response body\b/i,
-  /\bIPC request timed out\b/i
+  /\bIPC request completed without response body\b/i
 ];
+// HTTP-spawn timeouts are NOT retried even when the wrapper "Meridian API
+// unreachable" message would otherwise match the transient list. The Hub may
+// have completed the spawn server-side after our client aborted; a retry then
+// allocates a NEW thread_id and leaves the first agentapi+codex pair orphaned
+// (managed origin, no binding) — surfaces as a Processes-tab leak. Only
+// HTTP-spawn-timeout shapes skip retry; ECONNREFUSED/ECONNRESET/etc. still
+// retry because they prove the connection never produced a request.
+const SPAWN_HTTP_TIMEOUT_PATTERN = /spawn request timed out after\s+\d+\s*ms|operation was aborted due to timeout|\bIPC request timed out\b/i;
 
 interface SpawnRetryGuards {
   isPersistedThreadIdReserved: (threadId: string) => boolean;
@@ -324,6 +330,9 @@ function formatActiveThreadCollisionError(threadId: string): string {
 }
 
 function isSpawnTransientError(error: Error): boolean {
+  if (SPAWN_HTTP_TIMEOUT_PATTERN.test(error.message)) {
+    return false;
+  }
   return SPAWN_TRANSIENT_PATTERNS.some((pattern) => pattern.test(error.message));
 }
 
