@@ -1869,6 +1869,87 @@ describe("role config handlers", () => {
     }
   });
 
+  it("refuses to relaunch awaiting_validation workers when validator config is disabled", async () => {
+    // Regression: dispatcher 98b73906 (2026-05-18) — validator config was
+    // missing from the persisted role, so processValidationQueue early-returned
+    // and the launch path re-spawned every awaiting_validation worker the
+    // watchdog selected via resolveValidationContinueWorkerFromWorkerRows.
+    // The visible symptom: manual Validate clicks immediately became retries.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-validator-disabled-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔍 | 1 | N-02 | Build Complete | CODEX | — | TaskSpec | awaiting validation |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-08T00:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-02": buildLifecycleWorker({
+          thread_id: "worker-thread-n02",
+          status: "awaiting_validation",
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: []
+          }
+        })
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("must not call hub when validator is disabled");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    try {
+      const harness = createHarness();
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-validator-disabled",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+        // no validator config — the original repro
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/roles/agent-dispatcher-validator-disabled/worker/N-02/continue"
+      )).resolves.toMatchObject({
+        ok: true,
+        status: "manual_intervention_required",
+        worker: "N-02"
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns immediately after starting validation during continue", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-validation-async-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

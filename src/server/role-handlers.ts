@@ -997,6 +997,33 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
 
     try {
       if (effectiveWorkerId) {
+        // Validator-owned worker states (awaiting_validation, fix_requested)
+        // cannot be advanced when the dispatcher's validator config is
+        // disabled or absent: processValidationQueue early-returns at its
+        // enabled gate, then the launch path below would re-spawn the worker,
+        // producing a "manual Validate becomes retry" loop. The watchdog
+        // re-selects the same worker via resolveValidationContinueWorkerFromWorkerRows
+        // every tick and the loop continues until the breaker trips.
+        // Observed on agent-dispatcher-98b73906 (2026-05-18): F-1 cycled
+        // codex_09 → codex_17 (retry_count 1) with validation cleared on
+        // every relaunch. Return manual_intervention_required so the
+        // watchdog stops and the operator either re-enables the validator
+        // or applies a non-validate resume action.
+        const effectiveWorkerState = lifecycleState.workers[effectiveWorkerId];
+        if (
+          !validatorConfig?.enabled
+          && (
+            effectiveWorkerState?.status === "awaiting_validation"
+            || effectiveWorkerState?.status === "fix_requested"
+          )
+        ) {
+          return {
+            ok: true,
+            status: "manual_intervention_required",
+            message: `manual intervention required: ${effectiveWorkerId} is in ${effectiveWorkerState.status} but validator config is disabled; enable the validator on this dispatcher or apply a different resume action (retry/skip/force-complete)`,
+            worker: effectiveWorkerId
+          };
+        }
         const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, threadId);
         const continued = await continueDispatchWorker(
           context.effectiveConfig,
