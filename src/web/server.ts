@@ -874,6 +874,25 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/credentials/oauth-login" && request.method === "POST") {
+      await this.handleOAuthLoginStartRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/credentials/oauth-login/")) {
+      const jobId = decodeURIComponent(requestUrl.pathname.slice("/api/credentials/oauth-login/".length));
+      if (jobId && !jobId.includes("/")) {
+        if (request.method === "GET") {
+          await this.handleOAuthLoginPollRequest(request, response, jobId);
+          return;
+        }
+        if (request.method === "DELETE") {
+          await this.handleOAuthLoginCancelRequest(request, response, jobId);
+          return;
+        }
+      }
+    }
+
     if (requestUrl.pathname.startsWith("/api/credentials/")) {
       const credentialSuffix = requestUrl.pathname.slice("/api/credentials/".length);
       if (request.method === "POST" && credentialSuffix.endsWith("/default")) {
@@ -2345,6 +2364,95 @@ export class WebInterfaceServer {
       return;
     }
     this.respondJson(response, 201, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleOAuthLoginStartRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await this.readJsonBody(request);
+      body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    } catch (err) {
+      this.respondJson(response, 400, { error_code: "invalid_payload", error_message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_oauth_start",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify(body),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 202, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleOAuthLoginPollRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    jobId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_oauth_poll",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ job_id: jobId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleOAuthLoginCancelRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    jobId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_oauth_cancel",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ job_id: jobId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    response.statusCode = 204;
+    response.end();
   }
 
   private isPublicStaticAsset(pathname: string): boolean {
