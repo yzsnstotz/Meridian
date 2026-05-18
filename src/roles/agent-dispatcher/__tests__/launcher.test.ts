@@ -91,6 +91,26 @@ describe("launchDispatcher", () => {
     await expect(fs.access(harness.expectedCommandPath)).rejects.toThrow();
   });
 
+  it("does NOT retry when /api/spawn fails with an HTTP-spawn-timeout error", async () => {
+    // The Hub may have completed the spawn server-side after our 60s HTTP
+    // client aborted; a retry would allocate a NEW thread_id and leave the
+    // first agentapi+codex pair as a managed leak (no binding, surfaces in
+    // the Processes tab). Other transport errors (ECONNREFUSED, fetch failed
+    // pre-request, etc.) still retry — those prove the connection produced no
+    // request. See SPAWN_HTTP_TIMEOUT_PATTERN in launcher.ts.
+    const harness = await createHarness({
+      spawnError: new MeridianApiError(
+        "spawn failed: Meridian API unreachable at http://127.0.0.1:3000/: spawn request timed out after 60000ms"
+      )
+    });
+
+    const result = await launchDispatcher(buildConfig(harness.planDirectory, "System prompt text"), harness.deps);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("spawn request timed out after 60000ms");
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("wraps unexpected (non-MeridianApiError) spawn rejections with the spawn failed prefix", async () => {
     const harness = await createHarness({
       spawnError: new Error("unexpected internal error")

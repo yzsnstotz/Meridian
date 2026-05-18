@@ -236,9 +236,16 @@ const SPAWN_TRANSIENT_PATTERNS = [
   /ECONNREFUSED/,
   /ECONNRESET/,
   /ETIMEDOUT/,
-  /timed?\s*out/i,
   /service.unavailable/i
 ];
+// HTTP-spawn timeouts are NOT retried even when the wrapper "Meridian API
+// unreachable" message would otherwise match the transient list. The Hub may
+// have completed the spawn server-side after our client aborted; a retry then
+// allocates a NEW thread_id and leaves the first agentapi+codex pair orphaned
+// (managed origin, no binding) — surfaces as a Processes-tab leak. Only the
+// HTTP-spawn-timeout shape skips retry; ECONNREFUSED/ECONNRESET/etc. still
+// retry safely because they prove the connection never produced a request.
+const SPAWN_HTTP_TIMEOUT_PATTERN = /spawn request timed out after\s+\d+\s*ms|operation was aborted due to timeout/i;
 
 interface DispatcherSpawnRetryGuards {
   isPersistedThreadIdReserved: (threadId: string) => boolean;
@@ -313,6 +320,9 @@ async function spawnWithRetry(
 }
 
 function isSpawnTransientError(error: Error): boolean {
+  if (SPAWN_HTTP_TIMEOUT_PATTERN.test(error.message)) {
+    return false;
+  }
   return SPAWN_TRANSIENT_PATTERNS.some((pattern) => pattern.test(error.message));
 }
 

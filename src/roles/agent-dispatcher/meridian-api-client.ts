@@ -12,7 +12,13 @@ import https from "node:https";
 import { getCallerIdentity } from "../../shared/caller-identity";
 
 const DEFAULT_MERIDIAN_HTTP = "http://127.0.0.1:3000";
-const SPAWN_REQUEST_TIMEOUT_MS = 10_000;
+// /api/spawn waits for instanceManager.spawn → agentapi ready → codex/claude
+// CLI start → first prompt-readiness probe. Codex startup alone is 20–40s under
+// any Hub load; 10s caused frequent false-positive timeouts that ALSO orphaned
+// the spawn (Hub kept running, completed the spawn, but the caller had already
+// aborted and never bound the thread_id). 60s covers realistic startup with
+// margin; ECONNREFUSED still fails instantly via the underlying socket layer.
+const SPAWN_REQUEST_TIMEOUT_MS = 60_000;
 const KILL_REQUEST_TIMEOUT_MS = 10_000;
 const CALLER_HTTP_HEADERS = {
   id: "X-Meridian-Caller-Id",
