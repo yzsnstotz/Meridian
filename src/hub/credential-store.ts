@@ -192,6 +192,14 @@ export class CredentialStore {
     fs.rmSync(slot.codex_home, { recursive: true, force: true });
   }
 
+  async revoke(credentialId: string): Promise<void> {
+    const rec = this.records.get(credentialId);
+    if (!rec) throw new CredentialNotFoundError(credentialId);
+    fs.rmSync(rec.codex_home_path, { recursive: true, force: true });
+    rec.revoked_at = new Date().toISOString();
+    await this.onChange(this.list());
+  }
+
   private generateApiKeyConfigToml(args: {
     base_url: string;
     model_id: string;

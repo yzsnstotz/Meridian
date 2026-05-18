@@ -276,3 +276,41 @@ test("abandonOAuthSlot removes the slot dir", () => {
   store.abandonOAuthSlot(slot);
   assert.equal(fs.existsSync(slot.codex_home), false);
 });
+
+test("revoke removes dir, marks record revoked, and fires onChange", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b5-"));
+  let changeCount = 0;
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: tmpdir,
+    onChange: async () => { changeCount++; }
+  });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v"
+  });
+  const dir = store.get(id)!.codex_home_path;
+  const baseline = changeCount;
+  await store.revoke(id);
+  assert.equal(fs.existsSync(dir), false);
+  assert.ok(store.get(id)!.revoked_at);
+  assert.equal(changeCount, baseline + 1);
+});
+
+test("revoke throws CredentialNotFoundError for unknown id", async () => {
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: "/tmp" });
+  await assert.rejects(() => store.revoke("missing"), CredentialNotFoundError);
+});
+
+test("revoke is safe even if codex_home_path no longer exists on disk", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b5-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v"
+  });
+  // user deletes dir out-of-band first
+  fs.rmSync(store.get(id)!.codex_home_path, { recursive: true, force: true });
+  await store.revoke(id); // should not throw
+  assert.ok(store.get(id)!.revoked_at);
+});
