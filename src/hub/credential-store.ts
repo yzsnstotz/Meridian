@@ -200,6 +200,98 @@ export class CredentialStore {
     await this.onChange(this.list());
   }
 
+  async update(
+    credentialId: string,
+    patch: {
+      credential_label?: string;
+      base_url?: string;
+      model_id?: string;
+      env_var?: string;
+      key_value?: string;
+    }
+  ): Promise<void> {
+    const rec = this.records.get(credentialId);
+    if (!rec) throw new CredentialNotFoundError(credentialId);
+    if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
+
+    const FORBIDDEN = [
+      "credential_id",
+      "owner_caller_id",
+      "kind",
+      "provider",
+      "created_at",
+      "revoked_at",
+      "is_default",
+      "api_key_metadata",
+      "codex_home_path",
+      "last_used_at"
+    ];
+    for (const k of Object.keys(patch)) {
+      if (FORBIDDEN.includes(k)) {
+        throw new Error(`field ${k} is immutable`);
+      }
+    }
+
+    const isApiKeyChange =
+      patch.base_url !== undefined ||
+      patch.model_id !== undefined ||
+      patch.env_var !== undefined ||
+      patch.key_value !== undefined;
+    if (isApiKeyChange && rec.kind !== "api_key") {
+      throw new Error(`cannot modify api_key fields on a ${rec.kind} credential`);
+    }
+
+    if (patch.credential_label !== undefined) {
+      rec.credential_label = patch.credential_label;
+    }
+
+    if (rec.kind === "api_key" && rec.api_key_metadata) {
+      const merged = {
+        base_url: patch.base_url ?? rec.api_key_metadata.base_url,
+        model_id: patch.model_id ?? rec.api_key_metadata.model_id,
+        env_var: patch.env_var ?? rec.api_key_metadata.env_var
+      };
+
+      if (
+        patch.base_url !== undefined ||
+        patch.model_id !== undefined ||
+        patch.env_var !== undefined
+      ) {
+        const toml = this.generateApiKeyConfigToml(merged);
+        const tmp = path.join(rec.codex_home_path, "config.toml.tmp");
+        fs.writeFileSync(tmp, toml, { mode: 0o600 });
+        fs.renameSync(tmp, path.join(rec.codex_home_path, "config.toml"));
+        rec.api_key_metadata = merged;
+      }
+
+      if (patch.key_value !== undefined) {
+        const envJsonPath = path.join(rec.codex_home_path, "env.json");
+        const envVarName = merged.env_var;
+        const tmp = path.join(rec.codex_home_path, "env.json.tmp");
+        fs.writeFileSync(
+          tmp,
+          JSON.stringify({ [envVarName]: patch.key_value }),
+          { mode: 0o600 }
+        );
+        fs.renameSync(tmp, envJsonPath);
+      }
+    }
+
+    await this.onChange(this.list());
+  }
+
+  async setDefault(credentialId: string): Promise<void> {
+    const rec = this.records.get(credentialId);
+    if (!rec) throw new CredentialNotFoundError(credentialId);
+    if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
+    for (const r of this.records.values()) {
+      if (r.owner_caller_id === rec.owner_caller_id) {
+        r.is_default = r.credential_id === credentialId;
+      }
+    }
+    await this.onChange(this.list());
+  }
+
   private generateApiKeyConfigToml(args: {
     base_url: string;
     model_id: string;

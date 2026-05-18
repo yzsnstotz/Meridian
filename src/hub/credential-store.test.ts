@@ -314,3 +314,97 @@ test("revoke is safe even if codex_home_path no longer exists on disk", async ()
   await store.revoke(id); // should not throw
   assert.ok(store.get(id)!.revoked_at);
 });
+
+test("update changes credential_label", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "old", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v"
+  });
+  await store.update(id, { credential_label: "new" });
+  assert.equal(store.get(id)?.credential_label, "new");
+});
+
+test("update rewrites env.json atomically when key_value changes", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "OPENAI_API_KEY", key_value: "sk-old"
+  });
+  await store.update(id, { key_value: "sk-new" });
+  const env = JSON.parse(fs.readFileSync(path.join(store.get(id)!.codex_home_path, "env.json"), "utf8"));
+  assert.equal(env.OPENAI_API_KEY, "sk-new");
+  // ensure tmp file cleaned up
+  assert.equal(fs.existsSync(path.join(store.get(id)!.codex_home_path, "env.json.tmp")), false);
+});
+
+test("update regenerates config.toml when model_id changes", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "gpt-4o", env_var: "OPENAI_API_KEY", key_value: "sk-v"
+  });
+  await store.update(id, { model_id: "gpt-4o-mini" });
+  const toml = fs.readFileSync(path.join(store.get(id)!.codex_home_path, "config.toml"), "utf8");
+  assert.match(toml, /model = "gpt-4o-mini"/);
+  assert.equal(store.get(id)?.api_key_metadata?.model_id, "gpt-4o-mini");
+});
+
+test("update throws when trying to modify env on an oauth credential", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const slot = store.createOAuthSlot();
+  fs.writeFileSync(path.join(slot.codex_home, "auth.json"), JSON.stringify({ tokens: {} }));
+  const id = await store.completeOAuth({ slot, credential_label: "w", owner_caller_id: "c1" });
+  await assert.rejects(() => store.update(id, { key_value: "sk-x" }));
+});
+
+test("update rejects immutable fields (credential_id, owner_caller_id, kind)", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v"
+  });
+  // @ts-expect-error testing runtime guard
+  await assert.rejects(() => store.update(id, { owner_caller_id: "evil" }));
+});
+
+test("update throws for revoked credential", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const id = await store.createApiKey({
+    credential_label: "k", owner_caller_id: "c1",
+    base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v"
+  });
+  await store.revoke(id);
+  await assert.rejects(() => store.update(id, { credential_label: "x" }), CredentialRevokedError);
+});
+
+test("setDefault flips is_default true on named record, clears others owned by same caller", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const a = await store.createApiKey({ credential_label: "a", owner_caller_id: "c1", base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v" });
+  const b = await store.createApiKey({ credential_label: "b", owner_caller_id: "c1", base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v" });
+  await store.setDefault(a);
+  assert.equal(store.get(a)?.is_default, true);
+  assert.equal(store.get(b)?.is_default, false);
+  // flip to b
+  await store.setDefault(b);
+  assert.equal(store.get(a)?.is_default, false);
+  assert.equal(store.get(b)?.is_default, true);
+});
+
+test("setDefault does NOT affect records owned by a different caller", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "creds-root-b6-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const a = await store.createApiKey({ credential_label: "a", owner_caller_id: "c1", base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v" });
+  const b = await store.createApiKey({ credential_label: "b", owner_caller_id: "c2", base_url: "https://x/v1", model_id: "m", env_var: "K", key_value: "v" });
+  await store.setDefault(b); // c2's default
+  await store.setDefault(a); // c1's default — must not touch c2's
+  assert.equal(store.get(b)?.is_default, true);
+  assert.equal(store.get(a)?.is_default, true);
+});
