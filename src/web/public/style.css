@@ -1719,3 +1719,66 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 .monitor-card-state-info .monitor-state-dot {
   background: var(--monitor-card-accent);
 }
+
+/* ── Nav dropdown (Create Role menu) ──────────────────── */
+.nav-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.nav-dropdown-trigger {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-dropdown-caret {
+  font-size: 0.7em;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.nav-dropdown.open .nav-dropdown-caret {
+  transform: rotate(180deg);
+}
+
+.nav-dropdown-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 200px;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+}
+
+.nav-dropdown-list[hidden] { display: none; }
+
+.nav-dropdown-list > li > button,
+.nav-dropdown-list > li > a {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.nav-dropdown-list > li > button:hover,
+.nav-dropdown-list > li > a:hover,
+.nav-dropdown-list > li > button:focus-visible,
+.nav-dropdown-list > li > a:focus-visible {
+  background: var(--bg-card);
+  outline: none;
+}
