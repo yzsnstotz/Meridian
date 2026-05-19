@@ -2137,3 +2137,68 @@ test("startWebInterfaceServer throws bootstrap_key_missing when MERIDIAN_INTERNA
     );
   });
 });
+
+test("isHubSocketUnreachableMessage matches only genuine hub-socket connect failures", async () => {
+  const { isHubSocketUnreachableMessage } = await webServerModulePromise;
+
+  // Hub-socket unreachable — must match
+  assert.equal(isHubSocketUnreachableMessage("connect ENOENT /tmp/meridian.sock"), true);
+  assert.equal(isHubSocketUnreachableMessage("connect ECONNREFUSED 127.0.0.1:1234"), true);
+  assert.equal(isHubSocketUnreachableMessage("connect ENOTSOCK /tmp/meridian.sock"), true);
+  assert.equal(isHubSocketUnreachableMessage("IPC send connect timed out after 5000ms"), true);
+  assert.equal(isHubSocketUnreachableMessage("IPC request connect timed out after 120000ms"), true);
+
+  // Unrelated ENOENT / ECONNREFUSED — must NOT match. Prior substring matching
+  // mis-attributed these as "Hub is not reachable" and stalled dispatchers.
+  assert.equal(
+    isHubSocketUnreachableMessage("ENOENT: no such file or directory, open '/Users/foo/dispatch_plan.md'"),
+    false
+  );
+  assert.equal(
+    isHubSocketUnreachableMessage("Failed to load credential bundle: ENOENT: no such file"),
+    false
+  );
+  assert.equal(
+    isHubSocketUnreachableMessage("upstream fetch failed: ECONNREFUSED https://api.example.com"),
+    false
+  );
+
+  // IPC request timeout (post-connect) is hub overload, not hub-unreachable —
+  // friendlyErrorMessage routes those to "Request timed out — the hub may be overloaded".
+  assert.equal(isHubSocketUnreachableMessage("IPC request timed out after 120000ms"), false);
+});
+
+test("/api/health surfaces hub-socket-unreachable only when the underlying error is genuinely a connect failure", async () => {
+  let scriptedContent = "";
+
+  await withServer(async ({ baseUrl }) => {
+    // 1. Genuine hub-socket connect failure → friendly "Hub is not reachable".
+    scriptedContent = "connect ENOENT /tmp/meridian.sock";
+    let response = await fetch(`${baseUrl}/api/health?token=secret-token`);
+    assert.equal(response.status, 503);
+    let payload = (await response.json()) as { ok: boolean; error: string };
+    assert.equal(payload.ok, false);
+    assert.match(payload.error, /Hub is not reachable/);
+
+    // 2. Unrelated ENOENT (e.g. missing artifact on disk) → must NOT translate to
+    //    "Hub is not reachable". This is the bug that left dispatcher operators
+    //    paused with a misleading surface message when the hub was healthy.
+    scriptedContent = "ENOENT: no such file or directory, open '/Users/foo/dispatch_plan.md'";
+    response = await fetch(`${baseUrl}/api/health?token=secret-token`);
+    assert.equal(response.status, 503);
+    payload = (await response.json()) as { ok: boolean; error: string };
+    assert.equal(payload.ok, false);
+    assert.doesNotMatch(payload.error, /Hub is not reachable/);
+    assert.match(payload.error, /Server error:.*dispatch_plan\.md/);
+  }, {
+    requestHub: async (message: HubMessage) => ({
+      trace_id: message.trace_id,
+      thread_id: "global",
+      source: "codex",
+      status: "error" as const,
+      content: scriptedContent,
+      attachments: [],
+      timestamp: new Date().toISOString()
+    })
+  });
+});
