@@ -47,14 +47,32 @@ export class OAuthLoginJob {
   private pollHandle: NodeJS.Timeout | null = null;
 
   constructor(opts: OAuthLoginJobOptions) {
+    // Per-field `??` rather than `{ ...defaults, ...opts }`: an explicit
+    // `undefined` in opts (e.g. router forwarding an unset
+    // `defaultCodexLoginCommand`) would otherwise override the default with
+    // `undefined`, and `spawn(undefined, ...)` throws synchronously — which the
+    // registry's fire-and-forget `.catch(() => {})` swallows, leaving the job
+    // stuck on `status="pending"` forever.
     this.opts = {
-      codexLoginCommand: "codex",
-      codexLoginArgs: ["login"],
-      timeoutMs: 10 * 60 * 1000,
-      urlCaptureWindowMs: 30_000,
-      pollIntervalMs: 500,
-      ...opts
-    } as Required<OAuthLoginJobOptions>;
+      credentialStore: opts.credentialStore,
+      owner_caller_id: opts.owner_caller_id,
+      credential_label: opts.credential_label,
+      codexLoginCommand: opts.codexLoginCommand ?? "codex",
+      codexLoginArgs: opts.codexLoginArgs ?? ["login"],
+      timeoutMs: opts.timeoutMs ?? 10 * 60 * 1000,
+      urlCaptureWindowMs: opts.urlCaptureWindowMs ?? 30_000,
+      pollIntervalMs: opts.pollIntervalMs ?? 500
+    };
+  }
+
+  /**
+   * Mark a job that failed during start() (synchronous spawn throw, fs.watch
+   * EACCES, etc.) as failed instead of leaving it stuck on `pending`. Called
+   * by the registry from its `.catch` on `job.start()`.
+   */
+  markStartupFailure(message: string): void {
+    if (this.status !== "pending" && this.status !== "awaiting_browser") return;
+    this.fail("startup_failed", message);
   }
 
   async start(): Promise<void> {
