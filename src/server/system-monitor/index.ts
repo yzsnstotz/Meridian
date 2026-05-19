@@ -77,7 +77,7 @@ const DEFAULT_HUB_STATE_PATH = process.env.MERIDIAN_HUB_STATE_PATH
 const DEFAULT_ROLES_LOG_PATH = process.env.MERIDIAN_ROLES_LOG_PATH
   ?? path.resolve(process.cwd(), "logs/meridian-roles.out.log");
 const DEFAULT_HUB_LOG_PATH = process.env.MERIDIAN_HUB_LOG_PATH
-  ?? "/Users/yzliu/work/Meridian/logs/hub.log";
+  ?? path.join(process.env.LOG_DIR ?? "/var/log/hub", "hub.log");
 
 const defaultLogCounter = new LogPatternCounter();
 
