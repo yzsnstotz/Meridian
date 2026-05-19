@@ -85,7 +85,9 @@ import {
   AgentDispatcherConfigSchema,
   AgentTypeSchema,
   AppStateSchema,
+  ChatterRoleConfigSchema,
   StatefulBridgeModeSchema,
+  type ChatterRoleConfig,
   type DispatchThreadStateV2,
   type DispatchWorkerState,
   type LifecycleStatus,
@@ -1681,17 +1683,17 @@ async function loadState(stateStore: PersistableStateStore): Promise<AppState> {
 function normalizeCreateBody(body: unknown): {
   threadId: string;
   roleType: RoleType;
-  config: DispatcherConfig | AgentDispatcherConfig;
+  config: DispatcherConfig | AgentDispatcherConfig | ChatterRoleConfig;
 }
 function normalizeCreateBody(body: unknown, forcedRoleType: RoleType): {
   threadId: string;
   roleType: RoleType;
-  config: DispatcherConfig | AgentDispatcherConfig;
+  config: DispatcherConfig | AgentDispatcherConfig | ChatterRoleConfig;
 }
 function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
   threadId: string;
   roleType: RoleType;
-  config: DispatcherConfig | AgentDispatcherConfig;
+  config: DispatcherConfig | AgentDispatcherConfig | ChatterRoleConfig;
 } {
   const parsed = CreateRoleBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -1704,10 +1706,31 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
   }
 
   const roleType = forcedRoleType ?? requestedRoleType ?? "agent-dispatcher";
-  if (roleType !== "dispatcher" && roleType !== "agent-dispatcher") {
+  if (roleType !== "dispatcher" && roleType !== "agent-dispatcher" && roleType !== "chatter") {
     throw createHttpError(400, `Unsupported role_type=${roleType}`);
   }
   const threadId = parsed.data.thread_id ?? parsed.data.threadId ?? `${roleType}-${randomUUID().slice(0, 8)}`;
+
+  if (roleType === "chatter") {
+    const chatterRaw = typeof parsed.data.config === "object" && parsed.data.config !== null
+      ? parsed.data.config
+      : {};
+    // Prefer top-level user_reply_channel when present (matches dispatcher
+    // body shape); otherwise fall back to the field nested in config.
+    const merged = {
+      ...(chatterRaw as Record<string, unknown>),
+      user_reply_channel:
+        parsed.data.user_reply_channel
+        ?? (chatterRaw as { user_reply_channel?: unknown }).user_reply_channel
+    };
+    const chatterConfig = ChatterRoleConfigSchema.safeParse(merged);
+    if (!chatterConfig.success) {
+      const firstIssue = chatterConfig.error.issues[0];
+      const reason = firstIssue?.message ?? "Invalid chatter config";
+      throw createHttpError(400, `Invalid chatter config: ${reason}`);
+    }
+    return { threadId, roleType, config: chatterConfig.data };
+  }
 
   const nestedConfig = typeof parsed.data.config === "object" && parsed.data.config !== null
     ? parsed.data.config
