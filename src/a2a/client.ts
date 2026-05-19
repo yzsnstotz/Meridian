@@ -124,8 +124,21 @@ export class A2AClient {
       throw new Error(`list failed: ${result.content}`);
     }
 
+    // Some Hub builds return the literal sentinel `No active instances` (plain
+    // text) instead of `[]` when nothing is registered. The processes-tab
+    // probe polls this every ~1s, so the parse error used to flood the log
+    // (observed 2026-05-19: thousands of `Unexpected token 'N', "No active "`
+    // lines on a healthy hub with no codex sessions). Treat any
+    // status=success payload that isn't a JSON array/object as the empty
+    // list — semantically equivalent and harmless if a future Hub keeps the
+    // contract.
+    const content = result.content?.trim() ?? "";
+    if (!content.startsWith("[") && !content.startsWith("{")) {
+      return [];
+    }
+
     try {
-      return AgentInstanceSchema.array().parse(JSON.parse(result.content));
+      return AgentInstanceSchema.array().parse(JSON.parse(content));
     } catch (error) {
       throw new Error(`list failed: invalid AgentInstance[] response: ${asError(error).message}`);
     }
@@ -142,8 +155,14 @@ export class A2AClient {
       throw new Error(`list reply channels failed: ${result.content}`);
     }
 
+    // Same Hub-returns-plain-text-sentinel pattern as listInstances above.
+    const content = result.content?.trim() ?? "";
+    if (!content.startsWith("[") && !content.startsWith("{")) {
+      return [];
+    }
+
     try {
-      return parseReplyChannels(result.content);
+      return parseReplyChannels(content);
     } catch (error) {
       throw new Error(`list reply channels failed: invalid ReplyChannel[] response: ${asError(error).message}`);
     }

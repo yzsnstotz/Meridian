@@ -73,7 +73,7 @@ function appStateWithDispatchers(planPaths: string[]): AppState {
 }
 
 describe("buildSystemMonitorSnapshot", () => {
-  it("returns the full 27-indicator inventory and escalates red threshold crossings", async () => {
+  it("returns the full 28-indicator inventory and escalates red threshold crossings", async () => {
     const oldIso = "2026-05-18T01:00:00.000Z";
     const fixtureA = await createDispatcherFixture({
       version: 2,
@@ -208,7 +208,7 @@ describe("buildSystemMonitorSnapshot", () => {
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(27);
+    expect(snapshot.indicators).toHaveLength(28);
     expect(snapshot.any_red).toBe(true);
 
     expect(snapshot.indicators.find((i) => i.id === "A1")).toMatchObject({ value: 3, state: "red" });
@@ -218,7 +218,8 @@ describe("buildSystemMonitorSnapshot", () => {
     expect(snapshot.indicators.find((i) => i.id === "E2")).toMatchObject({ value: 1, state: "yellow" });
     expect(snapshot.indicators.find((i) => i.id === "E3")).toMatchObject({ value: 1, state: "yellow" });
     expect(snapshot.indicators.find((i) => i.id === "E4")).toMatchObject({ value: 1, state: "red" });
-    expect(snapshot.indicators.find((i) => i.id === "E5")).toMatchObject({ value: 1, state: "info" });
+    expect(snapshot.indicators.find((i) => i.id === "E5")).toMatchObject({ value: 1, state: "yellow" });
+    expect(snapshot.indicators.find((i) => i.id === "E6")).toMatchObject({ value: 0, state: "green" });
     expect(snapshot.indicators.find((i) => i.id === "F2")).toMatchObject({ value: 1, state: "info" });
 
     expect(snapshot.indicators.find((i) => i.id === "A1")?.items).toEqual(expect.arrayContaining([
@@ -261,6 +262,60 @@ describe("buildSystemMonitorSnapshot", () => {
 
     await fs.rm(fixtureA.dir, { recursive: true, force: true });
     await fs.rm(fixtureB.dir, { recursive: true, force: true });
+  });
+
+  it("flags E6 when a BLOCKED HUMAN row has pending non-HUMAN downstream (v1.1-append dep-loop)", async () => {
+    // Reproducer for agent-dispatcher-98b73906 (2026-05-19): V-01-B was a
+    // HUMAN gate marked ⛔ after failed verification, and the appended fix
+    // rows F-6/F-7 were wired `depends_on: V-01-B`. Result: a deadlock
+    // where the dispatcher idles forever because the HUMAN row never
+    // reaches a terminal lifecycle status on its own. E6 must catch this
+    // even when the dispatcher is paused (restart hold).
+    const fixture = await createDispatcherFixture(
+      {
+        version: 2,
+        dispatcher: { thread_id: null, started_at: null, status: "pending" },
+        workers: {},
+        last_reconciled_at: null
+      },
+      [
+        "| Status | Batch | Worker | Task | Model | Depends_on |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| ✅ | 1 | V-01-A | rebuild | CODEX | |",
+        "| ⛔ | 1 | V-01-B | human verify | HUMAN | V-01-A |",
+        "| ⬜ | 2 | F-6 | fix finding | CODEX | V-01-B |",
+        "| ⬜ | 2 | F-7 | fix finding | CODEX | V-01-B |",
+        "| ⬜ | 3 | POST-FLIGHT | teardown | CODEX | ALL-PRIOR |"
+      ].join("\n")
+    );
+
+    const snapshot = await buildSystemMonitorSnapshot({
+      stateStore: { load: async () => appStateWithDispatchers([fixture.planPath]) },
+      processSnapshot: async () => [],
+      now: () => new Date("2026-05-19T12:00:00.000Z"),
+      probeHub: async () => ({ reachable: true, latency_ms: 12 }),
+      statFile: async () => null,
+      statFs: async () => ({ freeBytes: 10 * 1024 * 1024 * 1024 }),
+      countLogPatterns: async () => new Map()
+    });
+
+    const e6 = snapshot.indicators.find((i) => i.id === "E6");
+    expect(e6).toMatchObject({ value: 1, state: "red" });
+    expect(e6?.items).toEqual([
+      expect.objectContaining({
+        label: "agent-dispatcher-0",
+        href: "/role/agent-dispatcher-0",
+        detail: expect.stringContaining("V-01-B")
+      })
+    ]);
+    // The downstream chain (F-6, F-7, and POST-FLIGHT via ALL-PRIOR) must all
+    // be listed so the operator sees the full set of pending workers stuck
+    // behind the gate.
+    expect(e6?.items?.[0]?.detail).toContain("F-6");
+    expect(e6?.items?.[0]?.detail).toContain("F-7");
+    expect(e6?.items?.[0]?.detail).toContain("POST-FLIGHT");
+
+    await fs.rm(fixture.dir, { recursive: true, force: true });
   });
 
   it("keeps the API read-only and returns false for unrelated routes", async () => {

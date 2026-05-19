@@ -3414,7 +3414,13 @@ function renderDispatchPlanStatus(row) {
 }
 
 function renderDispatchPlanActions(row) {
-  if (row?.read_only || isHumanDispatchModel(row?.model)) {
+  // read_only is set by buildDispatchPlanSyntheticRow for pm_resolver detail-kind rows
+  // (auto-resolved by the PM resolver subsystem, no operator action surface).
+  // Plan rows with model=HUMAN or model=PM must keep their action buttons —
+  // those are the only paths the operator has to drive a human-gated row to a
+  // terminal status (Force Complete / Skip). Hiding them broke recovery from
+  // the V-01-B HUMAN-gate loop scenario (2026-05-19).
+  if (row?.read_only) {
     return `<span class="muted">---</span>`;
   }
 
