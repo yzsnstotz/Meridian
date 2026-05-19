@@ -429,7 +429,17 @@ export class HubServer {
     this.stopIdempotencyCleanup();
     this.clearPushAccumulators();
     this.paneBroadcaster.close();
-    await fs.promises.unlink(this.socketPath).catch(() => undefined);
+    // Do NOT unlink this.socketPath on stop. PM2's restart races the old
+    // hub's graceful shutdown against the new hub's bind: if the old hub
+    // unlinks AFTER the new hub binds (it can take a few seconds for the
+    // old process to drain idempotency cleanup + pane broadcaster close),
+    // the directory entry disappears even though the new hub's fd is
+    // still alive, and downstream meridian-roles fails its
+    // hub_socket_reachable check on /tmp/hub-core.sock. Leaving the
+    // stale entry is harmless — start() always calls removeStaleSocket()
+    // before listen(), and Node will refuse to bind a path with a live
+    // listener (EADDRINUSE). The kernel reclaims the inode when the
+    // last fd closes.
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server stopped");
   }
 
@@ -1500,6 +1510,33 @@ export class HubServer {
   }
 
   private async removeStaleSocket(): Promise<void> {
+    // Before unlinking, probe to see if another process is actively
+    // listening on this path. PM2 routinely spawns transient children
+    // during restart races; a blind unlink here would delete the live
+    // hub's directory entry while leaving its fd open — meridian-roles
+    // then fails hub_socket_reachable on /tmp/hub-core.sock and the
+    // chain spirals into ensure_meridian_hub_socket → restart → repeat.
+    const liveListener = await new Promise<boolean>((resolve) => {
+      const probe = net.createConnection(this.socketPath);
+      const timer = setTimeout(() => {
+        probe.destroy();
+        resolve(false);
+      }, 250);
+      probe.once("connect", () => {
+        clearTimeout(timer);
+        probe.end();
+        resolve(true);
+      });
+      probe.once("error", () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
+    if (liveListener) {
+      throw new Error(
+        `Hub socket already in use by a live listener: ${this.socketPath}. Refusing to unlink it.`
+      );
+    }
     await fs.promises.unlink(this.socketPath).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") {
         throw error;

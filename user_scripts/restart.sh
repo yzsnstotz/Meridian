@@ -65,6 +65,43 @@ log() {
   printf '[restart] %s\n' "$1"
 }
 
+# When this script is invoked by the maintenance hub (or any spawner with a
+# minimal PATH), fnm's per-shell bin dir is missing and `command -v pm2`
+# returns nothing — even though the PM2 daemon is alive. Without resolving the
+# binary the script silently falls through to `start_with_node_dist`, leaves
+# PM2's calling-* apps running, and the two sets fight for ports (calling-web
+# crash-looped 2244× on EADDRINUSE :3000 on 2026-05-19).
+find_pm2_binary() {
+  local candidate
+  if candidate="$(command -v pm2 2>/dev/null)" && [[ -n "${candidate}" ]]; then
+    printf '%s' "${candidate}"
+    return 0
+  fi
+  for candidate in \
+    "${HOME}/.local/share/fnm/node-versions"/*/installation/bin/pm2 \
+    "${HOME}/.local/state/fnm_multishells"/*/bin/pm2 \
+    /opt/homebrew/bin/pm2 \
+    /usr/local/bin/pm2 \
+    /usr/bin/pm2; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+pm2_daemon_running() {
+  pgrep -f 'PM2.*ProcessContainerFork\.js' >/dev/null 2>&1 ||
+    pgrep -f 'PM2 v.*: God Daemon' >/dev/null 2>&1
+}
+
+PM2_BIN="$(find_pm2_binary || true)"
+if [[ -z "${PM2_BIN}" ]] && pm2_daemon_running; then
+  echo "[restart] WARNING: PM2 daemon is running but the pm2 binary is not on PATH and not found in fallback locations" >&2
+  echo "[restart] WARNING: standalone node dist mode will collide with PM2-managed processes on ports/sockets" >&2
+fi
+
 migrate_legacy_state_path() {
   if [[ "${MERIDIAN_STATE_PATH}" != "${DEFAULT_MERIDIAN_STATE_PATH}" ]]; then
     return 0
@@ -171,7 +208,7 @@ kill_runtime_service() {
 }
 
 stop_pm2_apps() {
-  if ! command -v pm2 >/dev/null 2>&1; then
+  if [[ -z "${PM2_BIN}" ]]; then
     return 0
   fi
 
@@ -180,16 +217,16 @@ stop_pm2_apps() {
     return 0
   fi
 
-  log "Stopping PM2 apps (if present)"
-  pm2 delete calling-hub calling-interface calling-monitor calling-web >/dev/null 2>&1 || true
-  pm2 delete ecosystem.config.js >/dev/null 2>&1 || true
+  log "Stopping PM2 apps (if present) via ${PM2_BIN}"
+  "${PM2_BIN}" delete calling-hub calling-interface calling-monitor calling-web >/dev/null 2>&1 || true
+  "${PM2_BIN}" delete ecosystem.config.js >/dev/null 2>&1 || true
 }
 
 pm2_runtime_available() {
-  if ! command -v pm2 >/dev/null 2>&1; then
+  if [[ -z "${PM2_BIN}" ]]; then
     return 1
   fi
-  if ! pm2 ping >/dev/null 2>&1; then
+  if ! "${PM2_BIN}" ping >/dev/null 2>&1; then
     return 1
   fi
   if [[ ! -f "${ROOT_DIR}/ecosystem.config.js" ]]; then
@@ -226,20 +263,20 @@ start_with_pm2() {
   fi
 
   if [[ "${KEEP_AGENTS}" -eq 1 ]]; then
-    log "Reloading Meridian with PM2 (keep-agents mode)"
+    log "Reloading Meridian with PM2 (keep-agents mode) via ${PM2_BIN}"
     (
       cd "${ROOT_DIR}"
-      pm2 reload ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1 ||
-        pm2 restart calling-hub calling-interface calling-monitor calling-web --update-env >/dev/null 2>&1 ||
-        pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
+      "${PM2_BIN}" reload ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1 ||
+        "${PM2_BIN}" restart calling-hub calling-interface calling-monitor calling-web --update-env >/dev/null 2>&1 ||
+        "${PM2_BIN}" start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
     )
     return 0
   fi
 
-  log "Starting Meridian with PM2"
+  log "Starting Meridian with PM2 via ${PM2_BIN}"
   (
     cd "${ROOT_DIR}"
-    pm2 start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
+    "${PM2_BIN}" start ecosystem.config.js --only calling-hub,calling-interface,calling-monitor,calling-web --update-env >/dev/null 2>&1
   )
   return 0
 }
@@ -367,7 +404,7 @@ fi
 if start_with_pm2; then
   wait_for_hub_socket
   log "Restart complete (PM2 mode)"
-  pm2 status calling-hub calling-interface calling-monitor calling-web || true
+  "${PM2_BIN}" status calling-hub calling-interface calling-monitor calling-web || true
 elif start_with_node_dist; then
   wait_for_hub_socket
   log "Restart complete (node dist mode)"
