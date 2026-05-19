@@ -18,6 +18,29 @@ export const CallerRecordSchema = z.object({
 });
 export type CallerRecord = z.input<typeof CallerRecordSchema>;
 
+export const CredentialKindSchema = z.enum(["oauth", "api_key"]);
+export const CredentialProviderSchema = z.enum(["codex"]);
+
+export const CredentialRecordSchema = z.object({
+  credential_id: z.string().min(1),
+  credential_label: z.string().min(1).max(64),
+  provider: CredentialProviderSchema,
+  kind: CredentialKindSchema,
+  owner_caller_id: z.string().min(1),
+  codex_home_path: z.string().min(1),
+  is_default: z.boolean().default(false),
+  created_at: z.string().datetime(),
+  last_used_at: z.string().datetime().nullable().default(null),
+  revoked_at: z.string().datetime().nullable().default(null),
+  api_key_metadata: z.object({
+    base_url: z.string().url(),
+    model_id: z.string().min(1),
+    env_var: z.string().min(1)
+  }).nullable().default(null)
+});
+
+export type CredentialRecord = z.input<typeof CredentialRecordSchema>;
+
 const PersistedPushSubscriptionSchema = z.object({
   session_id: z.string().min(1),
   chat_id: z.string().min(1),
@@ -83,7 +106,7 @@ const PersistedHubStateV2Schema = z.object({
   conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntryV2Schema)).default({})
 });
 
-const PersistedHubStateSchema = z.object({
+export const PersistedHubStateV3Schema = z.object({
   version: z.literal(3),
   updated_at: z.string().datetime(),
   instances: z.array(AgentInstanceSchema).default([]),
@@ -92,6 +115,19 @@ const PersistedHubStateSchema = z.object({
   conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntrySchema)).default({}),
   callers: z.array(CallerRecordSchema).default([])
 });
+
+export const PersistedHubStateSchema = z.object({
+  version: z.literal(4),
+  updated_at: z.string().datetime(),
+  instances: z.array(AgentInstanceSchema).default([]),
+  session_bindings: z.record(z.string(), z.string().min(1)).default({}),
+  push_subscriptions: z.record(z.string(), z.array(PersistedPushSubscriptionSchema)).default({}),
+  conversation_history: z.record(z.string(), z.array(PersistedConversationHistoryEntrySchema)).default({}),
+  callers: z.array(CallerRecordSchema).default([]),
+  credentials: z.array(CredentialRecordSchema).default([])
+});
+
+export type PersistedHubStateV3 = z.input<typeof PersistedHubStateV3Schema>;
 
 type LegacyPersistedHubState = z.input<typeof LegacyPersistedHubStateSchema>;
 type LegacyPersistedConversationHistoryEntry = z.input<typeof LegacyPersistedConversationHistoryEntrySchema>;
@@ -210,8 +246,8 @@ function migrateLegacyConversationHistory(
   return migrated;
 }
 
-function migrateLegacyPersistedHubState(state: LegacyPersistedHubState): PersistedHubState {
-  return PersistedHubStateSchema.parse({
+function migrateLegacyPersistedHubState(state: LegacyPersistedHubState): PersistedHubStateV3 {
+  return PersistedHubStateV3Schema.parse({
     version: 3,
     updated_at: state.updated_at,
     instances: state.instances,
@@ -224,8 +260,8 @@ function migrateLegacyPersistedHubState(state: LegacyPersistedHubState): Persist
 
 function migrateConversationHistoryV2EntriesToV3(
   v2History: PersistedHubStateV2["conversation_history"]
-): PersistedHubState["conversation_history"] {
-  const result: PersistedHubState["conversation_history"] = {};
+): PersistedHubStateV3["conversation_history"] {
+  const result: PersistedHubStateV3["conversation_history"] = {};
   for (const [threadId, entries] of Object.entries(v2History ?? {})) {
     result[threadId] = (entries ?? []).map((entry) => ({
       ...entry,
@@ -236,8 +272,8 @@ function migrateConversationHistoryV2EntriesToV3(
   return result;
 }
 
-export function migrateLegacyConversationHistoryV2ToV3(state: unknown): PersistedHubState {
-  const asV3 = PersistedHubStateSchema.safeParse(state);
+export function migrateLegacyConversationHistoryV2ToV3(state: unknown): PersistedHubStateV3 {
+  const asV3 = PersistedHubStateV3Schema.safeParse(state);
   if (asV3.success) {
     return asV3.data;
   }
@@ -245,7 +281,7 @@ export function migrateLegacyConversationHistoryV2ToV3(state: unknown): Persiste
   if (!asV2.success) {
     throw new Error("invalid_state_for_v2_to_v3_migration");
   }
-  return PersistedHubStateSchema.parse({
+  return PersistedHubStateV3Schema.parse({
     version: 3,
     updated_at: asV2.data.updated_at,
     instances: asV2.data.instances,
@@ -253,6 +289,14 @@ export function migrateLegacyConversationHistoryV2ToV3(state: unknown): Persiste
     push_subscriptions: asV2.data.push_subscriptions,
     conversation_history: migrateConversationHistoryV2EntriesToV3(asV2.data.conversation_history),
     callers: []
+  });
+}
+
+function migrateV3ToV4(state: PersistedHubStateV3): PersistedHubState {
+  return PersistedHubStateSchema.parse({
+    ...state,
+    version: 4,
+    credentials: []
   });
 }
 
@@ -287,13 +331,14 @@ function seedCallersFromLegacyEnv(rawJson: string, nowIso: string): CallerRecord
 
 export function buildEmptyPersistedHubState(nowIso: string): PersistedHubState {
   return {
-    version: 3,
+    version: 4,
     updated_at: nowIso,
     instances: [],
     session_bindings: {},
     push_subscriptions: {},
     conversation_history: {},
-    callers: []
+    callers: [],
+    credentials: []
   };
 }
 
@@ -303,16 +348,18 @@ export function buildPersistedHubState(
   sessionBindings: Record<string, string>,
   pushSubscriptions: Record<string, PersistedPushSubscription[]> = {},
   conversationHistory: Record<string, PersistedConversationHistoryEntry[]> = {},
-  callers: CallerRecord[] = []
+  callers: CallerRecord[] = [],
+  credentials: CredentialRecord[] = []
 ): PersistedHubState {
   return PersistedHubStateSchema.parse({
-    version: 3,
+    version: 4,
     updated_at: nowIso,
     instances,
     session_bindings: sessionBindings,
     push_subscriptions: pushSubscriptions,
     conversation_history: conversationHistory,
-    callers
+    callers,
+    credentials
   });
 }
 
@@ -320,17 +367,21 @@ function loadAndMigrate(statePath: string, nowIso: string): PersistedHubState {
   try {
     const raw = fs.readFileSync(statePath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
-    const v3 = PersistedHubStateSchema.safeParse(parsed);
+    const v4 = PersistedHubStateSchema.safeParse(parsed);
+    if (v4.success) {
+      return v4.data;
+    }
+    const v3 = PersistedHubStateV3Schema.safeParse(parsed);
     if (v3.success) {
-      return v3.data;
+      return migrateV3ToV4(v3.data);
     }
     const v2 = PersistedHubStateV2Schema.safeParse(parsed);
     if (v2.success) {
-      return migrateLegacyConversationHistoryV2ToV3(v2.data);
+      return migrateV3ToV4(migrateLegacyConversationHistoryV2ToV3(v2.data));
     }
     const v1 = LegacyPersistedHubStateSchema.safeParse(parsed);
     if (v1.success) {
-      return migrateLegacyPersistedHubState(v1.data);
+      return migrateV3ToV4(migrateLegacyPersistedHubState(v1.data));
     }
     return buildEmptyPersistedHubState(nowIso);
   } catch (error) {

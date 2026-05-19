@@ -11,6 +11,7 @@ import { config } from "../config";
 import { IpcSender, requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
 import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { callerEnvelopeFromHttpHeaders, type WireAuth } from "../shared/caller-wire";
+import type { HubRouter } from "../hub/router";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import { cleanupStagedAttachments, stageInlineAttachments } from "../shared/attachment-transform";
@@ -80,7 +81,12 @@ const spawnRequestBodySchema = z.object({
    * Absolute working directory for the new agent. Only existence/directory checks apply.
    * External integrations may send this instead of `repo`.
    */
-  spawn_dir: z.string().optional()
+  spawn_dir: z.string().optional(),
+  /**
+   * Optional credential to attach to the spawned agent. Hub validates ownership
+   * and reachability; omit (or pass empty) to use the default codex login (~/.codex).
+   */
+  credential_id: z.string().min(1).optional()
 });
 
 const filesQuerySchema = z.object({
@@ -238,6 +244,14 @@ export interface WebInterfaceServerOptions {
   providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
   logger?: WebInterfaceLogger;
+  /**
+   * Test seam: when supplied, the four hub-sender slots default to in-process
+   * `router.route()` calls (instead of opening real IPC sockets to a HubServer).
+   * Explicit `requestHub*` overrides still win. Intended exclusively for E2E
+   * tests that boot a real HubRouter alongside the web server in-process;
+   * production goes through the IPC socket as before.
+   */
+  routerOverride?: HubRouter;
 }
 
 interface ProviderModelCatalogLookup {
@@ -530,11 +544,40 @@ export class WebInterfaceServer {
     this.tlsCertPath = options.tlsCertPath ?? config.TLS_CERT_PATH;
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
     this.staticDir = options.staticDir ?? defaultStaticDir;
-    this.requestHub = options.requestHub ?? requestHubMessage;
-    this.requestHubRun = options.requestHubRun ?? requestHubRunMessage;
-    this.requestHubAsCaller = options.requestHubAsCaller ?? ((message, auth, requestOptions) =>
-      this.requestHubWithCallerIdentity(message, auth, requestOptions));
-    this.requestAdminHub = options.requestAdminHub ?? this.buildAdminSender();
+    // Test seam: if a routerOverride is supplied, default the four hub-sender
+    // slots to in-process `router.route()` calls so tests can exercise the
+    // real HTTP → router pipeline without spinning up a HubServer + IPC.
+    // Explicit per-slot overrides still win.
+    const router = options.routerOverride;
+    this.requestHub = options.requestHub ?? (router ? (m) => router.route(m) : requestHubMessage);
+    this.requestHubRun = options.requestHubRun ?? (router ? (m) => router.route(m) : requestHubRunMessage);
+    this.requestHubAsCaller = options.requestHubAsCaller ?? (
+      router
+        ? (message, auth) => {
+            // Inject the wire caller into message.caller so the router's
+            // handlers see the authenticated identity even though we are
+            // skipping the IPC/registry auth round-trip in this test seam.
+            const authority = auth.caller_id === "meridian-admin" ? "admin" : "write";
+            const enriched = {
+              ...message,
+              caller: { caller_id: auth.caller_id, caller_label: auth.caller_id, caller_authority: authority }
+            } as HubMessage;
+            return router.route(enriched);
+          }
+        : ((message, authParam, requestOptions) =>
+            this.requestHubWithCallerIdentity(message, authParam, requestOptions))
+    );
+    this.requestAdminHub = options.requestAdminHub ?? (
+      router
+        ? (message) => {
+            const enriched = {
+              ...message,
+              caller: { caller_id: "meridian-admin", caller_label: "Meridian Admin", caller_authority: "admin" as const }
+            } as HubMessage;
+            return router.route(enriched);
+          }
+        : this.buildAdminSender()
+    );
     this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
@@ -864,6 +907,56 @@ export class WebInterfaceServer {
       }
     }
 
+    if (requestUrl.pathname === "/api/credentials" && request.method === "GET") {
+      await this.handleListCredentialsRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/credentials/api-key" && request.method === "POST") {
+      await this.handleRegisterApiKeyRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/credentials/oauth-login" && request.method === "POST") {
+      await this.handleOAuthLoginStartRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/credentials/oauth-login/")) {
+      const jobId = decodeURIComponent(requestUrl.pathname.slice("/api/credentials/oauth-login/".length));
+      if (jobId && !jobId.includes("/")) {
+        if (request.method === "GET") {
+          await this.handleOAuthLoginPollRequest(request, response, jobId);
+          return;
+        }
+        if (request.method === "DELETE") {
+          await this.handleOAuthLoginCancelRequest(request, response, jobId);
+          return;
+        }
+      }
+    }
+
+    if (requestUrl.pathname.startsWith("/api/credentials/")) {
+      const credentialSuffix = requestUrl.pathname.slice("/api/credentials/".length);
+      if (request.method === "POST" && credentialSuffix.endsWith("/default")) {
+        const credentialId = decodeURIComponent(credentialSuffix.slice(0, -"/default".length));
+        if (credentialId && !credentialId.includes("/")) {
+          await this.handleSetDefaultCredentialRequest(request, response, credentialId);
+          return;
+        }
+      }
+      if (request.method === "PATCH" && credentialSuffix && !credentialSuffix.includes("/")) {
+        const credentialId = decodeURIComponent(credentialSuffix);
+        await this.handleUpdateCredentialRequest(request, response, credentialId);
+        return;
+      }
+      if (request.method === "DELETE" && credentialSuffix && !credentialSuffix.includes("/")) {
+        const credentialId = decodeURIComponent(credentialSuffix);
+        await this.handleRevokeCredentialRequest(request, response, credentialId);
+        return;
+      }
+    }
+
     await this.serveStaticAsset(requestUrl.pathname, response);
   }
 
@@ -1094,6 +1187,7 @@ export class WebInterfaceServer {
           effort: modelReference.reasoningEffort,
           integrationProfile: body.integration_profile,
           sandboxMode,
+          credentialId: body.credential_id,
           caller: this.extractInboundCaller(request)
         })
       )
@@ -1875,6 +1969,7 @@ export class WebInterfaceServer {
     effort?: ReasoningEffort;
     integrationProfile?: IntegrationProfile;
     sandboxMode?: SandboxMode;
+    credentialId?: string;
     historyLimit?: number;
     historyMaxContentChars?: number;
     historyMaxDetailChars?: number;
@@ -1898,6 +1993,7 @@ export class WebInterfaceServer {
         ...(params.effort && { effort: params.effort }),
         ...(params.integrationProfile && { integration_profile: params.integrationProfile }),
         ...(params.sandboxMode && { sandbox_mode: params.sandboxMode }),
+        ...(params.credentialId && { credential_id: params.credentialId }),
         ...(params.historyLimit !== undefined && { history_limit: params.historyLimit }),
         ...(params.historyMaxContentChars !== undefined && { history_max_content_chars: params.historyMaxContentChars }),
         ...(params.historyMaxDetailChars !== undefined && { history_max_detail_chars: params.historyMaxDetailChars }),
@@ -2121,6 +2217,288 @@ export class WebInterfaceServer {
       return;
     }
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  /**
+   * Translates a credential-intent HubResult error_code into an HTTP status code.
+   * Owner-or-admin auth and existence checks happen inside the intent handlers
+   * (router.ts), so we only translate; we don't re-enforce.
+   */
+  private credentialErrorStatus(errorCode: string | undefined): number {
+    switch (errorCode) {
+      case "credential_not_found":
+        return 404;
+      case "credential_revoked":
+        return 410;
+      case "credential_forbidden":
+        return 403;
+      case "credential_store_unavailable":
+      case "oauth_subsystem_unavailable":
+        return 503;
+      case "oauth_login_cap_exceeded":
+        return 429;
+      case "job_not_found":
+        return 404;
+      case "invalid_payload":
+      case "caller_required":
+        return 400;
+      default:
+        return 500;
+    }
+  }
+
+  private parseCredentialErrorBody(raw: string): { error_code?: string; error_message?: string; [key: string]: unknown } {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") {
+        return parsed as { error_code?: string; error_message?: string };
+      }
+    } catch {
+      // fall through
+    }
+    return { error_message: raw };
+  }
+
+  private async handleListCredentialsRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "list_credentials",
+          thread_id: "global",
+          target: "global",
+          content: "",
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const body = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleRevokeCredentialRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    credentialId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "revoke_credential",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ credential_id: credentialId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const body = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleUpdateCredentialRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    credentialId: string
+  ): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await this.readJsonBody(request);
+      body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    } catch (err) {
+      this.respondJson(response, 400, { error_code: "invalid_payload", error_message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const payload: Record<string, unknown> = { credential_id: credentialId };
+    for (const key of ["credential_label", "base_url", "model_id", "env_var", "key_value"]) {
+      if (body[key] !== undefined) payload[key] = body[key];
+    }
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "update_credential",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify(payload),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleSetDefaultCredentialRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    credentialId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "set_default_credential",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ credential_id: credentialId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const body = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleRegisterApiKeyRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await this.readJsonBody(request);
+      body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    } catch (err) {
+      this.respondJson(response, 400, { error_code: "invalid_payload", error_message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_api_key",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify(body),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 201, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleOAuthLoginStartRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      const raw = await this.readJsonBody(request);
+      body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    } catch (err) {
+      this.respondJson(response, 400, { error_code: "invalid_payload", error_message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_oauth_start",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify(body),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 202, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleOAuthLoginPollRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    jobId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_oauth_poll",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ job_id: jobId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleOAuthLoginCancelRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    jobId: string
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const result = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "register_credential_oauth_cancel",
+          thread_id: "global",
+          target: "global",
+          content: JSON.stringify({ job_id: jobId }),
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (result.status !== "success") {
+      const errBody = this.parseCredentialErrorBody(result.content);
+      this.respondJson(response, this.credentialErrorStatus(errBody.error_code), errBody);
+      return;
+    }
+    response.statusCode = 204;
+    response.end();
   }
 
   private isPublicStaticAsset(pathname: string): boolean {

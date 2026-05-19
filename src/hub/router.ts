@@ -44,7 +44,16 @@ import {
 } from "../types";
 import type { WireAuth } from "../shared/caller-wire";
 import { CallerRegistry, type CallerRecord } from "./caller-registry";
+import {
+  CredentialStore,
+  CredentialNotFoundError,
+  CredentialRevokedError,
+  CredentialForbiddenError,
+  type ResolvedCredential
+} from "./credential-store";
+import { sanitizeErrorMessage } from "./error-sanitization";
 import { InstanceManager } from "./instance-manager";
+import { OAuthLoginCapExceededError, OAuthLoginJobRegistry } from "./oauth-login-registry";
 import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { ServiceRegistry } from "./service-registry";
@@ -219,6 +228,16 @@ export interface HubRouterOptions {
   outputBus?: OutputBus;
   statePath?: string;
   serviceRegistry?: ServiceRegistry;
+  credentialStore?: CredentialStore;
+  oauthLoginRegistry?: OAuthLoginJobRegistry;
+  /**
+   * Server-side test seam. Overrides the codex login command spawned by
+   * register_credential_oauth_start. NEVER read from the wire payload —
+   * accepting an attacker-controlled command would be RCE.
+   */
+  defaultCodexLoginCommand?: string;
+  /** Server-side test seam paired with defaultCodexLoginCommand. */
+  defaultCodexLoginArgs?: string[];
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
@@ -228,7 +247,29 @@ const ADMIN_ONLY_INTENTS = new Set<string>([
   "rotate_caller_key",
   "update_caller_authority"
 ]);
-const READ_AUTHORITY_INTENTS = new Set<string>(["status", "list", "list_models", "detail", "gui", "history", "list_callers"]);
+const READ_AUTHORITY_INTENTS = new Set<string>([
+  "status",
+  "list",
+  "list_models",
+  "detail",
+  "gui",
+  "history",
+  "list_callers"
+]);
+// Credential intent membership consulted directly by checkCallerAuthority so
+// the sets are the single source of truth for credential-intent gating.
+// READ requires `read` or higher; WRITE requires `write` or higher; neither
+// permits `stateless_call`.
+export const CREDENTIAL_READ_INTENTS = new Set<string>(["list_credentials"]);
+export const CREDENTIAL_WRITE_INTENTS = new Set<string>([
+  "register_credential_oauth_start",
+  "register_credential_oauth_poll",
+  "register_credential_oauth_cancel",
+  "register_credential_api_key",
+  "update_credential",
+  "set_default_credential",
+  "revoke_credential"
+]);
 const ADMIN_CALLER_ID = "meridian-admin";
 
 const RegisterCallerPayloadSchema = z
@@ -252,6 +293,44 @@ const UpdateCallerAuthorityPayloadSchema = z
     caller_authority: CallerAuthoritySchema
   })
   .strict();
+
+const RegisterCredentialApiKeyPayloadSchema = z.object({
+  credential_label: z.string().min(1).max(64),
+  base_url: z.string().url(),
+  model_id: z.string().min(1),
+  env_var: z.string().min(1),
+  key_value: z.string().min(1)
+  // owner_caller_id intentionally NOT accepted — hub injects it from the authenticated caller.
+});
+
+// Wire schema: deliberately rejects codexLoginCommand / codexLoginArgs. Those
+// fields used to be accepted here as a test seam, but every authenticated
+// write-tier caller could pass an arbitrary command path and trigger RCE via
+// child_process.spawn. The override now lives on HubRouterOptions
+// (server-side construction only).
+const OAuthLoginStartPayloadSchema = z
+  .object({
+    credential_label: z.string().min(1).max(64)
+  })
+  .strict();
+
+const OAuthLoginPollPayloadSchema = z.object({ job_id: z.string().min(1) });
+const OAuthLoginCancelPayloadSchema = z.object({ job_id: z.string().min(1) });
+
+const UpdateCredentialPayloadSchema = z.object({
+  credential_id: z.string().min(1),
+  credential_label: z.string().min(1).max(64).optional(),
+  base_url: z.string().url().optional(),
+  model_id: z.string().min(1).optional(),
+  env_var: z.string().min(1).optional(),
+  key_value: z.string().min(1).optional()
+});
+const SetDefaultCredentialPayloadSchema = z.object({
+  credential_id: z.string().min(1)
+});
+const RevokeCredentialPayloadSchema = z.object({
+  credential_id: z.string().min(1)
+});
 
 class RunInterruptedError extends Error {
   constructor(readonly threadId: string) {
@@ -489,6 +568,10 @@ export class HubRouter {
   private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
   private readonly pendingRunFollowups = new Set<string>();
   private callerRegistry: CallerRegistry | null = null;
+  private readonly credentialStore: CredentialStore | undefined;
+  private readonly oauthLoginRegistry: OAuthLoginJobRegistry | undefined;
+  private readonly defaultCodexLoginCommand: string | undefined;
+  private readonly defaultCodexLoginArgs: string[] | undefined;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -504,6 +587,27 @@ export class HubRouter {
     this.outputBus = options.outputBus ?? new OutputBus();
     this.statePath = options.statePath ?? config.MERIDIAN_STATE_PATH;
     this.serviceRegistry = options.serviceRegistry ?? new ServiceRegistry();
+    this.credentialStore = options.credentialStore;
+    this.oauthLoginRegistry = options.oauthLoginRegistry;
+    this.defaultCodexLoginCommand = options.defaultCodexLoginCommand;
+    this.defaultCodexLoginArgs = options.defaultCodexLoginArgs;
+
+    // Wire credential mutations directly into persistence. Without this, a
+    // credential create/revoke/update only landed on disk when an unrelated
+    // handler later triggered persistStateSafely — a hub restart between
+    // mutations would silently lose credentials, and reconcile() would then
+    // rm -rf the orphan dirs.
+    if (this.credentialStore) {
+      this.credentialStore.setOnChange(() => this.persistStateSafely());
+    }
+  }
+
+  getCredentialStore(): CredentialStore | undefined {
+    return this.credentialStore;
+  }
+
+  getOAuthLoginRegistry(): OAuthLoginJobRegistry | undefined {
+    return this.oauthLoginRegistry;
   }
 
   async initialize(): Promise<void> {
@@ -666,6 +770,22 @@ export class HubRouter {
           return this.handleUpdateCallerAuthority(message);
         case "list_callers":
           return this.handleListCallers(message);
+        case "list_credentials":
+          return this.handleListCredentials(message);
+        case "register_credential_api_key":
+          return this.handleRegisterCredentialApiKey(message);
+        case "register_credential_oauth_start":
+          return this.handleRegisterCredentialOAuthStart(message);
+        case "register_credential_oauth_poll":
+          return this.handleRegisterCredentialOAuthPoll(message);
+        case "register_credential_oauth_cancel":
+          return this.handleRegisterCredentialOAuthCancel(message);
+        case "update_credential":
+          return this.handleUpdateCredential(message);
+        case "set_default_credential":
+          return this.handleSetDefaultCredential(message);
+        case "revoke_credential":
+          return this.handleRevokeCredential(message);
         case "reply":
           return this.handleReply(message);
         default:
@@ -1151,8 +1271,14 @@ export class HubRouter {
           break;
         }
       }
+      const credentialId = currentInstance.credential_id ?? null;
+      const credentialLabel = credentialId
+        ? (this.credentialStore?.get(credentialId)?.credential_label ?? null)
+        : null;
       return {
         ...currentInstance,
+        credential_id: credentialId,
+        credential_label: credentialLabel,
         current_model_id: currentInstance.model_id ?? null,
         attached: attachment.sessions.length > 0,
         attached_sessions: attachment.sessions,
@@ -1192,6 +1318,54 @@ export class HubRouter {
     const modelId = modelReference.modelId || undefined;
     const integrationProfile = message.payload.integration_profile;
     const sandboxMode = message.payload.sandbox_mode;
+
+    let resolvedCredential: ResolvedCredential | null = null;
+    const requestedCredentialId = message.payload?.credential_id;
+    if (requestedCredentialId !== undefined && requestedCredentialId !== null) {
+      if (!this.credentialStore) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({
+            error_code: "credential_store_unavailable",
+            error_message: "CredentialStore not configured"
+          }),
+          message.thread_id
+        );
+      }
+      if (!message.caller) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({
+            error_code: "caller_required",
+            error_message: "spawn with credential_id requires an authenticated caller"
+          }),
+          message.thread_id
+        );
+      }
+      try {
+        resolvedCredential = this.credentialStore.resolve(requestedCredentialId, message.caller);
+      } catch (err) {
+        let code = "spawn_credential_failed";
+        if (err instanceof CredentialNotFoundError) code = "credential_not_found";
+        else if (err instanceof CredentialRevokedError) code = "credential_revoked";
+        else if (err instanceof CredentialForbiddenError) code = "credential_forbidden";
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({
+            error_code: code,
+            error_message: err instanceof Error ? err.message : String(err)
+          }),
+          message.thread_id
+        );
+      }
+    }
+
     const threadId = await this.instanceManager.spawn(
       type,
       message.mode,
@@ -1202,7 +1376,8 @@ export class HubRouter {
       message.trace_id,
       integrationProfile,
       sandboxMode,
-      message.caller
+      message.caller,
+      resolvedCredential
     );
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
@@ -1958,6 +2133,21 @@ export class HubRouter {
     if (ADMIN_ONLY_INTENTS.has(message.intent)) {
       return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
     }
+    // Credential intents are gated by their dedicated sets — explicit
+    // membership rather than the generic READ/stateless fall-through, so
+    // CREDENTIAL_*_INTENTS as exported sets match runtime behavior.
+    if (CREDENTIAL_WRITE_INTENTS.has(message.intent)) {
+      if (authority !== "write") {
+        return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+      }
+      return null;
+    }
+    if (CREDENTIAL_READ_INTENTS.has(message.intent)) {
+      if (authority !== "read" && authority !== "write") {
+        return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+      }
+      return null;
+    }
     if (authority === "read" && !READ_AUTHORITY_INTENTS.has(message.intent)) {
       return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
     }
@@ -2183,6 +2373,519 @@ export class HubRouter {
       }),
       message.thread_id
     );
+  }
+
+  private handleListCredentials(message: HubMessage): HubResult {
+    const store = this.credentialStore;
+    if (!store) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        "list_credentials failed: credential_store_unavailable",
+        message.thread_id
+      );
+    }
+    const caller = message.caller ?? { caller_id: "", caller_label: "" };
+    const all = store.list();
+    // Delegate the predicate to CredentialStore so the read filter and the
+    // owner-or-admin gate cannot drift apart.
+    const filtered = all.filter((r) => store.canCallerAccess(r, caller));
+    // Project response: omit codex_home_path (filesystem detail). Secrets live in env.json
+    // on disk and are NOT carried on CredentialRecord, so the remaining fields are safe.
+    const credentials = filtered.map((r) => ({
+      credential_id: r.credential_id,
+      credential_label: r.credential_label,
+      provider: r.provider,
+      kind: r.kind,
+      owner_caller_id: r.owner_caller_id,
+      is_default: r.is_default,
+      created_at: r.created_at,
+      last_used_at: r.last_used_at,
+      revoked_at: r.revoked_at,
+      api_key_metadata: r.api_key_metadata
+    }));
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({ credentials }),
+      message.thread_id
+    );
+  }
+
+  private async handleRegisterCredentialApiKey(message: HubMessage): Promise<HubResult> {
+    const store = this.credentialStore;
+    if (!store) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "credential_store_unavailable",
+          error_message: "CredentialStore not configured"
+        }),
+        message.thread_id
+      );
+    }
+
+    const caller = message.caller;
+    if (!caller) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "caller_required",
+          error_message: "register_credential_api_key requires an authenticated caller"
+        }),
+        message.thread_id
+      );
+    }
+
+    let parsed: z.infer<typeof RegisterCredentialApiKeyPayloadSchema>;
+    try {
+      const raw = JSON.parse(message.payload.content);
+      parsed = RegisterCredentialApiKeyPayloadSchema.parse(raw);
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+
+    try {
+      const credential_id = await store.createApiKey({
+        credential_label: parsed.credential_label,
+        owner_caller_id: caller.caller_id,
+        base_url: parsed.base_url,
+        model_id: parsed.model_id,
+        env_var: parsed.env_var,
+        key_value: parsed.key_value
+      });
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "create_failed",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "createApiKey failed")
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private handleRegisterCredentialOAuthStart(message: HubMessage): HubResult {
+    const store = this.credentialStore;
+    const reg = this.oauthLoginRegistry;
+    if (!store || !reg) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "oauth_subsystem_unavailable",
+          error_message: "credentialStore or oauthLoginRegistry not configured"
+        }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    if (!caller) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "caller_required",
+          error_message: "register_credential_oauth_start requires an authenticated caller"
+        }),
+        message.thread_id
+      );
+    }
+    let parsed: z.infer<typeof OAuthLoginStartPayloadSchema>;
+    try {
+      parsed = OAuthLoginStartPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+    try {
+      const { job_id, job } = reg.start(caller.caller_id, {
+        credentialStore: store,
+        owner_caller_id: caller.caller_id,
+        credential_label: parsed.credential_label,
+        // SECURITY: defaults come from server-side construction options, never from the wire.
+        codexLoginCommand: this.defaultCodexLoginCommand,
+        codexLoginArgs: this.defaultCodexLoginArgs
+      });
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ job_id, status: job.status }),
+        message.thread_id
+      );
+    } catch (err) {
+      const code = err instanceof OAuthLoginCapExceededError ? "oauth_login_cap_exceeded" : "oauth_start_failed";
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: code,
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "oauth start failed")
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private handleRegisterCredentialOAuthPoll(message: HubMessage): HubResult {
+    const reg = this.oauthLoginRegistry;
+    if (!reg) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "oauth_subsystem_unavailable",
+          error_message: "oauthLoginRegistry not configured"
+        }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    let parsed: z.infer<typeof OAuthLoginPollPayloadSchema>;
+    try {
+      parsed = OAuthLoginPollPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+    const job = reg.get(parsed.job_id);
+    if (!job) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "job_not_found",
+          error_message: `oauth job ${parsed.job_id} not found`
+        }),
+        message.thread_id
+      );
+    }
+    const owner = reg.getOwner(parsed.job_id);
+    const isAdmin = caller?.caller_authority === "admin";
+    if (!isAdmin && owner !== caller?.caller_id) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "credential_forbidden",
+          error_message: "caller is not the owner of this oauth job"
+        }),
+        message.thread_id
+      );
+    }
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({
+        job_id: parsed.job_id,
+        status: job.status,
+        login_url: job.login_url ?? undefined,
+        expires_at: job.expires_at ?? undefined,
+        credential_id: job.credential_id ?? undefined,
+        error_code: job.error_code ?? undefined,
+        error_message: job.error_message ?? undefined,
+        log_excerpt: job.log_excerpt
+      }),
+      message.thread_id
+    );
+  }
+
+  private async handleRegisterCredentialOAuthCancel(message: HubMessage): Promise<HubResult> {
+    const reg = this.oauthLoginRegistry;
+    if (!reg) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "oauth_subsystem_unavailable",
+          error_message: "oauthLoginRegistry not configured"
+        }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller;
+    let parsed: z.infer<typeof OAuthLoginCancelPayloadSchema>;
+    try {
+      parsed = OAuthLoginCancelPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+    const job = reg.get(parsed.job_id);
+    if (!job) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "job_not_found",
+          error_message: `oauth job ${parsed.job_id} not found`
+        }),
+        message.thread_id
+      );
+    }
+    const owner = reg.getOwner(parsed.job_id);
+    const isAdmin = caller?.caller_authority === "admin";
+    if (!isAdmin && owner !== caller?.caller_id) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "credential_forbidden",
+          error_message: "caller is not the owner of this oauth job"
+        }),
+        message.thread_id
+      );
+    }
+    await reg.cancel(parsed.job_id);
+    return this.buildResult(
+      message,
+      "success",
+      this.resolveResultSource(message),
+      JSON.stringify({ job_id: parsed.job_id, status: "cancelled" }),
+      message.thread_id
+    );
+  }
+
+  /**
+   * Owner-or-admin guard for credential intent handlers. Delegates the actual
+   * check to CredentialStore.assertOwnerOrAdmin so the ACL rule lives in one
+   * place. Returns null on success, or a built HubResult error to short-circuit.
+   *
+   * Note on revoked records: the canonical ACL throws CredentialRevokedError
+   * for revoked entries. Handlers that *intentionally* operate on revoked
+   * records (none today; revoke is idempotent at the store layer) would need
+   * to handle that separately, but the current handler set treats "revoked"
+   * as a not-found-style terminal condition.
+   */
+  private checkCredentialOwnerOrAdmin(message: HubMessage, credentialId: string): HubResult | null {
+    const store = this.credentialStore;
+    if (!store) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({ error_code: "credential_store_unavailable" }),
+        message.thread_id
+      );
+    }
+    const caller = message.caller ?? { caller_id: "", caller_label: "" };
+    try {
+      store.assertOwnerOrAdmin(credentialId, caller);
+      return null;
+    } catch (err) {
+      if (err instanceof CredentialNotFoundError) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({ error_code: "credential_not_found", credential_id: credentialId }),
+          message.thread_id
+        );
+      }
+      if (err instanceof CredentialRevokedError) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({ error_code: "credential_revoked", credential_id: credentialId }),
+          message.thread_id
+        );
+      }
+      if (err instanceof CredentialForbiddenError) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({ error_code: "credential_forbidden", credential_id: credentialId }),
+          message.thread_id
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async handleUpdateCredential(message: HubMessage): Promise<HubResult> {
+    let parsed: z.infer<typeof UpdateCredentialPayloadSchema>;
+    try {
+      parsed = UpdateCredentialPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+    const guard = this.checkCredentialOwnerOrAdmin(message, parsed.credential_id);
+    if (guard) return guard;
+    const { credential_id, ...patch } = parsed;
+    try {
+      await this.credentialStore!.update(credential_id, patch);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id, updated: true }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "update_failed",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "update failed")
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private async handleSetDefaultCredential(message: HubMessage): Promise<HubResult> {
+    let parsed: z.infer<typeof SetDefaultCredentialPayloadSchema>;
+    try {
+      parsed = SetDefaultCredentialPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+    const guard = this.checkCredentialOwnerOrAdmin(message, parsed.credential_id);
+    if (guard) return guard;
+    try {
+      await this.credentialStore!.setDefault(parsed.credential_id);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id: parsed.credential_id, is_default: true }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "set_default_failed",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "set default failed")
+        }),
+        message.thread_id
+      );
+    }
+  }
+
+  private async handleRevokeCredential(message: HubMessage): Promise<HubResult> {
+    let parsed: z.infer<typeof RevokeCredentialPayloadSchema>;
+    try {
+      parsed = RevokeCredentialPayloadSchema.parse(JSON.parse(message.payload.content));
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "invalid_payload",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
+        }),
+        message.thread_id
+      );
+    }
+    const guard = this.checkCredentialOwnerOrAdmin(message, parsed.credential_id);
+    if (guard) return guard;
+    try {
+      await this.credentialStore!.revoke(parsed.credential_id);
+      return this.buildResult(
+        message,
+        "success",
+        this.resolveResultSource(message),
+        JSON.stringify({ credential_id: parsed.credential_id, revoked: true }),
+        message.thread_id
+      );
+    } catch (err) {
+      return this.buildResult(
+        message,
+        "error",
+        this.resolveResultSource(message),
+        JSON.stringify({
+          error_code: "revoke_failed",
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "revoke failed")
+        }),
+        message.thread_id
+      );
+    }
   }
 
   private async dispatchToService(endpoint: ServiceEndpoint, message: HubMessage): Promise<HubResult> {
@@ -3756,7 +4459,8 @@ export class HubRouter {
           snapshot.session_bindings ?? {},
           this.serializePushSubscriptions(),
           this.serializeConversationHistory(),
-          this.callerRegistry?.list() ?? []
+          this.callerRegistry?.list() ?? [],
+          this.credentialStore?.list() ?? []
         )
       );
     } catch (error) {

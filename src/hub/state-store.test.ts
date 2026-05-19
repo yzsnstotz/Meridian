@@ -7,7 +7,9 @@ import {
   buildPersistedHubState,
   loadPersistedHubState,
   migrateLegacyConversationHistoryV2ToV3,
-  type CallerRecord
+  PersistedHubStateV3Schema,
+  type CallerRecord,
+  type PersistedHubStateV3
 } from "./state-store";
 
 test("loadPersistedHubState preserves migrated approval prompts alongside terminal input and final reply", () => {
@@ -66,7 +68,7 @@ test("loadPersistedHubState preserves migrated approval prompts alongside termin
     const loaded = loadPersistedHubState(statePath, nowIso);
     const history = loaded.conversation_history?.approval_legacy ?? [];
 
-    assert.equal(loaded.version, 3);
+    assert.equal(loaded.version, 4);
     assert.equal(history.length, 3);
     assert.deepEqual(
       history.map((entry) => entry.event_kind),
@@ -127,7 +129,7 @@ test("loadPersistedHubState coalesces migrated approval prompts using the narrow
     const loaded = loadPersistedHubState(statePath, nowIso);
     const history = loaded.conversation_history?.mixed_legacy ?? [];
 
-    assert.equal(loaded.version, 3);
+    assert.equal(loaded.version, 4);
     assert.equal(history.length, 1);
     assert.equal(history[0]?.event_kind, "approval");
     assert.equal(history[0]?.replace_key, `${approvalTraceId}:approval`);
@@ -193,12 +195,14 @@ test("v3 fixture with populated caller fields round-trips through schema unchang
     }
   ];
 
-  const built = buildPersistedHubState(
-    nowIso,
-    [],
-    {},
-    {},
-    {
+  // Build a v3 fixture directly via the v3 schema (buildPersistedHubState now produces v4).
+  const v3Fixture: PersistedHubStateV3 = PersistedHubStateV3Schema.parse({
+    version: 3,
+    updated_at: nowIso,
+    instances: [],
+    session_bindings: {},
+    push_subscriptions: {},
+    conversation_history: {
       thread_a: [
         {
           id: "evt-1",
@@ -217,12 +221,12 @@ test("v3 fixture with populated caller fields round-trips through schema unchang
       ]
     },
     callers
-  );
+  });
 
-  const roundTripped = JSON.parse(JSON.stringify(built));
+  const roundTripped = JSON.parse(JSON.stringify(v3Fixture));
   const reparsed = migrateLegacyConversationHistoryV2ToV3(roundTripped);
 
-  assert.deepEqual(reparsed, built);
+  assert.deepEqual(reparsed, v3Fixture);
   assert.equal(reparsed.callers?.[0]?.caller_id, "meridian-web");
   assert.equal(reparsed.conversation_history?.thread_a?.[0]?.caller_id, "meridian-web");
   assert.equal(reparsed.conversation_history?.thread_a?.[0]?.caller_label, "Meridian Web");
@@ -230,13 +234,16 @@ test("v3 fixture with populated caller fields round-trips through schema unchang
 
 test("migrateLegacyConversationHistoryV2ToV3 is idempotent on a v3 state", () => {
   const nowIso = "2026-04-12T09:00:00.000Z";
-  const built = buildPersistedHubState(
-    nowIso,
-    [],
-    {},
-    {},
-    {},
-    [
+  // Hand-build a v3 fixture (buildPersistedHubState now emits v4, which is out of scope
+  // for the v2->v3 migrator under test).
+  const v3Fixture: PersistedHubStateV3 = PersistedHubStateV3Schema.parse({
+    version: 3,
+    updated_at: nowIso,
+    instances: [],
+    session_bindings: {},
+    push_subscriptions: {},
+    conversation_history: {},
+    callers: [
       {
         caller_id: "meridian-cli",
         caller_label: "Meridian CLI",
@@ -248,12 +255,12 @@ test("migrateLegacyConversationHistoryV2ToV3 is idempotent on a v3 state", () =>
         revoked_at: null
       }
     ]
-  );
+  });
 
-  const once = migrateLegacyConversationHistoryV2ToV3(built);
+  const once = migrateLegacyConversationHistoryV2ToV3(v3Fixture);
   const twice = migrateLegacyConversationHistoryV2ToV3(once);
 
-  assert.deepEqual(once, built);
+  assert.deepEqual(once, v3Fixture);
   assert.deepEqual(twice, once);
 });
 

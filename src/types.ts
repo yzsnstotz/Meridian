@@ -32,7 +32,15 @@ export const BUILT_IN_INTENTS = [
   "unregister_caller",
   "rotate_caller_key",
   "update_caller_authority",
-  "list_callers"
+  "list_callers",
+  "list_credentials",
+  "register_credential_api_key",
+  "register_credential_oauth_start",
+  "register_credential_oauth_poll",
+  "register_credential_oauth_cancel",
+  "update_credential",
+  "set_default_credential",
+  "revoke_credential"
 ] as const;
 
 export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
@@ -174,6 +182,7 @@ export const HubPayloadSchema = z.object({
   reply_to: z.string().nullable().optional(),
   spawn_dir: z.string().min(1).optional(),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().optional(),
   integration_profile: IntegrationProfileSchema.optional(),
@@ -281,7 +290,8 @@ export const AgentInstanceSchema = z.object({
   spawn_trace_id: z.string().nullable().optional(),
   spawned_by: CallerIdentitySchema.optional(),
   last_caller: CallerIdentitySchema.optional(),
-  last_caller_at: z.string().datetime().optional()
+  last_caller_at: z.string().datetime().optional(),
+  credential_id: z.string().nullable().default(null)
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 

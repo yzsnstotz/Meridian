@@ -30,6 +30,7 @@ import {
   type ReasoningEffort,
   type SandboxMode
 } from "../types";
+import type { ResolvedCredential } from "./credential-store";
 import { InstanceRegistry } from "./registry";
 import { buildPersistedHubState, type PersistedHubState } from "./state-store";
 
@@ -204,7 +205,8 @@ export class InstanceManager {
     spawnTraceId?: string | null,
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
-    caller?: CallerIdentity
+    caller?: CallerIdentity,
+    resolvedCredential?: ResolvedCredential | null
   ): Promise<string> {
     return await this.spawnWithRetry(
       type,
@@ -217,7 +219,8 @@ export class InstanceManager {
       spawnTraceId,
       integrationProfile,
       sandboxMode,
-      caller
+      caller,
+      resolvedCredential ?? null
     );
   }
 
@@ -789,7 +792,8 @@ export class InstanceManager {
     spawnTraceId?: string | null,
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
-    caller?: CallerIdentity
+    caller?: CallerIdentity,
+    resolvedCredential?: ResolvedCredential | null
   ): Promise<string> {
     let lastError: unknown;
     const reservedThreadId = threadIdOverride ?? this.nextThreadId(type);
@@ -808,7 +812,8 @@ export class InstanceManager {
           spawnTraceId,
           integrationProfile,
           sandboxMode,
-          caller
+          caller,
+          resolvedCredential ?? null
         );
       } catch (error) {
         lastError = error;
@@ -863,7 +868,8 @@ export class InstanceManager {
     spawnTraceId?: string | null,
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
-    caller?: CallerIdentity
+    caller?: CallerIdentity,
+    resolvedCredential?: ResolvedCredential | null
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const traceId = spawnTraceId ?? null;
@@ -878,7 +884,8 @@ export class InstanceManager {
         traceId,
         integrationProfile,
         sandboxMode,
-        caller
+        caller,
+        resolvedCredential ?? null
       );
     }
     if (sandboxMode === "read-only" && type !== "codex" && type !== "claude") {
@@ -891,7 +898,7 @@ export class InstanceManager {
     }
     const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
     const args = this.buildSpawnArgs(type, mode, endpointBinding.listenArg, modelId, autoApprove, reasoningEffort, sandboxMode);
-    const childEnv = this.buildChildEnv();
+    const childEnv = this.buildChildEnv(resolvedCredential ?? null);
 
     if (tmuxSession) {
       this.safeKillTmuxSession(tmuxSession);
@@ -954,7 +961,8 @@ export class InstanceManager {
         created_at: this.now().toISOString(),
         restart_safe: true,
         spawn_trace_id: traceId,
-        spawned_by: caller
+        spawned_by: caller,
+        credential_id: resolvedCredential?.credential_id ?? null
       };
 
       this.registry.register(instance);
@@ -1051,7 +1059,8 @@ export class InstanceManager {
       created_at: this.now().toISOString(),
       restart_safe: true,
       spawn_trace_id: traceId,
-      spawned_by: caller
+      spawned_by: caller,
+      credential_id: resolvedCredential?.credential_id ?? null
     };
 
     this.registry.register(instance);
@@ -1090,7 +1099,8 @@ export class InstanceManager {
     spawnTraceId?: string | null,
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
-    caller?: CallerIdentity
+    caller?: CallerIdentity,
+    resolvedCredential?: ResolvedCredential | null
   ): string {
     if (type !== "codex") {
       throw new Error("stateless_call mode is only supported for codex");
@@ -1117,7 +1127,8 @@ export class InstanceManager {
       created_at: this.now().toISOString(),
       restart_safe: true,
       spawn_trace_id: spawnTraceId ?? null,
-      spawned_by: caller
+      spawned_by: caller,
+      credential_id: resolvedCredential?.credential_id ?? null
     };
 
     this.registry.register(instance);
@@ -2295,17 +2306,8 @@ export class InstanceManager {
     }
   }
 
-  private buildChildEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    delete env.TMUX;
-    const home = env.HOME ?? process.env.HOME;
-    if (home) {
-      const fnmAliasBin = path.join(home, ".local", "share", "fnm", "aliases", "default", "bin");
-      if (fs.existsSync(fnmAliasBin)) {
-        env.PATH = this.prependPathEntry(env.PATH, fnmAliasBin);
-      }
-    }
-    return env;
+  private buildChildEnv(resolvedCredential?: ResolvedCredential | null): NodeJS.ProcessEnv {
+    return buildChildEnvImpl(process.env, resolvedCredential ?? null, this.log);
   }
 
   private isChildRunning(child: ChildProcess): boolean {
@@ -2580,4 +2582,64 @@ export class InstanceManager {
     }
     return null;
   }
+}
+
+interface BuildChildEnvLogger {
+  warn: (obj: Record<string, unknown>, message: string) => void;
+}
+
+/**
+ * Module-level helper that constructs the child env for a spawned agent process.
+ *
+ * Exported for unit testing. The class method `InstanceManager.buildChildEnv` is a
+ * thin wrapper that supplies `process.env` and the class logger.
+ *
+ * Semantics:
+ * - Always copies `baseEnv`, deletes TMUX, and prepends fnm-aliases bin to PATH
+ *   if present on disk (preserves prior behavior).
+ * - If `resolvedCredential` is non-null, sets `CODEX_HOME` to its codex_home, and
+ *   merges `env_overrides` on top of the ambient env. If an override replaces a
+ *   different ambient value, emits a warning-level log line.
+ * - When `resolvedCredential` is null, the env is identical to the prior behavior
+ *   (no `CODEX_HOME` injection, no override merging).
+ */
+export function buildChildEnvImpl(
+  baseEnv: Record<string, string | undefined>,
+  resolvedCredential: ResolvedCredential | null,
+  logger?: BuildChildEnvLogger
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  delete env.TMUX;
+  const home = env.HOME ?? baseEnv.HOME;
+  if (home) {
+    const fnmAliasBin = path.join(home, ".local", "share", "fnm", "aliases", "default", "bin");
+    if (fs.existsSync(fnmAliasBin)) {
+      const segments = (env.PATH ?? "")
+        .split(path.delimiter)
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+      if (!segments.includes(fnmAliasBin)) {
+        segments.unshift(fnmAliasBin);
+      }
+      env.PATH = segments.join(path.delimiter);
+    }
+  }
+  if (resolvedCredential) {
+    env.CODEX_HOME = resolvedCredential.codex_home;
+    for (const [k, v] of Object.entries(resolvedCredential.env_overrides)) {
+      const ambient = baseEnv[k];
+      if (ambient !== undefined && ambient !== v && logger) {
+        logger.warn(
+          {
+            operation: "spawn_env_override",
+            env_key: k,
+            credential_id: resolvedCredential.credential_id
+          },
+          `Ambient ${k} replaced by credential ${resolvedCredential.credential_id}`
+        );
+      }
+      env[k] = v;
+    }
+  }
+  return env;
 }

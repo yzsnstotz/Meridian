@@ -25,7 +25,8 @@ const CONFIG_KEYS = [
   "WEB_GUI_HTTPS",
   "TLS_CERT_PATH",
   "TLS_KEY_PATH",
-  "MERIDIAN_STATE_PATH"
+  "MERIDIAN_STATE_PATH",
+  "MERIDIAN_CREDENTIALS_ROOT"
 ] as const;
 
 async function withProcessEnv(overrides: Record<string, string>, fn: () => Promise<void> | void) {
@@ -138,6 +139,25 @@ test("parseConfig resolves relative hub state paths from the process cwd", async
     });
 
     assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
+  });
+});
+
+test("parseConfig: MERIDIAN_CREDENTIALS_ROOT defaults to empty string (server derives from state path)", async () => {
+  await withProcessEnv({}, async () => {
+    const { parseConfig } = await import("./config");
+    const config = parseConfig(REQUIRED_ENV);
+    assert.equal(config.MERIDIAN_CREDENTIALS_ROOT, "");
+  });
+});
+
+test("parseConfig: MERIDIAN_CREDENTIALS_ROOT honors override", async () => {
+  await withProcessEnv({}, async () => {
+    const { parseConfig } = await import("./config");
+    const config = parseConfig({
+      ...REQUIRED_ENV,
+      MERIDIAN_CREDENTIALS_ROOT: "/var/lib/meridian/creds"
+    });
+    assert.equal(config.MERIDIAN_CREDENTIALS_ROOT, "/var/lib/meridian/creds");
   });
 });
 
