@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meridian — Accounts</title>
+  <link rel="stylesheet" href="layout-base.css" />
+  <style>
+    :root {
+      --bg-color: #0b0f1a;
+      --surface-color: #161b2a;
+      --surface-hover: #1f2638;
+      --border-color: #2d3343;
+      --text-color: #f0f2f5;
+      --text-dim: #94a3b8;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --success-color: #22c55e;
+      --warn-color: #f59e0b;
+      --danger-color: #ef4444;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg-color);
+      color: var(--text-color);
+      line-height: 1.4;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.5rem;
+      background: var(--surface-color);
+      border-bottom: 1px solid var(--border-color);
+    }
+    header h1 { font-size: 1.25rem; font-weight: 700; }
+    header h1 .badge-live {
+      display: inline-block;
+      margin-left: 0.5rem;
+      padding: 0.15rem 0.5rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: var(--accent-color);
+      color: white;
+      border-radius: 0.375rem;
+      vertical-align: middle;
+    }
+    header p { color: var(--text-dim); font-size: 0.875rem; margin-top: 0.25rem; }
+    .header-nav { display: flex; gap: 0.75rem; align-items: center; }
+    .header-nav a {
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 0.875rem;
+      padding: 0.4rem 0.7rem;
+      border-radius: 0.4rem;
+      border: 1px solid var(--border-color);
+    }
+    .header-nav a:hover { color: var(--text-color); background: var(--surface-hover); }
+    .header-nav a.active { color: var(--text-color); background: var(--surface-hover); border-color: var(--accent-color); }
+
+    main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .toolbar h2 { font-size: 1rem; font-weight: 600; margin-right: auto; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 0.85rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border-color);
+      background: var(--surface-color);
+      color: var(--text-color);
+      font-size: 0.875rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .btn:hover { background: var(--surface-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent-color); border-color: var(--accent-color); color: white; }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .btn-danger { color: var(--danger-color); border-color: var(--danger-color); }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+    .btn-small { padding: 0.3rem 0.55rem; font-size: 0.75rem; }
+
+    #banner {
+      padding: 0.7rem 1rem;
+      border-radius: 0.5rem;
+      margin-bottom: 1rem;
+      font-size: 0.875rem;
+      display: none;
+    }
+    #banner.show { display: block; }
+    #banner.error { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger-color); color: #fecaca; }
+    #banner.success { background: rgba(34, 197, 94, 0.15); border: 1px solid var(--success-color); color: #bbf7d0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 0.6rem 0.75rem;
+      text-align: left;
+      font-size: 0.875rem;
+      border-bottom: 1px solid var(--border-color);
+      vertical-align: middle;
+    }
+    th {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      letter-spacing: 0.04em;
+      background: rgba(0, 0, 0, 0.15);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr.revoked td { opacity: 0.55; }
+    code, .mono {
+      font-family: SF Mono, Fira Code, monospace;
+      font-size: 0.78rem;
+      background: rgba(255,255,255,0.04);
+      padding: 0.1rem 0.35rem;
+      border-radius: 0.25rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      border-radius: 0.3rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      border: 1px solid var(--border-color);
+    }
+    .badge.default { background: rgba(59, 130, 246, 0.15); border-color: var(--accent-color); color: #bfdbfe; }
+    .badge.revoked { background: rgba(239, 68, 68, 0.15); border-color: var(--danger-color); color: #fecaca; }
+    .badge.kind-oauth { background: rgba(34, 197, 94, 0.12); border-color: #166534; color: #bbf7d0; }
+    .badge.kind-api { background: rgba(245, 158, 11, 0.12); border-color: #92400e; color: #fde68a; }
+
+    .actions { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
+    .empty { text-align: center; padding: 2rem 1rem; color: var(--text-dim); }
+
+    /* Dialogs */
+    dialog {
+      background: var(--surface-color);
+      color: var(--text-color);
+      border: 1px solid var(--border-color);
+      border-radius: 0.6rem;
+      padding: 0;
+      max-width: 520px;
+      width: 92vw;
+    }
+    dialog::backdrop { background: rgba(0,0,0,0.7); }
+    .dialog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .dialog-head h3 { font-size: 1rem; font-weight: 700; margin: 0; }
+    .dialog-close {
+      background: none; border: none; color: var(--text-dim);
+      font-size: 1.4rem; cursor: pointer; line-height: 1;
+    }
+    .dialog-body { padding: 1rem; display: flex; flex-direction: column; gap: 0.85rem; }
+    .field { display: flex; flex-direction: column; gap: 0.3rem; }
+    .field label { font-size: 0.8rem; color: var(--text-dim); font-weight: 600; }
+    .field input {
+      padding: 0.5rem 0.65rem;
+      border-radius: 0.4rem;
+      border: 1px solid var(--border-color);
+      background: var(--bg-color);
+      color: var(--text-color);
+      font-size: 0.875rem;
+      font-family: inherit;
+    }
+    .field input:focus { outline: 2px solid var(--accent-color); outline-offset: -1px; }
+    .field-error { font-size: 0.78rem; color: var(--danger-color); min-height: 1em; }
+    .dialog-actions {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      padding-top: 0.4rem;
+    }
+    .oauth-status {
+      padding: 0.6rem 0.8rem;
+      background: rgba(0,0,0,0.25);
+      border-radius: 0.4rem;
+      font-size: 0.85rem;
+    }
+    .oauth-status .status-label {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      border-radius: 0.3rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: var(--border-color);
+      color: var(--text-color);
+    }
+    .oauth-status .status-label.s-awaiting_browser { background: rgba(245, 158, 11, 0.25); color: #fde68a; }
+    .oauth-status .status-label.s-completed { background: rgba(34, 197, 94, 0.25); color: #bbf7d0; }
+    .oauth-status .status-label.s-failed,
+    .oauth-status .status-label.s-timeout,
+    .oauth-status .status-label.s-cancelled { background: rgba(239, 68, 68, 0.25); color: #fecaca; }
+    .login-url-box {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.5rem;
+      align-items: center;
+    }
+    .login-url-box code {
+      flex: 1;
+      overflow-wrap: anywhere;
+      padding: 0.45rem 0.55rem;
+    }
+    .log-excerpt {
+      margin-top: 0.5rem;
+      max-height: 8rem;
+      overflow: auto;
+      background: #000;
+      color: #cbd5e1;
+      font-family: SF Mono, Fira Code, monospace;
+      font-size: 0.75rem;
+      padding: 0.5rem;
+      border-radius: 0.35rem;
+      white-space: pre-wrap;
+    }
+    details summary { cursor: pointer; color: var(--text-dim); font-size: 0.8rem; }
+    .auth-error {
+      max-width: 540px;
+      margin: 3rem auto;
+      padding: 1.25rem;
+      background: var(--surface-color);
+      border: 1px solid var(--border-color);
+      border-radius: 0.6rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Meridian <span class="badge-live">Accounts</span></h1>
+      <p>Codex credentials — OAuth logins and API keys</p>
+    </div>
+    <nav class="header-nav">
+      <a href="index.html">Hub</a>
+      <a href="accounts.html" class="active">Accounts</a>
+    </nav>
+  </header>
+
+  <main id="app">
+    <div id="auth-error" class="auth-error" style="display:none">
+      <p>Access token required.</p>
+      <p style="margin-top:0.5rem"><code>?token=YOUR_TOKEN</code></p>
+    </div>
+
+    <div id="content" style="display:none">
+      <div id="banner"></div>
+
+      <div class="toolbar">
+        <h2>Credentials</h2>
+        <button type="button" id="btn-refresh" class="btn">Refresh</button>
+        <button type="button" id="btn-add-oauth" class="btn btn-primary">Add OAuth Account</button>
+        <button type="button" id="btn-add-apikey" class="btn">Add API Key Account</button>
+      </div>
+
+      <table id="accounts-table">
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>Provider</th>
+            <th>Kind</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Last used</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-tbody">
+          <tr><td colspan="7" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- OAuth dialog -->
+  <dialog id="oauth-dialog" aria-labelledby="oauth-dialog-title">
+    <div class="dialog-head">
+      <h3 id="oauth-dialog-title">Add OAuth Account</h3>
+      <button type="button" class="dialog-close" data-close="oauth-dialog" aria-label="Close">×</button>
+    </div>
+    <div class="dialog-body">
+      <div id="oauth-form-block">
+        <div class="field">
+          <label for="oauth-label-input">Label</label>
+          <input id="oauth-label-input" type="text" placeholder="e.g. work-codex" maxlength="64" autocomplete="off" />
+          <div id="oauth-label-error" class="field-error"></div>
+        </div>
+      </div>
+
+      <div id="oauth-status-block" style="display:none">
+        <div class="oauth-status">
+          <div>Status: <span id="oauth-status-label" class="status-label">pending</span></div>
+          <div id="oauth-status-detail" style="margin-top:0.45rem; color: var(--text-dim); font-size: 0.8rem;">
+            Starting Codex login…
+          </div>
+          <div id="oauth-url-block" style="display:none">
+            <div class="login-url-box">
+              <code id="oauth-login-url"></code>
+              <button type="button" id="oauth-copy-url" class="btn btn-small">Copy</button>
+              <a id="oauth-open-url" class="btn btn-small" target="_blank" rel="noopener noreferrer">Open</a>
+            </div>
+          </div>
+          <details id="oauth-log-details" style="display:none; margin-top:0.5rem">
+            <summary>Show details</summary>
+            <pre id="oauth-log-excerpt" class="log-excerpt"></pre>
+          </details>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" id="oauth-cancel-btn" class="btn">Cancel</button>
+        <button type="button" id="oauth-start-btn" class="btn btn-primary">Start login</button>
+        <button type="button" id="oauth-close-btn" class="btn" style="display:none">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- API key dialog -->
+  <dialog id="apikey-dialog" aria-labelledby="apikey-dialog-title">
+    <div class="dialog-head">
+      <h3 id="apikey-dialog-title">Add API Key Account</h3>
+      <button type="button" class="dialog-close" data-close="apikey-dialog" aria-label="Close">×</button>
+    </div>
+    <div class="dialog-body">
+      <div class="field">
+        <label for="apikey-label-input">Label</label>
+        <input id="apikey-label-input" type="text" placeholder="e.g. openai-prod" maxlength="64" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="apikey-baseurl-input">Service URL</label>
+        <input id="apikey-baseurl-input" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="apikey-model-input">Model code</label>
+        <input id="apikey-model-input" type="text" placeholder="gpt-4o" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="apikey-envvar-input">Env var name</label>
+        <input id="apikey-envvar-input" type="text" placeholder="OPENAI_API_KEY" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="apikey-key-input">Key value</label>
+        <input id="apikey-key-input" type="password" placeholder="sk-…" autocomplete="off" />
+      </div>
+      <div id="apikey-form-error" class="field-error"></div>
+      <div class="dialog-actions">
+        <button type="button" id="apikey-cancel-btn" class="btn">Cancel</button>
+        <button type="button" id="apikey-submit-btn" class="btn btn-primary">Create</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Edit-label dialog -->
+  <dialog id="edit-dialog" aria-labelledby="edit-dialog-title">
+    <div class="dialog-head">
+      <h3 id="edit-dialog-title">Edit account</h3>
+      <button type="button" class="dialog-close" data-close="edit-dialog" aria-label="Close">×</button>
+    </div>
+    <div class="dialog-body">
+      <div class="field">
+        <label for="edit-label-input">Label</label>
+        <input id="edit-label-input" type="text" maxlength="64" autocomplete="off" />
+      </div>
+      <div id="edit-form-error" class="field-error"></div>
+      <div class="dialog-actions">
+        <button type="button" id="edit-cancel-btn" class="btn">Cancel</button>
+        <button type="button" id="edit-submit-btn" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+  <script src="accounts.js"></script>
+</body>
+</html>
