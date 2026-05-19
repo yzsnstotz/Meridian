@@ -57,21 +57,23 @@ document.addEventListener("DOMContentLoaded", () => {
    Tab Navigation
    ═══════════════════════════════════════════════════════════════ */
 
-function setupTabNavigation() {
+function activateTab(target) {
   const tabs = document.querySelectorAll(".nav-tab[data-tab]");
   const panels = document.querySelectorAll(".tab-panel");
 
-  const activateTab = (target) => {
-    tabs.forEach((t) => t.classList.remove("active"));
-    panels.forEach((p) => p.classList.remove("active"));
+  tabs.forEach((t) => t.classList.remove("active"));
+  panels.forEach((p) => p.classList.remove("active"));
 
-    const tab = Array.from(tabs).find((candidate) => candidate.dataset.tab === target);
-    const panel = document.getElementById(`tab-${target}`);
-    if (!tab || !panel) return;
+  const tab = Array.from(tabs).find((candidate) => candidate.dataset.tab === target);
+  const panel = document.getElementById(`tab-${target}`);
+  if (!tab || !panel) return;
 
-    tab.classList.add("active");
-    panel.classList.add("active");
-  };
+  tab.classList.add("active");
+  panel.classList.add("active");
+}
+
+function setupTabNavigation() {
+  const tabs = document.querySelectorAll(".nav-tab[data-tab]");
 
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
