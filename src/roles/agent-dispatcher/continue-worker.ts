@@ -31,9 +31,15 @@ type ContinueWorkerConfig = Pick<
   | "model_map"
   | "dispatch_repo_root"
   | "validator"
-  | "pm_resolver"
   | "credential_id"
->;
+> & {
+  // pm_resolver is post-transform required on AgentDispatcherConfig, but the
+  // scheduler engine passes SchedulerConfig (optional pm_resolver) into this
+  // function and multiple test fixtures omit it. continue-worker.ts itself
+  // never reads pm_resolver — it only forwards config to launchDispatchWorker
+  // which also doesn't touch it — so widening to optional here is safe.
+  pm_resolver?: AgentDispatcherConfig["pm_resolver"];
+};
 
 export interface ContinueDispatchPlanRow {
   status: string;

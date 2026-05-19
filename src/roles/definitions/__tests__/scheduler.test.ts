@@ -48,7 +48,7 @@ describe("SchedulerRole", () => {
   });
 
   it("omits credentialId from LaunchConfig when SchedulerConfig.credential_id is unset", async () => {
-    const launchDispatcher = vi.fn(async (): Promise<LaunchResult> => ({
+    const launchDispatcher = vi.fn(async (_config: LaunchConfig): Promise<LaunchResult> => ({
       ok: true,
       threadId: "dispatcher-thread-sched"
     }));
@@ -73,7 +73,7 @@ describe("SchedulerRole", () => {
 
     await launchChild(role.config);
     expect(launchDispatcher).toHaveBeenCalledTimes(1);
-    const launchArgs = launchDispatcher.mock.calls[0]?.[0] as Record<string, unknown>;
+    const launchArgs = launchDispatcher.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(launchArgs).toBeDefined();
     expect(launchArgs.credentialId).toBeUndefined();
   });
