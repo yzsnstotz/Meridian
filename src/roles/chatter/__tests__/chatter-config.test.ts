@@ -25,7 +25,12 @@ describe("ChatterRoleConfigSchema", () => {
     template: "flat-log",
     allowed_modes: ["session"],
     skill_allowlist: ["dispatch_coding_job"],
-    llm_agent_kind: "claude-code"
+    llm_agent_kind: "claude-code",
+    user_reply_channel: {
+      channel: "socket",
+      chat_id: "ads:demo",
+      socket_path: "/tmp/ads.sock"
+    }
   };
 
   it("accepts a minimal valid config", () => {
@@ -53,6 +58,12 @@ describe("ChatterRoleConfigSchema", () => {
     const { template, ...rest } = validBody;
     const parsed = ChatterRoleConfigSchema.parse({ ...rest, manifest_path: "/tmp/manifest.json" });
     expect(parsed.manifest_path).toBe("/tmp/manifest.json");
+  });
+
+  it("rejects when user_reply_channel is missing", () => {
+    const { user_reply_channel: _omitted, ...rest } = validBody;
+    void _omitted;
+    expect(() => ChatterRoleConfigSchema.parse(rest)).toThrow();
   });
 
   it("defaults llm_agent_kind to claude-code", () => {

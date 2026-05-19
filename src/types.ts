@@ -677,7 +677,10 @@ export const ChatterRoleConfigSchema = z.object({
   allowed_modes: ChatterAllowedModesSchema,
   skill_allowlist: z.array(z.string().min(1)).default([]),
   llm_agent_kind: z.enum(["claude-code"]).default("claude-code"),
-  user_reply_channel: ReplyChannelSchema.optional()
+  // Required: ChatterRole has no useful behavior without somewhere to reply.
+  // Operators provide one channel at init; the gateway (ADS) demuxes per-user
+  // on its end via session correlation in payload.chatter.
+  user_reply_channel: ReplyChannelSchema
 }).refine((v) => v.template !== undefined || v.manifest_path !== undefined, {
   message: "Either template or manifest_path must be provided"
 });
