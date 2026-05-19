@@ -106,11 +106,31 @@ export class OAuthLoginJob {
     } catch {
       return; // partial write — wait for next fire
     }
-    this.credential_id = await this.opts.credentialStore.completeOAuth({
+
+    const credentialId = await this.opts.credentialStore.completeOAuth({
       slot: this.slot,
       credential_label: this.opts.credential_label,
       owner_caller_id: this.opts.owner_caller_id
     });
+
+    // RACE GUARD: state may have changed during the await above. If
+    // cancel()/handleTimeout()/fail() fired while completeOAuth was in flight,
+    // the slot dir has already been rm -rf'd via abandonOAuthSlot — but
+    // completeOAuth still inserted a record into the store. Resurrecting that
+    // record as a healthy credential would leak a CredentialRecord pointing at
+    // a non-existent codex_home_path. Undo the registration instead.
+    if (this.status !== "pending" && this.status !== "awaiting_browser") {
+      try {
+        await this.opts.credentialStore.revoke(credentialId);
+      } catch {
+        // Best effort. The slot dir is already gone so revoke()'s rm -rf will
+        // be a no-op; the record gets marked revoked which is the correct
+        // post-condition for an aborted job.
+      }
+      return;
+    }
+
+    this.credential_id = credentialId;
     this.status = "completed";
     this.cleanup({ deleteDir: false });
   }

@@ -141,6 +141,101 @@ test("URL capture window: if URL not printed within window, status flips to fail
   }
 });
 
+test("RACE: cancel during tryComplete await does not leave a viable registered credential", async () => {
+  // Reproduce the race where cancel() fires during the await inside tryComplete:
+  //   credential_id = await completeOAuth(...)
+  // If cancel runs while completeOAuth is awaiting onChange (the moment the
+  // record has been inserted into the map but completeOAuth hasn't returned),
+  // cancel() rm -rf's the slot dir (via abandonOAuthSlot) and then tryComplete
+  // proceeds to set credential_id + status=completed.
+  // Result: a registered, non-revoked CredentialRecord pointing at a deleted
+  // directory.
+
+  const prev = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_DELAY_MS = "20"; // auth.json appears fast
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-race-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+
+    // Stub completeOAuth to: do the real work, but yield control mid-flight so
+    // we can fire cancel() before it returns. This reproduces the "await
+    // completeOAuth" window in tryComplete deterministically.
+    const realCompleteOAuth = store.completeOAuth.bind(store);
+    let releaseAfterRecordInsert: () => void = () => {};
+    const afterRecordInsertGate = new Promise<void>((resolve) => {
+      releaseAfterRecordInsert = resolve;
+    });
+    let entered = false;
+    store.completeOAuth = async (args) => {
+      entered = true;
+      // Run the real implementation up to and including record insertion.
+      const id = await realCompleteOAuth(args);
+      // Now yield so the test can fire cancel() before tryComplete sees `id`.
+      await afterRecordInsertGate;
+      return id;
+    };
+
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "racey",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 30_000,
+      urlCaptureWindowMs: 5_000
+    });
+    await job.start();
+
+    // Wait for the auth.json watcher to fire tryComplete and reach our gate.
+    for (let i = 0; i < 200; i++) {
+      if (entered) break;
+      await wait(25);
+    }
+    assert.equal(entered, true, "completeOAuth must have been entered by tryComplete");
+
+    // Now cancel. cleanup({deleteDir:true}) rm -rf's the slot dir.
+    await job.cancel();
+    assert.equal(job.status, "cancelled");
+
+    // Release the gate so tryComplete resumes with the awaited credentialId.
+    // Without a race guard it will overwrite status back to "completed" and
+    // set credential_id on a record whose codex_home_path no longer exists.
+    releaseAfterRecordInsert();
+
+    // Let the resumed tryComplete settle.
+    for (let i = 0; i < 50; i++) {
+      await wait(20);
+    }
+
+    // POST-CONDITION: the job must NOT expose a viable (un-revoked) credential.
+    // Either credential_id stays null, OR the registered record is marked revoked.
+    if (job.credential_id) {
+      const rec = store.get(job.credential_id);
+      assert.ok(rec, "if credential_id was set, the record must exist");
+      assert.ok(
+        rec!.revoked_at,
+        `registered credential after cancel must be revoked. Got revoked_at=${rec!.revoked_at}`
+      );
+      // codex_home_path must no longer exist on disk (cancel cleaned it up).
+      assert.equal(
+        fs.existsSync(rec!.codex_home_path),
+        false,
+        "codex_home_path should be gone after cancel"
+      );
+    }
+
+    // Job's terminal status must be cancelled (not silently flipped to completed).
+    assert.equal(
+      job.status,
+      "cancelled",
+      `job status should remain cancelled, got ${job.status}`
+    );
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prev;
+  }
+});
+
 test("TIMEOUT: timeoutMs while awaiting_browser flips to timeout", async () => {
   // Big auth.json delay, small timeout
   const prev = process.env.FAKE_CODEX_DELAY_MS;
