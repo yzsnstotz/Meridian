@@ -27,6 +27,13 @@ export interface LaunchDispatchWorkerConfig {
   workerId: string;
   modelId?: string;
   effort?: string;
+  /**
+   * Opaque credential identifier to forward onto /api/spawn so the Hub uses a
+   * non-default credential set for this worker. Resolved by the caller via
+   * {@link resolveCredentialForSpawn} so dispatcher → worker inheritance is
+   * applied before reaching the launcher.
+   */
+  credentialId?: string;
   validationMaxFixCycles?: number;
   /**
    * Dispatch plan paths of OTHER active agent-dispatcher roles. Used to refuse
@@ -146,7 +153,8 @@ export async function launchDispatchWorker(
       spawnDir,
       modelId: parsedModel.modelId,
       effort: resolvedEffort,
-      autoApprove: config.autoApprove
+      autoApprove: config.autoApprove,
+      ...(config.credentialId !== undefined ? { credentialId: config.credentialId } : {})
     }, {
       isPersistedThreadIdReserved: (candidateThreadId) =>
         isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId),

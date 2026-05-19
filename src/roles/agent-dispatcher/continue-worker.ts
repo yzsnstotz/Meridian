@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import path from "node:path";
 
+import { resolveCredentialForSpawn } from "./credential-resolution";
 import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
 import { LifecycleStore } from "./lifecycle-store";
 import {
@@ -30,6 +31,8 @@ type ContinueWorkerConfig = Pick<
   | "model_map"
   | "dispatch_repo_root"
   | "validator"
+  | "pm_resolver"
+  | "credential_id"
 >;
 
 export interface ContinueDispatchPlanRow {
@@ -231,6 +234,8 @@ async function launchWorkerFromDispatchPlan(
 
   const workerSpawnDir = resolveLaunchSpawnDir(config, dispatchPlanRow.worker);
 
+  const credentialId = resolveCredentialForSpawn("main", config);
+
   return launchWorker({
     agentType: resolvedModel?.provider?.trim() || resolvedAgentType,
     mode: config.mode,
@@ -243,7 +248,8 @@ async function launchWorkerFromDispatchPlan(
     modelId,
     effort: resolvedEffort,
     validationMaxFixCycles: resolveValidationMaxFixCycles(config, dispatchPlanRow),
-    otherDispatchPlanPaths
+    otherDispatchPlanPaths,
+    ...(credentialId !== undefined ? { credentialId } : {})
   });
 }
 
