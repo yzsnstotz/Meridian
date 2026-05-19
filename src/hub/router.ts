@@ -1241,8 +1241,14 @@ export class HubRouter {
           break;
         }
       }
+      const credentialId = currentInstance.credential_id ?? null;
+      const credentialLabel = credentialId
+        ? (this.credentialStore?.get(credentialId)?.credential_label ?? null)
+        : null;
       return {
         ...currentInstance,
+        credential_id: credentialId,
+        credential_label: credentialLabel,
         current_model_id: currentInstance.model_id ?? null,
         attached: attachment.sessions.length > 0,
         attached_sessions: attachment.sessions,
