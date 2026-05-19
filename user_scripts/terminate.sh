@@ -52,7 +52,8 @@ process_cwd() {
   if ! command -v lsof >/dev/null 2>&1; then
     return 0
   fi
-  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+  # timeout 5 guards against lsof blocking on a stuck mount.
+  timeout 5 lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
 }
 
 repo_owned_pids() {
