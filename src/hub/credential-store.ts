@@ -250,6 +250,13 @@ export class CredentialStore {
     if (!rec) throw new CredentialNotFoundError(credentialId);
     if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
 
+    // FORBIDDEN = fields that an in-process caller could *plausibly* try to
+    // pass through. The schema-validated wire payload (UpdateCredentialPayloadSchema)
+    // already rejects everything outside { credential_label, base_url, model_id,
+    // env_var, key_value }, so the previous over-defensive list (including
+    // api_key_metadata, codex_home_path, last_used_at) added churn without
+    // catching real attack surface. is_default is excluded because there is a
+    // dedicated setDefault() entry-point that needs to mutate it.
     const FORBIDDEN = [
       "credential_id",
       "owner_caller_id",
@@ -257,10 +264,7 @@ export class CredentialStore {
       "provider",
       "created_at",
       "revoked_at",
-      "is_default",
-      "api_key_metadata",
-      "codex_home_path",
-      "last_used_at"
+      "is_default"
     ];
     for (const k of Object.keys(patch)) {
       if (FORBIDDEN.includes(k)) {
