@@ -40,3 +40,49 @@ describe("AgentDispatcherConfig.credential_id", () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe("ValidatorConfig.credential_id", () => {
+  it("defaults to undefined when omitted", () => {
+    const result = ValidatorConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.credential_id).toBeUndefined();
+    }
+  });
+
+  it("accepts an override credential_id", () => {
+    const result = ValidatorConfigSchema.safeParse({ credential_id: "cred-X" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.credential_id).toBe("cred-X");
+    }
+  });
+
+  it("rejects empty-string credential_id", () => {
+    const result = ValidatorConfigSchema.safeParse({ credential_id: "" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("PmResolverConfig.credential_id", () => {
+  it("defaults to undefined when omitted", () => {
+    const result = PmResolverConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.credential_id).toBeUndefined();
+    }
+  });
+
+  it("accepts an override credential_id", () => {
+    const result = PmResolverConfigSchema.safeParse({ credential_id: "cred-X" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.credential_id).toBe("cred-X");
+    }
+  });
+
+  it("rejects empty-string credential_id", () => {
+    const result = PmResolverConfigSchema.safeParse({ credential_id: "" });
+    expect(result.success).toBe(false);
+  });
+});
