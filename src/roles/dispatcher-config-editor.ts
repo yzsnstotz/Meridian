@@ -47,6 +47,7 @@ export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): 
     user_reply_channels: config.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
     agent_type: config.agent_type,
     ...(config.model_id ? { model_id: config.model_id } : {}),
+    ...(config.credential_id ? { credential_id: config.credential_id } : {}),
     mode: config.mode,
     kill_policy: config.kill_policy,
     auto_approve: config.auto_approve,

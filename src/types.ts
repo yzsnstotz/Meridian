@@ -498,6 +498,11 @@ export const AgentDispatcherEditorConfigSchema = z.object({
   user_reply_channels: z.array(ReplyChannelSchema).min(1),
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
+  // Mirrors AgentDispatcherConfigSchema.credential_id (PR #244). Without
+  // this the GET /api/role/<id>/config response would reject a persisted
+  // credential_id under .strict() — and the GUI's role-config form needs
+  // the populated value to round-trip through Save (PR #246-followup).
+  credential_id: z.string().min(1).optional(),
   mode: StatefulBridgeModeSchema,
   kill_policy: KillPolicySchema,
   auto_approve: z.boolean().default(false),

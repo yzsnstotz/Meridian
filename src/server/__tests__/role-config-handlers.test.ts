@@ -708,6 +708,59 @@ describe("role config handlers", () => {
       });
   });
 
+  it("persists credential_id config patches for an agent-dispatcher", async () => {
+    // Regression: PR #244 added credential_id to AgentDispatcherConfigSchema
+    // but missed AgentDispatcherConfigPatchSchema (.strict()), so the GUI
+    // role-config Save form raised
+    //   400 Invalid config patch: Unrecognized key: "credential_id"
+    // whenever an operator chose a credential in the dropdown.
+    const harness = createHarness({
+      roles: [
+        {
+          threadId: "agent-dispatcher-credential-patch",
+          roleType: "agent-dispatcher",
+          config: {
+            tasks: [],
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          },
+          status: "active"
+        }
+      ],
+      promptStore: {}
+    });
+
+    await expect(harness.roleHandlers.patchConfig("agent-dispatcher-credential-patch", {
+      credential_id: "01234567-89ab-cdef-0123-456789abcdef"
+    })).resolves.toMatchObject({
+      config: {
+        credential_id: "01234567-89ab-cdef-0123-456789abcdef"
+      }
+    });
+
+    const persistedAfterSet = (await harness.stateStore.load())
+      ?.roles.find((role) => role.threadId === "agent-dispatcher-credential-patch")?.config;
+    expect(persistedAfterSet).toMatchObject({
+      credential_id: "01234567-89ab-cdef-0123-456789abcdef"
+    });
+
+    // Clearing the credential override (GUI sends null when the operator
+    // selects "(provider default)") drops the field so the Hub uses ambient
+    // credentials.
+    const cleared = await harness.roleHandlers.patchConfig("agent-dispatcher-credential-patch", {
+      credential_id: null
+    });
+    expect(cleared.config).not.toHaveProperty("credential_id");
+
+    const persistedAfterClear = (await harness.stateStore.load())
+      ?.roles.find((role) => role.threadId === "agent-dispatcher-credential-patch")?.config as { credential_id?: string };
+    expect(persistedAfterClear?.credential_id).toBeUndefined();
+  });
+
   it("persists validator config patches for an agent-dispatcher", async () => {
     const harness = createHarness({
       roles: [
