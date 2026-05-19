@@ -217,6 +217,7 @@ export class ChatterRole implements BaseRole {
         content: "",
         attachments: [],
         spawn_dir: this.config.memory_folder,
+        ...(this.config.llm_model !== undefined ? { model_id: this.config.llm_model } : {}),
         ...(this.config.credential_id !== undefined ? { credential_id: this.config.credential_id } : {})
       },
       mode: "bridge",

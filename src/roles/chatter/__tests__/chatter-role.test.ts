@@ -122,6 +122,21 @@ describe("ChatterRole — activation + spawn handshake", () => {
     expect(spawn!.payload.credential_id).toBeUndefined();
   });
 
+  it("spawn payload carries model_id when llm_model is configured (PR #249)", async () => {
+    const root2 = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-model-")));
+    const made = makeCtx();
+    const roleModel = new ChatterRole(
+      "chatter-tenant-model",
+      makeConfig(root2, { llm_model: "claude-sonnet-4-6" })
+    );
+    await roleModel.onActivate(made.ctx);
+    await roleModel.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = made.sent.find((m) => m.intent === "spawn")!;
+    expect(spawn.payload.model_id).toBe("claude-sonnet-4-6");
+  });
+
   it("second turn during pending spawn is queued, not double-spawned", async () => {
     await role.onInboundResult(
       makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
