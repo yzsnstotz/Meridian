@@ -48,12 +48,24 @@ export interface OAuthSlot {
 export class CredentialStore {
   private readonly records: Map<string, CredentialRecord>;
   private readonly credentialsRoot: string;
-  private readonly onChange: (records: CredentialRecord[]) => Promise<void> | void;
+  private onChange: (records: CredentialRecord[]) => Promise<void> | void;
 
   constructor(opts: CredentialStoreOptions) {
     this.records = new Map(opts.initialRecords.map((r) => [r.credential_id, r]));
     this.credentialsRoot = opts.credentialsRoot;
     this.onChange = opts.onChange ?? (() => {});
+  }
+
+  /**
+   * Install or replace the onChange callback. Needed because HubServer
+   * constructs the store BEFORE the router (which owns persistStateSafely),
+   * but the callback needs to call back into the router. Without this, every
+   * credential mutation lived only in memory until an unrelated handler
+   * triggered persistStateSafely — a restart in between caused silent data
+   * loss and reconcile() then rm -rf'd the orphan dirs.
+   */
+  setOnChange(callback: (records: CredentialRecord[]) => Promise<void> | void): void {
+    this.onChange = callback;
   }
 
   list(): CredentialRecord[] {

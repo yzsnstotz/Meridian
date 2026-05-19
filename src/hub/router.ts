@@ -587,6 +587,15 @@ export class HubRouter {
     this.oauthLoginRegistry = options.oauthLoginRegistry;
     this.defaultCodexLoginCommand = options.defaultCodexLoginCommand;
     this.defaultCodexLoginArgs = options.defaultCodexLoginArgs;
+
+    // Wire credential mutations directly into persistence. Without this, a
+    // credential create/revoke/update only landed on disk when an unrelated
+    // handler later triggered persistStateSafely — a hub restart between
+    // mutations would silently lose credentials, and reconcile() would then
+    // rm -rf the orphan dirs.
+    if (this.credentialStore) {
+      this.credentialStore.setOnChange(() => this.persistStateSafely());
+    }
   }
 
   getCredentialStore(): CredentialStore | undefined {

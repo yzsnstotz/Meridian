@@ -22,6 +22,66 @@ test("HubServer bootstrap wires a CredentialStore and OAuthLoginJobRegistry into
   assert.equal(Array.isArray(store!.list()), true);
 });
 
+test("HubRouter wires CredentialStore.onChange to persistStateSafely (mutations land on disk immediately)", async () => {
+  // Use HubRouter directly with an explicit statePath option. This avoids the
+  // module-cached config.MERIDIAN_STATE_PATH problem and lets us assert the
+  // wiring contract: any credential mutation must immediately flush to disk
+  // via persistStateSafely.
+  const { HubRouter } = await import("./router");
+  const { InstanceRegistry } = await import("./registry");
+  const { CredentialStore } = await import("./credential-store");
+
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "meridian-router-onchange-"));
+  const statePath = path.join(tmpdir, "hub-state.json");
+  const credentialsRoot = path.join(tmpdir, "credentials");
+  fs.mkdirSync(credentialsRoot, { recursive: true });
+
+  try {
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot });
+    const router = new HubRouter(new InstanceRegistry(), {
+      credentialStore: store,
+      statePath
+    });
+    // initialize() writes an initial persisted state file.
+    await router.initialize();
+
+    // Drive a mutation directly through the live store. Without the onChange
+    // wiring this would live only in memory and persistStateSafely (called only
+    // by other intent handlers) would never see it until something unrelated
+    // mutated state.
+    const credId = await store.createApiKey({
+      credential_label: "boot-onchange",
+      owner_caller_id: "alice",
+      base_url: "https://example.com/v1",
+      model_id: "test-model",
+      env_var: "TEST_KEY",
+      key_value: "secret-xyz"
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    const raw = fs.readFileSync(statePath, "utf8");
+    const parsed = JSON.parse(raw) as { credentials?: Array<{ credential_id: string }> };
+    const credentialsList = parsed.credentials ?? [];
+    const ids = credentialsList.map((c) => c.credential_id);
+    assert.ok(
+      ids.includes(credId),
+      `credential ${credId} should be in persisted state immediately after createApiKey. got: ${ids.join(",")}`
+    );
+
+    // And revoke should also flush.
+    await store.revoke(credId);
+    await new Promise((r) => setImmediate(r));
+    const raw2 = fs.readFileSync(statePath, "utf8");
+    const parsed2 = JSON.parse(raw2) as { credentials?: Array<{ credential_id: string; revoked_at: string | null }> };
+    const found = (parsed2.credentials ?? []).find((c) => c.credential_id === credId);
+    assert.ok(found, "credential should still be present after revoke");
+    assert.ok(found!.revoked_at, "revoked_at must be set in persisted state");
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
 test("HubServer bootstrap rehydrates credentials from persisted state", () => {
   // Seed a temporary state file with a credential record, point the bootstrap at it
   // via MERIDIAN_STATE_PATH, and confirm the CredentialStore loads it.
