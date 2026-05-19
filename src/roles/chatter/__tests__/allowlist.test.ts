@@ -64,4 +64,8 @@ describe("assertSkillAllowed", () => {
     expect(() => assertSkillAllowed("chatter.memory.exec", [])).toThrow(ChatterPolicyError);
     expect(() => assertSkillAllowed("chatter.memory", [])).toThrow(ChatterPolicyError);
   });
+
+  it("rejects empty-skill name even when '' is in the allowlist", () => {
+    expect(() => assertSkillAllowed("chatter.skill.", [""])).toThrow(ChatterPolicyError);
+  });
 });

@@ -37,7 +37,7 @@ export function assertSkillAllowed(
     throw new ChatterPolicyError("denied_skill", `unknown tool '${toolName}'`);
   }
   const skill = toolName.slice(SKILL_PREFIX.length);
-  if (!skillAllowlist.includes(skill)) {
+  if (skill === "" || !skillAllowlist.includes(skill)) {
     throw new ChatterPolicyError(
       "denied_skill",
       `skill '${skill}' not in allowlist [${skillAllowlist.join(", ")}]`
