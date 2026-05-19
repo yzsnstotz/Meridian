@@ -57,21 +57,23 @@ document.addEventListener("DOMContentLoaded", () => {
    Tab Navigation
    ═══════════════════════════════════════════════════════════════ */
 
-function setupTabNavigation() {
+function activateTab(target) {
   const tabs = document.querySelectorAll(".nav-tab[data-tab]");
   const panels = document.querySelectorAll(".tab-panel");
 
-  const activateTab = (target) => {
-    tabs.forEach((t) => t.classList.remove("active"));
-    panels.forEach((p) => p.classList.remove("active"));
+  tabs.forEach((t) => t.classList.remove("active"));
+  panels.forEach((p) => p.classList.remove("active"));
 
-    const tab = Array.from(tabs).find((candidate) => candidate.dataset.tab === target);
-    const panel = document.getElementById(`tab-${target}`);
-    if (!tab || !panel) return;
+  const tab = Array.from(tabs).find((candidate) => candidate.dataset.tab === target);
+  const panel = document.getElementById(`tab-${target}`);
+  if (!tab || !panel) return;
 
-    tab.classList.add("active");
-    panel.classList.add("active");
-  };
+  tab.classList.add("active");
+  panel.classList.add("active");
+}
+
+function setupTabNavigation() {
+  const tabs = document.querySelectorAll(".nav-tab[data-tab]");
 
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -83,6 +85,72 @@ function setupTabNavigation() {
   if (initialTab) {
     activateTab(initialTab);
   }
+}
+
+function setupCreateRoleMenu() {
+  const root = document.getElementById("create-role-menu");
+  if (!root) return;
+
+  const trigger = root.querySelector(".nav-dropdown-trigger");
+  const list = root.querySelector(".nav-dropdown-list");
+  if (!trigger || !list) return;
+
+  const close = () => {
+    root.classList.remove("open");
+    list.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  };
+
+  const open = () => {
+    root.classList.add("open");
+    list.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    const first = list.querySelector('[role="menuitem"]');
+    if (first) first.focus();
+  };
+
+  const toggle = () => (list.hidden ? open() : close());
+
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggle();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!root.contains(e.target)) close();
+  });
+
+  root.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      close();
+      trigger.focus();
+    }
+  });
+
+  list.addEventListener("click", (e) => {
+    const item = e.target.closest('[role="menuitem"]');
+    if (!item) return;
+
+    if (item.tagName === "A") {
+      close();
+      return;
+    }
+
+    const targetTab = item.dataset.targetTab;
+    const targetForm = item.dataset.targetForm;
+    close();
+
+    if (targetTab) activateTab(targetTab);
+    if (targetForm) {
+      requestAnimationFrame(() => {
+        const form = document.getElementById(targetForm);
+        if (!form) return;
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
+        const firstField = form.querySelector("input, textarea, select");
+        if (firstField) firstField.focus({ preventScroll: true });
+      });
+    }
+  });
 }
 
 function updateTabCounts(roles) {
@@ -1367,6 +1435,7 @@ function renderSchedulerRunHistory(runHistory) {
 
 async function setupDashboard() {
   setupTabNavigation();
+  setupCreateRoleMenu();
   setupValidatorToggle();
   setupPmResolverToggle("agent-dispatcher-pm-enabled", "agent-dispatcher-pm-fields");
   setupPmResolverToggle("new-scheduler-pm-enabled", "new-scheduler-pm-fields");
