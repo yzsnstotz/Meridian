@@ -492,11 +492,81 @@
     oauthDialog.addEventListener("close", function () { stopOauthPolling(); });
   }
 
-  if (btnAddApiKey) {
-    btnAddApiKey.addEventListener("click", function () {
-      alert("Add API Key Account: implemented in next commit (G3).");
-    });
+  // API-key dialog wiring (G3).
+  var apikeyDialog = document.getElementById("apikey-dialog");
+  var apikeyLabelInput = document.getElementById("apikey-label-input");
+  var apikeyBaseUrlInput = document.getElementById("apikey-baseurl-input");
+  var apikeyModelInput = document.getElementById("apikey-model-input");
+  var apikeyEnvVarInput = document.getElementById("apikey-envvar-input");
+  var apikeyKeyInput = document.getElementById("apikey-key-input");
+  var apikeyFormError = document.getElementById("apikey-form-error");
+  var apikeyCancelBtn = document.getElementById("apikey-cancel-btn");
+  var apikeySubmitBtn = document.getElementById("apikey-submit-btn");
+
+  function resetApiKeyDialog() {
+    if (apikeyLabelInput) apikeyLabelInput.value = "";
+    if (apikeyBaseUrlInput) apikeyBaseUrlInput.value = "";
+    if (apikeyModelInput) apikeyModelInput.value = "";
+    if (apikeyEnvVarInput) apikeyEnvVarInput.value = "";
+    if (apikeyKeyInput) apikeyKeyInput.value = "";
+    if (apikeyFormError) apikeyFormError.textContent = "";
+    if (apikeySubmitBtn) apikeySubmitBtn.disabled = false;
   }
+  function openApiKeyDialog() {
+    resetApiKeyDialog();
+    if (apikeyDialog && typeof apikeyDialog.showModal === "function") {
+      apikeyDialog.showModal();
+      if (apikeyLabelInput) {
+        try { apikeyLabelInput.focus(); } catch (e) {}
+      }
+    }
+  }
+  function closeApiKeyDialog() {
+    if (apikeyDialog && apikeyDialog.open) apikeyDialog.close();
+  }
+  function submitApiKey() {
+    var label = String((apikeyLabelInput && apikeyLabelInput.value) || "").trim();
+    var baseUrl = String((apikeyBaseUrlInput && apikeyBaseUrlInput.value) || "").trim();
+    var modelId = String((apikeyModelInput && apikeyModelInput.value) || "").trim();
+    var envVar = String((apikeyEnvVarInput && apikeyEnvVarInput.value) || "").trim();
+    var keyValue = String((apikeyKeyInput && apikeyKeyInput.value) || "");
+    var missing = [];
+    if (!label) missing.push("Label");
+    if (!baseUrl) missing.push("Service URL");
+    if (!modelId) missing.push("Model code");
+    if (!envVar) missing.push("Env var name");
+    if (!keyValue) missing.push("Key value");
+    if (missing.length) {
+      if (apikeyFormError) apikeyFormError.textContent = "Missing: " + missing.join(", ");
+      return;
+    }
+    if (apikeyFormError) apikeyFormError.textContent = "";
+    if (apikeySubmitBtn) apikeySubmitBtn.disabled = true;
+    api("/api/credentials/api-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        credential_label: label,
+        base_url: baseUrl,
+        model_id: modelId,
+        env_var: envVar,
+        key_value: keyValue
+      })
+    })
+      .then(function () {
+        closeApiKeyDialog();
+        showBanner("success", "API-key credential created.", 4000);
+        return loadCredentials();
+      })
+      .catch(function (err) {
+        if (apikeyFormError) apikeyFormError.textContent = err.message || "Create failed.";
+      })
+      .finally(function () { if (apikeySubmitBtn) apikeySubmitBtn.disabled = false; });
+  }
+
+  if (btnAddApiKey) btnAddApiKey.addEventListener("click", openApiKeyDialog);
+  if (apikeyCancelBtn) apikeyCancelBtn.addEventListener("click", closeApiKeyDialog);
+  if (apikeySubmitBtn) apikeySubmitBtn.addEventListener("click", submitApiKey);
 
   // Expose for follow-up commits to override (G2/G3 will replace the click handlers
   // on btnAddOauth/btnAddApiKey by re-binding through MeridianAccounts).
