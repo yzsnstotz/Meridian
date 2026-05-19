@@ -190,6 +190,16 @@
                   Neutral approval policy only. Meridian maps provider-specific launch flags.
                 </small>
               </label>
+              <label class="field">
+                <span>Credential</span>
+                <select id="agent-dispatcher-credential-id" name="credential_id" data-credential-select>
+                  <option value="">Use default codex login (~/.codex)</option>
+                </select>
+                <small class="field-hint muted">
+                  Overrides the credential set forwarded to /api/spawn. Leave default
+                  unless an operator-issued credential is required.
+                </small>
+              </label>
             </div>
 
             <!-- Validator Config (Issue #1: accessible at launch time) -->
@@ -282,6 +292,16 @@
                     value="main"
                   />
                 </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select
+                    id="agent-dispatcher-validator-credential-id"
+                    name="validator_credential_id"
+                    data-credential-select
+                  >
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
+                </label>
               </div>
             </fieldset>
 
@@ -337,6 +357,16 @@
                 <label class="field">
                   <span>pm auto_approve</span>
                   <input id="agent-dispatcher-pm-auto-approve" name="pm_auto_approve" type="checkbox" />
+                </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select
+                    id="agent-dispatcher-pm-credential-id"
+                    name="pm_credential_id"
+                    data-credential-select
+                  >
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
                 </label>
                 <label class="field field-wide">
                   <span>pm user_reply_channels</span>

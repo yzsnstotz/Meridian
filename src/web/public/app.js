@@ -436,6 +436,7 @@ function collectValidatorConfig() {
     agent_type: agentType,
     mode: normalizeValidatorMode(agentType, requestedMode),
     model_id: document.getElementById("agent-dispatcher-validator-model-id")?.value?.trim() || undefined,
+    credential_id: document.getElementById("agent-dispatcher-validator-credential-id")?.value?.trim() || undefined,
     threshold_type: document.getElementById("agent-dispatcher-validator-threshold-type")?.value || "score",
     pass_threshold: parseFloat(document.getElementById("agent-dispatcher-validator-pass-threshold")?.value) || 0.7,
     max_fix_cycles: parseInt(document.getElementById("agent-dispatcher-validator-max-fix-cycles")?.value, 10) || 3,
@@ -471,6 +472,7 @@ function collectPmResolverConfig(prefix) {
     agent_type: document.getElementById(`${prefix}-agent-type`)?.value || "codex",
     mode: document.getElementById(`${prefix}-mode`)?.value || "bridge",
     model_id: document.getElementById(`${prefix}-model-id`)?.value?.trim() || undefined,
+    credential_id: document.getElementById(`${prefix}-credential-id`)?.value?.trim() || undefined,
     auto_approve: readBooleanControl(autoApproveControl, false)
   };
   const replyChannels = parseReplyChannelsTextarea(`${prefix}-reply-channels`);
@@ -516,6 +518,61 @@ function parseReplyChannelsTextarea(id) {
     throw new Error("pm user_reply_channels must be a JSON array.");
   }
   return parsed;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Credential selectors (multi-codex credentials)
+   ═══════════════════════════════════════════════════════════════
+   Populates every `<select data-credential-select>` on the current
+   page with the operator-visible credential list returned by
+   meridian-hub's `GET /api/credentials`. Revoked credentials are
+   filtered out client-side so operators can't pick a dead entry.
+   The default option ("Use default codex login (~/.codex)") is
+   preserved at value `""`; the form serializers map blank to
+   omission of `credential_id` so the Hub keeps its default path. */
+async function loadCredentialSelectors() {
+  const selects = Array.from(document.querySelectorAll("select[data-credential-select]"));
+  if (selects.length === 0) return;
+
+  let credentials;
+  try {
+    const payload = await fetchJson("/api/credentials");
+    credentials = Array.isArray(payload?.credentials) ? payload.credentials : [];
+  } catch (error) {
+    // Surfacing the failure in a feedback element is left to each page; for
+    // now we leave the selects with just the "default" option so spawn still
+    // works. Logging keeps the failure visible in devtools.
+    console.warn("Failed to load /api/credentials:", error);
+    return;
+  }
+
+  const usable = credentials.filter((entry) => entry && entry.revoked_at === null);
+
+  for (const select of selects) {
+    const preserved = select.value;
+    // Remove every option except the leading "default" placeholder (value "")
+    Array.from(select.querySelectorAll("option")).forEach((option, index) => {
+      if (index === 0 && option.value === "") {
+        return;
+      }
+      option.remove();
+    });
+
+    for (const cred of usable) {
+      const option = document.createElement("option");
+      option.value = cred.credential_id;
+      const label = typeof cred.credential_label === "string" && cred.credential_label.trim().length > 0
+        ? cred.credential_label
+        : cred.credential_id;
+      option.textContent = cred.is_default ? `${label} (default)` : label;
+      select.appendChild(option);
+    }
+
+    // Restore previously-selected value if it still exists; otherwise keep default
+    if (preserved && Array.from(select.options).some((opt) => opt.value === preserved)) {
+      select.value = preserved;
+    }
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1315,6 +1372,10 @@ async function setupDashboard() {
   setupPmResolverToggle("new-scheduler-pm-enabled", "new-scheduler-pm-fields");
   setupSchedulerCreation();
   setupProcessMonitor();
+  // Fire-and-forget: populates every credential selector on the dashboard
+  // (dispatcher main + validator + pm_resolver). Failure leaves the default
+  // option in place so spawn still works against ~/.codex.
+  void loadCredentialSelectors();
 
   const list = document.getElementById("roles-list");
   const empty = document.getElementById("roles-empty");
@@ -1698,7 +1759,8 @@ async function setupDashboard() {
       model_id: normalizeText(agentModelInput.value) || undefined,
       mode: normalizeText(modeSelect.value) || "bridge",
       kill_policy: normalizeText(killPolicySelect.value) || "always",
-      auto_approve: autoApproveInput.checked
+      auto_approve: autoApproveInput.checked,
+      credential_id: normalizeText(document.getElementById("agent-dispatcher-credential-id")?.value) || undefined
     };
 
     if (replyChannels.length > 0) {
@@ -1756,6 +1818,7 @@ async function setupDashboard() {
       mode: normalizeText(formData.get("mode")) || "bridge",
       kill_policy: normalizeText(formData.get("kill_policy")) || "always",
       auto_approve: Boolean(formData.get("auto_approve")),
+      credential_id: normalizeText(formData.get("credential_id")) || undefined,
       system_prompt: normalizeText(agentDispatcherPromptInput.value)
     };
 
@@ -2628,6 +2691,10 @@ async function setupConfigEditor() {
     return;
   }
 
+  // Populate credential selectors before rendering existing config so that
+  // the populated <select>s can show the saved credential_id values.
+  void loadCredentialSelectors();
+
   const title = document.getElementById("config-title");
   const detailLink = document.getElementById("config-detail-link");
   const lede = document.getElementById("config-lede");
@@ -2661,10 +2728,13 @@ async function setupConfigEditor() {
   const cfgValidatorPassThreshold = document.getElementById("cfg-validator-pass-threshold");
   const cfgValidatorMaxFixCycles = document.getElementById("cfg-validator-max-fix-cycles");
   const cfgValidatorBaseBranch = document.getElementById("cfg-validator-base-branch");
+  const cfgCredentialId = document.getElementById("cfg-credential-id");
+  const cfgValidatorCredentialId = document.getElementById("cfg-validator-credential-id");
   const cfgPmEnabled = document.getElementById("cfg-pm-enabled");
   const cfgPmAgentType = document.getElementById("cfg-pm-agent-type");
   const cfgPmMode = document.getElementById("cfg-pm-mode");
   const cfgPmModelId = document.getElementById("cfg-pm-model-id");
+  const cfgPmCredentialId = document.getElementById("cfg-pm-credential-id");
   const cfgPmAutoApprove = document.getElementById("cfg-pm-auto-approve");
   const cfgPmReplyChannels = document.getElementById("cfg-pm-reply-channels");
 
@@ -2686,6 +2756,7 @@ async function setupConfigEditor() {
     if (cfgMode) cfgMode.value = config.mode || "bridge";
     if (cfgKillPolicy) cfgKillPolicy.value = config.kill_policy || "always";
     if (cfgAutoApprove) cfgAutoApprove.value = String(config.auto_approve === true);
+    if (cfgCredentialId) cfgCredentialId.value = config.credential_id || "";
     if (cfgReplyChannels) cfgReplyChannels.value = JSON.stringify(config.user_reply_channels || [], null, 2);
 
     // Validator fields
@@ -2694,6 +2765,7 @@ async function setupConfigEditor() {
     if (cfgValidatorAgentType) cfgValidatorAgentType.value = v.agent_type || "codex";
     if (cfgValidatorMode) cfgValidatorMode.value = v.mode || normalizeValidatorMode(v.agent_type || "codex");
     if (cfgValidatorModelId) cfgValidatorModelId.value = v.model_id || "";
+    if (cfgValidatorCredentialId) cfgValidatorCredentialId.value = v.credential_id || "";
     if (cfgValidatorThresholdType) cfgValidatorThresholdType.value = v.threshold_type || "score";
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.value = v.pass_threshold ?? 0.7;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.value = v.max_fix_cycles ?? 3;
@@ -2704,6 +2776,7 @@ async function setupConfigEditor() {
     if (cfgPmAgentType) cfgPmAgentType.value = pm.agent_type || "codex";
     if (cfgPmMode) cfgPmMode.value = pm.mode || "bridge";
     if (cfgPmModelId) cfgPmModelId.value = pm.model_id || "";
+    if (cfgPmCredentialId) cfgPmCredentialId.value = pm.credential_id || "";
     if (cfgPmAutoApprove) cfgPmAutoApprove.value = String(pm.auto_approve === true);
     if (cfgPmReplyChannels) cfgPmReplyChannels.value = pm.user_reply_channels ? JSON.stringify(pm.user_reply_channels, null, 2) : "";
   };
@@ -2716,10 +2789,12 @@ async function setupConfigEditor() {
     if (cfgMode) cfgMode.disabled = disabled;
     if (cfgKillPolicy) cfgKillPolicy.disabled = disabled;
     if (cfgAutoApprove) cfgAutoApprove.disabled = disabled;
+    if (cfgCredentialId) cfgCredentialId.disabled = disabled;
     if (cfgValidatorEnabled) cfgValidatorEnabled.disabled = disabled;
     if (cfgValidatorAgentType) cfgValidatorAgentType.disabled = disabled;
     if (cfgValidatorMode) cfgValidatorMode.disabled = disabled;
     if (cfgValidatorModelId) cfgValidatorModelId.disabled = disabled;
+    if (cfgValidatorCredentialId) cfgValidatorCredentialId.disabled = disabled;
     if (cfgValidatorThresholdType) cfgValidatorThresholdType.disabled = disabled;
     if (cfgValidatorPassThreshold) cfgValidatorPassThreshold.readOnly = disabled;
     if (cfgValidatorMaxFixCycles) cfgValidatorMaxFixCycles.readOnly = disabled;
@@ -2728,6 +2803,7 @@ async function setupConfigEditor() {
     if (cfgPmAgentType) cfgPmAgentType.disabled = disabled;
     if (cfgPmMode) cfgPmMode.disabled = disabled;
     if (cfgPmModelId) cfgPmModelId.disabled = disabled;
+    if (cfgPmCredentialId) cfgPmCredentialId.disabled = disabled;
     if (cfgPmAutoApprove) cfgPmAutoApprove.disabled = disabled;
     if (cfgPmReplyChannels) cfgPmReplyChannels.readOnly = disabled;
   };
@@ -2751,6 +2827,9 @@ async function setupConfigEditor() {
     if (cfgMode) patch.mode = cfgMode.value;
     if (cfgKillPolicy) patch.kill_policy = cfgKillPolicy.value;
     if (cfgAutoApprove) patch.auto_approve = cfgAutoApprove.value === "true";
+    // Send `null` when blank so the server clears any previously-stored value;
+    // any non-empty value forwards through to /api/spawn as credential_id.
+    if (cfgCredentialId) patch.credential_id = cfgCredentialId.value.trim() || null;
 
     if (cfgValidatorEnabled) {
       const validatorAgentType = cfgValidatorAgentType?.value || "codex";
@@ -2760,6 +2839,7 @@ async function setupConfigEditor() {
         agent_type: validatorAgentType,
         mode: validatorMode,
         model_id: cfgValidatorModelId?.value?.trim() || undefined,
+        credential_id: cfgValidatorCredentialId?.value?.trim() || undefined,
         threshold_type: cfgValidatorThresholdType?.value || "score",
         pass_threshold: parseFloat(cfgValidatorPassThreshold?.value) || 0.7,
         max_fix_cycles: parseInt(cfgValidatorMaxFixCycles?.value, 10) || 3,
