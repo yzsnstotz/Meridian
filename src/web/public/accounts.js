@@ -249,13 +249,249 @@
     });
   });
 
-  // Add buttons — wired in G2 / G3. For now the buttons stay enabled so users
-  // see them, but they alert until those commits land. (Replaced below.)
-  if (btnAddOauth) {
-    btnAddOauth.addEventListener("click", function () {
-      alert("Add OAuth Account: implemented in next commit (G2).");
+  // OAuth dialog wiring (G2).
+  var oauthDialog = document.getElementById("oauth-dialog");
+  var oauthLabelInput = document.getElementById("oauth-label-input");
+  var oauthLabelError = document.getElementById("oauth-label-error");
+  var oauthFormBlock = document.getElementById("oauth-form-block");
+  var oauthStatusBlock = document.getElementById("oauth-status-block");
+  var oauthStatusLabel = document.getElementById("oauth-status-label");
+  var oauthStatusDetail = document.getElementById("oauth-status-detail");
+  var oauthUrlBlock = document.getElementById("oauth-url-block");
+  var oauthLoginUrlEl = document.getElementById("oauth-login-url");
+  var oauthOpenUrlEl = document.getElementById("oauth-open-url");
+  var oauthCopyUrlBtn = document.getElementById("oauth-copy-url");
+  var oauthLogDetails = document.getElementById("oauth-log-details");
+  var oauthLogExcerpt = document.getElementById("oauth-log-excerpt");
+  var oauthCancelBtn = document.getElementById("oauth-cancel-btn");
+  var oauthStartBtn = document.getElementById("oauth-start-btn");
+  var oauthCloseBtn = document.getElementById("oauth-close-btn");
+
+  var oauthState = {
+    jobId: null,
+    pollHandle: null,
+    terminal: false,
+    lastShownUrl: null
+  };
+  var OAUTH_POLL_MS = 1000;
+  var OAUTH_TERMINAL_STATUSES = { completed: true, failed: true, cancelled: true, timeout: true };
+  var OAUTH_STATUS_LABELS = {
+    pending: "Starting…",
+    awaiting_browser: "Waiting for browser login",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    timeout: "Timed out"
+  };
+
+  function resetOauthDialog() {
+    stopOauthPolling();
+    oauthState.jobId = null;
+    oauthState.terminal = false;
+    oauthState.lastShownUrl = null;
+    if (oauthLabelInput) oauthLabelInput.value = "";
+    if (oauthLabelError) oauthLabelError.textContent = "";
+    if (oauthFormBlock) oauthFormBlock.style.display = "";
+    if (oauthStatusBlock) oauthStatusBlock.style.display = "none";
+    if (oauthUrlBlock) oauthUrlBlock.style.display = "none";
+    if (oauthLoginUrlEl) oauthLoginUrlEl.textContent = "";
+    if (oauthOpenUrlEl) oauthOpenUrlEl.removeAttribute("href");
+    if (oauthLogDetails) oauthLogDetails.style.display = "none";
+    if (oauthLogExcerpt) oauthLogExcerpt.textContent = "";
+    if (oauthStatusLabel) {
+      oauthStatusLabel.textContent = "pending";
+      oauthStatusLabel.className = "status-label s-pending";
+    }
+    if (oauthStatusDetail) oauthStatusDetail.textContent = "Starting Codex login…";
+    if (oauthStartBtn) {
+      oauthStartBtn.disabled = false;
+      oauthStartBtn.style.display = "";
+    }
+    if (oauthCancelBtn) oauthCancelBtn.style.display = "";
+    if (oauthCloseBtn) oauthCloseBtn.style.display = "none";
+  }
+
+  function openOauthDialog() {
+    resetOauthDialog();
+    if (oauthDialog && typeof oauthDialog.showModal === "function") {
+      oauthDialog.showModal();
+      if (oauthLabelInput) {
+        try { oauthLabelInput.focus(); } catch (e) {}
+      }
+    }
+  }
+
+  function closeOauthDialog() {
+    stopOauthPolling();
+    if (oauthDialog && oauthDialog.open) oauthDialog.close();
+  }
+
+  function stopOauthPolling() {
+    if (oauthState.pollHandle) {
+      clearInterval(oauthState.pollHandle);
+      oauthState.pollHandle = null;
+    }
+  }
+
+  function renderOauthStatus(jobBody) {
+    var status = (jobBody && jobBody.status) || "pending";
+    var humanLabel = OAUTH_STATUS_LABELS[status] || status;
+    if (oauthStatusLabel) {
+      oauthStatusLabel.textContent = status;
+      oauthStatusLabel.className = "status-label s-" + status;
+    }
+    if (oauthStatusDetail) {
+      if (status === "awaiting_browser") {
+        oauthStatusDetail.textContent = "Open the login URL below in your browser and complete the sign-in.";
+      } else if (status === "completed") {
+        oauthStatusDetail.textContent = "Login complete. Credential saved.";
+      } else if (status === "failed" || status === "timeout" || status === "cancelled") {
+        oauthStatusDetail.textContent = (jobBody && jobBody.error_message) || humanLabel;
+      } else {
+        oauthStatusDetail.textContent = humanLabel;
+      }
+    }
+    var url = jobBody && jobBody.login_url;
+    if (url && oauthUrlBlock && oauthLoginUrlEl && oauthOpenUrlEl) {
+      oauthUrlBlock.style.display = "";
+      oauthLoginUrlEl.textContent = url;
+      oauthOpenUrlEl.setAttribute("href", url);
+      oauthState.lastShownUrl = url;
+    } else if (!url && oauthUrlBlock && !oauthState.lastShownUrl) {
+      oauthUrlBlock.style.display = "none";
+    }
+    var excerpt = jobBody && jobBody.log_excerpt;
+    if (excerpt && oauthLogDetails && oauthLogExcerpt) {
+      oauthLogDetails.style.display = "";
+      oauthLogExcerpt.textContent = excerpt;
+    }
+  }
+
+  function pollOauthOnce() {
+    if (!oauthState.jobId) return;
+    api("/api/credentials/oauth-login/" + encodeURIComponent(oauthState.jobId))
+      .then(function (r) {
+        var body = r.body || {};
+        renderOauthStatus(body);
+        var status = body.status;
+        if (OAUTH_TERMINAL_STATUSES[status]) {
+          oauthState.terminal = true;
+          stopOauthPolling();
+          if (oauthCancelBtn) oauthCancelBtn.style.display = "none";
+          if (oauthStartBtn) oauthStartBtn.style.display = "none";
+          if (oauthCloseBtn) oauthCloseBtn.style.display = "";
+          if (status === "completed") {
+            showBanner("success", "OAuth login completed — credential saved.", 4000);
+            loadCredentials();
+            // Auto-close shortly after success.
+            setTimeout(function () { if (!oauthState.jobId) return; closeOauthDialog(); }, 1500);
+          }
+        }
+      })
+      .catch(function (err) {
+        renderOauthStatus({ status: "failed", error_message: err.message || "Polling failed" });
+        oauthState.terminal = true;
+        stopOauthPolling();
+        if (oauthCancelBtn) oauthCancelBtn.style.display = "none";
+        if (oauthStartBtn) oauthStartBtn.style.display = "none";
+        if (oauthCloseBtn) oauthCloseBtn.style.display = "";
+      });
+  }
+
+  function startOauthLogin() {
+    var label = String((oauthLabelInput && oauthLabelInput.value) || "").trim();
+    if (!label) {
+      if (oauthLabelError) oauthLabelError.textContent = "Label is required.";
+      return;
+    }
+    if (oauthLabelError) oauthLabelError.textContent = "";
+    if (oauthStartBtn) oauthStartBtn.disabled = true;
+
+    api("/api/credentials/oauth-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential_label: label })
+    })
+      .then(function (r) {
+        var body = r.body || {};
+        if (!body.job_id) throw new Error("server did not return a job_id");
+        oauthState.jobId = body.job_id;
+        if (oauthFormBlock) oauthFormBlock.style.display = "none";
+        if (oauthStatusBlock) oauthStatusBlock.style.display = "";
+        renderOauthStatus({ status: body.status || "pending" });
+        // Immediate poll, then interval.
+        pollOauthOnce();
+        oauthState.pollHandle = setInterval(pollOauthOnce, OAUTH_POLL_MS);
+      })
+      .catch(function (err) {
+        if (oauthLabelError) oauthLabelError.textContent = err.message || "Failed to start login.";
+        if (oauthStartBtn) oauthStartBtn.disabled = false;
+      });
+  }
+
+  function cancelOauthLogin() {
+    if (!oauthState.jobId) {
+      // No job yet — just close the dialog.
+      closeOauthDialog();
+      return;
+    }
+    if (oauthState.terminal) {
+      closeOauthDialog();
+      return;
+    }
+    var id = oauthState.jobId;
+    api("/api/credentials/oauth-login/" + encodeURIComponent(id), { method: "DELETE" })
+      .then(function () {
+        stopOauthPolling();
+        renderOauthStatus({ status: "cancelled" });
+        oauthState.terminal = true;
+        if (oauthCancelBtn) oauthCancelBtn.style.display = "none";
+        if (oauthStartBtn) oauthStartBtn.style.display = "none";
+        if (oauthCloseBtn) oauthCloseBtn.style.display = "";
+      })
+      .catch(function (err) {
+        showBanner("error", "Cancel failed: " + err.message);
+      });
+  }
+
+  if (btnAddOauth) btnAddOauth.addEventListener("click", openOauthDialog);
+  if (oauthStartBtn) oauthStartBtn.addEventListener("click", startOauthLogin);
+  if (oauthCancelBtn) oauthCancelBtn.addEventListener("click", cancelOauthLogin);
+  if (oauthCloseBtn) oauthCloseBtn.addEventListener("click", closeOauthDialog);
+  if (oauthCopyUrlBtn) {
+    oauthCopyUrlBtn.addEventListener("click", function () {
+      var url = oauthLoginUrlEl ? oauthLoginUrlEl.textContent : "";
+      if (!url) return;
+      var doneCopy = function () {
+        var prev = oauthCopyUrlBtn.textContent;
+        oauthCopyUrlBtn.textContent = "Copied";
+        setTimeout(function () { oauthCopyUrlBtn.textContent = prev || "Copy"; }, 1500);
+      };
+      if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        navigator.clipboard.writeText(url).then(doneCopy).catch(function () {
+          // Fallback: select and copy.
+          var ta = document.createElement("textarea");
+          ta.value = url;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand("copy"); doneCopy(); } catch (e) {}
+          document.body.removeChild(ta);
+        });
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); doneCopy(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
     });
   }
+  // Stop polling if the dialog is dismissed via Escape.
+  if (oauthDialog) {
+    oauthDialog.addEventListener("close", function () { stopOauthPolling(); });
+  }
+
   if (btnAddApiKey) {
     btnAddApiKey.addEventListener("click", function () {
       alert("Add API Key Account: implemented in next commit (G3).");
