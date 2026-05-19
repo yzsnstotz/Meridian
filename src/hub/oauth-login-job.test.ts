@@ -236,6 +236,77 @@ test("RACE: cancel during tryComplete await does not leave a viable registered c
   }
 });
 
+test("POLL FALLBACK: tryComplete fires via the periodic poll even when the fs watcher is disabled", async () => {
+  // fs.watch on Linux can drop events on certain kernel/fs combos. The poll
+  // fallback (every pollIntervalMs while in pending/awaiting_browser) must
+  // detect auth.json and drive completion to "completed" without the watcher
+  // ever firing.
+  const prev = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_DELAY_MS = "150"; // auth.json after 150ms
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-poll-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "poll-only",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 10_000,
+      urlCaptureWindowMs: 5_000,
+      pollIntervalMs: 100
+    });
+    await job.start();
+
+    // Disable the fs watcher immediately so completion can only come from poll.
+    (job as unknown as { watcher: { close: () => void } | null }).watcher?.close();
+    (job as unknown as { watcher: null }).watcher = null;
+
+    for (let i = 0; i < 100; i++) {
+      if (job.status === "completed") break;
+      await wait(50);
+    }
+    assert.equal(job.status, "completed", `expected completed via poll, got ${job.status}`);
+    assert.ok(job.credential_id, "credential_id must be set");
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prev;
+  }
+});
+
+test("POLL FALLBACK: poll interval is cleared once job reaches a terminal state", async () => {
+  // After completion the poll handle must be cleared so it doesn't keep the
+  // process alive. We assert the handle is null/cleared after cleanup.
+  const prev = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_DELAY_MS = "100";
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-poll-clear-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "x",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 10_000,
+      urlCaptureWindowMs: 5_000,
+      pollIntervalMs: 100
+    });
+    await job.start();
+    for (let i = 0; i < 100; i++) {
+      if (job.status === "completed") break;
+      await wait(50);
+    }
+    assert.equal(job.status, "completed");
+    // pollHandle (private) must be null after cleanup.
+    const handle = (job as unknown as { pollHandle: NodeJS.Timeout | null }).pollHandle;
+    assert.equal(handle, null, "pollHandle must be cleared in cleanup()");
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prev;
+  }
+});
+
 test("TIMEOUT: timeoutMs while awaiting_browser flips to timeout", async () => {
   // Big auth.json delay, small timeout
   const prev = process.env.FAKE_CODEX_DELAY_MS;

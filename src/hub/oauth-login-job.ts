@@ -20,6 +20,13 @@ export interface OAuthLoginJobOptions {
   codexLoginArgs?: string[];
   timeoutMs?: number;
   urlCaptureWindowMs?: number;
+  /**
+   * Periodic poll interval (ms) for the fs.watch fallback. While the job is in
+   * `pending` or `awaiting_browser`, tryComplete() is also driven by this
+   * timer in case fs.watch drops the auth.json create event (known to happen
+   * on some Linux kernel/fs combos). Default 500ms.
+   */
+  pollIntervalMs?: number;
 }
 
 export class OAuthLoginJob {
@@ -37,6 +44,7 @@ export class OAuthLoginJob {
   private timeoutHandle: NodeJS.Timeout | null = null;
   private urlCaptureHandle: NodeJS.Timeout | null = null;
   private watcher: fs.FSWatcher | null = null;
+  private pollHandle: NodeJS.Timeout | null = null;
 
   constructor(opts: OAuthLoginJobOptions) {
     this.opts = {
@@ -44,6 +52,7 @@ export class OAuthLoginJob {
       codexLoginArgs: ["login"],
       timeoutMs: 10 * 60 * 1000,
       urlCaptureWindowMs: 30_000,
+      pollIntervalMs: 500,
       ...opts
     } as Required<OAuthLoginJobOptions>;
   }
@@ -76,6 +85,21 @@ export class OAuthLoginJob {
     this.watcher = fs.watch(this.slot.codex_home, (_event, file) => {
       if (file === "auth.json") this.tryComplete().catch(() => {});
     });
+
+    // Belt-and-suspenders poll fallback for fs.watch event drops. Stops itself
+    // once the job transitions out of pending/awaiting_browser; cleanup()
+    // clears the handle unconditionally as a safety net.
+    this.pollHandle = setInterval(() => {
+      if (this.status !== "pending" && this.status !== "awaiting_browser") {
+        if (this.pollHandle) {
+          clearInterval(this.pollHandle);
+          this.pollHandle = null;
+        }
+        return;
+      }
+      this.tryComplete().catch(() => {});
+    }, this.opts.pollIntervalMs);
+    this.pollHandle.unref();
 
     this.timeoutHandle = setTimeout(() => this.handleTimeout(), this.opts.timeoutMs);
     this.urlCaptureHandle = setTimeout(() => {
@@ -166,6 +190,10 @@ export class OAuthLoginJob {
     try { this.watcher?.close(); } catch {}
     if (this.timeoutHandle) clearTimeout(this.timeoutHandle);
     if (this.urlCaptureHandle) clearTimeout(this.urlCaptureHandle);
+    if (this.pollHandle) {
+      clearInterval(this.pollHandle);
+      this.pollHandle = null;
+    }
     if (opts.deleteDir && this.slot && this.status !== "completed") {
       try { this.opts.credentialStore.abandonOAuthSlot(this.slot); } catch {}
     }
