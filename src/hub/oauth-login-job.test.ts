@@ -307,6 +307,46 @@ test("POLL FALLBACK: poll interval is cleared once job reaches a terminal state"
   }
 });
 
+test("DEFAULTS: undefined codexLoginCommand/Args fall back to ['codex','login'] (not undefined)", () => {
+  // Reproduces the stuck-pending bug where the hub router forwarded an unset
+  // defaultCodexLoginCommand as `undefined`, and the constructor's
+  // `{ ...defaults, ...opts }` spread overrode the default with `undefined`,
+  // causing `spawn(undefined, ...)` to throw — which the registry's
+  // fire-and-forget catch swallowed, leaving the GUI stuck on "pending".
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-defaults-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const job = new OAuthLoginJob({
+    credentialStore: store,
+    owner_caller_id: "c1",
+    credential_label: "x",
+    codexLoginCommand: undefined as unknown as string,
+    codexLoginArgs: undefined as unknown as string[]
+  });
+  const opts = (job as unknown as { opts: { codexLoginCommand: string; codexLoginArgs: string[] } }).opts;
+  assert.equal(opts.codexLoginCommand, "codex");
+  assert.deepEqual(opts.codexLoginArgs, ["login"]);
+});
+
+test("MARK STARTUP FAILURE: markStartupFailure flips a pending job to failed (so the GUI doesn't stall)", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-startup-fail-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const job = new OAuthLoginJob({
+    credentialStore: store,
+    owner_caller_id: "c1",
+    credential_label: "x",
+    codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+    codexLoginArgs: [],
+    timeoutMs: 30_000,
+    urlCaptureWindowMs: 5_000
+  });
+  // Do NOT call start() — simulate a synchronous failure inside start().
+  assert.equal(job.status, "pending");
+  job.markStartupFailure("simulated spawn failure");
+  assert.equal(job.status, "failed");
+  assert.equal(job.error_code, "startup_failed");
+  assert.equal(job.error_message, "simulated spawn failure");
+});
+
 test("TIMEOUT: timeoutMs while awaiting_browser flips to timeout", async () => {
   // Big auth.json delay, small timeout
   const prev = process.env.FAKE_CODEX_DELAY_MS;

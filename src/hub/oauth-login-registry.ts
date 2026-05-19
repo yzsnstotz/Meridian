@@ -31,7 +31,9 @@ export class OAuthLoginJobRegistry {
     this.ownerByJobId.set(jobId, callerId);
     inflightIds.add(jobId);
     this.idsByCaller.set(callerId, inflightIds);
-    job.start().catch(() => {});
+    job.start().catch((err) => {
+      job.markStartupFailure(err instanceof Error ? err.message : String(err));
+    });
     return { job_id: jobId, job };
   }
 
