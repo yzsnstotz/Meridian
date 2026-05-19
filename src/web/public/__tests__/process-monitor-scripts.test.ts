@@ -90,9 +90,13 @@ describe("processes tab — token flash + history", () => {
     expect(js).toMatch(/processHistory\.size\s*>\s*PROCESS_HISTORY_CAP/);
     // refresh() must call both helpers in the right order (capture compares
     // *previous* snapshot to current, so it MUST run before lastProcesses is
-    // overwritten).
-    const refreshStart = js.indexOf("async function refresh()");
-    expect(refreshStart).toBeGreaterThan(0);
+    // overwritten). Anchor inside setupProcessMonitor — app.js now has
+    // multiple `async function refresh()` definitions across different
+    // setups, so the bare anchor would land on the wrong one.
+    const monitorStart = js.indexOf("function setupProcessMonitor");
+    expect(monitorStart, "setupProcessMonitor present").toBeGreaterThan(0);
+    const refreshStart = js.indexOf("async function refresh()", monitorStart);
+    expect(refreshStart, "refresh() defined inside setupProcessMonitor").toBeGreaterThan(monitorStart);
     const refreshSlice = js.slice(refreshStart, refreshStart + 800);
     const idxApply = refreshSlice.indexOf("applyTokenFlashing(data.processes)");
     const idxCapture = refreshSlice.indexOf("captureDepartedProcesses(data.processes, previousSnapshot)");
