@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChatterStateStore, ChatterPersistedStateSchema } from "../chatter-state-store";
@@ -54,7 +54,7 @@ describe("ChatterStateStore", () => {
   it("load() rejects corrupted state", () => {
     store.save({ version: 1, agent_session_id: null, in_flight_traces: [] });
     // Corrupt the file
-    require("node:fs").writeFileSync(store.stateFile, "{ not json");
+    writeFileSync(store.stateFile, "{ not json");
     expect(() => store.load()).toThrow();
   });
 });
