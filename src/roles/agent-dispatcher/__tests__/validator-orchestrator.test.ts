@@ -1291,7 +1291,8 @@ async function createHarness(options: {
   const meridianApi: MeridianApiClient = {
     spawn,
     run,
-    kill
+    kill,
+    listCredentials: vi.fn().mockResolvedValue([])
   };
 
   return {

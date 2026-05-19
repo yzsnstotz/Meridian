@@ -184,7 +184,8 @@ describe("launchDispatchWorker", () => {
     const meridianApi: MeridianApiClient = {
       spawn,
       run: vi.fn(),
-      kill: vi.fn()
+      kill: vi.fn(),
+      listCredentials: vi.fn().mockResolvedValue([])
     };
 
     const result = await launchDispatchWorker({
@@ -569,7 +570,8 @@ async function createHarness(overrides: {
   const meridianApi: MeridianApiClient = {
     spawn,
     run: vi.fn(),
-    kill
+    kill,
+    listCredentials: vi.fn().mockResolvedValue([])
   };
 
   const dispatchRunHandoff = vi.fn().mockImplementation(async () => {

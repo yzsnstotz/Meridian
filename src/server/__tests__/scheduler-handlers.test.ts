@@ -233,7 +233,8 @@ describe("scheduler config updates", () => {
           threadId,
           status: "killed",
           raw: {}
-        })
+        }),
+        listCredentials: async () => []
       }
     });
     await role.onActivate({
@@ -741,7 +742,8 @@ function createHarness(options: {
         threadId,
         status: "killed",
         raw: {}
-      })
+      }),
+      listCredentials: async () => []
     }
   }));
 

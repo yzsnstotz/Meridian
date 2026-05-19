@@ -113,7 +113,7 @@ describe("buildPmResolverPrompt", () => {
       raw: {}
     }));
     const kill = vi.fn(async () => ({ threadId: "pm-thread-cred", status: "killed", raw: {} }));
-    const meridianApi: MeridianApiClient = { spawn, run, kill };
+    const meridianApi: MeridianApiClient = { spawn, run, kill, listCredentials: vi.fn().mockResolvedValue([]) };
 
     try {
       await startPmResolver({
@@ -160,7 +160,8 @@ describe("buildPmResolverPrompt", () => {
       run: async () => {
         throw new Error("run failed: Request timed out — the hub may be overloaded");
       },
-      kill
+      kill,
+      listCredentials: vi.fn().mockResolvedValue([])
     };
 
     try {
@@ -263,7 +264,7 @@ describe("buildPmResolverPrompt", () => {
       }
     }));
     const kill = vi.fn(async () => ({ threadId: "pm-thread-fresh", status: "killed", raw: {} }));
-    const meridianApi: MeridianApiClient = { spawn, run, kill };
+    const meridianApi: MeridianApiClient = { spawn, run, kill, listCredentials: vi.fn().mockResolvedValue([]) };
 
     try {
       const result = await startPmResolver({
@@ -337,7 +338,8 @@ describe("buildPmResolverPrompt", () => {
           timestamp: "2026-05-03T00:00:00.000Z"
         }
       }),
-      kill
+      kill,
+      listCredentials: async () => []
     };
 
     try {
