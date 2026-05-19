@@ -90,6 +90,12 @@ export const HubPayloadSchema = z.object({
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   gui_host_port_override: z.string().min(1).optional(),
   push_enabled: z.boolean().optional(),
+  // Meridian-hub PR #78 reads payload.credential_id on intent:"spawn" to bind
+  // the spawned codex/claude process to a managed CODEX_HOME (auth.json etc.).
+  // Roles that want their agent to run under a specific credential set this
+  // when constructing outbound messages. Existing roles leave it undefined
+  // and inherit ambient credentials.
+  credential_id: z.string().min(1).optional(),
   chatter: ChatterTurnEnvelopeSchema.optional()
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;
@@ -677,6 +683,11 @@ export const ChatterRoleConfigSchema = z.object({
   allowed_modes: ChatterAllowedModesSchema,
   skill_allowlist: z.array(z.string().min(1)).default([]),
   llm_agent_kind: z.enum(["claude-code"]).default("claude-code"),
+  // Optional managed-credential binding. When set, ChatterRole forwards it
+  // on outbound hub messages as `payload.credential_id`, which meridian-hub
+  // honors at spawn time to bind the agent process to a specific
+  // CODEX_HOME (per PR #78). Flat-role pattern, mirrors SchedulerConfig.
+  credential_id: z.string().min(1).optional(),
   // Required: ChatterRole has no useful behavior without somewhere to reply.
   // Operators provide one channel at init; the gateway (ADS) demuxes per-user
   // on its end via session correlation in payload.chatter.

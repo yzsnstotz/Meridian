@@ -20,6 +20,10 @@ export interface DispatchCodingJobInput {
   target?: string;
   userReplyChannel?: ReplyChannel;
   rolesServiceId?: string;
+  // Optional managed-credential binding for the dispatched agent. Forwarded
+  // as `payload.credential_id` so meridian-hub spawns the worker under the
+  // correct CODEX_HOME.
+  credentialId?: string;
 }
 
 export interface DispatchCodingJobResult {
@@ -77,7 +81,8 @@ export async function dispatchCodingJob(input: DispatchCodingJobInput): Promise<
     priority: 5,
     payload: {
       content: buildPayloadContent(input.args),
-      attachments: []
+      attachments: [],
+      ...(input.credentialId !== undefined ? { credential_id: input.credentialId } : {})
     },
     mode: "bridge",
     reply_channel: {

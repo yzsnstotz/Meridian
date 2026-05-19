@@ -142,7 +142,11 @@ export class ChatterRole implements BaseRole {
       intent: "run",
       target: DEFAULT_AGENT_TARGET,
       priority: 5,
-      payload: { content: result.content, attachments: [] },
+      payload: {
+        content: result.content,
+        attachments: [],
+        ...(this.config.credential_id !== undefined ? { credential_id: this.config.credential_id } : {})
+      },
       mode: "bridge",
       reply_channel: ROLES_SOCKET_REPLY_CHANNEL,
       suppress_reply: false

@@ -79,6 +79,35 @@ describe("ChatterRole — turn intake (session mode)", () => {
     await role.onActivate(made.ctx);
   });
 
+  it("forwards config.credential_id on the outbound agent run when set", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-cred-")));
+    const { ctx, sent: localSent } = makeCtx();
+    const role = new ChatterRole(
+      "chatter-tenant-cred",
+      makeConfig(root, { credential_id: "cred-1234" })
+    );
+    await role.onActivate(ctx);
+    await role.onInboundResult(
+      makeHubResult({ content: "hi", payload: { chatter: { mode: "session" } } })
+    );
+    const dispatch = localSent.find((m) => m.target === "claude-code");
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.payload.credential_id).toBe("cred-1234");
+  });
+
+  it("omits credential_id from outbound when config does not set it", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-nocred-")));
+    const { ctx, sent: localSent } = makeCtx();
+    const role = new ChatterRole("chatter-tenant-nocred", makeConfig(root));
+    await role.onActivate(ctx);
+    await role.onInboundResult(
+      makeHubResult({ content: "hi", payload: { chatter: { mode: "session" } } })
+    );
+    const dispatch = localSent.find((m) => m.target === "claude-code");
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.payload.credential_id).toBeUndefined();
+  });
+
   it("dispatches the user content to the claude-code target via sendToHub", async () => {
     await role.onInboundResult(
       makeHubResult({ content: "hello chatter", payload: { chatter: { mode: "session" } } })

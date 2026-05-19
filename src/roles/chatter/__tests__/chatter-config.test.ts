@@ -60,6 +60,20 @@ describe("ChatterRoleConfigSchema", () => {
     expect(parsed.manifest_path).toBe("/tmp/manifest.json");
   });
 
+  it("accepts an optional credential_id (multi-codex credential binding)", () => {
+    const parsed = ChatterRoleConfigSchema.parse({ ...validBody, credential_id: "cred-uuid-1" });
+    expect(parsed.credential_id).toBe("cred-uuid-1");
+  });
+
+  it("credential_id is undefined when omitted", () => {
+    const parsed = ChatterRoleConfigSchema.parse(validBody);
+    expect(parsed.credential_id).toBeUndefined();
+  });
+
+  it("rejects an empty-string credential_id", () => {
+    expect(() => ChatterRoleConfigSchema.parse({ ...validBody, credential_id: "" })).toThrow();
+  });
+
   it("rejects when user_reply_channel is missing", () => {
     const { user_reply_channel: _omitted, ...rest } = validBody;
     void _omitted;

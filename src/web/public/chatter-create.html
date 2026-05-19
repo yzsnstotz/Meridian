@@ -71,6 +71,14 @@
       </fieldset>
 
       <fieldset>
+        <legend>Multi-codex credential (optional)</legend>
+        <label>
+          credential_id (UUID from <code>GET /api/credentials</code>; leave blank for ambient credentials)
+          <input name="credential_id" placeholder="e.g. 01234567-89ab-cdef-0123-456789abcdef" />
+        </label>
+      </fieldset>
+
+      <fieldset>
         <legend>Reply channel (where replies go — typically ADS)</legend>
         <label>
           chat_id
@@ -115,6 +123,7 @@
         ? []
         : skillAllowlistRaw.split(",").map(s => s.trim()).filter(Boolean);
 
+      const credentialId = (formData.get("credential_id") || "").toString().trim();
       const config = {
         chatter_id: chatterId,
         memory_folder: formData.get("memory_folder"),
@@ -127,6 +136,9 @@
           socket_path: formData.get("user_reply_channel_socket_path")
         }
       };
+      if (credentialId.length > 0) {
+        config.credential_id = credentialId;
+      }
       if (schemaSource === "manifest") {
         config.manifest_path = formData.get("manifest_path");
       } else {

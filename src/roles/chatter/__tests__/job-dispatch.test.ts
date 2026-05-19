@@ -55,6 +55,34 @@ describe("dispatchCodingJob", () => {
     expect(msg.suppress_reply).toBe(false);
   });
 
+  it("forwards credentialId as payload.credential_id when supplied", async () => {
+    const deps = makeDeps(root);
+    const res = await dispatchCodingJob({
+      args: { instruction: "x" },
+      chatterThreadId: CHATTER_THREAD_ID,
+      rolesSocketPath: ROLES_SOCKET,
+      resolver: deps.resolver,
+      sessionMgr: deps.sessionMgr,
+      sendToHub: deps.sendToHub,
+      credentialId: "cred-abcd"
+    });
+    expect(res.ok).toBe(true);
+    expect(deps.sent[0].payload.credential_id).toBe("cred-abcd");
+  });
+
+  it("omits payload.credential_id when credentialId is not supplied", async () => {
+    const deps = makeDeps(root);
+    await dispatchCodingJob({
+      args: { instruction: "x" },
+      chatterThreadId: CHATTER_THREAD_ID,
+      rolesSocketPath: ROLES_SOCKET,
+      resolver: deps.resolver,
+      sessionMgr: deps.sessionMgr,
+      sendToHub: deps.sendToHub
+    });
+    expect(deps.sent[0].payload.credential_id).toBeUndefined();
+  });
+
   it("registers the trace_id on the session manager before sending", async () => {
     const deps = makeDeps(root);
     const res = await dispatchCodingJob({

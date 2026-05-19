@@ -14,6 +14,10 @@ export interface ChatterInitAnswers {
   llmAgentKind: "claude-code";
   userReplyChannelSocket: string;
   userReplyChannelChatId: string;
+  // Optional managed-credential binding; if set, meridian-hub will spawn this
+  // Chatter's agent process under the specified CODEX_HOME (multi-codex
+  // credentials, per meridian PR #78 + meridian-roles PR #244).
+  credentialId?: string;
 }
 
 export interface ChatterCreateBody {
@@ -39,6 +43,10 @@ export function buildChatterCreateBody(answers: ChatterInitAnswers): ChatterCrea
       socket_path: answers.userReplyChannelSocket
     }
   };
+
+  if (answers.credentialId && answers.credentialId.trim().length > 0) {
+    baseConfig.credential_id = answers.credentialId.trim();
+  }
 
   if (answers.template === "custom") {
     if (!answers.manifestPath) {
@@ -84,6 +92,7 @@ async function runWizard(): Promise<void> {
       : skillAllowlistRaw.split(",").map((s) => s.trim()).filter(Boolean);
     const userReplyChannelSocket = await ask(rl, "user_reply_channel socket_path", "/tmp/ads.sock");
     const userReplyChannelChatId = await ask(rl, "user_reply_channel chat_id", `ads:${chatterId}`);
+    const credentialId = await ask(rl, "credential_id (blank for ambient credentials)", "");
 
     const body = buildChatterCreateBody({
       rolesApiUrl,
@@ -95,7 +104,8 @@ async function runWizard(): Promise<void> {
       skillAllowlist,
       llmAgentKind: "claude-code",
       userReplyChannelSocket,
-      userReplyChannelChatId
+      userReplyChannelChatId,
+      credentialId: credentialId.length > 0 ? credentialId : undefined
     });
 
     stdout.write("\nPOST body:\n");
