@@ -253,9 +253,12 @@ const READ_AUTHORITY_INTENTS = new Set<string>([
   "detail",
   "gui",
   "history",
-  "list_callers",
-  "list_credentials"
+  "list_callers"
 ]);
+// Credential intent membership consulted directly by checkCallerAuthority so
+// the sets are the single source of truth for credential-intent gating.
+// READ requires `read` or higher; WRITE requires `write` or higher; neither
+// permits `stateless_call`.
 export const CREDENTIAL_READ_INTENTS = new Set<string>(["list_credentials"]);
 export const CREDENTIAL_WRITE_INTENTS = new Set<string>([
   "register_credential_oauth_start",
@@ -2128,6 +2131,21 @@ export class HubRouter {
     }
     if (ADMIN_ONLY_INTENTS.has(message.intent)) {
       return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+    }
+    // Credential intents are gated by their dedicated sets — explicit
+    // membership rather than the generic READ/stateless fall-through, so
+    // CREDENTIAL_*_INTENTS as exported sets match runtime behavior.
+    if (CREDENTIAL_WRITE_INTENTS.has(message.intent)) {
+      if (authority !== "write") {
+        return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+      }
+      return null;
+    }
+    if (CREDENTIAL_READ_INTENTS.has(message.intent)) {
+      if (authority !== "read" && authority !== "write") {
+        return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
+      }
+      return null;
     }
     if (authority === "read" && !READ_AUTHORITY_INTENTS.has(message.intent)) {
       return this.buildAuthErrorResult(message, "caller_not_authorized_for_intent");
