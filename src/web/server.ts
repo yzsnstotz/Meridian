@@ -80,7 +80,12 @@ const spawnRequestBodySchema = z.object({
    * Absolute working directory for the new agent. Only existence/directory checks apply.
    * External integrations may send this instead of `repo`.
    */
-  spawn_dir: z.string().optional()
+  spawn_dir: z.string().optional(),
+  /**
+   * Optional credential to attach to the spawned agent. Hub validates ownership
+   * and reachability; omit (or pass empty) to use the default codex login (~/.codex).
+   */
+  credential_id: z.string().min(1).optional()
 });
 
 const filesQuerySchema = z.object({
@@ -1144,6 +1149,7 @@ export class WebInterfaceServer {
           effort: modelReference.reasoningEffort,
           integrationProfile: body.integration_profile,
           sandboxMode,
+          credentialId: body.credential_id,
           caller: this.extractInboundCaller(request)
         })
       )
@@ -1925,6 +1931,7 @@ export class WebInterfaceServer {
     effort?: ReasoningEffort;
     integrationProfile?: IntegrationProfile;
     sandboxMode?: SandboxMode;
+    credentialId?: string;
     historyLimit?: number;
     historyMaxContentChars?: number;
     historyMaxDetailChars?: number;
@@ -1948,6 +1955,7 @@ export class WebInterfaceServer {
         ...(params.effort && { effort: params.effort }),
         ...(params.integrationProfile && { integration_profile: params.integrationProfile }),
         ...(params.sandboxMode && { sandbox_mode: params.sandboxMode }),
+        ...(params.credentialId && { credential_id: params.credentialId }),
         ...(params.historyLimit !== undefined && { history_limit: params.historyLimit }),
         ...(params.historyMaxContentChars !== undefined && { history_max_content_chars: params.historyMaxContentChars }),
         ...(params.historyMaxDetailChars !== undefined && { history_max_detail_chars: params.historyMaxDetailChars }),

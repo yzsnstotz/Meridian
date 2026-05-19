@@ -898,6 +898,38 @@
       flex-shrink: 0;
     }
 
+    .card-credential {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      align-self: flex-start;
+      padding: 0.1rem 0.45rem 0.1rem 0.35rem;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-color);
+      border-radius: 0.3rem;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-credential-dot {
+      width: 0.35rem;
+      height: 0.35rem;
+      border-radius: 50%;
+      background: var(--success-color, #22c55e);
+      flex-shrink: 0;
+    }
+    .card-credential-revoked {
+      color: #fecaca;
+      border-color: #7f1d1d;
+      background: rgba(239, 68, 68, 0.12);
+    }
+    .card-credential-revoked .card-credential-dot {
+      background: var(--danger-color, #ef4444);
+    }
+
     /* Caller admin panel */
     #caller-admin {
       margin-top: 1.25rem;
@@ -1153,7 +1185,10 @@
       <h1>Meridian <span class="badge-live">Hub</span></h1>
       <p>Manage active coding agents</p>
     </div>
-    <a id="meridian-roles-header-link" class="header-roles-link" href="#" target="_blank" rel="noopener noreferrer" title="meridian-roles web UI (same host, port 7701)">meridian-roles</a>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      <a class="header-roles-link" href="accounts.html" title="Manage codex accounts and credentials">Accounts</a>
+      <a id="meridian-roles-header-link" class="header-roles-link" href="#" target="_blank" rel="noopener noreferrer" title="meridian-roles web UI (same host, port 7701)">meridian-roles</a>
+    </div>
   </header>
 
   <div id="app">
@@ -1205,6 +1240,14 @@
                   <option value="medium">Reasoning effort: medium</option>
                   <option value="high">Reasoning effort: high</option>
                   <option value="xhigh">Reasoning effort: xhigh</option>
+                </select>
+                <select
+                  id="spawn-credential"
+                  class="select"
+                  aria-label="Spawn credential"
+                  title="Credential / account to attach to the new agent (manage at accounts.html)"
+                >
+                  <option value="">Credential: default codex login (~/.codex)</option>
                 </select>
                 <label class="toggle" for="spawn-auto-approve">
                   <input id="spawn-auto-approve" type="checkbox" />
@@ -1410,6 +1453,7 @@
       var spawnModeEl = document.getElementById("spawn-mode");
       var spawnModelEl = document.getElementById("spawn-model");
       var spawnEffortEl = document.getElementById("spawn-effort");
+      var spawnCredentialEl = document.getElementById("spawn-credential");
       var autoApproveEl = document.getElementById("spawn-auto-approve");
       var SPAWN_PROVIDER_STORAGE_KEY = "meridian_spawn_provider";
       var SPAWN_MODE_STORAGE_KEY = "meridian_spawn_mode";
@@ -1417,6 +1461,7 @@
       var SPAWN_EFFORT_STORAGE_KEY = "meridian_spawn_effort_by_provider";
       var SPAWN_AUTO_APPROVE_STORAGE_KEY = "meridian_spawn_auto_approve";
       var SPAWN_REPO_STORAGE_KEY = "meridian_spawn_repo";
+      var SPAWN_CREDENTIAL_STORAGE_KEY = "meridian_spawn_credential_id";
       var spawnModelByProvider = {};
       var spawnEffortByProvider = {};
       var spawnModelRequestToken = 0;
@@ -1695,7 +1740,53 @@
           localStorage.setItem(SPAWN_EFFORT_STORAGE_KEY, JSON.stringify(spawnEffortByProvider));
           if (autoApproveEl) localStorage.setItem(SPAWN_AUTO_APPROVE_STORAGE_KEY, autoApproveEl.checked ? "true" : "false");
           localStorage.setItem(SPAWN_REPO_STORAGE_KEY, spawnRepoRelative || "");
+          if (spawnCredentialEl) localStorage.setItem(SPAWN_CREDENTIAL_STORAGE_KEY, spawnCredentialEl.value || "");
         } catch (e) {}
+      }
+
+      function readSavedSpawnCredentialId() {
+        try {
+          return localStorage.getItem(SPAWN_CREDENTIAL_STORAGE_KEY) || "";
+        } catch (e) {
+          return "";
+        }
+      }
+
+      function loadSpawnCredentialOptions() {
+        if (!spawnCredentialEl) return Promise.resolve();
+        var saved = readSavedSpawnCredentialId();
+        return window.MeridianWeb.fetchWithAuth("/api/credentials")
+          .then(function (res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.json();
+          })
+          .then(function (body) {
+            var creds = (body && Array.isArray(body.credentials)) ? body.credentials : [];
+            // Keep only usable (non-revoked) credentials in the dropdown.
+            var usable = creds.filter(function (c) { return !c.revoked_at; });
+            spawnCredentialEl.innerHTML = "";
+            var defaultOpt = document.createElement("option");
+            defaultOpt.value = "";
+            defaultOpt.textContent = "Credential: default codex login (~/.codex)";
+            spawnCredentialEl.appendChild(defaultOpt);
+            usable.forEach(function (c) {
+              var opt = document.createElement("option");
+              opt.value = c.credential_id;
+              var kindTag = c.kind === "oauth" ? "OAuth" : "API";
+              opt.textContent = "Credential: " + (c.credential_label || c.credential_id) +
+                " (" + kindTag + (c.is_default ? ", default" : "") + ")";
+              spawnCredentialEl.appendChild(opt);
+            });
+            // Restore saved selection if it still maps to a usable credential.
+            var stillValid = false;
+            for (var i = 0; i < spawnCredentialEl.options.length; i++) {
+              if (spawnCredentialEl.options[i].value === saved) { stillValid = true; break; }
+            }
+            spawnCredentialEl.value = stillValid ? saved : "";
+          })
+          .catch(function () {
+            // On error keep the static "default" option only.
+          });
       }
 
       function saveSpawnProviderPreference() {
@@ -2048,6 +2139,33 @@
           });
       }
 
+      function renderCredentialBadge(inst) {
+        var credentialId = inst && inst.credential_id ? String(inst.credential_id) : "";
+        var credentialLabel = inst && inst.credential_label ? String(inst.credential_label) : "";
+        // Provider is "codex" for v1 — pull from instance when available.
+        var provider = (inst && inst.credential_provider) ? String(inst.credential_provider) : "codex";
+        var labelText;
+        var cls = "card-credential";
+        var title;
+        if (!credentialId) {
+          labelText = provider + " · default (~/.codex)";
+          title = "Spawned with the default Codex login.";
+        } else if (credentialLabel) {
+          labelText = provider + " · " + credentialLabel;
+          title = "Credential ID: " + credentialId;
+        } else {
+          // credential_id present but label null → revoked or missing.
+          var prefix = credentialId.length > 8 ? credentialId.slice(0, 8) + "…" : credentialId;
+          labelText = prefix + " · revoked";
+          cls += " card-credential-revoked";
+          title = "Credential " + credentialId + " is no longer available (revoked or deleted).";
+        }
+        return '<div class="' + cls + '" title="' + escapeHtml(title) + '">' +
+          '<span class="card-credential-dot"></span>' +
+          escapeHtml(labelText) +
+          '</div>';
+      }
+
       function renderInstanceCard(inst, options) {
         options = options || {};
         var rolesBase = meridianRolesGuiOrigin();
@@ -2081,6 +2199,7 @@
         var spawnedByLabel = (spawnedBy && (spawnedBy.caller_label || spawnedBy.caller_id)) || "Unknown";
         var spawnAppend = inst.spawn_append || inst.spawn_provider_append || "";
         var spawnDisplay = spawnAppend || inst.spawn_display || "—";
+        var credentialBadge = renderCredentialBadge(inst);
         var closeButton = options.stateless
           ? '<button type="button" class="card-close-btn" aria-label="Close stateless agent card" title="Close stateless agent card">×</button>'
           : "";
@@ -2097,6 +2216,7 @@
             <span class="card-caller-dot"></span>
             Last caller: <strong>${escapeHtml(lastCallerLabel)}</strong>
           </div>
+          ${credentialBadge}
           ${repoBlock}
           <div class="card-footer">
             <span style="color: ${isActive ? "var(--success-color)" : "var(--text-dim)"}">${escapeHtml(cardStatus)}</span>
@@ -2606,6 +2726,11 @@
         if (parsedModel.reasoningEffort) {
           modelPayload.effort = parsedModel.reasoningEffort;
         }
+        var credentialPayload = {};
+        var selectedCredentialId = spawnCredentialEl && String(spawnCredentialEl.value || "").trim();
+        if (selectedCredentialId) {
+          credentialPayload.credential_id = selectedCredentialId;
+        }
         window.MeridianWeb.fetchWithAuth("/api/spawn", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2613,7 +2738,7 @@
             type: providerEl && providerEl.value ? providerEl.value : "codex",
             mode: spawnModeEl && spawnModeEl.value ? spawnModeEl.value : "pane_bridge",
             auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
-          }, repoPayload, modelPayload))
+          }, repoPayload, modelPayload, credentialPayload))
         })
           .then(function (res) {
             return res.json().then(function (body) {
@@ -2624,6 +2749,8 @@
               // Hub returns HTTP 200 even when routing fails; check HubResult.status.
               if (body.status === "success") {
                 fetchList();
+                // The spawned agent may have used (or surfaced) a credential update; refresh options.
+                void loadSpawnCredentialOptions();
               } else {
                 alert(typeof body.content === "string" && body.content ? body.content : "Spawn failed");
               }
@@ -2649,6 +2776,7 @@
       if (spawnModeEl) spawnModeEl.addEventListener("change", saveSpawnPreferences);
       if (spawnModelEl) spawnModelEl.addEventListener("change", saveSpawnPreferences);
       if (spawnEffortEl) spawnEffortEl.addEventListener("change", saveSpawnPreferences);
+      if (spawnCredentialEl) spawnCredentialEl.addEventListener("change", saveSpawnPreferences);
       if (autoApproveEl) autoApproveEl.addEventListener("change", saveSpawnPreferences);
 
       if (btnSpawnWorkspace) btnSpawnWorkspace.addEventListener("click", openSpawnWorkspaceDialog);
@@ -2845,6 +2973,7 @@
       closedStatelessAgentIds = loadClosedStatelessCards();
       loadSpawnPreferences();
       void loadSpawnModelOptions(true);
+      void loadSpawnCredentialOptions();
       fetchList();
       setInterval(fetchList, REFRESH_MS);
     })();
