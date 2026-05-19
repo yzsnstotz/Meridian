@@ -567,6 +567,7 @@ export class HubRouter {
   private readonly completedRunsByThread = new Map<string, CompletedRunRecord>();
   private readonly conversationHistoryByThread = new Map<string, ConversationHistoryEntry[]>();
   private readonly pendingRunFollowups = new Set<string>();
+  private readonly zombieEvictionsInFlight = new Set<string>();
   private callerRegistry: CallerRegistry | null = null;
   private readonly credentialStore: CredentialStore | undefined;
   private readonly oauthLoginRegistry: OAuthLoginJobRegistry | undefined;
@@ -1228,6 +1229,63 @@ export class HubRouter {
     );
   }
 
+  private isInstanceProcessAlive(instance: AgentInstance): boolean {
+    if (instance.mode === "stateless_call") {
+      return true;
+    }
+    if (typeof instance.pid !== "number" || !Number.isFinite(instance.pid) || instance.pid <= 0) {
+      return true;
+    }
+    try {
+      process.kill(instance.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Called when a list-time probe reveals an instance whose underlying
+  // agentapi PID is gone. Without eviction the dead instance stays in the
+  // in-memory registry, every subsequent list call (and the monitor's
+  // polling) re-probes it, ECONNREFUSED-fails, and emits a verbose pino
+  // record per zombie — the load that produced the 2026-05-19 hub-log
+  // storm (1850+ lines/sec, hub CPU pinned at 100%).
+  private scheduleZombieEviction(instance: AgentInstance): void {
+    const threadId = instance.thread_id;
+    if (this.zombieEvictionsInFlight.has(threadId)) {
+      return;
+    }
+    this.zombieEvictionsInFlight.add(threadId);
+    this.log.info(
+      {
+        operation: "zombie_instance_eviction",
+        thread_id: threadId,
+        pid: instance.pid,
+        socket_path: instance.socket_path
+      },
+      "Evicting in-memory instance whose agentapi PID is gone"
+    );
+    setImmediate(() => {
+      this.instanceManager
+        .kill(threadId)
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          // Concurrent list calls may both schedule eviction; the second
+          // kill loses the race with "thread_id=... is not registered".
+          if (/is not registered/.test(message)) {
+            return;
+          }
+          this.log.warn(
+            { thread_id: threadId, err: message },
+            "Failed to evict zombie instance after list probe"
+          );
+        })
+        .finally(() => {
+          this.zombieEvictionsInFlight.delete(threadId);
+        });
+    });
+  }
+
   private async handleList(message: HubMessage): Promise<HubResult> {
     const requestSessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     const instances = this.instanceManager
@@ -1237,20 +1295,28 @@ export class HubRouter {
     const listedInstances = await Promise.all(instances.map(async (instance) => {
       let currentInstance = instance;
       if (typeof this.instanceManager.status === "function") {
-        try {
-          currentInstance = (await this.instanceManager.status(currentInstance.thread_id)).instance;
-          __statusRefreshed = true;
-        } catch (error) {
-          this.log.debug(
-            {
-              operation: "list_status_probe_failed",
-              thread_id: currentInstance.thread_id,
-              socket_path: currentInstance.socket_path,
-              pid: currentInstance.pid,
-              err: error instanceof Error ? error.message : String(error)
-            },
-            "Continuing list response without a live instance status refresh"
-          );
+        if (!this.isInstanceProcessAlive(currentInstance)) {
+          // Skip the doomed probe and schedule cleanup. Probing dead PIDs
+          // generates ECONNREFUSED + verbose log per call; with multiple
+          // pollers (monitor + service:meridian-roles) and several zombies
+          // this loops at ~1850 log-lines/sec.
+          this.scheduleZombieEviction(currentInstance);
+        } else {
+          try {
+            currentInstance = (await this.instanceManager.status(currentInstance.thread_id)).instance;
+            __statusRefreshed = true;
+          } catch (error) {
+            this.log.debug(
+              {
+                operation: "list_status_probe_failed",
+                thread_id: currentInstance.thread_id,
+                socket_path: currentInstance.socket_path,
+                pid: currentInstance.pid,
+                err: error instanceof Error ? error.message : String(error)
+              },
+              "Continuing list response without a live instance status refresh"
+            );
+          }
         }
       }
 

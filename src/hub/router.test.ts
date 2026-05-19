@@ -1386,7 +1386,7 @@ test("HubRouter list backfills the live current model when the registry has none
     agent_type: "codex",
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
-    pid: 12,
+    pid: process.pid,
     tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
@@ -1440,7 +1440,7 @@ test("HubRouter list refreshes live status when the model is already known", asy
     agent_type: "codex",
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
-    pid: 12,
+    pid: process.pid,
     tmux_pane: null,
     status: "running",
     model_id: "gpt-5.4",
@@ -1486,6 +1486,63 @@ test("HubRouter list refreshes live status when the model is already known", asy
   assert.equal(statusCalls, 1);
   assert.equal(listed[0]?.status, "waiting");
   assert.equal(listed[0]?.current_model_id, "gpt-5.4");
+});
+
+test("HubRouter list skips probe and schedules eviction when instance PID is dead", async () => {
+  const registry = new InstanceRegistry();
+  // 99_999_999 is well above kernel.pid_max on every supported OS, so
+  // process.kill(pid, 0) is guaranteed to throw ESRCH.
+  const deadPid = 99_999_999;
+  registry.register({
+    thread_id: "codex_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "http://127.0.0.1:65535",
+    pid: deadPid,
+    tmux_pane: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  let statusCalls = 0;
+  const killedThreadIds: string[] = [];
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    status: async () => {
+      statusCalls += 1;
+      throw new Error("probe should not be attempted for a dead-PID instance");
+    },
+    kill: async (threadId: string) => {
+      killedThreadIds.push(threadId);
+      registry.unregister(threadId);
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: "/tmp/meridian-router-test-state.json"
+  });
+
+  const result = await router.route(baseMessage({ intent: "list", target: "all", thread_id: "global" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(statusCalls, 0, "status() must not be called for a dead-PID instance");
+  assert.deepEqual(killedThreadIds, ["codex_01"], "kill() must be called to evict the zombie");
+  // The dead instance is still present in this one response; the next list
+  // call will see the cleaned registry.
+  const listed = JSON.parse(result.content) as Array<Record<string, unknown>>;
+  assert.equal(listed[0]?.thread_id, "codex_01");
 });
 
 test("HubRouter returns error result when target thread is missing", async () => {
