@@ -77,9 +77,14 @@ find_pm2_binary() {
     printf '%s' "${candidate}"
     return 0
   fi
+  # NOTE: deliberately do NOT glob "${HOME}/.local/state/fnm_multishells/*/bin/pm2".
+  # That directory accumulates one entry per shell session and is never pruned;
+  # once the link count saturates (~65535+ entries, multi-MB inode), bash's
+  # glob expansion can take 10s+ and silently freezes the entire restart chain
+  # before any [restart] log line flushes. The canonical node-versions install
+  # (below) is the same pm2 binary, exposed via fnm's stable per-version path.
   for candidate in \
     "${HOME}/.local/share/fnm/node-versions"/*/installation/bin/pm2 \
-    "${HOME}/.local/state/fnm_multishells"/*/bin/pm2 \
     /opt/homebrew/bin/pm2 \
     /usr/local/bin/pm2 \
     /usr/bin/pm2; do
