@@ -327,6 +327,118 @@ test("DEFAULTS: undefined codexLoginCommand/Args fall back to ['codex','login'] 
   assert.deepEqual(opts.codexLoginArgs, ["login"]);
 });
 
+test("URL FRAGMENT: URL split across two stderr data events is still extracted", async () => {
+  // Reproduces the prod symptom where a `data` chunk boundary fell inside
+  // the URL string. The previous per-line splitter never saw a complete
+  // URL on any one line and the job failed with `login_url_not_captured`
+  // even though codex had emitted it. The tail-buffer-based extractor
+  // must match URL across chunks.
+  const prev = process.env.FAKE_CODEX_FRAGMENT_URL;
+  const prevDelay = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_FRAGMENT_URL = "1";
+  process.env.FAKE_CODEX_DELAY_MS = "5000"; // keep job in awaiting_browser
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-fragment-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "fragmented",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 30_000,
+      urlCaptureWindowMs: 2_000
+    });
+    await job.start();
+    for (let i = 0; i < 100; i++) {
+      if (job.status === "awaiting_browser") break;
+      await wait(50);
+    }
+    assert.equal(job.status, "awaiting_browser", `status=${job.status} error=${job.error_message}`);
+    assert.equal(job.login_url, "https://chatgpt.com/auth/test");
+    await job.cancel();
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CODEX_FRAGMENT_URL;
+    else process.env.FAKE_CODEX_FRAGMENT_URL = prev;
+    if (prevDelay === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prevDelay;
+  }
+});
+
+test("URL CAPTURE FAILURE: error_message includes recent codex output (self-diagnostic)", async () => {
+  // When the URL-capture window expires, the failure message must surface
+  // what codex actually printed so the operator can see the mismatch
+  // without expanding the GUI <details> block.
+  const prevNoUrl = process.env.FAKE_CODEX_NO_URL;
+  const prevDelay = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_NO_URL = "1";
+  process.env.FAKE_CODEX_DELAY_MS = "5000";
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-snippet-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "x",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 30_000,
+      urlCaptureWindowMs: 250
+    });
+    // Inject a stderr line via the fixture? The fixture currently emits no
+    // output when FAKE_CODEX_NO_URL=1. Append a stderr writeable line by
+    // using an env var the fixture interprets — for this test, just verify
+    // the "no output captured" branch fires when codex prints nothing.
+    await job.start();
+    for (let i = 0; i < 100; i++) {
+      if (job.status === "failed") break;
+      await wait(50);
+    }
+    assert.equal(job.status, "failed");
+    assert.equal(job.error_code, "login_url_not_captured");
+    assert.ok(
+      job.error_message && job.error_message.includes("no recognizable URL"),
+      `error_message should mention URL capture failure, got: ${job.error_message}`
+    );
+    assert.ok(
+      job.error_message && (job.error_message.includes("codex produced no output") || job.error_message.includes("Last codex output")),
+      `error_message should be self-diagnostic, got: ${job.error_message}`
+    );
+  } finally {
+    if (prevNoUrl === undefined) delete process.env.FAKE_CODEX_NO_URL;
+    else process.env.FAKE_CODEX_NO_URL = prevNoUrl;
+    if (prevDelay === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prevDelay;
+  }
+});
+
+test("SPAWN ERROR: codex binary not on PATH → status=failed with subprocess_spawn_error (not stuck until url window)", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-enoent-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const job = new OAuthLoginJob({
+    credentialStore: store,
+    owner_caller_id: "c1",
+    credential_label: "x",
+    codexLoginCommand: "/nonexistent/codex-binary-zzz-" + Date.now(),
+    codexLoginArgs: ["login"],
+    timeoutMs: 30_000,
+    urlCaptureWindowMs: 10_000
+  });
+  await job.start();
+  // ENOENT fires error event; must mark failed quickly, NOT wait for the
+  // urlCaptureWindow.
+  for (let i = 0; i < 50; i++) {
+    if (job.status === "failed") break;
+    await wait(20);
+  }
+  assert.equal(job.status, "failed");
+  assert.equal(job.error_code, "subprocess_spawn_error");
+  assert.ok(
+    job.error_message && /ENOENT/.test(job.error_message),
+    `error_message should mention ENOENT, got: ${job.error_message}`
+  );
+});
+
 test("MARK STARTUP FAILURE: markStartupFailure flips a pending job to failed (so the GUI doesn't stall)", () => {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-startup-fail-"));
   const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });

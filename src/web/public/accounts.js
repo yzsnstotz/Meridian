@@ -487,9 +487,21 @@
       }
     });
   }
-  // Stop polling if the dialog is dismissed via Escape.
+  // Stop polling if the dialog is dismissed (Escape, backdrop, X). Also tear
+  // down the server-side job — otherwise the `codex login` subprocess keeps
+  // running, holds port 1455, and the OAuth state token from its URL would
+  // be the only one the codex callback server would accept. If the user
+  // walked away mid-flight, that lingering subprocess plus a stale URL is
+  // exactly the "callback unreachable" failure mode.
   if (oauthDialog) {
-    oauthDialog.addEventListener("close", function () { stopOauthPolling(); });
+    oauthDialog.addEventListener("close", function () {
+      stopOauthPolling();
+      var id = oauthState.jobId;
+      if (id && !oauthState.terminal) {
+        api("/api/credentials/oauth-login/" + encodeURIComponent(id), { method: "DELETE" })
+          .catch(function () { /* best effort */ });
+      }
+    });
   }
 
   // API-key dialog wiring (G3).
