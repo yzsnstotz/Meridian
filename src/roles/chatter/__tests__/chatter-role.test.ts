@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, realpathSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, realpathSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChatterRole } from "../../definitions/chatter";
@@ -37,118 +37,172 @@ function makeConfig(memoryFolder: string, overrides: Partial<ChatterRoleConfig> 
   };
 }
 
-function makeHubResult(overrides: Partial<HubResult> & { content: string }): HubResult {
+function makeTurnResult(content: string, overrides: Partial<HubResult> = {}): HubResult {
   return {
     trace_id: crypto.randomUUID(),
     thread_id: "chatter-tenant-a",
     source: "ads",
     status: "success",
+    content,
     attachments: [],
     timestamp: new Date().toISOString(),
     ...overrides
   };
 }
 
-describe("ChatterRole — activation", () => {
-  let root: string;
+async function driveSpawnResponse(
+  role: ChatterRole,
+  spawnMsg: HubMessage,
+  newAgentThreadId: string,
+  overrides: Partial<HubResult> = {}
+): Promise<void> {
+  const response: HubResult = {
+    trace_id: spawnMsg.trace_id,
+    thread_id: newAgentThreadId,
+    source: spawnMsg.target,
+    status: "success",
+    content: `spawned ${newAgentThreadId}`,
+    attachments: [],
+    timestamp: new Date().toISOString(),
+    ...overrides
+  };
+  await role.onInboundResult(response);
+}
 
-  beforeEach(() => {
+describe("ChatterRole — activation + spawn handshake", () => {
+  let root: string;
+  let role: ChatterRole;
+  let sent: HubMessage[];
+
+  beforeEach(async () => {
     root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-")));
+    const made = makeCtx();
+    sent = made.sent;
+    role = new ChatterRole("chatter-tenant-a", makeConfig(root));
+    await role.onActivate(made.ctx);
   });
 
-  it("onActivate loads manifest, materializes sandbox, and starts a session manager", async () => {
-    const { ctx } = makeCtx();
-    const role = new ChatterRole("chatter-tenant-a", makeConfig(root));
-    await role.onActivate(ctx);
+  it("onActivate materializes sandbox but does NOT spawn", () => {
     expect(existsSync(path.join(root, ".chatter-sandbox", "settings.json"))).toBe(true);
-    const settings = JSON.parse(readFileSync(path.join(root, ".chatter-sandbox", "settings.json"), "utf8"));
-    expect(settings.permissions.deny).toContain("Bash(*)");
+    expect(sent.length).toBe(0);
   });
-});
 
-describe("ChatterRole — turn intake (session mode)", () => {
-  let root: string;
-  let role: ChatterRole;
-  let sent: HubMessage[];
+  it("first user turn kicks off intent:'spawn' to mapped agent_type (claude)", async () => {
+    await role.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawnMsgs = sent.filter((m) => m.intent === "spawn");
+    expect(spawnMsgs.length).toBe(1);
+    expect(spawnMsgs[0].target).toBe("claude");
+  });
 
-  beforeEach(async () => {
-    root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-")));
+  it("spawn payload carries spawn_dir and credential_id when configured", async () => {
+    const root2 = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-cred-")));
     const made = makeCtx();
-    sent = made.sent;
-    role = new ChatterRole("chatter-tenant-a", makeConfig(root));
-    await role.onActivate(made.ctx);
-  });
-
-  it("forwards config.credential_id on the outbound agent run when set", async () => {
-    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-cred-")));
-    const { ctx, sent: localSent } = makeCtx();
-    const role = new ChatterRole(
+    const roleCred = new ChatterRole(
       "chatter-tenant-cred",
-      makeConfig(root, { credential_id: "cred-1234" })
+      makeConfig(root2, { credential_id: "cred-uuid-1" })
     );
-    await role.onActivate(ctx);
-    await role.onInboundResult(
-      makeHubResult({ content: "hi", payload: { chatter: { mode: "session" } } })
+    await roleCred.onActivate(made.ctx);
+    await roleCred.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
     );
-    const dispatch = localSent.find((m) => m.target === "claude-code");
-    expect(dispatch).toBeDefined();
-    expect(dispatch!.payload.credential_id).toBe("cred-1234");
+    const spawn = made.sent.find((m) => m.intent === "spawn");
+    expect(spawn).toBeDefined();
+    expect(spawn!.payload.spawn_dir).toBe(root2);
+    expect(spawn!.payload.credential_id).toBe("cred-uuid-1");
   });
 
-  it("omits credential_id from outbound when config does not set it", async () => {
-    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-nocred-")));
-    const { ctx, sent: localSent } = makeCtx();
-    const role = new ChatterRole("chatter-tenant-nocred", makeConfig(root));
-    await role.onActivate(ctx);
+  it("spawn payload omits credential_id when config does not set one", async () => {
     await role.onInboundResult(
-      makeHubResult({ content: "hi", payload: { chatter: { mode: "session" } } })
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
     );
-    const dispatch = localSent.find((m) => m.target === "claude-code");
-    expect(dispatch).toBeDefined();
-    expect(dispatch!.payload.credential_id).toBeUndefined();
+    const spawn = sent.find((m) => m.intent === "spawn");
+    expect(spawn).toBeDefined();
+    expect(spawn!.payload.credential_id).toBeUndefined();
   });
 
-  it("dispatches the user content to the claude-code target via sendToHub", async () => {
-    await role.onInboundResult(
-      makeHubResult({ content: "hello chatter", payload: { chatter: { mode: "session" } } })
+  it("spawn payload carries model_id when llm_model is configured (PR #249)", async () => {
+    const root2 = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-model-")));
+    const made = makeCtx();
+    const roleModel = new ChatterRole(
+      "chatter-tenant-model",
+      makeConfig(root2, { llm_model: "claude-sonnet-4-6" })
     );
-    expect(sent.length).toBe(1);
-    const msg = sent[0];
-    expect(msg.intent).toBe("run");
-    expect(msg.target).toBe("claude-code");
-    expect(msg.payload.content).toBe("hello chatter");
-    expect(msg.reply_channel.channel).toBe("socket");
+    await roleModel.onActivate(made.ctx);
+    await roleModel.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = made.sent.find((m) => m.intent === "spawn")!;
+    expect(spawn.payload.model_id).toBe("claude-sonnet-4-6");
   });
 
-  it("writes the turn to memory in session mode", async () => {
+  it("second turn during pending spawn is queued, not double-spawned", async () => {
     await role.onInboundResult(
-      makeHubResult({ content: "remember this", payload: { chatter: { mode: "session" } } })
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
     );
-    // Verify a file was written under turns/<date>/
-    const turnsDir = path.join(root, "turns");
-    expect(existsSync(turnsDir)).toBe(true);
+    await role.onInboundResult(
+      makeTurnResult("second", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawnMsgs = sent.filter((m) => m.intent === "spawn");
+    expect(spawnMsgs.length).toBe(1);
+    const runMsgs = sent.filter((m) => m.intent === "run" && m.target !== "global");
+    expect(runMsgs.length).toBe(0);
   });
 
-  it("rejects the turn when mode is not in allowed_modes", async () => {
-    const sessionOnly = new ChatterRole(
-      "chatter-tenant-a",
-      makeConfig(root, { allowed_modes: ["session"], chatter_id: "tenant-b", memory_folder: root })
+  it("spawn response binds the agent thread and flushes queued turns in FIFO", async () => {
+    await role.onInboundResult(
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
     );
-    const { ctx, sent: localSent } = makeCtx();
-    await sessionOnly.onActivate(ctx);
-    await sessionOnly.onInboundResult(
-      makeHubResult({ content: "x", payload: { chatter: { mode: "stateless" } } })
+    await role.onInboundResult(
+      makeTurnResult("second", { payload: { chatter: { mode: "session" } } })
     );
-    // No agent dispatch
-    expect(localSent.filter((m) => m.target === "claude-code").length).toBe(0);
-    // A reply went back to user_reply_channel with a denial
-    const replyMsg = localSent.find((m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id);
-    expect(replyMsg).toBeDefined();
-    expect(replyMsg!.payload.content).toMatch(/denied_mode/);
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+
+    await driveSpawnResponse(role, spawn, "claude_07");
+
+    const runs = sent.filter((m) => m.intent === "run" && m.target === "claude_07");
+    expect(runs.length).toBe(2);
+    expect(runs[0].payload.content).toBe("first");
+    expect(runs[1].payload.content).toBe("second");
+  });
+
+  it("run dispatches DO NOT carry credential_id (credential is consumed at spawn)", async () => {
+    const root2 = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-cred-")));
+    const made = makeCtx();
+    const roleCred = new ChatterRole(
+      "chatter-tenant-cred",
+      makeConfig(root2, { credential_id: "cred-uuid-1" })
+    );
+    await roleCred.onActivate(made.ctx);
+    await roleCred.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = made.sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(roleCred, spawn, "claude_07");
+    const run = made.sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
+    expect(run.payload.credential_id).toBeUndefined();
+  });
+
+  it("post-bind turns dispatch immediately via intent:'run' (no new spawn)", async () => {
+    await role.onInboundResult(
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(role, spawn, "claude_07");
+
+    sent.length = 0;
+    await role.onInboundResult(
+      makeTurnResult("next", { payload: { chatter: { mode: "session" } } })
+    );
+    expect(sent.filter((m) => m.intent === "spawn").length).toBe(0);
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07");
+    expect(run).toBeDefined();
+    expect(run!.payload.content).toBe("next");
   });
 });
 
-describe("ChatterRole — turn intake (stateless mode)", () => {
+describe("ChatterRole — session-mode memory + stateless behavior", () => {
   let root: string;
   let role: ChatterRole;
   let sent: HubMessage[];
@@ -161,12 +215,40 @@ describe("ChatterRole — turn intake (stateless mode)", () => {
     await role.onActivate(made.ctx);
   });
 
-  it("dispatches but does NOT write to memory", async () => {
+  it("session-mode turn writes memory BEFORE the spawn handshake fires", async () => {
     await role.onInboundResult(
-      makeHubResult({ content: "one-shot", payload: { chatter: { mode: "stateless" } } })
+      makeTurnResult("remember this", { payload: { chatter: { mode: "session" } } })
     );
-    expect(sent.length).toBe(1);
+    expect(existsSync(path.join(root, "turns"))).toBe(true);
+    const dateDirs = readdirSync(path.join(root, "turns"));
+    expect(dateDirs.length).toBe(1);
+  });
+
+  it("stateless-mode turn does NOT write memory but still spawns", async () => {
+    await role.onInboundResult(
+      makeTurnResult("one-shot", { payload: { chatter: { mode: "stateless" } } })
+    );
     expect(existsSync(path.join(root, "turns"))).toBe(false);
+    expect(sent.find((m) => m.intent === "spawn")).toBeDefined();
+  });
+});
+
+describe("ChatterRole — mode policy gate", () => {
+  it("disallowed mode replies with denied_mode and does NOT spawn", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-")));
+    const { ctx, sent } = makeCtx();
+    const role = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root, { allowed_modes: ["session"] })
+    );
+    await role.onActivate(ctx);
+    await role.onInboundResult(
+      makeTurnResult("nope", { payload: { chatter: { mode: "stateless" } } })
+    );
+    expect(sent.find((m) => m.intent === "spawn")).toBeUndefined();
+    const errReply = sent.find((m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id);
+    expect(errReply).toBeDefined();
+    expect(errReply!.payload.content).toMatch(/denied_mode/);
   });
 });
 
@@ -183,35 +265,82 @@ describe("ChatterRole — control commands", () => {
     await role.onActivate(made.ctx);
   });
 
-  it("/new starts a new agent session and acknowledges", async () => {
+  it("/new with bound session: sends kill to old thread, unbinds, acks", async () => {
     await role.onInboundResult(
-      makeHubResult({ content: "x", payload: { chatter: { mode: "session", control: "new" } } })
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
     );
-    // Should send an ack to user_reply_channel, no claude-code dispatch
-    const claudeDispatches = sent.filter((m) => m.target === "claude-code");
-    const acks = sent.filter((m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id);
-    expect(claudeDispatches.length).toBe(0);
-    expect(acks.length).toBe(1);
-    expect(acks[0].payload.content).toMatch(/new session/i);
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(role, spawn, "claude_07");
+    sent.length = 0;
+
+    await role.onInboundResult(
+      makeTurnResult("reset", { payload: { chatter: { mode: "session", control: "new" } } })
+    );
+
+    const kill = sent.find((m) => m.intent === "kill" && m.target === "claude_07");
+    expect(kill).toBeDefined();
+    const ack = sent.find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && /new session pending/i.test(m.payload.content)
+    );
+    expect(ack).toBeDefined();
   });
 
-  it("/interrupt clears in-flight and acknowledges", async () => {
-    // First, dispatch a normal turn to put a trace in flight
+  it("/new during pending spawn is rejected (no state change)", async () => {
     await role.onInboundResult(
-      makeHubResult({ content: "do something", payload: { chatter: { mode: "session" } } })
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
     );
-    expect(sent.length).toBe(1);
-    // Now interrupt
+    const before = sent.length;
     await role.onInboundResult(
-      makeHubResult({ content: "stop", payload: { chatter: { mode: "session", control: "interrupt" } } })
+      makeTurnResult("rotate", { payload: { chatter: { mode: "session", control: "new" } } })
     );
-    const acks = sent.filter((m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id);
-    expect(acks.length).toBe(1);
-    expect(acks[0].payload.content).toMatch(/interrupt/i);
+    expect(sent.find((m) => m.intent === "kill")).toBeUndefined();
+    const replies = sent.slice(before).filter((m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id);
+    expect(replies.length).toBeGreaterThan(0);
+    expect(replies[0].payload.content).toMatch(/cannot rotate session/);
+  });
+
+  it("/new before any spawn: unbinds, no kill, acks", async () => {
+    await role.onInboundResult(
+      makeTurnResult("reset", { payload: { chatter: { mode: "session", control: "new" } } })
+    );
+    expect(sent.find((m) => m.intent === "kill")).toBeUndefined();
+    expect(sent.find((m) => m.intent === "spawn")).toBeUndefined();
+    const ack = sent.find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && /new session pending/i.test(m.payload.content)
+    );
+    expect(ack).toBeDefined();
+  });
+
+  it("/interrupt cancels pending spawn + clears in-flight + acks", async () => {
+    await role.onInboundResult(
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
+    );
+    const before = sent.length;
+    await role.onInboundResult(
+      makeTurnResult("stop", { payload: { chatter: { mode: "session", control: "interrupt" } } })
+    );
+    const ack = sent.slice(before).find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && /interrupt/i.test(m.payload.content)
+    );
+    expect(ack).toBeDefined();
+  });
+
+  it("/interrupt drops late spawn responses (unknown trace path)", async () => {
+    await role.onInboundResult(
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await role.onInboundResult(
+      makeTurnResult("stop", { payload: { chatter: { mode: "session", control: "interrupt" } } })
+    );
+    const sentBeforeLate = sent.length;
+    await driveSpawnResponse(role, spawn, "claude_07");
+    const newRuns = sent.slice(sentBeforeLate).filter((m) => m.intent === "run" && m.target === "claude_07");
+    expect(newRuns.length).toBe(0);
   });
 });
 
-describe("ChatterRole — inbound result forwarding", () => {
+describe("ChatterRole — claimsTrace + inbound forwarding", () => {
   let root: string;
   let role: ChatterRole;
   let sent: HubMessage[];
@@ -224,22 +353,33 @@ describe("ChatterRole — inbound result forwarding", () => {
     await role.onActivate(made.ctx);
   });
 
-  it("forwards a result that matches a known in-flight trace_id to user_reply_channel", async () => {
-    // Dispatch a turn to register a trace
+  it("claimsTrace returns true for in-flight, false otherwise", async () => {
     await role.onInboundResult(
-      makeHubResult({ content: "ask", payload: { chatter: { mode: "session" } } })
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
     );
-    const dispatched = sent[0];
-    expect(dispatched.target).toBe("claude-code");
-    const traceId = dispatched.trace_id;
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    expect(role.claimsTrace(spawn.trace_id)).toBe(true);
+    expect(role.claimsTrace(crypto.randomUUID())).toBe(false);
+  });
 
-    // Now the agent replies on that trace
-    const agentReply = makeHubResult({
-      trace_id: traceId,
-      source: "claude-code",
+  it("agent reply on known run trace forwards content to user_reply_channel", async () => {
+    await role.onInboundResult(
+      makeTurnResult("ask", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(role, spawn, "claude_07");
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
+
+    const agentReply: HubResult = {
+      trace_id: run.trace_id,
+      thread_id: "claude_07",
+      source: "claude",
+      status: "success",
       content: "the answer",
+      attachments: [],
+      timestamp: new Date().toISOString(),
       run_state: "completed"
-    });
+    };
     await role.onInboundResult(agentReply);
 
     const forwarded = sent.find(
@@ -248,29 +388,51 @@ describe("ChatterRole — inbound result forwarding", () => {
     expect(forwarded).toBeDefined();
   });
 
-  it("ignores a result with unknown trace_id and no envelope (no new turn, no echo)", async () => {
-    const beforeCount = sent.length;
+  it("unknown trace + no envelope is dropped silently", async () => {
+    const before = sent.length;
+    await role.onInboundResult({
+      trace_id: crypto.randomUUID(),
+      thread_id: "some-other-thread",
+      source: "stray",
+      status: "success",
+      content: "ghost",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    });
+    expect(sent.length).toBe(before);
+  });
+
+  it("spawn error (status:'error') triggers error reply to user", async () => {
     await role.onInboundResult(
-      makeHubResult({
-        trace_id: crypto.randomUUID(),
-        source: "unknown",
-        content: "ghost"
-        // no payload.chatter envelope, so this isn't a turn
-      })
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
     );
-    expect(sent.length).toBe(beforeCount);
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    const errorResponse: HubResult = {
+      trace_id: spawn.trace_id,
+      thread_id: "n/a",
+      source: spawn.target,
+      status: "error",
+      content: "credential_not_found",
+      attachments: [],
+      timestamp: new Date().toISOString()
+    };
+    await role.onInboundResult(errorResponse);
+    const errReply = sent.find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && /spawn failed/.test(m.payload.content)
+    );
+    expect(errReply).toBeDefined();
   });
 });
 
 describe("ChatterRole — onDeactivate", () => {
-  it("clears the ctx so subsequent inbound is a no-op", async () => {
+  it("clears ctx so subsequent inbound is a no-op", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-")));
     const { ctx, sent } = makeCtx();
     const role = new ChatterRole("chatter-tenant-a", makeConfig(root));
     await role.onActivate(ctx);
     await role.onDeactivate();
     await role.onInboundResult(
-      makeHubResult({ content: "x", payload: { chatter: { mode: "session" } } })
+      makeTurnResult("x", { payload: { chatter: { mode: "session" } } })
     );
     expect(sent.length).toBe(0);
   });

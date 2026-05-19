@@ -190,6 +190,20 @@ export class RoleRunner {
   }
 
   private findRoleByInboundTrace(result: HubResult): BaseRole | undefined {
+    // First pass: ask each role via the opt-in claimsTrace contract. This is
+    // the generic mechanism roles use when their outbound expects a response
+    // whose result.thread_id does not match the role's own thread_id (e.g.
+    // chatter's intent:"spawn" returns the NEW agent thread_id).
+    for (const candidate of this.roles.values()) {
+      if (typeof candidate.claimsTrace === "function" && candidate.claimsTrace(result.trace_id)) {
+        return candidate;
+      }
+    }
+
+    // Back-compat: agent-dispatcher kept its pre-claimsTrace introspection
+    // path so existing roles continue to receive infer-mode and task-row
+    // traces. New roles SHOULD implement claimsTrace instead of relying on
+    // this branch.
     for (const candidate of this.roles.values()) {
       if (candidate.roleType !== "agent-dispatcher") {
         continue;
