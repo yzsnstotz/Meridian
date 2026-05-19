@@ -327,6 +327,81 @@ test("DEFAULTS: undefined codexLoginCommand/Args fall back to ['codex','login'] 
   assert.deepEqual(opts.codexLoginArgs, ["login"]);
 });
 
+test("RETRY: URL-capture timeout triggers respawn up to urlCaptureRetries+1 attempts", async () => {
+  // codex CLI is observably flaky on stdio-piped login: occasionally produces
+  // zero bytes for many seconds. The job must kill+respawn instead of failing
+  // on the first window expiry. With urlCaptureRetries=2 the job should try
+  // codex 3 times before giving up.
+  const prevNoUrl = process.env.FAKE_CODEX_NO_URL;
+  const prevDelay = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_NO_URL = "1";
+  process.env.FAKE_CODEX_DELAY_MS = "10000"; // keep child alive past the window
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-retry-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "x",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 30_000,
+      urlCaptureWindowMs: 200,
+      urlCaptureRetries: 2
+    });
+    await job.start();
+    for (let i = 0; i < 100; i++) {
+      if (job.status === "failed") break;
+      await wait(50);
+    }
+    assert.equal(job.status, "failed");
+    assert.equal(job.error_code, "login_url_not_captured");
+    assert.equal(job.attemptCount, 3, `expected 3 attempts, got ${job.attemptCount}`);
+    assert.ok(
+      job.error_message && /3 codex attempts/.test(job.error_message),
+      `error_message should cite the attempt count, got: ${job.error_message}`
+    );
+  } finally {
+    if (prevNoUrl === undefined) delete process.env.FAKE_CODEX_NO_URL;
+    else process.env.FAKE_CODEX_NO_URL = prevNoUrl;
+    if (prevDelay === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prevDelay;
+  }
+});
+
+test("RETRY: urlCaptureRetries=0 preserves single-attempt behavior for tests/callers that want it", async () => {
+  const prevNoUrl = process.env.FAKE_CODEX_NO_URL;
+  const prevDelay = process.env.FAKE_CODEX_DELAY_MS;
+  process.env.FAKE_CODEX_NO_URL = "1";
+  process.env.FAKE_CODEX_DELAY_MS = "10000";
+  try {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-noretry-"));
+    const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+    const job = new OAuthLoginJob({
+      credentialStore: store,
+      owner_caller_id: "c1",
+      credential_label: "x",
+      codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+      codexLoginArgs: [],
+      timeoutMs: 30_000,
+      urlCaptureWindowMs: 200,
+      urlCaptureRetries: 0
+    });
+    await job.start();
+    for (let i = 0; i < 50; i++) {
+      if (job.status === "failed") break;
+      await wait(50);
+    }
+    assert.equal(job.status, "failed");
+    assert.equal(job.attemptCount, 1);
+  } finally {
+    if (prevNoUrl === undefined) delete process.env.FAKE_CODEX_NO_URL;
+    else process.env.FAKE_CODEX_NO_URL = prevNoUrl;
+    if (prevDelay === undefined) delete process.env.FAKE_CODEX_DELAY_MS;
+    else process.env.FAKE_CODEX_DELAY_MS = prevDelay;
+  }
+});
+
 test("URL FRAGMENT: URL split across two stderr data events is still extracted", async () => {
   // Reproduces the prod symptom where a `data` chunk boundary fell inside
   // the URL string. The previous per-line splitter never saw a complete

@@ -27,6 +27,15 @@ export interface OAuthLoginJobOptions {
    * on some Linux kernel/fs combos). Default 500ms.
    */
   pollIntervalMs?: number;
+  /**
+   * How many times to kill+respawn `codex login` if it produces no URL
+   * within `urlCaptureWindowMs`. Codex CLI is observably flaky on this path:
+   * stdio-piped invocations sometimes hang silently with zero output for
+   * many seconds even on a healthy install. The same binary works on a
+   * subsequent attempt. Default 2 retries (so 3 total attempts) — pure
+   * client-side robustness, no codex change required.
+   */
+  urlCaptureRetries?: number;
 }
 
 export class OAuthLoginJob {
@@ -58,6 +67,12 @@ export class OAuthLoginJob {
   private stdoutBuf = "";
   private stderrBuf = "";
   private static readonly MAX_STREAM_BUF = 64 * 1024;
+  /**
+   * Number of `codex login` attempts that have been started (1-indexed once
+   * start() runs). Exposed for diagnostics; included in the failure
+   * `error_message` when all retries are exhausted.
+   */
+  public attemptCount = 0;
 
   constructor(opts: OAuthLoginJobOptions) {
     // Per-field `??` rather than `{ ...defaults, ...opts }`: an explicit
@@ -74,7 +89,8 @@ export class OAuthLoginJob {
       codexLoginArgs: opts.codexLoginArgs ?? ["login"],
       timeoutMs: opts.timeoutMs ?? 10 * 60 * 1000,
       urlCaptureWindowMs: opts.urlCaptureWindowMs ?? 30_000,
-      pollIntervalMs: opts.pollIntervalMs ?? 500
+      pollIntervalMs: opts.pollIntervalMs ?? 500,
+      urlCaptureRetries: opts.urlCaptureRetries ?? 2
     };
   }
 
@@ -91,48 +107,9 @@ export class OAuthLoginJob {
   async start(): Promise<void> {
     this.slot = this.opts.credentialStore.createOAuthSlot();
 
-    this.child = spawn(this.opts.codexLoginCommand, this.opts.codexLoginArgs, {
-      env: { ...process.env, CODEX_HOME: this.slot.codex_home },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    const tryExtractFromBuffer = (combined: string) => {
-      if (this.login_url) return;
-      const url = extractCodexLoginUrl(combined);
-      if (!url) return;
-      this.login_url = url;
-      this.expires_at = new Date(Date.now() + this.opts.timeoutMs).toISOString();
-      if (this.status === "pending") this.status = "awaiting_browser";
-    };
-
-    const feedStream = (chunk: Buffer, which: "out" | "err") => {
-      const text = chunk.toString();
-      let combined = (which === "out" ? this.stdoutBuf : this.stderrBuf) + text;
-      if (combined.length > OAuthLoginJob.MAX_STREAM_BUF) {
-        combined = combined.slice(-OAuthLoginJob.MAX_STREAM_BUF);
-      }
-      // Run extraction on the accumulated buffer so a URL split across data
-      // events (or one not yet terminated by a newline) still matches.
-      tryExtractFromBuffer(combined);
-      // Drain any complete lines into appendLog; keep the trailing partial.
-      const newlineIdx = combined.lastIndexOf("\n");
-      if (newlineIdx >= 0) {
-        const completeBlock = combined.slice(0, newlineIdx);
-        const remainder = combined.slice(newlineIdx + 1);
-        for (const line of completeBlock.split(/\r?\n/)) {
-          if (line) this.appendLog(line);
-        }
-        if (which === "out") this.stdoutBuf = remainder;
-        else this.stderrBuf = remainder;
-      } else {
-        if (which === "out") this.stdoutBuf = combined;
-        else this.stderrBuf = combined;
-      }
-    };
-
-    this.child.stdout?.on("data", (buf: Buffer) => feedStream(buf, "out"));
-    this.child.stderr?.on("data", (buf: Buffer) => feedStream(buf, "err"));
-
+    // fs.watch + pollHandle + global timeout are job-level (not per-attempt):
+    // a retry shouldn't reset the 10-minute global deadline or stop watching
+    // for auth.json. Only the codex subprocess restarts per attempt.
     this.watcher = fs.watch(this.slot.codex_home, (_event, file) => {
       if (file === "auth.json") this.tryComplete().catch(() => {});
     });
@@ -153,27 +130,75 @@ export class OAuthLoginJob {
     this.pollHandle.unref();
 
     this.timeoutHandle = setTimeout(() => this.handleTimeout(), this.opts.timeoutMs);
-    this.urlCaptureHandle = setTimeout(() => {
-      if (this.status !== "pending" || this.login_url) return;
-      // Surface the last lines of codex output in the error_message so the
-      // GUI/operator can diagnose pattern mismatch without expanding the
-      // log_excerpt details block. Truncate aggressively to stay under the
-      // status-detail render budget.
-      const recent = this.logBuffer.slice(-8).join(" | ");
-      const snippet = recent.length > 400 ? recent.slice(0, 400) + "…" : recent;
-      const secs = Math.round(this.opts.urlCaptureWindowMs / 1000);
-      const detail = snippet
-        ? `no recognizable URL printed within ${secs}s. Last codex output: ${snippet}`
-        : `no recognizable URL printed within ${secs}s. codex produced no output (check that the codex binary is on the hub process's PATH).`;
-      this.fail("login_url_not_captured", detail);
-    }, this.opts.urlCaptureWindowMs);
 
-    // ENOENT / EACCES on spawn fires `error` and (in modern Node) does NOT
-    // fire `exit`. Without this handler the job would sit on `pending` until
-    // the URL-capture window expired, masquerading the real cause ("codex
-    // not on PATH") as "URL not captured". Mark it failed immediately with
-    // the OS error so the GUI/operator gets the actual reason.
-    this.child.on("error", (err) => {
+    this.startCodexAttempt();
+  }
+
+  /**
+   * Spawn `codex login` and wire stdout/stderr/error/exit + the URL-capture
+   * window timer. Called once on start() and again on each retry. All event
+   * handlers are closure-guarded against `this.child` reassignment so a
+   * killed-for-retry subprocess can't fire `exit` and call
+   * `fail("subprocess_exit", ...)` after we already moved on.
+   */
+  private startCodexAttempt(): void {
+    if (!this.slot) return;
+    this.attemptCount += 1;
+    this.stdoutBuf = "";
+    this.stderrBuf = "";
+    if (this.attemptCount > 1) {
+      this.appendLog(`[retry ${this.attemptCount}/${this.opts.urlCaptureRetries + 1}] respawning codex login`);
+    }
+
+    const thisChild = spawn(this.opts.codexLoginCommand, this.opts.codexLoginArgs, {
+      env: { ...process.env, CODEX_HOME: this.slot.codex_home },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    this.child = thisChild;
+
+    const tryExtractFromBuffer = (combined: string) => {
+      if (this.login_url) return;
+      const url = extractCodexLoginUrl(combined);
+      if (!url) return;
+      this.login_url = url;
+      this.expires_at = new Date(Date.now() + this.opts.timeoutMs).toISOString();
+      if (this.status === "pending") this.status = "awaiting_browser";
+    };
+
+    const feedStream = (chunk: Buffer, which: "out" | "err") => {
+      // Closure guard: a killed-for-retry child may still flush a buffered
+      // chunk after we've replaced this.child with a fresh attempt. Ignore.
+      if (this.child !== thisChild) return;
+      const text = chunk.toString();
+      let combined = (which === "out" ? this.stdoutBuf : this.stderrBuf) + text;
+      if (combined.length > OAuthLoginJob.MAX_STREAM_BUF) {
+        combined = combined.slice(-OAuthLoginJob.MAX_STREAM_BUF);
+      }
+      tryExtractFromBuffer(combined);
+      const newlineIdx = combined.lastIndexOf("\n");
+      if (newlineIdx >= 0) {
+        const completeBlock = combined.slice(0, newlineIdx);
+        const remainder = combined.slice(newlineIdx + 1);
+        for (const line of completeBlock.split(/\r?\n/)) {
+          if (line) this.appendLog(line);
+        }
+        if (which === "out") this.stdoutBuf = remainder;
+        else this.stderrBuf = remainder;
+      } else {
+        if (which === "out") this.stdoutBuf = combined;
+        else this.stderrBuf = combined;
+      }
+    };
+
+    thisChild.stdout?.on("data", (buf: Buffer) => feedStream(buf, "out"));
+    thisChild.stderr?.on("data", (buf: Buffer) => feedStream(buf, "err"));
+
+    if (this.urlCaptureHandle) clearTimeout(this.urlCaptureHandle);
+    this.urlCaptureHandle = setTimeout(() => this.handleUrlCaptureExpiry(), this.opts.urlCaptureWindowMs);
+
+    thisChild.on("error", (err) => {
+      // Closure guard: stale child's spawn error after retry — ignore.
+      if (this.child !== thisChild) return;
       if (this.status !== "pending" && this.status !== "awaiting_browser") return;
       const code = (err as NodeJS.ErrnoException).code ?? "spawn_error";
       this.fail(
@@ -182,11 +207,53 @@ export class OAuthLoginJob {
       );
     });
 
-    this.child.on("exit", (code) => {
-      if (this.status === "pending" || this.status === "awaiting_browser") {
-        if (code !== 0) this.fail("subprocess_exit", `codex login exited ${code}`);
-      }
+    thisChild.on("exit", (code) => {
+      // Closure guard: if we already spawned a replacement (retry), the old
+      // child's SIGTERM-induced exit is not a real subprocess failure.
+      if (this.child !== thisChild) return;
+      if (this.status !== "pending" && this.status !== "awaiting_browser") return;
+      if (code !== 0) this.fail("subprocess_exit", `codex login exited ${code}`);
     });
+  }
+
+  /**
+   * The URL-capture window expired. If we have retries remaining, kill the
+   * current (apparently-hung) codex and spawn a fresh attempt. Codex CLI is
+   * observably flaky: stdio-piped invocations occasionally produce zero
+   * bytes for many seconds and then never emit. Same binary, same env, fine
+   * on the next try.
+   */
+  private handleUrlCaptureExpiry(): void {
+    if (this.status !== "pending" || this.login_url) return;
+    const maxAttempts = this.opts.urlCaptureRetries + 1;
+    if (this.attemptCount < maxAttempts) {
+      const stale = this.child;
+      this.child = null;
+      if (stale && stale.exitCode === null && stale.signalCode === null) {
+        try { stale.kill("SIGTERM"); } catch {}
+        setTimeout(() => {
+          if (stale.exitCode === null && stale.signalCode === null) {
+            try { stale.kill("SIGKILL"); } catch {}
+          }
+        }, 2000).unref();
+      }
+      // Spawn next attempt on next tick to let the old child's signal land.
+      setTimeout(() => {
+        if (this.status === "pending" && !this.login_url) {
+          this.startCodexAttempt();
+        }
+      }, 100);
+      return;
+    }
+    // Out of retries — surface the cumulative failure.
+    const recent = this.logBuffer.slice(-8).join(" | ");
+    const snippet = recent.length > 400 ? recent.slice(0, 400) + "…" : recent;
+    const secs = Math.round(this.opts.urlCaptureWindowMs / 1000);
+    const base = `no recognizable URL printed after ${maxAttempts} codex attempts of ${secs}s each`;
+    const detail = snippet
+      ? `${base}. Last codex output: ${snippet}`
+      : `${base}. codex produced no output (check that the codex binary is on the hub process's PATH).`;
+    this.fail("login_url_not_captured", detail);
   }
 
   async cancel(): Promise<void> {
