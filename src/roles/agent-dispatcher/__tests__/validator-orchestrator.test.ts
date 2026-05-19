@@ -201,6 +201,28 @@ describe("executeValidationCycle", () => {
     }));
   });
 
+  it("forwards validatorConfig.credential_id onto the validator spawn", async () => {
+    const harness = await createHarness({
+      validatorConfig: {
+        credential_id: "cred-validator"
+      }
+    });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-cred" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-cred",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.92,"feedback":"ok"}',
+      raw: {}
+    });
+
+    await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: "cred-validator"
+    }));
+  });
+
   it("retries validator spawn when Meridian recycles a terminal worker thread id", async () => {
     const harness = await createHarness({
       validatorConfig: {
@@ -1269,7 +1291,8 @@ async function createHarness(options: {
   const meridianApi: MeridianApiClient = {
     spawn,
     run,
-    kill
+    kill,
+    listCredentials: vi.fn().mockResolvedValue([])
   };
 
   return {

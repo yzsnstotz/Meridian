@@ -440,7 +440,8 @@ async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestrator
       spawnDir: deps.spawnDir,
       modelId: deps.validatorConfig.model_id,
       autoApprove: deps.validatorConfig.mode === "stateless_call" ? false : deps.validatorConfig.auto_approve,
-      sandboxMode: deps.validatorConfig.mode === "stateless_call" ? "read-only" : undefined
+      sandboxMode: deps.validatorConfig.mode === "stateless_call" ? "read-only" : undefined,
+      ...(deps.validatorConfig.credential_id !== undefined ? { credentialId: deps.validatorConfig.credential_id } : {})
     });
 
     // Use the active-reservation check for all modes. The broader

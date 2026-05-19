@@ -383,6 +383,7 @@ export const ValidatorConfigSchema = z.object({
   enabled: z.boolean().default(false),
   agent_type: AgentTypeSchema.default("codex"),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   mode: BridgeModeSchema.optional(),
   auto_approve: z.boolean().default(false),
   threshold_type: ValidatorThresholdTypeSchema.default("score"),
@@ -414,6 +415,7 @@ export const PmResolverConfigSchema = z.object({
   enabled: z.boolean().default(true),
   agent_type: AgentTypeSchema.default("codex"),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   mode: StatefulBridgeModeSchema.default("bridge"),
   auto_approve: z.boolean().default(false),
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional()
@@ -428,6 +430,7 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   user_reply_channels: z.array(ReplyChannelSchema).min(1).optional(),
   agent_type: AgentTypeSchema.default("claude"),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   mode: StatefulBridgeModeSchema.default("bridge"),
   kill_policy: KillPolicySchema.default("always"),
   auto_approve: z.boolean().default(false),
@@ -542,6 +545,7 @@ export const SchedulerConfigSchema = z.object({
   // ── Dispatcher agent settings (pass-through to child dispatcher) ──
   agent_type: AgentTypeSchema.default("claude"),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   mode: StatefulBridgeModeSchema.default("bridge"),
   kill_policy: KillPolicySchema.default("always"),
   auto_approve: z.boolean().default(false),

@@ -184,7 +184,8 @@ describe("launchDispatchWorker", () => {
     const meridianApi: MeridianApiClient = {
       spawn,
       run: vi.fn(),
-      kill: vi.fn()
+      kill: vi.fn(),
+      listCredentials: vi.fn().mockResolvedValue([])
     };
 
     const result = await launchDispatchWorker({
@@ -446,6 +447,41 @@ describe("launchDispatchWorker", () => {
     }));
   });
 
+  it("forwards credentialId from LaunchDispatchWorkerConfig to /api/spawn", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true
+    });
+
+    await launchDispatchWorker(
+      {
+        ...buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+        credentialId: "cred-main"
+      },
+      harness.deps
+    );
+
+    expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: "cred-main"
+    }));
+  });
+
+  it("omits credentialId from /api/spawn when not set on the launch config", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true
+    });
+
+    await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      harness.deps
+    );
+
+    const spawnArgs = harness.spawn.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(spawnArgs).toBeDefined();
+    expect(spawnArgs.credentialId).toBeUndefined();
+  });
+
   it("does not kill the colliding thread when the collision is with an in-process active handoff", async () => {
     const harness = await createHarness({
       gitRoot: true,
@@ -534,7 +570,8 @@ async function createHarness(overrides: {
   const meridianApi: MeridianApiClient = {
     spawn,
     run: vi.fn(),
-    kill
+    kill,
+    listCredentials: vi.fn().mockResolvedValue([])
   };
 
   const dispatchRunHandoff = vi.fn().mockImplementation(async () => {

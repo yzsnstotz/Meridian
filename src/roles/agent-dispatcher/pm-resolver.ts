@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { AgentDispatcherConfig } from "../../types";
+import { resolveCredentialForSpawn } from "./credential-resolution";
 import { LifecycleStore } from "./lifecycle-store";
 import {
   createMeridianApiClient,
@@ -105,6 +106,7 @@ export async function startPmResolver(
     });
   const spawnDir = resolveConfiguredDispatchRepoRoot(request.config) ?? path.dirname(request.config.dispatch_plan_path);
   const { modelId, effort } = parseModelIdWithEffort(pmConfig.model_id);
+  const pmCredentialId = resolveCredentialForSpawn("pm_resolver", request.config);
   const spawnedThreadId = await spawnPmResolverWithReservedThreadRetry({
     meridianApi,
     spawnRequest: {
@@ -113,7 +115,8 @@ export async function startPmResolver(
       spawnDir,
       modelId,
       effort,
-      autoApprove: pmConfig.auto_approve
+      autoApprove: pmConfig.auto_approve,
+      ...(pmCredentialId !== undefined ? { credentialId: pmCredentialId } : {})
     },
     dispatchPlanPath: request.config.dispatch_plan_path,
     otherDispatchPlanPaths: request.otherDispatchPlanPaths ?? [],

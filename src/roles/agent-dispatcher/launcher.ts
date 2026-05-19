@@ -26,6 +26,12 @@ export interface LaunchConfig {
   modelId?: string;
   mode: "bridge" | "pane_bridge";
   autoApprove?: boolean;
+  /**
+   * Opaque credential identifier forwarded to /api/spawn so the Hub uses a
+   * non-default credential set for this dispatcher. Resolved by the caller
+   * (e.g. SchedulerRole or AgentDispatcherRole) before reaching the launcher.
+   */
+  credentialId?: string;
   systemPrompt: string;
   dispatchRepoRoot: string;
   /** Absolute path to dispatch_plan.md (directory is used for the Hub prompt file). */
@@ -136,7 +142,8 @@ export async function launchDispatcher(
       mode: config.mode,
       spawnDir,
       modelId: config.modelId?.trim() || undefined,
-      autoApprove: config.autoApprove
+      autoApprove: config.autoApprove,
+      ...(config.credentialId !== undefined ? { credentialId: config.credentialId } : {})
     }, {
       isPersistedThreadIdReserved: (candidateThreadId) =>
         isLifecycleThreadIdReserved(config.dispatchPlanPath, candidateThreadId),

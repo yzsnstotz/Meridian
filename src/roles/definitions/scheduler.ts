@@ -146,7 +146,10 @@ export class SchedulerRole implements BaseRole {
       dispatchPlanPath: config.dispatch_plan_path,
       commandFilePath: config.command_file_path,
       dispatcherRoleId: this.threadId,
-      userReplyChannel: config.user_reply_channels[0]!
+      userReplyChannel: config.user_reply_channels[0]!,
+      // Scheduler is flat — no parent inheritance, just forward its own
+      // credential_id onto the spawned child dispatcher's launch config.
+      ...(config.credential_id !== undefined ? { credentialId: config.credential_id } : {})
     });
 
     if (!result.ok || !result.threadId.trim()) {

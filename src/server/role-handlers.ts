@@ -15,6 +15,7 @@ import {
 } from "../roles/agent-dispatcher/dispatch-paths";
 import { wrapForHub } from "../shared/caller-identity";
 import { continueDispatchWorker } from "../roles/agent-dispatcher/continue-worker";
+import { resolveCredentialForSpawn } from "../roles/agent-dispatcher/credential-resolution";
 import { resolveOtherDispatcherPlanPaths } from "../roles/agent-dispatcher/cross-plan-paths";
 import {
   LifecycleStore,
@@ -2751,9 +2752,17 @@ function buildValidatorDeps(
   meridianApi?: MeridianApiClient,
   otherDispatchPlanPaths: readonly string[] = []
 ): ValidatorOrchestratorDeps {
+  // Apply credential inheritance from the parent dispatcher config so the
+  // validator spawn carries an explicit credential_id even when the validator
+  // sub-config left it unset. The validator-orchestrator only sees
+  // `validatorConfig` and has no other route to the parent's credential.
+  const resolvedValidatorCredential = resolveCredentialForSpawn("validator", config);
+  const validatorConfigWithCredential: ValidatorConfig = resolvedValidatorCredential !== undefined
+    ? { ...validatorConfig, credential_id: resolvedValidatorCredential }
+    : validatorConfig;
   return {
     lifecycleStore,
-    validatorConfig,
+    validatorConfig: validatorConfigWithCredential,
     meridianApi: meridianApi ?? createMeridianApiClient(),
     killPolicy: config.kill_policy,
     spawnDir: resolveConfiguredDispatchRepoRoot(config) ?? path.dirname(dispatchPlanPath),

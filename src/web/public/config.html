@@ -101,6 +101,16 @@
                   <option value="pane_bridge">pane_bridge</option>
                 </select>
               </label>
+              <label class="field">
+                <span>Credential</span>
+                <select id="cfg-credential-id" name="credential_id" data-credential-select>
+                  <option value="">Use default codex login (~/.codex)</option>
+                </select>
+                <small class="field-hint muted">
+                  Overrides the credential set forwarded to /api/spawn. Leave default
+                  unless an operator-issued credential is required.
+                </small>
+              </label>
             </div>
             <div class="summary-grid">
               <label class="field">
@@ -184,6 +194,12 @@
                     <option value="binary">binary</option>
                   </select>
                 </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select id="cfg-validator-credential-id" name="validator_credential_id" data-credential-select>
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
+                </label>
               </div>
               <div class="summary-grid">
                 <label class="field">
@@ -259,6 +275,12 @@
                   <select id="cfg-pm-auto-approve">
                     <option value="false">false</option>
                     <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select id="cfg-pm-credential-id" name="pm_credential_id" data-credential-select>
+                    <option value="">Use default codex login (~/.codex)</option>
                   </select>
                 </label>
                 <label class="field field-wide">

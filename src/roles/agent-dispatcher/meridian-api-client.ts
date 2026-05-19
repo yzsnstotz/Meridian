@@ -20,6 +20,7 @@ const DEFAULT_MERIDIAN_HTTP = "http://127.0.0.1:3000";
 // margin; ECONNREFUSED still fails instantly via the underlying socket layer.
 const SPAWN_REQUEST_TIMEOUT_MS = 60_000;
 const KILL_REQUEST_TIMEOUT_MS = 10_000;
+const LIST_CREDENTIALS_TIMEOUT_MS = 10_000;
 const CALLER_HTTP_HEADERS = {
   id: "X-Meridian-Caller-Id",
   key: "X-Meridian-Caller-Key",
@@ -43,6 +44,13 @@ export interface MeridianSpawnRequest {
   autoApprove?: boolean;
   /** Optional sandbox mode. Stateless Codex validator calls use read-only. */
   sandboxMode?: "read-only" | "workspace-write";
+  /**
+   * Opaque credential identifier resolved against the multi-credential store
+   * on the Hub side. When provided, /api/spawn uses this credential set
+   * instead of the default (`~/.codex`). Omitted from the wire body when
+   * undefined so the Hub keeps its existing default behavior.
+   */
+  credentialId?: string;
 }
 
 export interface MeridianSpawnResult {
@@ -71,10 +79,39 @@ export interface MeridianKillResult {
   raw: Record<string, unknown>;
 }
 
+/**
+ * Summary record returned by Meridian Hub's `GET /api/credentials` endpoint.
+ * Mirrors the multi-credential store row visible to the requesting caller.
+ * `api_key_metadata` is populated only when `kind === "api_key"`.
+ */
+export interface MeridianCredentialSummary {
+  credential_id: string;
+  credential_label: string;
+  provider: string;
+  kind: "oauth" | "api_key";
+  owner_caller_id: string;
+  is_default: boolean;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  api_key_metadata: {
+    base_url: string;
+    model_id: string;
+    env_var: string;
+  } | null;
+}
+
 export interface MeridianApiClient {
   spawn(request: MeridianSpawnRequest): Promise<MeridianSpawnResult>;
   run(request: MeridianRunRequest): Promise<MeridianRunResult>;
   kill(threadId: string): Promise<MeridianKillResult>;
+  /**
+   * Lists credentials visible to the requesting caller. Used by the
+   * role-config GUI to populate the optional `credential_id` selector
+   * for codex spawns. Throws on auth failures (401/403) and other
+   * non-2xx responses; the GUI surfaces the error inline.
+   */
+  listCredentials(): Promise<MeridianCredentialSummary[]>;
 }
 
 export interface MeridianApiClientOptions {
@@ -178,6 +215,21 @@ export function createMeridianApiClient(options: MeridianApiClientOptions = {}):
         status: readStringField(responseBody, "status") ?? "",
         raw: responseBody
       };
+    },
+    async listCredentials() {
+      const responseBody = await getMeridianJson(options, "/api/credentials", {
+        timeoutMs: LIST_CREDENTIALS_TIMEOUT_MS,
+        operation: "listCredentials"
+      });
+
+      const raw = responseBody.credentials;
+      if (!Array.isArray(raw)) {
+        throw new MeridianApiError(
+          "listCredentials failed: response missing credentials[] array"
+        );
+      }
+
+      return raw.map((entry, index) => parseCredentialSummary(entry, index));
     }
   };
 }
@@ -218,6 +270,9 @@ function buildSpawnRequestBody(request: MeridianSpawnRequest): Record<string, un
   if (request.sandboxMode?.trim()) {
     body.sandbox_mode = request.sandboxMode.trim();
   }
+  if (request.credentialId?.trim()) {
+    body.credential_id = request.credentialId.trim();
+  }
 
   return body;
 }
@@ -225,6 +280,11 @@ function buildSpawnRequestBody(request: MeridianSpawnRequest): Record<string, un
 interface PostOptions {
   timeoutMs: number;
   operation: "spawn" | "run" | "kill";
+}
+
+interface GetOptions {
+  timeoutMs: number;
+  operation: "listCredentials";
 }
 
 async function postMeridianJson(
@@ -377,6 +437,159 @@ async function postMeridianJsonNative(
   }
 
   return parsedBody;
+}
+
+async function getMeridianJson(
+  options: MeridianApiClientOptions,
+  pathname: string,
+  getOptions: GetOptions
+): Promise<Record<string, unknown>> {
+  const baseUrl = resolveMeridianHttpBase(options.baseUrl);
+  const requestUrl = new URL(pathname, baseUrl);
+
+  const headers: Record<string, string> = {
+    accept: "application/json"
+  };
+  applyCallerHeaders(headers);
+  const token = resolveMeridianApiToken(options);
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+
+  const init: RequestInit = {
+    method: "GET",
+    headers
+  };
+  if (getOptions.timeoutMs > 0) {
+    init.signal = AbortSignal.timeout(getOptions.timeoutMs);
+  }
+
+  // For GET we always go through fetch (option-provided or global). The native-http
+  // fallback used by POST exists primarily for the Hub-spawn path where a custom
+  // fetch is rarely injected; GET is only used from the role-config GUI flow which
+  // always has the global fetch available.
+  const fetchImpl = options.fetch ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(requestUrl, init);
+  } catch (error) {
+    throw new MeridianApiError(
+      `${getOptions.operation} failed: Meridian API unreachable at ${baseUrl}: ${asErrorMessage(error)}`
+    );
+  }
+
+  let parsedBody: unknown = null;
+  try {
+    const text = (await response.text()).trim();
+    parsedBody = text ? JSON.parse(text) : null;
+  } catch (error) {
+    if (response.ok) {
+      throw new MeridianApiError(
+        `${getOptions.operation} failed: invalid JSON response from Meridian: ${asErrorMessage(error)}`,
+        response.status
+      );
+    }
+    parsedBody = null;
+  }
+
+  if (!response.ok) {
+    const errorFromBody = isPlainObject(parsedBody) ? readErrorMessage(parsedBody) : null;
+    const fallback = response.statusText || `HTTP ${response.status}`;
+    if (response.status === 401 || response.status === 403) {
+      throw new MeridianApiError(
+        `${getOptions.operation} failed: authentication failed (${response.status}${
+          errorFromBody ? `: ${errorFromBody}` : ""
+        })`,
+        response.status
+      );
+    }
+    throw new MeridianApiError(
+      `${getOptions.operation} failed: ${errorFromBody ?? fallback}`,
+      response.status
+    );
+  }
+
+  if (!isPlainObject(parsedBody)) {
+    throw new MeridianApiError(
+      `${getOptions.operation} failed: unexpected response body shape from Meridian`,
+      response.status
+    );
+  }
+
+  return parsedBody;
+}
+
+function parseCredentialSummary(entry: unknown, index: number): MeridianCredentialSummary {
+  if (!isPlainObject(entry)) {
+    throw new MeridianApiError(
+      `listCredentials failed: credentials[${index}] is not an object`
+    );
+  }
+  const credential_id = readStringField(entry, "credential_id");
+  const credential_label = readStringField(entry, "credential_label");
+  const provider = readStringField(entry, "provider");
+  const kindRaw = entry.kind;
+  const owner_caller_id = readStringField(entry, "owner_caller_id");
+  const created_at = readStringField(entry, "created_at");
+
+  if (!credential_id) {
+    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing credential_id`);
+  }
+  if (!credential_label) {
+    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing credential_label`);
+  }
+  if (!provider) {
+    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing provider`);
+  }
+  if (kindRaw !== "oauth" && kindRaw !== "api_key") {
+    throw new MeridianApiError(
+      `listCredentials failed: credentials[${index}] has invalid kind '${String(kindRaw)}'`
+    );
+  }
+  if (!owner_caller_id) {
+    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing owner_caller_id`);
+  }
+  if (!created_at) {
+    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing created_at`);
+  }
+
+  const is_default = entry.is_default === true;
+  const last_used_at = typeof entry.last_used_at === "string" && entry.last_used_at.trim().length > 0
+    ? entry.last_used_at
+    : null;
+  const revoked_at = typeof entry.revoked_at === "string" && entry.revoked_at.trim().length > 0
+    ? entry.revoked_at
+    : null;
+
+  let api_key_metadata: MeridianCredentialSummary["api_key_metadata"] = null;
+  if (isPlainObject(entry.api_key_metadata)) {
+    const base_url = readStringField(entry.api_key_metadata, "base_url");
+    const model_id = readStringField(entry.api_key_metadata, "model_id");
+    const env_var = readStringField(entry.api_key_metadata, "env_var");
+    if (!base_url || !model_id || !env_var) {
+      throw new MeridianApiError(
+        `listCredentials failed: credentials[${index}] api_key_metadata missing required fields`
+      );
+    }
+    api_key_metadata = { base_url, model_id, env_var };
+  } else if (entry.api_key_metadata !== null && entry.api_key_metadata !== undefined) {
+    throw new MeridianApiError(
+      `listCredentials failed: credentials[${index}] api_key_metadata must be object or null`
+    );
+  }
+
+  return {
+    credential_id,
+    credential_label,
+    provider,
+    kind: kindRaw,
+    owner_caller_id,
+    is_default,
+    created_at,
+    last_used_at,
+    revoked_at,
+    api_key_metadata
+  };
 }
 
 function applyCallerHeaders(headers: Record<string, string>): void {

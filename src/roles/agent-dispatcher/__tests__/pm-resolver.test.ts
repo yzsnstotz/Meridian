@@ -95,6 +95,54 @@ describe("buildPmResolverPrompt", () => {
     expect(prompt).toContain("worker_id: <worker_id>");
   });
 
+  it("forwards pm_resolver.credential_id onto the PM resolver spawn", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-cred-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    await fs.writeFile(dispatchPlanPath, [
+      "| Status | Batch | Worker | Task | Model | Depends On |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ⛔ BLOCKED | 1 | BATCH-1-GATE | Verify gates | CODEX | — |"
+    ].join("\n"), "utf8");
+
+    const spawn = vi.fn(async () => ({ threadId: "pm-thread-cred" }));
+    const run = vi.fn(async () => ({
+      threadId: "pm-thread-cred",
+      status: "success" as const,
+      runState: "completed" as const,
+      content: "ok",
+      raw: {}
+    }));
+    const kill = vi.fn(async () => ({ threadId: "pm-thread-cred", status: "killed", raw: {} }));
+    const meridianApi: MeridianApiClient = { spawn, run, kill, listCredentials: vi.fn().mockResolvedValue([]) };
+
+    try {
+      await startPmResolver({
+        dispatcherId: "agent-dispatcher-pm",
+        config: {
+          ...config,
+          dispatch_plan_path: dispatchPlanPath,
+          pm_resolver: {
+            ...config.pm_resolver,
+            credential_id: "cred-pm"
+          }
+        },
+        issue: {
+          status: "manual_intervention_required",
+          workerId: "BATCH-1-GATE",
+          source: "watchdog",
+          message: "needs PM"
+        }
+      }, { meridianApi });
+
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+        credentialId: "cred-pm"
+      }));
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("retains the PM thread on a transport-class run rejection so a human can take over", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-stall-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -112,7 +160,8 @@ describe("buildPmResolverPrompt", () => {
       run: async () => {
         throw new Error("run failed: Request timed out — the hub may be overloaded");
       },
-      kill
+      kill,
+      listCredentials: vi.fn().mockResolvedValue([])
     };
 
     try {
@@ -215,7 +264,7 @@ describe("buildPmResolverPrompt", () => {
       }
     }));
     const kill = vi.fn(async () => ({ threadId: "pm-thread-fresh", status: "killed", raw: {} }));
-    const meridianApi: MeridianApiClient = { spawn, run, kill };
+    const meridianApi: MeridianApiClient = { spawn, run, kill, listCredentials: vi.fn().mockResolvedValue([]) };
 
     try {
       const result = await startPmResolver({
@@ -289,7 +338,8 @@ describe("buildPmResolverPrompt", () => {
           timestamp: "2026-05-03T00:00:00.000Z"
         }
       }),
-      kill
+      kill,
+      listCredentials: async () => []
     };
 
     try {
