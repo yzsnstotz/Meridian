@@ -11,6 +11,7 @@ import { config } from "../config";
 import { IpcSender, requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
 import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { callerEnvelopeFromHttpHeaders, type WireAuth } from "../shared/caller-wire";
+import type { HubRouter } from "../hub/router";
 import { createLogger } from "../logger";
 import { collectLogInventory } from "../log-retention";
 import { cleanupStagedAttachments, stageInlineAttachments } from "../shared/attachment-transform";
@@ -243,6 +244,14 @@ export interface WebInterfaceServerOptions {
   providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
   logger?: WebInterfaceLogger;
+  /**
+   * Test seam: when supplied, the four hub-sender slots default to in-process
+   * `router.route()` calls (instead of opening real IPC sockets to a HubServer).
+   * Explicit `requestHub*` overrides still win. Intended exclusively for E2E
+   * tests that boot a real HubRouter alongside the web server in-process;
+   * production goes through the IPC socket as before.
+   */
+  routerOverride?: HubRouter;
 }
 
 interface ProviderModelCatalogLookup {
@@ -535,11 +544,40 @@ export class WebInterfaceServer {
     this.tlsCertPath = options.tlsCertPath ?? config.TLS_CERT_PATH;
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
     this.staticDir = options.staticDir ?? defaultStaticDir;
-    this.requestHub = options.requestHub ?? requestHubMessage;
-    this.requestHubRun = options.requestHubRun ?? requestHubRunMessage;
-    this.requestHubAsCaller = options.requestHubAsCaller ?? ((message, auth, requestOptions) =>
-      this.requestHubWithCallerIdentity(message, auth, requestOptions));
-    this.requestAdminHub = options.requestAdminHub ?? this.buildAdminSender();
+    // Test seam: if a routerOverride is supplied, default the four hub-sender
+    // slots to in-process `router.route()` calls so tests can exercise the
+    // real HTTP → router pipeline without spinning up a HubServer + IPC.
+    // Explicit per-slot overrides still win.
+    const router = options.routerOverride;
+    this.requestHub = options.requestHub ?? (router ? (m) => router.route(m) : requestHubMessage);
+    this.requestHubRun = options.requestHubRun ?? (router ? (m) => router.route(m) : requestHubRunMessage);
+    this.requestHubAsCaller = options.requestHubAsCaller ?? (
+      router
+        ? (message, auth) => {
+            // Inject the wire caller into message.caller so the router's
+            // handlers see the authenticated identity even though we are
+            // skipping the IPC/registry auth round-trip in this test seam.
+            const authority = auth.caller_id === "meridian-admin" ? "admin" : "write";
+            const enriched = {
+              ...message,
+              caller: { caller_id: auth.caller_id, caller_label: auth.caller_id, caller_authority: authority }
+            } as HubMessage;
+            return router.route(enriched);
+          }
+        : ((message, authParam, requestOptions) =>
+            this.requestHubWithCallerIdentity(message, authParam, requestOptions))
+    );
+    this.requestAdminHub = options.requestAdminHub ?? (
+      router
+        ? (message) => {
+            const enriched = {
+              ...message,
+              caller: { caller_id: "meridian-admin", caller_label: "Meridian Admin", caller_authority: "admin" as const }
+            } as HubMessage;
+            return router.route(enriched);
+          }
+        : this.buildAdminSender()
+    );
     this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
