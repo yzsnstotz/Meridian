@@ -4,7 +4,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { OAuthLoginJob } from "./oauth-login-job";
+import { OAuthLoginJob, type OAuthLoginStatus } from "./oauth-login-job";
 import { CredentialStore } from "./credential-store";
 
 test("OAuthLoginJob: happy path → awaiting_browser → completed", async () => {
@@ -31,7 +31,7 @@ test("OAuthLoginJob: happy path → awaiting_browser → completed", async () =>
 
   // poll until completion (fake writes auth.json after 200ms default)
   for (let i = 0; i < 200; i++) {
-    if (job.status === "completed") break;
+    if ((job.status as OAuthLoginStatus) === "completed") break;
     await wait(50);
   }
   assert.equal(job.status, "completed");

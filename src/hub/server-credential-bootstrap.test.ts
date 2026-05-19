@@ -155,7 +155,7 @@ test("Credential rehydrate round-trip: createApiKey → persist via onChange →
         const current = loadPersistedHubState(statePath, new Date().toISOString());
         const next = buildPersistedHubState(
           new Date().toISOString(),
-          current.instances,
+          current.instances ?? [],
           current.session_bindings ?? {},
           current.push_subscriptions ?? {},
           current.conversation_history ?? {},
@@ -251,7 +251,7 @@ test("Credential rehydrate: ACL still enforced after rehydration (non-owner forb
           statePath,
           buildPersistedHubState(
             new Date().toISOString(),
-            current.instances,
+            current.instances ?? [],
             current.session_bindings ?? {},
             current.push_subscriptions ?? {},
             current.conversation_history ?? {},
@@ -284,6 +284,31 @@ test("Credential rehydrate: ACL still enforced after rehydration (non-owner forb
         }),
       CredentialForbiddenError
     );
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
+test("HubServer bootstrap eagerly creates credentialsRoot directory with mode 0o700", () => {
+  // Operators rely on the presence of this dir post-restart as a "the new code
+  // actually shipped" signal. Without eager mkdir it only appears on first
+  // credential write, which silently masked a broken rebuild on 2026-05-19.
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "meridian-eager-creds-"));
+  const credentialsRoot = path.join(tmpdir, "credentials-eager");
+  assert.equal(fs.existsSync(credentialsRoot), false, "precondition: dir must not exist");
+  try {
+    const server = new HubServer({ credentialsRoot });
+    // Touch the router so the bootstrap path is fully exercised (paranoia).
+    server.getRouter();
+    assert.equal(fs.existsSync(credentialsRoot), true, "credentialsRoot must exist post-boot");
+    const st = fs.statSync(credentialsRoot);
+    assert.equal(st.isDirectory(), true, "credentialsRoot must be a directory");
+    // Permission bits check — only meaningful on POSIX. Skip the assertion on
+    // platforms where mode bits aren't honored (e.g. Windows tests).
+    if (process.platform !== "win32") {
+      const mode = st.mode & 0o777;
+      assert.equal(mode, 0o700, `credentialsRoot mode must be 0o700, got 0o${mode.toString(8)}`);
+    }
   } finally {
     fs.rmSync(tmpdir, { recursive: true, force: true });
   }

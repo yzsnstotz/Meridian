@@ -101,8 +101,8 @@ test("loading a v3 state file from disk upgrades it to v4 with empty credentials
   const loaded = loadPersistedHubState(statePath, "2026-05-19T00:00:00.000Z");
   assert.equal(loaded.version, 4);
   assert.deepEqual(loaded.credentials, []);
-  assert.equal(loaded.callers.length, 1);
-  assert.equal(loaded.callers[0].caller_id, "c1");
+  assert.equal(loaded.callers!.length, 1);
+  assert.equal(loaded.callers![0].caller_id, "c1");
 
   // Cleanup
   fs.rmSync(tmpdir, { recursive: true, force: true });
