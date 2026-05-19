@@ -545,6 +545,7 @@ export const SchedulerConfigSchema = z.object({
   // ── Dispatcher agent settings (pass-through to child dispatcher) ──
   agent_type: AgentTypeSchema.default("claude"),
   model_id: z.string().min(1).optional(),
+  credential_id: z.string().min(1).optional(),
   mode: StatefulBridgeModeSchema.default("bridge"),
   kill_policy: KillPolicySchema.default("always"),
   auto_approve: z.boolean().default(false),
