@@ -1767,6 +1767,85 @@ describe("ReconciliationWatchdog", () => {
     await watchdog.sweep();
     expect(killThread).toHaveBeenCalledTimes(1);
   });
+
+  it("backs off terminal-kill retries when the hub returns an IPC transport error", async () => {
+    // Regression: when the hub starts returning
+    //   "kill failed: Server error: IPC request completed without response body"
+    // the missing-thread matcher correctly does NOT match (kill outcome
+    // unknown), but the watchdog previously fell through to a per-tick retry.
+    // On 2026-05-19 against agent-dispatcher-98b73906, the result was 315k+
+    // "terminal worker cleanup kill failed" entries in 24h, which EPIPE'd
+    // the hub's pino transport, dropped A2A response bodies, and stalled
+    // /api/system-monitor and /api/continue-dispatcher. The cooldown bounds
+    // retries to one per 60s per thread.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness("watchdog-terminal-cleanup-transport-stall-");
+    const outputPath = await harness.writeOutput("dev_history/W-01_report.md");
+    const dispatchPlanPath = path.join(harness.directory, "dispatch_plan.md");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "running",
+          expected_outputs: [outputPath],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient((message) =>
+      buildStatusResult(message.thread_id, "completed")
+    );
+
+    vi.spyOn(reconciliationFs, "existsSync").mockReturnValue(true);
+    vi.spyOn(reconciliationFs, "statSync").mockReturnValue({
+      size: 100,
+      mtimeMs: Date.parse(FIXED_NOW)
+    } as ReturnType<typeof reconciliationFs.statSync>);
+
+    const killThread = vi.fn(async () => {
+      throw new Error(
+        "kill failed: Server error: IPC request completed without response body"
+      );
+    });
+
+    let nowMs = Date.parse(FIXED_NOW);
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [dispatchPlanPath],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      resolveKillPolicyForDispatchPlan: async () => "always",
+      killThread,
+      now: () => nowMs
+    });
+
+    // First sweep: kill attempted once, transport error caught, cooldown set.
+    await watchdog.sweep();
+    expect(killThread).toHaveBeenCalledTimes(1);
+
+    // Multiple sweeps within the cooldown must NOT re-attempt the kill.
+    for (let tick = 0; tick < 50; tick++) {
+      nowMs += 1_000; // 50 seconds total — still under the 60s window
+      await watchdog.sweep();
+    }
+    expect(killThread).toHaveBeenCalledTimes(1);
+
+    // After the cooldown window elapses, exactly one more attempt fires.
+    nowMs += 15_000; // total elapsed > 60s
+    await watchdog.sweep();
+    expect(killThread).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
