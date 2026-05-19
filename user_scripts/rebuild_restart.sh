@@ -113,7 +113,8 @@ process_cwd() {
   if ! command -v lsof >/dev/null 2>&1; then
     return 0
   fi
-  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+  # timeout 5 guards against lsof blocking on a stuck mount.
+  timeout 5 lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
 }
 
 repo_owned_pids() {
@@ -196,6 +197,19 @@ ensure_meridian_hub_socket() {
     return 0
   fi
 
+  # When the outer chain (Meridian/user_scripts/rebuild_restart.sh) already
+  # restarted Meridian, a missing hub socket here is a real failure — not a
+  # recoverable condition. Recursively invoking ./user_scripts/restart.sh
+  # --keep-agents from this point is the named hang suspect in
+  # maintenance-hub-restart-pm2-and-socket-race.md's open follow-up: pm2 reload
+  # races against the running hub, /tmp/hub-core.sock cleanup gets skipped under
+  # keep-agents mode, and the loop never converges. Fail fast instead so the
+  # operator sees the real cause.
+  if [[ -n "${MERIDIAN_HUB_ALREADY_RESTARTED:-}" ]]; then
+    echo "Meridian Hub socket missing at ${HUB_SOCKET_PATH} after outer chain already restarted Meridian; refusing recursive restart (set MERIDIAN_HUB_ALREADY_RESTARTED= to override)." >&2
+    return 1
+  fi
+
   local restart_script="$ROOT_DIR/_meridian_hub/user_scripts/restart.sh"
   if [[ ! -x "$restart_script" ]]; then
     echo "Meridian Hub socket is missing or unreachable at ${HUB_SOCKET_PATH}, and restart script was not found: ${restart_script}" >&2
@@ -203,9 +217,12 @@ ensure_meridian_hub_socket() {
   fi
 
   echo "Meridian Hub socket missing or unreachable at ${HUB_SOCKET_PATH}; restarting Meridian runtime with --keep-agents..."
+  # timeout 180 caps the recursive restart so a stuck pm2 reload cannot hang
+  # the parent maintenance-hub action beyond its budget. Picked to comfortably
+  # cover Meridian/restart.sh's own 30s wait_for_hub_socket plus pm2 reload.
   (
     cd "$ROOT_DIR/_meridian_hub"
-    HUB_SOCKET_PATH="$HUB_SOCKET_PATH" ./user_scripts/restart.sh --keep-agents
+    HUB_SOCKET_PATH="$HUB_SOCKET_PATH" timeout 180 ./user_scripts/restart.sh --keep-agents
   )
 
   for _ in $(seq 1 30); do
