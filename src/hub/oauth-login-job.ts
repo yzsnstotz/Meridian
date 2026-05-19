@@ -150,8 +150,19 @@ export class OAuthLoginJob {
   }
 
   private cleanup(opts: { deleteDir: boolean }): void {
-    try { this.child?.kill("SIGTERM"); } catch {}
-    setTimeout(() => { try { this.child?.kill("SIGKILL"); } catch {} }, 5000).unref();
+    // Only signal the subprocess if it's still running. On the happy completion
+    // path the child has already exited cleanly; spinning up an unused SIGKILL
+    // timer (even with .unref()) adds avoidable timer churn and obscures the
+    // intent of cleanup() — kills are not free, they were defensive fallbacks
+    // for stuck children.
+    if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
+      try { this.child.kill("SIGTERM"); } catch {}
+      setTimeout(() => {
+        if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
+          try { this.child.kill("SIGKILL"); } catch {}
+        }
+      }, 5000).unref();
+    }
     try { this.watcher?.close(); } catch {}
     if (this.timeoutHandle) clearTimeout(this.timeoutHandle);
     if (this.urlCaptureHandle) clearTimeout(this.urlCaptureHandle);
