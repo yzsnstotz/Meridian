@@ -20,6 +20,48 @@
         <a class="nav-tab" href="/monitor">System Monitor<span id="nav-monitor-red-dot" class="nav-tab-leak-dot" hidden title="system monitor has a red indicator"></span></a>
         <button class="nav-tab" data-tab="schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></button>
         <button class="nav-tab" data-tab="roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></button>
+        <div class="nav-dropdown" id="create-role-menu">
+          <button
+            type="button"
+            class="nav-tab nav-dropdown-trigger"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="create-role-menu-list"
+          >
+            + Create Role
+            <span class="nav-dropdown-caret" aria-hidden="true">▾</span>
+          </button>
+          <ul
+            id="create-role-menu-list"
+            class="nav-dropdown-list"
+            role="menu"
+            hidden
+          >
+            <li role="none">
+              <button type="button" role="menuitem"
+                data-create-role="agent-dispatcher"
+                data-target-tab="dispatchers"
+                data-target-form="start-agent-dispatcher-form">
+                Agent Dispatcher
+              </button>
+            </li>
+            <li role="none">
+              <button type="button" role="menuitem"
+                data-create-role="scheduler"
+                data-target-tab="schedulers"
+                data-target-form="create-scheduler-form">
+                Scheduler
+              </button>
+            </li>
+            <li role="none">
+              <a role="menuitem"
+                data-create-role="chatter"
+                href="/chatter-create.html">
+                Chatter
+              </a>
+            </li>
+          </ul>
+        </div>
       </div>
     </nav>
 
