@@ -179,6 +179,13 @@ const AgentDispatcherConfigPatchSchema = z.object({
   command_file_path: z.string().min(1).optional(),
   agent_type: AgentTypeSchema.optional(),
   model_id: z.string().min(1).optional().nullable(),
+  // PR #244 added `credential_id` to AgentDispatcherConfigSchema but missed
+  // the PATCH schema, so the GUI's role-config Save form (app.js:2832 sends
+  // `patch.credential_id = ... || null`) failed with
+  // `Invalid config patch: Unrecognized key: "credential_id"`. Allow null to
+  // clear the override; the patch handler maps null → undefined so the Hub
+  // resumes its default credential path.
+  credential_id: z.string().min(1).optional().nullable(),
   mode: StatefulBridgeModeSchema.optional(),
   kill_policy: KillPolicySchema.optional(),
   auto_approve: z.boolean().optional(),
@@ -501,6 +508,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       if (patch.kill_policy !== undefined) config.kill_policy = patch.kill_policy;
       if (patch.auto_approve !== undefined) config.auto_approve = patch.auto_approve;
       if (patch.model_id !== undefined) config.model_id = patch.model_id ?? undefined;
+      if (patch.credential_id !== undefined) config.credential_id = patch.credential_id ?? undefined;
       if (patch.validator !== undefined) config.validator = patch.validator;
       if (patch.pm_resolver !== undefined) {
         config.pm_resolver = {
