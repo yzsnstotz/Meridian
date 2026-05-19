@@ -28,24 +28,26 @@ function buildMessage(
   };
 }
 
+const FAKE = path.resolve("tests/fixtures/fake-codex-login.sh");
+
 function makeRouter(credentialsRoot: string) {
   const store = new CredentialStore({ initialRecords: [], credentialsRoot });
   const reg = new OAuthLoginJobRegistry();
   const router = new HubRouter(new InstanceRegistry(), {
     credentialStore: store,
-    oauthLoginRegistry: reg
+    oauthLoginRegistry: reg,
+    // Server-side test seam: replaces the production "codex" command. The wire
+    // schema no longer accepts codexLoginCommand/codexLoginArgs.
+    defaultCodexLoginCommand: FAKE
   });
   return { router, store, reg };
 }
-
-const FAKE = path.resolve("tests/fixtures/fake-codex-login.sh");
 
 test("oauth_start returns job_id and registers an in-flight job", async () => {
   const { router } = makeRouter(fs.mkdtempSync(path.join(os.tmpdir(), "d4-")));
   const result = await router.route(
     buildMessage("register_credential_oauth_start", "c1", {
-      credential_label: "work",
-      codexLoginCommand: FAKE
+      credential_label: "work"
     })
   );
   assert.equal(result.status, "success");
@@ -58,8 +60,7 @@ test("oauth_poll returns awaiting_browser with login_url after subprocess prints
   const { router } = makeRouter(fs.mkdtempSync(path.join(os.tmpdir(), "d4-")));
   const start = await router.route(
     buildMessage("register_credential_oauth_start", "c1", {
-      credential_label: "work",
-      codexLoginCommand: FAKE
+      credential_label: "work"
     })
   );
   const { job_id } = JSON.parse(start.content);
@@ -79,8 +80,7 @@ test("oauth_poll rejects with credential_forbidden when caller is not job owner"
   const { router } = makeRouter(fs.mkdtempSync(path.join(os.tmpdir(), "d4-")));
   const start = await router.route(
     buildMessage("register_credential_oauth_start", "c1", {
-      credential_label: "work",
-      codexLoginCommand: FAKE
+      credential_label: "work"
     })
   );
   const { job_id } = JSON.parse(start.content);
@@ -96,8 +96,7 @@ test("oauth_poll allows admin even if not owner", async () => {
   const { router } = makeRouter(fs.mkdtempSync(path.join(os.tmpdir(), "d4-")));
   const start = await router.route(
     buildMessage("register_credential_oauth_start", "c1", {
-      credential_label: "work",
-      codexLoginCommand: FAKE
+      credential_label: "work"
     })
   );
   const { job_id } = JSON.parse(start.content);
@@ -114,8 +113,7 @@ test("oauth_cancel cancels the job for owner", async () => {
     const { router, reg } = makeRouter(fs.mkdtempSync(path.join(os.tmpdir(), "d4-")));
     const start = await router.route(
       buildMessage("register_credential_oauth_start", "c1", {
-        credential_label: "work",
-        codexLoginCommand: FAKE
+        credential_label: "work"
       })
     );
     const { job_id } = JSON.parse(start.content);
@@ -142,15 +140,13 @@ test("oauth_start returns 429-equivalent error when per-caller cap exceeded", as
     for (let i = 0; i < 3; i++) {
       await router.route(
         buildMessage("register_credential_oauth_start", "c1", {
-          credential_label: `work-${i}`,
-          codexLoginCommand: FAKE
+          credential_label: `work-${i}`
         })
       );
     }
     const fourth = await router.route(
       buildMessage("register_credential_oauth_start", "c1", {
-        credential_label: "work-4",
-        codexLoginCommand: FAKE
+        credential_label: "work-4"
       })
     );
     assert.notEqual(fourth.status, "success");

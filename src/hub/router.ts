@@ -229,6 +229,14 @@ export interface HubRouterOptions {
   serviceRegistry?: ServiceRegistry;
   credentialStore?: CredentialStore;
   oauthLoginRegistry?: OAuthLoginJobRegistry;
+  /**
+   * Server-side test seam. Overrides the codex login command spawned by
+   * register_credential_oauth_start. NEVER read from the wire payload —
+   * accepting an attacker-controlled command would be RCE.
+   */
+  defaultCodexLoginCommand?: string;
+  /** Server-side test seam paired with defaultCodexLoginCommand. */
+  defaultCodexLoginArgs?: string[];
 }
 
 const BUILT_IN_INTENT_SET = new Set<string>(BUILT_IN_INTENTS);
@@ -291,11 +299,16 @@ const RegisterCredentialApiKeyPayloadSchema = z.object({
   // owner_caller_id intentionally NOT accepted — hub injects it from the authenticated caller.
 });
 
-const OAuthLoginStartPayloadSchema = z.object({
-  credential_label: z.string().min(1).max(64),
-  codexLoginCommand: z.string().optional(),
-  codexLoginArgs: z.array(z.string()).optional()
-});
+// Wire schema: deliberately rejects codexLoginCommand / codexLoginArgs. Those
+// fields used to be accepted here as a test seam, but every authenticated
+// write-tier caller could pass an arbitrary command path and trigger RCE via
+// child_process.spawn. The override now lives on HubRouterOptions
+// (server-side construction only).
+const OAuthLoginStartPayloadSchema = z
+  .object({
+    credential_label: z.string().min(1).max(64)
+  })
+  .strict();
 
 const OAuthLoginPollPayloadSchema = z.object({ job_id: z.string().min(1) });
 const OAuthLoginCancelPayloadSchema = z.object({ job_id: z.string().min(1) });
@@ -553,6 +566,8 @@ export class HubRouter {
   private callerRegistry: CallerRegistry | null = null;
   private readonly credentialStore: CredentialStore | undefined;
   private readonly oauthLoginRegistry: OAuthLoginJobRegistry | undefined;
+  private readonly defaultCodexLoginCommand: string | undefined;
+  private readonly defaultCodexLoginArgs: string[] | undefined;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -570,6 +585,8 @@ export class HubRouter {
     this.serviceRegistry = options.serviceRegistry ?? new ServiceRegistry();
     this.credentialStore = options.credentialStore;
     this.oauthLoginRegistry = options.oauthLoginRegistry;
+    this.defaultCodexLoginCommand = options.defaultCodexLoginCommand;
+    this.defaultCodexLoginArgs = options.defaultCodexLoginArgs;
   }
 
   getCredentialStore(): CredentialStore | undefined {
@@ -2494,8 +2511,9 @@ export class HubRouter {
         credentialStore: store,
         owner_caller_id: caller.caller_id,
         credential_label: parsed.credential_label,
-        codexLoginCommand: parsed.codexLoginCommand,
-        codexLoginArgs: parsed.codexLoginArgs
+        // SECURITY: defaults come from server-side construction options, never from the wire.
+        codexLoginCommand: this.defaultCodexLoginCommand,
+        codexLoginArgs: this.defaultCodexLoginArgs
       });
       return this.buildResult(
         message,
