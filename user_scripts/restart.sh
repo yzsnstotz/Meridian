@@ -152,7 +152,9 @@ kill_by_pattern() {
 
 process_cwd() {
   local pid="$1"
-  lsof -a -d cwd -Fn -p "${pid}" 2>/dev/null | sed -n 's/^n//p' | head -n 1
+  # timeout 5 guards against lsof blocking on a stuck mount (the other named
+  # hang suspect in maintenance-hub-restart-pm2-and-socket-race.md).
+  timeout 5 lsof -a -d cwd -Fn -p "${pid}" 2>/dev/null | sed -n 's/^n//p' | head -n 1
 }
 
 runtime_pids_for_service() {

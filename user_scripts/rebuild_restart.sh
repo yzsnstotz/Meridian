@@ -32,7 +32,15 @@ log "Terminating previous-generation services and stragglers"
 log "Restarting services"
 "${ROOT_DIR}/user_scripts/restart.sh"
 
-log "Restarting meridian-roles"
-"${ROOT_DIR}/user_scripts/restart_meridian_roles.sh"
+if [[ -n "${MERIDIAN_REBUILD_SKIP_ROLES:-}" ]]; then
+  log "Skipping meridian-roles restart (MERIDIAN_REBUILD_SKIP_ROLES set)"
+else
+  log "Restarting meridian-roles"
+  # MERIDIAN_HUB_ALREADY_RESTARTED tells meridian-roles/user_scripts/rebuild_restart.sh
+  # not to recursively re-invoke this Meridian restart from ensure_meridian_hub_socket
+  # (the cascade documented as the hang suspect in
+  # maintenance-hub-restart-pm2-and-socket-race.md's open follow-up).
+  MERIDIAN_HUB_ALREADY_RESTARTED=1 "${ROOT_DIR}/user_scripts/restart_meridian_roles.sh"
+fi
 
 log "Done"
