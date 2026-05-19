@@ -108,7 +108,7 @@ describe("memory skills (session mode = read+write)", () => {
         vars: { date: "d", turn_id: "ignored" }
       });
       expect(res.ok).toBe(true);
-      expect(res.entries?.sort()).toEqual(["turn-a.md", "turn-b.md"]);
+      expect([...(res.entries ?? [])].sort()).toEqual(["turn-a.md", "turn-b.md"]);
     });
 
     it("returns empty entries when directory does not exist", async () => {
