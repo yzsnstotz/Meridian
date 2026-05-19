@@ -83,7 +83,9 @@ kill_by_pattern() {
 
 process_cwd() {
   local pid="$1"
-  lsof -a -d cwd -Fn -p "${pid}" 2>/dev/null | sed -n 's/^n//p' | head -n 1
+  # timeout 5 guards against lsof blocking on a stuck mount (the other named
+  # hang suspect in maintenance-hub-restart-pm2-and-socket-race.md).
+  timeout 5 lsof -a -d cwd -Fn -p "${pid}" 2>/dev/null | sed -n 's/^n//p' | head -n 1
 }
 
 runtime_pids_for_service() {
@@ -190,7 +192,11 @@ stop_meridian_roles() {
 }
 
 log "terminate Meridian root=${ROOT_DIR}"
-stop_meridian_roles
+if [[ -n "${MERIDIAN_TERMINATE_SKIP_ROLES:-}" ]]; then
+  log "skip meridian-roles termination (MERIDIAN_TERMINATE_SKIP_ROLES set)"
+else
+  stop_meridian_roles
+fi
 stop_pm2_apps
 kill_runtime_service "hub" "start:hub" "src/hub/index.ts" "dist/hub/index.js"
 kill_runtime_service "interface" "start:interface" "src/interface/index.ts" "dist/interface/index.js"
