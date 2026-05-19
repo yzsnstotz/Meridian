@@ -21,7 +21,7 @@ import {
 } from "../agent-dispatcher/active-tool-process";
 import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDispatchWorkerResult } from "../agent-dispatcher/continue-worker";
 import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
-import { isMissingThreadEvidence } from "../agent-dispatcher/missing-thread";
+import { isHubTransportEvidence, isMissingThreadEvidence } from "../agent-dispatcher/missing-thread";
 import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { nextCronFire } from "./cron-parser";
@@ -50,7 +50,17 @@ export interface SchedulerEngineOptions {
   stateStore: SchedulerStateStore;
   callbacks: SchedulerEngineCallbacks;
   log: Logger;
+  /** Test seam for the cleanup transport-stall cooldown gate. */
+  now?: () => number;
 }
+
+/**
+ * See watchdog.ts CLEANUP_KILL_TRANSPORT_COOLDOWN_MS — same rationale: when
+ * the Hub returns an IPC transport error on kill, the kill outcome is
+ * unknown; sleeping this long between retries keeps a single Hub-overload
+ * window from becoming a per-tick kill loop that floods the log.
+ */
+const CLEANUP_KILL_TRANSPORT_COOLDOWN_MS = 60_000;
 
 export class SchedulerEngine {
   private readonly schedulerThreadId: string;
@@ -63,6 +73,10 @@ export class SchedulerEngine {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private readonly cleanedTerminalThreadIds = new Set<string>();
+  // Per-thread cooldown for terminal-kill calls that returned a Hub IPC
+  // transport error. Mirrors the watchdog's gate — same rationale.
+  private readonly cleanupKillTransportCooldownUntilMs = new Map<string, number>();
+  private readonly now: () => number;
 
   private static readonly POLL_INTERVAL_MS = 30_000;
 
@@ -72,6 +86,7 @@ export class SchedulerEngine {
     this.stateStore = options.stateStore;
     this.callbacks = options.callbacks;
     this.log = options.log;
+    this.now = options.now ?? Date.now;
   }
 
   getConfig(): SchedulerConfig {
@@ -590,14 +605,42 @@ export class SchedulerEngine {
         continue;
       }
 
+      // Transport-stall cooldown — see watchdog.cleanupTerminalWorkerThreads
+      // for the full rationale. Suppresses retry of a kill whose outcome is
+      // unknown until the cooldown expires.
+      const cooldownUntil = this.cleanupKillTransportCooldownUntilMs.get(threadId);
+      if (cooldownUntil !== undefined && this.now() < cooldownUntil) {
+        continue;
+      }
+
       attemptedThreadIds.add(threadId);
       try {
         await this.callbacks.killDispatcher(threadId);
         this.cleanedTerminalThreadIds.add(threadId);
+        this.cleanupKillTransportCooldownUntilMs.delete(threadId);
       } catch (error) {
         const message = asError(error).message;
         if (isMissingThreadEvidence(message)) {
           this.cleanedTerminalThreadIds.add(threadId);
+          this.cleanupKillTransportCooldownUntilMs.delete(threadId);
+          continue;
+        }
+
+        if (isHubTransportEvidence(message)) {
+          const wasInCooldown = this.cleanupKillTransportCooldownUntilMs.has(threadId);
+          this.cleanupKillTransportCooldownUntilMs.set(
+            threadId,
+            this.now() + CLEANUP_KILL_TRANSPORT_COOLDOWN_MS
+          );
+          if (!wasInCooldown) {
+            this.log.info("Scheduler: terminal worker cleanup deferred — hub transport stall", {
+              schedulerThreadId: this.schedulerThreadId,
+              workerId,
+              threadId,
+              error: message,
+              cooldown_ms: CLEANUP_KILL_TRANSPORT_COOLDOWN_MS
+            });
+          }
           continue;
         }
 

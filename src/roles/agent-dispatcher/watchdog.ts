@@ -15,7 +15,7 @@ import type { Logger } from "../base-role";
 import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 import { autoResolve } from "./auto-resolver";
 import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
-import { isMissingThreadEvidence } from "./missing-thread";
+import { isHubTransportEvidence, isMissingThreadEvidence } from "./missing-thread";
 import {
   DEFAULT_RECONCILE_STALE_TIMEOUT_MS,
   queryHubThreadObservation,
@@ -59,7 +59,22 @@ export interface WatchdogDeps {
    * the run-tool's terminal cleanup uses.
    */
   killThread?: (threadId: string) => Promise<void>;
+  /**
+   * Clock seam for tests. Defaults to `Date.now`. Used to gate the per-thread
+   * cooldown that suppresses retries of terminal-kill calls that returned a
+   * Hub IPC transport error (kill outcome unknown).
+   */
+  now?: () => number;
 }
+
+/**
+ * Cooldown window between retries when a terminal-kill returned a transport-
+ * class error (Hub IPC dropped the response). Long enough that a single
+ * sustained Hub-overload window doesn't drive a kill-loop, short enough that
+ * recovery is observable. PR #203/#206 used 60s for the validator transport
+ * paths; mirror that here.
+ */
+const CLEANUP_KILL_TRANSPORT_COOLDOWN_MS = 60_000;
 
 export class ReconciliationWatchdog {
   private readonly resolveActiveDispatchPlanPaths: () => Promise<string[]>;
@@ -78,6 +93,14 @@ export class ReconciliationWatchdog {
   private running = false;
   private sweepInProgress = false;
   private readonly cleanedTerminalThreadIds = new Set<string>();
+  // Per-thread TTL cooldown for transport-class kill failures. Prevents the
+  // kill-flood that EPIPE'd the Hub's pino transport on agent-dispatcher-98b73906
+  // when the Hub started returning "Server error: IPC request completed without
+  // response body" — that string is NOT missing-thread evidence (the kill
+  // outcome is unknown), so the sweep would otherwise retry every tick.
+  private readonly cleanupKillTransportCooldownUntilMs = new Map<string, number>();
+  // Test seam — defaulting to Date.now keeps production behavior intact.
+  private readonly now: () => number;
 
   constructor(deps: WatchdogDeps) {
     this.resolveActiveDispatchPlanPaths = deps.resolveActiveDispatchPlanPaths;
@@ -89,6 +112,7 @@ export class ReconciliationWatchdog {
     this.autoResolveConfig = deps.autoResolveConfig ?? null;
     this.resolveKillPolicyForDispatchPlan = deps.resolveKillPolicyForDispatchPlan ?? null;
     this.killThread = deps.killThread ?? defaultKillThread;
+    this.now = deps.now ?? Date.now;
   }
 
   start(): void {
@@ -413,10 +437,24 @@ export class ReconciliationWatchdog {
         continue;
       }
 
+      // Transport-stall cooldown: a prior kill on this thread returned a Hub
+      // IPC transport error (kill outcome unknown). Skip silently until the
+      // window expires; the next attempt will either succeed, return
+      // missing-thread evidence (target really was killed), or refresh the
+      // cooldown. Without this, sustained Hub overload turns a single
+      // dropped response body into a per-tick kill loop that floods the log
+      // and EPIPE's the Hub's pino transport (315k entries observed on
+      // 2026-05-19).
+      const cooldownUntil = this.cleanupKillTransportCooldownUntilMs.get(threadId);
+      if (cooldownUntil !== undefined && this.now() < cooldownUntil) {
+        continue;
+      }
+
       attemptedThreadIds.add(threadId);
       try {
         await this.killThread(threadId);
         this.cleanedTerminalThreadIds.add(threadId);
+        this.cleanupKillTransportCooldownUntilMs.delete(threadId);
         this.log.info("Watchdog: terminal worker thread killed", {
           event: "watchdog_terminal_kill",
           dispatchPlanPath,
@@ -429,6 +467,24 @@ export class ReconciliationWatchdog {
         const message = asError(error).message;
         if (isMissingThreadEvidence(message)) {
           this.cleanedTerminalThreadIds.add(threadId);
+          this.cleanupKillTransportCooldownUntilMs.delete(threadId);
+          continue;
+        }
+        if (isHubTransportEvidence(message)) {
+          const wasInCooldown = this.cleanupKillTransportCooldownUntilMs.has(threadId);
+          this.cleanupKillTransportCooldownUntilMs.set(
+            threadId,
+            this.now() + CLEANUP_KILL_TRANSPORT_COOLDOWN_MS
+          );
+          if (!wasInCooldown) {
+            this.log.info("Watchdog: terminal worker cleanup deferred — hub transport stall", {
+              dispatchPlanPath,
+              worker_id: workerId,
+              thread_id: threadId,
+              error: message,
+              cooldown_ms: CLEANUP_KILL_TRANSPORT_COOLDOWN_MS
+            });
+          }
           continue;
         }
         this.log.warn("Watchdog: terminal worker cleanup kill failed", {
