@@ -51,6 +51,7 @@ import {
   CredentialForbiddenError,
   type ResolvedCredential
 } from "./credential-store";
+import { sanitizeErrorMessage } from "./error-sanitization";
 import { InstanceManager } from "./instance-manager";
 import { OAuthLoginCapExceededError, OAuthLoginJobRegistry } from "./oauth-login-registry";
 import { OutputBus } from "./output-bus";
@@ -2453,7 +2454,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2482,7 +2483,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "create_failed",
-          error_message: err instanceof Error ? err.message : "createApiKey failed"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "createApiKey failed")
         }),
         message.thread_id
       );
@@ -2527,7 +2528,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2556,7 +2557,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: code,
-          error_message: err instanceof Error ? err.message : "oauth start failed"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "oauth start failed")
         }),
         message.thread_id
       );
@@ -2588,7 +2589,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2663,7 +2664,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2774,7 +2775,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2798,7 +2799,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "update_failed",
-          error_message: err instanceof Error ? err.message : "update failed"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "update failed")
         }),
         message.thread_id
       );
@@ -2816,7 +2817,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2839,7 +2840,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "set_default_failed",
-          error_message: err instanceof Error ? err.message : "set default failed"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "set default failed")
         }),
         message.thread_id
       );
@@ -2857,7 +2858,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "invalid_payload",
-          error_message: err instanceof Error ? err.message : "invalid payload"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "invalid payload")
         }),
         message.thread_id
       );
@@ -2880,7 +2881,7 @@ export class HubRouter {
         this.resolveResultSource(message),
         JSON.stringify({
           error_code: "revoke_failed",
-          error_message: err instanceof Error ? err.message : "revoke failed"
+          error_message: sanitizeErrorMessage(err instanceof Error ? err.message : "revoke failed")
         }),
         message.thread_id
       );

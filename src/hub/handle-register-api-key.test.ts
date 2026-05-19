@@ -87,3 +87,43 @@ test("register_credential_api_key rejects invalid base_url", async () => {
   }));
   assert.notEqual(result.status, "success");
 });
+
+test("register_credential_api_key: error_message must not leak credentials directory paths", async () => {
+  // Force a store-level failure by pointing credentialsRoot at an unwriteable
+  // path; the resulting err.message will be an fs error containing the path,
+  // which the handler must sanitize before sending it back to the caller.
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "d3-leak-"));
+  // Use a credentialsRoot whose path contains the literal "credentials" segment
+  // (mimicking the real default layout) and make it a regular file. createApiKey
+  // will then mkdirSync inside it, raising an ENOTDIR / EEXIST whose err.message
+  // includes the full path.
+  const credentialsRoot = path.join(tmpdir, "credentials");
+  fs.writeFileSync(credentialsRoot, "x");
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot });
+  const router = new HubRouter(new InstanceRegistry(), { credentialStore: store });
+  const result = await router.route(buildMessage("c-leak", {
+    credential_label: "k",
+    base_url: "https://x/v1",
+    model_id: "m",
+    env_var: "K",
+    key_value: "v"
+  }));
+  assert.notEqual(result.status, "success");
+  const body = JSON.parse(result.content);
+  assert.equal(body.error_code, "create_failed");
+  // The fs error message will include something like
+  // /var/folders/.../d3-leak-XXXXX/credentials/<uuid> — the sanitizer must
+  // strip everything from the `credentials/` segment onwards, including the
+  // uuid and the user-identifying tmpdir prefix.
+  const errMsg = String(body.error_message);
+  assert.equal(
+    errMsg.includes(tmpdir),
+    false,
+    `error_message leaked user-identifying tmpdir prefix. got: ${errMsg}`
+  );
+  assert.equal(
+    errMsg.includes("<credentials-dir>"),
+    true,
+    `error_message should include the sanitized placeholder. got: ${errMsg}`
+  );
+});
