@@ -538,6 +538,31 @@ test("hub layout restores the meridian-roles entrance without probing role detai
 
 // N-05: agent card last-caller line + caller-admin panel + modals
 
+test("renderCredentialBadge derives provider from instance, not hardcoded 'codex'", async () => {
+  // Regression: 2026-05-19 a claude_01 sessioned-agent card displayed
+  // `codex · default (~/.codex)` because renderCredentialBadge defaulted
+  // provider to "codex" and the path hint was a hardcoded literal. Every
+  // claude_NN / gemini / cursor card was mislabeled.
+  const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
+
+  // Helper that maps each provider to its ambient credential path.
+  assert.match(indexHtml, /defaultCredentialHintForProvider/);
+  assert.match(indexHtml, /case "claude":\s*return "~\/.claude"/);
+  assert.match(indexHtml, /case "codex":\s*return "~\/.codex"/);
+
+  // Provider derivation falls back through agent_type / actual_agent / type
+  // before defaulting to codex — so claude / gemini / cursor instances are
+  // labeled correctly even if `credential_provider` is unset.
+  assert.match(indexHtml, /inst\.credential_provider/);
+  assert.match(indexHtml, /inst\.agent_type/);
+
+  // The string literal "default (~/.codex)" must NOT appear in the badge
+  // render path — it must come from the provider hint instead.
+  const badgeBlock = indexHtml.split("function renderCredentialBadge")[1] || "";
+  const badgeBlockTrimmed = badgeBlock.split("function renderInstanceCard")[0] || "";
+  assert.doesNotMatch(badgeBlockTrimmed, /"default \(~\/.codex\)"/, "renderCredentialBadge must not hardcode the codex path");
+});
+
 test("hub layout renders last-caller line on every agent card", async () => {
   const indexHtml = await fs.promises.readFile(path.join(publicDir, "index.html"), "utf8");
 

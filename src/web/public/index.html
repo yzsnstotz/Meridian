@@ -2139,17 +2139,49 @@
           });
       }
 
+      function defaultCredentialHintForProvider(provider) {
+        // Each agent has its own ambient credential store. The badge must
+        // reflect the actual provider of the spawned thread, not hardcode
+        // codex — claude_NN threads were rendered as "codex · default
+        // (~/.codex)" because the v1 implementation defaulted provider to
+        // "codex" and the path hint was a string literal.
+        switch (provider) {
+          case "claude":  return "~/.claude";
+          case "codex":   return "~/.codex";
+          case "gemini":  return "~/.gemini";
+          case "cursor":  return "~/.cursor";
+          default:        return "ambient";
+        }
+      }
+
       function renderCredentialBadge(inst) {
         var credentialId = inst && inst.credential_id ? String(inst.credential_id) : "";
         var credentialLabel = inst && inst.credential_label ? String(inst.credential_label) : "";
-        // Provider is "codex" for v1 — pull from instance when available.
-        var provider = (inst && inst.credential_provider) ? String(inst.credential_provider) : "codex";
+        // Provider must reflect the actual agent type of THIS instance.
+        // `credential_provider` is the explicit override the Hub sets when
+        // a credential carries a non-default provider tag; fall back to
+        // the instance's own agent_type / actual_agent / type field rather
+        // than hardcoding "codex" (which mislabeled every claude_NN card
+        // as "codex · default (~/.codex)").
+        var provider = "";
+        if (inst && inst.credential_provider) {
+          provider = String(inst.credential_provider);
+        } else if (inst && inst.agent_type) {
+          provider = String(inst.agent_type);
+        } else if (inst && inst.actual_agent) {
+          provider = String(inst.actual_agent);
+        } else if (inst && inst.type) {
+          provider = String(inst.type);
+        } else {
+          provider = "codex";
+        }
         var labelText;
         var cls = "card-credential";
         var title;
         if (!credentialId) {
-          labelText = provider + " · default (~/.codex)";
-          title = "Spawned with the default Codex login.";
+          var hint = defaultCredentialHintForProvider(provider);
+          labelText = provider + " · default (" + hint + ")";
+          title = "Spawned with the default " + provider + " login.";
         } else if (credentialLabel) {
           labelText = provider + " · " + credentialLabel;
           title = "Credential ID: " + credentialId;
