@@ -4,7 +4,10 @@ import { z } from "zod";
 
 export const ChatterInFlightTraceSchema = z.object({
   trace_id: z.string().min(1),
-  purpose: z.enum(["agent_turn", "job_dispatch"]),
+  // "spawn" — outbound intent:"spawn" awaiting the new agent thread_id.
+  // "agent_turn" — outbound intent:"run" to the bound agent thread.
+  // "job_dispatch" — outbound intent:"run" to agent-dispatcher for a coding job.
+  purpose: z.enum(["spawn", "agent_turn", "job_dispatch"]),
   agent_session_id: z.string().min(1).nullable().default(null),
   registered_at: z.string().datetime()
 });

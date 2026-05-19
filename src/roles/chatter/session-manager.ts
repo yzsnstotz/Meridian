@@ -29,12 +29,39 @@ export class SessionManager {
     this.needsNew = false;
   }
 
+  /**
+   * Legacy: generate a local UUID. Use bindAgentSession(threadId) instead
+   * when the session_id is a real meridian-hub thread_id returned by the
+   * intent:"spawn" handshake. Retained for tests / legacy code paths.
+   */
   start(): string {
     if (this.agentSessionId !== null) return this.agentSessionId;
     this.agentSessionId = randomUUID();
     this.needsNew = false;
     this.persist();
     return this.agentSessionId;
+  }
+
+  /**
+   * Bind to a concrete agent thread_id returned by meridian-hub's spawn
+   * handshake. This replaces any prior agent_session_id and persists.
+   */
+  bindAgentSession(threadId: string): void {
+    this.agentSessionId = threadId;
+    this.needsNew = false;
+    this.persist();
+  }
+
+  /**
+   * Clear the bound agent session without minting a new local UUID. Used
+   * during /new after the old agent thread has been killed and before a
+   * fresh spawn handshake fires on the next turn.
+   */
+  unbindAgentSession(): void {
+    this.agentSessionId = null;
+    this.inFlight.clear();
+    this.needsNew = true;
+    this.persist();
   }
 
   newSession(): { previousTraces: ChatterInFlightTrace[]; newSessionId: string } {
@@ -44,6 +71,17 @@ export class SessionManager {
     this.needsNew = false;
     this.persist();
     return { previousTraces, newSessionId: this.agentSessionId };
+  }
+
+  /**
+   * Returns true when this session manager issued an outbound message
+   * whose response carries the given trace_id. Used by ChatterRole's
+   * BaseRole.claimsTrace implementation so RoleRunner.dispatch can route
+   * inbound HubResults by trace_id when result.thread_id is the agent's
+   * (not the role's own).
+   */
+  claimsTrace(traceId: string): boolean {
+    return this.inFlight.has(traceId);
   }
 
   interrupt(): ChatterInFlightTrace[] {
