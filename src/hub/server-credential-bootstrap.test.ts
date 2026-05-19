@@ -82,6 +82,40 @@ test("HubRouter wires CredentialStore.onChange to persistStateSafely (mutations 
   }
 });
 
+test("HubServer bootstrap honors MERIDIAN_CREDENTIALS_ROOT override (via credentialsRoot option)", async () => {
+  // The credentialsRoot option mirrors what MERIDIAN_CREDENTIALS_ROOT would
+  // do at module-load time. Singleton config caching makes a direct env-var
+  // test brittle; the option is the testable surface and is itself wired to
+  // config.MERIDIAN_CREDENTIALS_ROOT in the no-option default path.
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "meridian-creds-root-"));
+  const customRoot = path.join(tmpdir, "custom-creds");
+  fs.mkdirSync(customRoot, { recursive: true });
+  try {
+    const server = new HubServer({ credentialsRoot: customRoot });
+    const router = server.getRouter();
+    const store = router.getCredentialStore();
+    assert.ok(store, "CredentialStore should be wired");
+    // Create a credential and confirm its codex_home_path lives under customRoot.
+    const id = await store!.createApiKey({
+      credential_label: "k",
+      owner_caller_id: "alice",
+      base_url: "https://x/v1",
+      model_id: "m",
+      env_var: "K",
+      key_value: "v"
+    });
+    const rec = store!.get(id);
+    assert.ok(rec, "credential should be registered");
+    assert.equal(
+      rec!.codex_home_path.startsWith(customRoot),
+      true,
+      `codex_home_path must live under custom credentialsRoot. got: ${rec!.codex_home_path}`
+    );
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
 test("HubServer bootstrap rehydrates credentials from persisted state", () => {
   // Seed a temporary state file with a credential record, point the bootstrap at it
   // via MERIDIAN_STATE_PATH, and confirm the CredentialStore loads it.

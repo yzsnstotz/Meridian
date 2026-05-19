@@ -100,6 +100,9 @@ const envSchema = z
     LOG_SESSION_FILE_KEEP_BYTES: z.coerce.number().int().positive().default(1024 * 1024),
     LOG_SESSION_FILE_MAX_AGE_HOURS: z.coerce.number().int().positive().default(168),
     MERIDIAN_STATE_PATH: meridianStatePathWithDefault(),
+    // Optional override for the credentials storage directory. When unset,
+    // HubServer derives the directory from dirname(MERIDIAN_STATE_PATH)/credentials.
+    MERIDIAN_CREDENTIALS_ROOT: optionalEnvString(),
     AGENT_WORKDIR: optionalPathWithDefault(DEFAULT_AGENT_WORKDIR),
     COORDINATOR_SOCKET_PATH: optionalEnvString(),
     COORDINATOR_INTENTS: envStringList(),

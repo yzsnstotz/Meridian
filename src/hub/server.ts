@@ -138,6 +138,13 @@ export interface HubServerOptions {
   paneBroadcaster?: PaneBroadcaster;
   staticServiceEndpoints?: ServiceEndpoint[];
   outputBus?: OutputBus;
+  /**
+   * Override the credentials root used when bootstrapping the default
+   * CredentialStore. Precedence: explicit option > MERIDIAN_CREDENTIALS_ROOT
+   * env config > dirname(MERIDIAN_STATE_PATH)/credentials. Only consulted when
+   * `router` is NOT provided (i.e. we're constructing the default router).
+   */
+  credentialsRoot?: string;
 }
 
 export function resolveStaticServiceEndpoints(appConfig: AppConfig = config): ServiceEndpoint[] {
@@ -252,7 +259,12 @@ export class HubServer {
       this.router = options.router;
     } else {
       const statePath = config.MERIDIAN_STATE_PATH;
-      const credentialsRoot = path.join(path.dirname(statePath), "credentials");
+      const configuredCredentialsRoot = config.MERIDIAN_CREDENTIALS_ROOT;
+      const credentialsRoot =
+        options.credentialsRoot ??
+        (configuredCredentialsRoot && configuredCredentialsRoot.trim() !== ""
+          ? configuredCredentialsRoot
+          : path.join(path.dirname(statePath), "credentials"));
       const nowIso = new Date().toISOString();
       let initialCredentials: CredentialRecord[] = [];
       try {
