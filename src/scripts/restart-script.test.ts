@@ -52,6 +52,31 @@ test("restart.sh preserves persisted hub state unless reset-state is explicit", 
   assert.doesNotMatch(script, /rm -f "\$\{MERIDIAN_STATE_PATH\}" >\/dev\/null 2>&1 \|\| true\nfi\n\nif start_with_pm2/);
 });
 
+test("restart.sh resolves pm2 binary by path when not on PATH (launchd / minimal-PATH spawner)", async () => {
+  const script = await readRestartScript();
+
+  // The maintenance hub launches restart.sh under launchd with a minimal
+  // PATH that omits fnm's per-shell bin dirs. `command -v pm2` returns
+  // empty there, so the script must search known install locations
+  // before falling through to start_with_node_dist — otherwise PM2's
+  // calling-* apps keep running and the standalone set fights them for
+  // ports (calling-web crash-looped 2244× on EADDRINUSE :3000 on 2026-05-19).
+  assert.match(script, /find_pm2_binary\(\)/);
+  assert.match(script, /\.local\/share\/fnm\/node-versions/);
+  assert.match(script, /\.local\/state\/fnm_multishells/);
+  assert.match(script, /\/opt\/homebrew\/bin\/pm2/);
+  assert.match(script, /PM2_BIN="\$\(find_pm2_binary/);
+  assert.match(script, /pm2_daemon_running/);
+  assert.match(script, /WARNING: PM2 daemon is running but the pm2 binary is not on PATH/);
+
+  // All bare `pm2 ...` invocations must go through ${PM2_BIN} so they
+  // use the resolved absolute path.
+  const barePm2Lines = script
+    .split(/\r?\n/)
+    .filter((line) => /(^|[^"$\w./-])pm2 (delete|ping|reload|restart|start|status)\b/.test(line));
+  assert.deepEqual(barePm2Lines, [], `unguarded pm2 invocations found:\n${barePm2Lines.join("\n")}`);
+});
+
 test("terminate.sh stops Meridian and meridian-roles without starting services", async () => {
   const script = await readTerminateScript();
 
