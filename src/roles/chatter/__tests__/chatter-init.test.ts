@@ -50,4 +50,16 @@ describe("buildChatterCreateBody", () => {
     const body = buildChatterCreateBody({ ...validAnswers, chatterId: "tenant-z" });
     expect(body.thread_id).toBe("chatter-tenant-z");
   });
+
+  it("includes credential_id when provided (multi-codex credential binding)", () => {
+    const body = buildChatterCreateBody({ ...validAnswers, credentialId: "cred-xyz" });
+    expect(body.config.credential_id).toBe("cred-xyz");
+  });
+
+  it("omits credential_id when not provided or empty", () => {
+    const body = buildChatterCreateBody({ ...validAnswers });
+    expect(body.config.credential_id).toBeUndefined();
+    const bodyEmpty = buildChatterCreateBody({ ...validAnswers, credentialId: "   " });
+    expect(bodyEmpty.config.credential_id).toBeUndefined();
+  });
 });
