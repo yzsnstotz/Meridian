@@ -1,19 +1,21 @@
 /**
- * Chatter role end-to-end (sans HTTP + A2A).
+ * Chatter role end-to-end (sans HTTP + A2A socket).
  *
  * Wires RoleRegistry + RoleRunner + ChatterRole exactly as src/index.ts does,
- * minus the HTTP server and the A2A client. Exercises:
- *   - role creation through the registry factory
- *   - activate via RoleRunner
- *   - dispatch of a HubResult turn through runner.dispatch (the path hub
- *     traffic takes inside meridian-roles)
- *   - memory write on session-mode turn
- *   - control commands (/new, /interrupt) routed through the same dispatch path
- *   - inbound result on a known trace_id forwarded to user_reply_channel
+ * minus the HTTP server and the A2A client. Drives the full spawn-then-run
+ * contract:
  *
- * A full HTTP + real-hub harness exists only for agent-dispatcher
- * (agent-dispatcher-harness.ts) and is out of scope for this PR. The
- * higher-level wiring tested here is what the absent harness would exercise.
+ *   1. user turn arrives via runner.dispatch(HubResult with payload.chatter)
+ *   2. ChatterRole emits intent:"spawn" with payload.credential_id
+ *   3. test drives a synthetic spawn HubResult back through runner.dispatch
+ *      (role-runner routes by trace_id via the BaseRole.claimsTrace contract
+ *      since result.thread_id is the NEW agent thread, not chatter's)
+ *   4. ChatterRole binds the agent session and flushes the queued turn via
+ *      intent:"run" target = the agent's thread_id
+ *   5. agent reply HubResult is forwarded to user_reply_channel
+ *
+ * The hub itself is replaced by a mock — but the contract surface
+ * (sendToHub outbound + dispatch inbound + claimsTrace routing) is real.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, realpathSync, existsSync, readdirSync } from "node:fs";
@@ -22,13 +24,20 @@ import path from "node:path";
 import { RoleRegistry } from "../../src/roles/role-registry";
 import { RoleRunner } from "../../src/roles/role-runner";
 import { ChatterRole } from "../../src/roles/definitions/chatter";
-import { ChatterRoleConfigSchema, type HubMessage, type HubResult, type ChatterRoleConfig } from "../../src/types";
+import {
+  ChatterRoleConfigSchema,
+  type HubMessage,
+  type HubResult,
+  type ChatterRoleConfig
+} from "../../src/types";
 
 const ADS_REPLY = {
   channel: "socket" as const,
   chat_id: "ads:e2e",
   socket_path: "/tmp/ads-e2e.sock"
 };
+
+const CHATTER_THREAD_ID = "chatter-tenant-e2e";
 
 function makeConfig(memoryFolder: string, overrides: Partial<ChatterRoleConfig> = {}): ChatterRoleConfig {
   return ChatterRoleConfigSchema.parse({
@@ -43,22 +52,49 @@ function makeConfig(memoryFolder: string, overrides: Partial<ChatterRoleConfig> 
   });
 }
 
-function makeTurnResult(content: string, opts: Partial<HubResult> & { mode?: "stateless" | "session"; control?: "new" | "interrupt"; chatterSessionId?: string } = {}): HubResult {
-  const { mode = "session", control, chatterSessionId, ...rest } = opts;
+function makeTurnResult(
+  content: string,
+  opts: { mode?: "stateless" | "session"; control?: "new" | "interrupt" } = {}
+): HubResult {
+  const { mode = "session", control } = opts;
   return {
     trace_id: crypto.randomUUID(),
-    thread_id: "chatter-tenant-e2e",
+    thread_id: CHATTER_THREAD_ID,
     source: "ads",
     status: "success",
     content,
     attachments: [],
     timestamp: new Date().toISOString(),
-    payload: { chatter: { mode, chatter_session_id: chatterSessionId, control } },
-    ...rest
+    payload: { chatter: { mode, control } }
   };
 }
 
-describe("Chatter e2e — registry + runner + role", () => {
+function makeSpawnResponse(spawnMsg: HubMessage, newThreadId: string): HubResult {
+  return {
+    trace_id: spawnMsg.trace_id,
+    thread_id: newThreadId,
+    source: spawnMsg.target,
+    status: "success",
+    content: `spawned ${newThreadId}`,
+    attachments: [],
+    timestamp: new Date().toISOString()
+  };
+}
+
+function makeAgentReply(runMsg: HubMessage, content: string): HubResult {
+  return {
+    trace_id: runMsg.trace_id,
+    thread_id: runMsg.target,
+    source: "claude",
+    status: "success",
+    content,
+    attachments: [],
+    timestamp: new Date().toISOString(),
+    run_state: "completed"
+  };
+}
+
+describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
   let memoryFolder: string;
   let registry: RoleRegistry;
   let runner: RoleRunner;
@@ -83,110 +119,116 @@ describe("Chatter e2e — registry + runner + role", () => {
     rmSync(memoryFolder, { recursive: true, force: true });
   });
 
-  it("creates a Chatter via registry and activates it; sandbox materialized; state dir created on first persist", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder));
+  it("activates a Chatter via registry; sandbox materialized; no spawn yet", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
     expect(existsSync(path.join(memoryFolder, ".chatter-sandbox", "settings.json"))).toBe(true);
+    expect(sent.length).toBe(0);
   });
 
-  it("session-mode turn: writes to memory AND dispatches to claude-code", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder));
+  it("first session-mode turn writes memory and emits intent:spawn with credential_id", async () => {
+    const role = registry.create(
+      "chatter",
+      CHATTER_THREAD_ID,
+      makeConfig(memoryFolder, { credential_id: "cred-uuid-1" })
+    );
     await runner.activate(role);
-    await runner.dispatch(makeTurnResult("hello world"));
+    await runner.dispatch(makeTurnResult("hello"));
 
-    // Memory write
-    const turnsRoot = path.join(memoryFolder, "turns");
-    expect(existsSync(turnsRoot)).toBe(true);
-    const dateDirs = readdirSync(turnsRoot);
+    // Memory write happened before spawn
+    expect(existsSync(path.join(memoryFolder, "turns"))).toBe(true);
+    const dateDirs = readdirSync(path.join(memoryFolder, "turns"));
     expect(dateDirs.length).toBe(1);
-    const turnFiles = readdirSync(path.join(turnsRoot, dateDirs[0]));
-    expect(turnFiles.length).toBe(1);
 
-    // Agent dispatch
-    const claudeDispatch = sent.find((m) => m.target === "claude-code");
-    expect(claudeDispatch).toBeDefined();
-    expect(claudeDispatch!.payload.content).toBe("hello world");
+    // Outbound is a spawn with credential_id
+    const spawn = sent.find((m) => m.intent === "spawn");
+    expect(spawn).toBeDefined();
+    expect(spawn!.target).toBe("claude");
+    expect(spawn!.payload.credential_id).toBe("cred-uuid-1");
+    expect(spawn!.payload.spawn_dir).toBe(memoryFolder);
   });
 
-  it("stateless turn: dispatches but does NOT write to memory", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder, { allowed_modes: ["stateless"] }));
+  it("spawn response binds agent thread via claimsTrace; queued turn flushes to intent:run", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
-    await runner.dispatch(makeTurnResult("one-shot", { mode: "stateless" }));
-    expect(existsSync(path.join(memoryFolder, "turns"))).toBe(false);
-    const claudeDispatch = sent.find((m) => m.target === "claude-code");
-    expect(claudeDispatch).toBeDefined();
+    await runner.dispatch(makeTurnResult("ask"));
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+
+    // The spawn response carries thread_id = the new agent (e.g. claude_07),
+    // NOT chatter's thread_id. role-runner routes via claimsTrace.
+    await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
+
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07");
+    expect(run).toBeDefined();
+    expect(run!.payload.content).toBe("ask");
   });
 
-  it("disallowed mode is rejected with structured error on user_reply_channel; no agent dispatch", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder, { allowed_modes: ["session"] }));
+  it("agent reply on the run trace forwards content to user_reply_channel", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
-    await runner.dispatch(makeTurnResult("nope", { mode: "stateless" }));
-    expect(sent.some((m) => m.target === "claude-code")).toBe(false);
-    const errReply = sent.find((m) => m.reply_channel.chat_id === ADS_REPLY.chat_id);
-    expect(errReply).toBeDefined();
-    expect(errReply!.payload.content).toMatch(/denied_mode/);
-  });
+    await runner.dispatch(makeTurnResult("question?"));
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
 
-  it("/new rotates session; /interrupt cancels in-flight; both ack on user_reply_channel", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder));
-    await runner.activate(role);
+    await runner.dispatch(makeAgentReply(run, "the answer"));
 
-    // First, dispatch a turn so there's an in-flight trace
-    await runner.dispatch(makeTurnResult("first", { mode: "session" }));
-    const firstDispatch = sent.find((m) => m.target === "claude-code");
-    expect(firstDispatch).toBeDefined();
-
-    // /interrupt
-    await runner.dispatch(makeTurnResult("stop", { mode: "session", control: "interrupt" }));
-    const interruptAck = sent.find(
-      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && /interrupt/i.test(m.payload.content)
+    const forwarded = sent.find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "the answer"
     );
-    expect(interruptAck).toBeDefined();
-
-    // /new
-    await runner.dispatch(makeTurnResult("reset", { mode: "session", control: "new" }));
-    const newAck = sent.find(
-      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && /new session/i.test(m.payload.content)
-    );
-    expect(newAck).toBeDefined();
-  });
-
-  it("inbound result on known trace_id is forwarded to user_reply_channel", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder));
-    await runner.activate(role);
-
-    // Dispatch a turn to register an outbound trace
-    await runner.dispatch(makeTurnResult("ask", { mode: "session" }));
-    const dispatch = sent.find((m) => m.target === "claude-code");
-    expect(dispatch).toBeDefined();
-    const traceId = dispatch!.trace_id;
-
-    // Agent replies on that trace — route via runner.dispatch
-    const sentBefore = sent.length;
-    await runner.dispatch({
-      trace_id: traceId,
-      thread_id: "chatter-tenant-e2e",
-      source: "claude-code",
-      status: "success",
-      content: "the answer",
-      attachments: [],
-      timestamp: new Date().toISOString(),
-      run_state: "completed"
-    });
-
-    const forwarded = sent
-      .slice(sentBefore)
-      .find((m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "the answer");
     expect(forwarded).toBeDefined();
   });
 
-  it("inbound result with unknown trace_id and no envelope is dropped (no echo, no error)", async () => {
-    const role = registry.create("chatter", "chatter-tenant-e2e", makeConfig(memoryFolder));
+  it("stateless turn does NOT write memory but still spawns", async () => {
+    const role = registry.create(
+      "chatter",
+      CHATTER_THREAD_ID,
+      makeConfig(memoryFolder, { allowed_modes: ["stateless"] })
+    );
+    await runner.activate(role);
+    await runner.dispatch(makeTurnResult("one-shot", { mode: "stateless" }));
+    expect(existsSync(path.join(memoryFolder, "turns"))).toBe(false);
+    expect(sent.find((m) => m.intent === "spawn")).toBeDefined();
+  });
+
+  it("disallowed mode replies on user_reply_channel; no spawn", async () => {
+    const role = registry.create(
+      "chatter",
+      CHATTER_THREAD_ID,
+      makeConfig(memoryFolder, { allowed_modes: ["session"] })
+    );
+    await runner.activate(role);
+    await runner.dispatch(makeTurnResult("nope", { mode: "stateless" }));
+    expect(sent.find((m) => m.intent === "spawn")).toBeUndefined();
+    const err = sent.find((m) => m.reply_channel.chat_id === ADS_REPLY.chat_id);
+    expect(err).toBeDefined();
+    expect(err!.payload.content).toMatch(/denied_mode/);
+  });
+
+  it("/new after bind: sends intent:kill to old thread, unbinds, next turn re-spawns", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
+    await runner.activate(role);
+    await runner.dispatch(makeTurnResult("first"));
+    const spawn1 = sent.find((m) => m.intent === "spawn")!;
+    await runner.dispatch(makeSpawnResponse(spawn1, "claude_07"));
+    sent.length = 0;
+
+    await runner.dispatch(makeTurnResult("reset", { control: "new" }));
+    expect(sent.find((m) => m.intent === "kill" && m.target === "claude_07")).toBeDefined();
+
+    // Next turn re-spawns
+    await runner.dispatch(makeTurnResult("after reset"));
+    const spawn2 = sent.find((m) => m.intent === "spawn");
+    expect(spawn2).toBeDefined();
+  });
+
+  it("inbound HubResult without envelope + unknown trace is dropped silently", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
     const before = sent.length;
     await runner.dispatch({
       trace_id: crypto.randomUUID(),
-      thread_id: "chatter-tenant-e2e",
+      thread_id: CHATTER_THREAD_ID,
       source: "stray",
       status: "success",
       content: "ghost",
