@@ -43,6 +43,13 @@ export interface MeridianSpawnRequest {
   autoApprove?: boolean;
   /** Optional sandbox mode. Stateless Codex validator calls use read-only. */
   sandboxMode?: "read-only" | "workspace-write";
+  /**
+   * Opaque credential identifier resolved against the multi-credential store
+   * on the Hub side. When provided, /api/spawn uses this credential set
+   * instead of the default (`~/.codex`). Omitted from the wire body when
+   * undefined so the Hub keeps its existing default behavior.
+   */
+  credentialId?: string;
 }
 
 export interface MeridianSpawnResult {
@@ -217,6 +224,9 @@ function buildSpawnRequestBody(request: MeridianSpawnRequest): Record<string, un
   }
   if (request.sandboxMode?.trim()) {
     body.sandbox_mode = request.sandboxMode.trim();
+  }
+  if (request.credentialId?.trim()) {
+    body.credential_id = request.credentialId.trim();
   }
 
   return body;
