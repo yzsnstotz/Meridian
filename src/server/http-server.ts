@@ -193,6 +193,10 @@ export function mapPublicAsset(pathname: string): { fileName: string; contentTyp
     return { fileName: "monitor.html", contentType: "text/html; charset=utf-8" };
   }
 
+  if (pathname === "/chatter-create" || pathname === "/chatter-create.html") {
+    return { fileName: "chatter-create.html", contentType: "text/html; charset=utf-8" };
+  }
+
   if (/^\/role\/scheduler-[^/]+$/.test(pathname)) {
     return { fileName: "scheduler.html", contentType: "text/html; charset=utf-8" };
   }

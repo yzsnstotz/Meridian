@@ -70,6 +70,13 @@ export type Priority = z.infer<typeof PrioritySchema>;
 
 export const OptionalUuidSchema = z.string().uuid().optional();
 
+export const ChatterTurnEnvelopeSchema = z.object({
+  mode: z.enum(["stateless", "session"]),
+  chatter_session_id: z.string().min(1).optional(),
+  control: z.enum(["new", "interrupt"]).optional()
+});
+export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
+
 export const HubPayloadSchema = z.object({
   content: z.string(),
   attachments: z.array(FileAttachmentSchema).default([]),
@@ -82,7 +89,14 @@ export const HubPayloadSchema = z.object({
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   gui_host_port_override: z.string().min(1).optional(),
-  push_enabled: z.boolean().optional()
+  push_enabled: z.boolean().optional(),
+  // Meridian-hub PR #78 reads payload.credential_id on intent:"spawn" to bind
+  // the spawned codex/claude process to a managed CODEX_HOME (auth.json etc.).
+  // Roles that want their agent to run under a specific credential set this
+  // when constructing outbound messages. Existing roles leave it undefined
+  // and inherit ambient credentials.
+  credential_id: z.string().min(1).optional(),
+  chatter: ChatterTurnEnvelopeSchema.optional()
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;
 
@@ -103,6 +117,16 @@ export const HubMessageSchema = z.object({
 });
 export type HubMessage = z.input<typeof HubMessageSchema>;
 
+// Optional payload extras carried on hub-to-role inbound. Distinct from
+// HubMessage.payload (which has required content + attachments) — this is a
+// passthrough container for role-specific envelopes (e.g. ChatterTurnEnvelope)
+// that the originating sender attached to a forwarded request. Every existing
+// role ignores it; only Chatter reads `payload.chatter`.
+export const HubResultPayloadSchema = z.object({
+  chatter: ChatterTurnEnvelopeSchema.optional()
+}).optional();
+export type HubResultPayload = z.infer<typeof HubResultPayloadSchema>;
+
 export const HubResultSchema = z.object({
   trace_id: z.string().uuid(),
   thread_id: z.string().min(1),
@@ -117,7 +141,8 @@ export const HubResultSchema = z.object({
   summary_text: z.string().nullable().optional(),
   details_text: z.string().nullable().optional(),
   attachments: z.array(FileAttachmentSchema).default([]),
-  timestamp: z.string().datetime()
+  timestamp: z.string().datetime(),
+  payload: HubResultPayloadSchema
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
 
@@ -313,7 +338,7 @@ export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
 // ─── meridian-roles specific types ──────────────────────────────────────────────
 
-export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher", "scheduler"]);
+export const RoleTypeSchema = z.enum(["dispatcher", "agent-dispatcher", "scheduler", "chatter"]);
 export type RoleType = z.infer<typeof RoleTypeSchema>;
 
 export const TaskStatusSchema = z.enum(["pending", "running", "done", "failed", "blocked"]);
@@ -644,3 +669,30 @@ function normalizePmResolverConfig(
     user_reply_channels: replyChannels
   };
 }
+
+export const ChatterTemplateNameSchema = z.enum(["flat-log", "topic-tree", "indexed-kb"]);
+export type ChatterTemplateName = z.infer<typeof ChatterTemplateNameSchema>;
+
+export const ChatterAllowedModesSchema = z.array(z.enum(["stateless", "session"])).min(1);
+
+export const ChatterRoleConfigSchema = z.object({
+  chatter_id: z.string().min(1).regex(/^[a-z0-9][a-z0-9_-]*$/i, "chatter_id must be slug-like"),
+  memory_folder: z.string().refine((p) => p.startsWith("/"), "memory_folder must be an absolute path"),
+  template: ChatterTemplateNameSchema.optional(),
+  manifest_path: z.string().refine((p) => p.startsWith("/"), "manifest_path must be absolute").optional(),
+  allowed_modes: ChatterAllowedModesSchema,
+  skill_allowlist: z.array(z.string().min(1)).default([]),
+  llm_agent_kind: z.enum(["claude-code"]).default("claude-code"),
+  // Optional managed-credential binding. When set, ChatterRole forwards it
+  // on outbound hub messages as `payload.credential_id`, which meridian-hub
+  // honors at spawn time to bind the agent process to a specific
+  // CODEX_HOME (per PR #78). Flat-role pattern, mirrors SchedulerConfig.
+  credential_id: z.string().min(1).optional(),
+  // Required: ChatterRole has no useful behavior without somewhere to reply.
+  // Operators provide one channel at init; the gateway (ADS) demuxes per-user
+  // on its end via session correlation in payload.chatter.
+  user_reply_channel: ReplyChannelSchema
+}).refine((v) => v.template !== undefined || v.manifest_path !== undefined, {
+  message: "Either template or manifest_path must be provided"
+});
+export type ChatterRoleConfig = z.infer<typeof ChatterRoleConfigSchema>;

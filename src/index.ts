@@ -30,6 +30,7 @@ import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import killTool from "./tool-gateway/tools/kill";
 import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "./tool-gateway/tools/dispatch-status";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
+import { ChatterRole } from "./roles/definitions/chatter";
 import { SchedulerRole } from "./roles/definitions/scheduler";
 import { SchedulerStateStore } from "./roles/scheduler/scheduler-state-store";
 import { PromptStore } from "./roles/prompt-store";
@@ -53,6 +54,7 @@ import {
 } from "./state-store";
 import {
   AgentDispatcherConfigSchema,
+  ChatterRoleConfigSchema,
   SchedulerConfigSchema,
   type AgentDispatcherConfig,
   type AppState,
@@ -127,6 +129,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   registry.register("dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
   registry.register("agent-dispatcher", (threadId, config) => new AgentDispatcherRole(threadId, config, { stateStore }));
   registry.register("scheduler", (threadId, config) => new SchedulerRole(threadId, config, { stateStore }));
+  registry.register("chatter", (threadId, config) => new ChatterRole(threadId, ChatterRoleConfigSchema.parse(config)));
 
   const startupActivations = await buildStartupActivations(stateStore, client, log);
   await reconcileStartupDispatchers(startupActivations, client, log);
