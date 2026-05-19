@@ -5,7 +5,7 @@ import { AgentDispatcherConfigSchema, type AppState, type DispatchThreadStateV2 
 import { ACTIVE_ROLE_STATUS, PAUSED_ROLE_STATUS, type StateStore } from "../../state-store";
 import { LifecycleStore } from "../../roles/agent-dispatcher/lifecycle-store";
 import { isHumanDispatchRow } from "../../roles/agent-dispatcher/service-continuation";
-import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status";
+import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "../../tool-gateway/tools/dispatch-status";
 
 export interface LifecycleMonitorResult {
   terminalThreadIds: Set<string>;
@@ -19,6 +19,8 @@ export interface LifecycleMonitorResult {
   runningThreadCollisionItems: LifecycleMonitorItem[];
   humanGateIdlingDispatchers: number;
   humanGateIdlingDispatcherItems: LifecycleMonitorItem[];
+  blockedHumanGateLoops: number;
+  blockedHumanGateLoopItems: LifecycleMonitorItem[];
   pausedDispatchers: number;
   pausedDispatcherItems: LifecycleMonitorItem[];
   statelessValidatorCards: number;
@@ -61,6 +63,8 @@ export async function inspectLifecycle(
     runningThreadCollisionItems: [],
     humanGateIdlingDispatchers: 0,
     humanGateIdlingDispatcherItems: [],
+    blockedHumanGateLoops: 0,
+    blockedHumanGateLoopItems: [],
     pausedDispatchers: 0,
     pausedDispatcherItems: [],
     statelessValidatorCards: 0,
@@ -150,12 +154,29 @@ export async function inspectLifecycle(
       }
     }
 
-    if (role.status === ACTIVE_ROLE_STATUS && await hasOpenHumanGate(config.dispatch_plan_path)) {
+    // Drop the ACTIVE-only gate the original E5 indicator had — a dispatcher
+    // force-paused by the restart safety hold (after a hub flap or service
+    // restart) still has an unresolved HUMAN gate that the operator needs
+    // to see. Without surfacing paused-with-open-gate we leave the user
+    // staring at a silent paused dispatcher with no signal about what's
+    // blocking. Reproducer: agent-dispatcher-98b73906 on 2026-05-19 — V-01-B
+    // HUMAN row pending while role.status = paused (restart hold), so the
+    // monitor showed E5 = 0 even though that was the actual block.
+    const planLoop = await detectBlockedHumanGateLoop(config.dispatch_plan_path);
+    if (planLoop.openHumanGate) {
       result.humanGateIdlingDispatchers += 1;
       result.humanGateIdlingDispatcherItems.push({
         label: role.threadId,
         href: roleHref,
-        detail: `active dispatcher has an open HUMAN row in ${config.dispatch_plan_path}`
+        detail: `${role.status} dispatcher has an open HUMAN row in ${config.dispatch_plan_path}`
+      });
+    }
+    if (planLoop.loopWorkers.length > 0) {
+      result.blockedHumanGateLoops += 1;
+      result.blockedHumanGateLoopItems.push({
+        label: role.threadId,
+        href: roleHref,
+        detail: `BLOCKED HUMAN row(s) ${planLoop.blockedHumanWorkers.join(", ")} with pending non-HUMAN downstream ${planLoop.loopWorkers.join(", ")} in ${config.dispatch_plan_path}`
       });
     }
   }
@@ -252,15 +273,107 @@ function hasActivePmResolver(lifecycle: DispatchThreadStateV2, workerId: string)
   );
 }
 
-async function hasOpenHumanGate(planPath: string): Promise<boolean> {
+interface BlockedHumanGateLoopResult {
+  openHumanGate: boolean;
+  blockedHumanWorkers: string[];
+  loopWorkers: string[];
+}
+
+async function detectBlockedHumanGateLoop(planPath: string): Promise<BlockedHumanGateLoopResult> {
+  const empty: BlockedHumanGateLoopResult = { openHumanGate: false, blockedHumanWorkers: [], loopWorkers: [] };
   let markdown: string;
   try {
     markdown = await fs.readFile(planPath, "utf8");
   } catch {
-    return false;
+    return empty;
   }
   const rows = parseDispatchPlanRows(markdown);
-  return rows.some((row) => isHumanDispatchRow({ model: row.model }) && !isTerminalPlanStatus(row.status));
+  const openHumanGate = rows.some((row) => isHumanDispatchRow({ model: row.model }) && !isTerminalPlanStatus(row.status));
+
+  // A "blocked-human-gate loop" is the deadlock pattern observed on
+  // agent-dispatcher-98b73906 (2026-05-19): a HUMAN row was manually
+  // annotated `⛔` (verdict: failed) and the v1.1 append wired the *fix*
+  // rows as `depends_on: <that-HUMAN-row>`. Result: the HUMAN row will
+  // never reach a terminal lifecycle status on its own, so its downstream
+  // pending workers can never be dispatched and the dispatcher idles
+  // silently forever. We catch this so the monitor surfaces it as
+  // actionable instead of waiting for the operator to notice the silence.
+  const blockedHumanWorkers = rows
+    .filter((row) => isHumanDispatchRow({ model: row.model }) && isBlockedPlanStatus(row.status))
+    .map((row) => row.worker_id);
+  if (blockedHumanWorkers.length === 0) {
+    return { openHumanGate, blockedHumanWorkers: [], loopWorkers: [] };
+  }
+  const blockedSet = new Set(blockedHumanWorkers);
+  const loopWorkers: string[] = [];
+  for (const row of rows) {
+    if (isHumanDispatchRow({ model: row.model })) {
+      continue;
+    }
+    if (!isPendingPlanStatus(row.status)) {
+      continue;
+    }
+    if (dependencyChainIncludes(row, rows, blockedSet)) {
+      loopWorkers.push(row.worker_id);
+    }
+  }
+  return { openHumanGate, blockedHumanWorkers, loopWorkers };
+}
+
+function isBlockedPlanStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === "⛔"
+    || normalized === "⛔ blocked"
+    || normalized === "blocked";
+}
+
+function isPendingPlanStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === "⬜" || normalized === "pending" || normalized === "";
+}
+
+function dependencyChainIncludes(
+  row: DispatchPlanWorkerRow,
+  rows: DispatchPlanWorkerRow[],
+  targets: Set<string>,
+  visited: Set<string> = new Set()
+): boolean {
+  if (visited.has(row.worker_id)) {
+    return false;
+  }
+  visited.add(row.worker_id);
+
+  const rowIndex = rows.findIndex((candidate) => candidate.worker_id === row.worker_id);
+  for (const rawDep of row.depends_on) {
+    const dep = rawDep.trim();
+    if (!dep) {
+      continue;
+    }
+    // ALL-PRIOR expands to every row strictly earlier in the master table.
+    if (dep.toUpperCase() === "ALL-PRIOR") {
+      for (let i = 0; i < (rowIndex === -1 ? rows.length : rowIndex); i += 1) {
+        const prior = rows[i];
+        if (!prior) {
+          continue;
+        }
+        if (targets.has(prior.worker_id)) {
+          return true;
+        }
+        if (dependencyChainIncludes(prior, rows, targets, visited)) {
+          return true;
+        }
+      }
+      continue;
+    }
+    if (targets.has(dep)) {
+      return true;
+    }
+    const depRow = rows.find((candidate) => candidate.worker_id === dep);
+    if (depRow && dependencyChainIncludes(depRow, rows, targets, visited)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isTerminalPlanStatus(status: string): boolean {
