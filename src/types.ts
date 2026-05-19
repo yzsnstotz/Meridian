@@ -687,7 +687,17 @@ export const ChatterRoleConfigSchema = z.object({
   manifest_path: z.string().refine((p) => p.startsWith("/"), "manifest_path must be absolute").optional(),
   allowed_modes: ChatterAllowedModesSchema,
   skill_allowlist: z.array(z.string().min(1)).default([]),
-  llm_agent_kind: z.enum(["claude-code"]).default("claude-code"),
+  // llm_agent_kind is intentionally unconstrained here: chatter is just a
+  // thin pass-through to meridian-hub's spawn boundary, and the list of
+  // accepted kinds is owned by meridian-hub (surfaced to the GUI via
+  // `GET /api/agent-kinds`). Hub-side spawn rejects unknown kinds, so a
+  // zod enum in chatter would only drift out of sync. The default keeps
+  // existing single-option callers backwards-compatible.
+  llm_agent_kind: z.string().min(1).default("claude-code"),
+  // Optional model the operator wants chatter to forward to the agent
+  // spawn. Free-form for the same reason as `llm_agent_kind`: meridian-hub
+  // owns the allowed list per kind and surfaces it via /api/agent-kinds.
+  llm_model: z.string().min(1).optional(),
   // Optional managed-credential binding. When set, ChatterRole forwards it
   // on outbound hub messages as `payload.credential_id`, which meridian-hub
   // honors at spawn time to bind the agent process to a specific

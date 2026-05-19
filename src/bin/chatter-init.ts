@@ -11,7 +11,11 @@ export interface ChatterInitAnswers {
   manifestPath?: string;
   allowedModes: ("stateless" | "session")[];
   skillAllowlist: string[];
-  llmAgentKind: "claude-code";
+  // Free-form: meridian-hub owns the accepted kinds. The CLI wizard
+  // suggests "claude-code" but does not constrain the typed value, so
+  // operators can target codex/claude/cursor/gemini as hub support evolves.
+  llmAgentKind: string;
+  llmModel?: string;
   userReplyChannelSocket: string;
   userReplyChannelChatId: string;
   // Optional managed-credential binding; if set, meridian-hub will spawn this
@@ -43,6 +47,10 @@ export function buildChatterCreateBody(answers: ChatterInitAnswers): ChatterCrea
       socket_path: answers.userReplyChannelSocket
     }
   };
+
+  if (answers.llmModel && answers.llmModel.trim().length > 0) {
+    baseConfig.llm_model = answers.llmModel.trim();
+  }
 
   if (answers.credentialId && answers.credentialId.trim().length > 0) {
     baseConfig.credential_id = answers.credentialId.trim();
@@ -92,6 +100,12 @@ async function runWizard(): Promise<void> {
       : skillAllowlistRaw.split(",").map((s) => s.trim()).filter(Boolean);
     const userReplyChannelSocket = await ask(rl, "user_reply_channel socket_path", "/tmp/ads.sock");
     const userReplyChannelChatId = await ask(rl, "user_reply_channel chat_id", `ads:${chatterId}`);
+    const llmAgentKind = await ask(
+      rl,
+      "llm_agent_kind (any kind meridian-hub supports — e.g. claude-code, codex, claude, gemini)",
+      "claude-code"
+    );
+    const llmModel = await ask(rl, "llm_model (blank to inherit the provider default)", "");
     const credentialId = await ask(rl, "credential_id (blank for ambient credentials)", "");
 
     const body = buildChatterCreateBody({
@@ -102,7 +116,8 @@ async function runWizard(): Promise<void> {
       manifestPath,
       allowedModes,
       skillAllowlist,
-      llmAgentKind: "claude-code",
+      llmAgentKind,
+      llmModel: llmModel.length > 0 ? llmModel : undefined,
       userReplyChannelSocket,
       userReplyChannelChatId,
       credentialId: credentialId.length > 0 ? credentialId : undefined

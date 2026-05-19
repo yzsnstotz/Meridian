@@ -62,4 +62,22 @@ describe("buildChatterCreateBody", () => {
     const bodyEmpty = buildChatterCreateBody({ ...validAnswers, credentialId: "   " });
     expect(bodyEmpty.config.credential_id).toBeUndefined();
   });
+
+  it("accepts non-claude-code llm_agent_kind values (no chatter-side constraint)", () => {
+    for (const kind of ["codex", "claude", "gemini", "custom-kind"]) {
+      const body = buildChatterCreateBody({ ...validAnswers, llmAgentKind: kind });
+      expect(body.config.llm_agent_kind).toBe(kind);
+    }
+  });
+
+  it("includes llm_model when provided and omits it when blank", () => {
+    const body = buildChatterCreateBody({ ...validAnswers, llmModel: "claude-opus-4-7" });
+    expect(body.config.llm_model).toBe("claude-opus-4-7");
+
+    const omitted = buildChatterCreateBody({ ...validAnswers });
+    expect(omitted.config.llm_model).toBeUndefined();
+
+    const blank = buildChatterCreateBody({ ...validAnswers, llmModel: "   " });
+    expect(blank.config.llm_model).toBeUndefined();
+  });
 });

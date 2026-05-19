@@ -63,18 +63,33 @@
           <input name="skill_allowlist" placeholder="web_search,scheduler_trigger" />
         </label>
         <label>
-          llm_agent_kind
-          <select name="llm_agent_kind">
-            <option value="claude-code">claude-code</option>
+          llm_agent_kind (populated from meridian-hub's supported kinds)
+          <select name="llm_agent_kind" id="chatter-llm-agent-kind">
+            <option value="" disabled selected>Loading…</option>
           </select>
+        </label>
+        <label>
+          llm_model (optional; filtered by the selected kind)
+          <select name="llm_model" id="chatter-llm-model">
+            <option value="">Use provider default</option>
+          </select>
+          <small id="chatter-llm-model-hint" class="field-hint muted">
+            Model options follow whatever meridian-hub publishes for the chosen kind.
+          </small>
         </label>
       </fieldset>
 
       <fieldset>
         <legend>Multi-codex credential (optional)</legend>
         <label>
-          credential_id (UUID from <code>GET /api/credentials</code>; leave blank for ambient credentials)
-          <input name="credential_id" placeholder="e.g. 01234567-89ab-cdef-0123-456789abcdef" />
+          credential_id (sourced from meridian-hub's <code>GET /api/credentials</code>)
+          <select name="credential_id" id="chatter-credential-id" data-credential-select>
+            <option value="">Use default codex login (~/.codex)</option>
+          </select>
+          <small class="field-hint muted">
+            Revoked credentials are filtered out. Leave on the default to inherit
+            ambient credentials at spawn time.
+          </small>
         </label>
       </fieldset>
 
@@ -103,6 +118,9 @@
     const form = document.getElementById("chatter-create-form");
     const result = document.getElementById("result");
     const resultBody = document.getElementById("result-body");
+    const kindSelect = document.getElementById("chatter-llm-agent-kind");
+    const modelSelect = document.getElementById("chatter-llm-model");
+    const credentialSelect = document.getElementById("chatter-credential-id");
 
     function syncSchemaVisibility() {
       const choice = form.elements.schema_source.value;
@@ -112,6 +130,104 @@
     }
     form.elements.schema_source.addEventListener("change", syncSchemaVisibility);
     syncSchemaVisibility();
+
+    /* The agent-kinds catalog is owned by meridian-roles (which sources it
+       from meridian-hub's supported set). We keep the per-kind model list
+       alongside the kind so a single fetch populates both dropdowns and
+       the model dropdown can stay filtered as the operator changes kind. */
+    let agentKindsCatalog = [];
+
+    async function loadAgentKinds() {
+      try {
+        const res = await fetch("/api/agent-kinds");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        agentKindsCatalog = Array.isArray(body?.agent_kinds) ? body.agent_kinds : [];
+      } catch (err) {
+        console.warn("Failed to load /api/agent-kinds:", err);
+        agentKindsCatalog = [];
+      }
+
+      kindSelect.innerHTML = "";
+      if (agentKindsCatalog.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.disabled = true;
+        opt.selected = true;
+        opt.textContent = "Failed to load — refresh to retry";
+        kindSelect.appendChild(opt);
+        repopulateModelOptions(null);
+        return;
+      }
+
+      for (const entry of agentKindsCatalog) {
+        const opt = document.createElement("option");
+        opt.value = entry.kind;
+        opt.textContent = entry.label || entry.kind;
+        kindSelect.appendChild(opt);
+      }
+
+      // Default selection: claude-code if present (chatter's historical
+      // pinned value), otherwise first entry.
+      const preferred = agentKindsCatalog.find((e) => e.kind === "claude-code")?.kind
+        ?? agentKindsCatalog[0].kind;
+      kindSelect.value = preferred;
+      repopulateModelOptions(preferred);
+    }
+
+    function repopulateModelOptions(kind) {
+      const entry = agentKindsCatalog.find((e) => e.kind === kind);
+      const models = entry?.models ?? [];
+      modelSelect.innerHTML = "";
+      const defaultOpt = document.createElement("option");
+      defaultOpt.value = "";
+      defaultOpt.textContent = "Use provider default";
+      modelSelect.appendChild(defaultOpt);
+      for (const model of models) {
+        const opt = document.createElement("option");
+        opt.value = model;
+        opt.textContent = model;
+        modelSelect.appendChild(opt);
+      }
+    }
+
+    kindSelect.addEventListener("change", () => repopulateModelOptions(kindSelect.value));
+
+    /* Credential dropdown mirrors loadCredentialSelectors() in app.js
+       (single-page form, no shared script). Revoked entries are filtered
+       so operators can't pick a dead credential. Default option ("") maps
+       to omission of credential_id at submit time. */
+    async function loadCredentialOptions() {
+      let credentials = [];
+      try {
+        const res = await fetch("/api/credentials");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        credentials = Array.isArray(body?.credentials) ? body.credentials : [];
+      } catch (err) {
+        console.warn("Failed to load /api/credentials:", err);
+        return;
+      }
+
+      const usable = credentials.filter((c) => c && c.revoked_at === null);
+      // Preserve the leading default option; rebuild the rest.
+      Array.from(credentialSelect.querySelectorAll("option")).forEach((opt, idx) => {
+        if (idx === 0 && opt.value === "") return;
+        opt.remove();
+      });
+      for (const cred of usable) {
+        const opt = document.createElement("option");
+        opt.value = cred.credential_id;
+        const label = typeof cred.credential_label === "string" && cred.credential_label.trim().length > 0
+          ? cred.credential_label
+          : cred.credential_id;
+        opt.textContent = cred.is_default ? `${label} (default)` : label;
+        credentialSelect.appendChild(opt);
+      }
+    }
+
+    void loadAgentKinds();
+    void loadCredentialOptions();
 
     function buildBody(formData) {
       const chatterId = formData.get("chatter_id");
@@ -124,6 +240,7 @@
         : skillAllowlistRaw.split(",").map(s => s.trim()).filter(Boolean);
 
       const credentialId = (formData.get("credential_id") || "").toString().trim();
+      const llmModel = (formData.get("llm_model") || "").toString().trim();
       const config = {
         chatter_id: chatterId,
         memory_folder: formData.get("memory_folder"),
@@ -136,6 +253,9 @@
           socket_path: formData.get("user_reply_channel_socket_path")
         }
       };
+      if (llmModel.length > 0) {
+        config.llm_model = llmModel;
+      }
       if (credentialId.length > 0) {
         config.credential_id = credentialId;
       }
