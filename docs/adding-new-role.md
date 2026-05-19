@@ -156,3 +156,17 @@ At minimum, add:
 - one E2E scenario under `tests/e2e/` that exercises the role through the real A2A socket callback path
 
 `EchoRole` is intentionally small. If a new role needs long-lived state, follow `DispatcherRole` and persist through `StateStore` instead of keeping important data only in memory.
+
+### Credential binding (optional)
+
+Roles that spawn codex agents may accept an optional `credential_id?: string`
+on their config schema. The field is forwarded onto `/api/spawn` and resolved
+by meridian-hub. Roles MUST NOT read credential dirs or set CODEX_HOME directly.
+
+For roles with sub-spawns (like agent-dispatcher's validator and pm_resolver),
+use the `resolveCredentialForSpawn(purpose, config)` helper from
+`src/roles/agent-dispatcher/credential-resolution.ts` to apply the
+parent-inherit-with-override rule.
+
+If the role has only one spawn target (like scheduler), pass
+`config.credential_id` directly to the spawn call.
