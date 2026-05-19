@@ -188,8 +188,7 @@ test("authority gate: write caller CAN call write credential intents (passes aut
 
 test("Credential intents are NOT in ADMIN_ONLY_INTENTS (they use owner-or-admin per-handler)", async () => {
   // Read router.ts source and grep — credential intents must NOT appear in ADMIN_ONLY_INTENTS Set literal
-  const fs = await import("node:fs");
-  const src = fs.readFileSync(new URL("./router.ts", import.meta.url), "utf8");
+  const src = fs.readFileSync(path.resolve(__dirname, "./router.ts"), "utf8");
   const adminBlock = src.match(/const ADMIN_ONLY_INTENTS[^]*?\]\);/)?.[0] ?? "";
   for (const intent of [
     "register_credential_oauth_start",

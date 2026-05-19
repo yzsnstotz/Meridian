@@ -289,6 +289,21 @@ export class HubServer {
           "CredentialStore reconcile failed (continuing)"
         );
       }
+      // Eagerly create the credentials root so operators can verify the new code
+      // shipped without having to add a credential first.
+      try {
+        fs.mkdirSync(credentialsRoot, { recursive: true, mode: 0o700 });
+      } catch (err) {
+        this.log.warn(
+          {
+            trace_id: null,
+            thread_id: null,
+            credentials_root: credentialsRoot,
+            err: err instanceof Error ? err.message : String(err)
+          },
+          "Failed to eagerly create credentials root (continuing)"
+        );
+      }
       const oauthLoginRegistry = new OAuthLoginJobRegistry();
       const routerOptions: HubRouterOptions = {
         credentialStore,

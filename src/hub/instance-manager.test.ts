@@ -1475,7 +1475,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   });
 
   const result = await manager.rehydrateFromState({
-    version: 3,
+    version: 4,
     updated_at: new Date().toISOString(),
     instances: [
       {
@@ -1540,7 +1540,7 @@ test("rehydrateFromState does NOT carry the thread allocator counter across a re
   });
 
   await manager.rehydrateFromState({
-    version: 3,
+    version: 4,
     updated_at: nowIso,
     instances: [],
     session_bindings: {},
@@ -1592,7 +1592,7 @@ test("rehydrateFromState drops persisted stateless_call instances instead of zom
   });
 
   const result = await manager.rehydrateFromState({
-    version: 3,
+    version: 4,
     updated_at: new Date().toISOString(),
     instances: [
       {
@@ -1649,7 +1649,7 @@ test("rehydrateFromState keeps the allocator above live rehydrated instances to 
   });
 
   await manager.rehydrateFromState({
-    version: 3,
+    version: 4,
     updated_at: new Date().toISOString(),
     instances: [
       {

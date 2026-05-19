@@ -448,7 +448,6 @@ test("reconcile is a no-op if credentialsRoot does not exist", () => {
 test("assertOwnerOrAdmin: throws CredentialNotFoundError for null/empty id", () => {
   const store = new CredentialStore({ initialRecords: [], credentialsRoot: "/tmp" });
   assert.throws(
-    // @ts-expect-error runtime guard
     () => store.assertOwnerOrAdmin(null, makeCaller("c1")),
     CredentialNotFoundError
   );
