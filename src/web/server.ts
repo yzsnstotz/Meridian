@@ -2566,10 +2566,10 @@ export class WebInterfaceServer {
   }
 
   private friendlyErrorMessage(raw: string): string {
-    const lower = raw.toLowerCase();
-    if (lower.includes("enoent") || lower.includes("econnrefused")) {
+    if (isHubSocketUnreachableMessage(raw)) {
       return "Hub is not reachable — is the hub process running?";
     }
+    const lower = raw.toLowerCase();
     if (lower.includes("no active instance") || lower.includes("no active agent") || lower.includes("no registered agent instance found")) {
       return "No active agent session — spawn or attach one first.";
     }
@@ -2600,6 +2600,24 @@ export class WebInterfaceServer {
       throw new Error(`Invalid JSON body: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+}
+
+// Node `net.createConnection` surfaces unix-socket connect failures as
+// `connect ENOENT <path>` / `connect ECONNREFUSED <addr>` / `connect ENOTSOCK <path>`.
+// The IPC layer (`src/shared/ipc.ts`) emits its own `IPC send connect timed out`
+// when even establishing the connection times out. Only these patterns indicate
+// the hub socket is genuinely unreachable.
+//
+// Prior versions matched bare `enoent`/`econnrefused` anywhere in the message,
+// which mis-attributed unrelated errors (e.g. `ENOENT: no such file or directory,
+// open '<dispatch plan>'`) as a downed hub — leaving agent-dispatcher operators
+// staring at "Hub is not reachable" while the hub was healthy and the real cause
+// was a missing artifact on disk.
+const HUB_SOCKET_UNREACHABLE_PATTERN =
+  /\bconnect (?:ENOENT|ECONNREFUSED|ENOTSOCK)\b|\bIPC (?:send|request) connect timed out\b/i;
+
+export function isHubSocketUnreachableMessage(raw: string): boolean {
+  return HUB_SOCKET_UNREACHABLE_PATTERN.test(raw);
 }
 
 export async function startWebInterfaceServer(options: WebInterfaceServerOptions = {}): Promise<WebInterfaceServer | null> {
