@@ -45,6 +45,19 @@ export class OAuthLoginJob {
   private urlCaptureHandle: NodeJS.Timeout | null = null;
   private watcher: fs.FSWatcher | null = null;
   private pollHandle: NodeJS.Timeout | null = null;
+  /**
+   * Per-stream tail buffers so URL extraction is robust to a URL arriving
+   * fragmented across multiple `data` events. The previous implementation
+   * split each chunk on `\n` and ran the extractor per line — if codex
+   * flushed the URL across two chunks (or with no trailing newline before
+   * the URL capture window expired), the regex never matched a complete URL
+   * and the job failed with `login_url_not_captured` even though codex had
+   * actually printed it. Capped at MAX_STREAM_BUF chars to keep memory
+   * bounded if the subprocess emits a single very long line.
+   */
+  private stdoutBuf = "";
+  private stderrBuf = "";
+  private static readonly MAX_STREAM_BUF = 64 * 1024;
 
   constructor(opts: OAuthLoginJobOptions) {
     // Per-field `??` rather than `{ ...defaults, ...opts }`: an explicit
@@ -83,22 +96,42 @@ export class OAuthLoginJob {
       stdio: ["ignore", "pipe", "pipe"]
     });
 
-    const onLine = (line: string) => {
-      if (!line) return;
-      this.appendLog(line);
-      if (!this.login_url) {
-        const url = extractCodexLoginUrl(line);
-        if (url) {
-          this.login_url = url;
-          this.expires_at = new Date(Date.now() + this.opts.timeoutMs).toISOString();
-          if (this.status === "pending") this.status = "awaiting_browser";
+    const tryExtractFromBuffer = (combined: string) => {
+      if (this.login_url) return;
+      const url = extractCodexLoginUrl(combined);
+      if (!url) return;
+      this.login_url = url;
+      this.expires_at = new Date(Date.now() + this.opts.timeoutMs).toISOString();
+      if (this.status === "pending") this.status = "awaiting_browser";
+    };
+
+    const feedStream = (chunk: Buffer, which: "out" | "err") => {
+      const text = chunk.toString();
+      let combined = (which === "out" ? this.stdoutBuf : this.stderrBuf) + text;
+      if (combined.length > OAuthLoginJob.MAX_STREAM_BUF) {
+        combined = combined.slice(-OAuthLoginJob.MAX_STREAM_BUF);
+      }
+      // Run extraction on the accumulated buffer so a URL split across data
+      // events (or one not yet terminated by a newline) still matches.
+      tryExtractFromBuffer(combined);
+      // Drain any complete lines into appendLog; keep the trailing partial.
+      const newlineIdx = combined.lastIndexOf("\n");
+      if (newlineIdx >= 0) {
+        const completeBlock = combined.slice(0, newlineIdx);
+        const remainder = combined.slice(newlineIdx + 1);
+        for (const line of completeBlock.split(/\r?\n/)) {
+          if (line) this.appendLog(line);
         }
+        if (which === "out") this.stdoutBuf = remainder;
+        else this.stderrBuf = remainder;
+      } else {
+        if (which === "out") this.stdoutBuf = combined;
+        else this.stderrBuf = combined;
       }
     };
-    const splitLines = (buf: Buffer) => buf.toString().split(/\r?\n/);
 
-    this.child.stdout?.on("data", (buf: Buffer) => splitLines(buf).forEach(onLine));
-    this.child.stderr?.on("data", (buf: Buffer) => splitLines(buf).forEach(onLine));
+    this.child.stdout?.on("data", (buf: Buffer) => feedStream(buf, "out"));
+    this.child.stderr?.on("data", (buf: Buffer) => feedStream(buf, "err"));
 
     this.watcher = fs.watch(this.slot.codex_home, (_event, file) => {
       if (file === "auth.json") this.tryComplete().catch(() => {});
@@ -121,10 +154,33 @@ export class OAuthLoginJob {
 
     this.timeoutHandle = setTimeout(() => this.handleTimeout(), this.opts.timeoutMs);
     this.urlCaptureHandle = setTimeout(() => {
-      if (this.status === "pending" && !this.login_url) {
-        this.fail("login_url_not_captured", "no recognizable URL printed within window");
-      }
+      if (this.status !== "pending" || this.login_url) return;
+      // Surface the last lines of codex output in the error_message so the
+      // GUI/operator can diagnose pattern mismatch without expanding the
+      // log_excerpt details block. Truncate aggressively to stay under the
+      // status-detail render budget.
+      const recent = this.logBuffer.slice(-8).join(" | ");
+      const snippet = recent.length > 400 ? recent.slice(0, 400) + "…" : recent;
+      const secs = Math.round(this.opts.urlCaptureWindowMs / 1000);
+      const detail = snippet
+        ? `no recognizable URL printed within ${secs}s. Last codex output: ${snippet}`
+        : `no recognizable URL printed within ${secs}s. codex produced no output (check that the codex binary is on the hub process's PATH).`;
+      this.fail("login_url_not_captured", detail);
     }, this.opts.urlCaptureWindowMs);
+
+    // ENOENT / EACCES on spawn fires `error` and (in modern Node) does NOT
+    // fire `exit`. Without this handler the job would sit on `pending` until
+    // the URL-capture window expired, masquerading the real cause ("codex
+    // not on PATH") as "URL not captured". Mark it failed immediately with
+    // the OS error so the GUI/operator gets the actual reason.
+    this.child.on("error", (err) => {
+      if (this.status !== "pending" && this.status !== "awaiting_browser") return;
+      const code = (err as NodeJS.ErrnoException).code ?? "spawn_error";
+      this.fail(
+        "subprocess_spawn_error",
+        `failed to spawn ${this.opts.codexLoginCommand}: ${code} ${err.message}`
+      );
+    });
 
     this.child.on("exit", (code) => {
       if (this.status === "pending" || this.status === "awaiting_browser") {
