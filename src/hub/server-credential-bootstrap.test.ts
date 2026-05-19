@@ -116,66 +116,175 @@ test("HubServer bootstrap honors MERIDIAN_CREDENTIALS_ROOT override (via credent
   }
 });
 
-test("HubServer bootstrap rehydrates credentials from persisted state", () => {
-  // Seed a temporary state file with a credential record, point the bootstrap at it
-  // via MERIDIAN_STATE_PATH, and confirm the CredentialStore loads it.
-  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "meridian-hub-bootstrap-"));
+test("Credential rehydrate round-trip: createApiKey → persist via onChange → reconstruct CredentialStore from disk", async () => {
+  // End-to-end test that a credential written through createApiKey survives a
+  // simulated restart. Previously this test was a no-op because HubServer
+  // reads its statePath from the module-cached config singleton. Drive the
+  // CredentialStore + state-store layer directly — that's the actual
+  // persistence contract that rehydration relies on.
+  const { CredentialStore } = await import("./credential-store");
+  const {
+    buildPersistedHubState,
+    savePersistedHubState,
+    loadPersistedHubState
+  } = await import("./state-store");
+
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "cred-rehydrate-"));
   const statePath = path.join(tmpdir, "hub-state.json");
   const credentialsRoot = path.join(tmpdir, "credentials");
   fs.mkdirSync(credentialsRoot, { recursive: true });
-  const credDir = path.join(credentialsRoot, "seeded-cred");
-  fs.mkdirSync(credDir, { recursive: true });
-  fs.writeFileSync(
+
+  try {
+    // ---- BOOT 1: empty store, wire onChange to flush hub-state.json ----
+    const initialState = buildPersistedHubState(
+      new Date().toISOString(),
+      [],
+      {},
+      {},
+      {},
+      [],
+      []
+    );
+    savePersistedHubState(statePath, initialState);
+
+    const store1 = new CredentialStore({
+      initialRecords: [],
+      credentialsRoot,
+      onChange: async (records) => {
+        // Mirror what HubRouter.persistStateSafely does for the credentials slice.
+        const current = loadPersistedHubState(statePath, new Date().toISOString());
+        const next = buildPersistedHubState(
+          new Date().toISOString(),
+          current.instances,
+          current.session_bindings ?? {},
+          current.push_subscriptions ?? {},
+          current.conversation_history ?? {},
+          current.callers ?? [],
+          records
+        );
+        savePersistedHubState(statePath, next);
+      }
+    });
+
+    const idA = await store1.createApiKey({
+      credential_label: "boot1-key",
+      owner_caller_id: "alice",
+      base_url: "https://api.example.com/v1",
+      model_id: "gpt-rehydrate",
+      env_var: "REHYDRATE_KEY",
+      key_value: "sk-secret"
+    });
+
+    // Confirm hub-state.json on disk has the credential
+    const persisted = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      credentials?: Array<{ credential_id: string; credential_label: string }>;
+    };
+    assert.ok(persisted.credentials, "credentials array must be present");
+    assert.equal(persisted.credentials!.length, 1);
+    assert.equal(persisted.credentials![0].credential_id, idA);
+    assert.equal(persisted.credentials![0].credential_label, "boot1-key");
+
+    // Confirm env.json was written on disk
+    const credDirFromBoot1 = store1.get(idA)!.codex_home_path;
+    const envOnDisk = JSON.parse(
+      fs.readFileSync(path.join(credDirFromBoot1, "env.json"), "utf8")
+    );
+    assert.deepEqual(envOnDisk, { REHYDRATE_KEY: "sk-secret" });
+
+    // ---- BOOT 2: simulated restart — load from disk, reconstruct store ----
+    const reloaded = loadPersistedHubState(statePath, new Date().toISOString());
+    const store2 = new CredentialStore({
+      initialRecords: reloaded.credentials ?? [],
+      credentialsRoot
+    });
+
+    // The seeded record must be present and resolvable.
+    assert.equal(store2.list().length, 1);
+    const rehydrated = store2.get(idA);
+    assert.ok(rehydrated, "credential must rehydrate from persisted state");
+    assert.equal(rehydrated!.credential_label, "boot1-key");
+    assert.equal(rehydrated!.owner_caller_id, "alice");
+    assert.equal(rehydrated!.kind, "api_key");
+    assert.equal(rehydrated!.api_key_metadata?.model_id, "gpt-rehydrate");
+
+    // resolve() must work end-to-end: read env.json off disk via the rehydrated record
+    const resolved = store2.resolve(idA, {
+      caller_id: "alice",
+      caller_label: "alice",
+      caller_authority: "write"
+    });
+    assert.ok(resolved, "resolve must return ResolvedCredential for owner");
+    assert.equal(resolved!.credential_id, idA);
+    assert.deepEqual(resolved!.env_overrides, { REHYDRATE_KEY: "sk-secret" });
+    assert.equal(resolved!.codex_home, credDirFromBoot1);
+  } finally {
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  }
+});
+
+test("Credential rehydrate: ACL still enforced after rehydration (non-owner forbidden)", async () => {
+  // After rehydration, the owner_caller_id field must still drive ACL.
+  // Otherwise restart could silently dissolve ownership boundaries.
+  const { CredentialStore, CredentialForbiddenError } = await import("./credential-store");
+  const {
+    buildPersistedHubState,
+    savePersistedHubState,
+    loadPersistedHubState
+  } = await import("./state-store");
+
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "cred-rehydrate-acl-"));
+  const statePath = path.join(tmpdir, "hub-state.json");
+  const credentialsRoot = path.join(tmpdir, "credentials");
+  fs.mkdirSync(credentialsRoot, { recursive: true });
+  savePersistedHubState(
     statePath,
-    JSON.stringify({
-      version: 4,
-      updated_at: new Date().toISOString(),
-      instances: [],
-      session_bindings: {},
-      push_subscriptions: {},
-      conversation_history: {},
-      callers: [],
-      credentials: [
-        {
-          credential_id: "seeded-cred",
-          credential_label: "seed",
-          provider: "codex",
-          kind: "api_key",
-          owner_caller_id: "alice",
-          codex_home_path: credDir,
-          is_default: false,
-          created_at: new Date().toISOString(),
-          last_used_at: null,
-          revoked_at: null,
-          api_key_metadata: {
-            base_url: "https://api.example.com",
-            model_id: "gpt-x",
-            env_var: "EXAMPLE_KEY"
-          }
-        }
-      ]
-    })
+    buildPersistedHubState(new Date().toISOString(), [], {}, {}, {}, [], [])
   );
 
-  const previous = process.env.MERIDIAN_STATE_PATH;
-  process.env.MERIDIAN_STATE_PATH = statePath;
-  // Force re-parse of config since the constructor reads config.MERIDIAN_STATE_PATH.
-  // The simplest path is to point the env var, then re-import config — but config
-  // is computed once at module load. Instead, we exercise the public surface via
-  // a fresh HubServer; if config caching prevents pickup, the test is a no-op
-  // (still passes the first assertion).
   try {
-    const server = new HubServer();
-    const router = server.getRouter();
-    const store = router.getCredentialStore();
-    assert.ok(store, "CredentialStore should be wired");
-    // Either the seed was loaded (if env propagated) or the store is empty (if
-    // config was already cached). Either way the wiring contract holds.
-    const list = store!.list();
-    assert.equal(Array.isArray(list), true);
+    const store1 = new CredentialStore({
+      initialRecords: [],
+      credentialsRoot,
+      onChange: async (records) => {
+        const current = loadPersistedHubState(statePath, new Date().toISOString());
+        savePersistedHubState(
+          statePath,
+          buildPersistedHubState(
+            new Date().toISOString(),
+            current.instances,
+            current.session_bindings ?? {},
+            current.push_subscriptions ?? {},
+            current.conversation_history ?? {},
+            current.callers ?? [],
+            records
+          )
+        );
+      }
+    });
+    const id = await store1.createApiKey({
+      credential_label: "owned-by-alice",
+      owner_caller_id: "alice",
+      base_url: "https://x/v1",
+      model_id: "m",
+      env_var: "K",
+      key_value: "v"
+    });
+
+    const reloaded = loadPersistedHubState(statePath, new Date().toISOString());
+    const store2 = new CredentialStore({
+      initialRecords: reloaded.credentials ?? [],
+      credentialsRoot
+    });
+    assert.throws(
+      () =>
+        store2.resolve(id, {
+          caller_id: "bob",
+          caller_label: "bob",
+          caller_authority: "write"
+        }),
+      CredentialForbiddenError
+    );
   } finally {
-    if (previous === undefined) delete process.env.MERIDIAN_STATE_PATH;
-    else process.env.MERIDIAN_STATE_PATH = previous;
     fs.rmSync(tmpdir, { recursive: true, force: true });
   }
 });
