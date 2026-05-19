@@ -73,7 +73,7 @@ function appStateWithDispatchers(planPaths: string[]): AppState {
 }
 
 describe("buildSystemMonitorSnapshot", () => {
-  it("returns the full 28-indicator inventory and escalates red threshold crossings", async () => {
+  it("returns the full 29-indicator inventory and escalates red threshold crossings", async () => {
     const oldIso = "2026-05-18T01:00:00.000Z";
     const fixtureA = await createDispatcherFixture({
       version: 2,
@@ -208,7 +208,7 @@ describe("buildSystemMonitorSnapshot", () => {
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(28);
+    expect(snapshot.indicators).toHaveLength(29);
     expect(snapshot.any_red).toBe(true);
 
     expect(snapshot.indicators.find((i) => i.id === "A1")).toMatchObject({ value: 3, state: "red" });
@@ -255,6 +255,16 @@ describe("buildSystemMonitorSnapshot", () => {
     expect(snapshot.indicators.find((i) => i.id === "F2")?.items).toEqual([
       expect.objectContaining({ label: "agent-dispatcher-1", href: "/role/agent-dispatcher-1" })
     ]);
+    // D5 detects the hub-log probe storm (see hub-list-zombie-eviction-and-probe-storm.md):
+    // with no shared runtime the growth rate is zero, so green. Wiring check.
+    expect(snapshot.indicators.find((i) => i.id === "D5")).toMatchObject({
+      group: "system_resources",
+      name: "meridian hub log growth rate",
+      unit: "bytes/s",
+      value: 0,
+      state: "green",
+      source_learning: "hub-list-zombie-eviction-and-probe-storm.md"
+    });
     expect(snapshot.indicators.find((i) => i.id === "F3")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "agent-dispatcher-0", href: "/role/agent-dispatcher-0" }),
       expect.objectContaining({ label: "agent-dispatcher-1", href: "/role/agent-dispatcher-1" })

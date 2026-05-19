@@ -180,6 +180,7 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, fileSizeIndicator("D2", "system_resources", "meridian-roles log size", rolesLogStat, "bytes", 100 * 1024 * 1024, 500 * 1024 * 1024, "session/2026-05-18-enospc.md"));
   push(indicators, aboveIndicator("D3", "system_resources", "meridian-roles log growth rate", Math.round(computeGrowthRate(rolesLogPath, rolesLogStat, nowMs, runtime)), "bytes/s", 20 * 1024, 200 * 1024, "session/2026-05-18-enospc.md"));
   push(indicators, fileSizeIndicator("D4", "system_resources", "meridian hub log size", hubLogStat, "bytes", 100 * 1024 * 1024, 500 * 1024 * 1024, "session/2026-05-18-enospc.md"));
+  push(indicators, aboveIndicator("D5", "system_resources", "meridian hub log growth rate", Math.round(computeGrowthRate(hubLogPath, hubLogStat, nowMs, runtime)), "bytes/s", 20 * 1024, 200 * 1024, "hub-list-zombie-eviction-and-probe-storm.md"));
 
   push(indicators, aboveIndicator("E1", "lifecycle_anomaly", "Active role with all-terminal plan", lifecycle.activeAllTerminalPlans, "roles", 1, 3, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", lifecycle.activeAllTerminalPlanItems));
   push(indicators, aboveIndicator("E2", "lifecycle_anomaly", "Workers stuck blocked > 30 min", lifecycle.blockedWorkersOver30m, "workers", 1, 3, "dispatcher/watchdog-pm-evicted-failed-seenissuekeys-cache-respawn-gap.md", lifecycle.blockedWorkerItems));
