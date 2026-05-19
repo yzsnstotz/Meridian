@@ -76,19 +76,43 @@ export class CredentialStore {
     return this.records.get(credentialId);
   }
 
+  /**
+   * Single chokepoint for owner-or-admin ACL on a specific credential id.
+   * Throws on missing, revoked, or forbidden access; returns void on success.
+   * Mirror the same precedence used by resolve(): not-found → revoked → forbidden.
+   */
+  assertOwnerOrAdmin(
+    credentialId: string | null | undefined,
+    caller: CallerIdentity
+  ): void {
+    if (!credentialId) throw new CredentialNotFoundError(String(credentialId));
+    const rec = this.records.get(credentialId);
+    if (!rec) throw new CredentialNotFoundError(credentialId);
+    if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
+    if (!this.canCallerAccess(rec, caller)) {
+      throw new CredentialForbiddenError(credentialId, caller.caller_id);
+    }
+  }
+
+  /**
+   * Predicate form of the owner-or-admin check, suitable for filtering lists
+   * where we want to skip records the caller cannot see (instead of throwing).
+   * Does NOT consider revoked_at — listing handlers may want to surface
+   * revoked entries to their owners; throwing forms enforce revoked separately.
+   */
+  canCallerAccess(record: CredentialRecord, caller: CallerIdentity): boolean {
+    if (caller.caller_authority === "admin") return true;
+    return record.owner_caller_id === caller.caller_id;
+  }
+
   resolve(
     credentialId: string | null | undefined,
     caller: CallerIdentity
   ): ResolvedCredential | null {
     if (!credentialId) return null;
-    const rec = this.records.get(credentialId);
-    if (!rec) throw new CredentialNotFoundError(credentialId);
-    if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
-    const isOwner = rec.owner_caller_id === caller.caller_id;
-    const isAdmin = caller.caller_authority === "admin";
-    if (!isOwner && !isAdmin) {
-      throw new CredentialForbiddenError(credentialId, caller.caller_id);
-    }
+    this.assertOwnerOrAdmin(credentialId, caller);
+    // assertOwnerOrAdmin guarantees the record exists and is not revoked.
+    const rec = this.records.get(credentialId)!;
     const env_overrides =
       rec.kind === "api_key" ? this.readSecretEnv(rec) : {};
     this.touchLastUsed(rec.credential_id).catch(() => {});

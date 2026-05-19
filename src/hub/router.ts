@@ -2367,12 +2367,11 @@ export class HubRouter {
         message.thread_id
       );
     }
-    const caller = message.caller;
+    const caller = message.caller ?? { caller_id: "", caller_label: "" };
     const all = store.list();
-    const isAdmin = caller?.caller_authority === "admin";
-    const filtered = isAdmin
-      ? all
-      : all.filter((r) => r.owner_caller_id === caller?.caller_id);
+    // Delegate the predicate to CredentialStore so the read filter and the
+    // owner-or-admin gate cannot drift apart.
+    const filtered = all.filter((r) => store.canCallerAccess(r, caller));
     // Project response: omit codex_home_path (filesystem detail). Secrets live in env.json
     // on disk and are NOT carried on CredentialRecord, so the remaining fields are safe.
     const credentials = filtered.map((r) => ({
@@ -2688,6 +2687,17 @@ export class HubRouter {
     );
   }
 
+  /**
+   * Owner-or-admin guard for credential intent handlers. Delegates the actual
+   * check to CredentialStore.assertOwnerOrAdmin so the ACL rule lives in one
+   * place. Returns null on success, or a built HubResult error to short-circuit.
+   *
+   * Note on revoked records: the canonical ACL throws CredentialRevokedError
+   * for revoked entries. Handlers that *intentionally* operate on revoked
+   * records (none today; revoke is idempotent at the store layer) would need
+   * to handle that separately, but the current handler set treats "revoked"
+   * as a not-found-style terminal condition.
+   */
   private checkCredentialOwnerOrAdmin(message: HubMessage, credentialId: string): HubResult | null {
     const store = this.credentialStore;
     if (!store) {
@@ -2699,28 +2709,40 @@ export class HubRouter {
         message.thread_id
       );
     }
-    const rec = store.get(credentialId);
-    if (!rec) {
-      return this.buildResult(
-        message,
-        "error",
-        this.resolveResultSource(message),
-        JSON.stringify({ error_code: "credential_not_found", credential_id: credentialId }),
-        message.thread_id
-      );
+    const caller = message.caller ?? { caller_id: "", caller_label: "" };
+    try {
+      store.assertOwnerOrAdmin(credentialId, caller);
+      return null;
+    } catch (err) {
+      if (err instanceof CredentialNotFoundError) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({ error_code: "credential_not_found", credential_id: credentialId }),
+          message.thread_id
+        );
+      }
+      if (err instanceof CredentialRevokedError) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({ error_code: "credential_revoked", credential_id: credentialId }),
+          message.thread_id
+        );
+      }
+      if (err instanceof CredentialForbiddenError) {
+        return this.buildResult(
+          message,
+          "error",
+          this.resolveResultSource(message),
+          JSON.stringify({ error_code: "credential_forbidden", credential_id: credentialId }),
+          message.thread_id
+        );
+      }
+      throw err;
     }
-    const caller = message.caller;
-    const isAdmin = caller?.caller_authority === "admin";
-    if (!isAdmin && rec.owner_caller_id !== caller?.caller_id) {
-      return this.buildResult(
-        message,
-        "error",
-        this.resolveResultSource(message),
-        JSON.stringify({ error_code: "credential_forbidden", credential_id: credentialId }),
-        message.thread_id
-      );
-    }
-    return null;
   }
 
   private async handleUpdateCredential(message: HubMessage): Promise<HubResult> {

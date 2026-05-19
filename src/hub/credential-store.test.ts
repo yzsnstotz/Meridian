@@ -440,3 +440,78 @@ test("reconcile is a no-op if credentialsRoot does not exist", () => {
   const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
   assert.doesNotThrow(() => store.reconcile());
 });
+
+// ---------------------------------------------------------------------------
+// assertOwnerOrAdmin: single chokepoint for owner-or-admin ACL.
+// ---------------------------------------------------------------------------
+
+test("assertOwnerOrAdmin: throws CredentialNotFoundError for null/empty id", () => {
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: "/tmp" });
+  assert.throws(
+    // @ts-expect-error runtime guard
+    () => store.assertOwnerOrAdmin(null, makeCaller("c1")),
+    CredentialNotFoundError
+  );
+  assert.throws(
+    () => store.assertOwnerOrAdmin("", makeCaller("c1")),
+    CredentialNotFoundError
+  );
+});
+
+test("assertOwnerOrAdmin: throws CredentialNotFoundError for unknown id", () => {
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: "/tmp" });
+  assert.throws(
+    () => store.assertOwnerOrAdmin("missing", makeCaller("c1")),
+    CredentialNotFoundError
+  );
+});
+
+test("assertOwnerOrAdmin: throws CredentialRevokedError for revoked credential", () => {
+  const rec = makeOAuth("c-rev", "c1", { revoked_at: "2026-05-18T00:00:00.000Z" });
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.throws(
+    () => store.assertOwnerOrAdmin("c-rev", makeCaller("c1")),
+    CredentialRevokedError
+  );
+});
+
+test("assertOwnerOrAdmin: throws CredentialForbiddenError for non-owner non-admin", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.throws(
+    () => store.assertOwnerOrAdmin("c-A", makeCaller("other")),
+    CredentialForbiddenError
+  );
+});
+
+test("assertOwnerOrAdmin: succeeds for owner (returns void)", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.doesNotThrow(() => store.assertOwnerOrAdmin("c-A", makeCaller("owner-1")));
+});
+
+test("assertOwnerOrAdmin: succeeds for admin even if owner mismatches", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.doesNotThrow(() =>
+    store.assertOwnerOrAdmin("c-A", makeCaller("admin-x", "admin"))
+  );
+});
+
+test("canCallerAccess: owner can access non-revoked record", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.equal(store.canCallerAccess(rec, makeCaller("owner-1")), true);
+});
+
+test("canCallerAccess: admin can access record regardless of owner", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.equal(store.canCallerAccess(rec, makeCaller("someone-else", "admin")), true);
+});
+
+test("canCallerAccess: non-owner non-admin cannot access", () => {
+  const rec = makeOAuth("c-A", "owner-1");
+  const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
+  assert.equal(store.canCallerAccess(rec, makeCaller("intruder")), false);
+});
