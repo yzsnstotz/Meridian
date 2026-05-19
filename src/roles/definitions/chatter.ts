@@ -139,12 +139,17 @@ export class ChatterRole implements BaseRole {
       trace_id: outboundTraceId,
       thread_id: this.threadId,
       actor_id: ROLES_SERVICE_ID,
+      // The hub routing target stays "claude-code" for backwards
+      // compatibility; the model selection is forwarded via the
+      // existing payload.model_id field so the hub side can decide
+      // spawn flags without the roles layer dictating routing topology.
       intent: "run",
       target: DEFAULT_AGENT_TARGET,
       priority: 5,
       payload: {
         content: result.content,
         attachments: [],
+        ...(this.config.llm_model !== undefined ? { model_id: this.config.llm_model } : {}),
         ...(this.config.credential_id !== undefined ? { credential_id: this.config.credential_id } : {})
       },
       mode: "bridge",

@@ -86,6 +86,27 @@ describe("ChatterRoleConfigSchema", () => {
     const parsed = ChatterRoleConfigSchema.parse(rest);
     expect(parsed.llm_agent_kind).toBe("claude-code");
   });
+
+  it("accepts any non-empty llm_agent_kind (chatter no longer constrains the list)", () => {
+    for (const kind of ["codex", "claude", "gemini", "cursor", "future-kind"]) {
+      const parsed = ChatterRoleConfigSchema.parse({ ...validBody, llm_agent_kind: kind });
+      expect(parsed.llm_agent_kind).toBe(kind);
+    }
+  });
+
+  it("rejects an empty-string llm_agent_kind", () => {
+    expect(() => ChatterRoleConfigSchema.parse({ ...validBody, llm_agent_kind: "" })).toThrow();
+  });
+
+  it("accepts an optional llm_model and rejects empty-string llm_model", () => {
+    const parsed = ChatterRoleConfigSchema.parse({ ...validBody, llm_model: "claude-opus-4-7" });
+    expect(parsed.llm_model).toBe("claude-opus-4-7");
+
+    const omitted = ChatterRoleConfigSchema.parse(validBody);
+    expect(omitted.llm_model).toBeUndefined();
+
+    expect(() => ChatterRoleConfigSchema.parse({ ...validBody, llm_model: "" })).toThrow();
+  });
 });
 
 describe("HubResultSchema with optional payload.chatter", () => {

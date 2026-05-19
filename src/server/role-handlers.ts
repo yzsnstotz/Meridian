@@ -26,7 +26,12 @@ import {
   isPmResolverHubResult,
   isValidatorSpawnBackoffActive
 } from "../roles/agent-dispatcher/lifecycle-store";
-import { createMeridianApiClient, type MeridianApiClient } from "../roles/agent-dispatcher/meridian-api-client";
+import {
+  createMeridianApiClient,
+  type MeridianApiClient,
+  type MeridianCredentialSummary
+} from "../roles/agent-dispatcher/meridian-api-client";
+import { listAgentKinds } from "./agent-kinds";
 import { parseMeridianStatusMarker } from "../roles/agent-dispatcher/meridian-status-marker";
 import { isMissingThreadEvidence } from "../roles/agent-dispatcher/missing-thread";
 import {
@@ -233,7 +238,9 @@ type RoleRouteMatch =
   | { kind: "reconcile" }
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string }
-  | { kind: "hub-relay" };
+  | { kind: "hub-relay" }
+  | { kind: "list-credentials" }
+  | { kind: "list-agent-kinds" };
 
 const PACKAGE_VERSION = readPackageVersion();
 
@@ -435,6 +442,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   const sendHubRequestImpl = options.sendHubRequest ?? sendHubRequest;
   const launchDispatchWorkerImpl = options.launchDispatchWorker ?? launchDispatchWorker;
   const startPmResolverImpl = options.startPmResolver ?? startPmResolverDefault;
+  const meridianApiClient: MeridianApiClient = options.meridianApi ?? createMeridianApiClient();
   const activeRoles = new Map<string, PromptStoreRoleBinding>();
 
   function syncActiveRolesFromRunner(): void {
@@ -553,6 +561,12 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "list-channels":
             writeJson(response, 200, await getChannels());
+            return true;
+          case "list-credentials":
+            writeJson(response, 200, await listCredentialsForGui(meridianApiClient));
+            return true;
+          case "list-agent-kinds":
+            writeJson(response, 200, { agent_kinds: listAgentKinds() });
             return true;
           case "list-roles":
             writeJson(response, 200, await listRoles(stateStore, log));
@@ -2111,6 +2125,14 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     return { kind: "list-channels" };
   }
 
+  if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "credentials") {
+    return { kind: "list-credentials" };
+  }
+
+  if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "agent-kinds") {
+    return { kind: "list-agent-kinds" };
+  }
+
   if (
     method === "POST"
     && parts.length === 3
@@ -2244,6 +2266,17 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
   }
 
   return null;
+}
+
+// Proxy for meridian-hub's GET /api/credentials. The GUI dispatcher form and
+// the chatter-create form both call this to populate credential dropdowns;
+// returning the hub wire shape lets app.js keep its single client-side
+// filter on `revoked_at`.
+async function listCredentialsForGui(
+  meridianApi: MeridianApiClient
+): Promise<{ credentials: MeridianCredentialSummary[] }> {
+  const credentials = await meridianApi.listCredentials();
+  return { credentials };
 }
 
 function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {

@@ -4,7 +4,10 @@ import path from "node:path";
 export interface SandboxSpawnPlanInput {
   memoryFolder: string;
   skillAllowlist: ReadonlyArray<string>;
-  llmAgentKind: "claude-code";
+  // Free-form: meridian-hub owns the allowed-kinds list. The local
+  // settings.json sandbox doesn't branch on the value today, so any
+  // non-empty string is fine here.
+  llmAgentKind: string;
 }
 
 export interface ToolDescriptor {
