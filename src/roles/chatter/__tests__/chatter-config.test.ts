@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   RoleTypeSchema,
   ChatterRoleConfigSchema,
-  HubPayloadSchema
+  HubPayloadSchema,
+  HubResultSchema
 } from "../../../types";
 
 describe("RoleTypeSchema with chatter", () => {
@@ -59,6 +60,41 @@ describe("ChatterRoleConfigSchema", () => {
     const { llm_agent_kind, ...rest } = validBody;
     const parsed = ChatterRoleConfigSchema.parse(rest);
     expect(parsed.llm_agent_kind).toBe("claude-code");
+  });
+});
+
+describe("HubResultSchema with optional payload.chatter", () => {
+  const base = {
+    trace_id: "12345678-1234-4234-8234-123456789012",
+    thread_id: "t",
+    source: "claude-code",
+    status: "success" as const,
+    content: "hi",
+    attachments: [],
+    timestamp: "2026-05-19T00:00:00.000Z"
+  };
+
+  it("parses without payload (existing roles unaffected)", () => {
+    const parsed = HubResultSchema.parse(base);
+    expect(parsed.payload).toBeUndefined();
+  });
+
+  it("parses with payload.chatter envelope", () => {
+    const parsed = HubResultSchema.parse({
+      ...base,
+      payload: { chatter: { mode: "session", chatter_session_id: "s1", control: "new" } }
+    });
+    expect(parsed.payload?.chatter?.mode).toBe("session");
+    expect(parsed.payload?.chatter?.control).toBe("new");
+  });
+
+  it("rejects payload.chatter with invalid mode", () => {
+    expect(() =>
+      HubResultSchema.parse({
+        ...base,
+        payload: { chatter: { mode: "broken" } }
+      })
+    ).toThrow();
   });
 });
 

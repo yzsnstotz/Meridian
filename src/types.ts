@@ -111,6 +111,16 @@ export const HubMessageSchema = z.object({
 });
 export type HubMessage = z.input<typeof HubMessageSchema>;
 
+// Optional payload extras carried on hub-to-role inbound. Distinct from
+// HubMessage.payload (which has required content + attachments) — this is a
+// passthrough container for role-specific envelopes (e.g. ChatterTurnEnvelope)
+// that the originating sender attached to a forwarded request. Every existing
+// role ignores it; only Chatter reads `payload.chatter`.
+export const HubResultPayloadSchema = z.object({
+  chatter: ChatterTurnEnvelopeSchema.optional()
+}).optional();
+export type HubResultPayload = z.infer<typeof HubResultPayloadSchema>;
+
 export const HubResultSchema = z.object({
   trace_id: z.string().uuid(),
   thread_id: z.string().min(1),
@@ -125,7 +135,8 @@ export const HubResultSchema = z.object({
   summary_text: z.string().nullable().optional(),
   details_text: z.string().nullable().optional(),
   attachments: z.array(FileAttachmentSchema).default([]),
-  timestamp: z.string().datetime()
+  timestamp: z.string().datetime(),
+  payload: HubResultPayloadSchema
 });
 export type HubResult = z.infer<typeof HubResultSchema>;
 
