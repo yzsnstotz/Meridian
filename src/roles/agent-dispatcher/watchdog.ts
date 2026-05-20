@@ -14,6 +14,7 @@ import type {
 import type { Logger } from "../base-role";
 import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 import { autoResolve } from "./auto-resolver";
+import { runAutoForceCompleteSweep } from "./auto-force-complete-reconciler";
 import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
 import { isHubTransportEvidence, isMissingThreadEvidence } from "./missing-thread";
 import {
@@ -65,6 +66,19 @@ export interface WatchdogDeps {
    * Hub IPC transport error (kill outcome unknown).
    */
   now?: () => number;
+  /**
+   * Resolves the base branch (e.g. "main") used by the auto-force-complete
+   * sweep to scan for `[<WORKER_ID>]`-prefixed commits as completion evidence.
+   * Returning null disables the sweep for that plan. When the dep is omitted,
+   * the sweep defaults to "main".
+   */
+  resolveBaseBranchForDispatchPlan?: (dispatchPlanPath: string) => Promise<string | null>;
+  /**
+   * Master switch for the auto-force-complete sweep. Default true. Set false
+   * during an incident to keep the watchdog running other reconciliation while
+   * disabling only the evidence-based promotion path.
+   */
+  autoForceCompleteEnabled?: boolean;
 }
 
 /**
@@ -88,6 +102,10 @@ export class ReconciliationWatchdog {
     | ((dispatchPlanPath: string) => Promise<KillPolicy | null>)
     | null;
   private readonly killThread: (threadId: string) => Promise<void>;
+  private readonly resolveBaseBranchForDispatchPlan:
+    | ((dispatchPlanPath: string) => Promise<string | null>)
+    | null;
+  private readonly autoForceCompleteEnabled: boolean;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -113,6 +131,8 @@ export class ReconciliationWatchdog {
     this.resolveKillPolicyForDispatchPlan = deps.resolveKillPolicyForDispatchPlan ?? null;
     this.killThread = deps.killThread ?? defaultKillThread;
     this.now = deps.now ?? Date.now;
+    this.resolveBaseBranchForDispatchPlan = deps.resolveBaseBranchForDispatchPlan ?? null;
+    this.autoForceCompleteEnabled = deps.autoForceCompleteEnabled ?? true;
   }
 
   start(): void {
@@ -203,6 +223,17 @@ export class ReconciliationWatchdog {
 
         await this.cleanupTerminalWorkerThreads(lifecycleStore, dispatchPlanPath, dispatchPlanPaths);
 
+        if (this.autoForceCompleteEnabled) {
+          try {
+            await this.runAutoForceCompleteSweep(lifecycleStore, dispatchPlanPath);
+          } catch (error) {
+            this.log.warn("Auto-force-complete sweep failed", {
+              dispatchPlanPath,
+              error: asError(error).message
+            });
+          }
+        }
+
         if (this.autoResolveConfig) {
           try {
             const resolveReport = await autoResolve(
@@ -245,6 +276,33 @@ export class ReconciliationWatchdog {
 
     return reports;
   }
+
+  private async runAutoForceCompleteSweep(
+    lifecycleStore: LifecycleStore,
+    dispatchPlanPath: string
+  ): Promise<void> {
+    const baseBranch = this.resolveBaseBranchForDispatchPlan
+      ? await this.resolveBaseBranchForDispatchPlan(dispatchPlanPath)
+      : "main";
+    if (!baseBranch) {
+      return;
+    }
+    const report = await runAutoForceCompleteSweep(lifecycleStore, dispatchPlanPath, {
+      baseBranch,
+      log: this.log
+    });
+    if (report.promoted.length > 0) {
+      this.log.info("Auto-force-complete promoted workers", {
+        dispatchPlanPath,
+        baseBranch,
+        promoted: report.promoted.map((entry) => ({
+          worker_id: entry.workerId,
+          commit_sha: entry.commitSha
+        }))
+      });
+    }
+  }
+
   /**
    * Steady-state PM resolver liveness reconciliation. Mirrors
    * `findLivePmResolversForWorker` (PR #212) but runs on every watchdog sweep
