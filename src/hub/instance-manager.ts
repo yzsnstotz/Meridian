@@ -509,13 +509,13 @@ export class InstanceManager {
     };
   }
 
-  sendTerminalInput(threadId: string, _rawInput: string): string {
+  sendTerminalInput(threadId: string, rawInput: string): string {
     const instance = this.registry.get(threadId);
     if (!instance) {
       throw new Error(`Cannot send terminal input; thread_id=${threadId} is not registered`);
     }
     throw new Error(
-      `Thread ${threadId} is running in mode=${instance.mode}; terminal_input is no longer supported (pane_bridge removed).`
+      `Thread ${threadId} is running in mode=${instance.mode}; terminal_input (${rawInput}) is no longer supported (pane_bridge removed).`
     );
   }
 

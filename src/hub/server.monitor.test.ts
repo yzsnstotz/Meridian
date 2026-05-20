@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import { config } from "../config";
 import type { HubResult, ReplyChannel, ServiceEndpoint, ThreadProgressSnapshot } from "../types";
-import { OutputBus } from "./output-bus";
 import type { ResultSender } from "./result-sender";
 import type { HubRouter } from "./router";
 import { HubServer, resolveStaticServiceEndpoints } from "./server";
@@ -171,15 +170,6 @@ class FakeResultSender {
 
   async sendResult(result: HubResult, replyChannel: ReplyChannel): Promise<void> {
     this.calls.push({ result, replyChannel });
-  }
-}
-
-class InspectableOutputBus extends OutputBus {
-  readonly snapshots: Array<{ traceId: string; snapshot: string }> = [];
-
-  override pushSnapshot(traceId: string, snapshot: string): void {
-    this.snapshots.push({ traceId, snapshot });
-    super.pushSnapshot(traceId, snapshot);
   }
 }
 

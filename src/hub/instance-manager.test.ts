@@ -36,10 +36,6 @@ function socketPathForThread(threadId: string): string {
   return path.join("/tmp", `agentapi-${threadId}.sock`);
 }
 
-function escapeForRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 const socketModeOptions = {
   agentapiSocketSupport: true,
   agentapiAttachSocketSupport: true
@@ -629,7 +625,7 @@ test("sendTerminalInput rejects bridge threads", async () => {
 
   assert.throws(
     () => manager.sendTerminalInput(threadId, "run"),
-    /terminal_input is no longer supported/
+    /is no longer supported/
   );
 
   await manager.kill(threadId);
