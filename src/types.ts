@@ -18,10 +18,15 @@ export type HubRunState = z.infer<typeof HubRunStateSchema>;
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
-export const StatefulBridgeModeSchema = z.enum(["bridge", "pane_bridge"]);
+// Mirrors the meridian-hub BridgeMode contract. `pane_bridge` was removed
+// 2026-05-21 (meridian-hub PR #93): operators standardized on telegram + a2a
+// (`bridge`) and the tmux-pane-attach surface was unused. The Stateful*
+// variant exists to forbid `stateless_call` at call sites that need a
+// persistent thread reservation.
+export const StatefulBridgeModeSchema = z.enum(["bridge"]);
 export type StatefulBridgeMode = z.infer<typeof StatefulBridgeModeSchema>;
 
-export const BridgeModeSchema = z.enum(["bridge", "pane_bridge", "stateless_call"]);
+export const BridgeModeSchema = z.enum(["bridge", "stateless_call"]);
 export type BridgeMode = z.infer<typeof BridgeModeSchema>;
 
 export const IntentSchema = z.union([
@@ -337,7 +342,6 @@ export const AgentInstanceSchema = z.object({
   socket_path: z.string().min(1),
   working_dir: z.string().min(1).optional(),
   pid: z.number().int().nonnegative(),
-  tmux_pane: z.string().nullable(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),

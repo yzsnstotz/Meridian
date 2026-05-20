@@ -24,7 +24,7 @@ const EMPTY_THREAD_ID = "";
 export interface LaunchConfig {
   agentType: string;
   modelId?: string;
-  mode: "bridge" | "pane_bridge";
+  mode: "bridge";
   autoApprove?: boolean;
   /**
    * Opaque credential identifier forwarded to /api/spawn so the Hub uses a

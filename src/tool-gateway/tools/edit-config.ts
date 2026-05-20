@@ -38,7 +38,7 @@ const editConfigTool: ToolDefinition = {
     mode: {
       type: "string",
       required: false,
-      description: "Set mode (bridge, pane_bridge)"
+      description: "Set mode (bridge)"
     },
     kill_policy: {
       type: "string",

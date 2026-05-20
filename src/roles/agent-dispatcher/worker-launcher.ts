@@ -18,7 +18,7 @@ import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
 
 export interface LaunchDispatchWorkerConfig {
   agentType: string;
-  mode: "bridge" | "pane_bridge";
+  mode: "bridge";
   killPolicy?: KillPolicy;
   autoApprove?: boolean;
   commandFilePath: string;
