@@ -13,10 +13,27 @@ export const ChatterInFlightTraceSchema = z.object({
 });
 export type ChatterInFlightTrace = z.infer<typeof ChatterInFlightTraceSchema>;
 
+export const ChatterProvisionErrorSchema = z.object({
+  ts: z.string().datetime(),
+  code: z.string().min(1),
+  message: z.string().min(1)
+});
+export type ChatterProvisionError = z.infer<typeof ChatterProvisionErrorSchema>;
+
+export const ChatterTurnErrorSchema = z.object({
+  ts: z.string().datetime(),
+  trace_id: z.string().min(1),
+  code: z.string().min(1),
+  message: z.string().min(1)
+});
+export type ChatterTurnError = z.infer<typeof ChatterTurnErrorSchema>;
+
 export const ChatterPersistedStateSchema = z.object({
   version: z.literal(1),
   agent_session_id: z.string().min(1).nullable().default(null),
-  in_flight_traces: z.array(ChatterInFlightTraceSchema).default([])
+  in_flight_traces: z.array(ChatterInFlightTraceSchema).default([]),
+  last_provision_error: ChatterProvisionErrorSchema.optional(),
+  last_turn_error: ChatterTurnErrorSchema.optional()
 });
 export type ChatterPersistedState = z.infer<typeof ChatterPersistedStateSchema>;
 
@@ -55,4 +72,45 @@ export class ChatterStateStore {
       throw e;
     }
   }
+
+  recordProvisionError(code: string, error: unknown): void {
+    this.save({
+      ...this.load(),
+      last_provision_error: {
+        ts: new Date().toISOString(),
+        code,
+        message: sanitizeChatterErrorMessage(error)
+      }
+    });
+  }
+
+  clearProvisionError(): void {
+    const { last_provision_error: _lastProvisionError, ...state } = this.load();
+    this.save(state);
+  }
+
+  recordTurnError(traceId: string, code: string, error: unknown): void {
+    this.save({
+      ...this.load(),
+      last_turn_error: {
+        ts: new Date().toISOString(),
+        trace_id: traceId,
+        code,
+        message: sanitizeChatterErrorMessage(error)
+      }
+    });
+  }
+
+  clearTurnError(): void {
+    const { last_turn_error: _lastTurnError, ...state } = this.load();
+    this.save(state);
+  }
+}
+
+export function sanitizeChatterErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const firstLine = raw.split(/\r?\n/, 1)[0]?.trim() || "unknown_error";
+  return firstLine
+    .replace(/\/(?:Users|private|var|tmp|Volumes|home)\/[^\s"'`]+/g, "[path]")
+    .slice(0, 500);
 }

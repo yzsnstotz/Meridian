@@ -192,6 +192,13 @@ export class ChatterRole implements BaseRole {
         case "agent_turn":
         case "job_dispatch":
           await this.forwardToUser(result.content);
+          if (trace.purpose === "agent_turn") {
+            if (result.status === "error") {
+              this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
+            } else if (result.run_state === "completed") {
+              this.clearTurnError();
+            }
+          }
           if (
             result.run_state === "completed"
             || result.run_state === "timeout"
@@ -228,7 +235,12 @@ export class ChatterRole implements BaseRole {
       return;
     }
 
-    await this.handleNewTurn(result, envelope as ChatterTurnEnvelopeWithMode);
+    try {
+      await this.handleNewTurn(result, envelope as ChatterTurnEnvelopeWithMode);
+    } catch (error) {
+      this.recordTurnError(result.trace_id, "turn_handler_failed", error);
+      throw error;
+    }
   }
 
   private async handleNewTurn(
@@ -453,6 +465,7 @@ export class ChatterRole implements BaseRole {
     };
 
     void this.ctx!.sendToHub(spawnMsg).catch((e) => {
+      this.recordTurnError(traceId, "spawn_dispatch_failed", e);
       this.failPendingSpawn(`spawn dispatch failed: ${e instanceof Error ? e.message : String(e)}`);
     });
   }
@@ -465,6 +478,7 @@ export class ChatterRole implements BaseRole {
     }
 
     if (result.status === "error") {
+      this.recordTurnError(result.trace_id, "spawn_failed", result.content);
       this.failPendingSpawn(`spawn failed: ${result.content}`);
       return;
     }
@@ -557,8 +571,10 @@ export class ChatterRole implements BaseRole {
 
     try {
       await this.ctx!.sendToHub(runMsg);
+      this.clearTurnError();
     } catch (e) {
       this.sessionMgr!.clearTrace(traceId);
+      this.recordTurnError(traceId, "agent_dispatch_failed", e);
       await this.forwardToUser(
         `error: agent dispatch failed: ${e instanceof Error ? e.message : String(e)}`
       );
@@ -621,6 +637,14 @@ export class ChatterRole implements BaseRole {
       suppress_reply: true
     };
     await this.ctx.sendToHub(msg);
+  }
+
+  private recordTurnError(traceId: string, code: string, error: unknown): void {
+    this.store?.recordTurnError(traceId, code, error);
+  }
+
+  private clearTurnError(): void {
+    this.store?.clearTurnError();
   }
 
   private async forwardReadOnlyQueryResult(result: ChatterReadOnlyQueryResult): Promise<void> {

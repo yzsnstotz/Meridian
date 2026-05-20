@@ -16,6 +16,11 @@ import {
   loadProjectPolicy
 } from "./project-policy-loader";
 import type { InterpolatedProjectPolicy } from "./project-policy-schema";
+import {
+  ChatterStateStore,
+  type ChatterProvisionError,
+  type ChatterTurnError
+} from "../roles/chatter/chatter-state-store";
 import { AppStateSchema, type AppState, type ChatterRoleConfig } from "../types";
 
 type PersistableStateStore = {
@@ -137,12 +142,14 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
 
     const existing = await findChatter(interpolated.thread_id);
     if (existing) {
+      new ChatterStateStore(interpolated.memory_folder).clearProvisionError();
       return { thread_id: interpolated.thread_id, status: "existing" };
     }
 
     return withEnsureLock(interpolated.thread_id, async () => {
       const rechecked = await findChatter(interpolated.thread_id);
       if (rechecked) {
+        new ChatterStateStore(interpolated.memory_folder).clearProvisionError();
         return { thread_id: interpolated.thread_id, status: "existing" };
       }
 
@@ -154,6 +161,10 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
       } catch (error) {
         if (!isHttpError(error) || error.statusCode >= 500) {
           const upstreamStatus = isHttpError(error) ? error.statusCode : 500;
+          new ChatterStateStore(interpolated.memory_folder).recordProvisionError(
+            "role_creation_failed",
+            error
+          );
           throw createHttpError(upstreamStatus, "role_creation_failed", {
             error: "role_creation_failed",
             upstream_status: upstreamStatus
@@ -163,6 +174,7 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
       }
 
       await persistChatterRole(interpolated.thread_id, body.config, "active");
+      new ChatterStateStore(interpolated.memory_folder).clearProvisionError();
       return { thread_id: interpolated.thread_id, status: "created" };
     });
   }
@@ -183,7 +195,13 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
   async function getChatter(
     projectId: string,
     userId: string
-  ): Promise<{ thread_id: string; status: string; last_active_at?: string } | null> {
+  ): Promise<{
+    thread_id: string;
+    status: string;
+    last_active_at?: string;
+    last_provision_error?: ChatterProvisionError;
+    last_turn_error?: ChatterTurnError;
+  } | null> {
     const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
     const interpolated = interpolatePolicyForUser(policy, userId);
     const existing = await findChatter(interpolated.thread_id);
@@ -191,9 +209,12 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
       return null;
     }
 
+    const chatterState = new ChatterStateStore(interpolated.memory_folder).load();
     return {
       thread_id: interpolated.thread_id,
-      status: existing.status
+      status: existing.status,
+      ...(chatterState.last_provision_error ? { last_provision_error: chatterState.last_provision_error } : {}),
+      ...(chatterState.last_turn_error ? { last_turn_error: chatterState.last_turn_error } : {})
     };
   }
 
