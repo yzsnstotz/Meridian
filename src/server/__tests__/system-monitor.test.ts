@@ -73,7 +73,7 @@ function appStateWithDispatchers(planPaths: string[]): AppState {
 }
 
 describe("buildSystemMonitorSnapshot", () => {
-  it("returns the full 34-indicator inventory and escalates red threshold crossings", async () => {
+  it("returns the full 35-indicator inventory and escalates red threshold crossings", async () => {
     const oldIso = "2026-05-18T01:00:00.000Z";
     const fixtureA = await createDispatcherFixture({
       version: 2,
@@ -193,6 +193,7 @@ describe("buildSystemMonitorSnapshot", () => {
       statFile: async (filePath) => {
         if (filePath.endsWith("state.json")) return { size: 11 * 1024 * 1024, mtimeMs: Date.parse("2026-05-18T02:48:30.000Z") };
         if (filePath.endsWith("meridian-roles.out.log")) return { size: 150 * 1024 * 1024, mtimeMs: Date.parse("2026-05-18T02:48:30.000Z") };
+        if (filePath.endsWith("fnm_multishells")) return { size: 2 * 1024 * 1024, mtimeMs: Date.parse("2026-05-18T02:48:30.000Z") };
         return { size: 10 * 1024 * 1024, mtimeMs: Date.parse("2026-05-18T02:48:30.000Z") };
       },
       statFs: async () => ({ freeBytes: 10 * 1024 * 1024 * 1024 }),
@@ -223,8 +224,19 @@ describe("buildSystemMonitorSnapshot", () => {
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(34);
+    expect(snapshot.indicators).toHaveLength(35);
     expect(snapshot.any_red).toBe(true);
+
+    // D6 fixture: 2 MB fnm_multishells block (above 1 MB yellow, below 10 MB red)
+    expect(snapshot.indicators.find((i) => i.id === "D6")).toMatchObject({
+      group: "system_resources",
+      name: "fnm multishells dir block size",
+      unit: "bytes",
+      value: 2 * 1024 * 1024,
+      state: "yellow",
+      thresholds: { yellow: 1024 * 1024, red: 10 * 1024 * 1024 },
+      source_learning: "maintenance-hub-restart-pm2-and-socket-race.md"
+    });
 
     expect(snapshot.indicators.find((i) => i.id === "G1")).toMatchObject({
       group: "cure_metrics",

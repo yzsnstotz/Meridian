@@ -61,6 +61,7 @@ export interface BuildSystemMonitorOptions {
   hubStatePath?: string;
   rolesLogPath?: string;
   hubLogPath?: string;
+  fnmMultishellsPath?: string;
   fetchAgentapiInstanceIndex?: ProcessHandlersOptions["fetchAgentapiInstanceIndex"];
 }
 
@@ -78,6 +79,13 @@ const DEFAULT_ROLES_LOG_PATH = process.env.MERIDIAN_ROLES_LOG_PATH
   ?? path.resolve(process.cwd(), "logs/meridian-roles.out.log");
 const DEFAULT_HUB_LOG_PATH = process.env.MERIDIAN_HUB_LOG_PATH
   ?? path.join(process.env.LOG_DIR ?? "/var/log/hub", "hub.log");
+// fnm caches a per-shell symlink dir under ~/.local/state/fnm_multishells/.
+// Every codex/agentapi spawn through fnm adds an entry. Without rotation it
+// saturates at 65535 (the macOS APFS link-count cap) and shell init (`eval
+// "$(fnm env)"`) hangs 10–30s on every new terminal. D6 stat-monitors the
+// directory inode size as a fast proxy for entry count — no enumeration.
+const DEFAULT_FNM_MULTISHELLS_PATH = process.env.MERIDIAN_FNM_MULTISHELLS_PATH
+  ?? path.join(process.env.HOME ?? "/Users/yzliu", ".local/state/fnm_multishells");
 
 const defaultLogCounter = new LogPatternCounter();
 
@@ -122,6 +130,7 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   const hubStatePath = options.hubStatePath ?? DEFAULT_HUB_STATE_PATH;
   const rolesLogPath = options.rolesLogPath ?? DEFAULT_ROLES_LOG_PATH;
   const hubLogPath = options.hubLogPath ?? DEFAULT_HUB_LOG_PATH;
+  const fnmMultishellsPath = options.fnmMultishellsPath ?? DEFAULT_FNM_MULTISHELLS_PATH;
 
   const [
     processes,
@@ -132,7 +141,8 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
     hubLogStat,
     diskStat,
     logCounts,
-    hubLogCounts
+    hubLogCounts,
+    fnmMultishellsStat
   ] = await Promise.all([
     loadProcesses(options, errors),
     loadHubProbe(options, hubSocketPath, errors),
@@ -142,7 +152,8 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
     loadStat(statFile, hubLogPath, errors),
     loadFsStat(statFs, rolesLogPath, errors),
     loadLogCounts(options, rolesLogPath, nowMs, errors),
-    loadLogCounts(options, hubLogPath, nowMs, errors)
+    loadLogCounts(options, hubLogPath, nowMs, errors),
+    loadStat(statFile, fnmMultishellsPath, errors)
   ]);
   errors.push(...lifecycle.errors);
 
@@ -183,6 +194,11 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, aboveIndicator("D3", "system_resources", "meridian-roles log growth rate", Math.round(computeGrowthRate(rolesLogPath, rolesLogStat, nowMs, runtime)), "bytes/s", 20 * 1024, 200 * 1024, "session/2026-05-18-enospc.md"));
   push(indicators, fileSizeIndicator("D4", "system_resources", "meridian hub log size", hubLogStat, "bytes", 100 * 1024 * 1024, 500 * 1024 * 1024, "session/2026-05-18-enospc.md"));
   push(indicators, aboveIndicator("D5", "system_resources", "meridian hub log growth rate", Math.round(computeGrowthRate(hubLogPath, hubLogStat, nowMs, runtime)), "bytes/s", 20 * 1024, 200 * 1024, "hub-list-zombie-eviction-and-probe-storm.md"));
+  // D6 — fnm multishells dir block size, stat'd via inode size (no enumeration).
+  // Saturation cap on macOS APFS is 65535 entries (~85 MB block); this caused
+  // 30s terminal spawns on 2026-05-20. Hourly launchd agent
+  // (com.meridian.fnm-multishell-clean) rotates above 1 MB.
+  push(indicators, fileSizeIndicator("D6", "system_resources", "fnm multishells dir block size", fnmMultishellsStat, "bytes", 1024 * 1024, 10 * 1024 * 1024, "maintenance-hub-restart-pm2-and-socket-race.md"));
 
   push(indicators, aboveIndicator("E1", "lifecycle_anomaly", "Active role with all-terminal plan", lifecycle.activeAllTerminalPlans, "roles", 1, 3, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", lifecycle.activeAllTerminalPlanItems));
   push(indicators, aboveIndicator("E2", "lifecycle_anomaly", "Workers stuck blocked > 30 min", lifecycle.blockedWorkersOver30m, "workers", 1, 3, "dispatcher/watchdog-pm-evicted-failed-seenissuekeys-cache-respawn-gap.md", lifecycle.blockedWorkerItems));
