@@ -48,7 +48,7 @@ describe("buildSandboxSpawnPlan", () => {
     expect(settings.enabledMcpjsonServers).toEqual([]);
   });
 
-  it("toolDescriptors include only built-in memory tools + dispatch_coding_job + allowlisted extras", () => {
+  it("toolDescriptors include built-in chatter tools + dispatch_coding_job + allowlisted extras", () => {
     const plan = buildSandboxSpawnPlan({
       memoryFolder: root,
       skillAllowlist: ["dispatch_coding_job", "web_search"],
@@ -60,6 +60,7 @@ describe("buildSandboxSpawnPlan", () => {
         "chatter.memory.list",
         "chatter.memory.read",
         "chatter.memory.write",
+        "chatter.suggest_observation",
         "chatter.skill.dispatch_coding_job",
         "chatter.skill.web_search"
       ].sort()
@@ -78,13 +79,14 @@ describe("buildSandboxSpawnPlan", () => {
         "chatter.memory.list",
         "chatter.memory.read",
         "chatter.memory.write",
+        "chatter.suggest_observation",
         "structured.get",
         "structured.upsert"
       ].sort()
     );
   });
 
-  it("never includes shell/web/exec tools by default (only built-in memory tools when allowlist is empty)", () => {
+  it("never includes shell/web/exec tools by default (only built-in chatter tools when allowlist is empty)", () => {
     const plan = buildSandboxSpawnPlan({
       memoryFolder: root,
       skillAllowlist: [],
@@ -92,7 +94,12 @@ describe("buildSandboxSpawnPlan", () => {
     });
     const names = plan.toolDescriptors.map((t) => t.name);
     expect(names).toEqual(
-      expect.arrayContaining(["chatter.memory.read", "chatter.memory.write", "chatter.memory.list"])
+      expect.arrayContaining([
+        "chatter.memory.read",
+        "chatter.memory.write",
+        "chatter.memory.list",
+        "chatter.suggest_observation"
+      ])
     );
     expect(names).not.toContain("Bash");
     expect(names).not.toContain("WebFetch");

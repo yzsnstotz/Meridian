@@ -47,7 +47,11 @@ export class SeedsInitError extends Error {
 const BUILTIN_MEMORY_TOOLS: ReadonlyArray<ToolDescriptor> = [
   { name: "chatter.memory.read", description: "Read a memory entry by logical key." },
   { name: "chatter.memory.write", description: "Write a memory entry by logical key (session mode only)." },
-  { name: "chatter.memory.list", description: "List entries under a logical path." }
+  { name: "chatter.memory.list", description: "List entries under a logical path." },
+  {
+    name: "chatter.suggest_observation",
+    description: "Suggest a user-confirmable structured observation without writing it."
+  }
 ];
 
 const STRUCTURED_SKILL_NAME_SET: ReadonlySet<string> = new Set(STRUCTURED_SKILL_NAMES);

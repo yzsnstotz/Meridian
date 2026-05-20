@@ -88,6 +88,21 @@ export const ChatterReadOnlyQueryResultSchema = z.object({
 });
 export type ChatterReadOnlyQueryResult = z.infer<typeof ChatterReadOnlyQueryResultSchema>;
 
+export const ChatterObservationProposedPatchSchema = z.object({
+  record_type: z.string().min(1),
+  key: z.string().min(1),
+  patch: z.record(z.string(), z.unknown())
+});
+export type ChatterObservationProposedPatch = z.infer<typeof ChatterObservationProposedPatchSchema>;
+
+export const ChatterCandidateObservationSchema = z.object({
+  observation_id: z.string().uuid(),
+  type: z.string().min(1),
+  description: z.string().min(1),
+  proposed_patch: ChatterObservationProposedPatchSchema
+});
+export type ChatterCandidateObservation = z.infer<typeof ChatterCandidateObservationSchema>;
+
 export const ChatterTurnOriginSchema = z.enum(["user", "trigger"]).default("user").optional();
 export type ChatterTurnOrigin = NonNullable<z.infer<typeof ChatterTurnOriginSchema>>;
 
@@ -99,7 +114,9 @@ export const ChatterTurnEnvelopeSchema = z.object({
   context_refs: z.array(z.object({ type: z.string(), key: z.string() })).optional(),
   read_only_query: ChatterReadOnlyQuerySchema.optional(),
   read_only_query_result: ChatterReadOnlyQueryResultSchema.optional(),
-  control: z.enum(["new", "interrupt"]).optional()
+  candidate_observation: ChatterCandidateObservationSchema.optional(),
+  observation_id: z.string().uuid().optional(),
+  control: z.enum(["new", "interrupt", "confirm_observation", "reject_observation"]).optional()
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
 
