@@ -286,9 +286,14 @@ export const AgentInstanceSchema = z.object({
   supportsStream: z.boolean().optional(),
   codexSessionId: z.string().min(1).optional(),
   mode: BridgeModeSchema,
-  socket_path: z.string().min(1),
+  // After the 2026-05-21 streaming-default simplification, both `bridge` and
+  // `stateless_call` instances are pure registry metadata — there is no
+  // long-lived agentapi child, so socket_path / pid have nothing real to
+  // refer to. They remain optional so legacy state.json blobs written by the
+  // previous schema still load; new entries set them to null.
+  socket_path: z.string().min(1).nullable().optional(),
   working_dir: z.string().min(1).optional(),
-  pid: z.number().int().nonnegative(),
+  pid: z.number().int().nonnegative().nullable().optional(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),

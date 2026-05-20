@@ -827,7 +827,6 @@ export class HubRouter {
   private async handleRun(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
-    const client = this.clientFactory(instance.thread_id);
     if (message.caller) {
       this.registry.setCaller(threadId, message.caller, this.now().toISOString());
     }
@@ -836,95 +835,27 @@ export class HubRouter {
     this.persistStateSafely();
 
     try {
-      if (instance.supportsStream) {
-        const streamContent = await this.tryHandleStreamRun(message, threadId);
-        if (streamContent !== null) {
-          const content = this.formatRunContent(instance.thread_id, streamContent.content);
-          const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
-            attachmentResults: streamContent.attachmentResults
-          });
-          this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
-          return result;
-        }
-      }
-
-      await client.connect(instance.socket_path);
-      const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
-      const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
-      const response = await client.sendMessage(runContent, message.payload.attachments, instance.agent_type);
-      const responseAttachmentResults = this.extractAttachmentResults(response);
-      this.registry.setStatus(instance.thread_id, "running");
-      const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
-      const agentReply = await this.waitForAgentReply(client, previousSnapshot, message.trace_id, runLogContext);
-      if (agentReply === null) {
-        this.log.warn(
-          runLogContext,
-          "Run using fallback content: waitForAgentReply returned null; response body or getLatestAgentMessageSnapshot used as result content"
+      // After the 2026-05-21 streaming-default change, every codex / claude /
+      // gemini instance carries supportsStream=true and the spawn path does
+      // not create an agentapi pane to fall back to. Every `/api/run` MUST
+      // succeed via the stream-exec path; if `tryHandleStreamRun` exhausts
+      // its retries it throws (instead of returning null + falling back to
+      // `client.sendMessage`, which used to be the pane-typing path).
+      if (!instance.supportsStream) {
+        throw new Error(
+          `Instance ${instance.thread_id} has supportsStream=false; the non-stream agentapi-pane fallback was removed (no pane is spawned for bridge instances anymore)`
         );
       }
-      if (agentReply?.kind === "final") {
-        const content = this.formatRunContent(instance.thread_id, agentReply.content);
-        const attachments = this.extractResultAttachments(response);
-        const result = this.buildResult(
-          message,
-          "success",
-          instance.agent_type,
-          content,
-          instance.thread_id,
-          {
-            attachments,
-            attachmentResults: responseAttachmentResults,
-            runState: "completed"
-          }
-        );
-        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
-        return result;
-      }
-
-      if (agentReply?.kind === "non_final") {
-        return this.buildPendingRunResult(
-          message,
-          instance.agent_type,
-          instance.thread_id,
-          agentReply.runState,
-          agentReply.content,
-          responseAttachmentResults
+      const streamContent = await this.tryHandleStreamRun(message, threadId);
+      if (streamContent === null) {
+        throw new Error(
+          `Stream run for ${instance.thread_id} returned no content after all retries; no agentapi-pane fallback exists`
         );
       }
-
-      const fallbackContent = await this.resolveFallbackRunContent(client, response, previousSnapshot);
-      const fallbackClassification = classifyAgentOutput(fallbackContent);
-      if (fallbackContent === "Agent is processing..." || fallbackClassification.kind === "action_required") {
-        const runState: Exclude<HubRunState, "completed"> =
-          fallbackClassification.kind === "action_required"
-            ? "still_running"
-            : (await this.getClientRunActivity(client)) === "active"
-              ? "still_running"
-              : "timeout";
-        return this.buildPendingRunResult(
-          message,
-          instance.agent_type,
-          instance.thread_id,
-          runState,
-          fallbackContent === "Agent is processing..." ? null : fallbackContent,
-          responseAttachmentResults
-        );
-      }
-
-      const content = this.formatRunContent(instance.thread_id, fallbackContent);
-      const attachments = this.extractResultAttachments(response);
-      const result = this.buildResult(
-        message,
-        "success",
-        instance.agent_type,
-        content,
-        instance.thread_id,
-        {
-          attachments,
-          attachmentResults: responseAttachmentResults,
-          runState: "completed"
-        }
-      );
+      const content = this.formatRunContent(instance.thread_id, streamContent.content);
+      const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
+        attachmentResults: streamContent.attachmentResults
+      });
       this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
       return result;
     } catch (error) {
@@ -948,7 +879,6 @@ export class HubRouter {
           completedAtMs: Date.now()
         });
       }
-      client.disconnect();
     }
   }
 
@@ -1981,6 +1911,24 @@ export class HubRouter {
 
   async buildCompletionResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
     const instance = this.resolveInstance(threadId);
+    // Streaming-bridge / stateless instances have no agentapi pane to probe.
+    // The completion content was already captured during the stream-exec run
+    // and persisted to the conversation history; reuse the latest entry.
+    if (!instance.socket_path) {
+      const latestEntry = this.findLatestConversationEntryForTrace(threadId, null);
+      const content = this.formatRunContent(threadId, latestEntry?.content ?? "Task completed.");
+      return HubResultSchema.parse({
+        trace_id: traceId ?? randomUUID(),
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "success",
+        content,
+        attachments: [],
+        telegram_inline_keyboard: tryBuildGuiInlineKeyboard(threadId),
+        timestamp: this.now().toISOString()
+      });
+    }
+
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
 
@@ -3109,6 +3057,33 @@ export class HubRouter {
 
   async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
     const instance = this.resolveInstance(threadId);
+    // Streaming-bridge / stateless instances have no agentapi pane to query
+    // for live progress. Fall back to the conversation history that
+    // `recordAgentConversationEntry` keeps in sync with each stream-exec run.
+    if (!instance.socket_path) {
+      const resolvedTraceId = this.resolveProgressTraceId(threadId, traceId);
+      const historyEntry = this.findLatestConversationEntryForTrace(threadId, resolvedTraceId);
+      const waitingForInput =
+        historyEntry?.event_kind === "approval" ||
+        instance.status === "waiting";
+      const displayText = this.formatRunContent(
+        threadId,
+        historyEntry?.content || (waitingForInput ? "Waiting for approval..." : "Task is running...")
+      );
+      return ThreadProgressSnapshotSchema.parse({
+        trace_id: resolvedTraceId,
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "partial",
+        event_kind: waitingForInput ? "approval" : "progress",
+        phase: waitingForInput ? "waiting_for_input" : "running",
+        waiting_for_input: waitingForInput,
+        content: displayText,
+        display_text: displayText,
+        updated_at: this.now().toISOString()
+      });
+    }
+
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
 
@@ -3758,6 +3733,12 @@ export class HubRouter {
     let client: AgentClient | null = null;
     try {
       const instance = this.resolveInstance(threadId);
+      if (!instance.socket_path) {
+        // Streaming-bridge / stateless instances have no agentapi pane to wait
+        // on. Each `/api/run` completes synchronously via spawnStreamAgent so
+        // there's no "pending run" to finalize asynchronously.
+        return;
+      }
       client = this.clientFactory(instance.thread_id);
       await client.connect(instance.socket_path);
       const completedReply = await this.waitForAgentReply(client, null, traceId, {
