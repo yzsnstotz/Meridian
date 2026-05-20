@@ -27,6 +27,11 @@ import { ChatterStateStore } from "../chatter/chatter-state-store";
 import { incrementChatterReadOnlyQueryTotal } from "../chatter/observability";
 import { SessionManager } from "../chatter/session-manager";
 import {
+  BackgroundTriggerEvaluator,
+  type BackgroundTriggerFireRequest,
+  type ScheduleSelfInitiatedTurn
+} from "../chatter/trigger-evaluator";
+import {
   makeStructuredSkills,
   registerStructuredSkills,
   type StructuredSkills,
@@ -62,6 +67,11 @@ interface QueuedTurn {
   content: string;
 }
 
+export interface ChatterRoleOptions {
+  scheduleSelfInitiatedTurn?: ScheduleSelfInitiatedTurn;
+  now?: () => Date;
+}
+
 type ChatterTurnEnvelopeWithMode =
   NonNullable<NonNullable<HubResult["payload"]>["chatter"]> & {
     mode: "stateless" | "session";
@@ -78,6 +88,7 @@ export class ChatterRole implements BaseRole {
   private sandboxPlan: SandboxSpawnPlan | null = null;
   private store: ChatterStateStore | null = null;
   private structuredSkills: StructuredSkills | null = null;
+  private triggerEvaluator: BackgroundTriggerEvaluator | null = null;
   private skillHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
 
   /**
@@ -93,7 +104,11 @@ export class ChatterRole implements BaseRole {
    */
   private pendingTurns: QueuedTurn[] = [];
 
-  constructor(threadId: string, config: ChatterRoleConfig) {
+  constructor(
+    threadId: string,
+    config: ChatterRoleConfig,
+    private readonly options: ChatterRoleOptions = {}
+  ) {
     this.threadId = threadId;
     this.config = config;
   }
@@ -114,13 +129,22 @@ export class ChatterRole implements BaseRole {
         : manifest.seeds_init
     });
     this.skillHandlers.clear();
-    this.structuredSkills = makeStructuredSkills(this.resolver);
+    this.store = new ChatterStateStore(this.config.memory_folder);
+    this.triggerEvaluator = new BackgroundTriggerEvaluator({
+      manifest,
+      store: this.store,
+      scheduleSelfInitiatedTurn: (request) => this.scheduleSelfInitiatedTurn(request),
+      now: this.options.now,
+      log: ctx.log
+    });
+    this.structuredSkills = makeStructuredSkills(this.resolver, {
+      onEvent: (event) => this.triggerEvaluator?.handleStructuredWrite(event)
+    });
     registerStructuredSkills(this.structuredSkills, {
       register: (name: StructuredSkillName, handler: (args: unknown) => Promise<unknown>) => {
         this.skillHandlers.set(name, handler);
       }
     });
-    this.store = new ChatterStateStore(this.config.memory_folder);
     this.sessionMgr = new SessionManager(this.store);
     this.sessionMgr.rehydrate();
     this.sandboxPlan = buildSandboxSpawnPlan({
@@ -143,6 +167,7 @@ export class ChatterRole implements BaseRole {
     this.sandboxPlan = null;
     this.store = null;
     this.structuredSkills = null;
+    this.triggerEvaluator = null;
     this.skillHandlers.clear();
   }
 
@@ -666,6 +691,13 @@ export class ChatterRole implements BaseRole {
       suppress_reply: true
     };
     await this.ctx.sendToHub(msg);
+  }
+
+  private async scheduleSelfInitiatedTurn(request: BackgroundTriggerFireRequest): Promise<void> {
+    if (!this.options.scheduleSelfInitiatedTurn) {
+      throw new Error(`self-initiated turn scheduling is not installed for trigger '${request.trigger_name}'`);
+    }
+    await this.options.scheduleSelfInitiatedTurn(request);
   }
 }
 
