@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../../config";
 import type { ChatterRoleConfig, HubMessage, HubResult, ReplyChannel } from "../../types";
 import type { BaseRole, RoleContext } from "../base-role";
-import { loadManifestFromTemplate, loadManifestFromFile } from "../chatter/manifest";
+import {
+  hasRecordType,
+  loadManifestFromTemplate,
+  loadManifestFromFile,
+  validateRecord
+} from "../chatter/manifest";
 import { MemoryResolver } from "../chatter/memory-resolver";
 import { buildSandboxSpawnPlan, type SandboxSpawnPlan } from "../chatter/sandbox";
 import { makeMemorySkills } from "../chatter/memory-skills";
@@ -12,6 +17,7 @@ import { SessionManager } from "../chatter/session-manager";
 import {
   makeStructuredSkills,
   registerStructuredSkills,
+  type StructuredSkills,
   type StructuredSkillName
 } from "../chatter/skills/structured";
 
@@ -54,6 +60,7 @@ export class ChatterRole implements BaseRole {
   private sessionMgr: SessionManager | null = null;
   private sandboxPlan: SandboxSpawnPlan | null = null;
   private store: ChatterStateStore | null = null;
+  private structuredSkills: StructuredSkills | null = null;
   private skillHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
 
   /**
@@ -81,7 +88,8 @@ export class ChatterRole implements BaseRole {
       : loadManifestFromFile(this.config.manifest_path as string);
     this.resolver = new MemoryResolver(this.config.memory_folder, manifest);
     this.skillHandlers.clear();
-    registerStructuredSkills(makeStructuredSkills(this.resolver), {
+    this.structuredSkills = makeStructuredSkills(this.resolver);
+    registerStructuredSkills(this.structuredSkills, {
       register: (name: StructuredSkillName, handler: (args: unknown) => Promise<unknown>) => {
         this.skillHandlers.set(name, handler);
       }
@@ -108,6 +116,7 @@ export class ChatterRole implements BaseRole {
     this.sessionMgr = null;
     this.sandboxPlan = null;
     this.store = null;
+    this.structuredSkills = null;
     this.skillHandlers.clear();
   }
 
@@ -207,15 +216,26 @@ export class ChatterRole implements BaseRole {
     }
 
     const systemPromptId = envelope.system_prompt_id;
-    let dispatchContent = result.content;
+    let systemPrompt: string | undefined;
     if (systemPromptId !== undefined) {
-      const systemPrompt = this.resolver!.manifest.systemPromptContents?.get(systemPromptId);
+      systemPrompt = this.resolver!.manifest.systemPromptContents?.get(systemPromptId);
       if (systemPrompt === undefined) {
         await this.forwardToUser(`error: unknown_system_prompt_id: ${systemPromptId}`);
         return;
       }
-      dispatchContent = composeTurnContent(systemPrompt, result.content);
     }
+
+    const promptBlocks: string[] = [];
+    const contextBlock = await this.buildContextBlock(envelope.context_refs);
+    if (contextBlock !== null) {
+      promptBlocks.push(contextBlock);
+    }
+    if (systemPrompt !== undefined) {
+      promptBlocks.push(systemPrompt);
+    }
+    const dispatchContent = promptBlocks.length > 0
+      ? composeTurnContent(promptBlocks.join("\n\n"), result.content)
+      : result.content;
 
     if (envelope.mode === "session") {
       await this.writeTurnToMemory(envelope, result.content);
@@ -234,6 +254,74 @@ export class ChatterRole implements BaseRole {
     }
 
     await this.dispatchRun(dispatchContent);
+  }
+
+  private async buildContextBlock(
+    contextRefs: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>["context_refs"]
+  ): Promise<string | null> {
+    if (!contextRefs || contextRefs.length === 0) {
+      return null;
+    }
+
+    const entries: string[] = [];
+    for (const ref of contextRefs) {
+      entries.push(await this.buildContextEntry(ref));
+    }
+
+    return ["## Pre-loaded context", ...entries].join("\n");
+  }
+
+  private async buildContextEntry(ref: { type: string; key: string }): Promise<string> {
+    const placeholder = contextPlaceholder(ref);
+    const manifest = this.resolver!.manifest;
+
+    if (!hasRecordType(manifest, ref.type)) {
+      this.ctx?.log.warn("chatter: unknown context ref type", {
+        chatter_id: this.config.chatter_id,
+        type: ref.type,
+        key: ref.key
+      });
+      return formatContextEntry(ref, placeholder);
+    }
+
+    const result: unknown = await this.structuredSkills!.get(ref.type, ref.key);
+    if (isStructuredError(result)) {
+      this.ctx?.log.warn(
+        result.error === "not_found"
+          ? "chatter: context ref not found"
+          : "chatter: context ref get failed",
+        {
+          chatter_id: this.config.chatter_id,
+          type: ref.type,
+          key: ref.key,
+          error: result.error,
+          details: result.details
+        }
+      );
+      return formatContextEntry(ref, placeholder);
+    }
+
+    if (!isStructuredRecordResult(result)) {
+      this.ctx?.log.warn("chatter: context ref returned malformed result", {
+        chatter_id: this.config.chatter_id,
+        type: ref.type,
+        key: ref.key
+      });
+      return formatContextEntry(ref, placeholder);
+    }
+
+    const validation = validateRecord(manifest, ref.type, result.record);
+    if (!validation.ok) {
+      this.ctx?.log.warn("chatter: context ref failed schema validation", {
+        chatter_id: this.config.chatter_id,
+        type: ref.type,
+        key: ref.key,
+        errors: validation.errors
+      });
+      return formatContextEntry(ref, placeholder);
+    }
+
+    return formatContextEntry(ref, `\`\`\`json\n${JSON.stringify(validation.value, null, 2)}\n\`\`\``);
   }
 
   private async writeTurnToMemory(
@@ -459,4 +547,24 @@ function composeTurnContent(systemPrompt: string, userContent: string): string {
     "User turn:",
     userContent
   ].join("\n");
+}
+
+function contextPlaceholder(ref: { type: string; key: string }): string {
+  return `**[context not found: ${ref.type}/${ref.key}]**`;
+}
+
+function formatContextEntry(ref: { type: string; key: string }, body: string): string {
+  return [`### type: ${ref.type}, key: ${ref.key}`, body].join("\n");
+}
+
+function isStructuredError(value: unknown): value is { error: string; details?: unknown } {
+  return isObject(value) && typeof value.error === "string";
+}
+
+function isStructuredRecordResult(value: unknown): value is { record: unknown } {
+  return isObject(value) && "record" in value;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

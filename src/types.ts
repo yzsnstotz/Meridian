@@ -74,6 +74,7 @@ export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]),
   chatter_session_id: z.string().min(1).optional(),
   system_prompt_id: z.string().min(1).optional(),
+  context_refs: z.array(z.object({ type: z.string(), key: z.string() })).optional(),
   control: z.enum(["new", "interrupt"]).optional()
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
