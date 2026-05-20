@@ -1,0 +1,23 @@
+{
+  "project_id": "mumu",
+  "thread_id_pattern": "chatter-mumu-user-{user_id}",
+  "memory_folder_pattern": "/data/mumu/users/{user_id}",
+  "manifest_path": "/etc/meridian-roles/projects/mumu/manifest.json",
+  "seeds_source_path": "/etc/meridian-roles/projects/mumu/seeds",
+  "allowed_modes": ["session", "stateless"],
+  "skill_allowlist": [
+    "structured.upsert",
+    "structured.get",
+    "structured.query",
+    "structured.delete",
+    "structured.list"
+  ],
+  "llm_agent_kind": "claude-code",
+  "credential_id": null,
+  "user_reply_channel_template": {
+    "channel": "socket",
+    "chat_id": "ads:mumu:{user_id}",
+    "socket_path": "/var/run/ads-mumu.sock"
+  },
+  "seeds_init": { "mode": "copy_on_provision" }
+}
