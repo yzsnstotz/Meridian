@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { InvalidProjectPolicyError, loadProjectPolicy, ProjectNotRegisteredError } from "../web/project-policy-loader";
+import { runValidateManifestCli } from "./validate-manifest";
 
 export interface ProjectPolicyCliIo {
   stdout: {
@@ -18,6 +19,10 @@ const defaultIo: ProjectPolicyCliIo = {
 
 export async function runProjectPolicyCli(argv: string[], io: ProjectPolicyCliIo = defaultIo): Promise<number> {
   const normalizedArgv = argv[0] === "project-policy" ? argv.slice(1) : argv;
+  if (normalizedArgv[0] === "validate-manifest") {
+    return runValidateManifestCli(normalizedArgv, io);
+  }
+
   const [command, projectId, ...rest] = normalizedArgv;
   const repoRoot = readRepoRoot(rest);
 
