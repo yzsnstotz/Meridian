@@ -73,7 +73,7 @@ function appStateWithDispatchers(planPaths: string[]): AppState {
 }
 
 describe("buildSystemMonitorSnapshot", () => {
-  it("returns the full 29-indicator inventory and escalates red threshold crossings", async () => {
+  it("returns the full 34-indicator inventory and escalates red threshold crossings", async () => {
     const oldIso = "2026-05-18T01:00:00.000Z";
     const fixtureA = await createDispatcherFixture({
       version: 2,
@@ -196,26 +196,72 @@ describe("buildSystemMonitorSnapshot", () => {
         return { size: 10 * 1024 * 1024, mtimeMs: Date.parse("2026-05-18T02:48:30.000Z") };
       },
       statFs: async () => ({ freeBytes: 10 * 1024 * 1024 * 1024 }),
-      countLogPatterns: async () => new Map([
-        ["terminal_cleanup_kill_failed", 10],
-        ["a2a_registration_retry", 31],
-        ["validator_transport_stall", 6],
-        ["pm_resolver_started", 5],
-        ["watchdog_stall_detected", 51],
-        ["launch_breaker_tripped", 3],
-        ["worker_breaker_tripped", 3]
-      ])
+      countLogPatterns: async (filePath: string) => {
+        // The system monitor scans the roles log (lifecycle_*, watchdog_*, etc.)
+        // and the hub log (rehydrate_*, is_not_registered_post_hub_init) on
+        // every snapshot. Mock returns different counts based on which file
+        // was requested so we can assert per-card wiring independently.
+        if (filePath.endsWith("hub.log")) {
+          return new Map([
+            ["rehydrate_orphan_reaped", 2],
+            ["rehydrate_probe_succeeded_after_retry", 7],
+            ["rehydrate_pid_dead_pruned", 4],
+            ["is_not_registered_post_hub_init", 0]
+          ]);
+        }
+        return new Map([
+          ["terminal_cleanup_kill_failed", 10],
+          ["a2a_registration_retry", 31],
+          ["validator_transport_stall", 6],
+          ["pm_resolver_started", 5],
+          ["watchdog_stall_detected", 51],
+          ["launch_breaker_tripped", 3],
+          ["worker_breaker_tripped", 3],
+          ["lifecycle_auto_force_complete", 12]
+        ]);
+      }
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(30);
+    expect(snapshot.indicators).toHaveLength(34);
     expect(snapshot.any_red).toBe(true);
 
     expect(snapshot.indicators.find((i) => i.id === "G1")).toMatchObject({
       group: "cure_metrics",
       name: "Auto-force-complete events (24h)",
       unit: "events",
+      value: 12,
       state: "info"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "G2")).toMatchObject({
+      group: "cure_metrics",
+      name: "Rehydrate orphan reaped (24h)",
+      unit: "events",
+      value: 2,
+      state: "info",
+      source_learning: "storm-recurrence-architectural-root-cause.md"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "G3")).toMatchObject({
+      group: "cure_metrics",
+      name: "Rehydrate probe succeeded after retry (24h)",
+      unit: "events",
+      value: 7,
+      state: "info"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "G4")).toMatchObject({
+      group: "cure_metrics",
+      name: "Rehydrate PID-dead pruned (24h)",
+      unit: "events",
+      value: 4,
+      state: "info"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "E7")).toMatchObject({
+      group: "lifecycle_anomaly",
+      name: "\"is not registered\" within 60s of hub restart",
+      unit: "events",
+      value: 0,
+      state: "green",
+      thresholds: { yellow: 1, red: 5 }
     });
 
     expect(snapshot.indicators.find((i) => i.id === "A1")).toMatchObject({ value: 3, state: "red" });
