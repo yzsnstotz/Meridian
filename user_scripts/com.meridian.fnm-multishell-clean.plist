@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent — prune ~/.local/state/fnm_multishells/ hourly.
+  Install:
+    cp user_scripts/com.meridian.fnm-multishell-clean.plist ~/Library/LaunchAgents/
+    launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.meridian.fnm-multishell-clean.plist
+
+  Verify:
+    launchctl list | grep meridian.fnm-multishell-clean
+    tail -f /tmp/fnm-multishells-clean.log
+
+  Uninstall:
+    launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.meridian.fnm-multishell-clean.plist
+    rm ~/Library/LaunchAgents/com.meridian.fnm-multishell-clean.plist
+
+  See learnings/maintenance-hub-restart-pm2-and-socket-race.md (PR #88 — the
+  fnm_multishells dir saturated at 65535 entries and broke find_pm2_binary).
+  PR #90 closed the hub-side rehydration windows that produced the spawn
+  storms; this agent is the last-mile cleanup that prevents the orphan
+  multishell entries from accumulating between hub restarts.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meridian.fnm-multishell-clean</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/yzliu/work/Meridian/user_scripts/clean_fnm_multishells.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/fnm-multishells-clean.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/fnm-multishells-clean.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/yzliu</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
