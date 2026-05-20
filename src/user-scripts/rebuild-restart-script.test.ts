@@ -26,3 +26,40 @@ describe("user_scripts/terminate.sh", () => {
     expect(script).not.toContain("npm run build");
   });
 });
+
+// The Maintenance Hub "Terminate" / "Rebuild & restart" buttons at
+// http://127.0.0.1:8765/ spawn these scripts with launchd-minimal PATH and
+// expect them to actually kill the running meridian-roles process. Before
+// this fix the safety-net step was `pgrep -f
+// "${ROOT_DIR}/src/index.ts|${ROOT_DIR}/dist/index.js|${ROOT_DIR}.*tsx
+// src/index.ts|${ROOT_DIR}.*npm (run )?start"`. That pattern only matched
+// the tmux server's command line (which embeds the inline shell snippet
+// `tmux new-session` was invoked with) — it did NOT match the actual
+// `npm start` or `node dist/index.js` processes spawned inside the session,
+// because neither has an absolute ROOT_DIR in argv. Whenever the PID file
+// pointed at a stale pid (or wasn't written), terminate became a no-op and
+// rebuild's pre-launch kill was a no-op (the next `npm start` then hit
+// EADDRINUSE on port 7701). Resolve by cwd instead of argv, mirroring
+// Meridian's own `runtime_pids_for_service`.
+describe.each([
+  ["user_scripts/terminate.sh"],
+  ["user_scripts/rebuild_restart.sh"]
+])("%s — Maintenance Hub button contract: kill by cwd, not argv", (relPath) => {
+  it("uses cwd-based filtering for relative entrypoints and drops the old pgrep alternation", async () => {
+    const script = await fs.readFile(path.resolve(__dirname, "../..", relPath), "utf8");
+
+    // Positive: the new contract — runtime_pids_for_service + process_cwd
+    // gated kill, covering relative `node dist/index.js` and `npm start`.
+    expect(script).toContain("runtime_pids_for_service()");
+    expect(script).toContain("process_cwd");
+    expect(script).toContain('kill_runtime_service "meridian-roles"');
+    expect(script).toMatch(/kill_runtime_service "meridian-roles" "start"\s+"src\/index\.ts"\s+"dist\/index\.js"/);
+
+    // Negative: the old, broken pgrep alternation is gone. Each fragment is
+    // unique enough that its presence anywhere in the script signals the
+    // regression has returned.
+    expect(script).not.toMatch(/\$\{ROOT_DIR\}\.\*npm \(run \)\?start/);
+    expect(script).not.toMatch(/\$\{ROOT_DIR\}\.\*tsx src\/index\.ts/);
+    expect(script).not.toMatch(/kill_by_pattern\s+"\$\{ROOT_DIR\}/);
+  });
+});

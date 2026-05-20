@@ -26,22 +26,6 @@ kill_tmux_session() {
   fi
 }
 
-kill_by_pattern() {
-  local pattern="$1"
-  local label="$2"
-  local pids
-  if ! command -v pgrep >/dev/null 2>&1; then
-    return 0
-  fi
-  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
-  if [[ -n "${pids}" ]]; then
-    echo "Stopping ${label} by pattern: ${pids//$'\n'/ }"
-    kill ${pids} 2>/dev/null || true
-    sleep 1
-    kill -9 ${pids} 2>/dev/null || true
-  fi
-}
-
 canonical_cwd() {
   local directory="$1"
   (cd "$directory" 2>/dev/null && pwd -P) || true
@@ -68,6 +52,67 @@ repo_owned_pids() {
       printf '%s\n' "$pid"
     fi
   done
+}
+
+# Lists PIDs whose argv references this repo's runtime — directly via an
+# absolute entrypoint path ("${ROOT_DIR}/dist/index.js"), or via a relative
+# argv whose cwd resolves to "${ROOT_DIR}". Mirrors Meridian's
+# user_scripts/restart.sh::runtime_pids_for_service so the Maintenance Hub
+# "Terminate" button at http://127.0.0.1:8765/ reliably catches the listener
+# process. The previous pgrep regex ("${ROOT_DIR}.*npm start") only matched
+# the tmux server's command line (which embeds the inline shell snippet) and
+# did NOT match `npm start` or `node dist/index.js` — npm's invocation has no
+# absolute repo path in argv. So whenever the PID file pointed at a stale pid,
+# the safety net was a no-op and the listener stayed alive after "Terminate".
+runtime_pids_for_service() {
+  local npm_script="$1"
+  shift
+
+  local pid command cwd entrypoint matched
+  while read -r pid command; do
+    [[ -z "${pid}" || -z "${command}" ]] && continue
+
+    matched=0
+    for entrypoint in "$@"; do
+      if [[ "${command}" == *"${ROOT_DIR}/${entrypoint}"* ]]; then
+        matched=1
+        break
+      fi
+
+      if [[ "${command}" == *" ${entrypoint}"* || "${command}" == "${entrypoint}"* ]]; then
+        cwd="$(process_cwd "${pid}")"
+        if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+          matched=1
+          break
+        fi
+      fi
+    done
+
+    if [[ "${matched}" -eq 0 ]] &&
+       [[ "${command}" == *"npm run ${npm_script}"* || "${command}" == *"npm ${npm_script}"* ]]; then
+      cwd="$(process_cwd "${pid}")"
+      if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+        matched=1
+      fi
+    fi
+
+    if [[ "${matched}" -eq 1 ]]; then
+      printf '%s\n' "${pid}"
+    fi
+  done < <(ps -axo pid=,command=) | sort -u
+}
+
+kill_runtime_service() {
+  local label="$1"
+  local npm_script="$2"
+  shift 2
+
+  local pids
+  pids="$(runtime_pids_for_service "${npm_script}" "$@" || true)"
+  if [[ -n "${pids}" ]]; then
+    # kill_pids already prints "Stopping ${label}: ${pids}" — don't double-log.
+    kill_pids "${label}" ${pids}
+  fi
 }
 
 find_repo_port_listener_pids() {
@@ -142,8 +187,10 @@ terminate_tmux_session() {
 terminate_pid_file_process
 terminate_tmux_session
 
-# Only match processes that include this repo path to avoid killing unrelated services.
-kill_by_pattern "${ROOT_DIR}/src/index.ts|${ROOT_DIR}/dist/index.js|${ROOT_DIR}.*tsx src/index.ts|${ROOT_DIR}.*npm (run )?start" "meridian-roles"
+# Identify processes by cwd, not by argv-substring. `npm start` and the
+# `node dist/index.js` it spawns both run with cwd=${ROOT_DIR} but neither has
+# an absolute ROOT_DIR in argv — a pgrep regex would silently miss them.
+kill_runtime_service "meridian-roles" "start" "src/index.ts" "dist/index.js"
 kill_repo_port_listeners
 
 echo "Cleaning stale socket: ${ROLES_SOCKET_PATH}"
