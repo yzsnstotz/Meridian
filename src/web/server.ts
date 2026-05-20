@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -28,8 +28,6 @@ import {
   HubMessageSchema,
   HubResultSchema,
   IntegrationProfileSchema,
-  PaneOutputChunkSchema,
-  PaneOutputNotAvailableSchema,
   ProviderCapabilityListSchema,
   ProviderCapabilitySchema,
   ReasoningEffortSchema,
@@ -50,10 +48,8 @@ import {
 const BUILTIN_CALLER_ID_SET = new Set<string>(BUILTIN_CALLERS.map((c) => c.caller_id));
 const ADMIN_CALLER_IDENTITY: CallerIdentity = { caller_id: "meridian-admin", caller_label: "Meridian Admin" };
 
-const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const sessionCookieName = "meridian_session";
 const defaultStaticDir = path.join(__dirname, "public");
-const websocketPath = "/ws/terminal";
 const packageVersion = readPackageVersion();
 
 const runRequestBodySchema = z.object({
@@ -69,7 +65,7 @@ const threadActionBodySchema = z.object({
 const spawnRequestBodySchema = z.object({
   type: AgentTypeSchema.default("codex"),
   provider: AgentTypeSchema.optional(),
-  mode: z.enum(["bridge", "pane_bridge", "stateless_call"]).default("pane_bridge"),
+  mode: z.enum(["bridge", "stateless_call"]).default("bridge"),
   model_id: z.string().min(1).optional(),
   effort: ReasoningEffortSchema.optional(),
   auto_approve: z.boolean().default(true),
@@ -167,25 +163,6 @@ const callerAuthorityBodySchema = z.object({
   caller_authority: CallerAuthoritySchema
 });
 
-const a2aPartSchema = z.union([
-  z.object({
-    type: z.literal("text"),
-    text: z.string()
-  }),
-  z.object({
-    type: z.literal("data"),
-    data: z.unknown()
-  })
-]);
-
-const a2aWebSocketMessageSchema = z.object({
-  type: z.literal("a2a_message"),
-  taskId: z.string().min(1),
-  taskState: z.enum(["working", "completed", "failed"]),
-  parts: z.array(a2aPartSchema),
-  agentId: z.string().min(1).optional()
-});
-
 function coerceProgressSnapshot(result: HubResult) {
   if (result.progress) {
     return ThreadProgressSnapshotSchema.parse(result.progress);
@@ -258,26 +235,6 @@ interface ProviderModelCatalogLookup {
   listModels(provider: AgentType): Promise<ProviderModelCatalogResult>;
 }
 
-interface WebSocketBridge {
-  clientSocket: net.Socket;
-  hubSocket: net.Socket;
-  threadId: string;
-}
-
-function isWebSocketUpgrade(request: http.IncomingMessage): boolean {
-  const upgrade = request.headers.upgrade;
-  const connection = request.headers.connection;
-  return (
-    typeof upgrade === "string" &&
-    upgrade.toLowerCase() === "websocket" &&
-    typeof connection === "string" &&
-    connection
-      .split(",")
-      .map((entry) => entry.trim().toLowerCase())
-      .includes("upgrade")
-  );
-}
-
 function parseCookies(cookieHeader: string | undefined): Map<string, string> {
   const cookies = new Map<string, string>();
   if (!cookieHeader) {
@@ -318,30 +275,6 @@ function contentTypeForPath(filePath: string): string {
     default:
       return "application/octet-stream";
   }
-}
-
-function encodeWebSocketTextFrame(payload: string): Buffer {
-  const body = Buffer.from(payload, "utf8");
-  if (body.length < 126) {
-    return Buffer.concat([Buffer.from([0x81, body.length]), body]);
-  }
-  if (body.length < 65536) {
-    const header = Buffer.alloc(4);
-    header[0] = 0x81;
-    header[1] = 126;
-    header.writeUInt16BE(body.length, 2);
-    return Buffer.concat([header, body]);
-  }
-
-  const header = Buffer.alloc(10);
-  header[0] = 0x81;
-  header[1] = 127;
-  header.writeBigUInt64BE(BigInt(body.length), 2);
-  return Buffer.concat([header, body]);
-}
-
-function encodeWebSocketControlFrame(opcode: number): Buffer {
-  return Buffer.from([0x80 | opcode, 0x00]);
 }
 
 function normalizeThreadSelector(threadId: string | undefined): { thread_id: string; target: string } {
@@ -529,7 +462,6 @@ export class WebInterfaceServer {
   private readonly providerModelCatalog: ProviderModelCatalogLookup;
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
   private readonly logger: WebInterfaceLogger;
-  private readonly bridges = new Set<WebSocketBridge>();
   private server: http.Server | https.Server | null = null;
   private loopbackSentinels: Array<http.Server | https.Server> = [];
 
@@ -612,14 +544,6 @@ export class WebInterfaceServer {
     };
 
     this.server = this.httpsEnabled ? await this.createHttpsServer(requestListener) : http.createServer(requestListener);
-    this.server.on("upgrade", (request, socket, head) => {
-      void this.handleUpgrade(request, socket as net.Socket, head).catch((error) => {
-        this.logger.error({ err: error instanceof Error ? error.message : String(error) }, "WebSocket upgrade failed");
-        if (!socket.destroyed) {
-          socket.end("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
-        }
-      });
-    });
 
     await new Promise<void>((resolve, reject) => {
       this.server?.once("error", reject);
@@ -643,19 +567,10 @@ export class WebInterfaceServer {
   }
 
   private async reserveLoopbackSentinels(requestListener: http.RequestListener): Promise<void> {
-    const upgradeHandler = (request: http.IncomingMessage, socket: net.Socket, head: Buffer): void => {
-      void this.handleUpgrade(request, socket, head).catch((error) => {
-        this.logger.error({ err: error instanceof Error ? error.message : String(error) }, "WebSocket upgrade failed");
-        if (!socket.destroyed) {
-          socket.end("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
-        }
-      });
-    };
     for (const sentinelHost of ["127.0.0.1", "::1"]) {
       const sentinel = this.httpsEnabled
         ? await this.createHttpsServer(requestListener)
         : http.createServer(requestListener);
-      sentinel.on("upgrade", (request, socket, head) => upgradeHandler(request, socket as net.Socket, head));
       try {
         await new Promise<void>((resolve, reject) => {
           sentinel.once("error", reject);
@@ -674,10 +589,6 @@ export class WebInterfaceServer {
   }
 
   async stop(): Promise<void> {
-    for (const bridge of [...this.bridges]) {
-      this.closeBridge(bridge);
-    }
-
     if (!this.server) {
       return;
     }
@@ -1742,162 +1653,6 @@ export class WebInterfaceServer {
     }
   }
 
-  private async handleUpgrade(request: http.IncomingMessage, clientSocket: net.Socket, head: Buffer): Promise<void> {
-    const requestUrl = this.getRequestUrl(request);
-    if (requestUrl.pathname !== websocketPath) {
-      clientSocket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-      return;
-    }
-
-    if (!this.isAuthorized(request, requestUrl)) {
-      clientSocket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      return;
-    }
-
-    if (!isWebSocketUpgrade(request)) {
-      clientSocket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-      return;
-    }
-
-    const websocketKey = request.headers["sec-websocket-key"];
-    if (typeof websocketKey !== "string" || !websocketKey.trim()) {
-      clientSocket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-      return;
-    }
-
-    const threadId = requestUrl.searchParams.get("thread_id")?.trim();
-    if (!threadId) {
-      clientSocket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-      return;
-    }
-    const replayLinesParam = requestUrl.searchParams.get("replay_lines");
-    const parsedReplayLines = replayLinesParam === null ? NaN : Number(replayLinesParam);
-    const replayLines = Number.isFinite(parsedReplayLines) && parsedReplayLines >= 0 ? Math.floor(parsedReplayLines) : 200;
-
-    const accept = createHash("sha1").update(`${websocketKey}${websocketGuid}`).digest("base64");
-    clientSocket.write(
-      [
-        "HTTP/1.1 101 Switching Protocols",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        `Sec-WebSocket-Accept: ${accept}`,
-        "\r\n"
-      ].join("\r\n")
-    );
-
-    const hubSocket = this.hubSocketFactory(this.hubSocketPath);
-    hubSocket.setEncoding("utf8");
-
-    const bridge: WebSocketBridge = {
-      clientSocket,
-      hubSocket,
-      threadId
-    };
-    this.bridges.add(bridge);
-
-    let cleanedUp = false;
-    let hubBuffer = "";
-    const cleanup = (): void => {
-      if (cleanedUp) {
-        return;
-      }
-      cleanedUp = true;
-      this.closeBridge(bridge);
-    };
-
-    const flushHubFrames = (force: boolean): void => {
-      const frames = force ? [hubBuffer] : hubBuffer.split("\n");
-      if (!force) {
-        hubBuffer = frames.pop() ?? "";
-      } else {
-        hubBuffer = "";
-      }
-
-      for (const frame of frames) {
-        const payload = frame.trim();
-        if (!payload) {
-          continue;
-        }
-
-        let outbound: string;
-        try {
-          const parsed = JSON.parse(payload) as unknown;
-          const paneOutput = PaneOutputChunkSchema.safeParse(parsed);
-          if (paneOutput.success) {
-            outbound = JSON.stringify(paneOutput.data);
-          } else {
-            const a2aMessage = a2aWebSocketMessageSchema.safeParse(parsed);
-            if (a2aMessage.success) {
-              outbound = JSON.stringify(a2aMessage.data);
-            } else {
-              const unavailable = PaneOutputNotAvailableSchema.parse(parsed);
-              outbound = JSON.stringify(unavailable);
-            }
-          }
-        } catch (error) {
-          this.logger.warn(
-            { err: error instanceof Error ? error.message : String(error), thread_id: threadId },
-            "Dropping malformed WebSocket bridge payload"
-          );
-          continue;
-        }
-
-        if (!clientSocket.destroyed) {
-          clientSocket.write(encodeWebSocketTextFrame(outbound));
-        }
-      }
-    };
-
-    hubSocket.on("connect", () => {
-      hubSocket.write(
-        `${JSON.stringify({ type: "subscribe_pane_output", thread_id: threadId, replay_lines: replayLines })}\n`
-      );
-    });
-
-    hubSocket.on("data", (chunk: string) => {
-      hubBuffer += chunk;
-      flushHubFrames(false);
-    });
-
-    hubSocket.on("end", () => {
-      flushHubFrames(true);
-      cleanup();
-    });
-
-    hubSocket.on("error", (error) => {
-      this.logger.error(
-        { err: error instanceof Error ? error.message : String(error), thread_id: threadId },
-        "Hub pane bridge socket failed"
-      );
-      cleanup();
-    });
-
-    clientSocket.on("data", (chunk) => {
-      if (head.length > 0) {
-        head = Buffer.alloc(0);
-      }
-      if (chunk.length === 0) {
-        return;
-      }
-      const opcode = chunk[0] & 0x0f;
-      if (opcode === 0x8) {
-        cleanup();
-        return;
-      }
-      if (opcode === 0x9 && !clientSocket.destroyed) {
-        clientSocket.write(encodeWebSocketControlFrame(0x0a));
-      }
-    });
-
-    clientSocket.on("close", cleanup);
-    clientSocket.on("end", cleanup);
-    clientSocket.on("error", cleanup);
-
-    if (head.length > 0) {
-      clientSocket.emit("data", head);
-    }
-  }
-
   private async resolveFallbackModelCatalog(
     sessionId: string,
     threadId: string
@@ -1935,24 +1690,6 @@ export class WebInterfaceServer {
     return historyMatch ? buildFallbackModelCatalogPayload(historyMatch, threadId) : null;
   }
 
-  private closeBridge(bridge: WebSocketBridge): void {
-    this.bridges.delete(bridge);
-
-    if (!bridge.hubSocket.destroyed) {
-      if (bridge.hubSocket.writable) {
-        bridge.hubSocket.write(`${JSON.stringify({ type: "unsubscribe_pane_output", thread_id: bridge.threadId })}\n`);
-        bridge.hubSocket.end();
-      } else {
-        bridge.hubSocket.destroy();
-      }
-    }
-
-    if (!bridge.clientSocket.destroyed) {
-      bridge.clientSocket.write(encodeWebSocketControlFrame(0x8));
-      bridge.clientSocket.end();
-    }
-  }
-
   private buildHubMessage(params: {
     sessionId: string;
     intent: Intent;
@@ -1960,7 +1697,7 @@ export class WebInterfaceServer {
     target: string;
     content: string;
     attachments?: FileAttachment[];
-    mode?: "bridge" | "pane_bridge" | "stateless_call";
+    mode?: "bridge" | "stateless_call";
     autoApprove?: boolean;
     guiHostPortOverride?: string;
     /** Passed through to Hub `payload.spawn_dir` (agent working directory). */

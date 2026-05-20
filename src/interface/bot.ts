@@ -13,7 +13,7 @@ const BOT_COMMANDS: BotCommand[] = [
   { command: "detach", description: "Detach this chat from the active thread" },
   { command: "reboot", description: "Restart an existing thread in place" },
   { command: "gui", description: "Get the Web GUI link for a thread" },
-  { command: "approve", description: "Send approval input to a pane_bridge thread" },
+  { command: "approve", description: "Send approval input to a bridge thread" },
   { command: "update", description: "Toggle monitor progress updates for a thread" },
   { command: "mupdate", description: "Send one manual progress update for a thread" },
   { command: "model", description: "Switch the provider model in the active thread" },

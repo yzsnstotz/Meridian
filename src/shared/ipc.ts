@@ -1,7 +1,7 @@
 import net from "node:net";
 
 const IPC_SEND_TIMEOUT_MS = 5000;
-// Long-running pane_bridge providers such as Gemini can legitimately exceed 30s.
+// Long-running providers such as Gemini can legitimately exceed 30s.
 const IPC_REQUEST_TIMEOUT_MS = 120000;
 // /api/run can take much longer than the default IPC timeout: stream retries
 // (up to 3 × codex exec attempts) plus waitForAgentReply (600 × 500ms = 5 min).

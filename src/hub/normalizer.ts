@@ -72,10 +72,10 @@ function toDefaultActorId(event: InboundUIEvent): string {
 }
 
 function resolveMode(mode: string | undefined): BridgeMode {
-  if (mode === undefined || mode === "bridge" || mode === "pane_bridge" || mode === "stateless_call") {
-    return mode ?? "pane_bridge";
+  if (mode === undefined || mode === "bridge" || mode === "stateless_call") {
+    return mode ?? "bridge";
   }
-  throw new Error("mode must be bridge, pane_bridge, or stateless_call");
+  throw new Error("mode must be bridge or stateless_call");
 }
 
 function parseMonitorUpdateSwitch(value: string | undefined): boolean | null {

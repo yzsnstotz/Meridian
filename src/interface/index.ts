@@ -108,7 +108,7 @@ interface SpawnDirectorySession {
   botId: string;
   chatId: string;
   type: AgentType;
-  mode: "bridge" | "pane_bridge";
+  mode: "bridge";
   currentDir: string;
   entries: string[];
   createdAtMs: number;
@@ -179,8 +179,8 @@ function isAgentType(value: string): value is AgentType {
   return SPAWN_TYPES.includes(value as AgentType);
 }
 
-function isBridgeMode(value: string): value is "bridge" | "pane_bridge" {
-  return value === "bridge" || value === "pane_bridge";
+function isBridgeMode(value: string): value is "bridge" {
+  return value === "bridge";
 }
 
 function resolveThreadId(parsedCommand: ParsedSlashCommand, fallbackReplyTo: string | null): string {
@@ -264,7 +264,7 @@ function buildActionHubMessage(params: {
   threadId: string;
   target: string;
   content?: string;
-  mode?: "bridge" | "pane_bridge";
+  mode?: "bridge";
   spawnDir?: string;
   suppressReply?: boolean;
 }): HubMessage {
@@ -338,7 +338,6 @@ function buildSpawnProviderKeyboard(): InlineKeyboard {
 function buildSpawnModeKeyboard(type: AgentType): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   keyboard.text("bridge", `${CALLBACK_PREFIX}:spawn_mode:${type}:bridge`);
-  keyboard.text("pane_bridge", `${CALLBACK_PREFIX}:spawn_mode:${type}:pane_bridge`);
   return keyboard;
 }
 
@@ -478,7 +477,7 @@ function beginSpawnDirectorySession(
   botId: string,
   chatId: string,
   type: AgentType,
-  mode: "bridge" | "pane_bridge"
+  mode: "bridge"
 ): SpawnDirectorySession {
   const initialDir = normalizeSpawnDirectory(SPAWN_DIR_ROOT);
   if (!initialDir || !fs.existsSync(initialDir) || !fs.statSync(initialDir).isDirectory()) {

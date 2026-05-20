@@ -304,37 +304,6 @@ export const AgentInstanceSchema = z.object({
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
 
-export const PaneSubscribeRequestSchema = z.object({
-  type: z.literal("subscribe_pane_output"),
-  thread_id: z.string().min(1),
-  replay_lines: z.number().int().nonnegative().optional()
-});
-export type PaneSubscribeRequest = z.infer<typeof PaneSubscribeRequestSchema>;
-
-export const PaneOutputChunkSchema = z.object({
-  type: z.literal("pane_output"),
-  thread_id: z.string().min(1),
-  chunk: z.string(),
-  cursor: z.number().int().nonnegative().optional(),
-  timestamp: z.string().datetime().optional(),
-  span_id: OptionalUuidSchema,
-  parent_span_id: OptionalUuidSchema
-});
-export type PaneOutputChunk = z.infer<typeof PaneOutputChunkSchema>;
-
-export const PaneOutputNotAvailableSchema = z.object({
-  type: z.literal("not_available"),
-  thread_id: z.string().min(1),
-  reason: z.string().min(1)
-});
-export type PaneOutputNotAvailable = z.infer<typeof PaneOutputNotAvailableSchema>;
-
-export const PaneUnsubscribeRequestSchema = z.object({
-  type: z.literal("unsubscribe_pane_output"),
-  thread_id: z.string().min(1)
-});
-export type PaneUnsubscribeRequest = z.infer<typeof PaneUnsubscribeRequestSchema>;
-
 export const ProviderModelSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1)
