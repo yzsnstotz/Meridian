@@ -601,6 +601,30 @@ export class HubRouter {
     if (this.credentialStore) {
       this.credentialStore.setOnChange(() => this.persistStateSafely());
     }
+
+    // Wire instance-manager mutations directly into persistence too. Without
+    // this, a spawn that called `registry.register(instance)` only landed on
+    // disk when route() returned and ran persistStateSafely. A SIGKILL during
+    // the readiness wait (pm2 kill_timeout, OS OOM, host restart) would
+    // therefore leave the agentapi child alive (detached: true) with no
+    // on-disk record — the next hub generation would silently lose it and
+    // surface `thread_id=X is not registered` on the first call.
+    //
+    // Existing tests inject fake InstanceManager objects via `as never`
+    // that may not implement setOnStateChange — guard so we don't break
+    // the harness when the real wiring is not relevant.
+    if (typeof (this.instanceManager as { setOnStateChange?: unknown }).setOnStateChange === "function") {
+      this.instanceManager.setOnStateChange(() => this.persistStateSafely());
+    }
+  }
+
+  /**
+   * Force a state flush. Called from HubServer.stop() at the very top of
+   * shutdown to ensure any registry mutation made since the last route()
+   * persistStateSafely lands on disk before the process exits.
+   */
+  persistOnShutdown(): void {
+    this.persistStateSafely();
   }
 
   getCredentialStore(): CredentialStore | undefined {
