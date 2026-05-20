@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import Ajv2020, { type ErrorObject, type ValidateFunction } from "ajv/dist/2020";
 import type { ChatterTemplateName } from "../../types";
 import {
@@ -26,12 +27,16 @@ export const ChatterManifestSchema = z
     layers: z.enum(["flat", "tree"]),
     index: z.enum(["none", "json"]),
     bindings: z.record(z.string().min(1), z.string().min(1)),
-    record_schemas: z.record(z.string().min(1), z.unknown()).optional()
+    record_schemas: z.record(z.string().min(1), z.unknown()).optional(),
+    system_prompts: z.record(z.string().min(1), z.object({
+      prompt_path: z.string().min(1)
+    })).optional()
   })
   .strict();
 
 export type ChatterManifest = z.infer<typeof ChatterManifestSchema> & {
   readonly compiledRecordSchemas?: ReadonlyMap<string, ValidateFunction>;
+  readonly systemPromptContents?: ReadonlyMap<string, string>;
 };
 
 export type RecordValidationResult =
@@ -52,7 +57,7 @@ export function loadManifestFromTemplate(name: ChatterTemplateName): ChatterMani
 export function loadManifestFromFile(absPath: string): ChatterManifest {
   const raw = readFileSync(absPath, "utf8");
   const json = JSON.parse(raw);
-  return parseManifest(json);
+  return parseManifest(json, path.dirname(absPath));
 }
 
 export function hasRecordType(manifest: ChatterManifest, type: string): boolean {
@@ -85,20 +90,44 @@ export function validateRecord(
   return { ok: false, errors: validator.errors ?? [] };
 }
 
-function parseManifest(input: unknown): ChatterManifest {
+function parseManifest(input: unknown, baseDir?: string): ChatterManifest {
   const manifest = ChatterManifestSchema.parse(input) as ChatterManifest;
   const compiledRecordSchemas = compileRecordSchemas(manifest.record_schemas);
-  if (compiledRecordSchemas.size === 0) {
-    return manifest;
+  const systemPromptContents = loadSystemPromptContents(manifest.system_prompts, baseDir);
+
+  if (compiledRecordSchemas.size > 0) {
+    Object.defineProperty(manifest, "compiledRecordSchemas", {
+      value: compiledRecordSchemas,
+      enumerable: false,
+      configurable: false,
+      writable: false
+    });
   }
 
-  Object.defineProperty(manifest, "compiledRecordSchemas", {
-    value: compiledRecordSchemas,
-    enumerable: false,
-    configurable: false,
-    writable: false
-  });
+  if (systemPromptContents.size > 0) {
+    Object.defineProperty(manifest, "systemPromptContents", {
+      value: systemPromptContents,
+      enumerable: false,
+      configurable: false,
+      writable: false
+    });
+  }
+
   return manifest;
+}
+
+function loadSystemPromptContents(
+  systemPrompts: ChatterManifest["system_prompts"],
+  baseDir?: string
+): ReadonlyMap<string, string> {
+  const loaded = new Map<string, string>();
+  for (const [id, entry] of Object.entries(systemPrompts ?? {})) {
+    if (!baseDir) {
+      throw new Error(`system prompt '${id}' requires a manifest file base directory`);
+    }
+    loaded.set(id, readFileSync(path.resolve(baseDir, entry.prompt_path), "utf8"));
+  }
+  return loaded;
 }
 
 function compileRecordSchemas(recordSchemas: ChatterManifest["record_schemas"]): ReadonlyMap<string, ValidateFunction> {

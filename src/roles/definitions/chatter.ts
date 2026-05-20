@@ -37,12 +37,11 @@ function agentTypeForKind(kind: ChatterRoleConfig["llm_agent_kind"]): string {
 
 /**
  * Result of a queued user turn that arrived while the spawn handshake was
- * still in flight. Stored verbatim so the original HubResult + envelope
- * can be replayed through dispatchRun after the agent thread binds.
+ * still in flight. Content is already composed for this turn only so any
+ * system_prompt_id prompt does not persist into later turns.
  */
 interface QueuedTurn {
-  result: HubResult;
-  envelope: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
+  content: string;
 }
 
 export class ChatterRole implements BaseRole {
@@ -207,23 +206,34 @@ export class ChatterRole implements BaseRole {
       return;
     }
 
+    const systemPromptId = envelope.system_prompt_id;
+    let dispatchContent = result.content;
+    if (systemPromptId !== undefined) {
+      const systemPrompt = this.resolver!.manifest.systemPromptContents?.get(systemPromptId);
+      if (systemPrompt === undefined) {
+        await this.forwardToUser(`error: unknown_system_prompt_id: ${systemPromptId}`);
+        return;
+      }
+      dispatchContent = composeTurnContent(systemPrompt, result.content);
+    }
+
     if (envelope.mode === "session") {
       await this.writeTurnToMemory(envelope, result.content);
     }
 
     if (this.pendingSpawnTraceId !== null) {
       // Spawn still handshaking; queue this turn — onSpawnResponse drains.
-      this.pendingTurns.push({ result, envelope });
+      this.pendingTurns.push({ content: dispatchContent });
       return;
     }
 
     if (this.sessionMgr!.currentSessionId === null) {
       this.kickoffSpawn();
-      this.pendingTurns.push({ result, envelope });
+      this.pendingTurns.push({ content: dispatchContent });
       return;
     }
 
-    await this.dispatchRun(result.content);
+    await this.dispatchRun(dispatchContent);
   }
 
   private async writeTurnToMemory(
@@ -298,7 +308,7 @@ export class ChatterRole implements BaseRole {
 
     const queued = this.pendingTurns.splice(0);
     for (const turn of queued) {
-      await this.dispatchRun(turn.result.content);
+      await this.dispatchRun(turn.content);
     }
   }
 
@@ -439,4 +449,14 @@ export class ChatterRole implements BaseRole {
     };
     await this.ctx.sendToHub(msg);
   }
+}
+
+function composeTurnContent(systemPrompt: string, userContent: string): string {
+  return [
+    "System prompt for this turn:",
+    systemPrompt.trimEnd(),
+    "",
+    "User turn:",
+    userContent
+  ].join("\n");
 }

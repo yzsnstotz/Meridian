@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   AgentDispatcherConfigSchema,
+  HubMessageSchema,
+  HubResultSchema,
   PmResolverConfigSchema,
   SchedulerConfigSchema,
   ValidatorConfigSchema
@@ -120,5 +122,43 @@ describe("role config mode defaults", () => {
       auto_approve: true,
       user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
     });
+  });
+});
+
+describe("payload.chatter.system_prompt_id schema symmetry", () => {
+  it("preserves system_prompt_id through both outbound HubMessage and inbound HubResult parsing", () => {
+    const chatter = {
+      mode: "session" as const,
+      chatter_session_id: "ads-session-1",
+      system_prompt_id: "create_from_template"
+    };
+
+    const outbound = HubMessageSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789012",
+      thread_id: "ads",
+      actor_id: "ads",
+      intent: "run",
+      target: "chatter-tenant-a",
+      payload: {
+        content: "draft a short drama",
+        attachments: [],
+        chatter
+      },
+      mode: "bridge",
+      reply_channel: { channel: "web", chat_id: "web:ops" }
+    });
+    expect(outbound.payload.chatter?.system_prompt_id).toBe("create_from_template");
+
+    const inbound = HubResultSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789012",
+      thread_id: "chatter-tenant-a",
+      source: "ads",
+      status: "success",
+      content: "draft a short drama",
+      attachments: [],
+      timestamp: "2026-05-20T00:00:00.000Z",
+      payload: { chatter }
+    });
+    expect(inbound.payload?.chatter?.system_prompt_id).toBe("create_from_template");
   });
 });

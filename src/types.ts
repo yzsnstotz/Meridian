@@ -73,6 +73,7 @@ export const OptionalUuidSchema = z.string().uuid().optional();
 export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]),
   chatter_session_id: z.string().min(1).optional(),
+  system_prompt_id: z.string().min(1).optional(),
   control: z.enum(["new", "interrupt"]).optional()
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
