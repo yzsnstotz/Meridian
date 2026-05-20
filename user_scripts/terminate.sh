@@ -48,6 +48,49 @@ log() {
   printf 'STATUS: %s\n' "$*"
 }
 
+# When this script is invoked by the maintenance hub (or any spawner with a
+# minimal PATH), fnm's per-shell bin dir is missing and `command -v pm2`
+# returns nothing — even though the PM2 daemon is alive. Without resolving the
+# binary, stop_pm2_apps used to return without doing anything, so PM2 kept
+# autorestart-ing calling-hub even when kill_runtime_service SIGKILLed the PID
+# (the silent failure that left both services online after the user clicked
+# "Terminate" on http://127.0.0.1:8765/ on 2026-05-20). Mirrors restart.sh's
+# find_pm2_binary.
+find_pm2_binary() {
+  local candidate
+  if candidate="$(command -v pm2 2>/dev/null)" && [[ -n "${candidate}" ]]; then
+    printf '%s' "${candidate}"
+    return 0
+  fi
+  # NOTE: deliberately do NOT glob "${HOME}/.local/state/fnm_multishells/*/bin/pm2".
+  # That directory accumulates one entry per shell session and is never pruned;
+  # once the link count saturates (~65535+ entries) bash's glob expansion can
+  # take 10s+ and silently freezes the whole chain before any STATUS line
+  # flushes. The canonical node-versions install (below) is the same binary.
+  for candidate in \
+    "${HOME}/.local/share/fnm/node-versions"/*/installation/bin/pm2 \
+    /opt/homebrew/bin/pm2 \
+    /usr/local/bin/pm2 \
+    /usr/bin/pm2; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+pm2_daemon_running() {
+  pgrep -f 'PM2.*ProcessContainerFork\.js' >/dev/null 2>&1 ||
+    pgrep -f 'PM2 v.*: God Daemon' >/dev/null 2>&1
+}
+
+PM2_BIN="$(find_pm2_binary || true)"
+if [[ -z "${PM2_BIN}" ]] && pm2_daemon_running; then
+  echo "STATUS: WARNING PM2 daemon is running but the pm2 binary is not on PATH and not found in fallback locations" >&2
+  echo "STATUS: WARNING calling-* apps may keep autorestart-ing after kill_runtime_service SIGKILLs them" >&2
+fi
+
 kill_pids() {
   local pids="$1"
   if [[ -z "${pids}" ]]; then
@@ -141,13 +184,14 @@ kill_runtime_service() {
 }
 
 stop_pm2_apps() {
-  if ! command -v pm2 >/dev/null 2>&1; then
+  if [[ -z "${PM2_BIN}" ]]; then
+    log "skip PM2 app delete — no pm2 binary resolvable (set PATH or install fnm/homebrew pm2)"
     return 0
   fi
 
-  log "delete Meridian PM2 apps if present"
-  pm2 delete calling-hub calling-interface calling-monitor calling-web >/dev/null 2>&1 || true
-  pm2 delete ecosystem.config.js >/dev/null 2>&1 || true
+  log "delete Meridian PM2 apps if present via ${PM2_BIN}"
+  "${PM2_BIN}" delete calling-hub calling-interface calling-monitor calling-web >/dev/null 2>&1 || true
+  "${PM2_BIN}" delete ecosystem.config.js >/dev/null 2>&1 || true
 }
 
 cleanup_tmux_agent_sessions() {

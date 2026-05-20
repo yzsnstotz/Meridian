@@ -96,3 +96,27 @@ test("terminate.sh preserves persisted hub state unless reset-state is explicit"
   assert.match(script, /preserve persisted hub state/);
   assert.match(script, /reset persisted hub state/);
 });
+
+test("terminate.sh resolves pm2 binary by path when not on PATH (maintenance hub / launchd spawner)", async () => {
+  const script = await readTerminateScript();
+
+  // The maintenance hub at http://127.0.0.1:8765/ spawns terminate.sh under
+  // launchd with a minimal PATH that omits fnm's per-shell bin dirs.
+  // `command -v pm2` returns empty there, so stop_pm2_apps used to skip the
+  // `pm2 delete` call — PM2's autorestart then respawned calling-hub even
+  // after kill_runtime_service SIGKILLed the PID, leaving the user's
+  // "Terminate" click silently ineffective (2026-05-20 incident).
+  assert.match(script, /find_pm2_binary\(\)/);
+  assert.match(script, /\.local\/share\/fnm\/node-versions/);
+  assert.match(script, /\/opt\/homebrew\/bin\/pm2/);
+  assert.match(script, /PM2_BIN="\$\(find_pm2_binary/);
+  assert.match(script, /pm2_daemon_running/);
+  assert.match(script, /WARNING PM2 daemon is running but the pm2 binary is not on PATH/);
+
+  // All bare `pm2 ...` invocations must go through ${PM2_BIN} so they
+  // use the resolved absolute path — same contract as restart.sh.
+  const barePm2Lines = script
+    .split(/\r?\n/)
+    .filter((line) => /(^|[^"$\w./-])pm2 (delete|ping|reload|restart|start|status|stop)\b/.test(line));
+  assert.deepEqual(barePm2Lines, [], `unguarded pm2 invocations found:\n${barePm2Lines.join("\n")}`);
+});
