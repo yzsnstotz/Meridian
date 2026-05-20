@@ -3,9 +3,20 @@ import { ChatterStateStore, type ChatterInFlightTrace } from "./chatter-state-st
 
 export type SessionProbe = (sessionId: string) => Promise<boolean>;
 
+export interface SelfInitiatedTurnRequest {
+  system_prompt_id: string;
+  origin: "trigger";
+  trigger_name: string;
+}
+
+export interface QueuedSelfInitiatedTurn extends SelfInitiatedTurnRequest {
+  queued_at: string;
+}
+
 export class SessionManager {
   private agentSessionId: string | null = null;
   private inFlight: Map<string, ChatterInFlightTrace> = new Map();
+  private selfInitiatedTurnQueue: QueuedSelfInitiatedTurn[] = [];
   private needsNew = false;
 
   constructor(private readonly store: ChatterStateStore) {}
@@ -20,6 +31,14 @@ export class SessionManager {
 
   get needsNewSession(): boolean {
     return this.needsNew;
+  }
+
+  get hasActiveAgentTurn(): boolean {
+    return [...this.inFlight.values()].some((trace) => trace.purpose === "agent_turn");
+  }
+
+  get queuedSelfInitiatedTurnCount(): number {
+    return this.selfInitiatedTurnQueue.length;
   }
 
   rehydrate(): void {
@@ -60,6 +79,7 @@ export class SessionManager {
   unbindAgentSession(): void {
     this.agentSessionId = null;
     this.inFlight.clear();
+    this.selfInitiatedTurnQueue = [];
     this.needsNew = true;
     this.persist();
   }
@@ -67,6 +87,7 @@ export class SessionManager {
   newSession(): { previousTraces: ChatterInFlightTrace[]; newSessionId: string } {
     const previousTraces = [...this.inFlight.values()];
     this.inFlight.clear();
+    this.selfInitiatedTurnQueue = [];
     this.agentSessionId = randomUUID();
     this.needsNew = false;
     this.persist();
@@ -87,8 +108,26 @@ export class SessionManager {
   interrupt(): ChatterInFlightTrace[] {
     const traces = [...this.inFlight.values()];
     this.inFlight.clear();
+    this.selfInitiatedTurnQueue = [];
     this.persist();
     return traces;
+  }
+
+  enqueueSelfInitiatedTurn(request: SelfInitiatedTurnRequest): QueuedSelfInitiatedTurn {
+    const entry: QueuedSelfInitiatedTurn = {
+      ...request,
+      queued_at: new Date().toISOString()
+    };
+    this.selfInitiatedTurnQueue.push(entry);
+    return entry;
+  }
+
+  shiftSelfInitiatedTurn(): QueuedSelfInitiatedTurn | null {
+    return this.selfInitiatedTurnQueue.shift() ?? null;
+  }
+
+  clearSelfInitiatedTurnQueue(): void {
+    this.selfInitiatedTurnQueue = [];
   }
 
   registerTrace(trace: Omit<ChatterInFlightTrace, "registered_at">): ChatterInFlightTrace {
@@ -113,6 +152,7 @@ export class SessionManager {
   markSessionDead(): void {
     this.agentSessionId = null;
     this.inFlight.clear();
+    this.selfInitiatedTurnQueue = [];
     this.needsNew = true;
     this.persist();
   }

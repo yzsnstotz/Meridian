@@ -88,10 +88,14 @@ export const ChatterReadOnlyQueryResultSchema = z.object({
 });
 export type ChatterReadOnlyQueryResult = z.infer<typeof ChatterReadOnlyQueryResultSchema>;
 
+export const ChatterTurnOriginSchema = z.enum(["user", "trigger"]);
+export type ChatterTurnOrigin = z.infer<typeof ChatterTurnOriginSchema>;
+
 export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]).optional(),
   chatter_session_id: z.string().min(1).optional(),
   system_prompt_id: z.string().min(1).optional(),
+  origin: ChatterTurnOriginSchema.optional(),
   context_refs: z.array(z.object({ type: z.string(), key: z.string() })).optional(),
   read_only_query: ChatterReadOnlyQuerySchema.optional(),
   read_only_query_result: ChatterReadOnlyQueryResultSchema.optional(),
