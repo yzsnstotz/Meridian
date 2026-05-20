@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "cli": "tsx src/cli/project-policy.ts",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
