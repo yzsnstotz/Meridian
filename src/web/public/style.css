@@ -1350,6 +1350,134 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
 }
 .process-filter-toggle input[type="checkbox"] { cursor: pointer; }
 
+/* ---- Process row grouping ----
+   Rows in the processes table are visually grouped by their actual owner
+   (worker / dispatcher / validator / pm-resolver / stateless Hub-direct
+   call / orphan / external). The group header row carries the owner
+   identity + deduped token total; sub-rows are individual PIDs that all
+   participate in the same owner. The two pieces work together to surface
+   shim+native pairs and stateless calls clearly. */
+.row-group-header td {
+  background: rgba(15, 23, 42, 0.05);
+  padding: 0.55rem 0.7rem;
+  border-top: 2px solid rgba(15, 23, 42, 0.12);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+.row-group-managed-leak td {
+  background: rgba(217, 45, 32, 0.10);
+  border-top-color: rgba(217, 45, 32, 0.35);
+}
+.row-group-orphan td {
+  background: rgba(217, 45, 32, 0.07);
+  border-top-color: rgba(217, 45, 32, 0.30);
+}
+.row-group-stateless td {
+  background: rgba(245, 158, 11, 0.06);
+  border-top-color: rgba(245, 158, 11, 0.30);
+}
+.row-group-external td {
+  background: rgba(107, 114, 128, 0.06);
+  border-top-color: rgba(107, 114, 128, 0.20);
+}
+.row-group-worker td,
+.row-group-dispatcher td,
+.row-group-validator td,
+.row-group-pm_resolver td {
+  background: rgba(22, 128, 60, 0.07);
+  border-top-color: rgba(22, 128, 60, 0.25);
+}
+
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.group-row-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.group-row-right {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+.group-title { font-weight: 600; }
+.group-subtitle { font-size: 0.85rem; }
+.group-tokens { font-size: 0.92rem; }
+
+.group-kind-badge {
+  display: inline-block;
+  padding: 0.06rem 0.5rem;
+  border-radius: 0.32rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+}
+.group-kind-badge.group-kind-worker,
+.group-kind-badge.group-kind-dispatcher,
+.group-kind-badge.group-kind-validator,
+.group-kind-badge.group-kind-pm_resolver {
+  color: #166534;
+  background: rgba(22, 128, 60, 0.12);
+}
+.group-kind-badge.group-kind-managed-leak,
+.group-kind-badge.group-kind-orphan {
+  color: #b42318;
+  background: rgba(217, 45, 32, 0.10);
+}
+.group-kind-badge.group-kind-stateless {
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.10);
+}
+.group-kind-badge.group-kind-external {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.10);
+}
+
+.tree-indent {
+  color: #9ca3af;
+  font-family: inherit;
+}
+
+/* Session-share / session-anchor tags inside the tokens cell — make it
+   visually obvious that two adjacent rows with the same numbers are
+   participating in the same session, not double-counted. */
+.session-anchor {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.02rem 0.36rem;
+  border-radius: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #166534;
+  background: rgba(22, 128, 60, 0.10);
+  border: 1px solid rgba(22, 128, 60, 0.35);
+}
+.session-shared {
+  font-size: 0.78rem;
+  font-style: italic;
+}
+.token-cell-note {
+  font-size: 0.85rem;
+}
+
+/* Sub-row treatment: a faint left border so the eye associates the rows
+   below a group header with that header. */
+.row-in-group td:first-child {
+  border-left: 3px solid rgba(15, 23, 42, 0.08);
+}
+.row-leak.row-in-group td:first-child {
+  border-left-color: rgba(217, 45, 32, 0.55);
+}
+
 /* ---- System monitor ---- */
 .monitor-shell {
   display: flex;
