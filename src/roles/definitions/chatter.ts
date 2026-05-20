@@ -6,9 +6,14 @@ import { loadManifestFromTemplate, loadManifestFromFile } from "../chatter/manif
 import { MemoryResolver } from "../chatter/memory-resolver";
 import { buildSandboxSpawnPlan, type SandboxSpawnPlan } from "../chatter/sandbox";
 import { makeMemorySkills } from "../chatter/memory-skills";
-import { assertModeAllowed, ChatterPolicyError } from "../chatter/allowlist";
+import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../chatter/allowlist";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
 import { SessionManager } from "../chatter/session-manager";
+import {
+  makeStructuredSkills,
+  registerStructuredSkills,
+  type StructuredSkillName
+} from "../chatter/skills/structured";
 
 const ROLES_SOCKET_REPLY_CHANNEL: ReplyChannel = {
   channel: "socket",
@@ -50,6 +55,7 @@ export class ChatterRole implements BaseRole {
   private sessionMgr: SessionManager | null = null;
   private sandboxPlan: SandboxSpawnPlan | null = null;
   private store: ChatterStateStore | null = null;
+  private skillHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
 
   /**
    * In-flight spawn trace_id; set when we send intent:"spawn" and cleared
@@ -75,6 +81,12 @@ export class ChatterRole implements BaseRole {
       ? loadManifestFromTemplate(this.config.template)
       : loadManifestFromFile(this.config.manifest_path as string);
     this.resolver = new MemoryResolver(this.config.memory_folder, manifest);
+    this.skillHandlers.clear();
+    registerStructuredSkills(makeStructuredSkills(this.resolver), {
+      register: (name: StructuredSkillName, handler: (args: unknown) => Promise<unknown>) => {
+        this.skillHandlers.set(name, handler);
+      }
+    });
     this.store = new ChatterStateStore(this.config.memory_folder);
     this.sessionMgr = new SessionManager(this.store);
     this.sessionMgr.rehydrate();
@@ -97,10 +109,32 @@ export class ChatterRole implements BaseRole {
     this.sessionMgr = null;
     this.sandboxPlan = null;
     this.store = null;
+    this.skillHandlers.clear();
   }
 
   async onStatusChange(): Promise<void> {
     return undefined;
+  }
+
+  async handleAgentToolCall(name: string, args: unknown): Promise<unknown> {
+    if (!this.resolver) {
+      return { error: "not_active", details: "chatter role is not active" };
+    }
+
+    try {
+      assertSkillAllowed(name, this.config.skill_allowlist);
+    } catch (error) {
+      if (error instanceof ChatterPolicyError) {
+        return { error: error.code, details: error.message };
+      }
+      throw error;
+    }
+
+    const handler = this.skillHandlers.get(name);
+    if (!handler) {
+      return { error: "unknown_skill", details: `unknown tool '${name}'` };
+    }
+    return handler(args);
   }
 
   /**
@@ -226,6 +260,7 @@ export class ChatterRole implements BaseRole {
         content: "",
         attachments: [],
         spawn_dir: this.config.memory_folder,
+        tool_descriptors: [...(this.sandboxPlan?.toolDescriptors ?? [])],
         ...(this.config.llm_model !== undefined ? { model_id: this.config.llm_model } : {}),
         ...(this.config.credential_id !== undefined ? { credential_id: this.config.credential_id } : {})
       },

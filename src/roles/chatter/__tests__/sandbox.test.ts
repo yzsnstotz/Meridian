@@ -66,6 +66,24 @@ describe("buildSandboxSpawnPlan", () => {
     );
   });
 
+  it("toolDescriptors expose allowlisted structured tools by their raw names", () => {
+    const plan = buildSandboxSpawnPlan({
+      memoryFolder: root,
+      skillAllowlist: ["structured.upsert", "structured.get"],
+      llmAgentKind: "claude-code"
+    });
+    const names = plan.toolDescriptors.map((t) => t.name).sort();
+    expect(names).toEqual(
+      [
+        "chatter.memory.list",
+        "chatter.memory.read",
+        "chatter.memory.write",
+        "structured.get",
+        "structured.upsert"
+      ].sort()
+    );
+  });
+
   it("never includes shell/web/exec tools by default (only built-in memory tools when allowlist is empty)", () => {
     const plan = buildSandboxSpawnPlan({
       memoryFolder: root,

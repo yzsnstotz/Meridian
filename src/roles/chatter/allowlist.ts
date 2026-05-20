@@ -15,6 +15,13 @@ const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 const SKILL_PREFIX = "chatter.skill.";
+const STRUCTURED_TOOLS: ReadonlySet<string> = new Set([
+  "structured.upsert",
+  "structured.get",
+  "structured.query",
+  "structured.delete",
+  "structured.list"
+]);
 
 export function assertModeAllowed(
   mode: "stateless" | "session",
@@ -33,6 +40,13 @@ export function assertSkillAllowed(
   skillAllowlist: ReadonlyArray<string>
 ): void {
   if (ALWAYS_ALLOWED_TOOLS.has(toolName)) return;
+  if (STRUCTURED_TOOLS.has(toolName)) {
+    if (skillAllowlist.includes(toolName)) return;
+    throw new ChatterPolicyError(
+      "denied_skill",
+      `skill '${toolName}' not in allowlist [${skillAllowlist.join(", ")}]`
+    );
+  }
   if (!toolName.startsWith(SKILL_PREFIX)) {
     throw new ChatterPolicyError("denied_skill", `unknown tool '${toolName}'`);
   }

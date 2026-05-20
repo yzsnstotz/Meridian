@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, realpathSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  realpathSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChatterRole } from "../../definitions/chatter";
@@ -49,6 +56,37 @@ function makeTurnResult(content: string, overrides: Partial<HubResult> = {}): Hu
     ...overrides
   };
 }
+
+function writeStructuredManifest(root: string): string {
+  const manifestPath = path.join(root, "manifest.json");
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      version: 1,
+      layers: "flat",
+      index: "none",
+      bindings: {},
+      record_schemas: {
+        story_short_drama: {
+          type: "object",
+          "x-indexed-fields": ["status"],
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            status: { type: "string" }
+          },
+          required: ["id", "title", "status"],
+          additionalProperties: false
+        }
+      }
+    })
+  );
+  return manifestPath;
+}
+
+type AgentToolCallable = ChatterRole & {
+  handleAgentToolCall(name: string, args: unknown): Promise<unknown>;
+};
 
 async function driveSpawnResponse(
   role: ChatterRole,
@@ -199,6 +237,64 @@ describe("ChatterRole — activation + spawn handshake", () => {
     const run = sent.find((m) => m.intent === "run" && m.target === "claude_07");
     expect(run).toBeDefined();
     expect(run!.payload.content).toBe("next");
+  });
+});
+
+describe("ChatterRole — structured agent tools", () => {
+  it("exposes only allowlisted structured tool descriptors on spawn", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-structured-role-")));
+    const manifestPath = writeStructuredManifest(root);
+    const { ctx, sent } = makeCtx();
+    const role = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root, {
+        template: undefined,
+        manifest_path: manifestPath,
+        skill_allowlist: ["structured.upsert", "structured.get"]
+      })
+    );
+    await role.onActivate(ctx);
+
+    await role.onInboundResult(
+      makeTurnResult("use structured tools", { payload: { chatter: { mode: "session" } } })
+    );
+
+    const spawn = sent.find((m) => m.intent === "spawn");
+    expect(spawn).toBeDefined();
+    const names = ((spawn!.payload as { tool_descriptors?: Array<{ name: string }> })
+      .tool_descriptors ?? []).map((descriptor) => descriptor.name);
+    expect(names).toEqual(expect.arrayContaining(["structured.upsert", "structured.get"]));
+    expect(names).not.toContain("structured.query");
+    expect(names).not.toContain("structured.delete");
+    expect(names).not.toContain("structured.list");
+  });
+
+  it("dispatches allowlisted structured tools and denies non-allowlisted structured tools", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-structured-role-")));
+    const manifestPath = writeStructuredManifest(root);
+    const { ctx } = makeCtx();
+    const role = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root, {
+        template: undefined,
+        manifest_path: manifestPath,
+        skill_allowlist: ["structured.upsert"]
+      })
+    ) as AgentToolCallable;
+    await role.onActivate(ctx);
+
+    const upsert = await role.handleAgentToolCall("structured.upsert", {
+      type: "story_short_drama",
+      key: "s1",
+      record: { id: "s1", title: "Alpha", status: "draft" }
+    });
+    expect(upsert).toMatchObject({
+      record: { id: "s1", title: "Alpha", status: "draft" }
+    });
+
+    await expect(
+      role.handleAgentToolCall("structured.get", { type: "story_short_drama", key: "s1" })
+    ).resolves.toMatchObject({ error: "denied_skill" });
   });
 });
 

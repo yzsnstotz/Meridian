@@ -1,5 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import {
+  STRUCTURED_SKILL_NAMES,
+  getStructuredToolDescriptors,
+  type StructuredSkillName
+} from "./skills/structured";
 
 export interface SandboxSpawnPlanInput {
   memoryFolder: string;
@@ -29,6 +34,11 @@ const BUILTIN_MEMORY_TOOLS: ReadonlyArray<ToolDescriptor> = [
   { name: "chatter.memory.list", description: "List entries under a logical path." }
 ];
 
+const STRUCTURED_SKILL_NAME_SET: ReadonlySet<string> = new Set(STRUCTURED_SKILL_NAMES);
+const STRUCTURED_TOOL_DESCRIPTORS = new Map<StructuredSkillName, ToolDescriptor>(
+  getStructuredToolDescriptors().map((descriptor) => [descriptor.name, descriptor])
+);
+
 export function buildSandboxSpawnPlan(input: SandboxSpawnPlanInput): SandboxSpawnPlan {
   const sandboxDir = path.join(input.memoryFolder, ".chatter-sandbox");
   const settingsPath = path.join(sandboxDir, "settings.json");
@@ -43,10 +53,18 @@ export function buildSandboxSpawnPlan(input: SandboxSpawnPlanInput): SandboxSpaw
     disableAllHooks: true
   };
 
-  const skillTools: ReadonlyArray<ToolDescriptor> = input.skillAllowlist.map((s) => ({
-    name: `chatter.skill.${s}`,
-    description: `Operator-allowlisted skill: ${s}`
-  }));
+  const skillTools: ReadonlyArray<ToolDescriptor> = input.skillAllowlist.map((s) => {
+    if (STRUCTURED_SKILL_NAME_SET.has(s)) {
+      return STRUCTURED_TOOL_DESCRIPTORS.get(s as StructuredSkillName) ?? {
+        name: s,
+        description: `Operator-allowlisted skill: ${s}`
+      };
+    }
+    return {
+      name: `chatter.skill.${s}`,
+      description: `Operator-allowlisted skill: ${s}`
+    };
+  });
 
   const toolDescriptors: ReadonlyArray<ToolDescriptor> = [...BUILTIN_MEMORY_TOOLS, ...skillTools];
 
