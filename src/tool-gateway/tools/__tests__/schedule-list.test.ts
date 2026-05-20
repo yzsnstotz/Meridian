@@ -42,7 +42,7 @@ describe("schedule-list tool", () => {
       user_reply_channels: [{ channel: "web", chat_id: "web:ops" }],
       agent_type: "codex",
       model_id: "gpt-5",
-      mode: "pane_bridge",
+      mode: "bridge",
       kill_policy: "always",
       auto_approve: false,
       scheduler_mode: "cron",

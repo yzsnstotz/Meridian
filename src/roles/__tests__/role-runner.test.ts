@@ -14,7 +14,6 @@ const instances: AgentInstance[] = [
     socket_path: "/tmp/claude.sock",
     working_dir: "/tmp",
     pid: 123,
-    tmux_pane: null,
     status: "idle",
     created_at: "2026-03-19T00:00:00.000Z",
     restart_safe: true,

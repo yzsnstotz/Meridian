@@ -48,7 +48,7 @@ describe("spawn tool", () => {
 
     const result = await spawnTool.execute({
       agent_type: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       model_id: "gpt-5.4",
       spawn_dir: "/tmp/project",
       auto_approve: "false"
@@ -56,7 +56,7 @@ describe("spawn tool", () => {
 
     expect(mockSpawn).toHaveBeenCalledWith({
       agentType: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       spawnDir: "/tmp/project",
       modelId: "gpt-5.4",
       effort: undefined,
@@ -67,7 +67,7 @@ describe("spawn tool", () => {
       data: {
         thread_id: "thread-999",
         agent_type: "codex",
-        mode: "pane_bridge",
+        mode: "bridge",
         model_id: "gpt-5.4"
       }
     });
@@ -104,7 +104,7 @@ describe("spawn tool", () => {
 
     const result = await spawnTool.execute({
       agent_type: "codex",
-      mode: "pane_bridge"
+      mode: "bridge"
     });
 
     expect(result).toEqual({
@@ -118,7 +118,7 @@ describe("spawn tool", () => {
 
     const result = await spawnTool.execute({
       agent_type: "claude",
-      mode: "pane_bridge"
+      mode: "bridge"
     });
 
     expect(result).toEqual({

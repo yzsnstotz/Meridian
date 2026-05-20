@@ -5736,7 +5736,7 @@ describe("role config handlers", () => {
               }
             ],
             agent_type: "codex",
-            mode: "pane_bridge",
+            mode: "bridge",
             kill_policy: "always",
             auto_approve: true,
             scheduler_mode: "cron",

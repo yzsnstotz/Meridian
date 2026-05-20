@@ -92,7 +92,7 @@ async function createDetachedDispatchHarness(): Promise<{
     command_file_path: string;
     user_reply_channels: Array<{ channel: "telegram"; chat_id: string }>;
     agent_type: "codex";
-    mode: "pane_bridge";
+    mode: "bridge";
     kill_policy: "always";
     auto_approve: false;
     use_agent_dispatcher: true;
@@ -135,7 +135,7 @@ async function createDetachedDispatchHarness(): Promise<{
         }
       ],
       agent_type: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       kill_policy: "always",
       auto_approve: false,
       use_agent_dispatcher: true

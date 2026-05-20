@@ -47,7 +47,7 @@ describe("launchDispatchWorker", () => {
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     expect(harness.spawn).toHaveBeenCalledWith({
       agentType: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       spawnDir: harness.expectedSpawnDir,
       modelId: "gpt-5.4",
       autoApprove: undefined
@@ -76,7 +76,7 @@ describe("launchDispatchWorker", () => {
 
     expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
       agentType: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       spawnDir: harness.expectedSpawnDir,
       modelId: "gpt-5.4"
     }));
@@ -95,7 +95,7 @@ describe("launchDispatchWorker", () => {
 
     expect(harness.spawn).toHaveBeenCalledWith(expect.objectContaining({
       agentType: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       spawnDir: harness.expectedSpawnDir,
       modelId: "gpt-5.4"
     }));
@@ -190,7 +190,7 @@ describe("launchDispatchWorker", () => {
 
     const result = await launchDispatchWorker({
       agentType: "codex",
-      mode: "pane_bridge",
+      mode: "bridge",
       commandFilePath: "   ",
       dispatchPlanPath: "",
       dispatchRepoRoot: "   ",
@@ -605,7 +605,7 @@ function buildConfig(
 ): LaunchDispatchWorkerConfig {
   return {
     agentType: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     killPolicy: "always",
     commandFilePath,
     dispatchPlanPath,
