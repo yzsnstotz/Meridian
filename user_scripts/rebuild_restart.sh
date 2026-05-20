@@ -87,22 +87,6 @@ service_launcher_is_alive() {
   return 1
 }
 
-kill_by_pattern() {
-  local pattern="$1"
-  local label="$2"
-  local pids
-  if ! command -v pgrep >/dev/null 2>&1; then
-    return 0
-  fi
-  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
-  if [[ -n "${pids}" ]]; then
-    echo "Stopping ${label} by pattern: ${pids//$'\n'/ }"
-    kill ${pids} 2>/dev/null || true
-    sleep 1
-    kill -9 ${pids} 2>/dev/null || true
-  fi
-}
-
 canonical_cwd() {
   local directory="$1"
   (cd "$directory" 2>/dev/null && pwd -P) || true
@@ -129,6 +113,65 @@ repo_owned_pids() {
       printf '%s\n' "$pid"
     fi
   done
+}
+
+# Lists PIDs whose argv references this repo's runtime — directly via an
+# absolute entrypoint path ("${ROOT_DIR}/dist/index.js"), or via a relative
+# argv whose cwd resolves to "${ROOT_DIR}". Mirrors Meridian's
+# user_scripts/restart.sh::runtime_pids_for_service. See terminate.sh's copy
+# of this helper for the full rationale (the previous pgrep regex matched the
+# tmux server but not the actual npm/node processes spawned inside it, so the
+# pre-rebuild kill step was a no-op and the new `npm start` hit EADDRINUSE on
+# port 7701).
+runtime_pids_for_service() {
+  local npm_script="$1"
+  shift
+
+  local pid command cwd entrypoint matched
+  while read -r pid command; do
+    [[ -z "${pid}" || -z "${command}" ]] && continue
+
+    matched=0
+    for entrypoint in "$@"; do
+      if [[ "${command}" == *"${ROOT_DIR}/${entrypoint}"* ]]; then
+        matched=1
+        break
+      fi
+
+      if [[ "${command}" == *" ${entrypoint}"* || "${command}" == "${entrypoint}"* ]]; then
+        cwd="$(process_cwd "${pid}")"
+        if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+          matched=1
+          break
+        fi
+      fi
+    done
+
+    if [[ "${matched}" -eq 0 ]] &&
+       [[ "${command}" == *"npm run ${npm_script}"* || "${command}" == *"npm ${npm_script}"* ]]; then
+      cwd="$(process_cwd "${pid}")"
+      if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+        matched=1
+      fi
+    fi
+
+    if [[ "${matched}" -eq 1 ]]; then
+      printf '%s\n' "${pid}"
+    fi
+  done < <(ps -axo pid=,command=) | sort -u
+}
+
+kill_runtime_service() {
+  local label="$1"
+  local npm_script="$2"
+  shift 2
+
+  local pids
+  pids="$(runtime_pids_for_service "${npm_script}" "$@" || true)"
+  if [[ -n "${pids}" ]]; then
+    # kill_pids already prints "Stopping ${label}: ${pids}" — don't double-log.
+    kill_pids "${label}" ${pids}
+  fi
 }
 
 find_repo_port_listener_pids() {
@@ -264,9 +307,11 @@ if [[ -f "$TMUX_SESSION_FILE" ]]; then
   rm -f "$TMUX_SESSION_FILE"
 fi
 
-# Only match processes that include this repo path to avoid killing unrelated services
-# (e.g., Meridian itself may run via "pnpm start" which contains "npm start" as a substring).
-kill_by_pattern "${ROOT_DIR}/src/index.ts|${ROOT_DIR}/dist/index.js|${ROOT_DIR}.*tsx src/index.ts|${ROOT_DIR}.*npm (run )?start" "meridian-roles"
+# Identify processes by cwd, not by argv-substring. `npm start` and the
+# `node dist/index.js` it spawns both run with cwd=${ROOT_DIR} but neither has
+# an absolute ROOT_DIR in argv — a pgrep regex would silently miss them and
+# the next `npm start` below would hit EADDRINUSE on port 7701.
+kill_runtime_service "meridian-roles" "start" "src/index.ts" "dist/index.js"
 kill_repo_port_listeners
 
 echo "Cleaning stale socket: ${ROLES_SOCKET_PATH}"
