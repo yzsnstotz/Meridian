@@ -71,6 +71,23 @@ export class MemoryResolver {
     return resolved;
   }
 
+  /**
+   * Resolve controlled memory-folder-relative path segments under the sandbox
+   * root. Callers pass each semantic segment separately so traversal markers
+   * are rejected before filesystem helpers receive a path.
+   */
+  resolveMemoryPath(...segments: string[]): string {
+    if (segments.length === 0) {
+      throw new SandboxViolationError("missing memory path segment", "");
+    }
+    for (const segment of segments) {
+      this.assertSafeMemorySegment(segment);
+    }
+    const candidate = path.resolve(this.rootReal, ...segments);
+    this.assertUnderRoot(candidate);
+    return candidate;
+  }
+
   private findExistingAncestor(target: string): string | null {
     let cur = target;
     while (true) {
@@ -78,6 +95,18 @@ export class MemoryResolver {
       const parent = path.dirname(cur);
       if (parent === cur) return null;
       cur = parent;
+    }
+  }
+
+  private assertSafeMemorySegment(segment: string): void {
+    if (
+      segment === ""
+      || segment === "."
+      || segment === ".."
+      || path.isAbsolute(segment)
+      || /[\\/]/.test(segment)
+    ) {
+      throw new SandboxViolationError("memory path segment is unsafe", segment);
     }
   }
 
