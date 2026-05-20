@@ -418,6 +418,25 @@ export class HubServer {
       return;
     }
 
+    // Flush in-memory hub state to disk BEFORE closing the listening
+    // socket. Without this, any instance registered since the last route()
+    // call (e.g., a spawn whose readiness wait is still in-flight, or a
+    // mutation by the periodic monitor ticker) is silently discarded when
+    // pm2 sends SIGTERM. The next hub generation rehydrates a stale
+    // state.json and surfaces `thread_id=X is not registered` errors.
+    try {
+      this.router.persistOnShutdown();
+    } catch (error) {
+      this.log.warn(
+        {
+          trace_id: null,
+          thread_id: null,
+          err: error instanceof Error ? error.message : String(error)
+        },
+        "Final state flush on shutdown threw — continuing teardown"
+      );
+    }
+
     const server = this.server;
     this.server = null;
 

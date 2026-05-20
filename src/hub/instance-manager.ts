@@ -104,6 +104,15 @@ export interface InstanceManagerOptions {
   paneDeltaTailLinesWhenNoOverlap?: number;
   geminiPanePromptSettleMs?: number;
   geminiPaneFooterSettleMs?: number;
+  /**
+   * Override OS-level PID liveness check. Default uses `process.kill(pid, 0)`.
+   * Tests inject `() => true` so fake pids count as live; production uses default.
+   */
+  pidLivenessFn?: (pid: number) => boolean;
+  /** Max attempts for the rehydrate probe before reaping a stuck child. Default 3. */
+  rehydrateProbeRetries?: number;
+  /** Base delay between rehydrate probe retries (multiplied by attempt count). Default 500ms. */
+  rehydrateProbeRetryDelayMs?: number;
 }
 
 const SESSION_THREAD_PLACEHOLDERS = new Set(["active", "all", "global", "pending", "unbound", "none"]);
@@ -167,6 +176,10 @@ export class InstanceManager {
   private readonly startupDelayMs = 250;
   private readonly spawnAttempts = 3;
   private readonly spawnRetryDelayMs = 500;
+  private readonly pidLivenessFn: (pid: number) => boolean;
+  private readonly rehydrateProbeRetries: number;
+  private readonly rehydrateProbeRetryDelayMs: number;
+  private onStateChange: (() => void) | null = null;
 
   constructor(
     private readonly registry: InstanceRegistry,
@@ -193,6 +206,49 @@ export class InstanceManager {
       options.paneDeltaTailLinesWhenNoOverlap ?? PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP;
     this.geminiPanePromptSettleMs = options.geminiPanePromptSettleMs ?? 1500;
     this.geminiPaneFooterSettleMs = options.geminiPaneFooterSettleMs ?? 20000;
+    this.pidLivenessFn =
+      options.pidLivenessFn ??
+      ((pid: number) => {
+        if (!Number.isInteger(pid) || pid <= 1) {
+          return false;
+        }
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          // EPERM means the PID exists but is owned by another user — still alive.
+          return (error as NodeJS.ErrnoException).code === "EPERM";
+        }
+      });
+    this.rehydrateProbeRetries = Math.max(1, options.rehydrateProbeRetries ?? 3);
+    this.rehydrateProbeRetryDelayMs = Math.max(0, options.rehydrateProbeRetryDelayMs ?? 500);
+  }
+
+  /**
+   * Wire a persistence callback that fires after any registry mutation that
+   * matters for restart recovery (register, unregister, rehydrate complete).
+   * Closes the spawn-then-persist race: previously, a hub crash between
+   * `registry.register(instance)` and the route()-end persistStateSafely
+   * left the agentapi child alive (detached: true) with no on-disk record,
+   * producing `thread_id=X is not registered` errors on the next hub
+   * generation.
+   */
+  setOnStateChange(callback: (() => void) | null): void {
+    this.onStateChange = callback;
+  }
+
+  private notifyStateChange(): void {
+    if (!this.onStateChange) {
+      return;
+    }
+    try {
+      this.onStateChange();
+    } catch (error) {
+      this.log.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        "InstanceManager onStateChange callback threw"
+      );
+    }
   }
 
   async spawn(
@@ -603,17 +659,28 @@ export class InstanceManager {
     const prunedThreadIds: string[] = [];
     const liveThreadIds = new Set<string>();
 
-    for (const persistedInstance of state.instances ?? []) {
-      const hydratedInstance = await this.rehydrateInstance(persistedInstance);
-      if (!hydratedInstance) {
-        prunedThreadIds.push(persistedInstance.thread_id);
+    // Probe persisted instances in parallel. Serial probes would multiply
+    // the worst-case rehydrate wallclock (n × per-probe timeout) and was
+    // a contributing factor to pm2 SIGKILL'ing hub past kill_timeout when
+    // many instances were unhealthy after a restart.
+    const persistedInstances = state.instances ?? [];
+    const rehydrated = await Promise.all(
+      persistedInstances.map(async (persistedInstance) => ({
+        persisted: persistedInstance,
+        hydrated: await this.rehydrateInstance(persistedInstance)
+      }))
+    );
+
+    for (const { persisted, hydrated } of rehydrated) {
+      if (!hydrated) {
+        prunedThreadIds.push(persisted.thread_id);
         continue;
       }
 
-      this.registry.register(hydratedInstance);
-      this.rememberAllocatedThreadId(hydratedInstance.thread_id, hydratedInstance.agent_type);
-      restoredThreadIds.push(hydratedInstance.thread_id);
-      liveThreadIds.add(hydratedInstance.thread_id);
+      this.registry.register(hydrated);
+      this.rememberAllocatedThreadId(hydrated.thread_id, hydrated.agent_type);
+      restoredThreadIds.push(hydrated.thread_id);
+      liveThreadIds.add(hydrated.thread_id);
     }
 
     for (const [session, threadId] of Object.entries(state.session_bindings ?? {})) {
@@ -626,6 +693,11 @@ export class InstanceManager {
         // Ignore invalid persisted bindings and continue restoring the rest.
       }
     }
+
+    // Flush the rehydrated state so the next hub generation reads a
+    // post-prune state.json (with the reaped orphans already absent),
+    // not the pre-restart snapshot that still references dead PIDs.
+    this.notifyStateChange();
 
     return {
       restored_thread_ids: restoredThreadIds,
@@ -972,6 +1044,9 @@ export class InstanceManager {
       this.children.set(threadId, child);
       this.maybeUnrefChild(child, stdio);
       this.watchChildProcess(threadId, child);
+      // Persist now, BEFORE the readiness wait. A SIGKILL during the wait
+      // would otherwise leave a live detached child with no on-disk record.
+      this.notifyStateChange();
       try {
         await this.assertAgentReady(threadId, socketPath, traceId);
         const attachArgs = this.buildAgentAttachCliArgs(endpointBinding);
@@ -1070,6 +1145,9 @@ export class InstanceManager {
     this.children.set(threadId, child);
     this.maybeUnrefChild(child, stdio);
     this.watchChildProcess(threadId, child);
+    // Persist now, BEFORE the readiness wait — closes the spawn-then-persist
+    // race that leaves a detached agentapi child orphaned across hub restart.
+    this.notifyStateChange();
     await this.assertAgentReady(threadId, socketPath, traceId);
 
     this.log.info(
@@ -1132,6 +1210,7 @@ export class InstanceManager {
     };
 
     this.registry.register(instance);
+    this.notifyStateChange();
     this.log.info(
       {
         operation: "spawn",
@@ -1550,32 +1629,143 @@ export class InstanceManager {
       return null;
     }
 
-    const client = this.clientFactory(instance.thread_id);
-    try {
-      await client.connect(instance.socket_path);
-      const rawStatus = await client.getStatus();
-      const enrichedStatus = await this.enrichRawStatusWithLiveModel(rawStatus, client);
-      const reportedStatus = this.normalizeAgentapiStatus(enrichedStatus.status);
-      const reportedModelId = this.extractReportedModelId(enrichedStatus);
-      return {
-        ...instance,
-        status: reportedStatus ?? instance.status,
-        ...(reportedModelId ? { model_id: reportedModelId } : {})
-      };
-    } catch (error) {
-      this.log.warn(
+    // Fast-path PID liveness check. If the OS has reaped the PID, no probe
+    // can succeed and there is no orphan to reap. Clean the leftover socket
+    // file and prune. This shortcuts the per-restart storm where stale
+    // entries used to consume probe budget and emit confusing "probe failed"
+    // warnings for already-dead workers.
+    if (!this.pidLivenessFn(instance.pid)) {
+      this.log.info(
         {
-          operation: "rehydrate_probe_failed",
+          operation: "rehydrate_pid_dead_pruned",
           thread_id: instance.thread_id,
           socket_path: instance.socket_path,
           pid: instance.pid,
-          err: error instanceof Error ? error.message : String(error)
+          prev_status: instance.status
         },
-        "Skipping persisted agent instance because readiness probe failed"
+        "Pruning persisted agent instance because PID is no longer alive"
       );
+      void this.cleanupOrphanSocket(instance.socket_path);
       return null;
+    }
+
+    // PID-alive path: probe with retries. agentapi can take several seconds
+    // to be ready after spawn (or after its own pm2-style restart). A single
+    // shot at probe time used to permanently prune any instance whose
+    // agentapi was mid-boot — the exact mechanism behind §C-2(b) of the
+    // architectural learning. Retries make the prune decision evidence-based.
+    const client = this.clientFactory(instance.thread_id);
+    let lastError: unknown = null;
+    try {
+      for (let attempt = 1; attempt <= this.rehydrateProbeRetries; attempt += 1) {
+        try {
+          await client.connect(instance.socket_path);
+          const rawStatus = await client.getStatus();
+          const enrichedStatus = await this.enrichRawStatusWithLiveModel(rawStatus, client);
+          const reportedStatus = this.normalizeAgentapiStatus(enrichedStatus.status);
+          const reportedModelId = this.extractReportedModelId(enrichedStatus);
+          if (attempt > 1) {
+            this.log.info(
+              {
+                operation: "rehydrate_probe_succeeded_after_retry",
+                thread_id: instance.thread_id,
+                socket_path: instance.socket_path,
+                pid: instance.pid,
+                attempt
+              },
+              "Rehydrate probe succeeded after retry"
+            );
+          }
+          return {
+            ...instance,
+            status: reportedStatus ?? instance.status,
+            ...(reportedModelId ? { model_id: reportedModelId } : {})
+          };
+        } catch (error) {
+          lastError = error;
+          if (attempt < this.rehydrateProbeRetries) {
+            client.disconnect();
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, this.rehydrateProbeRetryDelayMs * attempt);
+            });
+          }
+        }
+      }
     } finally {
       client.disconnect();
+    }
+
+    // All probe attempts failed but the PID is still alive. This is a true
+    // orphan: a process holding a socket that no longer responds to /status.
+    // Reap it so it does not (a) remain on the host as a resource leak, and
+    // (b) cause the next spawn that reuses this socket path to collide with
+    // the dead agentapi's socket file. Reap is fire-and-forget — startup
+    // does not block on it.
+    this.log.warn(
+      {
+        operation: "rehydrate_probe_failed",
+        thread_id: instance.thread_id,
+        socket_path: instance.socket_path,
+        pid: instance.pid,
+        attempts: this.rehydrateProbeRetries,
+        err: lastError instanceof Error ? lastError.message : String(lastError)
+      },
+      "Skipping persisted agent instance because readiness probe failed; reaping orphan"
+    );
+    void this.reapRehydrateOrphan(instance);
+    return null;
+  }
+
+  private async cleanupOrphanSocket(socketPath: string): Promise<void> {
+    if (!socketPath || !socketPath.startsWith("/")) {
+      return;
+    }
+    try {
+      await fs.promises.unlink(socketPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return;
+      }
+      this.log.warn(
+        { socket_path: socketPath, err: (error as Error).message },
+        "Failed to unlink orphan socket during rehydrate cleanup"
+      );
+    }
+  }
+
+  private async reapRehydrateOrphan(instance: AgentInstance): Promise<void> {
+    if (!this.pidLivenessFn(instance.pid)) {
+      await this.cleanupOrphanSocket(instance.socket_path);
+      return;
+    }
+    try {
+      // SIGTERM first via process kill; escalate to SIGKILL on the process
+      // group if it does not exit promptly. agentapi was spawned detached,
+      // so its pgid equals its pid — `-pid` reaches the whole subtree.
+      try {
+        process.kill(instance.pid, "SIGTERM");
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH") {
+          this.log.warn(
+            { thread_id: instance.thread_id, pid: instance.pid, err: (error as Error).message },
+            "SIGTERM to rehydrate orphan failed"
+          );
+        }
+      }
+      await this.waitForPidExit(instance.pid, instance.thread_id, 2_000);
+      this.log.info(
+        {
+          operation: "rehydrate_orphan_reaped",
+          thread_id: instance.thread_id,
+          pid: instance.pid,
+          socket_path: instance.socket_path
+        },
+        "Rehydrate orphan reaped"
+      );
+    } finally {
+      await this.cleanupOrphanSocket(instance.socket_path);
     }
   }
 
@@ -1592,6 +1782,7 @@ export class InstanceManager {
         this.clearSessionBindingsForThread(threadId);
       }
 
+      this.notifyStateChange();
       this.log.info(
         {
           operation: "kill",
@@ -1653,6 +1844,7 @@ export class InstanceManager {
       this.clearSessionBindingsForThread(threadId);
     }
 
+    this.notifyStateChange();
     this.log.info(
       {
         operation: "kill",

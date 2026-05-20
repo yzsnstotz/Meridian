@@ -1463,6 +1463,10 @@ test("rehydrateFromState restores live instances and session bindings", async ()
   const failingSocketPath = socketPathForThread("codex_02");
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
+    // Fake pids in tests are not real OS processes — bypass the PID
+    // liveness shortcut so the probe path is what's exercised here.
+    pidLivenessFn: () => true,
+    rehydrateProbeRetries: 1,
     clientFactory: (threadId: string) => ({
       connect: async (endpoint: string) => {
         if (threadId === "codex_02" || endpoint === failingSocketPath) {
@@ -1640,6 +1644,7 @@ test("rehydrateFromState keeps the allocator above live rehydrated instances to 
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
     socketPathFactory: socketPathForThread,
+    pidLivenessFn: () => true,
     spawnFn: (() => new FakeChildProcess(6602) as never) as never,
     clientFactory: () => ({
       connect: async () => undefined,
@@ -2094,4 +2099,256 @@ test("waitForChildExit does not short-circuit on child.killed before the process
 
   await wait;
   assert.equal(resolved, true);
+});
+
+test("rehydrateFromState fast-prunes instances whose PID is no longer alive without probing", async () => {
+  // Regression for the architectural storm root cause (§C-2 candidate a/b):
+  // when state.json carries a stale pid whose process the OS has already
+  // reaped, the rehydrate probe used to try to connect anyway, log a
+  // confusing "probe failed" warning, and leave the orphan socket file on
+  // disk. Now the PID check shortcuts the entire probe and unlinks the
+  // socket — no probe budget burned, no orphan socket left behind.
+  const registry = new InstanceRegistry();
+  let probeAttempts = 0;
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    pidLivenessFn: () => false,
+    clientFactory: () => ({
+      connect: async () => {
+        probeAttempts += 1;
+      },
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await manager.rehydrateFromState({
+    version: 4,
+    updated_at: new Date().toISOString(),
+    instances: [
+      {
+        thread_id: "codex_10",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: socketPathForThread("codex_10"),
+        working_dir: "/tmp",
+        pid: 9001,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString(),
+        auto_approve: false
+      }
+    ],
+    session_bindings: {}
+  });
+
+  assert.deepEqual(result.restored_thread_ids, []);
+  assert.deepEqual(result.pruned_thread_ids, ["codex_10"]);
+  assert.equal(probeAttempts, 0, "probe must not run when PID is already dead");
+  assert.equal(registry.list().length, 0);
+});
+
+test("rehydrateFromState retries probe on transient failure before pruning", async () => {
+  // Regression for §C-2 candidate (b): the rehydrate probe used to fire
+  // exactly once. agentapi can take a few seconds to boot after pm2
+  // reload; a single-shot probe permanently pruned still-living workers
+  // and produced "thread_id=X is not registered" storms downstream.
+  // The retry budget makes the prune evidence-based.
+  const registry = new InstanceRegistry();
+  let connectAttempts = 0;
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    pidLivenessFn: () => true,
+    rehydrateProbeRetries: 3,
+    rehydrateProbeRetryDelayMs: 1,
+    clientFactory: () => ({
+      connect: async () => {
+        connectAttempts += 1;
+        if (connectAttempts < 3) {
+          throw new Error("connect ECONNREFUSED (agentapi still booting)");
+        }
+      },
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "running" })
+    })
+  });
+
+  const result = await manager.rehydrateFromState({
+    version: 4,
+    updated_at: new Date().toISOString(),
+    instances: [
+      {
+        thread_id: "codex_11",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: socketPathForThread("codex_11"),
+        working_dir: "/tmp",
+        pid: 9100,
+        tmux_pane: null,
+        status: "idle",
+        created_at: new Date().toISOString(),
+        auto_approve: false
+      }
+    ],
+    session_bindings: {}
+  });
+
+  assert.deepEqual(result.restored_thread_ids, ["codex_11"]);
+  assert.deepEqual(result.pruned_thread_ids, []);
+  assert.equal(connectAttempts, 3, "probe must retry up to the configured budget");
+  assert.equal(registry.get("codex_11")?.status, "running");
+});
+
+test("rehydrateFromState reaps the orphan when all probe retries fail but PID is alive", async () => {
+  // Regression for the orphan-accumulation half of §C-2 candidate (b):
+  // previously, a stuck agentapi (PID alive but /status hung) was simply
+  // pruned from the registry — the host accumulated dead-but-running
+  // agentapi processes that held sockets and produced confusing errors
+  // when the same thread_id was reused. Now the rehydrate path actively
+  // SIGTERMs the orphan and unlinks its socket.
+  const registry = new InstanceRegistry();
+  const killSignals: Array<{ pid: number; signal: number | NodeJS.Signals }> = [];
+  const originalKill = process.kill.bind(process);
+  let probeCalls = 0;
+  const stuckPid = 9200;
+
+  process.kill = ((pid: number, signal: number | NodeJS.Signals): true => {
+    if (pid === stuckPid && signal !== 0) {
+      killSignals.push({ pid, signal });
+      return true;
+    }
+    // process.kill(pid, 0) is the liveness check inside waitForPidExit;
+    // simulate "still alive" until SIGTERM has been delivered, then dead.
+    if (signal === 0) {
+      if (pid === stuckPid && killSignals.length > 0) {
+        const err = new Error("kill ESRCH") as NodeJS.ErrnoException;
+        err.code = "ESRCH";
+        throw err;
+      }
+      return true;
+    }
+    return originalKill(pid, signal) as true;
+  }) as typeof process.kill;
+
+  try {
+    const manager = new InstanceManager(registry, {
+      ...socketModeOptions,
+      pidLivenessFn: () => true,
+      rehydrateProbeRetries: 2,
+      rehydrateProbeRetryDelayMs: 1,
+      clientFactory: () => ({
+        connect: async () => {
+          probeCalls += 1;
+          throw new Error("connect timeout (agentapi unhealthy)");
+        },
+        disconnect: () => undefined,
+        getStatus: async () => ({ status: "idle" })
+      })
+    });
+
+    const result = await manager.rehydrateFromState({
+      version: 4,
+      updated_at: new Date().toISOString(),
+      instances: [
+        {
+          thread_id: "codex_12",
+          agent_type: "codex",
+          mode: "bridge",
+          socket_path: socketPathForThread("codex_12"),
+          working_dir: "/tmp",
+          pid: stuckPid,
+          tmux_pane: null,
+          status: "idle",
+          created_at: new Date().toISOString(),
+          auto_approve: false
+        }
+      ],
+      session_bindings: {}
+    });
+
+    assert.deepEqual(result.restored_thread_ids, []);
+    assert.deepEqual(result.pruned_thread_ids, ["codex_12"]);
+    assert.equal(probeCalls, 2, "probe must exhaust the configured retry budget");
+
+    // The orphan reap runs as fire-and-forget after rehydrateFromState
+    // returns. Give it a brief window to deliver SIGTERM.
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(
+      killSignals.some((entry) => entry.pid === stuckPid && entry.signal === "SIGTERM"),
+      `expected SIGTERM to ${stuckPid}; saw ${JSON.stringify(killSignals)}`
+    );
+  } finally {
+    process.kill = originalKill;
+  }
+});
+
+test("spawn triggers onStateChange BEFORE the readiness wait to close the spawn-then-persist race", async () => {
+  // Regression for §C-2 candidate (a): previously, `registry.register(instance)`
+  // landed in memory but only reached state.json after route() returned and
+  // ran persistStateSafely. A SIGKILL during the readiness wait left a live
+  // detached agentapi child with no on-disk record. Now the InstanceManager
+  // fires onStateChange immediately after register, so the disk view tracks
+  // the in-memory view across the readiness boundary.
+  const registry = new InstanceRegistry();
+  const callbackCallsBeforeReady: number[] = [];
+  let readyCalls = 0;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(7401) as never) as never,
+    clientFactory: () => ({
+      connect: async () => {
+        readyCalls += 1;
+        callbackCallsBeforeReady.push(readyCalls);
+      },
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  let onStateChangeCalls = 0;
+  let onStateChangeBeforeReady = false;
+  manager.setOnStateChange(() => {
+    onStateChangeCalls += 1;
+    if (readyCalls === 0) {
+      onStateChangeBeforeReady = true;
+    }
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  assert.ok(onStateChangeCalls >= 1, "onStateChange must fire at least once during spawn");
+  assert.equal(
+    onStateChangeBeforeReady,
+    true,
+    "onStateChange must fire BEFORE the readiness wait — the storm-fix promise"
+  );
+
+  await manager.kill(threadId);
+});
+
+test("kill triggers onStateChange after registry.unregister so deletions also persist immediately", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => new FakeChildProcess(7501) as never) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+
+  let postKillCallback = 0;
+  manager.setOnStateChange(() => {
+    postKillCallback += 1;
+  });
+
+  await manager.kill(threadId);
+
+  assert.ok(postKillCallback >= 1, "onStateChange must fire on kill so disk view tracks the removal");
+  assert.equal(registry.get(threadId), undefined);
 });
