@@ -259,6 +259,7 @@ export interface RoleHandlersOptions {
 }
 
 export interface RoleHandlers {
+  createRole(body: unknown): Promise<{ ok: true; thread_id: string; role_type: RoleType }>;
   getConfig(threadId: string): Promise<RoleConfigResponse>;
   patchConfig(threadId: string, body: unknown): Promise<RoleConfigResponse>;
   continueDispatcher(threadId: string, workerId?: string): Promise<ContinueDispatcherResponse>;
@@ -490,6 +491,15 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
   }
 
   const handlers: RoleHandlers = {
+    async createRole(body: unknown): Promise<{ ok: true; thread_id: string; role_type: RoleType }> {
+      const { threadId, roleType } = await activateRole(body);
+      return {
+        ok: true,
+        thread_id: threadId,
+        role_type: roleType
+      };
+    },
+
     continueDispatcher: continueDispatcherForRole,
 
     async getConfig(threadId: string): Promise<RoleConfigResponse> {
