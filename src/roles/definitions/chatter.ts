@@ -87,7 +87,16 @@ export class ChatterRole implements BaseRole {
   }
 
   async onDeactivate(): Promise<void> {
+    await this.archive();
+  }
+
+  async archive(): Promise<void> {
+    await this.shutdownAgentSession();
     this.ctx = null;
+    this.resolver = null;
+    this.sessionMgr = null;
+    this.sandboxPlan = null;
+    this.store = null;
   }
 
   async onStatusChange(): Promise<void> {
@@ -266,6 +275,44 @@ export class ChatterRole implements BaseRole {
     const queued = this.pendingTurns.splice(0);
     for (let i = 0; i < queued.length; i += 1) {
       void this.forwardToUser(`error: ${reason}`).catch(() => undefined);
+    }
+  }
+
+  private async shutdownAgentSession(): Promise<void> {
+    const sessionMgr = this.sessionMgr;
+    if (!sessionMgr) return;
+
+    if (this.pendingSpawnTraceId !== null) {
+      sessionMgr.clearTrace(this.pendingSpawnTraceId);
+      this.pendingSpawnTraceId = null;
+    }
+    this.pendingTurns.splice(0);
+
+    const previousAgentThreadId = sessionMgr.currentSessionId;
+    try {
+      if (previousAgentThreadId !== null && this.ctx) {
+        const killMsg: HubMessage = {
+          trace_id: randomUUID(),
+          thread_id: this.threadId,
+          actor_id: ROLES_SERVICE_ID,
+          intent: "kill",
+          target: previousAgentThreadId,
+          priority: 5,
+          payload: { content: "", attachments: [] },
+          mode: "bridge",
+          reply_channel: ROLES_SOCKET_REPLY_CHANNEL,
+          suppress_reply: true
+        };
+        await this.ctx.sendToHub(killMsg);
+      }
+    } catch (error) {
+      this.ctx?.log.warn("chatter: archive kill failed", {
+        chatter_id: this.config.chatter_id,
+        agent_session_id: previousAgentThreadId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      sessionMgr.markSessionDead();
     }
   }
 

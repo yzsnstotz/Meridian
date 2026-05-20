@@ -152,10 +152,11 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
         await fs.mkdir(interpolated.memory_folder, { recursive: true });
         await options.createRole(body);
       } catch (error) {
-        if (isHttpError(error) && error.statusCode >= 500) {
-          throw createHttpError(error.statusCode, "role_creation_failed", {
+        if (!isHttpError(error) || error.statusCode >= 500) {
+          const upstreamStatus = isHttpError(error) ? error.statusCode : 500;
+          throw createHttpError(upstreamStatus, "role_creation_failed", {
             error: "role_creation_failed",
-            upstream_status: error.statusCode
+            upstream_status: upstreamStatus
           });
         }
         throw error;
