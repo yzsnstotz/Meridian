@@ -171,6 +171,19 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, aboveIndicator("A2", "process_pressure", "Leaked process token total", leakedTokenTotal, "tokens", 10_000, 100_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenSessionItems(leakProcesses)));
   push(indicators, aboveIndicator("A3", "process_pressure", "Per-process token velocity", Math.round(tokenVelocity), "tokens/min", 5_000, 50_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenProcessItems(processes)));
   push(indicators, aboveIndicator("A4", "process_pressure", "Orphan dispatcher-completed codex CLIs", completedAliveProcesses.length, "processes", 1, 5, "dispatcher/settle-time-terminal-thread-cleanup-gap.md", processItems(completedAliveProcesses)));
+  // A5 — codex app-server orphans from the model-catalog RPC dance
+  // (src/shared/model-catalog.ts::listCodexModelsViaAppServer). Codex
+  // app-server does NOT exit on stdin EOF, so every model/list call without
+  // an outer `timeout` permanently leaks ~3 processes (shell + node shim +
+  // native rust binary). Each spawn re-validates the unsigned NPM codex
+  // binary through syspolicyd, pegging that daemon at ~80% CPU and
+  // stalling every fork/exec on the box. The `app-server` argv suffix is
+  // unique to this path — agentapi-managed codex spawns never use it —
+  // so filtering on it cleanly isolates the leak.
+  const modelCatalogLeakProcesses = processes.filter(
+    (process) => process.agent_type === "codex" && /(?:^|\s)app-server(?:\s|$)/.test(process.command)
+  );
+  push(indicators, aboveIndicator("A5", "process_pressure", "codex app-server orphans (model-catalog leak)", modelCatalogLeakProcesses.length, "processes", 2, 5, "codex-app-server-no-shutdown-on-stdin-eof.md", processItems(modelCatalogLeakProcesses)));
 
   const hubFailureStreak = updateHubRuntime(hubProbe, runtime);
   push(indicators, hubReachabilityIndicator(hubProbe, hubFailureStreak));
