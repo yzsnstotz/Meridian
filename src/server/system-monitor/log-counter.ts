@@ -27,8 +27,22 @@ export const MONITOR_LOG_PATTERNS: LogPatternDefinition[] = [
   { key: "watchdog_stall_detected", pattern: /Watchdog detected stalled dispatcher/i, windowMs: 5 * 60 * 1000 },
   { key: "launch_breaker_tripped", pattern: /DispatcherLaunchBreaker tripped/i, windowMs: 5 * 60 * 1000 },
   { key: "worker_breaker_tripped", pattern: /DispatcherWorkerBreaker tripped/i, windowMs: 30 * 60 * 1000 },
-  { key: "lifecycle_auto_force_complete", pattern: /lifecycle_auto_force_complete/i, windowMs: 24 * 60 * 60 * 1000 }
+  { key: "lifecycle_auto_force_complete", pattern: /lifecycle_auto_force_complete/i, windowMs: 24 * 60 * 60 * 1000 },
+  // Hub log markers shipped by meridian-hub PR #90 (storm three-windows fix).
+  // Routed to system-monitor cards G2/G3/G4 to verify the fix in production.
+  { key: "rehydrate_orphan_reaped", pattern: /rehydrate_orphan_reaped/i, windowMs: 24 * 60 * 60 * 1000 },
+  { key: "rehydrate_probe_succeeded_after_retry", pattern: /rehydrate_probe_succeeded_after_retry/i, windowMs: 24 * 60 * 60 * 1000 },
+  { key: "rehydrate_pid_dead_pruned", pattern: /rehydrate_pid_dead_pruned/i, windowMs: 24 * 60 * 60 * 1000 }
 ];
+
+/** Time window after a Hub-router-init line inside which "is not registered" errors are attributed to a fresh rehydrate. */
+export const HUB_RESTART_WINDOW_MS = 60 * 1000;
+
+/** Default analysis window (events older than this are not counted). */
+const POST_INIT_ANALYSIS_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const HUB_ROUTER_INIT_PATTERN = /Hub router state initialized/i;
+const IS_NOT_REGISTERED_PATTERN = /thread_id=\S+ is not registered/i;
 
 export class LogPatternCounter {
   private readonly cache = new Map<string, CacheEntry>();
@@ -52,6 +66,7 @@ export class LogPatternCounter {
 
     const text = await readTail(filePath, stat.size, tailBytes);
     const counts = countPatternsInText(text, nowMs);
+    counts.set("is_not_registered_post_hub_init", countIsNotRegisteredPostHubInit(text, nowMs));
     this.cache.set(filePath, {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
@@ -60,6 +75,81 @@ export class LogPatternCounter {
     });
     return new Map(counts);
   }
+}
+
+/**
+ * Count `thread_id=X is not registered` hub-log lines whose timestamp falls
+ * within `restartWindowMs` AFTER a `Hub router state initialized` line.
+ *
+ * This is the load-bearing end-state check for the storm fix shipped in
+ * meridian-hub PR #90 (the "three windows" architectural fix). If this
+ * count stays at zero, the spawn-then-persist race + rehydrate one-shot
+ * probe + missing-shutdown-flush windows are all closed in production.
+ * A non-zero count is the trigger to investigate §C-2 candidate (d) —
+ * a fourth code path that emits "is not registered" without going through
+ * the rehydration race the PR #90 fixes addressed.
+ */
+export function countIsNotRegisteredPostHubInit(
+  text: string,
+  nowMs: number,
+  restartWindowMs = HUB_RESTART_WINDOW_MS,
+  windowMs = POST_INIT_ANALYSIS_WINDOW_MS
+): number {
+  const lines = text.split(/\r?\n/);
+  const initTimestamps: number[] = [];
+
+  // First pass: collect Hub-router-init timestamps inside the analysis window.
+  for (const line of lines) {
+    if (!line || !HUB_ROUTER_INIT_PATTERN.test(line)) {
+      continue;
+    }
+    const t = extractLineTimeMs(line);
+    if (t === null || nowMs - t > windowMs) {
+      continue;
+    }
+    initTimestamps.push(t);
+  }
+
+  if (initTimestamps.length === 0) {
+    return 0;
+  }
+  initTimestamps.sort((a, b) => a - b);
+
+  // Second pass: count is-not-registered lines that follow any init within
+  // restartWindowMs. A single init can attribute multiple subsequent errors;
+  // a single error attributes to at most one init (the nearest prior).
+  let count = 0;
+  for (const line of lines) {
+    if (!line || !IS_NOT_REGISTERED_PATTERN.test(line)) {
+      continue;
+    }
+    const t = extractLineTimeMs(line);
+    if (t === null || nowMs - t > windowMs) {
+      continue;
+    }
+    // Find the most-recent init that occurred at or before t.
+    let lo = 0;
+    let hi = initTimestamps.length - 1;
+    let candidate = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const initT = initTimestamps[mid];
+      if (initT === undefined) {
+        break;
+      }
+      if (initT <= t) {
+        candidate = initT;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (candidate !== -1 && t - candidate <= restartWindowMs) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 export function countPatternsInText(text: string, nowMs: number, patterns = MONITOR_LOG_PATTERNS): Map<string, number> {

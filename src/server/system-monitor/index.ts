@@ -131,7 +131,8 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
     rolesLogStat,
     hubLogStat,
     diskStat,
-    logCounts
+    logCounts,
+    hubLogCounts
   ] = await Promise.all([
     loadProcesses(options, errors),
     loadHubProbe(options, hubSocketPath, errors),
@@ -140,7 +141,8 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
     loadStat(statFile, rolesLogPath, errors),
     loadStat(statFile, hubLogPath, errors),
     loadFsStat(statFs, rolesLogPath, errors),
-    loadLogCounts(options, rolesLogPath, nowMs, errors)
+    loadLogCounts(options, rolesLogPath, nowMs, errors),
+    loadLogCounts(options, hubLogPath, nowMs, errors)
   ]);
   errors.push(...lifecycle.errors);
 
@@ -194,6 +196,18 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, infoIndicator("F3", "wedge_staleness", "Stateless-mode validator card count", lifecycle.statelessValidatorCards, "validators", "dispatcher/validator-thread-error-status-not-classified-as-inactive.md", lifecycle.statelessValidatorItems));
 
   push(indicators, infoIndicator("G1", "cure_metrics", "Auto-force-complete events (24h)", logCount(logCounts, "lifecycle_auto_force_complete"), "events", "storm-recurrence-architectural-root-cause.md"));
+  // Three new cure_metrics cards (G2/G3/G4) track the storm-fix shipped by
+  // meridian-hub PR #90. Each maps to one of the three windows now closed:
+  //   - G2 rehydrate_orphan_reaped       → Window B reap path firing in prod
+  //   - G3 rehydrate_probe_succeeded_after_retry → Window B retry budget being used
+  //   - G4 rehydrate_pid_dead_pruned     → Baseline restart cleanup
+  // E7 is the load-bearing end-state indicator: "is not registered" within
+  // 60s of any "Hub router state initialized" line. Non-zero here means
+  // §C-2 candidate (d) — a fourth code path the PR #90 fix did not cover.
+  push(indicators, infoIndicator("G2", "cure_metrics", "Rehydrate orphan reaped (24h)", logCount(hubLogCounts, "rehydrate_orphan_reaped"), "events", "storm-recurrence-architectural-root-cause.md"));
+  push(indicators, infoIndicator("G3", "cure_metrics", "Rehydrate probe succeeded after retry (24h)", logCount(hubLogCounts, "rehydrate_probe_succeeded_after_retry"), "events", "storm-recurrence-architectural-root-cause.md"));
+  push(indicators, infoIndicator("G4", "cure_metrics", "Rehydrate PID-dead pruned (24h)", logCount(hubLogCounts, "rehydrate_pid_dead_pruned"), "events", "storm-recurrence-architectural-root-cause.md"));
+  push(indicators, aboveIndicator("E7", "lifecycle_anomaly", "\"is not registered\" within 60s of hub restart", logCount(hubLogCounts, "is_not_registered_post_hub_init"), "events", 1, 5, "storm-recurrence-architectural-root-cause.md"));
 
   return {
     polled_at: now.toISOString(),
