@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { runProjectPolicyCli } from "../project-policy";
 import { runValidateManifestCli } from "../validate-manifest";
@@ -43,6 +44,32 @@ describe("runValidateManifestCli", () => {
     expect(io.stderr()).toContain("[ERROR] background_triggers");
     expect(io.stderr()).toContain("background_triggers[0].fires_on.record_type");
     expect(io.stderr()).toContain("missing_story");
+  });
+
+  it("returns non-zero for a background trigger prompt reference and passes after the reference is fixed", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "validate-trigger-prompt-"));
+    mkdirSync(path.join(root, "prompts"));
+    writeFileSync(path.join(root, "prompts", "style_observe.md"), "observe style");
+    const manifestPath = path.join(root, "manifest.json");
+    writeFileSync(manifestPath, JSON.stringify(makeTriggerPromptManifest("missing_prompt")));
+    const brokenIo = createIo();
+
+    const brokenExitCode = await runValidateManifestCli(["validate-manifest", manifestPath], brokenIo.streams);
+
+    expect(brokenExitCode).toBe(1);
+    expect(brokenIo.stdout()).toBe("");
+    expect(brokenIo.stderr()).toContain("[ERROR] background_triggers");
+    expect(brokenIo.stderr()).toContain("background_triggers[0].action.system_prompt_id");
+    expect(brokenIo.stderr()).toContain("missing_prompt");
+
+    writeFileSync(manifestPath, JSON.stringify(makeTriggerPromptManifest("style_observe")));
+    const fixedIo = createIo();
+
+    const fixedExitCode = await runValidateManifestCli(["validate-manifest", manifestPath], fixedIo.streams);
+
+    expect(fixedExitCode).toBe(0);
+    expect(fixedIo.stderr()).toBe("");
+    expect(fixedIo.stdout()).toContain("background_triggers=1");
   });
 
   it("reports malformed record schemas with their manifest field path", async () => {
@@ -150,5 +177,37 @@ function createIo(): {
     stderr(): string {
       return stderr;
     }
+  };
+}
+
+function makeTriggerPromptManifest(systemPromptId: string): unknown {
+  return {
+    version: 1,
+    layers: "flat",
+    index: "none",
+    bindings: {},
+    record_schemas: {
+      test_story: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+        additionalProperties: false
+      }
+    },
+    system_prompts: {
+      style_observe: { prompt_path: "prompts/style_observe.md" }
+    },
+    background_triggers: [{
+      name: "style_observe_after_stories",
+      fires_on: {
+        type: "after_structured_upsert",
+        record_type: "test_story"
+      },
+      throttle: {
+        min_records_since_last_fire: 3,
+        min_interval: "1s"
+      },
+      action: { system_prompt_id: systemPromptId }
+    }]
   };
 }
