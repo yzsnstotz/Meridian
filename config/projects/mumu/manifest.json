@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "layers": "flat",
+  "index": "none",
+  "bindings": {
+    "conversation_log": "turns/<turn_id>.md"
+  },
+  "record_schemas": {
+    "template_short_drama": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "overall_arc",
+        "episode_count",
+        "per_episode_beats",
+        "cliff_pattern"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "cliff_pattern"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "overall_arc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "episode_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "per_episode_beats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "episode_no",
+              "hook",
+              "cliff"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "episode_no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "hook": {
+                "type": "string"
+              },
+              "cliff": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "cliff_pattern": {
+          "type": "string",
+          "enum": [
+            "every_episode",
+            "alternating",
+            "every_two",
+            "every_three",
+            "freeform"
+          ]
+        },
+        "hook_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tone": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "story_short_drama": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": [
+        "id",
+        "template_id",
+        "outline"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "template_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "object",
+          "required": [
+            "arc",
+            "episodes"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "arc": {
+              "type": "string"
+            },
+            "episodes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "no",
+                  "hook",
+                  "cliff"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "no": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "hook": {
+                    "type": "string"
+                  },
+                  "cliff": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "episode_no",
+              "type",
+              "content"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "episode_no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "full_dialogue",
+                  "scene_outline",
+                  "free_form"
+                ]
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "style_short_drama": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_authored": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "likes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dislikes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tone_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "agent_observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "recurring_motifs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "avoided_patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confirmed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  "system_prompts": {
+    "create_from_template": {
+      "prompt_path": "seeds/prompts/create_from_template.md"
+    },
+    "style_observe": {
+      "prompt_path": "seeds/prompts/style_observe.md"
+    },
+    "style_user_write": {
+      "prompt_path": "seeds/prompts/style_user_write.md"
+    }
+  },
+  "background_triggers": [
+    {
+      "name": "style_observe_after_stories",
+      "fires_on": {
+        "type": "after_structured_upsert",
+        "record_type": "story_short_drama"
+      },
+      "throttle": {
+        "min_records_since_last_fire": 3,
+        "min_interval": "10m"
+      },
+      "action": {
+        "system_prompt_id": "style_observe"
+      }
+    }
+  ],
+  "read_only_allowlist": [
+    "structured.get",
+    "structured.list",
+    "structured.query"
+  ]
+}
