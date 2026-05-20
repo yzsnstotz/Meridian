@@ -77,6 +77,12 @@ export const ChatterTurnEnvelopeSchema = z.object({
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
 
+export const HubToolDescriptorSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1)
+});
+export type HubToolDescriptor = z.infer<typeof HubToolDescriptorSchema>;
+
 export const HubPayloadSchema = z.object({
   content: z.string(),
   attachments: z.array(FileAttachmentSchema).default([]),
@@ -96,6 +102,8 @@ export const HubPayloadSchema = z.object({
   // when constructing outbound messages. Existing roles leave it undefined
   // and inherit ambient credentials.
   credential_id: z.string().min(1).optional(),
+  // Optional role-owned tool surface metadata for spawned agent sessions.
+  tool_descriptors: z.array(HubToolDescriptorSchema).optional(),
   chatter: ChatterTurnEnvelopeSchema.optional()
 });
 export type HubPayload = z.infer<typeof HubPayloadSchema>;

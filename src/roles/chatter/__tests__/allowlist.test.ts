@@ -41,6 +41,13 @@ describe("assertSkillAllowed", () => {
     expect(() => assertSkillAllowed("chatter.skill.web_search", ["web_search"])).not.toThrow();
   });
 
+  it("permits raw structured tool names only when explicitly allowlisted", () => {
+    expect(() => assertSkillAllowed("structured.upsert", ["structured.upsert"])).not.toThrow();
+    expect(() => assertSkillAllowed("structured.get", ["structured.upsert"])).toThrow(
+      ChatterPolicyError
+    );
+  });
+
   it("rejects skill not in allowlist", () => {
     expect(() => assertSkillAllowed("chatter.skill.exec", ["web_search"])).toThrow(ChatterPolicyError);
   });
