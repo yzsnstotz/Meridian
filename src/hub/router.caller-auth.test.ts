@@ -284,7 +284,6 @@ test("authority gate: stateless_call caller cannot run bridge threads", async ()
       mode: "bridge",
       socket_path: "/tmp/agentapi-codex_bridge.sock",
       pid: 22,
-      tmux_pane: null,
       status: "idle",
       created_at: new Date().toISOString(),
       auto_approve: false
@@ -458,10 +457,9 @@ test("terminal_input: history entry carries caller_id and caller_label from mess
   registry.register({
     thread_id: "cursor_01",
     agent_type: "cursor",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:63011",
     pid: 22,
-    tmux_pane: "agent_cursor_01",
     status: "waiting",
     created_at: new Date().toISOString()
   });
@@ -505,10 +503,9 @@ test("terminal_input: history entry has null caller fields when message.caller i
   registry.register({
     thread_id: "cursor_02",
     agent_type: "cursor",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:63012",
     pid: 23,
-    tmux_pane: "agent_cursor_02",
     status: "waiting",
     created_at: new Date().toISOString()
   });
@@ -550,10 +547,9 @@ test("terminal_input: last_caller and last_caller_at updated on registry instanc
   registry.register({
     thread_id: "cursor_03",
     agent_type: "cursor",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:63013",
     pid: 24,
-    tmux_pane: "agent_cursor_03",
     status: "waiting",
     created_at: before.toISOString()
   });
@@ -601,7 +597,6 @@ test("detail: service self-probe backfills missing legacy caller attribution", a
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_legacy.sock",
     pid: 42,
-    tmux_pane: "agent_codex_legacy",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -646,7 +641,6 @@ test("detail: non-service caller does not claim missing spawned_by", async () =>
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_legacy.sock",
     pid: 43,
-    tmux_pane: "agent_codex_legacy",
     status: "running",
     created_at: new Date().toISOString()
   });

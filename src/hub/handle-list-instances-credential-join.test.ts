@@ -18,7 +18,6 @@ function makeInstance(threadId: string, credentialId: string | null): AgentInsta
     socket_path: `/tmp/${threadId}.sock`,
     status: "running",
     created_at: "2026-05-19T00:00:00.000Z",
-    tmux_pane: null,
     credential_id: credentialId
   } as AgentInstance;
 }

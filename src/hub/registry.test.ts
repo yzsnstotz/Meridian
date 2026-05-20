@@ -12,7 +12,6 @@ test("InstanceRegistry tracks register, status updates, and removal", () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 4321,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString(),
     spawn_trace_id: traceId
@@ -39,7 +38,6 @@ test("setAutoApprove updates and returns immutable copy", () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-claude_01.sock",
     pid: 5678,
-    tmux_pane: null,
     status: "idle",
     auto_approve: false,
     created_at: new Date().toISOString()
@@ -69,7 +67,6 @@ test("registry updates stream metadata without mutating identity", () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 1234,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -92,7 +89,6 @@ test("setCaller updates last_caller and last_caller_at atomically", () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 1234,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -122,7 +118,6 @@ test("setSpawnedBy sets spawned_by and returns updated instance", () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 1234,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -142,7 +137,6 @@ test("setSpawnedBy with undefined caller returns current instance without mutati
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 1234,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });

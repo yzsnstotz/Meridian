@@ -10,10 +10,6 @@ import {
   HubResultSchema,
   IntentSchema,
   MonitorEventSchema,
-  PaneOutputNotAvailableSchema,
-  PaneOutputChunkSchema,
-  PaneSubscribeRequestSchema,
-  PaneUnsubscribeRequestSchema,
   ProviderCapabilityListSchema,
   ProviderCapabilitySchema,
   ServiceEndpointSchema,
@@ -157,7 +153,6 @@ test("AgentInstanceSchema accepts optional stream capability fields", () => {
     mode: "bridge",
     socket_path: "/tmp/codex.sock",
     pid: 1234,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString(),
     supportsStream: true,
@@ -176,7 +171,6 @@ test("AgentInstanceSchema defaults auto_approve to true while honoring explicit 
     mode: "bridge",
     socket_path: "/tmp/codex.sock",
     pid: 1234,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -186,7 +180,6 @@ test("AgentInstanceSchema defaults auto_approve to true while honoring explicit 
     mode: "bridge",
     socket_path: "/tmp/codex-02.sock",
     pid: 1235,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString(),
     auto_approve: false
@@ -203,7 +196,6 @@ test("AgentInstanceSchema accepts optional integration_profile and sandbox_mode"
     mode: "bridge",
     socket_path: "/tmp/codex-03.sock",
     pid: 1236,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString(),
     integration_profile: "ads_public",
@@ -221,7 +213,6 @@ test("AgentInstanceSchema accepts stateless_call mode", () => {
     mode: "stateless_call",
     socket_path: "stateless:codex_04",
     pid: 0,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString(),
     supportsStream: true,
@@ -334,44 +325,6 @@ test("HubResultSchema accepts optional run-state metadata", () => {
   assert.equal(parsed.run_state, "still_running");
 });
 
-test("pane IPC schemas parse subscribe, output, and unsubscribe messages", () => {
-  assert.equal(
-    PaneSubscribeRequestSchema.parse({
-      type: "subscribe_pane_output",
-      thread_id: "claude_01",
-      replay_lines: 200
-    }).replay_lines,
-    200
-  );
-
-  assert.equal(
-    PaneOutputChunkSchema.parse({
-      type: "pane_output",
-      thread_id: "claude_01",
-      chunk: "hello",
-      timestamp: new Date().toISOString()
-    }).chunk,
-    "hello"
-  );
-
-  assert.equal(
-    PaneOutputNotAvailableSchema.parse({
-      type: "not_available",
-      thread_id: "claude_01",
-      reason: "pane output is unavailable for bridge mode"
-    }).type,
-    "not_available"
-  );
-
-  assert.equal(
-    PaneUnsubscribeRequestSchema.parse({
-      type: "unsubscribe_pane_output",
-      thread_id: "claude_01"
-    }).thread_id,
-    "claude_01"
-  );
-});
-
 test("ServiceEndpointSchema parses static service registrations", () => {
   const parsed = ServiceEndpointSchema.parse({
     service: "coordinator",
@@ -452,7 +405,6 @@ test("AgentInstanceSchema parses without caller tracking fields (backward compat
     mode: "bridge",
     socket_path: "/tmp/claude.sock",
     pid: 9999,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -470,7 +422,6 @@ test("AgentInstanceSchema accepts optional caller tracking fields", () => {
     mode: "bridge",
     socket_path: "/tmp/claude-06.sock",
     pid: 8888,
-    tmux_pane: null,
     status: "running",
     created_at: now,
     spawned_by: { caller_id: "web-gui" },

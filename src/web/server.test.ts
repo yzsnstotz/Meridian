@@ -81,7 +81,7 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
     assert.deepEqual(payload, [
       {
         thread_id: "codex_01",
-        mode: "pane_bridge",
+        mode: "bridge",
         status: "running",
         agent_type: "codex",
         model_id: "gpt-5.4"
@@ -98,7 +98,7 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
         content: JSON.stringify([
           {
             thread_id: "codex_01",
-            mode: "pane_bridge",
+            mode: "bridge",
             status: "running",
             agent_type: "codex",
             model_id: "gpt-5.4"
@@ -230,7 +230,7 @@ test("Web Interface Server lists files from instance working directory", async (
           content: JSON.stringify([
             {
               thread_id: "codex_01",
-              mode: "pane_bridge",
+              mode: "bridge",
               status: "running",
               working_dir: repoDir
             }
@@ -285,7 +285,7 @@ test("Web Interface Server reads and writes file content in instance working dir
           content: JSON.stringify([
             {
               thread_id: "codex_01",
-              mode: "pane_bridge",
+              mode: "bridge",
               status: "running",
               working_dir: repoDir
             }
@@ -1080,7 +1080,7 @@ test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selec
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           repo: path.basename(subDir)
         })
       });
@@ -1117,7 +1117,7 @@ test("Web Interface Server forwards absolute repo path to Hub", async () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           repo: externalDir
         })
       });
@@ -1220,7 +1220,7 @@ test("Web Interface Server enforces ADS profile spawn safety defaults", async ()
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         provider: "codex",
-        mode: "pane_bridge",
+        mode: "bridge",
         auto_approve: true,
         integration_profile: "ads_public",
         sandbox_mode: "workspace-write"
@@ -1295,7 +1295,7 @@ test("Web Interface Server forwards explicit spawn_dir outside AGENT_WORKDIR", a
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           spawn_dir: externalDir
         })
       });
@@ -1392,7 +1392,7 @@ test("Web Interface Server forwards nested repo path to Hub", async () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           repo: rel
         })
       });
@@ -1652,7 +1652,7 @@ test("Web Interface Server spawn forwards auto_approve=false without injecting p
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         provider: "codex",
-        mode: "pane_bridge",
+        mode: "bridge",
         auto_approve: false
       })
     });

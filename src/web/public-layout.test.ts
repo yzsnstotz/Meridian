@@ -505,7 +505,7 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   assert.match(indexHtml, /SPAWN_AUTO_APPROVE_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_REPO_STORAGE_KEY/);
   assert.match(indexHtml, /type:\s*providerEl && providerEl\.value \? providerEl\.value : "codex"/);
-  assert.match(indexHtml, /mode:\s*spawnModeEl && spawnModeEl\.value \? spawnModeEl\.value : "pane_bridge"/);
+  assert.match(indexHtml, /mode:\s*spawnModeEl && spawnModeEl\.value \? spawnModeEl\.value : "bridge"/);
   assert.match(indexHtml, /modelPayload\.model_id/);
   assert.match(indexHtml, /localStorage\.getItem\(SPAWN_AUTO_APPROVE_STORAGE_KEY\)\s*!==\s*"false"/);
 });
@@ -704,7 +704,7 @@ test("hub stateless card close helpers hide only stateless call cards", async ()
   ]);
 
   const instances = [
-    { thread_id: "codex_01", mode: "pane_bridge", status: "running" },
+    { thread_id: "codex_01", mode: "bridge", status: "running" },
     { thread_id: "codex_stateless_01", mode: "stateless_call", status: "idle" },
     { thread_id: "codex_stateless_02", mode: "stateless_call", status: "running" }
   ];
@@ -814,7 +814,7 @@ test("hub stateless card display helpers show provider default model and neutral
   const sessionedError = {
     thread_id: "codex_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     status: "error"
   };
 
