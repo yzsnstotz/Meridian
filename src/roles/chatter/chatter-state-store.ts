@@ -28,12 +28,19 @@ export const ChatterTurnErrorSchema = z.object({
 });
 export type ChatterTurnError = z.infer<typeof ChatterTurnErrorSchema>;
 
+export const ChatterTriggerThrottleStateSchema = z.object({
+  records_since_last_fire: z.number().int().min(0),
+  last_fire_at: z.string().datetime().nullable()
+});
+export type ChatterTriggerThrottleState = z.infer<typeof ChatterTriggerThrottleStateSchema>;
+
 export const ChatterPersistedStateSchema = z.object({
   version: z.literal(1),
   agent_session_id: z.string().min(1).nullable().default(null),
   in_flight_traces: z.array(ChatterInFlightTraceSchema).default([]),
   last_provision_error: ChatterProvisionErrorSchema.optional(),
-  last_turn_error: ChatterTurnErrorSchema.optional()
+  last_turn_error: ChatterTurnErrorSchema.optional(),
+  trigger_state: z.record(z.string().min(1), ChatterTriggerThrottleStateSchema).optional()
 });
 export type ChatterPersistedState = z.infer<typeof ChatterPersistedStateSchema>;
 
@@ -104,6 +111,49 @@ export class ChatterStateStore {
   clearTurnError(): void {
     const { last_turn_error: _lastTurnError, ...state } = this.load();
     this.save(state);
+  }
+
+  getTriggerThrottleState(triggerName: string): ChatterTriggerThrottleState {
+    return this.load().trigger_state?.[triggerName] ?? {
+      records_since_last_fire: 0,
+      last_fire_at: null
+    };
+  }
+
+  incrementTriggerRecord(triggerName: string): ChatterTriggerThrottleState {
+    const state = this.load();
+    const current = state.trigger_state?.[triggerName] ?? {
+      records_since_last_fire: 0,
+      last_fire_at: null
+    };
+    const next: ChatterTriggerThrottleState = {
+      ...current,
+      records_since_last_fire: current.records_since_last_fire + 1
+    };
+    this.save({
+      ...state,
+      trigger_state: {
+        ...state.trigger_state,
+        [triggerName]: next
+      }
+    });
+    return next;
+  }
+
+  markTriggerFired(triggerName: string, firedAt: string): ChatterTriggerThrottleState {
+    const state = this.load();
+    const next: ChatterTriggerThrottleState = {
+      records_since_last_fire: 0,
+      last_fire_at: firedAt
+    };
+    this.save({
+      ...state,
+      trigger_state: {
+        ...state.trigger_state,
+        [triggerName]: next
+      }
+    });
+    return next;
   }
 }
 

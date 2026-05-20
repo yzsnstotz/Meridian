@@ -10,6 +10,32 @@ import {
 } from "./templates";
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
+const BACKGROUND_TRIGGER_DURATION_RE = /^([1-9]\d*)(s|m|h)$/;
+
+const BackgroundTriggerSchema = z
+  .object({
+    name: z.string().min(1),
+    fires_on: z
+      .object({
+        type: z.literal("after_structured_upsert"),
+        record_type: z.string().min(1)
+      })
+      .strict(),
+    throttle: z
+      .object({
+        min_records_since_last_fire: z.number().int().min(1),
+        min_interval: z.string().min(1).refine(isBackgroundTriggerDuration, {
+          message: "min_interval must be a duration string like 30s, 10m, or 1h"
+        })
+      })
+      .strict(),
+    action: z
+      .object({
+        system_prompt_id: z.string().min(1)
+      })
+      .strict()
+  })
+  .strict();
 
 export class InvalidRecordSchemaError extends Error {
   constructor(
@@ -31,6 +57,7 @@ export const ChatterManifestSchema = z
     system_prompts: z.record(z.string().min(1), z.object({
       prompt_path: z.string().min(1)
     })).optional(),
+    background_triggers: z.array(BackgroundTriggerSchema).optional(),
     read_only_allowlist: z.array(z.string().min(1)).optional(),
     seeds_init: z.object({
       mode: z.enum(["copy_on_provision"]),
@@ -99,6 +126,7 @@ function parseManifest(input: unknown, baseDir?: string): ChatterManifest {
   const manifest = ChatterManifestSchema.parse(input) as ChatterManifest;
   const compiledRecordSchemas = compileRecordSchemas(manifest.record_schemas);
   const systemPromptContents = loadSystemPromptContents(manifest.system_prompts, baseDir);
+  validateBackgroundTriggerReferences(manifest, compiledRecordSchemas);
 
   if (compiledRecordSchemas.size > 0) {
     Object.defineProperty(manifest, "compiledRecordSchemas", {
@@ -119,6 +147,52 @@ function parseManifest(input: unknown, baseDir?: string): ChatterManifest {
   }
 
   return manifest;
+}
+
+export function parseBackgroundTriggerDurationMs(input: string): number {
+  const match = BACKGROUND_TRIGGER_DURATION_RE.exec(input);
+  if (!match) {
+    throw new Error(`invalid duration '${input}', expected a value like 30s, 10m, or 1h`);
+  }
+
+  const amount = Number.parseInt(match[1], 10);
+  switch (match[2]) {
+    case "s":
+      return amount * 1000;
+    case "m":
+      return amount * 60 * 1000;
+    case "h":
+      return amount * 60 * 60 * 1000;
+    default:
+      throw new Error(`invalid duration '${input}', expected a value like 30s, 10m, or 1h`);
+  }
+}
+
+function isBackgroundTriggerDuration(input: string): boolean {
+  try {
+    parseBackgroundTriggerDurationMs(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateBackgroundTriggerReferences(
+  manifest: ChatterManifest,
+  compiledRecordSchemas: ReadonlyMap<string, ValidateFunction>
+): void {
+  for (const trigger of manifest.background_triggers ?? []) {
+    if (!compiledRecordSchemas.has(trigger.fires_on.record_type)) {
+      throw new Error(
+        `background trigger '${trigger.name}' references unknown record_type '${trigger.fires_on.record_type}'`
+      );
+    }
+    if (!manifest.system_prompts?.[trigger.action.system_prompt_id]) {
+      throw new Error(
+        `background trigger '${trigger.name}' references unknown system_prompt_id '${trigger.action.system_prompt_id}'`
+      );
+    }
+  }
 }
 
 function loadSystemPromptContents(

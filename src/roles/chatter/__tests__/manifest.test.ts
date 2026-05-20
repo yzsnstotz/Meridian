@@ -49,6 +49,38 @@ describe("ChatterManifestSchema", () => {
     });
   });
 
+  it("accepts background_triggers with structured-upsert fires_on and throttle", () => {
+    const parsed = ChatterManifestSchema.parse({
+      version: 1,
+      layers: "flat",
+      index: "none",
+      bindings: { conversation_log: "turns/<turn_id>.md" },
+      record_schemas: {
+        story_short_drama: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+          additionalProperties: false
+        }
+      },
+      system_prompts: {
+        style_observe: { prompt_path: "prompts/style_observe.md" }
+      },
+      background_triggers: [{
+        name: "style_observe_after_stories",
+        fires_on: { type: "after_structured_upsert", record_type: "story_short_drama" },
+        throttle: { min_records_since_last_fire: 3, min_interval: "10m" },
+        action: { system_prompt_id: "style_observe" }
+      }]
+    });
+
+    expect(parsed.background_triggers?.[0]).toMatchObject({
+      name: "style_observe_after_stories",
+      fires_on: { type: "after_structured_upsert", record_type: "story_short_drama" },
+      action: { system_prompt_id: "style_observe" }
+    });
+  });
+
   it("rejects unknown layer kind", () => {
     expect(() => ChatterManifestSchema.parse({
       version: 1,
