@@ -36,10 +36,6 @@ function socketPathForThread(threadId: string): string {
   return path.join("/tmp", `agentapi-${threadId}.sock`);
 }
 
-function escapeForRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 const socketModeOptions = {
   agentapiSocketSupport: true,
   agentapiAttachSocketSupport: true
@@ -515,152 +511,6 @@ test("spawn codex bridge includes auto-approve flag when requested", async () =>
   await manager.kill(threadId);
 });
 
-test("spawn pane_bridge starts interactive tmux CLI and attaches agentapi bridge", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-  const spawnCalls: Array<{ command: string; args: string[] }> = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    paneBridgeUsePtyWrapper: false,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      spawnCalls.push({ command, args });
-      return new FakeChildProcess(2202) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("claude", "pane_bridge");
-  const instance = registry.get(threadId);
-  const socketPath = socketPathForThread(threadId);
-
-  assert.equal(threadId, "claude_01");
-  assert.equal(instance?.tmux_pane, "agent_claude_01");
-  assert.equal(instance?.pid, 2202);
-  assert.equal(instance?.socket_path, socketPath);
-  assert.equal(execCalls.length, 5);
-  assert.match(execCalls[0] ?? "", /tmux kill-session -t .*agent_claude_01/);
-  assert.match(execCalls[1] ?? "", /tmux new-session -d -s .*agent_claude_01/);
-  assert.match(execCalls[1] ?? "", /'attach'/);
-  assert.match(execCalls[1] ?? "", new RegExp(`'--socket=${escapeForRegExp(socketPath)}'`));
-  assert.match(execCalls[2] ?? "", /tmux set-option -t .*agent_claude_01.* history-limit 200000/);
-  assert.match(execCalls[3] ?? "", /tmux set-window-option -t .*agent_claude_01.* alternate-screen off/);
-  assert.match(execCalls[4] ?? "", /tmux set-option -t .*agent_claude_01.* mouse on/);
-  assert.equal(spawnCalls.length, 1);
-  assert.equal(spawnCalls[0]?.command, "/Users/yzliu/work/Meridian/bin/agentapi");
-  assert.deepEqual(spawnCalls[0]?.args, [
-    "server",
-    "--type=claude",
-    `--socket=${socketPath}`,
-    "--",
-    "claude",
-    "--allowedTools",
-    "Bash Edit Replace"
-  ]);
-
-  await manager.kill(threadId);
-});
-
-test("spawn pane_bridge dismisses Codex update prompt before returning", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-  let captureCount = 0;
-
-  const updatePrompt = [
-    "Update available! 0.124.0 -> 0.125.0",
-    "Release notes: https://github.com/openai/codex/releases/latest",
-    "› 1. Update now (runs `npm install -g @openai/codex`)",
-    "  2. Skip",
-    "  3. Skip until next version",
-    "Press enter to continue"
-  ].join("\n");
-  const readyPrompt = [
-    "OpenAI Codex (v0.124.0)",
-    "model:       gpt-5.4 high",
-    "directory:   ~/work/project",
-    "›"
-  ].join("\n");
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    paneBridgeUsePtyWrapper: false,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      if (command.includes("capture-pane")) {
-        captureCount += 1;
-        return Buffer.from(captureCount === 1 ? updatePrompt : readyPrompt, "utf8");
-      }
-      return Buffer.from("", "utf8");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2304) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 1;
-
-  const threadId = await manager.spawn("codex", "pane_bridge");
-
-  assert.equal(threadId, "codex_01");
-  assert.ok(captureCount >= 2, "spawn should re-check the pane after dismissing the update prompt");
-  assert.ok(
-    execCalls.some((command) => /tmux send-keys -t .*agent_codex_01.*'3' 'Enter'/.test(command)),
-    "spawn should choose Codex's 'skip until next version' update option"
-  );
-
-  await manager.kill(threadId);
-});
-
-test("spawn pane_bridge does not wait indefinitely for an empty Codex pane", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    paneBridgeUsePtyWrapper: false,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("", "utf8");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2305) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 1;
-
-  const threadId = await manager.spawn("codex", "pane_bridge");
-
-  assert.equal(threadId, "codex_01");
-  assert.equal(execCalls.filter((command) => command.includes("capture-pane")).length, 3);
-  assert.ok(!execCalls.some((command) => command.includes("send-keys")));
-
-  await manager.kill(threadId);
-});
-
 test("spawnStreamAgent launches a provider CLI directly and pipes the prompt over stdin", () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -670,7 +520,6 @@ test("spawnStreamAgent launches a provider CLI directly and pipes the prompt ove
     socket_path: "/tmp/agentapi-claude_01.sock",
     working_dir: "/tmp",
     pid: 999,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -711,419 +560,6 @@ test("spawnStreamAgent launches a provider CLI directly and pipes the prompt ove
   assert.equal(child.stdin.read()?.toString("utf8"), "Summarize this");
 });
 
-test("pane capture uses visible pane with -e to preserve ANSI/controls", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    paneBridgeUsePtyWrapper: false,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("", "utf8");
-    }) as never,
-    execAsyncFn: (async (command: string) => {
-      execCalls.push(command);
-      if (command.includes("capture-pane")) {
-        return { stdout: "line1\nline2\nline3\nline4\nline5\n", stderr: "" };
-      }
-      return { stdout: "", stderr: "" };
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2301) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("claude", "pane_bridge");
-
-  // Invoke a capture tick directly to inspect the capture-pane command.
-  await (manager as unknown as { capturePaneSnapshot: (id: string) => Promise<void> }).capturePaneSnapshot(threadId);
-
-  const captureCommands = execCalls.filter((cmd) => cmd.includes("capture-pane"));
-  assert.ok(captureCommands.length > 0);
-  const lastCapture = captureCommands[captureCommands.length - 1] ?? "";
-  assert.ok(lastCapture.includes("-e"), "capture-pane must use -e to preserve ANSI/control sequences");
-  assert.ok(lastCapture.includes("-p"), "capture-pane must use -p for stdout");
-  assert.ok(lastCapture.includes("-t"), "capture-pane must target tmux session with -t");
-  assert.ok(!/-S\s+-?\d+/.test(lastCapture), "visible capture must not use -S (scrollback); use visible pane only");
-
-  await manager.kill(threadId);
-});
-
-test("spawn pane_bridge waits for Gemini screen prompt readiness before returning", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-  let messagePollCount = 0;
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    paneBridgeUsePtyWrapper: false,
-    geminiPanePromptSettleMs: 60,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("", "utf8");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2302) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "stable" }),
-      getMessages: async () => {
-        messagePollCount += 1;
-        return [
-          {
-            role: "agent",
-            content: [
-              "Gemini CLI v0.34.0",
-              "Signed in with Google: user@example.com",
-              "? for shortcuts",
-              "Shift+Tab to accept edits",
-              ">   Type your message or @path/to/file"
-            ].join("\n")
-          }
-        ];
-      }
-    })
-  });
-  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 20;
-
-  const threadId = await manager.spawn("gemini", "pane_bridge");
-
-  assert.equal(threadId, "gemini_01");
-  assert.ok(messagePollCount >= 3, "spawn should wait for a stable Gemini prompt");
-  assert.ok(!execCalls.some((command) => command.includes("capture-pane")), "Gemini readiness should use agent messages");
-
-  await manager.kill(threadId);
-});
-
-test("spawn pane_bridge waits for Gemini footer chrome to settle before returning", async () => {
-  const registry = new InstanceRegistry();
-  let messagePollCount = 0;
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    paneBridgeUsePtyWrapper: false,
-    geminiPaneFooterSettleMs: 40,
-    execSyncFn: (() => Buffer.from("", "utf8")) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2303) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "stable" }),
-      getMessages: async () => {
-        messagePollCount += 1;
-        if (messagePollCount < 2) {
-          return [{ role: "agent", content: "" }];
-        }
-        return [
-          {
-            role: "agent",
-            content: [
-              "Gemini CLI v0.34.0",
-              "We're making changes to Gemini CLI that may impact your workflow.",
-              "? for shortcuts",
-              "Shift+Tab to accept edits"
-            ].join("\n")
-          }
-        ];
-      }
-    })
-  });
-  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 20;
-
-  const threadId = await manager.spawn("gemini", "pane_bridge");
-
-  assert.equal(threadId, "gemini_01");
-  assert.ok(messagePollCount >= 4, "spawn should wait for stable Gemini footer chrome");
-
-  await manager.kill(threadId);
-});
-
-test("pane_bridge uses attach --url when running in port mode", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-
-  const manager = new InstanceManager(registry, {
-    agentapiSocketSupport: false,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("");
-    }) as never,
-    spawnFn: (() => {
-      return new FakeChildProcess(2212) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" }),
-      getMessages: async () => [
-        {
-          role: "agent",
-          content: [
-            "Gemini CLI v0.34.0",
-            "? for shortcuts",
-            "Shift+Tab to accept edits",
-            ">   Type your message or @path/to/file"
-          ].join("\n")
-        }
-      ]
-    })
-  });
-  (manager as unknown as { startupDelayMs: number }).startupDelayMs = 1;
-
-  const threadId = await manager.spawn("codex", "pane_bridge");
-  const instance = registry.get(threadId);
-  const newSessionCall = execCalls.find((command) => command.includes("tmux new-session"));
-
-  assert.match(instance?.socket_path ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
-  assert.match(newSessionCall ?? "", /tmux new-session -d -s .*agent_codex_01/);
-  assert.match(newSessionCall ?? "", /'attach'/);
-  assert.match(newSessionCall ?? "", /'--url=http:\/\/127\.0\.0\.1:\d+'/);
-
-  await manager.kill(threadId);
-});
-
-test("sendTerminalInput forwards approval action to tmux pane", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    geminiPanePromptSettleMs: 40,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2203) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("cursor", "pane_bridge");
-  execCalls.length = 0;
-
-  const message = manager.sendTerminalInput(threadId, "allow");
-
-  assert.equal(message, `Sent approval action 'allow' to ${threadId}.`);
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'2' 'Enter'/);
-
-  await manager.kill(threadId);
-});
-
-test("sendTerminalInput falls back to Gemini allow-for-session key when prompt inspection fails", () => {
-  const registry = new InstanceRegistry();
-  registry.register({
-    thread_id: "gemini_01",
-    agent_type: "gemini",
-    mode: "pane_bridge",
-    socket_path: "/tmp/agentapi-gemini_01.sock",
-    pid: 2205,
-    tmux_pane: "agent_gemini_01",
-    status: "running",
-    created_at: new Date().toISOString(),
-    auto_approve: false
-  });
-
-  const execCalls: string[] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      if (command.includes("capture-pane")) {
-        throw new Error("capture failed");
-      }
-      return Buffer.from("");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2205) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "running" })
-    })
-  });
-
-  const message = manager.sendTerminalInput("gemini_01", "all");
-
-  assert.equal(message, "Sent approval action 'all' to gemini_01.");
-  assert.equal(execCalls.length, 2);
-  assert.match(execCalls[0] ?? "", /tmux capture-pane -e -p -t 'agent_gemini_01'/);
-  assert.match(execCalls[1] ?? "", /tmux send-keys -t 'agent_gemini_01' '2' 'Enter'/);
-});
-
-test("sendTerminalInput derives Gemini option numbers from the live approval prompt", () => {
-  const registry = new InstanceRegistry();
-  registry.register({
-    thread_id: "gemini_01",
-    agent_type: "gemini",
-    mode: "pane_bridge",
-    socket_path: "/tmp/agentapi-gemini_01.sock",
-    pid: 2207,
-    tmux_pane: "agent_gemini_01",
-    status: "running",
-    created_at: new Date().toISOString(),
-    auto_approve: false
-  });
-
-  const execCalls: string[] = [];
-  const approvalFrame = [
-    "╭──────────────────────────────────────────────────────────────────────────────╮",
-    "│ Action Required                                                              │",
-    "│                                                                              │",
-    "│ ?  Edit .gitignore: .context/ => .context/                                   │",
-    "│                                                                              │",
-    "│ 5   .DS_Store                                                                │",
-    "│ 6   bin/agentapi                                                             │",
-    "│ 7   .context/                                                                │",
-    "│ 8 + docs/                                                                    │",
-    "│ Apply this change?                                                           │",
-    "│                                                                              │",
-    "│ ● 1. Allow once                                                              │",
-    "│   2. Allow for this session                                                  │",
-    "│   3. Modify with external editor                                             │",
-    "│   4. No, suggest changes (esc)                                               │",
-    "│                                                                              │",
-    "╰──────────────────────────────────────────────────────────────────────────────╯"
-  ].join("\n");
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      if (command.includes("capture-pane")) {
-        return approvalFrame;
-      }
-      return Buffer.from("");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2207) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "running" })
-    })
-  });
-
-  execCalls.length = 0;
-  const message = manager.sendTerminalInput("gemini_01", "skip");
-
-  assert.equal(message, "Sent approval action 'skip' to gemini_01.");
-  assert.equal(execCalls.length, 2);
-  assert.match(execCalls[0] ?? "", /tmux capture-pane -e -p -t 'agent_gemini_01'/);
-  assert.match(execCalls[1] ?? "", /tmux send-keys -t 'agent_gemini_01' '4' 'Enter'/);
-});
-
-test("sendTerminalInput forwards raw terminal text to tmux pane", async () => {
-  const registry = new InstanceRegistry();
-  const execCalls: string[] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2206) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("cursor", "pane_bridge");
-  execCalls.length = 0;
-
-  const message = manager.sendTerminalInput(threadId, "/model");
-
-  assert.equal(message, `Sent terminal input to ${threadId}.`);
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0] ?? "", /tmux send-keys -t .*agent_cursor_01.*'\/model' 'Enter'/);
-
-  await manager.kill(threadId);
-});
-
-test("interrupt sends Escape to pane_bridge tmux pane without unregistering thread", async () => {
-  const registry = new InstanceRegistry();
-  registry.register({
-    thread_id: "codex_01",
-    agent_type: "codex",
-    mode: "pane_bridge",
-    socket_path: "/tmp/agentapi-codex_01.sock",
-    pid: 2301,
-    tmux_pane: "agent_codex_01",
-    status: "running",
-    created_at: new Date().toISOString()
-  });
-  const execCalls: string[] = [];
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    execSyncFn: ((command: string) => {
-      execCalls.push(command);
-      return Buffer.from("");
-    }) as never,
-    spawnFn: ((command: string, args: string[]) => {
-      void command;
-      void args;
-      return new FakeChildProcess(2301) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "running" })
-    })
-  });
-
-  const message = await manager.interrupt("codex_01");
-
-  assert.equal(message, "Sent interrupt to codex_01.");
-  assert.equal(registry.has("codex_01"), true);
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0] ?? "", /tmux send-keys -t 'agent_codex_01' 'Escape'/);
-});
-
 test("interrupt sends raw Escape through AgentAPI for bridge threads without unregistering thread", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -1132,7 +568,6 @@ test("interrupt sends raw Escape through AgentAPI for bridge threads without unr
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 2302,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -1190,7 +625,7 @@ test("sendTerminalInput rejects bridge threads", async () => {
 
   assert.throws(
     () => manager.sendTerminalInput(threadId, "run"),
-    /terminal_input requires a pane_bridge thread with tmux/
+    /is no longer supported/
   );
 
   await manager.kill(threadId);
@@ -1348,7 +783,6 @@ test("status normalizes stable agentapi state to waiting", async () => {
     mode: "bridge",
     socket_path: socketPathForThread("codex_01"),
     pid: 3402,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -1489,8 +923,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
         socket_path: socketPathForThread("codex_01"),
         working_dir: "/tmp",
         pid: 6501,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: false
       },
@@ -1501,8 +934,7 @@ test("rehydrateFromState restores live instances and session bindings", async ()
         socket_path: failingSocketPath,
         working_dir: "/tmp",
         pid: 6502,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: false
       }
@@ -1606,8 +1038,7 @@ test("rehydrateFromState drops persisted stateless_call instances instead of zom
         socket_path: "stateless:codex_05",
         working_dir: "/tmp",
         pid: 6800,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: false
       },
@@ -1618,8 +1049,7 @@ test("rehydrateFromState drops persisted stateless_call instances instead of zom
         socket_path: "stateless:codex_06",
         working_dir: "/tmp",
         pid: 6801,
-        tmux_pane: null,
-        status: "running",
+            status: "running",
         created_at: new Date().toISOString(),
         auto_approve: false
       }
@@ -1664,8 +1094,7 @@ test("rehydrateFromState keeps the allocator above live rehydrated instances to 
         socket_path: socketPathForThread("codex_07"),
         working_dir: "/tmp",
         pid: 6700,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: false
       }
@@ -1705,7 +1134,7 @@ test("switchModel keeps thread id and updates selected model", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "pane_bridge", undefined, "gpt-5", undefined, "high");
+  const threadId = await manager.spawn("codex", "bridge", undefined, "gpt-5", undefined, "high");
   const switchedThread = await manager.switchModel(threadId, "codex-5.3-max");
   const switched = registry.get(switchedThread);
 
@@ -1713,7 +1142,7 @@ test("switchModel keeps thread id and updates selected model", async () => {
   assert.equal(switched?.thread_id, threadId);
   assert.equal(switched?.agent_type, "codex");
   assert.equal(switched?.model_id, "codex-5.3-max");
-  assert.equal(switched?.mode, "pane_bridge");
+  assert.equal(switched?.mode, "bridge");
   assert.equal(switched?.reasoning_effort, "high");
 
   await manager.kill(threadId);
@@ -1728,7 +1157,6 @@ test("listModels returns provider catalog and current selection", async () => {
     mode: "bridge",
     socket_path: socketPathForThread("codex_01"),
     pid: 100,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1764,7 +1192,6 @@ test("listModels backfills the current model from live status when the registry 
     mode: "bridge",
     socket_path: socketPathForThread("codex_01"),
     pid: 100,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1804,7 +1231,6 @@ test("listModels backfills the current model from live messages when status omit
     mode: "bridge",
     socket_path: socketPathForThread("codex_01"),
     pid: 100,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -2133,8 +1559,7 @@ test("rehydrateFromState fast-prunes instances whose PID is no longer alive with
         socket_path: socketPathForThread("codex_10"),
         working_dir: "/tmp",
         pid: 9001,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: false
       }
@@ -2184,8 +1609,7 @@ test("rehydrateFromState retries probe on transient failure before pruning", asy
         socket_path: socketPathForThread("codex_11"),
         working_dir: "/tmp",
         pid: 9100,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: false
       }
@@ -2257,8 +1681,7 @@ test("rehydrateFromState reaps the orphan when all probe retries fail but PID is
           socket_path: socketPathForThread("codex_12"),
           working_dir: "/tmp",
           pid: stuckPid,
-          tmux_pane: null,
-          status: "idle",
+                status: "idle",
           created_at: new Date().toISOString(),
           auto_approve: false
         }

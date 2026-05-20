@@ -84,7 +84,6 @@ test("HubRouter routes run intent through AgentAPIClient", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -116,7 +115,6 @@ test("HubRouter run skips summary protocol injection when instance supports stre
     mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_stream_01.sock",
     pid: 111,
-    tmux_pane: null,
     status: "idle",
     supportsStream: true,
     created_at: new Date().toISOString()
@@ -186,7 +184,6 @@ test("HubRouter interrupt stops the active stream run without unregistering the 
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_stream_interrupt_01.sock",
     pid: 118,
-    tmux_pane: null,
     status: "idle",
     supportsStream: true,
     created_at: new Date().toISOString()
@@ -267,8 +264,7 @@ test("HubRouter run still injects summary protocol when streaming is disabled or
       mode: "bridge",
       socket_path: `/tmp/agentapi-gemini_${scenario.label}_01.sock`,
       pid: 120,
-      tmux_pane: null,
-      status: "idle",
+        status: "idle",
       ...(scenario.supportsStream === undefined ? {} : { supportsStream: scenario.supportsStream }),
       created_at: new Date().toISOString()
     });
@@ -329,7 +325,6 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_stream_01.sock",
     pid: 301,
-    tmux_pane: null,
     status: "idle",
     supportsStream: true,
     created_at: new Date().toISOString()
@@ -500,7 +495,6 @@ test("HubRouter runs stateless_call Codex threads without resuming prior exec se
     mode: "stateless_call",
     socket_path: "stateless:codex_stateless_01",
     pid: 0,
-    tmux_pane: null,
     status: "idle",
     supportsStream: true,
     created_at: new Date().toISOString()
@@ -625,7 +619,6 @@ test("HubRouter falls back to agentapi bridge after three stream failures", asyn
     mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_stream_02.sock",
     pid: 302,
-    tmux_pane: null,
     status: "idle",
     supportsStream: true,
     created_at: new Date().toISOString()
@@ -701,7 +694,6 @@ test("HubRouter detail reuses conversation history details produced for pane/cha
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -787,7 +779,6 @@ test("HubRouter run logs getMessages_threw and returns a structured pending resu
     mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_01.sock",
     pid: 201,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -826,7 +817,6 @@ test("HubRouter warns when a terminal wait path returns a non-terminal run resul
     mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_warn_01.sock",
     pid: 202,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -890,7 +880,6 @@ test("HubRouter forwards agent response files as HubResult attachments", async (
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -950,7 +939,6 @@ test("HubRouter list surfaces error-status bridge instances so operators can act
     mode: "bridge",
     socket_path: "http://127.0.0.1:52209",
     pid: 12345,
-    tmux_pane: null,
     status: "error",
     created_at: new Date().toISOString()
   });
@@ -986,7 +974,6 @@ test("HubRouter list still hides stopped bridge instances", async () => {
     mode: "bridge",
     socket_path: "http://127.0.0.1:52210",
     pid: 0,
-    tmux_pane: null,
     status: "stopped",
     created_at: new Date().toISOString()
   });
@@ -1015,7 +1002,6 @@ test("HubRouter routes restart intent through InstanceManager", async () => {
     mode: "bridge",
     socket_path: "http://127.0.0.1:61010",
     pid: 10,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1058,7 +1044,6 @@ test("HubRouter routes reboot intent through InstanceManager.restart", async () 
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 10,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1098,10 +1083,9 @@ test("HubRouter routes terminal_input through InstanceManager", async () => {
   registry.register({
     thread_id: "cursor_01",
     agent_type: "cursor",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61011",
     pid: 12,
-    tmux_pane: "agent_cursor_01",
     status: "waiting",
     created_at: new Date().toISOString()
   });
@@ -1164,7 +1148,6 @@ test("HubRouter returns provider model catalog through InstanceManager", async (
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 20,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1218,7 +1201,6 @@ test("HubRouter switches provider model using payload content", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 21,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1243,8 +1225,7 @@ test("HubRouter switches provider model using payload content", async () => {
         mode: "bridge",
         socket_path: "/tmp/agentapi-codex_01.sock",
         pid: 22,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString()
       });
       return threadId;
@@ -1283,20 +1264,18 @@ test("HubRouter list omits stopped instances", async () => {
   registry.register({
     thread_id: "codex_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61001",
     pid: 10,
-    tmux_pane: "agent_codex_01",
     status: "stopped",
     created_at: new Date().toISOString()
   });
   registry.register({
     thread_id: "codex_02",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61002",
     pid: 11,
-    tmux_pane: "agent_codex_02",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -1318,7 +1297,7 @@ test("HubRouter list omits stopped instances", async () => {
 
 test("HubRouter list keeps errored instances visible across mode kinds", async () => {
   // Stateless `error` already surfaced (the `status !== stopped` branch).
-  // Bridge / pane_bridge `error` previously hid — a crashed or
+  // Bridge `error` previously hid — a crashed or
   // monitor-flagged thread left no GUI handle to kill or attach. Updated
   // contract: any non-`stopped` registry entry stays listed regardless of
   // mode, because an entry's presence in the registry is the signal that
@@ -1328,10 +1307,9 @@ test("HubRouter list keeps errored instances visible across mode kinds", async (
   registry.register({
     thread_id: "codex_session_error_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61011",
     pid: 10,
-    tmux_pane: "agent_codex_session_error_01",
     status: "error",
     created_at: new Date().toISOString()
   });
@@ -1341,7 +1319,6 @@ test("HubRouter list keeps errored instances visible across mode kinds", async (
     mode: "stateless_call",
     socket_path: "stateless:codex_stateless_error_01",
     pid: 0,
-    tmux_pane: null,
     status: "error",
     sandbox_mode: "read-only",
     auto_approve: false,
@@ -1354,7 +1331,6 @@ test("HubRouter list keeps errored instances visible across mode kinds", async (
     mode: "stateless_call",
     socket_path: "stateless:codex_stateless_stopped_01",
     pid: 0,
-    tmux_pane: null,
     status: "stopped",
     sandbox_mode: "read-only",
     auto_approve: false,
@@ -1387,7 +1363,6 @@ test("HubRouter list backfills the live current model when the registry has none
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: process.pid,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -1441,7 +1416,6 @@ test("HubRouter list refreshes live status when the model is already known", asy
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: process.pid,
-    tmux_pane: null,
     status: "running",
     model_id: "gpt-5.4",
     created_at: new Date().toISOString()
@@ -1499,7 +1473,6 @@ test("HubRouter list skips probe and schedules eviction when instance PID is dea
     mode: "bridge",
     socket_path: "http://127.0.0.1:65535",
     pid: deadPid,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -1565,10 +1538,9 @@ test("HubRouter returns updated agent screen content when transport response is 
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:65481",
     pid: 101,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1607,10 +1579,9 @@ test("HubRouter waits past transient spinner frames and returns stabilized reply
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:50730",
     pid: 101,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1656,10 +1627,9 @@ test("HubRouter prefers Gemini edit approval over transient POST /message chrome
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:50731",
     pid: 101,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1720,10 +1690,9 @@ test("HubRouter combines multi-part agent replies after run", async () => {
   registry.register({
     thread_id: "codex_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61234",
     pid: 101,
-    tmux_pane: "agent_codex_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1773,10 +1742,9 @@ test("HubRouter run returns only the latest complete summary block for current t
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61111",
     pid: 201,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1834,10 +1802,9 @@ test("HubRouter run ignores incomplete summary block and falls back to stable re
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61112",
     pid: 202,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1887,10 +1854,9 @@ test("HubRouter keeps waiting for a delayed same-trace summary while the run sta
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61114",
     pid: 204,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1939,10 +1905,9 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61113",
     pid: 203,
-    tmux_pane: "agent_gemini_01",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -1983,10 +1948,9 @@ test("HubRouter times out when an active worker never emits any reply for the cu
   registry.register({
     thread_id: "codex_02",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "http://127.0.0.1:61114",
     pid: 204,
-    tmux_pane: "agent_codex_02",
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -2039,7 +2003,6 @@ test("HubRouter normalizes monitor statuses before updating registry", () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 42,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2068,10 +2031,9 @@ test("HubRouter builds completion result from latest stable agent message", asyn
   registry.register({
     thread_id: "codex_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 2048,
-    tmux_pane: "agent_codex_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2131,7 +2093,6 @@ test("HubRouter enables and disables monitor updates via monitor_update intent",
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2191,7 +2152,6 @@ test("HubRouter keeps bot_id on monitor update dispatch targets", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2241,7 +2201,6 @@ test("HubRouter stores attach bindings with bot-aware session key", async () => 
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2279,7 +2238,6 @@ test("HubRouter includes attached chat and bot labels in thread command response
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2339,7 +2297,6 @@ test("HubRouter detaches the current session from its thread", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2406,7 +2363,6 @@ test("HubRouter returns a clickable Web GUI link", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2455,7 +2411,6 @@ test("HubRouter attach result includes a Web GUI button when available", async (
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2516,8 +2471,7 @@ test("HubRouter spawn result includes a Web GUI button when available", async ()
         mode: "bridge",
         socket_path: "/tmp/agentapi-codex_01.sock",
         pid: 101,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString()
       });
       return spawnedThreadId;
@@ -2617,8 +2571,7 @@ test("HubRouter forwards model_id, effort, and auto_approve on spawn", async () 
         mode: "bridge",
         socket_path: "/tmp/agentapi-codex_01.sock",
         pid: 101,
-        tmux_pane: null,
-        status: "idle",
+            status: "idle",
         created_at: new Date().toISOString(),
         auto_approve: autoApprove ?? false,
         integration_profile: integrationProfile,
@@ -2686,7 +2639,6 @@ test("HubRouter blocks terminal_input for ADS public threads", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_ads.sock",
     pid: 22,
-    tmux_pane: null,
     status: "waiting",
     created_at: new Date().toISOString(),
     integration_profile: "ads_public",
@@ -2743,7 +2695,6 @@ test("HubRouter blocks set_auto_approve for ADS public threads", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_ads.sock",
     pid: 23,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString(),
     auto_approve: false,
@@ -2780,7 +2731,6 @@ test("HubRouter list includes attachment owner and attachability by bot interfac
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2852,7 +2802,6 @@ test("HubRouter rejects cross-interface attach for already attached thread", asy
     mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: null,
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2899,10 +2848,9 @@ test("HubRouter builds monitor progress result from latest agent output", async 
   registry.register({
     thread_id: "codex_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: "agent_codex_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2937,10 +2885,9 @@ test("HubRouter keeps the latest stable progress reply when the newest frame is 
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_01.sock",
     pid: 101,
-    tmux_pane: "agent_gemini_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -2979,10 +2926,9 @@ test("HubRouter normalizes pane action-required frames into compact actionable c
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_01.sock",
     pid: 101,
-    tmux_pane: "agent_gemini_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -3033,10 +2979,9 @@ test("HubRouter normalizes Gemini edit approval frames into compact actionable c
   registry.register({
     thread_id: "gemini_01",
     agent_type: "gemini",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-gemini_01.sock",
     pid: 101,
-    tmux_pane: "agent_gemini_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -3093,10 +3038,9 @@ test("HubRouter falls back to canonical pending history for structured progress 
   registry.register({
     thread_id: "codex_02",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-codex_02.sock",
     pid: 101,
-    tmux_pane: "agent_codex_02",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -3127,10 +3071,9 @@ test("HubRouter returns one-time manual monitor update without subscribing", asy
   registry.register({
     thread_id: "codex_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-codex_01.sock",
     pid: 101,
-    tmux_pane: "agent_codex_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -3161,124 +3104,6 @@ test("HubRouter returns one-time manual monitor update without subscribing", asy
   assert.deepEqual(router.getMonitorUpdateSubscribersForThread("codex_01"), []);
 });
 
-test("HubRouter handlePush enables and disables push for pane_bridge instance", async () => {
-  const registry = new InstanceRegistry();
-  registry.register({
-    thread_id: "codex_01",
-    agent_type: "codex",
-    mode: "pane_bridge",
-    socket_path: "/tmp/agentapi-codex_01.sock",
-    pid: 101,
-    tmux_pane: "agent_codex_01",
-    status: "running",
-    created_at: new Date().toISOString()
-  });
-
-  const router = new HubRouter(registry, {
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      sendMessage: async () => ({}),
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const enableResult = await router.route(
-    baseMessage({
-      intent: "push",
-      target: "codex_01",
-      payload: { content: "", attachments: [], push_enabled: true },
-      reply_channel: { channel: "telegram", chat_id: "100", bot_id: "999" }
-    })
-  );
-  assert.equal(enableResult.status, "success");
-  assert.match(enableResult.content, /ON/);
-
-  const subs = router.getPushSubscriptionsForThread("codex_01");
-  assert.equal(subs.length, 1);
-  assert.equal(subs[0].chatId, "100");
-
-  const disableResult = await router.route(
-    baseMessage({
-      intent: "push",
-      target: "codex_01",
-      payload: { content: "", attachments: [], push_enabled: false },
-      reply_channel: { channel: "telegram", chat_id: "100", bot_id: "999" }
-    })
-  );
-  assert.equal(disableResult.status, "success");
-  assert.match(disableResult.content, /OFF/);
-  assert.equal(router.getPushSubscriptionsForThread("codex_01").length, 0);
-});
-
-test("HubRouter handlePush queries status when push_enabled is not set", async () => {
-  const registry = new InstanceRegistry();
-  registry.register({
-    thread_id: "codex_01",
-    agent_type: "codex",
-    mode: "pane_bridge",
-    socket_path: "/tmp/agentapi-codex_01.sock",
-    pid: 101,
-    tmux_pane: "agent_codex_01",
-    status: "running",
-    created_at: new Date().toISOString()
-  });
-
-  const router = new HubRouter(registry, {
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      sendMessage: async () => ({}),
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const queryResult = await router.route(
-    baseMessage({
-      intent: "push",
-      target: "codex_01",
-      payload: { content: "", attachments: [] },
-      reply_channel: { channel: "telegram", chat_id: "100" }
-    })
-  );
-  assert.equal(queryResult.status, "success");
-  assert.match(queryResult.content, /OFF/);
-});
-
-test("HubRouter handlePush rejects bridge mode instances", async () => {
-  const registry = new InstanceRegistry();
-  registry.register({
-    thread_id: "codex_01",
-    agent_type: "codex",
-    mode: "bridge",
-    socket_path: "/tmp/agentapi-codex_01.sock",
-    pid: 101,
-    tmux_pane: null,
-    status: "idle",
-    created_at: new Date().toISOString()
-  });
-
-  const router = new HubRouter(registry, {
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      sendMessage: async () => ({}),
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const result = await router.route(
-    baseMessage({
-      intent: "push",
-      target: "codex_01",
-      payload: { content: "", attachments: [], push_enabled: true },
-      reply_channel: { channel: "telegram", chat_id: "100" }
-    })
-  );
-  assert.equal(result.status, "error");
-  assert.match(result.content, /pane_bridge/);
-});
-
 test("HubRouter exposes conversation history after a run", async () => {
   const registry = new InstanceRegistry();
   registry.register({
@@ -3287,7 +3112,6 @@ test("HubRouter exposes conversation history after a run", async () => {
     mode: "bridge",
     socket_path: "/tmp/agentapi-history_01.sock",
     pid: 901,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -3359,7 +3183,6 @@ test("HubRouter shapes oversized thread history when bootstrap hints are provide
     mode: "bridge",
     socket_path: "/tmp/agentapi-history_shape_01.sock",
     pid: 902,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });
@@ -3419,10 +3242,9 @@ test("HubRouter appends same-trace progress snapshots and replaces them with the
   registry.register({
     thread_id: "coalesce_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-coalesce_01.sock",
     pid: 701,
-    tmux_pane: "agent_coalesce_01",
     status: "running",
     created_at: new Date().toISOString()
   });
@@ -3458,10 +3280,9 @@ test("HubRouter keeps approval prompts replaceable while progress entries append
   registry.register({
     thread_id: "approval_replace_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-approval_replace_01.sock",
     pid: 703,
-    tmux_pane: "agent_approval_replace_01",
     status: "waiting",
     created_at: new Date().toISOString()
   });
@@ -3497,10 +3318,9 @@ test("HubRouter converts resolved approval prompts into pending progress after t
   registry.register({
     thread_id: "approval_01",
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     socket_path: "/tmp/agentapi-approval_01.sock",
     pid: 702,
-    tmux_pane: "agent_approval_01",
     status: "waiting",
     created_at: new Date().toISOString()
   });
@@ -3578,7 +3398,6 @@ test("HubRouter isWithinRunCompletionCooldown returns true after run completes",
     mode: "bridge",
     socket_path: "/tmp/agentapi-cooldown_01.sock",
     pid: 501,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString()
   });

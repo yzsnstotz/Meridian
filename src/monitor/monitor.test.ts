@@ -19,7 +19,6 @@ function buildInstance(overrides: Partial<AgentInstance> = {}): AgentInstance {
     socket_path: "/tmp/agentapi-codex_99.sock",
     working_dir: "/tmp",
     pid: 1234,
-    tmux_pane: null,
     status: "idle",
     created_at: new Date().toISOString(),
     restart_safe: true,

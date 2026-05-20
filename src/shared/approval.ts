@@ -375,7 +375,6 @@ export function buildTelegramApprovalHint(threadId: string): string {
     `/approve all thread=${threadId}`,
     `/approve skip thread=${threadId}`,
     `Or reply with an exact option number like: /approve 4 thread=${threadId}`,
-    "Or reply to this message with exactly: y, allow, all, or n.",
-    "Requires pane_bridge mode."
+    "Or reply to this message with exactly: y, allow, all, or n."
   ].join("\n");
 }

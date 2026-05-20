@@ -47,7 +47,17 @@ export const BuiltInIntentSchema = z.enum(BUILT_IN_INTENTS);
 export const IntentSchema = z.union([BuiltInIntentSchema, z.string().min(1)]);
 export type Intent = z.infer<typeof IntentSchema>;
 
-export const BridgeModeSchema = z.enum(["bridge", "pane_bridge", "stateless_call"]);
+// `bridge` = persistent thread reservation in the registry; per-turn LLM
+// execution forks `codex exec --json` (or the equivalent provider streaming
+// CLI) via tryHandleStreamRun. There is no long-lived agentapi child.
+// `stateless_call` = one-shot Hub-direct exec call. Identical at the process
+// layer; differs only in that the thread_id is not persisted across calls.
+//
+// `pane_bridge` was removed 2026-05-21 — it relied on agentapi typing into a
+// tmux pane for operator interaction. Production operators standardized on
+// telegram + a2a (`bridge`) and the tmux pane was unused. The tmux-attach
+// machinery and pane-broadcast WebSocket were deleted with it.
+export const BridgeModeSchema = z.enum(["bridge", "stateless_call"]);
 export type BridgeMode = z.infer<typeof BridgeModeSchema>;
 
 export const AgentTypeSchema = z.enum(["claude", "codex", "gemini", "cursor"]);
@@ -279,7 +289,6 @@ export const AgentInstanceSchema = z.object({
   socket_path: z.string().min(1),
   working_dir: z.string().min(1).optional(),
   pid: z.number().int().nonnegative(),
-  tmux_pane: z.string().nullable(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),
@@ -294,37 +303,6 @@ export const AgentInstanceSchema = z.object({
   credential_id: z.string().nullable().default(null)
 });
 export type AgentInstance = z.input<typeof AgentInstanceSchema>;
-
-export const PaneSubscribeRequestSchema = z.object({
-  type: z.literal("subscribe_pane_output"),
-  thread_id: z.string().min(1),
-  replay_lines: z.number().int().nonnegative().optional()
-});
-export type PaneSubscribeRequest = z.infer<typeof PaneSubscribeRequestSchema>;
-
-export const PaneOutputChunkSchema = z.object({
-  type: z.literal("pane_output"),
-  thread_id: z.string().min(1),
-  chunk: z.string(),
-  cursor: z.number().int().nonnegative().optional(),
-  timestamp: z.string().datetime().optional(),
-  span_id: OptionalUuidSchema,
-  parent_span_id: OptionalUuidSchema
-});
-export type PaneOutputChunk = z.infer<typeof PaneOutputChunkSchema>;
-
-export const PaneOutputNotAvailableSchema = z.object({
-  type: z.literal("not_available"),
-  thread_id: z.string().min(1),
-  reason: z.string().min(1)
-});
-export type PaneOutputNotAvailable = z.infer<typeof PaneOutputNotAvailableSchema>;
-
-export const PaneUnsubscribeRequestSchema = z.object({
-  type: z.literal("unsubscribe_pane_output"),
-  thread_id: z.string().min(1)
-});
-export type PaneUnsubscribeRequest = z.infer<typeof PaneUnsubscribeRequestSchema>;
 
 export const ProviderModelSchema = z.object({
   id: z.string().min(1),

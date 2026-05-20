@@ -4,10 +4,10 @@ import { test } from "node:test";
 import { getHelpMessage, parseSlashCommand } from "./slash-handler";
 
 test("parseSlashCommand parses /spawn normally", () => {
-  const parsed = parseSlashCommand("/spawn type=gemini mode=pane_bridge");
+  const parsed = parseSlashCommand("/spawn type=gemini mode=bridge");
   assert.equal(parsed.intent, "spawn");
   assert.equal(parsed.target, "gemini");
-  assert.equal(parsed.mode, "pane_bridge");
+  assert.equal(parsed.mode, "bridge");
   assert.equal(parsed.spawnDir, null);
   assert.equal(parsed.picker, null);
 });
@@ -21,19 +21,19 @@ test("parseSlashCommand parses /spawn stateless_call mode", () => {
 });
 
 test("parseSlashCommand parses /spawn with explicit dir", () => {
-  const parsed = parseSlashCommand("/spawn type=codex mode=pane_bridge dir=/Users/yzliu/work/project-a");
+  const parsed = parseSlashCommand("/spawn type=codex mode=bridge dir=/Users/yzliu/work/project-a");
   assert.equal(parsed.intent, "spawn");
   assert.equal(parsed.target, "codex");
-  assert.equal(parsed.mode, "pane_bridge");
+  assert.equal(parsed.mode, "bridge");
   assert.equal(parsed.spawnDir, "/Users/yzliu/work/project-a");
   assert.equal(parsed.picker, null);
 });
 
 test("parseSlashCommand accepts full-width slash prefix", () => {
-  const parsed = parseSlashCommand("／spawn type=gemini mode=pane_bridge");
+  const parsed = parseSlashCommand("／spawn type=gemini mode=bridge");
   assert.equal(parsed.intent, "spawn");
   assert.equal(parsed.target, "gemini");
-  assert.equal(parsed.mode, "pane_bridge");
+  assert.equal(parsed.mode, "bridge");
   assert.equal(parsed.picker, null);
 });
 
@@ -136,7 +136,7 @@ test("parseSlashCommand marks /kill without thread as picker flow", () => {
 test("parseSlashCommand marks /spawn without args as picker flow", () => {
   const parsed = parseSlashCommand("/spawn");
   assert.equal(parsed.intent, "spawn");
-  assert.equal(parsed.mode, "pane_bridge");
+  assert.equal(parsed.mode, "bridge");
   assert.equal(parsed.picker, "spawn");
 });
 

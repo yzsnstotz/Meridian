@@ -46,8 +46,7 @@ test("AgentInstanceSchema accepts credential_id and defaults to null", () => {
     pid: 1234,
     socket_path: "/tmp/x",
     status: "running",
-    created_at: "2026-05-19T00:00:00.000Z",
-    tmux_pane: null
+    created_at: "2026-05-19T00:00:00.000Z"
   };
   // First parse-attempt — add fields as required by validation errors
   const result = AgentInstanceSchema.safeParse(baseline);
@@ -66,7 +65,6 @@ test("AgentInstanceSchema accepts an explicit credential_id", () => {
     socket_path: "/tmp/x",
     status: "running",
     created_at: "2026-05-19T00:00:00.000Z",
-    tmux_pane: null,
     credential_id: "cred-xyz"
   };
   const result = AgentInstanceSchema.safeParse(baseline);

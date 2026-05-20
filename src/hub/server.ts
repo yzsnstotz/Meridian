@@ -17,8 +17,6 @@ import {
   HubMessageSchema,
   HubResultSchema,
   InboundUIEventSchema,
-  PaneSubscribeRequestSchema,
-  PaneUnsubscribeRequestSchema,
   ServiceEndpointSchema,
   type ServiceEndpoint,
   type AgentType,
@@ -29,13 +27,11 @@ import {
 } from "../types";
 import { normalizeInboundEvent } from "./normalizer";
 import { appendA2AWebSocketLog } from "./a2a-websocket-log";
-import { PaneBroadcaster } from "./pane-broadcaster";
 import { ResultSender, shouldPushTelegramProactive } from "./result-sender";
 import { TelegramChannelAdapter } from "../interface/adapters/telegram-adapter";
 import { WebChannelAdapter } from "../interface/adapters/web-adapter";
 import { SocketChannelAdapter } from "./socket-adapter";
 import { InstanceRegistry } from "./registry";
-import { classifyAgentOutput } from "../shared/agent-output";
 import type { OutputDelta } from "../shared/stream-adapter";
 import { OutputBus } from "./output-bus";
 import { HubRouter, type HubRouterOptions, type MonitorUpdateDispatch, type PushDeliveryTarget } from "./router";
@@ -135,7 +131,6 @@ export interface HubServerOptions {
   socketPath?: string;
   router?: HubRouter;
   resultSender?: ResultSender;
-  paneBroadcaster?: PaneBroadcaster;
   staticServiceEndpoints?: ServiceEndpoint[];
   outputBus?: OutputBus;
   /**
@@ -178,7 +173,6 @@ const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
 const IDEMPOTENCY_CLEANUP_INTERVAL_MS = 60 * 1000;
 const DEFAULT_PRIORITY = 5;
 const MONITOR_EVENT_PRIORITY = 7;
-const PUSH_DEBOUNCE_MS = 2000;
 const PUSH_DEDUP_WINDOW_MS = 90 * 1000;
 const RUN_COMPLETION_COOLDOWN_MS = 5_000;
 const SUMMARY_MARKER_BEGIN = "[[MERIDIAN_SUMMARY_BEGIN";
@@ -199,11 +193,6 @@ const IMMEDIATE_INTENTS = new Set([
   "terminal_input",
   "capture_interval"
 ]);
-
-interface PushAccumulator {
-  chunks: string[];
-  timer: NodeJS.Timeout;
-}
 
 interface PushDedupState {
   fingerprint: string;
@@ -236,7 +225,6 @@ export class HubServer {
   private readonly router: HubRouter;
   private readonly resultSender: ResultSender;
   private readonly outputBus: OutputBus;
-  private readonly paneBroadcaster: PaneBroadcaster;
   private readonly staticServiceEndpoints: ServiceEndpoint[];
   private server: net.Server | null = null;
   private monitorProgressTimer: NodeJS.Timeout | null = null;
@@ -246,7 +234,6 @@ export class HubServer {
   private readonly priorityQueue: PriorityQueueItem[] = [];
   private priorityQueueSequence = 0;
   private priorityQueueDraining = false;
-  private readonly pushAccumulators = new Map<string, PushAccumulator>();
   private readonly lastPushDedupByThread = new Map<string, PushDedupState>();
   private readonly monitorProgressContextByTrace = new Map<string, MonitorProgressDispatchContext>();
   private readonly outputBusDeliveryContextByTrace = new Map<string, OutputBusDeliveryContext>();
@@ -318,7 +305,6 @@ export class HubServer {
       new WebChannelAdapter()
     ]);
     this.outputBus = options.outputBus ?? this.resolveOutputBusFromRouter(this.router);
-    this.paneBroadcaster = options.paneBroadcaster ?? new PaneBroadcaster();
     this.staticServiceEndpoints = options.staticServiceEndpoints ?? resolveStaticServiceEndpoints();
     this.outputBus.setAdapterOutput((traceId, _message, delta) => this.dispatchOutputBusDelta(traceId, delta));
     this.outputBus.setWebsocketOutput((traceId, message) => this.dispatchOutputBusWebsocketMessage(traceId, message));
@@ -391,13 +377,11 @@ export class HubServer {
 
       socket.on("error", (error) => {
         this.cleanupWebsocketSubscriptions(socket);
-        this.paneBroadcaster.cleanupSocket(socket);
         this.log.error({ trace_id: null, thread_id: null, err: String(error) }, "Hub socket connection failed");
       });
 
       socket.on("close", () => {
         this.cleanupWebsocketSubscriptions(socket);
-        this.paneBroadcaster.cleanupSocket(socket);
       });
     });
 
@@ -408,7 +392,6 @@ export class HubServer {
 
     this.startMonitorProgressTicker();
     this.startIdempotencyCleanup();
-    this.registerPushCallback();
 
     this.log.info({ trace_id: null, thread_id: null, socket_path: this.socketPath }, "Hub server listening");
   }
@@ -447,7 +430,6 @@ export class HubServer {
     this.stopMonitorProgressTicker();
     this.stopIdempotencyCleanup();
     this.clearPushAccumulators();
-    this.paneBroadcaster.close();
     // Do NOT unlink this.socketPath on stop. PM2's restart races the old
     // hub's graceful shutdown against the new hub's bind: if the old hub
     // unlinks AFTER the new hub binds (it can take a few seconds for the
@@ -463,33 +445,6 @@ export class HubServer {
   }
 
   private async handleSocketPayload(socket: net.Socket, raw: string, closeOnComplete: boolean): Promise<void> {
-    const parsed = JSON.parse(raw) as unknown;
-    const subscribeRequest = PaneSubscribeRequestSchema.safeParse(parsed);
-    if (subscribeRequest.success) {
-      this.registerWebsocketSubscriber(subscribeRequest.data.thread_id, socket);
-      const result = await this.paneBroadcaster.subscribe(
-        socket,
-        this.router.resolveInstanceForThread(subscribeRequest.data.thread_id),
-        subscribeRequest.data
-      );
-      if (result.kind === "not_available" && socket.writable) {
-        socket.write(`${JSON.stringify(result.payload)}\n`);
-      }
-      return;
-    }
-
-    const unsubscribeRequest = PaneUnsubscribeRequestSchema.safeParse(parsed);
-    if (unsubscribeRequest.success) {
-      this.unregisterWebsocketSubscriber(unsubscribeRequest.data.thread_id, socket);
-      this.paneBroadcaster.unsubscribe(socket, unsubscribeRequest.data.thread_id);
-      if (closeOnComplete && socket.writable) {
-        socket.end();
-      } else if (socket.writable) {
-        socket.write('{"ok":true}\n');
-      }
-      return;
-    }
-
     const result = await this.enqueueMessage(raw);
     if (!socket.writable) {
       return;
@@ -1187,32 +1142,6 @@ export class HubServer {
     this.idempotencyCache.clear();
   }
 
-  private registerPushCallback(): void {
-    this.paneBroadcaster.registerPushCallback((threadId: string, chunk: string) => {
-      const subscribers = this.getPushSubscriptionsForThreadSafe(threadId);
-      if (subscribers.length === 0) {
-        return;
-      }
-
-      const accumulator = this.pushAccumulators.get(threadId);
-      if (accumulator) {
-        accumulator.chunks.push(chunk);
-        clearTimeout(accumulator.timer);
-        accumulator.timer = setTimeout(() => {
-          void this.flushPushAccumulator(threadId);
-        }, PUSH_DEBOUNCE_MS);
-        accumulator.timer.unref();
-        return;
-      }
-
-      const timer = setTimeout(() => {
-        void this.flushPushAccumulator(threadId);
-      }, PUSH_DEBOUNCE_MS);
-      timer.unref();
-      this.pushAccumulators.set(threadId, { chunks: [chunk], timer });
-    });
-  }
-
   private registerWebsocketSubscriber(threadId: string, socket: net.Socket): void {
     const existing = this.websocketSubscribersByThread.get(threadId);
     if (existing) {
@@ -1248,87 +1177,6 @@ export class HubServer {
     }
     socket.write(`${payload}\n`);
     return true;
-  }
-
-  private async flushPushAccumulator(threadId: string): Promise<void> {
-    const accumulator = this.pushAccumulators.get(threadId);
-    if (!accumulator) {
-      return;
-    }
-
-    const combined = accumulator.chunks.join("");
-    if (!combined.trim()) {
-      this.pushAccumulators.delete(threadId);
-      return;
-    }
-
-    const classification = classifyAgentOutput(combined);
-
-    // Allow action_required (approval prompts) through even during active runs
-    // so the user on the other client can respond to approvals.
-    const runBlocked = this.isRunActiveForThreadSafe(threadId) || this.isWithinRunCooldownSafe(threadId);
-    if (runBlocked && classification.kind !== "action_required") {
-      this.pushAccumulators.delete(threadId);
-      return;
-    }
-
-    // Auto-approve intercept: if the instance has auto_approve enabled and the
-    // output is an approval prompt, automatically send the approval input and
-    // skip pushing notifications to subscribers.
-    if (classification.kind === "action_required") {
-      const instance = this.getRegistryInstanceSafe(threadId);
-      if (instance?.auto_approve) {
-        this.sendAutoApproveInputSafe(threadId);
-        this.pushAccumulators.delete(threadId);
-        return;
-      }
-    }
-
-    this.pushAccumulators.delete(threadId);
-
-    if (classification.kind === "transient") {
-      return;
-    }
-
-    const subscribers = this.getPushSubscriptionsForThreadSafe(threadId);
-    if (subscribers.length === 0) {
-      return;
-    }
-
-    const traceId = this.getActiveRunTraceIdSafe(threadId) ?? randomUUID();
-    const source = this.router.resolveSourceForThread(threadId);
-    const normalizedText = classification.text.trim();
-    const content = normalizedText.trim();
-    if (!content) {
-      return;
-    }
-    if (this.isDuplicatePushContent(threadId, content, { skipTailDedup: classification.kind === "action_required" })) {
-      return;
-    }
-
-    this.recordAgentPushConversationSafe(threadId, content, traceId, "progress");
-    this.outputBusDeliveryContextByTrace.set(traceId, {
-      threadId,
-      source,
-      timestamp: new Date().toISOString(),
-      replyChannels: subscribers.map((subscriber) => subscriber.replyChannel),
-      historyBacked: true
-    });
-    try {
-      this.outputBus.pushSnapshot(traceId, content);
-    } finally {
-      this.outputBusDeliveryContextByTrace.delete(traceId);
-    }
-
-    this.log.info(
-      {
-        trace_id: traceId,
-        thread_id: threadId,
-        kind: classification.kind,
-        subscriber_count: subscribers.length
-      },
-      "Push agent text dispatched through OutputBus"
-    );
   }
 
   private getPushSubscriptionsForThreadSafe(threadId: string): PushDeliveryTarget[] {
@@ -1518,10 +1366,6 @@ export class HubServer {
   }
 
   private clearPushAccumulators(): void {
-    for (const accumulator of this.pushAccumulators.values()) {
-      clearTimeout(accumulator.timer);
-    }
-    this.pushAccumulators.clear();
     this.lastPushDedupByThread.clear();
     this.outputBusDeliveryContextByTrace.clear();
     this.outputBusThreadByTrace.clear();

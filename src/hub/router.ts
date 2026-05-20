@@ -773,8 +773,6 @@ export class HubRouter {
           return this.handleMonitorUpdate(message);
         case "monitor_manual_update":
           return await this.handleManualMonitorUpdate(message);
-        case "push":
-          return this.handlePush(message);
         case "capture_interval":
           return this.handleCaptureInterval(message);
         case "history":
@@ -3219,107 +3217,6 @@ export class HubRouter {
     if (byChat.size === 0) {
       this.monitorUpdateSubscriptionsByThread.delete(threadId);
     }
-  }
-
-  // ── Push subscription management ──
-
-  private handlePush(message: HubMessage): HubResult {
-    const threadId = this.resolveThreadId(message);
-    const instance = this.resolveInstance(threadId);
-    const enabled = message.payload.push_enabled;
-
-    if (instance.mode !== "pane_bridge") {
-      return this.buildResult(
-        message, "error", instance.agent_type,
-        "Push is only available for pane_bridge mode instances.",
-        threadId
-      );
-    }
-
-    if (message.reply_channel.channel === "web") {
-      return this.handlePushFromWeb(message, threadId, instance, enabled);
-    }
-
-    const chatId = message.reply_channel.chat_id;
-    const botId = message.reply_channel.bot_id;
-    const sessionId = encodeSessionId(chatId, botId);
-
-    if (enabled === undefined || enabled === null) {
-      const existing = this.pushSubscriptionsByThread.get(threadId)?.get(sessionId);
-      const state = existing ? "ON" : "OFF";
-      return this.buildResult(
-        message, "success", instance.agent_type,
-        `Push agent text is ${state} for thread=${threadId}.`,
-        threadId
-      );
-    }
-
-    if (!enabled) {
-      this.deletePushSubscription(threadId, sessionId);
-      return this.buildResult(
-        message, "success", instance.agent_type,
-        `Push agent text turned OFF for thread=${threadId}.`,
-        threadId
-      );
-    }
-
-    this.upsertPushSubscription(threadId, sessionId, chatId, botId, message.reply_channel);
-    return this.buildResult(
-      message, "success", instance.agent_type,
-      `Push agent text turned ON for thread=${threadId}.`,
-      threadId
-    );
-  }
-
-  private handlePushFromWeb(
-    message: HubMessage,
-    threadId: string,
-    instance: AgentInstance,
-    enabled: boolean | undefined | null
-  ): HubResult {
-    const existingCount = this.pushSubscriptionsByThread.get(threadId)?.size ?? 0;
-
-    if (enabled === undefined || enabled === null) {
-      const state = existingCount > 0 ? "ON" : "OFF";
-      return this.buildResult(
-        message, "success", instance.agent_type,
-        `Push agent text is ${state} for thread=${threadId} (${existingCount} subscriber(s)).`,
-        threadId
-      );
-    }
-
-    if (!enabled) {
-      this.pushSubscriptionsByThread.delete(threadId);
-      return this.buildResult(
-        message, "success", instance.agent_type,
-        `Push agent text turned OFF for thread=${threadId}.`,
-        threadId
-      );
-    }
-
-    const attachedSessions = this.getAttachedSessionsForThread(threadId);
-    let subscribed = 0;
-    for (const session of attachedSessions) {
-      const parsed = this.parseSessionTarget(session);
-      if (!parsed) continue;
-      const replyChannel = this.resolveReplyChannelForSession(session);
-      this.upsertPushSubscription(threadId, session, parsed.chatId, parsed.botId, replyChannel);
-      subscribed++;
-    }
-
-    if (subscribed === 0) {
-      return this.buildResult(
-        message, "error", instance.agent_type,
-        `No attached Telegram sessions for thread=${threadId}. Use Telegram /push on to subscribe.`,
-        threadId
-      );
-    }
-
-    return this.buildResult(
-      message, "success", instance.agent_type,
-      `Push agent text turned ON for thread=${threadId} (${subscribed} session(s)).`,
-      threadId
-    );
   }
 
   private handleCaptureInterval(message: HubMessage): HubResult {

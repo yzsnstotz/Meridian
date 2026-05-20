@@ -10,15 +10,8 @@ import { buildCursorSpawnArgs } from "../agents/cursor";
 import { buildGeminiSpawnArgs } from "../agents/gemini";
 import { config } from "../config";
 import { createLogger } from "../logger";
-import {
-  APPROVAL_HELP_TEXT,
-  approvalActionToTmuxKeys,
-  normalizeApprovalAction,
-  selectApprovalOptionInput
-} from "../shared/approval";
 import { AgentAPIClient } from "../shared/agentapi-client";
 import { ProviderModelCatalog } from "../shared/model-catalog";
-import { normalizeVisibleText } from "../shared/terminal-text";
 import {
   AgentTypeSchema,
   type AgentInstance,
@@ -95,15 +88,9 @@ export interface InstanceManagerOptions {
   execAsyncFn?: ExecAsyncFn;
   socketPathFactory?: SocketPathFactory;
   agentapiSocketSupport?: boolean;
-  agentapiAttachSocketSupport?: boolean;
   clientFactory?: (threadId: string) => StatusClient;
   modelCatalog?: ProviderModelCatalog;
   now?: () => Date;
-  paneBridgeUsePtyWrapper?: boolean;
-  /** When pane delta has no overlap (full-screen redraw), write last K lines to log instead of skipping. Default 50. */
-  paneDeltaTailLinesWhenNoOverlap?: number;
-  geminiPanePromptSettleMs?: number;
-  geminiPaneFooterSettleMs?: number;
   /**
    * Override OS-level PID liveness check. Default uses `process.kill(pid, 0)`.
    * Tests inject `() => true` so fake pids count as live; production uses default.
@@ -126,9 +113,6 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
 const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
-/** When overlap is 0 (full-screen redraw), write this many tail lines to pane log instead of skipping. */
-const PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP = 50;
-const CODEX_PANE_READINESS_MAX_ATTEMPTS = 12;
 const INTERRUPT_ESCAPE_SEQUENCE = "\u001b";
 const STATELESS_SOCKET_PREFIX = "stateless:";
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
@@ -137,14 +121,6 @@ type AgentEndpointBinding = {
   listenArg: string;
   transport: "socket" | "http";
 };
-
-interface PaneCaptureState {
-  timer: NodeJS.Timeout;
-  tmuxSession: string;
-  logPath: string;
-  lastSnapshot: string;
-  inFlight: boolean;
-}
 
 export class InstanceManager {
   private readonly log = createLogger("instance_mgr");
@@ -156,20 +132,13 @@ export class InstanceManager {
   private readonly execAsyncFn: ExecAsyncFn;
   private readonly socketPathFactory: SocketPathFactory;
   private readonly forcedAgentapiSocketSupport: boolean | null;
-  private readonly forcedAgentapiAttachSocketSupport: boolean | null;
   private readonly clientFactory: (threadId: string) => StatusClient;
   private readonly modelCatalog: ProviderModelCatalog;
   private readonly now: () => Date;
-  private readonly paneBridgeUsePtyWrapper: boolean;
-  private readonly paneDeltaTailLinesWhenNoOverlap: number;
-  private readonly geminiPanePromptSettleMs: number;
-  private readonly geminiPaneFooterSettleMs: number;
   private agentapiSocketSupportCache: boolean | null = null;
-  private agentapiAttachSocketSupportCache: boolean | null = null;
   private paneCaptureIntervalMs: number = config.PANE_CAPTURE_INTERVAL_MS;
   private readonly children = new Map<string, ChildProcess>();
   private readonly agentLogFdByThread = new Map<string, number>();
-  private readonly paneCaptureByThread = new Map<string, PaneCaptureState>();
   private readonly sessionThreadBySession = new Map<string, string>();
   private readonly allocatedThreadMaxIndexByType = new Map<AgentType, number>();
   private readonly startupAttempts = 180;
@@ -193,7 +162,6 @@ export class InstanceManager {
     this.execAsyncFn = options.execAsyncFn ?? defaultExecAsyncFn;
     this.socketPathFactory = options.socketPathFactory ?? ((threadId: string) => this.formatAgentSocketPath(threadId));
     this.forcedAgentapiSocketSupport = options.agentapiSocketSupport ?? null;
-    this.forcedAgentapiAttachSocketSupport = options.agentapiAttachSocketSupport ?? null;
     this.clientFactory =
       options.clientFactory ??
       ((threadId: string) => {
@@ -201,11 +169,6 @@ export class InstanceManager {
       });
     this.modelCatalog = options.modelCatalog ?? new ProviderModelCatalog();
     this.now = options.now ?? (() => new Date());
-    this.paneBridgeUsePtyWrapper = options.paneBridgeUsePtyWrapper ?? false;
-    this.paneDeltaTailLinesWhenNoOverlap =
-      options.paneDeltaTailLinesWhenNoOverlap ?? PANE_DELTA_TAIL_LINES_WHEN_NO_OVERLAP;
-    this.geminiPanePromptSettleMs = options.geminiPanePromptSettleMs ?? 1500;
-    this.geminiPaneFooterSettleMs = options.geminiPaneFooterSettleMs ?? 20000;
     this.pidLivenessFn =
       options.pidLivenessFn ??
       ((pid: number) => {
@@ -352,19 +315,15 @@ export class InstanceManager {
       return `No active stateless run to interrupt for ${threadId}.`;
     }
 
-    if (instance.mode === "pane_bridge" && instance.tmux_pane) {
-      this.sendTmuxKeys(instance.tmux_pane, ["Escape"]);
-    } else {
-      const client = this.clientFactory(threadId);
-      await client.connect(instance.socket_path);
-      try {
-        if (!client.sendRawInput) {
-          throw new Error("AgentAPI client does not support raw terminal input");
-        }
-        await client.sendRawInput(INTERRUPT_ESCAPE_SEQUENCE);
-      } finally {
-        client.disconnect();
+    const client = this.clientFactory(threadId);
+    await client.connect(instance.socket_path);
+    try {
+      if (!client.sendRawInput) {
+        throw new Error("AgentAPI client does not support raw terminal input");
       }
+      await client.sendRawInput(INTERRUPT_ESCAPE_SEQUENCE);
+    } finally {
+      client.disconnect();
     }
 
     this.log.info(
@@ -372,7 +331,6 @@ export class InstanceManager {
         operation: "interrupt",
         thread_id: threadId,
         mode: instance.mode,
-        tmux_pane: instance.tmux_pane,
         socket_path: instance.socket_path,
         pid: instance.pid,
         status: instance.status
@@ -556,78 +514,9 @@ export class InstanceManager {
     if (!instance) {
       throw new Error(`Cannot send terminal input; thread_id=${threadId} is not registered`);
     }
-
-    if (instance.mode !== "pane_bridge" || !instance.tmux_pane) {
-      throw new Error(
-        `Thread ${threadId} is running in mode=${instance.mode}; terminal_input requires a pane_bridge thread with tmux.`
-      );
-    }
-
-    const action = normalizeApprovalAction(rawInput);
-    const keys = action
-      ? this.approvalActionToTmuxKeys(action, instance)
-      : this.rawTerminalInputToTmuxKeys(rawInput);
-    this.sendTmuxKeys(instance.tmux_pane, keys);
-
-    this.log.info(
-      {
-        operation: "terminal_input",
-        thread_id: threadId,
-        tmux_pane: instance.tmux_pane,
-        approval_action: action ?? null,
-        raw_input: action ? null : rawInput,
-        keys
-      },
-      "Sent terminal input to tmux pane"
+    throw new Error(
+      `Thread ${threadId} is running in mode=${instance.mode}; terminal_input (${rawInput}) is no longer supported (pane_bridge removed).`
     );
-
-    return action ? `Sent approval action '${action}' to ${threadId}.` : `Sent terminal input to ${threadId}.`;
-  }
-
-  private rawTerminalInputToTmuxKeys(rawInput: string): string[] {
-    const normalized = rawInput.replace(/\r/g, "");
-    if (!normalized.trim()) {
-      throw new Error(`Unsupported empty terminal input. ${APPROVAL_HELP_TEXT}`);
-    }
-
-    const lines = normalized.split("\n");
-    const keys: string[] = [];
-    for (const line of lines) {
-      if (line.length > 0) {
-        keys.push(line);
-      }
-      keys.push("Enter");
-    }
-    return keys;
-  }
-
-  private approvalActionToTmuxKeys(
-    action: "run" | "allow" | "all" | "skip",
-    instance: AgentInstance
-  ): string[] {
-    if (instance.agent_type === "gemini") {
-      try {
-        const visibleText = this.captureVisibleTmuxText(instance.tmux_pane ?? instance.thread_id);
-        const selectedInput = selectApprovalOptionInput(visibleText, action);
-        if (selectedInput) {
-          return [selectedInput, "Enter"];
-        }
-      } catch {
-        // Fall through to provider defaults when the current prompt cannot be inspected.
-      }
-
-      // Gemini defaults when no structured prompt can be parsed.
-      if (action === "run") {
-        return ["1", "Enter"];
-      }
-      if (action === "allow" || action === "all") {
-        return ["2", "Enter"];
-      }
-      if (action === "skip") {
-        return ["3", "Enter"];
-      }
-    }
-    return approvalActionToTmuxKeys(action);
   }
 
   snapshotState(): PersistedHubState {
@@ -650,9 +539,6 @@ export class InstanceManager {
     this.allocatedThreadMaxIndexByType.clear();
     this.registry.clear();
     this.children.clear();
-    for (const threadId of this.paneCaptureByThread.keys()) {
-      this.stopTmuxPaneCapture(threadId);
-    }
     this.sessionThreadBySession.clear();
 
     const restoredThreadIds: string[] = [];
@@ -968,113 +854,8 @@ export class InstanceManager {
     if (endpointBinding.transport === "socket") {
       await this.removeSocketPath(socketPath);
     }
-    const tmuxSession = mode === "pane_bridge" ? `agent_${threadId}` : null;
     const args = this.buildSpawnArgs(type, mode, endpointBinding.listenArg, modelId, autoApprove, reasoningEffort, sandboxMode);
     const childEnv = this.buildChildEnv(resolvedCredential ?? null);
-
-    if (tmuxSession) {
-      this.safeKillTmuxSession(tmuxSession);
-      const stdio = this.buildSpawnStdio(threadId);
-      const paneLaunch = this.wrapWithPseudoTerminal(this.agentapiBinPath, args, this.paneBridgeUsePtyWrapper);
-      this.log.info(
-        {
-          operation: "spawn_launch",
-          trace_id: traceId,
-          mode,
-          thread_id: threadId,
-          socket_path: socketPath,
-          working_directory: spawnWorkdir,
-          command: paneLaunch.command,
-          args: paneLaunch.args,
-          pane_bridge_use_pty_wrapper: this.paneBridgeUsePtyWrapper,
-          child_path: this.summarizePath(childEnv.PATH),
-          stdio_mode: stdio === "inherit" ? "inherit" : "redirected"
-        },
-        "Launching agent instance process"
-      );
-      const child = this.spawnFn(paneLaunch.command, paneLaunch.args, {
-        detached: true,
-        stdio,
-        env: childEnv,
-        cwd: spawnWorkdir
-      });
-
-      if (!child.pid) {
-        throw new Error(`Failed to spawn agentapi process for thread_id=${threadId}`);
-      }
-
-      this.log.info(
-        {
-          operation: "spawn_pid",
-          trace_id: traceId,
-          mode,
-          thread_id: threadId,
-          socket_path: socketPath,
-          pid: child.pid
-        },
-        "Spawned agent instance process"
-      );
-
-      const instance: AgentInstance = {
-        thread_id: threadId,
-        agent_type: type,
-        model_id: modelId,
-        reasoning_effort: reasoningEffort,
-        integration_profile: integrationProfile,
-        sandbox_mode: sandboxMode,
-        auto_approve: autoApprove,
-        supportsStream: this.supportsStreaming(type),
-        mode,
-        socket_path: socketPath,
-        working_dir: spawnWorkdir,
-        pid: child.pid,
-        tmux_pane: tmuxSession,
-        status: "idle",
-        created_at: this.now().toISOString(),
-        restart_safe: true,
-        spawn_trace_id: traceId,
-        spawned_by: caller,
-        credential_id: resolvedCredential?.credential_id ?? null
-      };
-
-      this.registry.register(instance);
-      if (autoApprove === true) {
-        this.registry.setAutoApprove(threadId, true);
-      }
-      this.children.set(threadId, child);
-      this.maybeUnrefChild(child, stdio);
-      this.watchChildProcess(threadId, child);
-      // Persist now, BEFORE the readiness wait. A SIGKILL during the wait
-      // would otherwise leave a live detached child with no on-disk record.
-      this.notifyStateChange();
-      try {
-        await this.assertAgentReady(threadId, socketPath, traceId);
-        const attachArgs = this.buildAgentAttachCliArgs(endpointBinding);
-        if (attachArgs) {
-          this.spawnInTmuxSession(threadId, tmuxSession, attachArgs);
-          await this.assertPaneBridgePromptReady(threadId, tmuxSession, type, socketPath, traceId);
-        }
-      } catch (error) {
-        await this.killInternal(threadId, false).catch(() => undefined);
-        throw error;
-      }
-      this.log.info(
-        {
-          operation: "spawn",
-          trace_id: traceId,
-          mode,
-          thread_id: threadId,
-          pid: child.pid,
-          socket_path: socketPath,
-          tmux_pane: tmuxSession,
-          prev_status: null,
-          next_status: "idle"
-        },
-        "Agent instance spawned"
-      );
-
-      return threadId;
-    }
 
     const stdio = this.buildSpawnStdio(threadId);
     this.log.info(
@@ -1087,7 +868,6 @@ export class InstanceManager {
         working_directory: spawnWorkdir,
         command: this.agentapiBinPath,
         args,
-        pane_bridge_use_pty_wrapper: this.paneBridgeUsePtyWrapper,
         child_path: this.summarizePath(childEnv.PATH),
         stdio_mode: stdio === "inherit" ? "inherit" : "redirected"
       },
@@ -1129,7 +909,6 @@ export class InstanceManager {
       socket_path: socketPath,
       working_dir: spawnWorkdir,
       pid: child.pid,
-      tmux_pane: tmuxSession,
       status: "idle",
       created_at: this.now().toISOString(),
       restart_safe: true,
@@ -1148,7 +927,12 @@ export class InstanceManager {
     // Persist now, BEFORE the readiness wait — closes the spawn-then-persist
     // race that leaves a detached agentapi child orphaned across hub restart.
     this.notifyStateChange();
-    await this.assertAgentReady(threadId, socketPath, traceId);
+    try {
+      await this.assertAgentReady(threadId, socketPath, traceId);
+    } catch (error) {
+      await this.killInternal(threadId, false).catch(() => undefined);
+      throw error;
+    }
 
     this.log.info(
       {
@@ -1158,7 +942,6 @@ export class InstanceManager {
         thread_id: threadId,
         pid: child.pid,
         socket_path: socketPath,
-        tmux_pane: tmuxSession,
         prev_status: null,
         next_status: "idle"
       },
@@ -1200,7 +983,6 @@ export class InstanceManager {
       socket_path: `${STATELESS_SOCKET_PREFIX}${threadId}`,
       working_dir: spawnWorkdir,
       pid: 0,
-      tmux_pane: null,
       status: "idle",
       created_at: this.now().toISOString(),
       restart_safe: true,
@@ -1283,317 +1065,6 @@ export class InstanceManager {
     await this.killInternal(threadId, false).catch(() => undefined);
     throw new Error(
       `Agent instance failed readiness check for thread_id=${threadId}: ${lastError ?? "unknown startup error"}`
-    );
-  }
-
-  private async assertPaneBridgePromptReady(
-    threadId: string,
-    tmuxSession: string,
-    agentType: AgentType,
-    endpoint: string,
-    traceId?: string | null
-  ): Promise<void> {
-    if (agentType === "codex") {
-      await this.assertCodexPromptReadyFromTmux(threadId, tmuxSession, traceId);
-      return;
-    }
-
-    if (agentType !== "gemini") {
-      return;
-    }
-
-    const client = this.clientFactory(threadId);
-    if (typeof client.getMessages === "function") {
-      await client.connect(endpoint);
-      try {
-        await this.assertGeminiScreenReady(threadId, client, traceId);
-        return;
-      } finally {
-        client.disconnect();
-      }
-    }
-
-    await this.assertGeminiPromptReadyFromTmux(threadId, tmuxSession, traceId);
-  }
-
-  private async assertCodexPromptReadyFromTmux(
-    threadId: string,
-    tmuxSession: string,
-    traceId?: string | null
-  ): Promise<void> {
-    let updatePromptDismissed = false;
-    let lastVisibleText = "";
-    const maxAttempts = Math.min(this.startupAttempts, CODEX_PANE_READINESS_MAX_ATTEMPTS);
-
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const child = this.children.get(threadId);
-      if (!child || !this.isChildRunning(child)) {
-        const exitCode = child?.exitCode ?? null;
-        const signal = child?.signalCode ?? null;
-        throw new Error(
-          `Codex pane prompt did not stabilize for thread_id=${threadId}: ` +
-          `agentapi process exited before pane prompt became ready (exit_code=${exitCode}, signal=${signal})`
-        );
-      }
-
-      try {
-        const visibleText = this.captureVisibleTmuxText(tmuxSession);
-        const lower = visibleText.toLowerCase();
-        const updatePromptVisible = this.isCodexUpdatePromptVisible(lower);
-        lastVisibleText = visibleText;
-
-        if (updatePromptVisible) {
-          this.sendTmuxKeys(tmuxSession, ["3", "Enter"]);
-          updatePromptDismissed = true;
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, this.startupDelayMs);
-          });
-          continue;
-        }
-
-        if (this.isCodexPromptReadyVisible(visibleText)) {
-          return;
-        }
-
-        if (!updatePromptDismissed && attempt >= 2) {
-          return;
-        }
-        if (updatePromptDismissed && visibleText.trim()) {
-          return;
-        }
-      } catch (error) {
-        if (attempt === 0) {
-          this.log.warn(
-            {
-              operation: "pane_prompt_probe_failed",
-              trace_id: traceId ?? null,
-              thread_id: threadId,
-              tmux_session: tmuxSession,
-              attempt,
-              err: error instanceof Error ? error.message : String(error)
-            },
-            "Initial Codex pane prompt readiness probe failed"
-          );
-        }
-      }
-
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, this.startupDelayMs);
-      });
-    }
-
-    if (updatePromptDismissed && this.isCodexUpdatePromptVisible(lastVisibleText.toLowerCase())) {
-      const preview = lastVisibleText ? lastVisibleText.slice(0, 240) : "";
-      throw new Error(
-        `Codex update prompt could not be dismissed for thread_id=${threadId}` +
-        (preview ? `: last_visible_text=${JSON.stringify(preview)}` : "")
-      );
-    }
-  }
-
-  private async assertGeminiScreenReady(
-    threadId: string,
-    client: StatusClient,
-    traceId?: string | null
-  ): Promise<void> {
-    let footerVisibleAtMs: number | null = null;
-    let promptVisibleAtMs: number | null = null;
-    let lastVisibleText = "";
-
-    for (let attempt = 0; attempt < this.startupAttempts; attempt += 1) {
-      const child = this.children.get(threadId);
-      if (!child || !this.isChildRunning(child)) {
-        const exitCode = child?.exitCode ?? null;
-        const signal = child?.signalCode ?? null;
-        throw new Error(
-          `Gemini pane prompt did not stabilize for thread_id=${threadId}: ` +
-          `agentapi process exited before pane prompt became ready (exit_code=${exitCode}, signal=${signal})`
-        );
-      }
-
-      try {
-        const messages = await client.getMessages?.();
-        const visibleText = normalizeVisibleText(this.extractLatestAgentScreenText(messages ?? []));
-        const lower = visibleText.toLowerCase();
-        const promptVisible = lower.includes("type your message or @path/to/file");
-        const waitingForAuth = lower.includes("waiting for auth");
-        const footerVisible = lower.includes("? for shortcuts") && lower.includes("shift+tab to accept edits");
-        const nowMs = Date.now();
-
-        if (promptVisible && !waitingForAuth) {
-          promptVisibleAtMs ??= nowMs;
-          if (nowMs - promptVisibleAtMs >= this.geminiPanePromptSettleMs) {
-            return;
-          }
-        } else {
-          promptVisibleAtMs = null;
-        }
-
-        if (footerVisible && !waitingForAuth) {
-          footerVisibleAtMs ??= nowMs;
-          if (nowMs - footerVisibleAtMs >= this.geminiPaneFooterSettleMs) {
-            return;
-          }
-        } else {
-          footerVisibleAtMs = null;
-        }
-
-        lastVisibleText = visibleText;
-      } catch (error) {
-        if (attempt === 0) {
-          this.log.warn(
-            {
-              operation: "pane_prompt_probe_failed",
-              trace_id: traceId ?? null,
-              thread_id: threadId,
-              attempt,
-              err: error instanceof Error ? error.message : String(error)
-            },
-            "Initial Gemini screen readiness probe failed"
-          );
-        }
-      }
-
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, this.startupDelayMs);
-      });
-    }
-
-    const preview = lastVisibleText ? lastVisibleText.slice(0, 240) : "";
-    throw new Error(
-      `Gemini pane prompt did not stabilize for thread_id=${threadId}` +
-      (preview ? `: last_visible_text=${JSON.stringify(preview)}` : "")
-    );
-  }
-
-  private async assertGeminiPromptReadyFromTmux(
-    threadId: string,
-    tmuxSession: string,
-    traceId?: string | null
-  ): Promise<void> {
-    let stablePromptPolls = 0;
-    let lastVisibleText = "";
-    let startupNoticeDismissed = false;
-
-    for (let attempt = 0; attempt < this.startupAttempts; attempt += 1) {
-      const child = this.children.get(threadId);
-      if (!child || !this.isChildRunning(child)) {
-        const exitCode = child?.exitCode ?? null;
-        const signal = child?.signalCode ?? null;
-        throw new Error(
-          `Gemini pane prompt did not stabilize for thread_id=${threadId}: ` +
-          `agentapi process exited before pane prompt became ready (exit_code=${exitCode}, signal=${signal})`
-        );
-      }
-
-      try {
-        const visibleText = this.captureVisibleTmuxText(tmuxSession);
-        const lower = visibleText.toLowerCase();
-        const promptVisible = lower.includes("type your message or @path/to/file");
-        const waitingForAuth = lower.includes("waiting for auth");
-        const startupNoticeVisible = this.isGeminiStartupNoticeVisible(lower);
-
-        if (startupNoticeVisible && !waitingForAuth && !startupNoticeDismissed) {
-          this.sendTmuxKeys(tmuxSession, ["Enter"]);
-          startupNoticeDismissed = true;
-          stablePromptPolls = 0;
-          lastVisibleText = visibleText;
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, this.startupDelayMs);
-          });
-          continue;
-        }
-
-        if (promptVisible && !waitingForAuth && !startupNoticeVisible) {
-          stablePromptPolls += 1;
-          if (stablePromptPolls >= 2) {
-            return;
-          }
-        } else {
-          stablePromptPolls = 0;
-        }
-        lastVisibleText = visibleText;
-      } catch (error) {
-        if (attempt === 0) {
-          this.log.warn(
-            {
-              operation: "pane_prompt_probe_failed",
-              trace_id: traceId ?? null,
-              thread_id: threadId,
-              tmux_session: tmuxSession,
-              attempt,
-              err: error instanceof Error ? error.message : String(error)
-            },
-            "Initial Gemini pane prompt readiness probe failed"
-          );
-        }
-      }
-
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, this.startupDelayMs);
-      });
-    }
-
-    const preview = lastVisibleText ? lastVisibleText.slice(0, 240) : "";
-    throw new Error(
-      `Gemini pane prompt did not stabilize for thread_id=${threadId}` +
-      (preview ? `: last_visible_text=${JSON.stringify(preview)}` : "")
-    );
-  }
-
-  private extractLatestAgentScreenText(messages: Record<string, unknown>[]): string {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const candidate = messages[index];
-      if (!candidate) {
-        continue;
-      }
-      const role = typeof candidate.role === "string" ? candidate.role.toLowerCase() : "";
-      if (role !== "agent" && role !== "assistant") {
-        continue;
-      }
-      if (typeof candidate.content === "string") {
-        return candidate.content;
-      }
-    }
-    return "";
-  }
-
-  private captureVisibleTmuxText(tmuxTarget: string): string {
-    const rawSnapshot = this.execSyncFn(
-      `tmux capture-pane -e -p -t ${this.shellEscape(tmuxTarget)}`,
-      { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }
-    );
-    return normalizeVisibleText(this.toText(rawSnapshot));
-  }
-
-  private sendTmuxKeys(tmuxTarget: string, keys: string[]): void {
-    const escapedKeys = keys.map((key) => this.shellEscape(key)).join(" ");
-    this.execSyncFn(`tmux send-keys -t ${this.shellEscape(tmuxTarget)} ${escapedKeys}`, {
-      stdio: "ignore"
-    });
-  }
-
-  private isGeminiStartupNoticeVisible(normalizedLowerText: string): boolean {
-    return (
-      normalizedLowerText.includes("we're making changes to gemini cli") ||
-      normalizedLowerText.includes("goo.gle/geminicli-updates")
-    );
-  }
-
-  private isCodexUpdatePromptVisible(normalizedLowerText: string): boolean {
-    return (
-      normalizedLowerText.includes("update available") &&
-      normalizedLowerText.includes("skip until next version") &&
-      normalizedLowerText.includes("press enter to continue")
-    );
-  }
-
-  private isCodexPromptReadyVisible(visibleText: string): boolean {
-    const normalizedLowerText = visibleText.toLowerCase();
-    return (
-      normalizedLowerText.includes("openai codex") &&
-      normalizedLowerText.includes("model:") &&
-      visibleText.includes("›")
     );
   }
 
@@ -1798,10 +1269,6 @@ export class InstanceManager {
       return;
     }
 
-    if (instance.tmux_pane) {
-      this.safeKillTmuxSession(instance.tmux_pane);
-    }
-
     const child = this.children.get(threadId);
     if (child) {
       child.removeAllListeners("exit");
@@ -1837,7 +1304,6 @@ export class InstanceManager {
 
     this.children.delete(threadId);
     this.releaseAgentLogFd(threadId);
-    this.stopTmuxPaneCapture(threadId);
     this.registry.unregister(threadId);
 
     if (!preserveBindings) {
@@ -1985,7 +1451,6 @@ export class InstanceManager {
     child.once("exit", (code, signal) => {
       this.children.delete(threadId);
       this.releaseAgentLogFd(threadId);
-      this.stopTmuxPaneCapture(threadId);
 
       const instance = this.registry.get(threadId);
       if (!instance) {
@@ -2127,204 +1592,13 @@ export class InstanceManager {
     return `'${arg.replace(/'/g, "'\"'\"'")}'`;
   }
 
-  private buildAgentAttachCliArgs(binding: AgentEndpointBinding): string[] | null {
-    if (binding.transport === "http") {
-      return [this.agentapiBinPath, "attach", `--url=${binding.endpoint}`];
-    }
-
-    if (this.supportsAgentapiAttachSocketFlag()) {
-      return [this.agentapiBinPath, "attach", `--socket=${binding.endpoint}`];
-    }
-
-    this.log.warn(
-      {
-        operation: "spawn_attach_skipped",
-        endpoint: binding.endpoint
-      },
-      "agentapi attach does not support --socket; skipping tmux attach for pane_bridge"
-    );
-    return null;
-  }
-
-  private spawnInTmuxSession(
-    threadId: string,
-    tmuxSession: string,
-    commandParts: string[]
-  ): void {
-    const command = commandParts
-      .map((part) => this.shellEscape(part))
-      .join(" ");
-    const fullCommand = command;
-
-    this.execSyncFn(
-      `tmux new-session -d -s ${this.shellEscape(tmuxSession)} ${this.shellEscape(fullCommand)}`,
-      {
-        stdio: "ignore"
-      }
-    );
-    this.configureTmuxSession(tmuxSession);
-    this.startTmuxPaneCapture(threadId, tmuxSession);
-  }
-
-  private configureTmuxSession(tmuxSession: string): void {
-    // Keep deep scrollback and disable alternate screen so attached viewers can
-    // reliably scroll older output from full-screen TUIs.
-    this.execSyncFn(`tmux set-option -t ${this.shellEscape(tmuxSession)} history-limit 200000`, {
-      stdio: "ignore"
-    });
-    this.execSyncFn(`tmux set-window-option -t ${this.shellEscape(tmuxSession)} alternate-screen off`, {
-      stdio: "ignore"
-    });
-    this.execSyncFn(`tmux set-option -t ${this.shellEscape(tmuxSession)} mouse on`, {
-      stdio: "ignore"
-    });
-  }
-
-  private startTmuxPaneCapture(threadId: string, tmuxSession: string): void {
-    try {
-      fs.mkdirSync(this.logDir, { recursive: true });
-      const paneLogPath = path.join(this.logDir, `pane-${threadId}.log`);
-      this.stopTmuxPaneCapture(threadId);
-      const timer = setInterval(() => {
-        void this.capturePaneSnapshot(threadId);
-      }, this.paneCaptureIntervalMs);
-      timer.unref();
-      this.paneCaptureByThread.set(threadId, {
-        timer,
-        tmuxSession,
-        logPath: paneLogPath,
-        lastSnapshot: "",
-        inFlight: false
-      });
-    } catch (error) {
-      this.log.warn(
-        {
-          operation: "pane_capture_start_failed",
-          thread_id: threadId,
-          tmux_session: tmuxSession,
-          err: error instanceof Error ? error.message : String(error)
-        },
-        "Failed to start tmux pane capture"
-      );
-    }
-  }
-
   getPaneCaptureIntervalMs(): number {
     return this.paneCaptureIntervalMs;
   }
 
   setPaneCaptureIntervalMs(intervalMs: number): void {
     const clamped = Math.max(2000, Math.min(30000, Math.floor(intervalMs)));
-    if (clamped === this.paneCaptureIntervalMs) {
-      return;
-    }
     this.paneCaptureIntervalMs = clamped;
-
-    // Restart all active capture timers with the new interval
-    for (const [threadId, capture] of this.paneCaptureByThread.entries()) {
-      clearInterval(capture.timer);
-      const timer = setInterval(() => {
-        void this.capturePaneSnapshot(threadId);
-      }, this.paneCaptureIntervalMs);
-      timer.unref();
-      capture.timer = timer;
-    }
-  }
-
-  private stopTmuxPaneCapture(threadId: string): void {
-    const capture = this.paneCaptureByThread.get(threadId);
-    if (!capture) {
-      return;
-    }
-    clearInterval(capture.timer);
-    this.paneCaptureByThread.delete(threadId);
-  }
-
-  /**
-   * Compute the delta (new lines only) between last snapshot and current snapshot.
-   * Terminal output grows downward; when the pane scrolls, the top of the new snapshot
-   * may overlap with the tail of the old. We find the longest overlap (last i lines of
-   * old = first i lines of new) and return the remaining lines of new as the delta.
-   * First frame (lastSnapshot === ""): return full snapshot normalized with trailing newline.
-   * When overlap is 0 (e.g. full-screen redraw) and not first frame: return last K lines
-   * only if they are not already present at the end of lastSnapshot, to avoid duplicate
-   * blocks in the pane log (which would cause duplicate push deliveries).
-   */
-  private computePaneDelta(lastSnapshot: string, snapshot: string): string {
-    const oldLines = lastSnapshot.split(/\n/);
-    const newLines = snapshot.split(/\n/);
-    const n = oldLines.length;
-    const m = newLines.length;
-    const K = this.paneDeltaTailLinesWhenNoOverlap;
-
-    if (lastSnapshot === "") {
-      return snapshot.trimEnd() ? snapshot.trimEnd() + "\n" : "";
-    }
-
-    let overlap = 0;
-    for (let i = 1; i <= Math.min(n, m); i++) {
-      const oldSuffix = oldLines.slice(n - i, n);
-      const newPrefix = newLines.slice(0, i);
-      if (oldSuffix.every((line, j) => line === newPrefix[j])) {
-        overlap = i;
-      }
-    }
-    if (overlap === 0) {
-      const tailLines = newLines.slice(-K);
-      const tailBlock = tailLines.join("\n") + (tailLines.length > 0 ? "\n" : "");
-      const oldTail = oldLines.slice(-K).join("\n").trimEnd();
-      const newTail = tailLines.join("\n").trimEnd();
-      if (newTail.length > 0 && newTail === oldTail) {
-        return "";
-      }
-      return tailBlock;
-    }
-    const deltaLines = newLines.slice(overlap);
-    return deltaLines.join("\n") + (deltaLines.length > 0 ? "\n" : "");
-  }
-
-  private async capturePaneSnapshot(threadId: string): Promise<void> {
-    const capture = this.paneCaptureByThread.get(threadId);
-    if (!capture || capture.inFlight) {
-      // Skip overlapping ticks: a slow tmux capture would otherwise stack
-      // ticks across many agents and starve the hub event loop, which
-      // causes /tmp/hub-core.sock to refuse new IPC connections.
-      return;
-    }
-    capture.inFlight = true;
-
-    try {
-      const { stdout } = await this.execAsyncFn(
-        `tmux capture-pane -e -p -t ${this.shellEscape(capture.tmuxSession)}`,
-        { encoding: "utf8" }
-      );
-      const snapshot = this.toText(stdout).trimEnd();
-      const delta = this.computePaneDelta(capture.lastSnapshot, snapshot);
-      capture.lastSnapshot = snapshot;
-
-      if (!delta) {
-        return;
-      }
-
-      const timestamp = this.now().toISOString();
-      await fs.promises.appendFile(
-        capture.logPath,
-        `\n--- ${timestamp} ---\n${delta}\n`,
-        "utf8"
-      );
-    } catch (error) {
-      this.log.warn(
-        {
-          operation: "pane_capture_tick_failed",
-          thread_id: threadId,
-          tmux_session: capture.tmuxSession,
-          err: error instanceof Error ? error.message : String(error)
-        },
-        "Failed to capture tmux pane snapshot"
-      );
-    } finally {
-      capture.inFlight = false;
-    }
   }
 
   private formatAgentSocketPath(threadId: string): string {
@@ -2363,19 +1637,6 @@ export class InstanceManager {
 
     const supported = this.probeAgentapiFlagSupport("server", "--socket");
     this.agentapiSocketSupportCache = supported;
-    return supported;
-  }
-
-  private supportsAgentapiAttachSocketFlag(): boolean {
-    if (this.forcedAgentapiAttachSocketSupport !== null) {
-      return this.forcedAgentapiAttachSocketSupport;
-    }
-    if (this.agentapiAttachSocketSupportCache !== null) {
-      return this.agentapiAttachSocketSupportCache;
-    }
-
-    const supported = this.probeAgentapiFlagSupport("attach", "--socket");
-    this.agentapiAttachSocketSupportCache = supported;
     return supported;
   }
 
@@ -2466,16 +1727,6 @@ export class InstanceManager {
     return `'${value.replace(/'/g, `'\"'\"'`)}'`;
   }
 
-  private safeKillTmuxSession(sessionName: string): void {
-    try {
-      this.execSyncFn(`tmux kill-session -t ${this.shellEscape(sessionName)}`, {
-        stdio: "ignore"
-      });
-    } catch {
-      // Session may already be gone; cleanup continues below.
-    }
-  }
-
   private buildSpawnStdio(threadId: string): SpawnStdioMode {
     const shouldRedirectLogs = DEFAULT_NODE_ENV === "production" || Boolean(process.env.PM2_HOME);
     if (!shouldRedirectLogs) {
@@ -2529,21 +1780,6 @@ export class InstanceManager {
       .map((segment) => segment.trim())
       .filter(Boolean)
       .slice(0, 6);
-  }
-
-  private wrapWithPseudoTerminal(
-    command: string,
-    args: string[],
-    enabled: boolean
-  ): { command: string; args: string[] } {
-    if (!enabled) {
-      return { command, args };
-    }
-
-    return {
-      command: "script",
-      args: ["-q", "/dev/null", command, ...args]
-    };
   }
 
   private releaseAgentLogFd(threadId: string): void {

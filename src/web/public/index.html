@@ -1209,7 +1209,6 @@
                 <option value="cursor">Provider: Cursor</option>
               </select>
               <select id="spawn-mode" class="select" aria-label="Spawn mode">
-                <option value="pane_bridge">Mode: pane bridge</option>
                 <option value="bridge">Mode: bridge</option>
                 <option value="stateless_call">Mode: stateless call</option>
               </select>
@@ -1529,8 +1528,8 @@
 
       function normalizeSpawnMode(value) {
         var mode = value == null ? "" : String(value).trim().toLowerCase();
-        if (mode === "bridge" || mode === "pane_bridge" || mode === "stateless_call") return mode;
-        return "pane_bridge";
+        if (mode === "bridge" || mode === "stateless_call") return mode;
+        return "bridge";
       }
 
       function normalizeSpawnEffort(value) {
@@ -2768,7 +2767,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign({
             type: providerEl && providerEl.value ? providerEl.value : "codex",
-            mode: spawnModeEl && spawnModeEl.value ? spawnModeEl.value : "pane_bridge",
+            mode: spawnModeEl && spawnModeEl.value ? spawnModeEl.value : "bridge",
             auto_approve: Boolean(autoApproveEl && autoApproveEl.checked)
           }, repoPayload, modelPayload, credentialPayload))
         })

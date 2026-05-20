@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -81,7 +80,7 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
     assert.deepEqual(payload, [
       {
         thread_id: "codex_01",
-        mode: "pane_bridge",
+        mode: "bridge",
         status: "running",
         agent_type: "codex",
         model_id: "gpt-5.4"
@@ -98,7 +97,7 @@ test("Web Interface Server returns instance JSON for an authorized request", asy
         content: JSON.stringify([
           {
             thread_id: "codex_01",
-            mode: "pane_bridge",
+            mode: "bridge",
             status: "running",
             agent_type: "codex",
             model_id: "gpt-5.4"
@@ -230,7 +229,7 @@ test("Web Interface Server lists files from instance working directory", async (
           content: JSON.stringify([
             {
               thread_id: "codex_01",
-              mode: "pane_bridge",
+              mode: "bridge",
               status: "running",
               working_dir: repoDir
             }
@@ -285,7 +284,7 @@ test("Web Interface Server reads and writes file content in instance working dir
           content: JSON.stringify([
             {
               thread_id: "codex_01",
-              mode: "pane_bridge",
+              mode: "bridge",
               status: "running",
               working_dir: repoDir
             }
@@ -837,222 +836,6 @@ test("Web Interface Server returns not found for provider capabilities that are 
   });
 });
 
-test("Web Interface Server bridges pane output over WebSocket", async () => {
-  const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-"));
-  const socketPath = path.join(socketDir, "hub.sock");
-  const subscribeRequests: Array<{ replay_lines?: number }> = [];
-
-  const hubServer = net.createServer((socket) => {
-    socket.setEncoding("utf8");
-    let buffer = "";
-
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      const frames = buffer.split("\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const payload = frame.trim();
-        if (!payload) {
-          continue;
-        }
-        const parsed = JSON.parse(payload) as { type: string; thread_id: string; replay_lines?: number };
-        if (parsed.type === "subscribe_pane_output") {
-          subscribeRequests.push({ replay_lines: parsed.replay_lines });
-          socket.write(
-            `${JSON.stringify({
-              type: "pane_output",
-              thread_id: parsed.thread_id,
-              chunk: "line 1\n",
-              timestamp: new Date().toISOString()
-            })}\n`
-          );
-        }
-      }
-    });
-  });
-
-  await new Promise<void>((resolve) => hubServer.listen(socketPath, resolve));
-
-  try {
-    await withServer(async ({ baseUrl }) => {
-      const ws = new WebSocket(`${baseUrl.replace("http://", "ws://")}/ws/terminal?thread_id=codex_01&token=secret-token`);
-      const payload = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket payload")), 2000);
-
-        ws.addEventListener("message", (event) => {
-          clearTimeout(timeout);
-          resolve(String(event.data));
-        });
-        ws.addEventListener("error", () => {
-          clearTimeout(timeout);
-          reject(new Error("WebSocket failed"));
-        });
-      });
-
-      const parsed = JSON.parse(payload) as { type: string; thread_id: string; chunk: string; timestamp: string };
-      assert.deepEqual(parsed, {
-        type: "pane_output",
-        thread_id: "codex_01",
-        chunk: "line 1\n",
-        timestamp: parsed.timestamp
-      });
-      await new Promise<void>((resolve) => {
-        ws.addEventListener("close", () => resolve(), { once: true });
-        ws.close();
-      });
-    }, {
-      hubSocketPath: socketPath
-    });
-    assert.equal(subscribeRequests.length, 1);
-    assert.equal(subscribeRequests[0]?.replay_lines, 200);
-  } finally {
-    hubServer.close();
-    await fs.promises.rm(socketDir, { recursive: true, force: true });
-  }
-});
-
-test("Web Interface Server bridges A2A messages over WebSocket", async () => {
-  const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-a2a-"));
-  const socketPath = path.join(socketDir, "hub.sock");
-
-  const hubServer = net.createServer((socket) => {
-    socket.setEncoding("utf8");
-    let buffer = "";
-
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      const frames = buffer.split("\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const payload = frame.trim();
-        if (!payload) {
-          continue;
-        }
-        const parsed = JSON.parse(payload) as { type: string };
-        if (parsed.type === "subscribe_pane_output") {
-          socket.write(
-            `${JSON.stringify({
-              type: "a2a_message",
-              taskId: "trace-a2a-1",
-              taskState: "working",
-              parts: [{ type: "text", text: "partial output" }]
-            })}\n`
-          );
-        }
-      }
-    });
-  });
-
-  await new Promise<void>((resolve) => hubServer.listen(socketPath, resolve));
-
-  try {
-    await withServer(async ({ baseUrl }) => {
-      const ws = new WebSocket(`${baseUrl.replace("http://", "ws://")}/ws/terminal?thread_id=codex_01&token=secret-token`);
-      const payload = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket payload")), 2000);
-
-        ws.addEventListener("message", (event) => {
-          clearTimeout(timeout);
-          resolve(String(event.data));
-        });
-        ws.addEventListener("error", () => {
-          clearTimeout(timeout);
-          reject(new Error("WebSocket failed"));
-        });
-      });
-
-      const parsed = JSON.parse(payload) as {
-        type: string;
-        taskId: string;
-        taskState: string;
-        parts: Array<{ type: string; text?: string }>;
-      };
-      assert.deepEqual(parsed, {
-        type: "a2a_message",
-        taskId: "trace-a2a-1",
-        taskState: "working",
-        parts: [{ type: "text", text: "partial output" }]
-      });
-      await new Promise<void>((resolve) => {
-        ws.addEventListener("close", () => resolve(), { once: true });
-        ws.close();
-      });
-    }, {
-      hubSocketPath: socketPath
-    });
-  } finally {
-    hubServer.close();
-    await fs.promises.rm(socketDir, { recursive: true, force: true });
-  }
-});
-
-test("WebSocket pane bridge accepts replay_lines override from query", async () => {
-  const socketDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-ipc-replay-"));
-  const socketPath = path.join(socketDir, "hub.sock");
-  const subscribeRequests: Array<{ replay_lines?: number }> = [];
-
-  const hubServer = net.createServer((socket) => {
-    socket.setEncoding("utf8");
-    let buffer = "";
-
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      const frames = buffer.split("\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const payload = frame.trim();
-        if (!payload) {
-          continue;
-        }
-        const parsed = JSON.parse(payload) as { type: string; thread_id: string; replay_lines?: number };
-        if (parsed.type === "subscribe_pane_output") {
-          subscribeRequests.push({ replay_lines: parsed.replay_lines });
-          socket.write(
-            `${JSON.stringify({
-              type: "pane_output",
-              thread_id: parsed.thread_id,
-              chunk: "",
-              timestamp: new Date().toISOString()
-            })}\n`
-          );
-        }
-      }
-    });
-  });
-
-  await new Promise<void>((resolve) => hubServer.listen(socketPath, resolve));
-
-  try {
-    await withServer(async ({ baseUrl }) => {
-      const ws = new WebSocket(
-        `${baseUrl.replace("http://", "ws://")}/ws/terminal?thread_id=codex_01&token=secret-token&replay_lines=0`
-      );
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket payload")), 2000);
-        ws.addEventListener("message", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-        ws.addEventListener("error", () => {
-          clearTimeout(timeout);
-          reject(new Error("WebSocket failed"));
-        });
-      });
-      await new Promise<void>((resolve) => {
-        ws.addEventListener("close", () => resolve(), { once: true });
-        ws.close();
-      });
-    }, {
-      hubSocketPath: socketPath
-    });
-    assert.equal(subscribeRequests.length, 1);
-    assert.equal(subscribeRequests[0]?.replay_lines, 0);
-  } finally {
-    hubServer.close();
-    await fs.promises.rm(socketDir, { recursive: true, force: true });
-  }
-});
-
 test("Web Interface Server lists spawn repo choices under AGENT_WORKDIR", async () => {
   const subDir = path.join(config.AGENT_WORKDIR, `meridian-web-spawn-list-${Date.now()}`);
   await fs.promises.mkdir(subDir, { recursive: true });
@@ -1080,7 +863,7 @@ test("Web Interface Server forwards resolved spawn_dir to Hub when repo is selec
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           repo: path.basename(subDir)
         })
       });
@@ -1117,7 +900,7 @@ test("Web Interface Server forwards absolute repo path to Hub", async () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           repo: externalDir
         })
       });
@@ -1220,7 +1003,7 @@ test("Web Interface Server enforces ADS profile spawn safety defaults", async ()
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         provider: "codex",
-        mode: "pane_bridge",
+        mode: "bridge",
         auto_approve: true,
         integration_profile: "ads_public",
         sandbox_mode: "workspace-write"
@@ -1295,7 +1078,7 @@ test("Web Interface Server forwards explicit spawn_dir outside AGENT_WORKDIR", a
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           spawn_dir: externalDir
         })
       });
@@ -1392,7 +1175,7 @@ test("Web Interface Server forwards nested repo path to Hub", async () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           type: "codex",
-          mode: "pane_bridge",
+          mode: "bridge",
           repo: rel
         })
       });
@@ -1652,7 +1435,7 @@ test("Web Interface Server spawn forwards auto_approve=false without injecting p
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         provider: "codex",
-        mode: "pane_bridge",
+        mode: "bridge",
         auto_approve: false
       })
     });
