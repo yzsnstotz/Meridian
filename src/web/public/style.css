@@ -1478,6 +1478,29 @@ dd { margin: 6px 0 0; font-size: 0.88rem; }
   border-left-color: rgba(217, 45, 32, 0.55);
 }
 
+/* Per-thread sub-header inside a multi-thread bound group (worker + its
+   validator / pm-resolver). Visually quieter than the main group header but
+   distinct enough to read as a sectioning device. */
+.row-thread-subheader td {
+  background: rgba(15, 23, 42, 0.025);
+  padding: 0.32rem 0.7rem 0.32rem 1.8rem;
+  font-size: 0.86rem;
+  color: #4b5563;
+  border-top: 1px dashed rgba(15, 23, 42, 0.10);
+}
+.thread-subheader-role {
+  display: inline-block;
+  padding: 0.02rem 0.4rem;
+  border-radius: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #166534;
+  background: rgba(22, 128, 60, 0.10);
+  margin-right: 0.45rem;
+}
+
 /* ---- System monitor ---- */
 .monitor-shell {
   display: flex;

@@ -409,7 +409,17 @@ function setupProcessMonitor() {
 
     function provisionalKey(p) {
       if (p.binding) {
-        return `bound:${p.binding.role}:${p.binding.worker_id}:${p.thread_id ?? p.pid}`;
+        // Collapse a worker's worker / validator / pm-resolver / dispatcher
+        // process trees into ONE group keyed on (dispatcher_role_id, worker_id).
+        // Pre-this-change the validator/PM landed in their own groups even when
+        // their binding.worker_id matched a bound worker above — so the live
+        // session that the operator wants to see "as a single thing" was split
+        // across two visually unrelated rows. Distinct binding.role values
+        // still show inside the group via per-thread sub-headers.
+        const ownerId = p.binding.role === "dispatcher"
+          ? `DISPATCHER:${p.binding.dispatcher_role_id}`
+          : `${p.binding.dispatcher_role_id}:${p.binding.worker_id}`;
+        return `bound:${ownerId}`;
       }
       if (p.is_leak) {
         return `leak:${p.thread_id ?? p.pid}`;
@@ -475,7 +485,18 @@ function setupProcessMonitor() {
         }
         return d;
       }
+      // Within a bound-by-worker group multiple threads can coexist (the
+      // worker thread + its validator thread + its pm-resolver thread). Sort
+      // by (role-order, thread_id, depth) so the operator reads the worker
+      // tree first, then the validator/PM trees inside the same block.
+      const roleOrder = { worker: 0, dispatcher: 0, validator: 1, pm_resolver: 2 };
       members.sort((a, b) => {
+        const ra = a.binding ? (roleOrder[a.binding.role] ?? 9) : 9;
+        const rb = b.binding ? (roleOrder[b.binding.role] ?? 9) : 9;
+        if (ra !== rb) return ra - rb;
+        const ta = a.thread_id ?? "";
+        const tb = b.thread_id ?? "";
+        if (ta !== tb) return ta < tb ? -1 : 1;
         const da = depth(a);
         const db = depth(b);
         if (da !== db) return da - db;
@@ -517,16 +538,39 @@ function setupProcessMonitor() {
         } else if (role === "dispatcher") {
           title = `Dispatcher ${head.binding.worker_id}`;
         } else if (role === "validator") {
+          // After the cross-role grouping change, a "validator" head can only
+          // appear here when no worker thread for the same worker_id was
+          // present in the snapshot (e.g. the worker terminated but its
+          // validator process is still running). Keep the title pointing back
+          // at the worker so the operator still sees the linkage.
           title = `Validator (for worker ${head.binding.worker_id})`;
         } else if (role === "pm_resolver") {
           title = `PM-resolver (for worker ${head.binding.worker_id})`;
         } else {
           title = `${role} ${head.binding.worker_id}`;
         }
+        // Subtitle now describes the group as a whole, not just the head's
+        // thread, because a bound group can contain the worker thread plus
+        // its validator / pm-resolver threads (each PID block is broken out
+        // by the per-thread sub-header below).
+        const distinctThreadsForSubtitle = new Set(
+          members
+            .map((m) => (m.binding && m.thread_id ? `${m.binding.role}:${m.thread_id}` : null))
+            .filter((t) => t !== null)
+        );
         const parts = [];
-        if (head.thread_id) parts.push(`thread <code>${escapeHtml(head.thread_id)}</code>`);
         if (head.binding.dispatcher_role_id) parts.push(`dispatcher <code>${escapeHtml(head.binding.dispatcher_role_id)}</code>`);
-        if (head.binding.status) parts.push(`status ${escapeHtml(head.binding.status)}`);
+        if (distinctThreadsForSubtitle.size > 1) {
+          const labels = [...distinctThreadsForSubtitle].map((rt) => {
+            const [r, tid] = rt.split(":");
+            const rl = r === "pm_resolver" ? "pm-resolver" : r;
+            return `${escapeHtml(rl)} <code>${escapeHtml(tid)}</code>`;
+          });
+          parts.push(`threads: ${labels.join(", ")}`);
+        } else if (head.thread_id) {
+          parts.push(`thread <code>${escapeHtml(head.thread_id)}</code>`);
+        }
+        if (head.binding.status) parts.push(`worker status ${escapeHtml(head.binding.status)}`);
         subtitle = parts.join(" · ");
       } else if (key.startsWith("leak:")) {
         kind = "managed-leak";
@@ -586,10 +630,66 @@ function setupProcessMonitor() {
 
   function renderGroup(group) {
     const rows = [renderGroupHeader(group)];
+    // A bound group can hold the worker thread plus its validator / pm-resolver
+    // threads (each with its own thread_id, its own session file, its own PID
+    // tree). When more than one distinct thread is present, insert a small
+    // sub-header before each thread's PIDs so the operator can see "this
+    // codex_05 is the worker; this codex_08 below is the validator working on
+    // the same A2 worker". Single-thread groups skip the sub-header for
+    // visual quiet.
+    const distinctThreads = new Set(
+      group.processes
+        .map((p) => p.thread_id)
+        .filter((t) => t !== null && t !== undefined)
+    );
+    const showThreadSubheaders = distinctThreads.size > 1;
+    let lastThreadKey = "__unset__";
     for (const p of group.processes) {
+      const threadKey = `${p.binding ? p.binding.role : "?"}:${p.thread_id ?? "(none)"}`;
+      if (showThreadSubheaders && threadKey !== lastThreadKey) {
+        rows.push(renderThreadSubheader(p, group));
+        lastThreadKey = threadKey;
+      }
       rows.push(renderProcessRow(p, group));
     }
     return rows.join("");
+  }
+
+  function renderThreadSubheader(entry, group) {
+    const role = entry.binding ? entry.binding.role : "?";
+    const roleLabel = role === "pm_resolver" ? "pm-resolver" : role;
+    const tid = entry.thread_id
+      ? `<code>${escapeHtml(entry.thread_id)}</code>`
+      : '<span class="muted">no thread_id</span>';
+    // Per-thread token total: deduped across the rows that belong to THIS
+    // thread within the group. Gives the operator a clean per-thread number
+    // alongside the group-wide total in the main header.
+    const seen = new Set();
+    let inTok = 0;
+    let outTok = 0;
+    let totTok = 0;
+    for (const p of group.processes) {
+      if (p.thread_id !== entry.thread_id) continue;
+      const u = p.token_usage;
+      if (!u || seen.has(u.session_file)) continue;
+      seen.add(u.session_file);
+      inTok += Number(u.input_tokens || 0);
+      outTok += Number(u.output_tokens || 0);
+      totTok += Number(u.total_tokens || 0);
+    }
+    const tokensHtml = seen.size > 0
+      ? `<code>${formatTokens(inTok)}</code> in / <code>${formatTokens(outTok)}</code> out / <strong><code>${formatTokens(totTok)}</code></strong> total`
+      : `<span class="muted">no tokens yet</span>`;
+    return `<tr class="row-thread-subheader">`
+      + `<td colspan="10">`
+      + `<span class="thread-subheader-role">${escapeHtml(roleLabel)}</span>`
+      + ` thread ${tid}`
+      + (entry.binding && entry.binding.status
+        ? ` <span class="muted">· status ${escapeHtml(entry.binding.status)}</span>`
+        : "")
+      + ` <span class="muted">· ${tokensHtml}</span>`
+      + `</td>`
+      + `</tr>`;
   }
 
   function renderGroupHeader(group) {

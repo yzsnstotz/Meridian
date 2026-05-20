@@ -762,6 +762,196 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.token_totals.total_tokens).toBe(300);
   });
 
+  it("binds the active validator_thread_id even when worker status is no longer 'awaiting_validation' (output-artifact recovery + transport-stall paths)", async () => {
+    // Pre-fix: buildThreadIndex required `w.status === "awaiting_validation"`
+    // before it would publish a binding for `worker.validation.validator_thread_id`.
+    // Two real scenarios fall outside that gate:
+    //  (a) output-artifact recovery flips the worker to `completed` while the
+    //      stateless_call validator (still spawned by validator-orchestrator)
+    //      is mid-flight on its own thread_id;
+    //  (b) `validator_run_transport_stall_codex_alive` keeps the validator's
+    //      thread_id recorded on a `blocked` worker for late-verdict recovery.
+    // In both cases the codex process is still alive, the dispatcher knows
+    // which worker it belongs to, but the Processes tab used to leave it
+    // unbound and dump it into the stateless bucket — making the operator
+    // misread the validator as a phantom "stateless call".
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "codex_01", started_at: "2026-05-21T14:00:00.000Z", status: "running" },
+      workers: {
+        "A2": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-21T14:07:01.000Z",
+          last_seen_at: "2026-05-21T14:10:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            validator_thread_id: "codex_08",
+            current_cycle: 0,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      },
+      pm_resolvers: [],
+      last_reconciled_at: null
+    } as unknown as DispatchThreadStateV2);
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      listProcesses: (): ProcInfo[] => [
+        { pid: 7001, ppid: 1, etime: "10:00", command: "agentapi server --socket=/tmp/agentapi-codex_08.sock --type=codex -- codex --model gpt-5.5" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    expect(payload.processes[0].binding).toMatchObject({
+      worker_id: "A2",
+      role: "validator",
+      status: "running"
+    });
+    expect(payload.processes[0].is_leak).toBe(false);
+  });
+
+  it("binds an unbound stateless `codex exec --json` to the worker's active validator when exactly one candidate matches by timing (singleton fallback)", async () => {
+    // Meridian Hub spawns validators in stateless_call mode as
+    // `codex exec --json` and does NOT publish the thread_id via /api/list, so
+    // fetchAgentapiInstanceIndex returns no PID mapping. The lifecycle store
+    // knows the validator_thread_id, but the Processes tab cannot resolve
+    // it from `ps` alone. This test exercises the inference fallback in
+    // buildSnapshot: when exactly one active stateless owner exists in the
+    // lifecycle AND exactly one unbound `codex exec --json` root is present
+    // in the snapshot, bind them. The native binary child of the root
+    // inherits the binding so both PIDs fold into the worker's group.
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "codex_01", started_at: "2026-05-21T14:00:00.000Z", status: "running" },
+      workers: {
+        "A2": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-21T14:07:01.000Z",
+          last_seen_at: "2026-05-21T14:09:50.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            validator_thread_id: "codex_08",
+            current_cycle: 0,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      },
+      pm_resolvers: [],
+      last_reconciled_at: null
+    } as unknown as DispatchThreadStateV2);
+    // No Hub instance index entry for the stateless PIDs — this is the live
+    // Hub contract we observed (`codex exec --json` calls do not register).
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      fetchAgentapiInstanceIndex: async () => new Map<number, string>(),
+      listProcesses: (): ProcInfo[] => [
+        // meridian-hub parent (present in ps so the stateless calls have a
+        // managed-origin classification path).
+        { pid: 91564, ppid: 1, etime: "30:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        // The stateless `codex exec --json` shim + its native binary child.
+        { pid: 90194, ppid: 91564, etime: "00:05", command: "node /Users/yzliu/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 90195, ppid: 90194, etime: "00:05", command: "/Users/yzliu/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const ninetyEightFour = payload.processes.find((p: { pid: number }) => p.pid === 90194);
+    const ninetyEightFive = payload.processes.find((p: { pid: number }) => p.pid === 90195);
+    expect(ninetyEightFour.binding).toMatchObject({
+      worker_id: "A2",
+      role: "validator",
+      status: "running"
+    });
+    expect(ninetyEightFour.thread_id).toBe("codex_08");
+    // The native binary child of the stateless root must inherit the
+    // binding so the page can fold all PIDs into the worker's group.
+    expect(ninetyEightFive.binding).toMatchObject({
+      worker_id: "A2",
+      role: "validator"
+    });
+    expect(ninetyEightFive.thread_id).toBe("codex_08");
+    expect(ninetyEightFour.is_leak).toBe(false);
+    expect(ninetyEightFive.is_leak).toBe(false);
+  });
+
+  it("inference pass does NOT bind when multiple stateless candidates exist (avoids false 1-to-1 attribution under concurrent validators)", async () => {
+    // Safety property: when two `codex exec --json` roots exist and only one
+    // active stateless owner is recorded, we cannot decide which root the
+    // owner belongs to. Both must stay unbound; the operator sees the
+    // ambiguity rather than a wrong attribution.
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "codex_01", started_at: "2026-05-21T14:00:00.000Z", status: "running" },
+      workers: {
+        "A2": {
+          thread_id: "codex_05",
+          trace_id: null,
+          started_at: "2026-05-21T14:07:01.000Z",
+          last_seen_at: "2026-05-21T14:09:50.000Z",
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            // started_at on the worker is well outside the TOLERANCE_MS
+            // window for BOTH candidate processes; without a timestamp match
+            // the singleton fallback would not fire either (because there
+            // are TWO candidates), so binding must stay null.
+            validator_thread_id: "codex_08",
+            current_cycle: 0,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      },
+      pm_resolvers: [],
+      last_reconciled_at: null
+    } as unknown as DispatchThreadStateV2);
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      fetchAgentapiInstanceIndex: async () => new Map<number, string>(),
+      listProcesses: (): ProcInfo[] => [
+        { pid: 91564, ppid: 1, etime: "30:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        // Two distinct stateless `codex exec --json` roots.
+        { pid: 90194, ppid: 91564, etime: "00:05", command: "node /usr/local/bin/codex exec --json --model gpt-5.5" },
+        { pid: 90195, ppid: 90194, etime: "00:05", command: "/usr/local/lib/codex/codex exec --json --model gpt-5.5" },
+        { pid: 90294, ppid: 91564, etime: "00:05", command: "node /usr/local/bin/codex exec --json --model gpt-5.5" },
+        { pid: 90295, ppid: 90294, etime: "00:05", command: "/usr/local/lib/codex/codex exec --json --model gpt-5.5" }
+      ]
+    });
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    for (const pid of [90194, 90195, 90294, 90295]) {
+      const row = payload.processes.find((p: { pid: number }) => p.pid === pid);
+      expect(row.binding, `pid ${pid} should remain unbound under ambiguity`).toBeNull();
+    }
+  });
+
   it("ignores non-agent processes entirely (zsh, node-not-codex, ...)", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
