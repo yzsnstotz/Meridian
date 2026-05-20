@@ -317,8 +317,27 @@ kill_repo_port_listeners
 echo "Cleaning stale socket: ${ROLES_SOCKET_PATH}"
 rm -f "${ROLES_SOCKET_PATH}" 2>/dev/null || true
 
+# Install / refresh node_modules. The Maintenance Hub "Rebuild & restart"
+# button at http://127.0.0.1:8765/ is the entry point operators use after a
+# fresh git pull, so the script has to make sure node_modules matches
+# package-lock.json — not just that node_modules exists. On 2026-05-20 PR #263
+# (chatter manifest schema) added `import Ajv2020 from "ajv/dist/2020"` and
+# bumped package-lock.json to ajv@8.20.0, but the operator's node_modules
+# still had the pre-merge ajv@6.14.0 hoisted from eslint. The "exists"-only
+# guard skipped `npm ci`, `tsc -p tsconfig.json` failed at
+# `error TS2307: Cannot find module 'ajv/dist/2020'`, and rebuild_restart
+# bailed out before re-launching the service.
+#
+# npm writes node_modules/.package-lock.json on every install (npm 7+);
+# comparing its mtime to package-lock.json detects a stale tree without
+# paying for `npm ls --depth=0` on every restart.
 if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
   echo "node_modules missing; installing dependencies via npm ci..."
+  npm ci
+elif [[ -f "$ROOT_DIR/package-lock.json" ]] && \
+     { [[ ! -f "$ROOT_DIR/node_modules/.package-lock.json" ]] || \
+       [[ "$ROOT_DIR/package-lock.json" -nt "$ROOT_DIR/node_modules/.package-lock.json" ]]; }; then
+  echo "package-lock.json is newer than node_modules/.package-lock.json; syncing via npm ci..."
   npm ci
 fi
 

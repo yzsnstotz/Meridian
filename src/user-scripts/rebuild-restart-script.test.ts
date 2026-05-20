@@ -14,6 +14,26 @@ describe("user_scripts/rebuild_restart.sh", () => {
     expect(script).toContain('if hub_socket_reachable; then');
     expect(script).toContain("HUB_SOCKET_PATH=$(shell_escape");
   });
+
+  // The Maintenance Hub "Rebuild & restart" button is the post-pull entry
+  // point operators use, so the script has to refresh node_modules when the
+  // lockfile drifts — not just when node_modules is missing. Before this
+  // guard, PR #263 (chatter manifest) bumped ajv 6→8 in package-lock.json
+  // but the operator's stale node_modules kept ajv@6 hoisted from eslint;
+  // `tsc` then died on `import Ajv2020 from "ajv/dist/2020"` and rebuild
+  // bailed before relaunching the service.
+  it("syncs node_modules to package-lock.json before building (detects lockfile drift)", async () => {
+    const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart.sh"), "utf8");
+
+    // node_modules missing: must npm ci.
+    expect(script).toMatch(/if \[\[ ! -d "\$ROOT_DIR\/node_modules" \]\]; then[\s\S]{0,200}npm ci/);
+
+    // node_modules present but package-lock.json newer than the hidden
+    // node_modules/.package-lock.json: must also npm ci.
+    expect(script).toContain("node_modules/.package-lock.json");
+    expect(script).toMatch(/"\$ROOT_DIR\/package-lock\.json" -nt "\$ROOT_DIR\/node_modules\/\.package-lock\.json"/);
+    expect(script).toMatch(/package-lock\.json is newer than node_modules\/\.package-lock\.json[\s\S]{0,200}npm ci/);
+  });
 });
 
 describe("user_scripts/terminate.sh", () => {
