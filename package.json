@@ -20,6 +20,7 @@
     "lint": "eslint src tests/e2e/scenario-*.ts vitest.config.ts --ext .ts"
   },
   "dependencies": {
+    "ajv": "^8.20.0",
     "zod": "^4.1.11"
   },
   "devDependencies": {
