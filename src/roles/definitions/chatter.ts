@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../../config";
-import type { ChatterRoleConfig, HubMessage, HubResult, ReplyChannel } from "../../types";
+import type {
+  ChatterReadOnlyQuery,
+  ChatterReadOnlyQueryResult,
+  ChatterRoleConfig,
+  HubMessage,
+  HubResult,
+  ReplyChannel
+} from "../../types";
 import type { BaseRole, RoleContext } from "../base-role";
 import {
   hasRecordType,
@@ -17,6 +24,7 @@ import {
 import { makeMemorySkills } from "../chatter/memory-skills";
 import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../chatter/allowlist";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
+import { incrementChatterReadOnlyQueryTotal } from "../chatter/observability";
 import { SessionManager } from "../chatter/session-manager";
 import {
   makeStructuredSkills,
@@ -53,6 +61,11 @@ function agentTypeForKind(kind: ChatterRoleConfig["llm_agent_kind"]): string {
 interface QueuedTurn {
   content: string;
 }
+
+type ChatterTurnEnvelopeWithMode =
+  NonNullable<NonNullable<HubResult["payload"]>["chatter"]> & {
+    mode: "stateless" | "session";
+  };
 
 export class ChatterRole implements BaseRole {
   readonly roleType = "chatter" as const;
@@ -201,12 +214,26 @@ export class ChatterRole implements BaseRole {
       return;
     }
 
-    await this.handleNewTurn(result, envelope);
+    if (envelope.read_only_query) {
+      await this.handleReadOnlyQuery(envelope.read_only_query);
+      return;
+    }
+
+    if (envelope.mode === undefined) {
+      this.ctx.log.warn("chatter: dropping inbound with no chatter mode", {
+        chatter_id: this.config.chatter_id,
+        trace_id: result.trace_id,
+        source: result.source
+      });
+      return;
+    }
+
+    await this.handleNewTurn(result, envelope as ChatterTurnEnvelopeWithMode);
   }
 
   private async handleNewTurn(
     result: HubResult,
-    envelope: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>
+    envelope: ChatterTurnEnvelopeWithMode
   ): Promise<void> {
     try {
       assertModeAllowed(envelope.mode, this.config.allowed_modes);
@@ -267,6 +294,51 @@ export class ChatterRole implements BaseRole {
     }
 
     await this.dispatchRun(dispatchContent);
+  }
+
+  private async handleReadOnlyQuery(query: ChatterReadOnlyQuery): Promise<void> {
+    const skill = query.skill;
+    const readOnlyAllowlist = this.resolver!.manifest.read_only_allowlist ?? [];
+    if (!readOnlyAllowlist.includes(skill)) {
+      incrementChatterReadOnlyQueryTotal(skill, "denied_skill");
+      await this.forwardReadOnlyQueryResult({
+        ok: false,
+        error: `denied_skill: ${skill}`
+      });
+      return;
+    }
+
+    const handler = this.skillHandlers.get(skill);
+    if (!handler) {
+      incrementChatterReadOnlyQueryTotal(skill, "error");
+      await this.forwardReadOnlyQueryResult({
+        ok: false,
+        error: `unknown_skill: ${skill}`
+      });
+      return;
+    }
+
+    try {
+      const result = await handler(query.args);
+      if (isStructuredError(result)) {
+        incrementChatterReadOnlyQueryTotal(skill, "error");
+        await this.forwardReadOnlyQueryResult({
+          ok: false,
+          error: result.error,
+          result
+        });
+        return;
+      }
+
+      incrementChatterReadOnlyQueryTotal(skill, "ok");
+      await this.forwardReadOnlyQueryResult({ ok: true, result });
+    } catch (error) {
+      incrementChatterReadOnlyQueryTotal(skill, "error");
+      await this.forwardReadOnlyQueryResult({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private async buildContextBlock(
@@ -544,6 +616,27 @@ export class ChatterRole implements BaseRole {
       target: "global",
       priority: 5,
       payload: { content, attachments: [] },
+      mode: "bridge",
+      reply_channel: this.config.user_reply_channel,
+      suppress_reply: true
+    };
+    await this.ctx.sendToHub(msg);
+  }
+
+  private async forwardReadOnlyQueryResult(result: ChatterReadOnlyQueryResult): Promise<void> {
+    if (!this.ctx || !this.config.user_reply_channel) return;
+    const msg: HubMessage = {
+      trace_id: randomUUID(),
+      thread_id: this.threadId,
+      actor_id: ROLES_SERVICE_ID,
+      intent: "run",
+      target: "global",
+      priority: 5,
+      payload: {
+        content: JSON.stringify({ read_only_query_result: result }),
+        attachments: [],
+        chatter: { read_only_query_result: result }
+      },
       mode: "bridge",
       reply_channel: this.config.user_reply_channel,
       suppress_reply: true

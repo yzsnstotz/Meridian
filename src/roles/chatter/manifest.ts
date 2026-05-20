@@ -31,6 +31,7 @@ export const ChatterManifestSchema = z
     system_prompts: z.record(z.string().min(1), z.object({
       prompt_path: z.string().min(1)
     })).optional(),
+    read_only_allowlist: z.array(z.string().min(1)).optional(),
     seeds_init: z.object({
       mode: z.enum(["copy_on_provision"]),
       source_path: z.string().min(1).optional()
