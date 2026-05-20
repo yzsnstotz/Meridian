@@ -162,3 +162,44 @@ describe("payload.chatter.system_prompt_id schema symmetry", () => {
     expect(inbound.payload?.chatter?.system_prompt_id).toBe("create_from_template");
   });
 });
+
+describe("payload.chatter.context_refs schema symmetry", () => {
+  it("preserves context_refs through both outbound HubMessage and inbound HubResult parsing", () => {
+    const chatter = {
+      mode: "session" as const,
+      chatter_session_id: "ads-session-1",
+      context_refs: [
+        { type: "template_short_drama", key: "template-abc" },
+        { type: "style_short_drama", key: "user-42" }
+      ]
+    };
+
+    const outbound = HubMessageSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789012",
+      thread_id: "ads",
+      actor_id: "ads",
+      intent: "run",
+      target: "chatter-tenant-a",
+      payload: {
+        content: "draft a short drama",
+        attachments: [],
+        chatter
+      },
+      mode: "bridge",
+      reply_channel: { channel: "web", chat_id: "web:ops" }
+    });
+    expect(outbound.payload.chatter?.context_refs).toEqual(chatter.context_refs);
+
+    const inbound = HubResultSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789012",
+      thread_id: "chatter-tenant-a",
+      source: "ads",
+      status: "success",
+      content: "draft a short drama",
+      attachments: [],
+      timestamp: "2026-05-20T00:00:00.000Z",
+      payload: { chatter }
+    });
+    expect(inbound.payload?.chatter?.context_refs).toEqual(chatter.context_refs);
+  });
+});
