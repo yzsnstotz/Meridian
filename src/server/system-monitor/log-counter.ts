@@ -26,7 +26,8 @@ export const MONITOR_LOG_PATTERNS: LogPatternDefinition[] = [
   { key: "pm_resolver_started", pattern: /pm_resolver_started/i, windowMs: 30 * 60 * 1000 },
   { key: "watchdog_stall_detected", pattern: /Watchdog detected stalled dispatcher/i, windowMs: 5 * 60 * 1000 },
   { key: "launch_breaker_tripped", pattern: /DispatcherLaunchBreaker tripped/i, windowMs: 5 * 60 * 1000 },
-  { key: "worker_breaker_tripped", pattern: /DispatcherWorkerBreaker tripped/i, windowMs: 30 * 60 * 1000 }
+  { key: "worker_breaker_tripped", pattern: /DispatcherWorkerBreaker tripped/i, windowMs: 30 * 60 * 1000 },
+  { key: "lifecycle_auto_force_complete", pattern: /lifecycle_auto_force_complete/i, windowMs: 24 * 60 * 60 * 1000 }
 ];
 
 export class LogPatternCounter {

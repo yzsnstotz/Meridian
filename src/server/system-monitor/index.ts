@@ -193,6 +193,8 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, infoIndicator("F2", "wedge_staleness", "Restart-hold paused dispatcher count", lifecycle.pausedDispatchers, "dispatchers", "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md", lifecycle.pausedDispatcherItems));
   push(indicators, infoIndicator("F3", "wedge_staleness", "Stateless-mode validator card count", lifecycle.statelessValidatorCards, "validators", "dispatcher/validator-thread-error-status-not-classified-as-inactive.md", lifecycle.statelessValidatorItems));
 
+  push(indicators, infoIndicator("G1", "cure_metrics", "Auto-force-complete events (24h)", logCount(logCounts, "lifecycle_auto_force_complete"), "events", "storm-recurrence-architectural-root-cause.md"));
+
   return {
     polled_at: now.toISOString(),
     any_red: indicators.some((indicator) => indicator.state === "red"),

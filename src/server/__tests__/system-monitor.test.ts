@@ -208,8 +208,15 @@ describe("buildSystemMonitorSnapshot", () => {
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(29);
+    expect(snapshot.indicators).toHaveLength(30);
     expect(snapshot.any_red).toBe(true);
+
+    expect(snapshot.indicators.find((i) => i.id === "G1")).toMatchObject({
+      group: "cure_metrics",
+      name: "Auto-force-complete events (24h)",
+      unit: "events",
+      state: "info"
+    });
 
     expect(snapshot.indicators.find((i) => i.id === "A1")).toMatchObject({ value: 3, state: "red" });
     expect(snapshot.indicators.find((i) => i.id === "A2")).toMatchObject({ value: 130000, state: "red" });
