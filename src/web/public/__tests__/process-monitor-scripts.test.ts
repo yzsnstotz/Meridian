@@ -151,6 +151,27 @@ describe("processes tab — token flash + history", () => {
     // Stateless group must be visually distinct from leak/orphan (amber,
     // not red) so operators don't fight false-alarm muscle memory.
     expect(css).toContain(".row-group-stateless td");
+    // Per-thread sub-header inside a multi-thread bound group (worker + its
+    // validator / pm-resolver) must be styled so the operator can see the
+    // worker thread and its validator/PM thread as distinct sections of one
+    // group instead of one undifferentiated blob.
+    expect(css).toContain(".row-thread-subheader td");
+    expect(css).toContain(".thread-subheader-role");
+  });
+
+  it("processes grouping folds worker + validator + pm-resolver under one bound key when worker_id matches", async () => {
+    const js = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    // The grouping key for bound rows must be on (dispatcher_role_id,
+    // worker_id) — NOT on (role, worker_id, thread_id) — so a validator
+    // running on a different thread_id collapses into the worker group it's
+    // actually serving instead of producing a sibling "validator" group.
+    expect(js).toMatch(/bound:\$\{ownerId\}/);
+    // The render path must emit per-thread sub-headers when more than one
+    // distinct thread_id is present in a single group; single-thread groups
+    // skip the sub-header for visual quiet.
+    expect(js).toContain("function renderThreadSubheader");
+    expect(js).toContain("showThreadSubheaders");
+    expect(js).toContain("row-thread-subheader");
   });
 
   it("truncateMiddle helper exists and behaves correctly", async () => {

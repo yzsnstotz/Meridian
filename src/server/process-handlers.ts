@@ -79,6 +79,13 @@ const AGENTAPI_SOCKET_PATTERN = /\/agentapi-([^/\s]+?)\.sock/;
 const AGENTAPI_PORT_PATTERN = /--port=(\d+)/;
 // `agentapi server` parent (real or symlinked binary path)
 const AGENTAPI_COMMAND_PATTERN = /(?:^|[\s/])agentapi\s+server(?:\s|$)/;
+// `codex exec --json …` — the canonical Hub-direct stateless-call argv shape
+// used by validator-orchestrator (mode="stateless_call") and pm-resolver. The
+// `--json` flag is what disambiguates it from a user-launched `codex exec`
+// (interactive mode never gets --json from meridian-roles paths). Matches a
+// path-prefixed `codex` too (`/.../bin/codex exec --json`) — mirrors the
+// allowance in CODEX_COMMAND_PATTERN.
+const CODEX_EXEC_JSON_PATTERN = /(?:^|[\s/])codex\s+exec\s+--json(?:\s|$)/;
 // Codex CLI — bare `codex `, native binary path `.../codex/codex` or `.../codex`,
 // or node-wrapped `node .../codex`. Matches the executable name after start, a
 // path separator, or whitespace.
@@ -307,6 +314,143 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           token_usage: tokenUsage
         };
       });
+
+    // Stateless validator / PM inference pass. Meridian Hub spawns validators
+    // (in `stateless_call` mode) and pm-resolvers as `codex exec --json` and
+    // does NOT keep the resulting thread in its /api/list instance index after
+    // returning, so `fetchAgentapiInstanceIndex` cannot map their PID to the
+    // thread_id the lifecycle store knows about. Without this pass the live
+    // stateless-call process tree (a node-shim PID + native-binary PID, parent
+    // is the meridian-hub process) lands in the Processes tab as an unbound
+    // "stateless" group even though the dispatcher knows it's a validator/PM
+    // working on a specific worker. That makes operators read the unbound
+    // group as "the actual worker" and the bound worker group as "ghost" —
+    // exactly the misread reported 2026-05-20 (PIDs 90194/90195 with active
+    // tokens read as Worker A2 while the real worker 90191/92/93 read as
+    // dead, when 90194/95 was actually the validator for A2).
+    //
+    // Inference rules (conservative, no PPID/cwd matching to avoid false
+    // positives in multi-dispatcher concurrency):
+    //   - Build a list of active stateless owners from the lifecycle store
+    //     (any worker.validation.validator_thread_id set, plus any
+    //     pm_resolvers entry with status="running").
+    //   - For each unbound managed `codex exec --json` process, find the
+    //     unique candidate owner whose `started_at` is within 60s of the
+    //     process's elapsed-time-derived start window. When exactly ONE owner
+    //     matches, synthesize a binding. When zero or multiple match, leave
+    //     unbound — better to show a labeled stateless group than to attach
+    //     a wrong worker.
+    const activeOwners = await buildActiveStatelessOwners(options.stateStore, log);
+    if (activeOwners.length > 0) {
+      const usedOwnerThreadIds = new Set<string>();
+      const usedRootPids = new Set<number>();
+      // Pre-bucket stateless candidate roots: an unbound managed process whose
+      // argv matches `codex exec --json` and whose parent process is NOT also
+      // a stateless codex (i.e. it's the top of its own stateless tree). The
+      // native binary child has `node …/codex exec --json` as its parent, so
+      // the root is whichever PID's parent is meridian-hub or otherwise
+      // outside this stateless chain.
+      const statelessCandidates: ProcessSnapshotEntry[] = [];
+      for (const entry of entries) {
+        if (entry.origin !== "managed") continue;
+        if (entry.binding !== null) continue;
+        if (entry.thread_id !== null) continue;
+        if (entry.agent_type !== "codex") continue;
+        if (!CODEX_EXEC_JSON_PATTERN.test(entry.command)) continue;
+        // Root = whichever PID's parent is not also a stateless `codex exec
+        // --json` process. The native binary's parent is the node shim
+        // (also matches the pattern), so the shim is the root.
+        const parent = byPid.get(entry.ppid);
+        if (parent && CODEX_EXEC_JSON_PATTERN.test(parent.command)) continue;
+        statelessCandidates.push(entry);
+      }
+      // Build a parent→children map within candidate roots so the synthesized
+      // binding propagates to the native binary child (and any deeper descendants).
+      function descendantsOf(rootPid: number): ProcessSnapshotEntry[] {
+        const out: ProcessSnapshotEntry[] = [];
+        const stack = [rootPid];
+        const seen = new Set<number>([rootPid]);
+        while (stack.length > 0) {
+          const here = stack.pop()!;
+          for (const e of entries) {
+            if (seen.has(e.pid)) continue;
+            if (e.ppid !== here) continue;
+            if (e.origin !== "managed") continue;
+            if (e.thread_id !== null) continue;
+            seen.add(e.pid);
+            out.push(e);
+            stack.push(e.pid);
+          }
+        }
+        return out;
+      }
+      // Process attrs come from `ps` etime on the entry itself; parse it into
+      // an approximate start epoch via the snapshot's `captured_at`. We use a
+      // 60s tolerance to absorb the gap between lifecycle `started_at` (when
+      // the orchestrator recorded the thread_id) and the actual codex process
+      // spawn (which can be a few seconds later under hub load).
+      const nowMs = Date.now();
+      function approximateStartMs(etime: string): number | null {
+        // ps etime forms: "MM:SS", "HH:MM:SS", "DD-HH:MM:SS". Parse to seconds.
+        const m = etime.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+        if (!m) return null;
+        const days = Number(m[1] ?? 0);
+        const hours = Number(m[2] ?? 0);
+        const mins = Number(m[3] ?? 0);
+        const secs = Number(m[4] ?? 0);
+        if (![days, hours, mins, secs].every(Number.isFinite)) return null;
+        return nowMs - (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1000;
+      }
+      const TOLERANCE_MS = 60 * 1000;
+      for (const root of statelessCandidates) {
+        const startMs = approximateStartMs(root.etime);
+        if (startMs === null) continue;
+        // Find owners whose recorded started_at sits within TOLERANCE_MS of
+        // the process's approximate start. Skip owners already used by an
+        // earlier root in this pass (1-to-1 binding).
+        const matches: ActiveStatelessOwner[] = [];
+        for (const owner of activeOwners) {
+          if (usedOwnerThreadIds.has(owner.thread_id)) continue;
+          if (!owner.started_at) {
+            // Owners without started_at are too ambiguous — only bind when
+            // they're the ONLY active owner in the whole snapshot AND only
+            // one stateless candidate exists. Handled below as a fallback.
+            continue;
+          }
+          const ownerMs = Date.parse(owner.started_at);
+          if (!Number.isFinite(ownerMs)) continue;
+          if (Math.abs(ownerMs - startMs) <= TOLERANCE_MS) {
+            matches.push(owner);
+          }
+        }
+        let chosen: ActiveStatelessOwner | null = null;
+        if (matches.length === 1) {
+          chosen = matches[0];
+        } else if (matches.length === 0
+          && statelessCandidates.length === 1
+          && activeOwners.length === 1) {
+          // Singleton fallback: only one stateless candidate AND only one
+          // active owner — even without a timestamp, this is unambiguous.
+          chosen = activeOwners[0];
+        }
+        if (!chosen) continue;
+        usedOwnerThreadIds.add(chosen.thread_id);
+        usedRootPids.add(root.pid);
+        const binding: BindingSnapshot = {
+          dispatcher_role_id: chosen.dispatcher_role_id,
+          worker_id: chosen.worker_id,
+          role: chosen.role,
+          status: "running",
+          started_at: chosen.started_at
+        };
+        root.binding = binding;
+        root.thread_id = chosen.thread_id;
+        for (const descendant of descendantsOf(root.pid)) {
+          descendant.binding = binding;
+          descendant.thread_id = chosen.thread_id;
+        }
+      }
+    }
 
     // Token-attribution dedupe: claude resolves via cwd + birthtime match, so
     // a Hub-direct `claude --print` started near the same time in the same
@@ -673,7 +817,19 @@ async function buildThreadIndex(
         validation?: { validator_thread_id?: string | null };
       }).validation;
       const validatorThreadId = validation?.validator_thread_id?.trim();
-      if (!validatorThreadId || w.status !== "awaiting_validation") {
+      // Bind whenever the lifecycle store has an active validator_thread_id —
+      // do NOT gate on `w.status === "awaiting_validation"`. validator_thread_id
+      // is cleared by recordValidationOutcome / clearValidatorStart on
+      // completion, so a non-empty value already means "validator is active".
+      // Gating on awaiting_validation missed two real cases observed live
+      // 2026-05-20: (a) stateless_call validators that finish a turn while the
+      // worker has already transitioned to `completed` via output-artifact
+      // recovery, and (b) transport-stall paths where the validator stays
+      // recorded with the worker in `blocked` for late-verdict recovery
+      // (`validator_run_transport_stall_codex_alive` event). Both are visible
+      // running validator processes that the Processes tab used to leave
+      // unbound, dumping them into the "stateless" bucket.
+      if (!validatorThreadId) {
         continue;
       }
       index.set(validatorThreadId, {
@@ -711,29 +867,97 @@ async function buildThreadIndex(
       });
     }
 
-    for (const [workerId, w] of Object.entries(lifecycleState.workers)) {
-      const validation = (w as unknown as {
-        validation?: {
-          history?: Array<{ validator_thread_id?: string; status?: string; started_at?: string }>;
-        };
-      }).validation;
-      const history = validation?.history ?? [];
-      for (const entry of history) {
-        if (!entry.validator_thread_id || entry.status !== "running") {
-          continue;
-        }
-        index.set(entry.validator_thread_id, {
-          dispatcher_role_id: role.threadId,
-          worker_id: workerId,
-          role: "validator",
-          status: entry.status,
-          started_at: entry.started_at ?? null
-        });
-      }
-    }
+    // Note: validation.history entries are appended only after a validator
+    // produces a verdict (lifecycle-store.ts:recordValidationOutcome) and the
+    // recorded shape is `{cycle, score, feedback, validator_thread_id,
+    // timestamp}` — there is no `status` field. The previous loop here looked
+    // for `entry.status === "running"` which never matched anything, so it was
+    // dead code that gave a false sense of "history is covered". A
+    // currently-running validator now lives at `validation.validator_thread_id`
+    // (bound above) and a previously-finished validator should NOT bind
+    // because the verdict is already in the lifecycle and the codex process
+    // has been killed by the orchestrator. Dropped intentionally.
   }
 
   return index;
+}
+
+// Lifecycle-store snapshot of validator / PM resolver threads that are
+// currently active (recorded as "running" with a non-empty thread_id). Used by
+// the inference pass in buildSnapshot() to bind stateless `codex exec --json`
+// processes that Meridian Hub does not expose via /api/list (and therefore
+// `fetchAgentapiInstanceIndex` cannot map their PID).
+export interface ActiveStatelessOwner {
+  thread_id: string;          // lifecycle-recorded thread_id (e.g. "codex_08")
+  dispatcher_role_id: string;
+  worker_id: string;
+  role: "validator" | "pm_resolver";
+  started_at: string | null;
+}
+
+async function buildActiveStatelessOwners(
+  stateStore: Pick<StateStore, "load">,
+  log: Logger
+): Promise<ActiveStatelessOwner[]> {
+  const owners: ActiveStatelessOwner[] = [];
+  const stateRaw = await stateStore.load();
+  const state = (stateRaw ?? { roles: [], promptStore: {} }) as AppState;
+  for (const role of state.roles) {
+    if (role.roleType !== "agent-dispatcher") {
+      continue;
+    }
+    const parsed = AgentDispatcherConfigSchema.safeParse(role.config);
+    if (!parsed.success) {
+      continue;
+    }
+    const planPath = parsed.data.dispatch_plan_path;
+    const sidecarPath = path.join(path.dirname(planPath), "dispatch_threads.json");
+    let lifecycleState: DispatchThreadStateV2;
+    try {
+      lifecycleState = new LifecycleStore(sidecarPath).load();
+    } catch (error) {
+      log.debug?.("processes: failed to read sidecar for stateless inference", {
+        sidecarPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      continue;
+    }
+    for (const [workerId, w] of Object.entries(lifecycleState.workers)) {
+      const validation = (w as unknown as {
+        validation?: { validator_thread_id?: string | null };
+      }).validation;
+      const tid = validation?.validator_thread_id?.trim();
+      if (tid) {
+        owners.push({
+          thread_id: tid,
+          dispatcher_role_id: role.threadId,
+          worker_id: workerId,
+          role: "validator",
+          started_at: w.last_seen_at ?? w.started_at ?? null
+        });
+      }
+    }
+    const pmResolvers = (lifecycleState as unknown as {
+      pm_resolvers?: Array<{
+        thread_id?: string;
+        worker_id?: string;
+        status?: string;
+        started_at?: string;
+        issue?: { worker_id?: string };
+      }>;
+    }).pm_resolvers ?? [];
+    for (const pm of pmResolvers) {
+      if (!pm.thread_id || pm.status !== "running") continue;
+      owners.push({
+        thread_id: pm.thread_id,
+        dispatcher_role_id: role.threadId,
+        worker_id: pm.worker_id ?? pm.issue?.worker_id ?? "(unknown)",
+        role: "pm_resolver",
+        started_at: pm.started_at ?? null
+      });
+    }
+  }
+  return owners;
 }
 
 function defaultListProcesses(): ProcInfo[] {
@@ -780,6 +1004,7 @@ export const _internals = {
   AGENTAPI_COMMAND_PATTERN,
   CODEX_COMMAND_PATTERN,
   CLAUDE_COMMAND_PATTERN,
+  CODEX_EXEC_JSON_PATTERN,
   MERIDIAN_HUB_NODE_PATTERN,
   MERIDIAN_HUB_RELATIVE_NODE_PATTERN,
   isAgentShaped,
@@ -788,5 +1013,6 @@ export const _internals = {
   isReparentedToInit,
   findAgentapiAncestor,
   parseLine,
-  summarizeTokenUsage
+  summarizeTokenUsage,
+  buildActiveStatelessOwners
 };
