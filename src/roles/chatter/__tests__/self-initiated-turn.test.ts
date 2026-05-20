@@ -69,7 +69,23 @@ describe("payload.chatter.origin schema symmetry", () => {
     });
     expect(inbound.payload?.chatter?.origin).toBe("trigger");
 
-    const defaulted = HubResultSchema.parse({
+    const defaultedOutbound = HubMessageSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789013",
+      thread_id: "chatter-tenant-a",
+      actor_id: "service:meridian-roles",
+      intent: "run",
+      target: "claude_07",
+      payload: {
+        content: "user turn",
+        attachments: [],
+        chatter: { mode: "session" }
+      },
+      mode: "bridge",
+      reply_channel: ADS_REPLY_CHANNEL
+    });
+    expect(defaultedOutbound.payload.chatter?.origin).toBe("user");
+
+    const defaultedInbound = HubResultSchema.parse({
       trace_id: "12345678-1234-4234-8234-123456789013",
       thread_id: "chatter-tenant-a",
       source: "ads",
@@ -79,7 +95,7 @@ describe("payload.chatter.origin schema symmetry", () => {
       timestamp: "2026-05-21T00:00:00.000Z",
       payload: { chatter: { mode: "session" } }
     });
-    expect(defaulted.payload?.chatter?.origin ?? "user").toBe("user");
+    expect(defaultedInbound.payload?.chatter?.origin).toBe("user");
   });
 });
 
