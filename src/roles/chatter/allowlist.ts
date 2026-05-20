@@ -11,6 +11,7 @@ const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "chatter.memory.read",
   "chatter.memory.write",
   "chatter.memory.list",
+  "chatter.suggest_observation",
   "chatter.skill.dispatch_coding_job"
 ]);
 

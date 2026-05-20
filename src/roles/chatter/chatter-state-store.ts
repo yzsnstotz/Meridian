@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { ChatterObservationProposedPatchSchema } from "../../types";
 
 export const ChatterInFlightTraceSchema = z.object({
   trace_id: z.string().min(1),
@@ -34,13 +35,21 @@ export const ChatterTriggerThrottleStateSchema = z.object({
 });
 export type ChatterTriggerThrottleState = z.infer<typeof ChatterTriggerThrottleStateSchema>;
 
+export const ChatterObservationCacheEntrySchema = z.object({
+  proposed_patch: ChatterObservationProposedPatchSchema,
+  created_at: z.string().datetime(),
+  ttl_ms: z.number().int().positive()
+});
+export type ChatterObservationCacheEntry = z.infer<typeof ChatterObservationCacheEntrySchema>;
+
 export const ChatterPersistedStateSchema = z.object({
   version: z.literal(1),
   agent_session_id: z.string().min(1).nullable().default(null),
   in_flight_traces: z.array(ChatterInFlightTraceSchema).default([]),
   last_provision_error: ChatterProvisionErrorSchema.optional(),
   last_turn_error: ChatterTurnErrorSchema.optional(),
-  trigger_state: z.record(z.string().min(1), ChatterTriggerThrottleStateSchema).optional()
+  trigger_state: z.record(z.string().min(1), ChatterTriggerThrottleStateSchema).optional(),
+  observations: z.record(z.string().uuid(), ChatterObservationCacheEntrySchema).optional()
 });
 export type ChatterPersistedState = z.infer<typeof ChatterPersistedStateSchema>;
 

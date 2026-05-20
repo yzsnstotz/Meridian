@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../../config";
+import { ChatterCandidateObservationSchema } from "../../types";
 import type {
+  ChatterCandidateObservation,
+  ChatterObservationProposedPatch,
   ChatterReadOnlyQuery,
   ChatterReadOnlyQueryResult,
   ChatterRoleConfig,
@@ -24,6 +27,7 @@ import {
 import { makeMemorySkills } from "../chatter/memory-skills";
 import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../chatter/allowlist";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
+import { ObservationCache } from "../chatter/observation-cache";
 import {
   incrementChatterReadOnlyQueryTotal,
   incrementChatterSelfInitiatedTurnErrorTotal,
@@ -47,6 +51,10 @@ const ROLES_SOCKET_REPLY_CHANNEL: ReplyChannel = {
   chat_id: ROLES_SERVICE_ID,
   socket_path: ROLES_SOCKET_PATH
 };
+
+const ChatterSuggestObservationArgsSchema = ChatterCandidateObservationSchema.omit({
+  observation_id: true
+});
 
 /**
  * Maps the chatter-side llm_agent_kind to the meridian-hub agent_type the
@@ -91,6 +99,7 @@ export class ChatterRole implements BaseRole {
   private sessionMgr: SessionManager | null = null;
   private sandboxPlan: SandboxSpawnPlan | null = null;
   private store: ChatterStateStore | null = null;
+  private observationCache: ObservationCache | null = null;
   private structuredSkills: StructuredSkills | null = null;
   private triggerEvaluator: BackgroundTriggerEvaluator | null = null;
   private skillHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
@@ -144,11 +153,15 @@ export class ChatterRole implements BaseRole {
     this.structuredSkills = makeStructuredSkills(this.resolver, {
       onEvent: (event) => this.triggerEvaluator?.handleStructuredWrite(event)
     });
+    this.observationCache = new ObservationCache(this.store, {
+      now: this.options.now
+    });
     registerStructuredSkills(this.structuredSkills, {
       register: (name: StructuredSkillName, handler: (args: unknown) => Promise<unknown>) => {
         this.skillHandlers.set(name, handler);
       }
     });
+    this.skillHandlers.set("chatter.suggest_observation", (args) => this.handleSuggestObservation(args));
     this.sessionMgr = new SessionManager(this.store);
     this.sessionMgr.rehydrate();
     this.sandboxPlan = buildSandboxSpawnPlan({
@@ -170,6 +183,7 @@ export class ChatterRole implements BaseRole {
     this.sessionMgr = null;
     this.sandboxPlan = null;
     this.store = null;
+    this.observationCache = null;
     this.structuredSkills = null;
     this.triggerEvaluator = null;
     this.skillHandlers.clear();
@@ -247,6 +261,16 @@ export class ChatterRole implements BaseRole {
 
     if (envelope.read_only_query) {
       await this.handleReadOnlyQuery(envelope.read_only_query);
+      return;
+    }
+
+    if (envelope.control === "confirm_observation") {
+      await this.handleConfirmObservation(envelope.observation_id);
+      return;
+    }
+
+    if (envelope.control === "reject_observation") {
+      await this.handleRejectObservation(envelope.observation_id);
       return;
     }
 
@@ -330,6 +354,105 @@ export class ChatterRole implements BaseRole {
     }
 
     await this.dispatchRun(dispatchContent);
+  }
+
+  private async handleSuggestObservation(args: unknown): Promise<unknown> {
+    if (!this.observationCache) {
+      return { error: "not_active", details: "chatter observation cache is not active" };
+    }
+
+    const parsed = ChatterSuggestObservationArgsSchema.safeParse(args);
+    if (!parsed.success) {
+      return { error: "invalid_args", details: parsed.error.issues };
+    }
+
+    const observationId = randomUUID();
+    const candidate: ChatterCandidateObservation = {
+      observation_id: observationId,
+      ...parsed.data
+    };
+    this.observationCache.put(observationId, candidate.proposed_patch);
+    await this.forwardChatterReply(
+      JSON.stringify({ candidate_observation: candidate }),
+      { candidate_observation: candidate }
+    );
+    return { ok: true, observation_id: observationId };
+  }
+
+  private async handleConfirmObservation(observationId: string | undefined): Promise<void> {
+    if (!observationId) {
+      await this.forwardChatterReply("error: missing_observation_id", {});
+      return;
+    }
+
+    const entry = this.observationCache?.get(observationId);
+    if (!entry) {
+      await this.forwardChatterReply(
+        `error: observation_expired_or_unknown: ${observationId}`,
+        { observation_id: observationId }
+      );
+      return;
+    }
+
+    const result = await this.applyObservationPatch(entry.proposed_patch);
+    if (isStructuredError(result)) {
+      await this.forwardChatterReply(
+        `error: ${result.error}${result.details ? `: ${JSON.stringify(result.details)}` : ""}`,
+        { observation_id: observationId }
+      );
+      return;
+    }
+
+    this.observationCache?.evict(observationId);
+    await this.forwardChatterReply(`observation_confirmed: ${observationId}`, {
+      observation_id: observationId
+    });
+  }
+
+  private async handleRejectObservation(observationId: string | undefined): Promise<void> {
+    if (!observationId) {
+      await this.forwardChatterReply("error: missing_observation_id", {});
+      return;
+    }
+
+    const entry = this.observationCache?.get(observationId);
+    if (!entry) {
+      await this.forwardChatterReply(
+        `error: observation_expired_or_unknown: ${observationId}`,
+        { observation_id: observationId }
+      );
+      return;
+    }
+
+    this.observationCache?.evict(observationId);
+    await this.forwardChatterReply(`observation_rejected: ${observationId}`, {
+      observation_id: observationId
+    });
+  }
+
+  private async applyObservationPatch(
+    proposedPatch: ChatterObservationProposedPatch
+  ): Promise<unknown> {
+    const current = await this.structuredSkills!.get(
+      proposedPatch.record_type,
+      proposedPatch.key
+    );
+    if (isStructuredError(current) && current.error !== "not_found") {
+      return current;
+    }
+
+    const currentRecord = isStructuredRecordResult(current) ? current.record : {};
+    const patched = mergeJsonRecord(currentRecord, proposedPatch.patch);
+    const stamped = mergeJsonRecord(patched, {
+      agent_observed: {
+        confirmed_at: (this.options.now?.() ?? new Date()).toISOString()
+      }
+    });
+    return this.structuredSkills!.upsert(
+      proposedPatch.record_type,
+      proposedPatch.key,
+      stamped
+    );
   }
 
   private async handleReadOnlyQuery(query: ChatterReadOnlyQuery): Promise<void> {
@@ -734,6 +857,26 @@ export class ChatterRole implements BaseRole {
     await this.ctx.sendToHub(msg);
   }
 
+  private async forwardChatterReply(
+    content: string,
+    chatter: NonNullable<HubMessage["payload"]["chatter"]>
+  ): Promise<void> {
+    if (!this.ctx || !this.config.user_reply_channel) return;
+    const msg: HubMessage = {
+      trace_id: randomUUID(),
+      thread_id: this.threadId,
+      actor_id: ROLES_SERVICE_ID,
+      intent: "run",
+      target: "global",
+      priority: 5,
+      payload: { content, attachments: [], chatter },
+      mode: "bridge",
+      reply_channel: this.config.user_reply_channel,
+      suppress_reply: true
+    };
+    await this.ctx.sendToHub(msg);
+  }
+
   private recordTurnError(traceId: string, code: string, error: unknown): void {
     this.store?.recordTurnError(traceId, code, error);
   }
@@ -841,6 +984,54 @@ function isStructuredError(value: unknown): value is { error: string; details?: 
 
 function isStructuredRecordResult(value: unknown): value is { record: unknown } {
   return isObject(value) && "record" in value;
+}
+
+function mergeJsonRecord(base: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const baseRecord = isObject(base) ? base : {};
+  return mergeJsonValue(baseRecord, patch) as Record<string, unknown>;
+}
+
+function mergeJsonValue(base: unknown, patch: unknown): unknown {
+  if (Array.isArray(base) && Array.isArray(patch)) {
+    return mergeJsonArrays(base, patch);
+  }
+  if (isObject(base) && isObject(patch)) {
+    const merged: Record<string, unknown> = { ...base };
+    for (const [key, value] of Object.entries(patch)) {
+      merged[key] = key in merged ? mergeJsonValue(merged[key], value) : cloneJsonValue(value);
+    }
+    return merged;
+  }
+  return cloneJsonValue(patch);
+}
+
+function mergeJsonArrays(base: unknown[], patch: unknown[]): unknown[] {
+  const merged = base.map(cloneJsonValue);
+  const seen = new Set(merged.map(stableJsonKey));
+  for (const value of patch) {
+    const key = stableJsonKey(value);
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(cloneJsonValue(value));
+    }
+  }
+  return merged;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(cloneJsonValue);
+  }
+  if (isObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, cloneJsonValue(child)])
+    );
+  }
+  return value;
+}
+
+function stableJsonKey(value: unknown): string {
+  return JSON.stringify(value);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
