@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ChatterStateStore, type ChatterInFlightTrace, EMPTY_CHATTER_STATE } from "./chatter-state-store";
+import { ChatterStateStore, type ChatterInFlightTrace } from "./chatter-state-store";
 
 export type SessionProbe = (sessionId: string) => Promise<boolean>;
 
@@ -131,8 +131,9 @@ export class SessionManager {
   }
 
   private persist(): void {
+    const current = this.store.load();
     this.store.save({
-      ...EMPTY_CHATTER_STATE,
+      ...current,
       version: 1,
       agent_session_id: this.agentSessionId,
       in_flight_traces: [...this.inFlight.values()]
