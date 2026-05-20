@@ -111,6 +111,48 @@ describe("processes tab — token flash + history", () => {
     expect(js).toContain("const PROCESS_HISTORY_CAP = 100;");
   });
 
+  it("processes table groups rows by owner (worker / dispatcher / stateless / external) with a deduped token total per group", async () => {
+    const js = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    // The grouping pipeline + the two renderers must be wired in. Without
+    // any one of these the page silently falls back to the flat-table view
+    // and the agentapi→codex_shim→codex_native chain becomes confusing
+    // again.
+    expect(js).toContain("function buildProcessGroups");
+    expect(js).toContain("function renderGroup(");
+    expect(js).toContain("function renderGroupHeader");
+    expect(js).toContain("row-group-header");
+    // Render path must call buildProcessGroups + renderGroup; if render()
+    // reverts to a flat map of rows the grouping is dead code.
+    expect(js).toMatch(/const groups = buildProcessGroups\(visible\)/);
+    expect(js).toMatch(/groups\.map\(renderGroup\)/);
+    // Stateless Hub-direct calls (codex spawned by Meridian Hub with no
+    // worker binding, e.g. for a validator turn) must get their own group,
+    // not be lumped into the leak bucket — that was the PID 4232 confusion.
+    expect(js).toContain('"stateless"');
+    expect(js).toContain("Stateless ");
+    // Sub-rows that share a session_file with an earlier PID get the
+    // "↑ same session as PID X" annotation, and the first PID is tagged
+    // "session anchor" — this is the visual signal that fixed the "two
+    // rows show the same tokens, am I double-counting?" confusion.
+    expect(js).toContain("session anchor");
+    expect(js).toContain("↑ same session as PID");
+    // Deduped group token totals must dedupe on session_file (codex shim +
+    // native always resolve to the same file).
+    expect(js).toMatch(/seen\.add\(u\.session_file\)/);
+  });
+
+  it("CSS defines styles for the group-header row + session anchor/shared tags", async () => {
+    const css = await fs.readFile(path.join(publicDir, "style.css"), "utf8");
+    expect(css).toContain(".row-group-header td");
+    expect(css).toContain(".group-kind-badge");
+    expect(css).toContain(".session-anchor");
+    expect(css).toContain(".session-shared");
+    expect(css).toContain(".tree-indent");
+    // Stateless group must be visually distinct from leak/orphan (amber,
+    // not red) so operators don't fight false-alarm muscle memory.
+    expect(css).toContain(".row-group-stateless td");
+  });
+
   it("truncateMiddle helper exists and behaves correctly", async () => {
     const js = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
     expect(js).toContain("function truncateMiddle(");

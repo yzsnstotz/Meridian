@@ -298,7 +298,16 @@ function setupProcessMonitor() {
     } else {
       if (empty) empty.hidden = true;
       tableShell.hidden = false;
-      tableBody.innerHTML = visible.map(renderProcessRow).join("");
+      // Group rows by their actual owner (worker / dispatcher / validator /
+      // pm-resolver / stateless Hub-direct call / orphan / external). This
+      // collapses the 2- or 3-PID agentapi→codex_shim→codex_native chain into
+      // a single visual block with ONE deduped token total in the group header,
+      // so the operator can read "this worker is using N tokens across these M
+      // PIDs" instead of staring at duplicate numbers across sibling rows. It
+      // also gives stateless Hub-direct validator/PM turns a header row that
+      // says exactly that, instead of looking like an unattached "leak".
+      const groups = buildProcessGroups(visible);
+      tableBody.innerHTML = groups.map(renderGroup).join("");
     }
 
     renderHistory();
@@ -388,7 +397,235 @@ function setupProcessMonitor() {
     }
   }
 
-  function renderProcessRow(entry) {
+  // Group processes by their actual owner. The rules mirror the binding
+  // classification produced by /api/agentapi-processes — see
+  // src/server/process-handlers.ts buildSnapshot() — so what the operator
+  // sees in this tab matches the structure the dispatcher/Hub already use
+  // internally. Output is an array of group descriptors:
+  //   { key, kind, title, subtitle, processes, tokenTotals, isLeak }
+  // sorted leaks-first then by kind-priority.
+  function buildProcessGroups(processes) {
+    const byPid = new Map(processes.map((p) => [p.pid, p]));
+
+    function provisionalKey(p) {
+      if (p.binding) {
+        return `bound:${p.binding.role}:${p.binding.worker_id}:${p.thread_id ?? p.pid}`;
+      }
+      if (p.is_leak) {
+        return `leak:${p.thread_id ?? p.pid}`;
+      }
+      if (p.origin === "orphan") {
+        return `orphan:${p.thread_id ?? p.pid}`;
+      }
+      if (p.origin === "external") {
+        return `external:${p.pid}`;
+      }
+      // managed + no binding + no thread_id = stateless Hub-direct call.
+      // Group all PIDs in the same ancestry chain together so the agentapi-less
+      // codex shim + native pair (e.g. PID 4232 + PID 82106 spawned by Hub for
+      // a stateless validator turn) become one block instead of two orphans.
+      return null;
+    }
+
+    const provisional = new Map();
+    const statelessPids = new Set();
+    for (const p of processes) {
+      const k = provisionalKey(p);
+      if (k !== null) {
+        provisional.set(p.pid, k);
+      } else {
+        statelessPids.add(p.pid);
+      }
+    }
+    function statelessRoot(p) {
+      let cur = p;
+      for (let i = 0; i < 12; i += 1) {
+        const parent = byPid.get(cur.ppid);
+        if (!parent || !statelessPids.has(parent.pid)) return cur;
+        cur = parent;
+      }
+      return cur;
+    }
+    for (const p of processes) {
+      if (statelessPids.has(p.pid)) {
+        provisional.set(p.pid, `stateless:${statelessRoot(p).pid}`);
+      }
+    }
+
+    const buckets = new Map();
+    for (const p of processes) {
+      const k = provisional.get(p.pid);
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k).push(p);
+    }
+
+    const groups = [];
+    for (const [key, members] of buckets) {
+      // Sort members parent→child so an agentapi row comes before its codex
+      // child, and the codex node shim comes before the native binary.
+      const memberPids = new Set(members.map((p) => p.pid));
+      function depth(p) {
+        let d = 0;
+        let cur = p;
+        while (d < 12) {
+          const parent = byPid.get(cur.ppid);
+          if (!parent || !memberPids.has(parent.pid)) return d;
+          d += 1;
+          cur = parent;
+        }
+        return d;
+      }
+      members.sort((a, b) => {
+        const da = depth(a);
+        const db = depth(b);
+        if (da !== db) return da - db;
+        return a.pid - b.pid;
+      });
+      for (const m of members) m._tree_depth = depth(m);
+
+      // Dedupe tokens across the group by session_file so the header shows the
+      // real cumulative spend (agentapi shim + codex shim + codex native always
+      // resolve to the same session file via cwd + start-time match — they
+      // must be counted once).
+      const seen = new Set();
+      let inTok = 0;
+      let outTok = 0;
+      let totTok = 0;
+      let sessions = 0;
+      for (const m of members) {
+        const u = m.token_usage;
+        if (!u || seen.has(u.session_file)) continue;
+        seen.add(u.session_file);
+        sessions += 1;
+        inTok += Number(u.input_tokens || 0);
+        outTok += Number(u.output_tokens || 0);
+        totTok += Number(u.total_tokens || 0);
+      }
+      const tokenTotals = sessions > 0
+        ? { input_tokens: inTok, output_tokens: outTok, total_tokens: totTok, sessions }
+        : null;
+
+      const head = members[0];
+      let kind;
+      let title;
+      let subtitle;
+      if (key.startsWith("bound:")) {
+        const role = head.binding ? head.binding.role : "worker";
+        kind = role;
+        if (role === "worker") {
+          title = `Worker ${head.binding.worker_id}`;
+        } else if (role === "dispatcher") {
+          title = `Dispatcher ${head.binding.worker_id}`;
+        } else if (role === "validator") {
+          title = `Validator (for worker ${head.binding.worker_id})`;
+        } else if (role === "pm_resolver") {
+          title = `PM-resolver (for worker ${head.binding.worker_id})`;
+        } else {
+          title = `${role} ${head.binding.worker_id}`;
+        }
+        const parts = [];
+        if (head.thread_id) parts.push(`thread <code>${escapeHtml(head.thread_id)}</code>`);
+        if (head.binding.dispatcher_role_id) parts.push(`dispatcher <code>${escapeHtml(head.binding.dispatcher_role_id)}</code>`);
+        if (head.binding.status) parts.push(`status ${escapeHtml(head.binding.status)}`);
+        subtitle = parts.join(" · ");
+      } else if (key.startsWith("leak:")) {
+        kind = "managed-leak";
+        title = `LEAK — no dispatcher claim`;
+        subtitle = head.thread_id
+          ? `thread <code>${escapeHtml(head.thread_id)}</code> · investigate before killing`
+          : `unbindable managed process · investigate before killing`;
+      } else if (key.startsWith("orphan:")) {
+        kind = "orphan";
+        title = `ORPHAN — agentapi parent died, ${escapeHtml(head.agent_type ?? "agent")} survived`;
+        subtitle = head.thread_id
+          ? `thread <code>${escapeHtml(head.thread_id)}</code> · reparented to init`
+          : `reparented to init`;
+      } else if (key.startsWith("stateless:")) {
+        kind = "stateless";
+        const rootPid = key.slice("stateless:".length);
+        title = `Stateless ${escapeHtml(head.agent_type ?? "agent")} call (root PID ${escapeHtml(rootPid)})`;
+        subtitle = `Hub-direct short-lived turn — validator / PM / scheduler. No worker binding by design, NOT a leak.`;
+      } else {
+        kind = "external";
+        title = `External ${escapeHtml(head.agent_type ?? "agent")} session`;
+        subtitle = `Not spawned by meridian-roles — terminal, Claude Code, or other tool`;
+      }
+
+      groups.push({
+        key,
+        kind,
+        title,
+        subtitle,
+        processes: members,
+        tokenTotals,
+        isLeak: members.some((m) => m.is_leak)
+      });
+    }
+
+    const kindOrder = {
+      "managed-leak": 0,
+      orphan: 1,
+      dispatcher: 2,
+      worker: 3,
+      validator: 4,
+      pm_resolver: 5,
+      stateless: 6,
+      external: 7
+    };
+    groups.sort((a, b) => {
+      const oa = kindOrder[a.kind] ?? 9;
+      const ob = kindOrder[b.kind] ?? 9;
+      if (oa !== ob) return oa - ob;
+      const ap = Math.min(...a.processes.map((p) => p.pid));
+      const bp = Math.min(...b.processes.map((p) => p.pid));
+      return ap - bp;
+    });
+
+    return groups;
+  }
+
+  function renderGroup(group) {
+    const rows = [renderGroupHeader(group)];
+    for (const p of group.processes) {
+      rows.push(renderProcessRow(p, group));
+    }
+    return rows.join("");
+  }
+
+  function renderGroupHeader(group) {
+    const kindLabel = {
+      worker: "worker",
+      dispatcher: "dispatcher",
+      validator: "validator",
+      pm_resolver: "pm-resolver",
+      "managed-leak": "LEAK",
+      orphan: "orphan",
+      stateless: "stateless",
+      external: "external"
+    }[group.kind] || group.kind;
+    const tokensHtml = group.tokenTotals
+      ? `<code>${formatTokens(group.tokenTotals.input_tokens)}</code> in / `
+        + `<code>${formatTokens(group.tokenTotals.output_tokens)}</code> out / `
+        + `<strong><code>${formatTokens(group.tokenTotals.total_tokens)}</code></strong> total`
+        + ` <span class="muted">(${group.tokenTotals.sessions} session${group.tokenTotals.sessions === 1 ? "" : "s"}, deduped across ${group.processes.length} PID${group.processes.length === 1 ? "" : "s"})</span>`
+      : `<span class="muted">— no token usage detected yet (codex session file may still be warming up)</span>`;
+    return `<tr class="row-group-header row-group-${escapeHtml(group.kind)}">`
+      + `<td colspan="10">`
+      + `<div class="group-row">`
+      + `<div class="group-row-left">`
+      + `<span class="group-kind-badge group-kind-${escapeHtml(group.kind)}">${escapeHtml(kindLabel)}</span>`
+      + `<span class="group-title">${escapeHtml(group.title)}</span>`
+      + (group.subtitle ? `<span class="group-subtitle muted">${group.subtitle}</span>` : "")
+      + `</div>`
+      + `<div class="group-row-right">`
+      + `<span class="group-tokens">${tokensHtml}</span>`
+      + `</div>`
+      + `</div>`
+      + `</td>`
+      + `</tr>`;
+  }
+
+  function renderProcessRow(entry, group) {
     const dot = entry.is_leak
       ? '<span class="leak-dot" title="LEAK — meridian-roles spawned this process but no dispatcher claims its thread_id"></span>'
       : entry.origin === "managed"
@@ -403,6 +640,14 @@ function setupProcessMonitor() {
         ? '<span class="origin-tag origin-orphan">orphan</span>'
         : '<span class="origin-tag origin-external">external</span>';
 
+    // Tree-indent the agent_type so the operator can see at a glance which row
+    // is the parent (agentapi shim) and which are its descendants (codex node
+    // shim → codex native). Depth comes from buildProcessGroups().
+    const indent = entry._tree_depth || 0;
+    const treeGlyph = indent > 0
+      ? `<span class="tree-indent">${"&nbsp;&nbsp;".repeat(indent)}↳ </span>`
+      : "";
+
     const worker = entry.binding
       ? `<code>${escapeHtml(entry.binding.worker_id)}</code> <span class="muted">(${escapeHtml(entry.binding.role)})</span>`
       : entry.is_leak
@@ -414,21 +659,25 @@ function setupProcessMonitor() {
     const threadId = entry.thread_id
       ? `<code>${escapeHtml(entry.thread_id)}</code>`
       : '<span class="muted">—</span>';
-    const baseClass = entry.is_leak ? "row-leak" : entry.origin === "external" ? "row-external" : "";
+    const baseClass = entry.is_leak
+      ? "row-leak row-in-group"
+      : entry.origin === "external"
+        ? "row-external row-in-group"
+        : "row-in-group";
     // One-shot green flash when total_tokens grew vs the previous tick. The
     // CSS animation runs once on row mount; since the tbody is re-rendered
     // per poll, each new increase naturally restarts it (no manual reset).
     const flashClass = entry._tokenIncreased ? "row-token-flash" : "";
     const klass = [baseClass, flashClass].filter(Boolean).join(" ");
 
-    const tokens = renderTokenCell(entry);
+    const tokens = renderTokenCell(entry, group);
 
     return `<tr class="${klass}">`
       + `<td>${dot}</td>`
       + `<td>${originTag}</td>`
       + `<td><code>${entry.pid}</code></td>`
       + `<td><code class="muted">${entry.ppid}</code></td>`
-      + `<td>${escapeHtml(entry.agent_type ?? "?")}</td>`
+      + `<td>${treeGlyph}${escapeHtml(entry.agent_type ?? "?")}</td>`
       + `<td>${threadId}</td>`
       + `<td>${worker}</td>`
       + `<td>${dispatcher}</td>`
@@ -437,15 +686,45 @@ function setupProcessMonitor() {
       + "</tr>";
   }
 
-  function renderTokenCell(entry) {
+  function renderTokenCell(entry, group) {
     const u = entry.token_usage;
-    if (!u) return '<span class="muted">—</span>';
+    if (!u) {
+      // Empty cell would be misread as "I haven't measured this yet" — make
+      // the reason explicit so the operator stops second-guessing whether the
+      // worker is idle or whether the resolver is broken. agentapi rows are
+      // never expected to carry tokens; codex/claude rows without tokens are
+      // either pre-warmup (session file not yet on disk) or stripped because
+      // a bound peer in the group already claimed the session_file.
+      if (entry.agent_type === "agentapi") {
+        return '<span class="muted token-cell-note" title="agentapi shim does not consume tokens itself — its child codex/claude does">shim (no tokens)</span>';
+      }
+      if (group && group.tokenTotals) {
+        return '<span class="muted token-cell-note" title="tokens for this group are on the session-anchor PID; this row is part of the same group but is not the file owner">↑ see group total</span>';
+      }
+      return '<span class="muted">—</span>';
+    }
     const inn = formatTokens(u.input_tokens);
     const out = formatTokens(u.output_tokens);
     const tot = formatTokens(u.total_tokens);
     const cached = u.cached_input_tokens > 0 ? ` <span class="muted">(${formatTokens(u.cached_input_tokens)} cached)</span>` : "";
     const tip = `source: ${u.source}\nsession_id: ${u.session_id || "(n/a)"}\nfile: ${u.session_file}\ninput: ${u.input_tokens}\ncached_input: ${u.cached_input_tokens}\noutput: ${u.output_tokens}\nreasoning_output: ${u.reasoning_output_tokens}\ntotal: ${u.total_tokens}`;
-    return `<span title="${escapeHtml(tip)}"><code>${inn}</code> in / <code>${out}</code> out / <code>${tot}</code> total${cached}</span>`;
+    // Session-anchor annotation: when more than one PID in the group resolves
+    // to the same on-disk session file (agentapi shim + codex shim + codex
+    // native all do, by design), only the first PID is the "session anchor";
+    // the others show the same numbers but mark themselves as shared so it's
+    // visually obvious those two cells are not double-counting.
+    let sessionTag = "";
+    if (group) {
+      const anchor = group.processes.find(
+        (p) => p.token_usage && p.token_usage.session_file === u.session_file
+      );
+      if (anchor && anchor.pid !== entry.pid) {
+        sessionTag = ` <span class="session-shared muted" title="same session_file as PID ${anchor.pid}; the group total counts it once">↑ same session as PID ${anchor.pid}</span>`;
+      } else if (group.processes.length > 1) {
+        sessionTag = ` <span class="session-anchor" title="session anchor — this PID&apos;s session file drives the group total">session anchor</span>`;
+      }
+    }
+    return `<span title="${escapeHtml(tip)}"><code>${inn}</code> in / <code>${out}</code> out / <code>${tot}</code> total${cached}</span>${sessionTag}`;
   }
 
   if (hideExternalToggle) {

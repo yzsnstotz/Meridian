@@ -759,7 +759,14 @@
             <div>
               <h2>Live agentapi / codex / claude processes</h2>
               <p class="muted">
-                Every agent-shaped process on the host. Each row is classified:
+                Rows are grouped by their actual owner — each group header
+                names the worker / dispatcher / validator / PM-resolver /
+                stateless Hub-direct call / external session, and shows ONE
+                deduped token total across the group's PIDs. Sub-rows are the
+                individual processes that make up that group (typically
+                <code>agentapi</code> shim → <code>codex</code> node shim →
+                <code>codex</code> native binary, all sharing one LLM session
+                file). Origins:
                 <strong class="origin-tag origin-managed">meridian-roles</strong>
                 <span> — spawned by meridian-roles, parented or bound to a dispatcher;</span>
                 <strong class="origin-tag origin-orphan">orphan</strong>
@@ -767,7 +774,11 @@
                 <strong class="origin-tag origin-external">external</strong>
                 <span> — terminal sessions, Claude Code, other tools — NOT spawned by meridian-roles, safe to ignore.</span>
                 <br>
-                <strong class="leak-callout">Pulsing red dot = leak.</strong> Auto-refreshes every 3 seconds.
+                <strong class="leak-callout">Pulsing red dot = leak.</strong>
+                Auto-refreshes every 3 seconds. When two sub-rows show the same
+                token numbers, the second is tagged
+                <span class="session-shared muted">↑ same session as PID X</span>
+                so you can see the group is not double-counting.
               </p>
             </div>
             <div id="process-summary" class="process-summary"></div>
