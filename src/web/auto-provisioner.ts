@@ -264,6 +264,7 @@ function buildChatterCreateBody(policy: InterpolatedProjectPolicy): {
   thread_id: string;
   config: ChatterRoleConfig;
 } {
+  const seedsInit = buildChatterSeedsInit(policy);
   return {
     role_type: "chatter",
     thread_id: policy.thread_id,
@@ -275,8 +276,20 @@ function buildChatterCreateBody(policy: InterpolatedProjectPolicy): {
       skill_allowlist: policy.skill_allowlist,
       llm_agent_kind: policy.llm_agent_kind,
       ...(policy.credential_id ? { credential_id: policy.credential_id } : {}),
+      ...(seedsInit ? { seeds_init: seedsInit } : {}),
       user_reply_channel: policy.user_reply_channel
     }
+  };
+}
+
+function buildChatterSeedsInit(policy: InterpolatedProjectPolicy): ChatterRoleConfig["seeds_init"] | undefined {
+  if (policy.seeds_init.mode !== "copy_on_provision") {
+    return undefined;
+  }
+  const sourcePath = policy.seeds_init.source_path ?? policy.seeds_source_path;
+  return {
+    mode: "copy_on_provision",
+    ...(sourcePath ? { source_path: sourcePath } : {})
   };
 }
 

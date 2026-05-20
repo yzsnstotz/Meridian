@@ -694,6 +694,14 @@ export type ChatterTemplateName = z.infer<typeof ChatterTemplateNameSchema>;
 
 export const ChatterAllowedModesSchema = z.array(z.enum(["stateless", "session"])).min(1);
 
+export const ChatterSeedsInitSchema = z
+  .object({
+    mode: z.enum(["copy_on_provision"]),
+    source_path: z.string().min(1).optional()
+  })
+  .strict();
+export type ChatterSeedsInit = z.infer<typeof ChatterSeedsInitSchema>;
+
 export const ChatterRoleConfigSchema = z.object({
   chatter_id: z.string().min(1).regex(/^[a-z0-9][a-z0-9_-]*$/i, "chatter_id must be slug-like"),
   memory_folder: z.string().refine((p) => p.startsWith("/"), "memory_folder must be an absolute path"),
@@ -717,6 +725,7 @@ export const ChatterRoleConfigSchema = z.object({
   // honors at spawn time to bind the agent process to a specific
   // CODEX_HOME (per PR #78). Flat-role pattern, mirrors SchedulerConfig.
   credential_id: z.string().min(1).optional(),
+  seeds_init: ChatterSeedsInitSchema.optional(),
   // Required: ChatterRole has no useful behavior without somewhere to reply.
   // Operators provide one channel at init; the gateway (ADS) demuxes per-user
   // on its end via session correlation in payload.chatter.

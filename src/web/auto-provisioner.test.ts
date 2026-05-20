@@ -143,6 +143,36 @@ describe("createAutoProvisionerHandlers", () => {
     });
   });
 
+  it("passes copy_on_provision seed source from registry policy into chatter config", async () => {
+    process.env.ADS_HMAC_KEY = "super-secret";
+    const repoRoot = await createRepoRoot();
+    await writeCaller(repoRoot);
+    await writePolicy(repoRoot, "mumu", {
+      ...validPolicy,
+      seeds_source_path: "/tmp/mumu-seeds",
+      seeds_init: { mode: "copy_on_provision" }
+    });
+    const registry = await loadCallerRegistry({ repoRoot });
+    const createRole = vi.fn().mockResolvedValue({ ok: true, thread_id: "chatter-mumu-user-u_001" });
+    const handlers = createHarness({
+      repoRoot,
+      callerAuth: createRequireCallerAuth({ registry }),
+      createRole
+    });
+
+    const response = await invokeSigned(handlers.handle, "POST", "/api/projects/mumu/users/u_001/ensure-chatter", {});
+
+    expect(response.statusCode).toBe(200);
+    expect(createRole).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        seeds_init: {
+          mode: "copy_on_provision",
+          source_path: "/tmp/mumu-seeds"
+        }
+      })
+    }));
+  });
+
   it("returns role_creation_failed when internal role creation returns a 5xx", async () => {
     process.env.ADS_HMAC_KEY = "super-secret";
     const repoRoot = await createRepoRoot();
