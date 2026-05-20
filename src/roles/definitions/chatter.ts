@@ -24,8 +24,12 @@ import {
 import { makeMemorySkills } from "../chatter/memory-skills";
 import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../chatter/allowlist";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
-import { incrementChatterReadOnlyQueryTotal } from "../chatter/observability";
-import { SessionManager } from "../chatter/session-manager";
+import {
+  incrementChatterReadOnlyQueryTotal,
+  incrementChatterSelfInitiatedTurnErrorTotal,
+  incrementChatterSelfInitiatedTurnTotal
+} from "../chatter/observability";
+import { SessionManager, type SelfInitiatedTurnRequest } from "../chatter/session-manager";
 import {
   BackgroundTriggerEvaluator,
   type BackgroundTriggerFireRequest,
@@ -215,15 +219,10 @@ export class ChatterRole implements BaseRole {
           await this.onSpawnResponse(result);
           return;
         case "agent_turn":
+          await this.onAgentTurnResponse(result);
+          return;
         case "job_dispatch":
           await this.forwardToUser(result.content);
-          if (trace.purpose === "agent_turn") {
-            if (result.status === "error") {
-              this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
-            } else if (result.run_state === "completed") {
-              this.clearTurnError();
-            }
-          }
           if (
             result.run_state === "completed"
             || result.run_state === "timeout"
@@ -522,6 +521,25 @@ export class ChatterRole implements BaseRole {
     for (const turn of queued) {
       await this.dispatchRun(turn.content);
     }
+    await this.drainSelfInitiatedTurnQueue();
+  }
+
+  private async onAgentTurnResponse(result: HubResult): Promise<void> {
+    await this.forwardToUser(result.content);
+    if (result.status === "error") {
+      this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
+    } else if (result.run_state === "completed") {
+      this.clearTurnError();
+    }
+
+    if (
+      result.run_state === "completed"
+      || result.run_state === "timeout"
+      || result.status === "error"
+    ) {
+      this.sessionMgr!.clearTrace(result.trace_id);
+      await this.drainSelfInitiatedTurnQueue();
+    }
   }
 
   private failPendingSpawn(reason: string): void {
@@ -606,6 +624,57 @@ export class ChatterRole implements BaseRole {
     }
   }
 
+  private async dispatchSelfInitiatedRun(request: SelfInitiatedTurnRequest): Promise<void> {
+    const agentSessionId = this.sessionMgr!.currentSessionId;
+    if (agentSessionId === null) {
+      this.recordSelfInitiatedTurnError(request.trigger_name, "missing_agent_session");
+      return;
+    }
+
+    const message: HubMessage = {
+      trace_id: randomUUID(),
+      thread_id: this.threadId,
+      actor_id: ROLES_SERVICE_ID,
+      intent: "run",
+      target: agentSessionId,
+      priority: 5,
+      payload: {
+        content: "",
+        attachments: [],
+        chatter: {
+          origin: "trigger",
+          system_prompt_id: request.system_prompt_id
+        }
+      },
+      mode: "bridge",
+      reply_channel: this.config.user_reply_channel,
+      suppress_reply: false
+    };
+
+    this.ctx!.log.info("chatter: scheduled self-initiated turn", {
+      chatter_id: this.config.chatter_id,
+      trigger_name: request.trigger_name,
+      origin: request.origin
+    });
+    incrementChatterSelfInitiatedTurnTotal(request.trigger_name);
+
+    try {
+      await this.ctx!.sendToHub(message);
+    } catch (error) {
+      this.recordSelfInitiatedTurnError(request.trigger_name, error);
+    }
+  }
+
+  private async drainSelfInitiatedTurnQueue(): Promise<void> {
+    if (!this.sessionMgr || this.sessionMgr.hasActiveAgentTurn) return;
+
+    while (!this.sessionMgr.hasActiveAgentTurn && this.sessionMgr.queuedSelfInitiatedTurnCount > 0) {
+      const next = this.sessionMgr.shiftSelfInitiatedTurn();
+      if (!next) return;
+      await this.dispatchSelfInitiatedRun(next);
+    }
+  }
+
   private async handleControlNew(): Promise<void> {
     if (this.pendingSpawnTraceId !== null) {
       await this.forwardToUser(
@@ -642,6 +711,7 @@ export class ChatterRole implements BaseRole {
     }
     const cancelled = this.sessionMgr!.interrupt();
     this.pendingTurns.splice(0);
+    this.sessionMgr!.clearSelfInitiatedTurnQueue();
     void this.forwardToUser(`interrupt: cancelled ${cancelled.length} in-flight item(s)`).catch(
       () => undefined
     );
@@ -672,6 +742,15 @@ export class ChatterRole implements BaseRole {
     this.store?.clearTurnError();
   }
 
+  private recordSelfInitiatedTurnError(triggerName: string, error: unknown): void {
+    incrementChatterSelfInitiatedTurnErrorTotal(triggerName);
+    this.ctx?.log.warn("chatter: self-initiated turn failed", {
+      chatter_id: this.config.chatter_id,
+      trigger_name: triggerName,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+
   private async forwardReadOnlyQueryResult(result: ChatterReadOnlyQueryResult): Promise<void> {
     if (!this.ctx || !this.config.user_reply_channel) return;
     const msg: HubMessage = {
@@ -695,9 +774,46 @@ export class ChatterRole implements BaseRole {
 
   private async scheduleSelfInitiatedTurn(request: BackgroundTriggerFireRequest): Promise<void> {
     if (!this.options.scheduleSelfInitiatedTurn) {
-      throw new Error(`self-initiated turn scheduling is not installed for trigger '${request.trigger_name}'`);
+      await this.scheduleInternalSelfInitiatedTurn(request);
+      return;
     }
     await this.options.scheduleSelfInitiatedTurn(request);
+  }
+
+  private async scheduleInternalSelfInitiatedTurn(request: BackgroundTriggerFireRequest): Promise<void> {
+    if (!this.ctx || !this.sessionMgr || !this.resolver) {
+      incrementChatterSelfInitiatedTurnErrorTotal(request.trigger_name);
+      return;
+    }
+
+    const systemPromptExists = this.resolver.manifest.systemPromptContents?.has(request.system_prompt_id) ?? false;
+    if (!systemPromptExists) {
+      this.recordSelfInitiatedTurnError(request.trigger_name, `unknown_system_prompt_id: ${request.system_prompt_id}`);
+      return;
+    }
+
+    const turnRequest: SelfInitiatedTurnRequest = {
+      system_prompt_id: request.system_prompt_id,
+      origin: "trigger",
+      trigger_name: request.trigger_name
+    };
+
+    if (this.pendingSpawnTraceId !== null) {
+      this.sessionMgr.enqueueSelfInitiatedTurn(turnRequest);
+      return;
+    }
+
+    if (this.sessionMgr.currentSessionId === null) {
+      this.recordSelfInitiatedTurnError(request.trigger_name, "missing_agent_session");
+      return;
+    }
+
+    if (this.sessionMgr.hasActiveAgentTurn) {
+      this.sessionMgr.enqueueSelfInitiatedTurn(turnRequest);
+      return;
+    }
+
+    await this.dispatchSelfInitiatedRun(turnRequest);
   }
 }
 
