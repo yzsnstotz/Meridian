@@ -75,11 +75,26 @@ export type Priority = z.infer<typeof PrioritySchema>;
 
 export const OptionalUuidSchema = z.string().uuid().optional();
 
+export const ChatterReadOnlyQuerySchema = z.object({
+  skill: z.string().min(1),
+  args: z.record(z.string(), z.unknown())
+});
+export type ChatterReadOnlyQuery = z.infer<typeof ChatterReadOnlyQuerySchema>;
+
+export const ChatterReadOnlyQueryResultSchema = z.object({
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+  error: z.string().min(1).optional()
+});
+export type ChatterReadOnlyQueryResult = z.infer<typeof ChatterReadOnlyQueryResultSchema>;
+
 export const ChatterTurnEnvelopeSchema = z.object({
-  mode: z.enum(["stateless", "session"]),
+  mode: z.enum(["stateless", "session"]).optional(),
   chatter_session_id: z.string().min(1).optional(),
   system_prompt_id: z.string().min(1).optional(),
   context_refs: z.array(z.object({ type: z.string(), key: z.string() })).optional(),
+  read_only_query: ChatterReadOnlyQuerySchema.optional(),
+  read_only_query_result: ChatterReadOnlyQueryResultSchema.optional(),
   control: z.enum(["new", "interrupt"]).optional()
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
