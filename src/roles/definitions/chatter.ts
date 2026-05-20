@@ -9,7 +9,11 @@ import {
   validateRecord
 } from "../chatter/manifest";
 import { MemoryResolver } from "../chatter/memory-resolver";
-import { buildSandboxSpawnPlan, type SandboxSpawnPlan } from "../chatter/sandbox";
+import {
+  buildSandboxSpawnPlan,
+  initializeSeedsOnProvision,
+  type SandboxSpawnPlan
+} from "../chatter/sandbox";
 import { makeMemorySkills } from "../chatter/memory-skills";
 import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../chatter/allowlist";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
@@ -87,6 +91,15 @@ export class ChatterRole implements BaseRole {
       ? loadManifestFromTemplate(this.config.template)
       : loadManifestFromFile(this.config.manifest_path as string);
     this.resolver = new MemoryResolver(this.config.memory_folder, manifest);
+    await initializeSeedsOnProvision({
+      resolver: this.resolver,
+      seedsInit: this.config.seeds_init
+        ? {
+            mode: "copy_on_provision",
+            source_path: this.config.seeds_init.source_path ?? manifest.seeds_init?.source_path
+          }
+        : manifest.seeds_init
+    });
     this.skillHandlers.clear();
     this.structuredSkills = makeStructuredSkills(this.resolver);
     registerStructuredSkills(this.structuredSkills, {

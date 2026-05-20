@@ -30,7 +30,11 @@ export const ChatterManifestSchema = z
     record_schemas: z.record(z.string().min(1), z.unknown()).optional(),
     system_prompts: z.record(z.string().min(1), z.object({
       prompt_path: z.string().min(1)
-    })).optional()
+    })).optional(),
+    seeds_init: z.object({
+      mode: z.enum(["copy_on_provision"]),
+      source_path: z.string().min(1).optional()
+    }).optional()
   })
   .strict();
 
