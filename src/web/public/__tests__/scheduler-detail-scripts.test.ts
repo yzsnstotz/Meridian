@@ -24,9 +24,9 @@ describe("scheduler detail public scripts", () => {
     expect(indexHtml).not.toContain('id="new-scheduler-model-map"');
     expect(indexHtml).toContain('id="new-scheduler-scan-run-id-strategy" name="scan_run_id_strategy"');
     expect(indexHtml).toContain('id="new-scheduler-scan-run-id-prefix" name="scan_run_id_prefix"');
-    expect(indexHtml).toMatch(/<select id="agent-dispatcher-mode" name="mode">\s*<option value="bridge">bridge<\/option>\s*<option value="pane_bridge">pane_bridge<\/option>/);
+    expect(indexHtml).toMatch(/<select id="agent-dispatcher-mode" name="mode">\s*<option value="bridge">bridge<\/option>/);
     expect(indexHtml).toMatch(/<input[^>]*id="agent-dispatcher-auto-approve"[^>]*name="auto_approve"[^>]*type="checkbox"[^>]*checked[^>]*\/>/);
-    expect(indexHtml).toMatch(/<select id="new-scheduler-agent-mode" name="mode">\s*<option value="bridge">bridge<\/option>\s*<option value="pane_bridge">pane_bridge<\/option>/);
+    expect(indexHtml).toMatch(/<select id="new-scheduler-agent-mode" name="mode">\s*<option value="bridge">bridge<\/option>/);
     expect(indexHtml).toMatch(/<input[^>]*id="new-scheduler-auto-approve"[^>]*name="auto_approve"[^>]*type="checkbox"[^>]*checked[^>]*\/>/);
     // model_id text input fallbacks must be gone from index.html (regression:
     // every former <input id="*-model-id" type="text"> is now a <select>).
@@ -695,7 +695,7 @@ describe("scheduler detail public scripts", () => {
       scan_run_id_prefix: { value: "daily" },
       agent_type: { value: "codex" },
       model_id: { value: "gpt-5.5 high" },
-      mode: { value: "pane_bridge" },
+      mode: { value: "bridge" },
       auto_approve: { checked: true },
       catch_up_policy: { value: "skip_missed" },
       reset: () => undefined
@@ -743,7 +743,7 @@ describe("scheduler detail public scripts", () => {
       config: {
         agent_type: "codex",
         model_id: "gpt-5.5 high",
-        mode: "pane_bridge",
+        mode: "bridge",
         auto_approve: true,
         scan_run_id_strategy: "daily-date",
         scan_run_id_prefix: "daily"
@@ -891,7 +891,7 @@ describe("scheduler detail public scripts", () => {
               scheduler_mode: "cron",
               agent_type: "codex",
               model_id: "gpt-5.5 high",
-              mode: "pane_bridge",
+              mode: "bridge",
               scan_run_id_strategy: "daily-date",
               scan_run_id_prefix: "daily"
             },
@@ -923,7 +923,7 @@ describe("scheduler detail public scripts", () => {
 
     expect(getElementStub(elements, "cfg-agent-type")).toMatchObject({ value: "codex" });
     expect(getElementStub(elements, "cfg-model-id")).toMatchObject({ value: "gpt-5.5 high" });
-    expect(getElementStub(elements, "cfg-agent-mode")).toMatchObject({ value: "pane_bridge" });
+    expect(getElementStub(elements, "cfg-agent-mode")).toMatchObject({ value: "bridge" });
     expect(getElementStub(elements, "cfg-scan-run-id-strategy")).toMatchObject({ value: "daily-date" });
     expect(getElementStub(elements, "cfg-scan-run-id-prefix")).toMatchObject({ value: "daily" });
 

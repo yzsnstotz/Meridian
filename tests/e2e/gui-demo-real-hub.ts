@@ -208,7 +208,7 @@ async function main(): Promise<void> {
     command_file_path: commandFilePath,
     user_reply_channels: [{ channel: "web", chat_id: "web:gui-demo-real" }],
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     kill_policy: "always"
   };
 

@@ -425,7 +425,7 @@ describe("Scenario F: Config editor and role error states", () => {
               ],
               agent_type: "claude",
               model_id: "claude-opus-4-7",
-              mode: "pane_bridge",
+              mode: "bridge",
               kill_policy: "never",
               auto_approve: true
             }
@@ -450,7 +450,7 @@ describe("Scenario F: Config editor and role error states", () => {
 
     page.elements["cfg-agent-type"].value = "claude";
     page.elements["cfg-model-id"].value = "claude-opus-4-7";
-    page.elements["cfg-mode"].value = "pane_bridge";
+    page.elements["cfg-mode"].value = "bridge";
     page.elements["cfg-kill-policy"].value = "never";
     page.elements["cfg-auto-approve"].value = "true";
 
@@ -460,7 +460,7 @@ describe("Scenario F: Config editor and role error states", () => {
       {
         agent_type: "claude",
         model_id: "claude-opus-4-7",
-        mode: "pane_bridge",
+        mode: "bridge",
         kill_policy: "never",
         auto_approve: true
       }

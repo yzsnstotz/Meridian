@@ -440,7 +440,7 @@ function buildConfig(dispatchPlanPath: string, overrides: Partial<SchedulerConfi
     docs_root: path.dirname(dispatchPlanPath),
     user_reply_channels: [{ channel: "web", chat_id: "web:ops" }],
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     kill_policy: "always",
     auto_approve: true,
     scheduler_mode: "cron",

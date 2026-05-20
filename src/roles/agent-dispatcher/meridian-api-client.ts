@@ -32,8 +32,8 @@ export type MeridianAgentType = "codex" | "claude" | "cursor" | "gemini";
 export interface MeridianSpawnRequest {
   /** Provider type forwarded to /api/spawn (codex, claude, cursor, gemini). */
   agentType: string;
-  /** "bridge" for stateful Hub sessions, "pane_bridge" for visible workers, "stateless_call" for read-only Codex calls. */
-  mode: "bridge" | "pane_bridge" | "stateless_call";
+  /** "bridge" for persistent thread reservation; "stateless_call" for one-shot Hub-direct exec calls. */
+  mode: "bridge" | "stateless_call";
   /** Absolute working directory for the spawned thread. Validated under AGENT_WORKDIR by Meridian. */
   spawnDir: string;
   /** Optional model identifier forwarded to the provider adapter. */

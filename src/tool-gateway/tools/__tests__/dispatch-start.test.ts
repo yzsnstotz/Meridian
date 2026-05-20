@@ -61,7 +61,7 @@ describe("dispatch-start tool", () => {
       auto_approve: "true",
       pm_agent_type: "claude",
       pm_model_id: "claude-opus-4-7",
-      pm_mode: "pane_bridge",
+      pm_mode: "bridge",
       pm_auto_approve: "true",
       pm_reply_channels: JSON.stringify([{ channel: "web", chat_id: "web:pm" }])
     });
@@ -81,7 +81,7 @@ describe("dispatch-start tool", () => {
           enabled: true,
           agent_type: "claude",
           model_id: "claude-opus-4-7",
-          mode: "pane_bridge",
+          mode: "bridge",
           auto_approve: true,
           user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
         },
@@ -125,7 +125,7 @@ describe("dispatch-start tool", () => {
             enabled: true,
             agent_type: "claude",
             model_id: "claude-opus-4-7",
-            mode: "pane_bridge",
+            mode: "bridge",
             auto_approve: true,
             user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
           },

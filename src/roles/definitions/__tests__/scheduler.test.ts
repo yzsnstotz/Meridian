@@ -87,7 +87,7 @@ function buildSchedulerConfig(overrides: Partial<Record<string, unknown>> = {}):
     docs_root: "/tmp/scheduler-test",
     user_reply_channels: [{ channel: "web", chat_id: "web:ops" }],
     agent_type: "codex",
-    mode: "pane_bridge",
+    mode: "bridge",
     kill_policy: "always",
     auto_approve: true,
     scheduler_mode: "cron",

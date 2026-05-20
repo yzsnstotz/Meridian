@@ -54,27 +54,6 @@ describe("role config mode defaults", () => {
     expect(validator.threshold_type).toBe("score");
   });
 
-  it("preserves explicit pane_bridge mode for settable role configs", () => {
-    const agentDispatcher = AgentDispatcherConfigSchema.parse({
-      dispatch_plan_path: "/tmp/dispatch_plan.md",
-      command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channels: replyChannels,
-      mode: "pane_bridge"
-    });
-    const scheduler = SchedulerConfigSchema.parse({
-      dispatch_plan_path: "/tmp/dispatch_plan.md",
-      command_file_path: "/tmp/agent_dispatch_command.md",
-      user_reply_channels: replyChannels,
-      report_base_dir: "/tmp/reports",
-      mode: "pane_bridge"
-    });
-    const validator = ValidatorConfigSchema.parse({ mode: "pane_bridge" });
-
-    expect(agentDispatcher.mode).toBe("pane_bridge");
-    expect(scheduler.mode).toBe("pane_bridge");
-    expect(validator.mode).toBe("pane_bridge");
-  });
-
   it("preserves explicit binary validator threshold_type", () => {
     const validator = ValidatorConfigSchema.parse({ threshold_type: "binary" });
 
@@ -109,7 +88,7 @@ describe("role config mode defaults", () => {
       enabled: true,
       agent_type: "claude",
       model_id: "claude-opus-4-7",
-      mode: "pane_bridge",
+      mode: "bridge",
       auto_approve: true,
       user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
     });
@@ -118,7 +97,7 @@ describe("role config mode defaults", () => {
       enabled: true,
       agent_type: "claude",
       model_id: "claude-opus-4-7",
-      mode: "pane_bridge",
+      mode: "bridge",
       auto_approve: true,
       user_reply_channels: [{ channel: "web", chat_id: "web:pm" }]
     });

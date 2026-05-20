@@ -32,7 +32,7 @@ describe("Scenario C: Agent-dispatcher config update", () => {
       }>("PATCH", "/api/role/agent-dispatcher-c/config", {
         agent_type: "claude",
         model_id: "claude-opus-4-7",
-        mode: "pane_bridge",
+        mode: "bridge",
         kill_policy: "never",
         auto_approve: true
       });
@@ -41,7 +41,7 @@ describe("Scenario C: Agent-dispatcher config update", () => {
       expect(patched.config).toMatchObject({
         agent_type: "claude",
         model_id: "claude-opus-4-7",
-        mode: "pane_bridge",
+        mode: "bridge",
         kill_policy: "never",
         auto_approve: true
       });
@@ -60,7 +60,7 @@ describe("Scenario C: Agent-dispatcher config update", () => {
       expect(harness.workerLaunches[0]).toMatchObject({
         workerId: "W-CONFIG",
         agentType: "claude",
-        mode: "pane_bridge",
+        mode: "bridge",
         killPolicy: "never",
         autoApprove: true
       });
