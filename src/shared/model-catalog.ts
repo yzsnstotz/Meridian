@@ -9,7 +9,11 @@ import type { AgentType, ProviderModel } from "../types";
 
 const execFileAsync = promisify(execFile);
 type ExecFileResult = { stdout: string; stderr: string };
-type ExecFileFn = (file: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => Promise<ExecFileResult>;
+type ExecFileFn = (
+  file: string,
+  args: string[],
+  options?: { env?: NodeJS.ProcessEnv; timeout?: number; killSignal?: NodeJS.Signals }
+) => Promise<ExecFileResult>;
 type ReadFileFn = (filePath: string, encoding: BufferEncoding) => Promise<string>;
 
 interface CodexModelRecord {
@@ -60,6 +64,10 @@ const OPENAI_MODEL_EXCLUDES = [
 const CODEX_APP_SERVER_INIT_REQUEST_ID = "meridian-codex-init";
 const CODEX_APP_SERVER_MODEL_LIST_REQUEST_ID = "meridian-codex-model-list";
 const CODEX_APP_SERVER_MODEL_LIST_LIMIT = 200;
+// Outer safety net on the Node side. Coreutils `timeout 15` kills the inner
+// pipeline; this gives Node a few extra seconds to drain stdout before
+// SIGTERM-ing the immediate child.
+const CODEX_APP_SERVER_NODE_TIMEOUT_MS = 20_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -239,6 +247,17 @@ export class ProviderModelCatalog {
       }
     });
 
+    // Wrap the `cat <<EOF | codex app-server` pipeline with the `timeout`
+    // utility so the WHOLE process group (shell + cat + codex node shim +
+    // native codex Rust binary) is killed if codex doesn't return inside the
+    // budget. Without this, codex app-server keeps its stdin pipe waiting
+    // indefinitely after EOF, and every model/list call permanently leaks
+    // ~3 processes — each spawn hammers macOS syspolicyd for signature
+    // verification of the unsigned NPM codex binary, eventually pegging the
+    // daemon at 80%+ CPU and stalling every subsequent fork/exec on the box.
+    // Node's execFile { timeout: ... } only signals the immediate child
+    // (the shell) and leaves grandchildren orphaned; coreutils `timeout`
+    // signals the whole process group by default.
     const requestScript = [
       "cat <<'EOF' | codex app-server",
       initializeRequest,
@@ -247,9 +266,15 @@ export class ProviderModelCatalog {
       "EOF"
     ].join("\n");
 
-    const { stdout } = await this.execFileFn("/bin/sh", ["-lc", requestScript], {
-      env: process.env
-    });
+    const { stdout } = await this.execFileFn(
+      "timeout",
+      ["--kill-after=3", "15", "/bin/sh", "-lc", requestScript],
+      {
+        env: process.env,
+        timeout: CODEX_APP_SERVER_NODE_TIMEOUT_MS,
+        killSignal: "SIGTERM"
+      }
+    );
 
     const responseLines = stdout
       .split(/\r?\n/)
