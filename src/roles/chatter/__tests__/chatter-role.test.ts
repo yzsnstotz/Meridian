@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, realpathSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, realpathSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChatterRole } from "../../definitions/chatter";
@@ -435,5 +435,29 @@ describe("ChatterRole — onDeactivate", () => {
       makeTurnResult("x", { payload: { chatter: { mode: "session" } } })
     );
     expect(sent.length).toBe(0);
+  });
+
+  it("kills the bound agent session and clears persisted chatter state", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-role-")));
+    const { ctx, sent } = makeCtx();
+    const role = new ChatterRole("chatter-tenant-a", makeConfig(root));
+    await role.onActivate(ctx);
+    await role.onInboundResult(
+      makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(role, spawn, "claude_07");
+    sent.length = 0;
+
+    await role.onDeactivate();
+
+    const kill = sent.find((m) => m.intent === "kill" && m.target === "claude_07");
+    expect(kill).toBeDefined();
+    expect(kill!.suppress_reply).toBe(true);
+    const persisted = JSON.parse(
+      readFileSync(path.join(root, ".chatter-state", "state.json"), "utf8")
+    ) as { agent_session_id: string | null; in_flight_traces: unknown[] };
+    expect(persisted.agent_session_id).toBeNull();
+    expect(persisted.in_flight_traces).toEqual([]);
   });
 });

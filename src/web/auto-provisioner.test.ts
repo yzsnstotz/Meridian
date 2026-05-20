@@ -162,6 +162,24 @@ describe("createAutoProvisionerHandlers", () => {
     expect(response.body).toEqual({ error: "role_creation_failed", upstream_status: 503 });
   });
 
+  it("returns role_creation_failed when internal role creation throws a plain error", async () => {
+    process.env.ADS_HMAC_KEY = "super-secret";
+    const repoRoot = await createRepoRoot();
+    await writeCaller(repoRoot);
+    await writePolicy(repoRoot, "mumu", validPolicy);
+    const registry = await loadCallerRegistry({ repoRoot });
+    const handlers = createHarness({
+      repoRoot,
+      callerAuth: createRequireCallerAuth({ registry }),
+      createRole: vi.fn().mockRejectedValue(new Error("boom"))
+    });
+
+    const response = await invokeSigned(handlers.handle, "POST", "/api/projects/mumu/users/u_001/ensure-chatter", {});
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toEqual({ error: "role_creation_failed", upstream_status: 500 });
+  });
+
   it("archives chatter idempotently", async () => {
     process.env.ADS_HMAC_KEY = "super-secret";
     const repoRoot = await createRepoRoot();
