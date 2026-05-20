@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   ChatterManifestSchema,
+  InvalidRecordSchemaError,
+  hasRecordType,
   loadManifestFromTemplate,
-  loadManifestFromFile
+  loadManifestFromFile,
+  validateRecord
 } from "../manifest";
 
 describe("ChatterManifestSchema", () => {
@@ -18,6 +21,32 @@ describe("ChatterManifestSchema", () => {
     });
     expect(parsed.layers).toBe("flat");
     expect(parsed.bindings.conversation_log).toBe("turns/<date>/turn-<turn_id>.md");
+  });
+
+  it("accepts record_schemas with jsonSchema extension metadata", () => {
+    const parsed = ChatterManifestSchema.parse({
+      version: 1,
+      layers: "flat",
+      index: "none",
+      bindings: { conversation_log: "turns/<date>/turn-<turn_id>.md" },
+      record_schemas: {
+        template_short_drama: {
+          type: "object",
+          "x-indexed-fields": ["genre"],
+          properties: {
+            title: { type: "string" },
+            genre: { type: "string" }
+          },
+          required: ["title"],
+          additionalProperties: false
+        }
+      }
+    });
+
+    expect(parsed.record_schemas?.template_short_drama).toMatchObject({
+      type: "object",
+      "x-indexed-fields": ["genre"]
+    });
   });
 
   it("rejects unknown layer kind", () => {
@@ -139,5 +168,129 @@ describe("loadManifestFromFile", () => {
       })
     );
     expect(() => loadManifestFromFile(file)).toThrow();
+  });
+
+  it("compiles record_schemas and validates records with structured errors", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "chatter-manifest-"));
+    const file = path.join(dir, "m.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        layers: "flat",
+        index: "none",
+        bindings: { conversation_log: "turns/<turn_id>.md" },
+        record_schemas: {
+          template_short_drama: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              episode_count: { type: "integer", minimum: 1 }
+            },
+            required: ["title", "episode_count"],
+            additionalProperties: false
+          }
+        }
+      })
+    );
+
+    const manifest = loadManifestFromFile(file);
+
+    expect(hasRecordType(manifest, "template_short_drama")).toBe(true);
+    expect(hasRecordType(manifest, "unknown")).toBe(false);
+
+    const valid = validateRecord(manifest, "template_short_drama", {
+      title: "Rebirth Contract",
+      episode_count: 12
+    });
+    expect(valid).toEqual({
+      ok: true,
+      value: { title: "Rebirth Contract", episode_count: 12 }
+    });
+
+    const invalid = validateRecord(manifest, "template_short_drama", { episode_count: 0 });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.errors.length).toBeGreaterThan(0);
+      expect(invalid.errors.map((error) => error.instancePath)).toContain("");
+      expect(invalid.errors.map((error) => error.instancePath)).toContain("/episode_count");
+    }
+  });
+
+  it("keeps compiled record validators cached on the manifest", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "chatter-manifest-"));
+    const file = path.join(dir, "m.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        layers: "flat",
+        index: "none",
+        bindings: { conversation_log: "turns/<turn_id>.md" },
+        record_schemas: {
+          story_short_drama: {
+            type: "object",
+            properties: { title: { type: "string" } },
+            required: ["title"],
+            additionalProperties: false
+          }
+        }
+      })
+    );
+
+    const manifest = loadManifestFromFile(file);
+    const cachedBefore = manifest.compiledRecordSchemas?.get("story_short_drama");
+    validateRecord(manifest, "story_short_drama", { title: "Pilot" });
+    validateRecord(manifest, "story_short_drama", { title: "Finale" });
+
+    expect(cachedBefore).toBeDefined();
+    expect(manifest.compiledRecordSchemas?.get("story_short_drama")).toBe(cachedBefore);
+  });
+
+  it("rejects record_schemas entries missing a top-level type", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "chatter-manifest-"));
+    const file = path.join(dir, "m.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        layers: "flat",
+        index: "none",
+        bindings: { conversation_log: "turns/<turn_id>.md" },
+        record_schemas: {
+          template_short_drama: {
+            properties: { title: { type: "string" } }
+          }
+        }
+      })
+    );
+
+    expect(() => loadManifestFromFile(file)).toThrow(InvalidRecordSchemaError);
+    expect(() => loadManifestFromFile(file)).toThrow("template_short_drama");
+  });
+
+  it("rejects circular local refs in record_schemas", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "chatter-manifest-"));
+    const file = path.join(dir, "m.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        layers: "flat",
+        index: "none",
+        bindings: { conversation_log: "turns/<turn_id>.md" },
+        record_schemas: {
+          template_short_drama: {
+            type: "object",
+            properties: {
+              parent: { $ref: "#" }
+            }
+          }
+        }
+      })
+    );
+
+    expect(() => loadManifestFromFile(file)).toThrow(InvalidRecordSchemaError);
+    expect(() => loadManifestFromFile(file)).toThrow("template_short_drama");
   });
 });
