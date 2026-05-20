@@ -42,6 +42,7 @@ import { HttpServer } from "./server/http-server";
 import { createRoleHandlers, type ContinueDispatcherResponse } from "./server/role-handlers";
 import { createSchedulerHandlers } from "./server/scheduler-handlers";
 import { createSystemMonitorHandlers } from "./server/system-monitor";
+import { createAutoProvisionerHandlers } from "./web/auto-provisioner";
 import { createTimestampedLogger } from "./timestamped-logger";
 import {
   ACTIVE_ROLE_STATUS,
@@ -192,6 +193,12 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log,
     fetchAgentapiInstanceIndex
   });
+  const autoProvisionerHandlers = createAutoProvisionerHandlers({
+    stateStore,
+    createRole: (body) => roleHandlers.createRole(body),
+    deactivateRole: (threadId) => runner.deactivate(threadId),
+    resolveActiveRole: (threadId) => roleHandlers.resolveRole(threadId)
+  });
   const httpServer = new HttpServer({
     port: GUI_PORT,
     roleHandlers,
@@ -199,6 +206,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     schedulerHandlers,
     processHandlers,
     systemMonitorHandlers,
+    autoProvisionerHandlers,
     log
   });
   const settleKillThread = async (threadId: string): Promise<void> => {

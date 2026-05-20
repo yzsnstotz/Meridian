@@ -10,6 +10,7 @@ import type { PromptHandlers } from "./prompt-handlers";
 import type { RoleHandlers } from "./role-handlers";
 import type { SchedulerHandlers } from "./scheduler-handlers";
 import type { SystemMonitorHandlers } from "./system-monitor";
+import type { AutoProvisionerHandlers } from "../web/auto-provisioner";
 
 export interface HttpServerOptions {
   port?: number;
@@ -19,6 +20,7 @@ export interface HttpServerOptions {
   schedulerHandlers?: SchedulerHandlers;
   processHandlers?: ProcessHandlers;
   systemMonitorHandlers?: SystemMonitorHandlers;
+  autoProvisionerHandlers?: AutoProvisionerHandlers;
   publicDir?: string;
   log?: Logger;
 }
@@ -33,6 +35,7 @@ export class HttpServer {
   private readonly schedulerHandlers: SchedulerHandlers | null;
   private readonly processHandlers: ProcessHandlers | null;
   private readonly systemMonitorHandlers: SystemMonitorHandlers | null;
+  private readonly autoProvisionerHandlers: AutoProvisionerHandlers | null;
   private server: Server | null = null;
 
   constructor(options: HttpServerOptions) {
@@ -45,6 +48,7 @@ export class HttpServer {
     this.schedulerHandlers = options.schedulerHandlers ?? null;
     this.processHandlers = options.processHandlers ?? null;
     this.systemMonitorHandlers = options.systemMonitorHandlers ?? null;
+    this.autoProvisionerHandlers = options.autoProvisionerHandlers ?? null;
   }
 
   async listen(): Promise<void> {
@@ -106,6 +110,10 @@ export class HttpServer {
       }
 
       if (this.systemMonitorHandlers && await this.systemMonitorHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.autoProvisionerHandlers && await this.autoProvisionerHandlers.handle(request, response)) {
         return;
       }
 
