@@ -225,6 +225,23 @@ export class ChatterRole implements BaseRole {
   }
 
   async onInboundResult(result: HubResult): Promise<void> {
+    // Temp diag (2026-05-22): expose chatter inbound activity at info level so
+    // ADS-driven read-only-query timeouts can be triaged. Revert once the
+    // mumu chatter-inbound transport is validated end-to-end.
+    if (this.ctx) {
+      this.ctx.log.info("chatter: onInboundResult", {
+        chatter_id: this.config.chatter_id,
+        trace_id: result.trace_id,
+        thread_id: result.thread_id,
+        has_ctx: this.ctx !== null,
+        has_session_mgr: this.sessionMgr !== null,
+        has_resolver: this.resolver !== null,
+        has_envelope: result.payload?.chatter !== undefined,
+        has_read_only_query: result.payload?.chatter?.read_only_query !== undefined,
+        chatter_session_id: result.payload?.chatter?.chatter_session_id ?? null
+      });
+    }
+
     if (!this.ctx || !this.sessionMgr || !this.resolver) return;
 
     const trace = this.sessionMgr.getTrace(result.trace_id);
