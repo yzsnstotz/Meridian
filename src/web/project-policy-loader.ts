@@ -112,8 +112,19 @@ export function interpolatePolicyForUser(policy: ProjectPolicy, userId: string):
   const memoryFolder = interpolatePattern(policy.memory_folder_pattern, "memory_folder_pattern", userId);
   const chatId = interpolatePattern(policy.user_reply_channel_template.chat_id, "user_reply_channel_template.chat_id", userId);
 
+  // Per-project env override for llm_agent_kind. Lets a single source-of-
+  // truth project policy file (e.g. config/projects/mumu.json) hold the
+  // Mac-friendly default ("claude-code") while production hosts override
+  // to whatever CLI is actually installed and authenticated on that box
+  // (e.g. MUMU_LLM_AGENT_KIND=codex on EC2). Avoids per-host forks of the
+  // policy JSON and the dirty-tree state that creates.
+  const overrideEnvKey = `${policy.project_id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_LLM_AGENT_KIND`;
+  const llmAgentKindOverride = process.env[overrideEnvKey]?.trim();
+  const effectiveLlmAgentKind = llmAgentKindOverride || policy.llm_agent_kind;
+
   return {
     ...policy,
+    llm_agent_kind: effectiveLlmAgentKind,
     thread_id: threadId,
     memory_folder: memoryFolder,
     user_reply_channel: {
