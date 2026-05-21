@@ -241,7 +241,8 @@ type RoleRouteMatch =
   | { kind: "delete-role"; threadId: string }
   | { kind: "hub-relay" }
   | { kind: "list-credentials" }
-  | { kind: "list-agent-kinds" };
+  | { kind: "list-agent-kinds" }
+  | { kind: "hub-web-entrance" };
 
 const PACKAGE_VERSION = readPackageVersion();
 
@@ -636,6 +637,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "delete-role":
             writeJson(response, 200, await deleteRole(route.threadId));
+            return true;
+          case "hub-web-entrance":
+            redirectToHubWebEntrance(response);
             return true;
           case "hub-relay": {
             const rawHubMessage = HubMessageSchema.parse(await readJsonBody(request));
@@ -2283,6 +2287,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     return { kind: "hub-relay" };
   }
 
+  if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "hub-web-entrance") {
+    return { kind: "hub-web-entrance" };
+  }
+
   return null;
 }
 
@@ -2310,6 +2318,43 @@ function createHttpError(statusCode: number, message: string): Error & { statusC
   const error = new Error(message) as Error & { statusCode: number };
   error.statusCode = statusCode;
   return error;
+}
+
+/**
+ * GET /api/hub-web-entrance — 302 redirect to the meridian-hub web GUI with
+ * the access token pre-applied as a `?token=` query parameter. The token is
+ * never written into the meridian-roles HTML page; it only appears in the
+ * Location header of the redirect, returned to whichever (gateway-
+ * authenticated) client clicks the nav entry.
+ *
+ * Configured via two env vars on the meridian-roles process:
+ *   - HUB_WEB_URL: base URL of meridian-hub's web GUI. Loopback for
+ *     Mac dev (e.g. http://127.0.0.1:3000), or the public-tunneled
+ *     gateway path on AWS (e.g. https://aws.ioex.io/hub-web). When
+ *     either env var is absent, the endpoint returns 503 so the link
+ *     fails loud instead of opening an empty/broken page.
+ *   - HUB_WEB_TOKEN: value of the meridian-hub WEB_GUI_TOKEN env var.
+ *     meridian-hub's web server accepts the token either as
+ *     `Authorization: Bearer ...` or as a `?token=` query parameter
+ *     (see Meridian src/web/server.ts:resolveAuthToken).
+ */
+function redirectToHubWebEntrance(response: ServerResponse): void {
+  const url = process.env.HUB_WEB_URL?.trim();
+  const token = process.env.HUB_WEB_TOKEN?.trim();
+  if (!url || !token) {
+    writeJson(response, 503, {
+      error: "hub-web entrance not configured",
+      hint: "set HUB_WEB_URL + HUB_WEB_TOKEN env vars on the meridian-roles process"
+    });
+    return;
+  }
+  const base = url.replace(/\/+$/u, "");
+  const separator = base.includes("?") ? "&" : "?";
+  const target = `${base}/${separator}token=${encodeURIComponent(token)}`;
+  response.statusCode = 302;
+  response.setHeader("location", target);
+  response.setHeader("cache-control", "no-store");
+  response.end();
 }
 
 function readPackageVersion(): string {
