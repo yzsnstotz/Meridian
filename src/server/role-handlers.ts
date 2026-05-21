@@ -240,6 +240,7 @@ type RoleRouteMatch =
   | { kind: "patch-config"; threadId: string }
   | { kind: "delete-role"; threadId: string }
   | { kind: "hub-relay" }
+  | { kind: "chatter-inbound" }
   | { kind: "list-credentials" }
   | { kind: "list-agent-kinds" }
   | { kind: "hub-web-entrance" };
@@ -672,6 +673,23 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             }
             const result = await sendHubRequestImpl(hubMessage);
             writeJson(response, 200, result);
+            return true;
+          }
+          case "chatter-inbound": {
+            // External callers (e.g. ADS) drive a ChatterRole turn by POSTing
+            // a HubResult that carries the user turn under payload.chatter.
+            // RoleRunner.dispatch routes by result.thread_id to the live
+            // role and invokes onInboundResult. The chatter's reply is
+            // delivered asynchronously through its configured
+            // user_reply_channel — this endpoint is a fire-and-forget ack.
+            const result = HubResultSchema.parse(await readJsonBody(request));
+            await options.runner.dispatch(result);
+            writeJson(response, 200, {
+              ok: true,
+              dispatched: true,
+              trace_id: result.trace_id,
+              thread_id: result.thread_id
+            });
             return true;
           }
         }
@@ -2285,6 +2303,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
 
   if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "hub-relay") {
     return { kind: "hub-relay" };
+  }
+
+  if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "chatter-inbound") {
+    return { kind: "chatter-inbound" };
   }
 
   if (method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === "hub-web-entrance") {
