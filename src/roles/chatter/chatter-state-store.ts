@@ -14,6 +14,7 @@ export const ChatterInFlightTraceSchema = z.object({
   // "job_dispatch" — outbound intent:"run" to agent-dispatcher for a coding job.
   purpose: z.enum(["spawn", "agent_turn", "job_dispatch"]),
   agent_session_id: z.string().min(1).nullable().default(null),
+  chatter_session_id: z.string().min(1).optional(),
   registered_at: z.string().datetime()
 });
 export type ChatterInFlightTrace = z.infer<typeof ChatterInFlightTraceSchema>;

@@ -77,6 +77,7 @@ function agentTypeForKind(kind: ChatterRoleConfig["llm_agent_kind"]): string {
  */
 interface QueuedTurn {
   content: string;
+  chatterSessionId?: string;
 }
 
 export interface ChatterRoleOptions {
@@ -260,17 +261,17 @@ export class ChatterRole implements BaseRole {
     }
 
     if (envelope.read_only_query) {
-      await this.handleReadOnlyQuery(envelope.read_only_query);
+      await this.handleReadOnlyQuery(envelope.read_only_query, envelope.chatter_session_id);
       return;
     }
 
     if (envelope.control === "confirm_observation") {
-      await this.handleConfirmObservation(envelope.observation_id);
+      await this.handleConfirmObservation(envelope.observation_id, envelope.chatter_session_id);
       return;
     }
 
     if (envelope.control === "reject_observation") {
-      await this.handleRejectObservation(envelope.observation_id);
+      await this.handleRejectObservation(envelope.observation_id, envelope.chatter_session_id);
       return;
     }
 
@@ -343,17 +344,17 @@ export class ChatterRole implements BaseRole {
 
     if (this.pendingSpawnTraceId !== null) {
       // Spawn still handshaking; queue this turn — onSpawnResponse drains.
-      this.pendingTurns.push({ content: dispatchContent });
+      this.pendingTurns.push({ content: dispatchContent, chatterSessionId: envelope.chatter_session_id });
       return;
     }
 
     if (this.sessionMgr!.currentSessionId === null) {
       this.kickoffSpawn();
-      this.pendingTurns.push({ content: dispatchContent });
+      this.pendingTurns.push({ content: dispatchContent, chatterSessionId: envelope.chatter_session_id });
       return;
     }
 
-    await this.dispatchRun(dispatchContent);
+    await this.dispatchRun(dispatchContent, envelope.chatter_session_id);
   }
 
   private async handleSuggestObservation(args: unknown): Promise<unknown> {
@@ -379,9 +380,15 @@ export class ChatterRole implements BaseRole {
     return { ok: true, observation_id: observationId };
   }
 
-  private async handleConfirmObservation(observationId: string | undefined): Promise<void> {
+  private async handleConfirmObservation(
+    observationId: string | undefined,
+    chatterSessionId?: string
+  ): Promise<void> {
     if (!observationId) {
-      await this.forwardChatterReply("error: missing_observation_id", {});
+      await this.forwardChatterReply(
+        "error: missing_observation_id",
+        chatterSessionId ? { chatter_session_id: chatterSessionId } : {}
+      );
       return;
     }
 
@@ -389,7 +396,10 @@ export class ChatterRole implements BaseRole {
     if (!entry) {
       await this.forwardChatterReply(
         `error: observation_expired_or_unknown: ${observationId}`,
-        { observation_id: observationId }
+        {
+          observation_id: observationId,
+          ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
+        }
       );
       return;
     }
@@ -398,20 +408,30 @@ export class ChatterRole implements BaseRole {
     if (isStructuredError(result)) {
       await this.forwardChatterReply(
         `error: ${result.error}${result.details ? `: ${JSON.stringify(result.details)}` : ""}`,
-        { observation_id: observationId }
+        {
+          observation_id: observationId,
+          ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
+        }
       );
       return;
     }
 
     this.observationCache?.evict(observationId);
     await this.forwardChatterReply(`observation_confirmed: ${observationId}`, {
-      observation_id: observationId
+      observation_id: observationId,
+      ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
     });
   }
 
-  private async handleRejectObservation(observationId: string | undefined): Promise<void> {
+  private async handleRejectObservation(
+    observationId: string | undefined,
+    chatterSessionId?: string
+  ): Promise<void> {
     if (!observationId) {
-      await this.forwardChatterReply("error: missing_observation_id", {});
+      await this.forwardChatterReply(
+        "error: missing_observation_id",
+        chatterSessionId ? { chatter_session_id: chatterSessionId } : {}
+      );
       return;
     }
 
@@ -419,14 +439,18 @@ export class ChatterRole implements BaseRole {
     if (!entry) {
       await this.forwardChatterReply(
         `error: observation_expired_or_unknown: ${observationId}`,
-        { observation_id: observationId }
+        {
+          observation_id: observationId,
+          ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
+        }
       );
       return;
     }
 
     this.observationCache?.evict(observationId);
     await this.forwardChatterReply(`observation_rejected: ${observationId}`, {
-      observation_id: observationId
+      observation_id: observationId,
+      ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
     });
   }
 
@@ -455,7 +479,10 @@ export class ChatterRole implements BaseRole {
     );
   }
 
-  private async handleReadOnlyQuery(query: ChatterReadOnlyQuery): Promise<void> {
+  private async handleReadOnlyQuery(
+    query: ChatterReadOnlyQuery,
+    chatterSessionId?: string
+  ): Promise<void> {
     const skill = query.skill;
     const readOnlyAllowlist = this.resolver!.manifest.read_only_allowlist ?? [];
     if (!readOnlyAllowlist.includes(skill)) {
@@ -463,7 +490,7 @@ export class ChatterRole implements BaseRole {
       await this.forwardReadOnlyQueryResult({
         ok: false,
         error: `denied_skill: ${skill}`
-      });
+      }, chatterSessionId);
       return;
     }
 
@@ -473,7 +500,7 @@ export class ChatterRole implements BaseRole {
       await this.forwardReadOnlyQueryResult({
         ok: false,
         error: `unknown_skill: ${skill}`
-      });
+      }, chatterSessionId);
       return;
     }
 
@@ -485,18 +512,18 @@ export class ChatterRole implements BaseRole {
           ok: false,
           error: result.error,
           result
-        });
+        }, chatterSessionId);
         return;
       }
 
       incrementChatterReadOnlyQueryTotal(skill, "ok");
-      await this.forwardReadOnlyQueryResult({ ok: true, result });
+      await this.forwardReadOnlyQueryResult({ ok: true, result }, chatterSessionId);
     } catch (error) {
       incrementChatterReadOnlyQueryTotal(skill, "error");
       await this.forwardReadOnlyQueryResult({
         ok: false,
         error: error instanceof Error ? error.message : String(error)
-      });
+      }, chatterSessionId);
     }
   }
 
@@ -642,13 +669,20 @@ export class ChatterRole implements BaseRole {
 
     const queued = this.pendingTurns.splice(0);
     for (const turn of queued) {
-      await this.dispatchRun(turn.content);
+      await this.dispatchRun(turn.content, turn.chatterSessionId);
     }
     await this.drainSelfInitiatedTurnQueue();
   }
 
   private async onAgentTurnResponse(result: HubResult): Promise<void> {
-    await this.forwardToUser(result.content);
+    const trace = this.sessionMgr!.getTrace(result.trace_id);
+    if (trace?.chatter_session_id) {
+      await this.forwardChatterReply(result.content, {
+        chatter_session_id: trace.chatter_session_id
+      });
+    } else {
+      await this.forwardToUser(result.content);
+    }
     if (result.status === "error") {
       this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
     } else if (result.run_state === "completed") {
@@ -714,12 +748,13 @@ export class ChatterRole implements BaseRole {
     }
   }
 
-  private async dispatchRun(content: string): Promise<void> {
+  private async dispatchRun(content: string, chatterSessionId?: string): Promise<void> {
     const traceId = randomUUID();
     this.sessionMgr!.registerTrace({
       trace_id: traceId,
       purpose: "agent_turn",
-      agent_session_id: this.sessionMgr!.currentSessionId
+      agent_session_id: this.sessionMgr!.currentSessionId,
+      ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
     });
 
     const runMsg: HubMessage = {
@@ -894,7 +929,10 @@ export class ChatterRole implements BaseRole {
     });
   }
 
-  private async forwardReadOnlyQueryResult(result: ChatterReadOnlyQueryResult): Promise<void> {
+  private async forwardReadOnlyQueryResult(
+    result: ChatterReadOnlyQueryResult,
+    chatterSessionId?: string
+  ): Promise<void> {
     if (!this.ctx || !this.config.user_reply_channel) return;
     const msg: HubMessage = {
       trace_id: randomUUID(),
@@ -906,7 +944,10 @@ export class ChatterRole implements BaseRole {
       payload: {
         content: JSON.stringify({ read_only_query_result: result }),
         attachments: [],
-        chatter: { read_only_query_result: result }
+        chatter: {
+          read_only_query_result: result,
+          ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
+        }
       },
       mode: "bridge",
       reply_channel: this.config.user_reply_channel,
