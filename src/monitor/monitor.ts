@@ -109,15 +109,21 @@ export class MonitorManager {
     // thread whose underlying process is actually running fine — a state
     // downstream consumers (notably Meridian-roles validator orchestration)
     // cannot distinguish from a real crash and stay wedged on indefinitely.
-    if (instance.mode === "stateless_call") {
+    if (instance.mode === "stateless_call" || !instance.socket_path) {
+      // No agentapi socket to subscribe to. Applies to stateless_call AND to
+      // streaming-bridge instances (2026-05-21): both run via per-turn
+      // `codex exec --json` and never bind to a Unix socket. The monitor's
+      // SSE-hook + heartbeat model assumes a live agentapi pane, so we just
+      // skip registration. The hub registry status for these instances is
+      // updated directly by router.handleRun's stream-run path.
       this.log.info(
         {
           trace_id: null,
           thread_id: instance.thread_id,
-          socket_path: instance.socket_path,
+          socket_path: instance.socket_path ?? null,
           mode: instance.mode
         },
-        "Skipping monitor registration for stateless instance"
+        "Skipping monitor registration for instance with no agentapi pane"
       );
       return;
     }
@@ -202,8 +208,26 @@ export class MonitorManager {
   }
 
   private async startTask(task: MonitorTask): Promise<void> {
+    // `register()` short-circuits for streaming-bridge / stateless_call
+    // instances, so by here we have a legacy non-streaming bridge instance
+    // with both socket_path and pid set. Narrow them locally for the
+    // null-safety checks below.
+    const taskSocketPath = task.instance.socket_path;
+    const taskPid = task.instance.pid;
+    if (!taskSocketPath || taskPid === null || taskPid === undefined) {
+      this.log.warn(
+        {
+          trace_id: null,
+          thread_id: task.instance.thread_id,
+          socket_path: taskSocketPath ?? null,
+          pid: taskPid ?? null
+        },
+        "Refusing to start monitor task: instance has no agentapi pane"
+      );
+      return;
+    }
     try {
-      await task.client.connect(task.instance.socket_path);
+      await task.client.connect(taskSocketPath);
       this.startSseSubscription(task);
     } catch (error) {
       if (!task.active) {
@@ -211,7 +235,7 @@ export class MonitorManager {
       }
 
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const pidAlive = this.isPidAlive(task.instance.pid);
+      const pidAlive = this.isPidAlive(taskPid);
       const reason = pidAlive ? "SOCKET_UNREACHABLE" : "PID_GONE";
       this.log.error(
         {
@@ -399,7 +423,11 @@ export class MonitorManager {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       task.missedHeartbeats += 1;
-      const pidAlive = this.isPidAlive(task.instance.pid);
+      // Heartbeat tasks only run for legacy non-streaming bridge instances
+      // (register() skips streaming/stateless), so task.instance.pid is set.
+      // Defensive fallback to "PID_GONE" if it's missing anyway.
+      const taskPid = task.instance.pid;
+      const pidAlive = taskPid !== null && taskPid !== undefined ? this.isPidAlive(taskPid) : false;
       const reason = pidAlive ? "SOCKET_UNREACHABLE" : "PID_GONE";
       await this.emitEvent(task, "heartbeat_missed", {
         missed_heartbeats: task.missedHeartbeats,

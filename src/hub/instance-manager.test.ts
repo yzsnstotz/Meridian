@@ -41,7 +41,11 @@ const socketModeOptions = {
   agentapiAttachSocketSupport: true
 } as const;
 
-test("spawn registers instance and uses bridge args", async () => {
+test("spawn registers a streaming-bridge codex instance without launching agentapi", async () => {
+  // After the 2026-05-20 streaming-default change, codex/claude/gemini in
+  // `bridge` mode are metadata-only: no agentapi child is forked at spawn,
+  // and pid/socket_path stay null. Per-turn LLM work is forked by
+  // tryHandleStreamRun via `codex exec --json`.
   const registry = new InstanceRegistry();
   const spawnCalls: Array<{ command: string; args: string[]; detached?: boolean }> = [];
 
@@ -61,17 +65,97 @@ test("spawn registers instance and uses bridge args", async () => {
 
   const threadId = await manager.spawn("codex", "bridge");
   const instance = registry.get(threadId);
-  const socketPath = socketPathForThread(threadId);
 
   assert.equal(threadId, "codex_01");
-  assert.equal(instance?.socket_path, socketPath);
-  assert.equal(instance?.pid, 1101);
+  assert.equal(spawnCalls.length, 0, "no agentapi child should be forked for stream-capable bridge agents");
+  assert.equal(instance?.mode, "bridge");
+  assert.equal(instance?.socket_path, null);
+  assert.equal(instance?.pid, null);
   assert.equal(instance?.restart_safe, true);
   assert.equal(instance?.supportsStream, true);
-  assert.equal(spawnCalls[0]?.detached, true);
-  assert.deepEqual(spawnCalls[0]?.args, ["server", "--type=codex", `--socket=${socketPath}`, "--", "codex"]);
 
   await manager.kill(threadId);
+  assert.equal(registry.get(threadId), undefined);
+});
+
+test("spawn skips the agentapi child for every stream-capable bridge agent (codex / claude / gemini)", async () => {
+  // Single test that pins the streaming-default invariant across all three
+  // stream-capable agent types: no agentapi process is ever forked at
+  // spawn-time. Per-turn LLM work is forked by tryHandleStreamRun via
+  // `spawnStreamAgent`, not by this path.
+  for (const agentType of ["codex", "claude", "gemini"] as const) {
+    const registry = new InstanceRegistry();
+    let spawnCalls = 0;
+
+    const manager = new InstanceManager(registry, {
+      ...socketModeOptions,
+      socketPathFactory: socketPathForThread,
+      spawnFn: (() => {
+        spawnCalls += 1;
+        return new FakeChildProcess(1100) as never;
+      }) as never,
+      clientFactory: () => ({
+        connect: async () => undefined,
+        disconnect: () => undefined,
+        getStatus: async () => ({ status: "idle" })
+      })
+    });
+
+    const threadId = await manager.spawn(agentType, "bridge");
+    const instance = registry.get(threadId);
+
+    assert.equal(
+      spawnCalls,
+      0,
+      `${agentType} bridge spawn must not fork an agentapi child (streaming-default)`
+    );
+    assert.equal(instance?.agent_type, agentType);
+    assert.equal(instance?.mode, "bridge");
+    assert.equal(instance?.pid, null, `${agentType} streaming-bridge must have pid=null`);
+    assert.equal(instance?.socket_path, null, `${agentType} streaming-bridge must have socket_path=null`);
+    assert.equal(instance?.supportsStream, true);
+    assert.equal(instance?.status, "idle");
+
+    await manager.kill(threadId);
+  }
+});
+
+test("kill removes a streaming-bridge registry entry without process kill or socket unlink", async () => {
+  // Streaming-bridge kill is metadata-only: drop the registry entry, fire
+  // onStateChange, clear session bindings. No child process is signaled and
+  // no socket file is unlinked because neither exists.
+  const registry = new InstanceRegistry();
+  let spawnCalls = 0;
+  let stateChangeCount = 0;
+
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    socketPathFactory: socketPathForThread,
+    spawnFn: (() => {
+      spawnCalls += 1;
+      return new FakeChildProcess(1109) as never;
+    }) as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+  manager.setOnStateChange(() => {
+    stateChangeCount += 1;
+  });
+
+  const threadId = await manager.spawn("codex", "bridge");
+  manager.attach(threadId, "777:chat-stream");
+  assert.equal(manager.getAttachedThread("777:chat-stream"), threadId);
+  assert.equal(spawnCalls, 0, "spawn must not have forked anything");
+
+  const stateChangesAfterSpawn = stateChangeCount;
+  await manager.kill(threadId);
+
+  assert.equal(registry.get(threadId), undefined, "registry entry must be removed");
+  assert.equal(manager.getAttachedThread("777:chat-stream"), null, "session binding must be cleared");
+  assert.ok(stateChangeCount > stateChangesAfterSpawn, "kill must fire onStateChange so disk view tracks the removal");
 });
 
 test("spawn registers stateless_call codex instance without launching AgentAPI", async () => {
@@ -117,7 +201,10 @@ test("spawn registers stateless_call codex instance without launching AgentAPI",
   assert.equal(registry.get(threadId), undefined);
 });
 
-test("describeSpawnInvocation exposes provider append flags for agent cards", async () => {
+test("describeSpawnInvocation exposes the codex-exec command for streaming-bridge instances", async () => {
+  // Streaming-bridge codex/claude/gemini have no agentapi pane to describe.
+  // The agent card surfaces the per-turn `codex exec --json` invocation that
+  // tryHandleStreamRun forks for every /api/run.
   const registry = new InstanceRegistry();
 
   const manager = new InstanceManager(registry, {
@@ -138,16 +225,21 @@ test("describeSpawnInvocation exposes provider append flags for agent cards", as
   assert.ok(instance);
 
   const invocation = manager.describeSpawnInvocation(instance);
-  assert.equal(invocation.command, "/Users/yzliu/work/Meridian/bin/agentapi");
+  assert.equal(invocation.command, "codex");
   assert.deepEqual(invocation.provider_args, [
     "codex",
+    "exec",
+    "--json",
     "-c",
     'model_reasoning_effort="high"',
     "--model",
     "gpt-5.4",
     "--dangerously-bypass-approvals-and-sandbox"
   ]);
-  assert.equal(invocation.provider_append, 'codex -c model_reasoning_effort="high" --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox');
+  assert.equal(
+    invocation.provider_append,
+    'codex exec --json -c model_reasoning_effort="high" --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox'
+  );
 
   await manager.kill(threadId);
 });
@@ -228,7 +320,10 @@ test("spawn stores spawn_trace_id on instance and registry when provided", async
   await manager.kill(threadId);
 });
 
-test("spawn falls back to --port when server does not support --socket", async () => {
+test("spawn falls back to --port when server does not support --socket (cursor)", async () => {
+  // Cursor is the only remaining non-streaming bridge agent, so it still
+  // exercises the agentapi endpoint-binding path. codex/claude/gemini bridge
+  // no longer spawn an agentapi pane (streaming-default change).
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
 
@@ -245,18 +340,22 @@ test("spawn falls back to --port when server does not support --socket", async (
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge");
+  const threadId = await manager.spawn("cursor", "bridge");
   const instance = registry.get(threadId);
   const portArg = spawnCalls[0]?.find((arg) => arg.startsWith("--port="));
 
-  assert.equal(threadId, "codex_01");
+  assert.equal(threadId, "cursor_01");
   assert.match(portArg ?? "", /^--port=\d+$/);
   assert.match(instance?.socket_path ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
 
   await manager.kill(threadId);
 });
 
-test("spawn forwards selected model and reasoning effort to provider CLI", async () => {
+test("spawn forwards selected model and reasoning effort into the streaming-bridge codex-exec invocation", async () => {
+  // Streaming-bridge codex does not spawn an agentapi child, but model/effort
+  // selections must be persisted on the registry so the per-turn
+  // `codex exec --json` (forked by tryHandleStreamRun) and the GUI's agent
+  // card (via describeSpawnInvocation) receive them.
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
 
@@ -275,16 +374,20 @@ test("spawn forwards selected model and reasoning effort to provider CLI", async
   });
 
   const threadId = await manager.spawn("codex", "bridge", undefined, "gpt-5.4", true, "xhigh");
+  const instance = registry.get(threadId);
+  assert.ok(instance);
 
   assert.equal(threadId, "codex_01");
-  assert.equal(registry.get(threadId)?.model_id, "gpt-5.4");
-  assert.equal(registry.get(threadId)?.reasoning_effort, "xhigh");
-  assert.deepEqual(spawnCalls[0], [
-    "server",
-    "--type=codex",
-    `--socket=${socketPathForThread(threadId)}`,
-    "--",
+  assert.equal(spawnCalls.length, 0, "streaming-bridge codex must not fork an agentapi child");
+  assert.equal(instance.model_id, "gpt-5.4");
+  assert.equal(instance.reasoning_effort, "xhigh");
+  assert.equal(instance.auto_approve, true);
+
+  const invocation = manager.describeSpawnInvocation(instance);
+  assert.deepEqual(invocation.provider_args, [
     "codex",
+    "exec",
+    "--json",
     "-c",
     'model_reasoning_effort="xhigh"',
     "--model",
@@ -296,6 +399,8 @@ test("spawn forwards selected model and reasoning effort to provider CLI", async
 });
 
 test("spawn stores auto_approve in the registry when requested", async () => {
+  // Streaming-bridge claude is metadata-only; auto_approve still has to land
+  // on the registry so the per-turn provider CLI receives the bypass flag.
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
 
@@ -314,24 +419,22 @@ test("spawn stores auto_approve in the registry when requested", async () => {
   });
 
   const threadId = await manager.spawn("claude", "bridge", undefined, undefined, true);
+  const instance = registry.get(threadId);
 
   assert.equal(threadId, "claude_01");
-  assert.equal(registry.get(threadId)?.auto_approve, true);
-  assert.deepEqual(spawnCalls[0], [
-    "server",
-    "--type=claude",
-    `--socket=${socketPathForThread(threadId)}`,
-    "--",
-    "claude",
-    "--allowedTools",
-    "Bash Edit Replace",
-    "--dangerously-skip-permissions"
-  ]);
+  assert.equal(spawnCalls.length, 0, "streaming-bridge claude must not fork an agentapi child");
+  assert.equal(instance?.auto_approve, true);
+  assert.equal(instance?.pid, null);
+  assert.equal(instance?.socket_path, null);
+  assert.equal(instance?.supportsStream, true);
 
   await manager.kill(threadId);
 });
 
 test("spawn stores integration_profile and sandbox_mode on the registry instance", async () => {
+  // Streaming-bridge codex skips the agentapi fork, but integration_profile
+  // and sandbox_mode still need to round-trip through the registry so the
+  // per-turn `codex exec --json` (and the GUI agent card) see them.
   const registry = new InstanceRegistry();
   const spawnCalls: string[][] = [];
 
@@ -360,18 +463,22 @@ test("spawn stores integration_profile and sandbox_mode on the registry instance
     "ads_public",
     "read-only"
   );
+  const instance = registry.get(threadId);
+  assert.ok(instance);
 
   assert.equal(threadId, "codex_01");
-  assert.equal(registry.get(threadId)?.integration_profile, "ads_public");
-  assert.equal(registry.get(threadId)?.sandbox_mode, "read-only");
-  assert.deepEqual(spawnCalls[0], [
-    "server",
-    "--type=codex",
-    `--socket=${socketPathForThread(threadId)}`,
-    "--",
+  assert.equal(spawnCalls.length, 0, "streaming-bridge codex must not fork an agentapi child");
+  assert.equal(instance.integration_profile, "ads_public");
+  assert.equal(instance.sandbox_mode, "read-only");
+
+  const invocation = manager.describeSpawnInvocation(instance);
+  assert.deepEqual(invocation.provider_args, [
     "codex",
+    "exec",
+    "--json",
     "--sandbox",
-    "read-only"
+    "read-only",
+    "--skip-git-repo-check"
   ]);
 
   await manager.kill(threadId);
@@ -402,114 +509,17 @@ test("spawn rejects unsupported providers for read-only sandbox mode", async () 
   assert.equal(spawnCalls, 0);
 });
 
-test("spawn claude bridge includes --allowedTools args", async () => {
-  const registry = new InstanceRegistry();
-  const spawnCalls: string[][] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    spawnFn: ((_: string, args: string[]) => {
-      spawnCalls.push(args);
-      return new FakeChildProcess(1202) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("claude", "bridge");
-  const socketPath = socketPathForThread(threadId);
-  assert.equal(threadId, "claude_01");
-  assert.deepEqual(spawnCalls[0], [
-    "server",
-    "--type=claude",
-    `--socket=${socketPath}`,
-    "--",
-    "claude",
-    "--allowedTools",
-    "Bash Edit Replace"
-  ]);
-
-  await manager.kill(threadId);
-});
-
-test("spawn claude bridge threads reasoning_effort to the CLI --effort flag", async () => {
-  const registry = new InstanceRegistry();
-  const spawnCalls: string[][] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    spawnFn: ((_: string, args: string[]) => {
-      spawnCalls.push(args);
-      return new FakeChildProcess(1208) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("claude", "bridge", undefined, "claude-opus-4-7", true, "high");
-  const socketPath = socketPathForThread(threadId);
-
-  assert.equal(threadId, "claude_01");
-  assert.equal(registry.get(threadId)?.reasoning_effort, "high");
-  assert.deepEqual(spawnCalls[0], [
-    "server",
-    "--type=claude",
-    `--socket=${socketPath}`,
-    "--",
-    "claude",
-    "--allowedTools",
-    "Bash Edit Replace",
-    "--effort",
-    "high",
-    "--model",
-    "claude-opus-4-7",
-    "--dangerously-skip-permissions"
-  ]);
-
-  await manager.kill(threadId);
-});
-
-test("spawn codex bridge includes auto-approve flag when requested", async () => {
-  const registry = new InstanceRegistry();
-  const spawnCalls: string[][] = [];
-
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    spawnFn: ((_: string, args: string[]) => {
-      spawnCalls.push(args);
-      return new FakeChildProcess(1203) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({ status: "idle" })
-    })
-  });
-
-  const threadId = await manager.spawn("codex", "bridge", undefined, undefined, true);
-  const socketPath = socketPathForThread(threadId);
-
-  assert.equal(threadId, "codex_01");
-  assert.deepEqual(spawnCalls[0], [
-    "server",
-    "--type=codex",
-    `--socket=${socketPath}`,
-    "--",
-    "codex",
-    "--dangerously-bypass-approvals-and-sandbox"
-  ]);
-
-  await manager.kill(threadId);
-});
+// Deleted 2026-05-21: `spawn claude bridge includes --allowedTools args`,
+// `spawn claude bridge threads reasoning_effort to the CLI --effort flag`,
+// `spawn codex bridge includes auto-approve flag when requested`. All three
+// asserted agentapi-pane spawn arguments for claude/codex bridge mode. The
+// streaming-default change makes these instances metadata-only — no
+// agentapi child is forked at spawn-time, so the assertions describe
+// behavior that no longer exists. The provider-CLI arg construction is
+// still covered by:
+//   - `buildClaudeStreamArgs` (tested via `spawnStreamAgent launches a provider CLI directly` below)
+//   - `buildCodexExecArgs`     (tested via `describeSpawnInvocation exposes the codex-exec command for streaming-bridge instances`
+//                              and `spawn forwards selected model and reasoning effort into the streaming-bridge codex-exec invocation`)
 
 test("spawnStreamAgent launches a provider CLI directly and pipes the prompt over stdin", () => {
   const registry = new InstanceRegistry();
@@ -631,7 +641,10 @@ test("sendTerminalInput rejects bridge threads", async () => {
   await manager.kill(threadId);
 });
 
-test("spawn retries after transient readiness failure", async () => {
+test("spawn retries after transient readiness failure (cursor)", async () => {
+  // Only `cursor` still spawns an agentapi pane (non-streaming bridge), so
+  // the readiness-retry path is now cursor-only. Streaming-bridge codex /
+  // claude / gemini are metadata-only and have no readiness probe to retry.
   const registry = new InstanceRegistry();
   let spawnCount = 0;
   let failReadiness = true;
@@ -665,8 +678,8 @@ test("spawn retries after transient readiness failure", async () => {
     })
   });
 
-  const threadId = await manager.spawn("gemini", "bridge");
-  assert.equal(threadId, "gemini_01");
+  const threadId = await manager.spawn("cursor", "bridge");
+  assert.equal(threadId, "cursor_01");
   assert.equal(spawnCount, 2);
   assert.equal(registry.get(threadId)?.socket_path, socketPathForThread(threadId));
 
@@ -674,16 +687,20 @@ test("spawn retries after transient readiness failure", async () => {
 });
 
 test("spawn honors explicit working directory", async () => {
+  // Streaming-bridge codex stores working_dir on the registry (no agentapi
+  // spawn). The per-turn `codex exec --json` fork — see `spawnStreamAgent`
+  // — reads `instance.working_dir` as its cwd. Cursor's cwd hand-off
+  // through spawnFn is covered separately by the cursor lifecycle tests.
   const registry = new InstanceRegistry();
-  let observedCwd: string | undefined;
+  let spawnCalls = 0;
 
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
     socketPathFactory: socketPathForThread,
-    spawnFn: ((command: string, args: string[], options?: { cwd?: string }) => {
+    spawnFn: ((command: string, args: string[]) => {
       void command;
       void args;
-      observedCwd = options?.cwd;
+      spawnCalls += 1;
       return new FakeChildProcess(2555) as never;
     }) as never,
     clientFactory: () => ({
@@ -695,12 +712,18 @@ test("spawn honors explicit working directory", async () => {
 
   const threadId = await manager.spawn("codex", "bridge", "/tmp");
   assert.equal(threadId, "codex_01");
-  assert.equal(observedCwd, "/tmp");
+  assert.equal(spawnCalls, 0, "streaming-bridge codex must not fork an agentapi child");
+  assert.equal(registry.get(threadId)?.working_dir, "/tmp");
 
   await manager.kill(threadId);
 });
 
-test("attach + status + list + kill + restart lifecycle", async () => {
+test("attach + status + list + kill + restart lifecycle (cursor)", async () => {
+  // Lifecycle test for the agentapi-pane path. Cursor is the one remaining
+  // non-streaming bridge agent that still spawns a pane, polls it via
+  // client.getStatus(), and unlinks a socket on kill. Streaming-bridge
+  // codex/claude/gemini are exercised by the dedicated streaming-bridge
+  // spawn/kill tests at the top of this file.
   const registry = new InstanceRegistry();
   const children = new Map<string, FakeChildProcess>();
   let spawnCounter = 0;
@@ -711,8 +734,8 @@ test("attach + status + list + kill + restart lifecycle", async () => {
     spawnFn: ((command: string, args: string[]) => {
       void command;
       spawnCounter += 1;
-      const typeArg = args.find((arg) => arg.startsWith("--type=")) ?? "--type=codex";
-      const type = typeArg.split("=")[1] ?? "codex";
+      const typeArg = args.find((arg) => arg.startsWith("--type=")) ?? "--type=cursor";
+      const type = typeArg.split("=")[1] ?? "cursor";
       const threadId = `${type}_01`;
       const child = new FakeChildProcess(3300 + spawnCounter);
       children.set(threadId, child);
@@ -725,7 +748,7 @@ test("attach + status + list + kill + restart lifecycle", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge", undefined, undefined, undefined, "high");
+  const threadId = await manager.spawn("cursor", "bridge");
   const attachResult = manager.attach(threadId, "chat-1");
   assert.equal(attachResult.thread_id, threadId);
   assert.equal(manager.getAttachedThread("chat-1"), threadId);
@@ -741,14 +764,17 @@ test("attach + status + list + kill + restart lifecycle", async () => {
   assert.equal(restartedThread, threadId);
   assert.equal(manager.getAttachedThread("chat-1"), threadId);
   assert.equal(registry.get(threadId)?.status, "idle");
-  assert.equal(registry.get(threadId)?.reasoning_effort, "high");
 
   await manager.kill(threadId);
   assert.equal(registry.has(threadId), false);
   assert.equal(manager.getAttachedThread("chat-1"), null);
 });
 
-test("status persists the live current model reported by agentapi", async () => {
+test("status persists the live current model reported by agentapi (cursor)", async () => {
+  // Live-model probing only runs against an agentapi pane. Streaming-bridge
+  // codex/claude/gemini have no pane to probe, so status() returns the
+  // registry's last-known model. Cursor still spawns a pane and exercises
+  // the live-status → registry write-through path.
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
@@ -766,7 +792,7 @@ test("status persists the live current model reported by agentapi", async () => 
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge");
+  const threadId = await manager.spawn("cursor", "bridge");
   const status = await manager.status(threadId);
 
   assert.equal(status.instance.model_id, "gpt-5.4");
@@ -806,7 +832,11 @@ test("status normalizes stable agentapi state to waiting", async () => {
   assert.equal(registry.get("codex_01")?.status, "waiting");
 });
 
-test("status infers the live current model from agent messages when status omits it", async () => {
+test("status infers the live current model from agent messages when status omits it (cursor)", async () => {
+  // Pane-message model inference still belongs to the agentapi-pane path.
+  // Cursor is the only agent type that still owns a pane; codex/claude/gemini
+  // bridge instances do not probe a pane at all (streaming-default), so
+  // status() returns the registry's last-known model for them.
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
@@ -819,7 +849,7 @@ test("status infers the live current model from agent messages when status omits
       disconnect: () => undefined,
       getStatus: async () => ({
         status: "running",
-        agent_type: "codex"
+        agent_type: "cursor"
       }),
       getMessages: async () => ([
         {
@@ -827,7 +857,7 @@ test("status infers the live current model from agent messages when status omits
           role: "agent",
           content: [
             "╭─────────────────────────────────────────────╮",
-            "│ >_ OpenAI Codex (v0.120.0)                  │",
+            "│ >_ Cursor Agent                             │",
             "│                                             │",
             "│ model:     gpt-5.4 xhigh   /model to change │",
             "│ directory: ~/work/projects/clawso           │",
@@ -838,7 +868,7 @@ test("status infers the live current model from agent messages when status omits
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge");
+  const threadId = await manager.spawn("cursor", "bridge");
   const status = await manager.status(threadId);
 
   assert.equal(status.instance.model_id, "gpt-5.4");
@@ -848,49 +878,14 @@ test("status infers the live current model from agent messages when status omits
   await manager.kill(threadId);
 });
 
-test("status infers the live Claude model from the interactive banner when status omits it", async () => {
-  const registry = new InstanceRegistry();
-  const manager = new InstanceManager(registry, {
-    ...socketModeOptions,
-    socketPathFactory: socketPathForThread,
-    spawnFn: ((_command: string, _args: string[]) => {
-      return new FakeChildProcess(3403) as never;
-    }) as never,
-    clientFactory: () => ({
-      connect: async () => undefined,
-      disconnect: () => undefined,
-      getStatus: async () => ({
-        status: "stable",
-        agent_type: "claude"
-      }),
-      getMessages: async () => ([
-        {
-          id: 0,
-          role: "agent",
-          content: [
-            " ▐▛███▜▌   Claude Code v2.1.92",
-            "▝▜█████▛▘  Sonnet 4.6 · Claude Pro",
-            "  ▘▘ ▝▝    ~/work/Meridian",
-            "",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "❯ ",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "  ? for shortcuts                                                       /buddy"
-          ].join("\n")
-        }
-      ])
-    })
-  });
-
-  const threadId = await manager.spawn("claude", "bridge");
-  const status = await manager.status(threadId);
-
-  assert.equal(status.instance.model_id, "claude-sonnet-4-6");
-  assert.equal(status.agent_status.current_model_id, "claude-sonnet-4-6");
-  assert.equal(registry.get(threadId)?.model_id, "claude-sonnet-4-6");
-
-  await manager.kill(threadId);
-});
+// Deleted 2026-05-21: `status infers the live Claude model from the interactive
+// banner when status omits it`. Claude bridge is now streaming-only, with no
+// agentapi pane to probe — status() never reads claude pane messages. The
+// claude-banner regex itself is still covered by direct
+// `extractReportedModelIdFromText` callers (listModels backfill path) if a
+// future codepath surfaces it. No streaming-bridge equivalent exists because
+// the streaming `codex exec --json` stream emits model metadata as JSON
+// events (handled by stream-run code, not by InstanceManager.status).
 
 test("rehydrateFromState restores live instances and session bindings", async () => {
   const registry = new InstanceRegistry();
@@ -1303,7 +1298,10 @@ test("attach enforces single interface owner per thread", async () => {
   await manager.kill(threadId);
 });
 
-test("spawn fails fast when child already exited before readiness polling", async () => {
+test("spawn fails fast when child already exited before readiness polling (cursor)", async () => {
+  // Readiness polling only runs for cursor (the one remaining non-streaming
+  // bridge agent). Streaming-bridge codex/claude/gemini have no readiness
+  // wait — they register as pure metadata.
   const registry = new InstanceRegistry();
   let connectCalls = 0;
 
@@ -1328,13 +1326,17 @@ test("spawn fails fast when child already exited before readiness polling", asyn
   });
 
   await assert.rejects(
-    async () => await manager.spawn("gemini", "bridge"),
+    async () => await manager.spawn("cursor", "bridge"),
     /exited before readiness check succeeded \(exit_code=1, signal=null\)/
   );
   assert.equal(connectCalls, 0);
 });
 
-test("kill removes the thread socket path", async () => {
+test("kill removes the thread socket path (cursor)", async () => {
+  // Socket unlink on kill is part of the agentapi-pane teardown path.
+  // Streaming-bridge codex/claude/gemini never have a socket file to unlink
+  // (their `socket_path` stays null) — see the dedicated streaming-bridge
+  // kill test added below.
   const registry = new InstanceRegistry();
   const manager = new InstanceManager(registry, {
     ...socketModeOptions,
@@ -1354,7 +1356,7 @@ test("kill removes the thread socket path", async () => {
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge");
+  const threadId = await manager.spawn("cursor", "bridge");
   const socketPath = socketPathForThread(threadId);
   assert.equal(fs.existsSync(socketPath), true);
 
@@ -1362,7 +1364,10 @@ test("kill removes the thread socket path", async () => {
   assert.equal(fs.existsSync(socketPath), false);
 });
 
-test("crash exit preserves instance and session bindings for monitor alerting", async () => {
+test("crash exit preserves instance and session bindings for monitor alerting (cursor)", async () => {
+  // Child crash/exit handlers only run for agentapi-pane bridge agents.
+  // Streaming-bridge codex/claude/gemini have no child process to crash;
+  // their lifecycle is driven by registry register/unregister calls only.
   const registry = new InstanceRegistry();
   const children = new Map<string, FakeChildProcess>();
 
@@ -1373,7 +1378,7 @@ test("crash exit preserves instance and session bindings for monitor alerting", 
       void command;
       void args;
       const child = new FakeChildProcess(9501);
-      children.set("claude_01", child);
+      children.set("cursor_01", child);
       return child as never;
     }) as never,
     clientFactory: () => ({
@@ -1383,7 +1388,7 @@ test("crash exit preserves instance and session bindings for monitor alerting", 
     })
   });
 
-  const threadId = await manager.spawn("claude", "bridge");
+  const threadId = await manager.spawn("cursor", "bridge");
   manager.attach(threadId, "777:chat-a");
   assert.equal(manager.getAttachedThread("777:chat-a"), threadId);
 
@@ -1405,7 +1410,11 @@ test("crash exit preserves instance and session bindings for monitor alerting", 
   await manager.kill(threadId);
 });
 
-test("graceful exit (SIGTERM) unregisters instance and clears session bindings", async () => {
+test("graceful exit (SIGTERM) unregisters instance and clears session bindings (cursor)", async () => {
+  // SIGTERM child-exit handling is only meaningful for the agentapi-pane
+  // path. Streaming-bridge agents have no child to receive SIGTERM; their
+  // unregister/clear-bindings path is exercised by the dedicated
+  // streaming-bridge kill test added below.
   const registry = new InstanceRegistry();
   const children = new Map<string, FakeChildProcess>();
 
@@ -1416,7 +1425,7 @@ test("graceful exit (SIGTERM) unregisters instance and clears session bindings",
       void command;
       void args;
       const child = new FakeChildProcess(9502);
-      children.set("codex_01", child);
+      children.set("cursor_01", child);
       return child as never;
     }) as never,
     clientFactory: () => ({
@@ -1426,7 +1435,7 @@ test("graceful exit (SIGTERM) unregisters instance and clears session bindings",
     })
   });
 
-  const threadId = await manager.spawn("codex", "bridge");
+  const threadId = await manager.spawn("cursor", "bridge");
   manager.attach(threadId, "777:chat-b");
 
   // Simulate graceful exit (SIGTERM from /kill)

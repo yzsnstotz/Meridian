@@ -836,18 +836,32 @@ export class HubRouter {
     this.persistStateSafely();
 
     try {
+      // After the 2026-05-21 streaming-default change:
+      // - codex / claude / gemini bridge instances have supportsStream=true,
+      //   no agentapi pane, and MUST run via tryHandleStreamRun. Stream
+      //   failure throws (no pane to fall back to).
+      // - cursor (the only non-streaming agent) still spawns an agentapi
+      //   pane and uses the legacy client.sendMessage path below.
       if (instance.supportsStream) {
         const streamContent = await this.tryHandleStreamRun(message, threadId);
-        if (streamContent !== null) {
-          const content = this.formatRunContent(instance.thread_id, streamContent.content);
-          const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
-            attachmentResults: streamContent.attachmentResults
-          });
-          this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
-          return result;
+        if (streamContent === null) {
+          throw new Error(
+            `Stream run for ${instance.thread_id} returned no content after all retries; no agentapi-pane fallback exists for streaming instances`
+          );
         }
+        const content = this.formatRunContent(instance.thread_id, streamContent.content);
+        const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
+          attachmentResults: streamContent.attachmentResults
+        });
+        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+        return result;
       }
 
+      if (!instance.socket_path) {
+        throw new Error(
+          `Non-streaming instance ${instance.thread_id} has no socket_path; cannot connect to agentapi pane`
+        );
+      }
       await client.connect(instance.socket_path);
       const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
       const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
@@ -978,20 +992,15 @@ export class HubRouter {
       }
     }
 
-    if (this.resolveInstance(threadId).mode === "stateless_call") {
-      throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "stateless stream run failed"));
-    }
-
-    this.registry.setSupportsStream(threadId, false);
-    this.log.warn(
-      {
-        trace_id: message.trace_id,
-        thread_id: threadId,
-        attempts: maxAttempts
-      },
-      "Disabled direct streaming after repeated failures; falling back to agentapi bridge"
-    );
-    return null;
+    // After the 2026-05-21 streaming-default change there is no agentapi pane
+    // to fall back to for bridge-mode codex / claude / gemini. The old
+    // behavior was to flip supportsStream=false on the registry and let
+    // handleRun route to client.sendMessage; that path no longer exists.
+    // Propagate the exception so the dispatcher / caller sees a real failure
+    // instead of silently switching to a non-existent pane.
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(String(lastError ?? "stream run failed after retries"));
   }
 
   private async runStreamAttempt(message: HubMessage, threadId: string): Promise<StreamRunResult> {
@@ -1981,6 +1990,24 @@ export class HubRouter {
 
   async buildCompletionResultForThread(threadId: string, traceId: string | null): Promise<HubResult> {
     const instance = this.resolveInstance(threadId);
+    // Streaming-bridge / stateless instances have no agentapi pane to probe.
+    // The completion content was already captured during the stream-exec run
+    // and persisted to the conversation history; reuse the latest entry.
+    if (!instance.socket_path) {
+      const latestEntry = this.findLatestConversationEntryForTrace(threadId, null);
+      const content = this.formatRunContent(threadId, latestEntry?.content ?? "Task completed.");
+      return HubResultSchema.parse({
+        trace_id: traceId ?? randomUUID(),
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "success",
+        content,
+        attachments: [],
+        telegram_inline_keyboard: tryBuildGuiInlineKeyboard(threadId),
+        timestamp: this.now().toISOString()
+      });
+    }
+
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
 
@@ -3109,6 +3136,33 @@ export class HubRouter {
 
   async buildProgressSnapshotForThread(threadId: string, traceId: string | null): Promise<ThreadProgressSnapshot> {
     const instance = this.resolveInstance(threadId);
+    // Streaming-bridge / stateless instances have no agentapi pane to query
+    // for live progress. Fall back to the conversation history that
+    // `recordAgentConversationEntry` keeps in sync with each stream-exec run.
+    if (!instance.socket_path) {
+      const resolvedTraceId = this.resolveProgressTraceId(threadId, traceId);
+      const historyEntry = this.findLatestConversationEntryForTrace(threadId, resolvedTraceId);
+      const waitingForInput =
+        historyEntry?.event_kind === "approval" ||
+        instance.status === "waiting";
+      const displayText = this.formatRunContent(
+        threadId,
+        historyEntry?.content || (waitingForInput ? "Waiting for approval..." : "Task is running...")
+      );
+      return ThreadProgressSnapshotSchema.parse({
+        trace_id: resolvedTraceId,
+        thread_id: threadId,
+        source: instance.agent_type,
+        status: "partial",
+        event_kind: waitingForInput ? "approval" : "progress",
+        phase: waitingForInput ? "waiting_for_input" : "running",
+        waiting_for_input: waitingForInput,
+        content: displayText,
+        display_text: displayText,
+        updated_at: this.now().toISOString()
+      });
+    }
+
     const client = this.clientFactory(instance.thread_id);
     await client.connect(instance.socket_path);
 
@@ -3758,6 +3812,12 @@ export class HubRouter {
     let client: AgentClient | null = null;
     try {
       const instance = this.resolveInstance(threadId);
+      if (!instance.socket_path) {
+        // Streaming-bridge / stateless instances have no agentapi pane to wait
+        // on. Each `/api/run` completes synchronously via spawnStreamAgent so
+        // there's no "pending run" to finalize asynchronously.
+        return;
+      }
       client = this.clientFactory(instance.thread_id);
       await client.connect(instance.socket_path);
       const completedReply = await this.waitForAgentReply(client, null, traceId, {

@@ -301,18 +301,23 @@ export class InstanceManager {
       throw new Error(`Cannot interrupt; thread_id=${threadId} is not registered`);
     }
 
-    if (instance.mode === "stateless_call") {
+    if (instance.mode === "stateless_call" || !instance.socket_path) {
+      // Either a stateless_call instance OR a streaming-bridge instance with
+      // no agentapi pane. Either way there is no socket to send the Escape
+      // sequence to; the per-turn `codex exec --json` is killed via the
+      // router's stream-run interrupt path (router.activeRunsByThread →
+      // streamProcess.kill("SIGINT")), not via this method.
       this.log.info(
         {
           operation: "interrupt",
           thread_id: threadId,
           mode: instance.mode,
-          pid: instance.pid,
+          pid: instance.pid ?? null,
           status: instance.status
         },
-        "No active AgentAPI process exists for stateless instance interrupt"
+        "No agentapi pane for this instance — interrupt is handled by the per-turn stream-exec child"
       );
-      return `No active stateless run to interrupt for ${threadId}.`;
+      return `No agentapi-pane interrupt available for ${threadId}.`;
     }
 
     const client = this.clientFactory(threadId);
@@ -661,6 +666,21 @@ export class InstanceManager {
         }
       };
     }
+    if (!instance.socket_path) {
+      // Streaming-bridge instance with no agentapi pane — there is no socket
+      // to query for live status. Return the registry's last-known status
+      // (kept in sync by run state transitions in router.handleRun).
+      return {
+        instance,
+        agent_status: {
+          status: instance.status,
+          mode: instance.mode,
+          stateless: false,
+          streaming: true,
+          current_model_id: instance.model_id ?? null
+        }
+      };
+    }
 
     const client = this.clientFactory(threadId);
     await client.connect(instance.socket_path);
@@ -698,12 +718,15 @@ export class InstanceManager {
   }
 
   describeSpawnInvocation(instance: AgentInstance): SpawnInvocationDescriptor {
-    if (instance.mode === "stateless_call") {
+    if (instance.mode === "stateless_call" || !instance.socket_path) {
+      // stateless_call OR streaming-bridge: there is no agentapi spawn to
+      // describe — the work happens per-turn via `codex exec --json`. Return
+      // the exec invocation so the GUI / log shows what is actually executed.
       const providerArgs = buildCodexExecArgs(
         instance.model_id,
-        false,
+        instance.mode === "stateless_call" ? false : (instance.auto_approve ?? false),
         instance.reasoning_effort,
-        "read-only"
+        instance.mode === "stateless_call" ? "read-only" : instance.sandbox_mode
       );
       return {
         command: providerArgs[0] ?? "codex",
@@ -846,6 +869,30 @@ export class InstanceManager {
         resolvedCredential ?? null
       );
     }
+    // `bridge` mode for stream-capable agents (codex / claude / gemini) is
+    // metadata-only too: each `/api/run` forks its own `codex exec --json` via
+    // `tryHandleStreamRun` → `spawnStreamAgent`, and the agentapi pane that
+    // we used to fork at spawn-time was unused (no /api/run ever typed into
+    // it). Skip the agentapi child spawn, register the thread reservation,
+    // and let per-turn exec do the LLM work. Observed live 2026-05-20: every
+    // worker spawn produced a 3-PID ghost trio (agentapi + node-codex-shim +
+    // native-codex) that sat idle while the actual turn ran as a sibling
+    // `codex exec --json` under meridian-hub. This branch eliminates the trio.
+    if (mode === "bridge" && this.supportsStreaming(type)) {
+      return this.spawnStreamingBridgeInstance(
+        type,
+        threadId,
+        spawnWorkdir,
+        modelId,
+        autoApprove,
+        reasoningEffort,
+        traceId,
+        integrationProfile,
+        sandboxMode,
+        caller,
+        resolvedCredential ?? null
+      );
+    }
     if (sandboxMode === "read-only" && type !== "codex" && type !== "claude") {
       throw new Error("Agent type does not support read-only sandbox mode");
     }
@@ -948,6 +995,70 @@ export class InstanceManager {
       "Agent instance spawned"
     );
 
+    return threadId;
+  }
+
+  // Streaming `bridge` mode: register the thread as pure metadata. Every
+  // `/api/run` forks `codex exec --json` (or the provider equivalent) via
+  // `spawnStreamAgent`, so the agentapi pane we used to spawn here was idle.
+  // Skipping the spawn eliminates the 3-PID ghost trio (agentapi + node-codex
+  // shim + native-codex) per worker. The instance carries `supportsStream:
+  // true` so router.handleRun takes the stream-exec branch; `pid` and
+  // `socket_path` stay null because there is no agentapi child to point at.
+  private spawnStreamingBridgeInstance(
+    type: AgentType,
+    threadId: string,
+    spawnWorkdir: string,
+    modelId?: string,
+    autoApprove?: boolean,
+    reasoningEffort?: ReasoningEffort,
+    spawnTraceId?: string | null,
+    integrationProfile?: string,
+    sandboxMode?: SandboxMode,
+    caller?: CallerIdentity,
+    resolvedCredential?: ResolvedCredential | null
+  ): string {
+    if (sandboxMode === "read-only" && type !== "codex" && type !== "claude") {
+      throw new Error("Agent type does not support read-only sandbox mode");
+    }
+    const instance: AgentInstance = {
+      thread_id: threadId,
+      agent_type: type,
+      model_id: modelId,
+      reasoning_effort: reasoningEffort,
+      integration_profile: integrationProfile,
+      sandbox_mode: sandboxMode,
+      auto_approve: autoApprove,
+      supportsStream: true,
+      mode: "bridge",
+      socket_path: null,
+      working_dir: spawnWorkdir,
+      pid: null,
+      status: "idle",
+      created_at: this.now().toISOString(),
+      restart_safe: true,
+      spawn_trace_id: spawnTraceId ?? null,
+      spawned_by: caller,
+      credential_id: resolvedCredential?.credential_id ?? null
+    };
+    this.registry.register(instance);
+    if (autoApprove === true) {
+      this.registry.setAutoApprove(threadId, true);
+    }
+    this.notifyStateChange();
+    this.log.info(
+      {
+        operation: "spawn",
+        trace_id: spawnTraceId ?? null,
+        mode: "bridge",
+        thread_id: threadId,
+        working_directory: spawnWorkdir,
+        streaming: true,
+        prev_status: null,
+        next_status: "idle"
+      },
+      "Streaming bridge instance registered (no agentapi child)"
+    );
     return threadId;
   }
 
@@ -1069,6 +1180,22 @@ export class InstanceManager {
   }
 
   private async rehydrateInstance(instance: AgentInstance): Promise<AgentInstance | null> {
+    if (instance.mode === "bridge" && (instance.pid === null || instance.pid === undefined || !instance.socket_path)) {
+      // Streaming-bridge instance: there is no agentapi child to probe, no
+      // socket to reattach to. Restore the registry entry as-is so the
+      // thread reservation survives Hub restart; the next `/api/run` forks
+      // a fresh `codex exec --json` via spawnStreamAgent. Dispatcher worker
+      // continuity is preserved across hub bounces.
+      this.log.info(
+        {
+          operation: "rehydrate_streaming_bridge",
+          thread_id: instance.thread_id,
+          prev_status: instance.status
+        },
+        "Rehydrating streaming-bridge instance (metadata only, no agentapi child)"
+      );
+      return instance;
+    }
     if (instance.mode === "stateless_call") {
       // Stateless calls are ephemeral by definition — the agent process exits
       // as soon as the single Codex/Claude exec completes. A persisted
@@ -1100,23 +1227,42 @@ export class InstanceManager {
       return null;
     }
 
+    // The streaming-bridge early return above already handled the no-pid /
+    // no-socket case; here we are guaranteed a legacy non-streaming bridge
+    // instance with both fields set. Re-narrow locally for the type system.
+    const livePid = instance.pid;
+    const liveSocketPath = instance.socket_path;
+    if (livePid === null || livePid === undefined || !liveSocketPath) {
+      this.log.warn(
+        {
+          operation: "rehydrate_unexpected_null_pane",
+          thread_id: instance.thread_id,
+          mode: instance.mode,
+          pid: instance.pid ?? null,
+          socket_path: instance.socket_path ?? null
+        },
+        "Non-streaming bridge instance is missing pid/socket_path; pruning"
+      );
+      return null;
+    }
+
     // Fast-path PID liveness check. If the OS has reaped the PID, no probe
     // can succeed and there is no orphan to reap. Clean the leftover socket
     // file and prune. This shortcuts the per-restart storm where stale
     // entries used to consume probe budget and emit confusing "probe failed"
     // warnings for already-dead workers.
-    if (!this.pidLivenessFn(instance.pid)) {
+    if (!this.pidLivenessFn(livePid)) {
       this.log.info(
         {
           operation: "rehydrate_pid_dead_pruned",
           thread_id: instance.thread_id,
-          socket_path: instance.socket_path,
-          pid: instance.pid,
+          socket_path: liveSocketPath,
+          pid: livePid,
           prev_status: instance.status
         },
         "Pruning persisted agent instance because PID is no longer alive"
       );
-      void this.cleanupOrphanSocket(instance.socket_path);
+      void this.cleanupOrphanSocket(liveSocketPath);
       return null;
     }
 
@@ -1130,7 +1276,7 @@ export class InstanceManager {
     try {
       for (let attempt = 1; attempt <= this.rehydrateProbeRetries; attempt += 1) {
         try {
-          await client.connect(instance.socket_path);
+          await client.connect(liveSocketPath);
           const rawStatus = await client.getStatus();
           const enrichedStatus = await this.enrichRawStatusWithLiveModel(rawStatus, client);
           const reportedStatus = this.normalizeAgentapiStatus(enrichedStatus.status);
@@ -1206,8 +1352,20 @@ export class InstanceManager {
   }
 
   private async reapRehydrateOrphan(instance: AgentInstance): Promise<void> {
+    // Streaming-bridge / stateless_call instances have no agentapi child PID
+    // and no socket file — there is nothing to reap. They are unreachable
+    // through this code path because rehydrateInstance() returns before
+    // calling reapRehydrateOrphan for them, but be defensive.
+    if (instance.pid === null || instance.pid === undefined) {
+      if (instance.socket_path) {
+        await this.cleanupOrphanSocket(instance.socket_path);
+      }
+      return;
+    }
     if (!this.pidLivenessFn(instance.pid)) {
-      await this.cleanupOrphanSocket(instance.socket_path);
+      if (instance.socket_path) {
+        await this.cleanupOrphanSocket(instance.socket_path);
+      }
       return;
     }
     try {
@@ -1236,7 +1394,9 @@ export class InstanceManager {
         "Rehydrate orphan reaped"
       );
     } finally {
-      await this.cleanupOrphanSocket(instance.socket_path);
+      if (instance.socket_path) {
+        await this.cleanupOrphanSocket(instance.socket_path);
+      }
     }
   }
 
@@ -1246,7 +1406,13 @@ export class InstanceManager {
       throw new Error(`Cannot kill; thread_id=${threadId} is not registered`);
     }
 
-    if (instance.mode === "stateless_call") {
+    if (instance.mode === "stateless_call"
+      || (instance.pid === null || instance.pid === undefined)
+      || !instance.socket_path) {
+      // stateless_call OR streaming-bridge: there is no agentapi child to
+      // kill and no socket file to unlink. The per-turn `codex exec --json`
+      // (if any) is killed via the router's stream-run interrupt path, not
+      // here. Just drop the registry entry.
       this.registry.unregister(threadId);
 
       if (!preserveBindings) {
@@ -1259,12 +1425,13 @@ export class InstanceManager {
           operation: "kill",
           trace_id: instance.spawn_trace_id ?? null,
           thread_id: threadId,
-          pid: instance.pid,
-          socket_path: instance.socket_path,
+          mode: instance.mode,
+          pid: instance.pid ?? null,
+          socket_path: instance.socket_path ?? null,
           prev_status: instance.status,
           next_status: "stopped"
         },
-        "Stateless agent instance removed"
+        "Metadata-only instance removed (no agentapi child to kill)"
       );
       return;
     }
