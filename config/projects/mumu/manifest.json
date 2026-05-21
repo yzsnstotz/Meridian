@@ -17,9 +17,6 @@
         "cliff_pattern"
       ],
       "additionalProperties": false,
-      "x-indexed-fields": [
-        "cliff_pattern"
-      ],
       "properties": {
         "id": {
           "type": "string"
