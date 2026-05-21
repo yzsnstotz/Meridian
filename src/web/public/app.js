@@ -1,4 +1,16 @@
 const POLL_INTERVAL_MS = 3000;
+// When this GUI is mounted behind the ADS gateway card at /roles-gui/,
+// links like /role/<id> need the /roles-gui prefix or the browser
+// navigates to a path the gateway does not recognize and falls back to
+// the service-card-router SPA (i.e. clicking "Open detail" bounces the
+// user back to /ads).
+const GATEWAY_PATH_PREFIX = (() => {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const match = window.location.pathname.match(/^(\/roles-gui)(?:\/|$)/u);
+  return match ? match[1] : "";
+})();
 const WORKER_MODEL_OPTIONS = [
   "CODEX",
   "CODEX-HIGH",
@@ -1985,7 +1997,7 @@ async function setupDashboard() {
               <div><dt>tasks</dt><dd>${escapeHtml(String(role.task_count ?? 0))}</dd></div>
             </dl>
             <div class="card-actions">
-              <a class="ghost-link" href="/scheduler/${encodeURIComponent(role.thread_id)}">Open detail</a>
+              <a class="ghost-link" href="${GATEWAY_PATH_PREFIX}/scheduler/${encodeURIComponent(role.thread_id)}">Open detail</a>
               <button type="button" class="danger-button" data-scheduler-thread="${escapeHtml(role.thread_id)}">Deactivate</button>
             </div>
           `;
@@ -2084,7 +2096,7 @@ async function setupDashboard() {
           </dl>
           <p class="role-card-preview">${escapeHtml(detail.last_log_line || "No dispatcher activity yet.")}</p>
           <div class="card-actions dispatcher-card-actions">
-            <a class="ghost-link" href="/role/${encodeURIComponent(detail.thread_id)}">Open detail</a>
+            <a class="ghost-link" href="${GATEWAY_PATH_PREFIX}/role/${encodeURIComponent(detail.thread_id)}">Open detail</a>
             <button
               type="button"
               class="primary-button"
@@ -4939,7 +4951,13 @@ function navigateToHref(href) {
 
 function decodeThreadId(pattern) {
   const pathname = window.location.pathname;
-  const parts = pathname.split("/").filter(Boolean);
+  let parts = pathname.split("/").filter(Boolean);
+
+  // Strip the gateway-card prefix (e.g. /roles-gui/role/<id>) so the
+  // pattern match still works when the GUI is mounted at /roles-gui/.
+  if (parts[0] === "roles-gui") {
+    parts = parts.slice(1);
+  }
 
   if (parts.length !== pattern.length) {
     return null;
