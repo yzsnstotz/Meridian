@@ -55,6 +55,14 @@ interface FileUsageCacheEntry {
   usage: TokenUsage;
 }
 
+interface PidResolution {
+  filePath: string | null;
+  // ms-since-epoch when the most recent resolution attempt ran. Used only for
+  // negative entries to decide whether the TTL has elapsed; positive entries
+  // are kept forever regardless.
+  attemptedAtMs: number;
+}
+
 // Codex creates the rollout file shortly after process start (we observed
 // delays up to ~45s while the first turn warms up). Allow a generous window
 // to avoid false negatives. False positives are still bounded by cwd match.
@@ -64,16 +72,31 @@ const CODEX_SESSION_OPEN_WINDOW_MS = 5 * 60 * 1000;
 // first turn. Same window logic.
 const CLAUDE_SESSION_OPEN_WINDOW_MS = 5 * 60 * 1000;
 
+// Negative pid→file resolutions used to bypass the cache entirely so a freshly
+// spawned codex (which writes its rollout ~14s after process start) would
+// be re-resolved on each poll. That contract is preserved, but with a TTL: a
+// negative result is cached for NEGATIVE_RESOLUTION_TTL_MS before the next
+// re-resolution runs. Otherwise, every orphan/transient PID (short stateless
+// validators, codex children mid-warmup, recently-died PIDs not yet evicted)
+// pays the full ps+lsof exec + N×64KB-rollout-head-read cost on EVERY poll.
+// At K open GUI tabs × M unresolved PIDs × N rollouts per day, that fan-out
+// saturates syspolicyd/trustd and stalls system-wide exec — root-caused
+// 2026-05-21 (see learnings/token-usage-orphan-pid-rollout-fanout-storm.md).
+const NEGATIVE_RESOLUTION_TTL_MS = 30_000;
+
 export class TokenUsageCollector {
   private readonly deps: Required<Omit<CollectorDeps, "codexSessionsRoot" | "claudeProjectsRoot">> & {
     codexSessionsRoot: string;
     claudeProjectsRoot: string;
   };
 
-  // pid -> resolved session file path. null = "tried and gave up".
-  // Once resolved we never re-resolve for the same pid (codex/claude pids do
-  // not switch sessions mid-flight).
-  private readonly pidToFile = new Map<number, string | null>();
+  // pid -> { filePath, attemptedAtMs }. Positive entries (filePath !== null)
+  // are kept for the PID's lifetime — codex/claude pids do not switch sessions
+  // mid-flight. Negative entries (filePath === null) are kept until the TTL
+  // elapses, then re-resolved; this preserves the rollout-warmup retry
+  // contract while bounding repeated ps+lsof+N-rollout-scan cost per orphan
+  // PID to O(1 / TTL) instead of O(every poll).
+  private readonly pidToFile = new Map<number, PidResolution>();
 
   // file path -> last-known usage, keyed by (mtime,size). Avoids re-parsing
   // long sessions when the file hasn't grown.
@@ -103,23 +126,30 @@ export class TokenUsageCollector {
   }
 
   lookup(pid: number, agentType: "codex" | "claude", command?: string): TokenUsage | null {
-    // Only POSITIVE resolutions are cached. A failed lookup (null) must
-    // re-resolve on the next poll, because codex creates the rollout file a
-    // few seconds AFTER the process starts (observed ~14s gap on live PIDs).
-    // Caching negatives would permanently mask every codex/claude session
-    // whose first /api/agentapi-processes poll lands before the rollout file
-    // exists, and would also hide every short-lived stateless validator
-    // (which dies before re-resolution would have happened).
+    // Positive resolutions are cached for the PID's lifetime — codex/claude
+    // pids don't switch sessions mid-flight. Negative resolutions are cached
+    // for NEGATIVE_RESOLUTION_TTL_MS, then re-resolved: the rollout-warmup
+    // retry contract is preserved (codex creates the rollout ~14s after spawn,
+    // so the first poll often legitimately misses), but a stable orphan PID
+    // can't keep paying the full ps+lsof+N-rollout-scan cost every poll. At
+    // K open GUI tabs × M orphan PIDs × N rollouts/day, that fan-out was
+    // saturating syspolicyd/trustd and stalling system-wide exec.
     //
     // `command` is the live argv. For codex it disambiguates `codex exec --json`
     // (stateless, source="exec" rollouts) from interactive/agentapi-bound
     // codex (source="cli" rollouts). Without this filter, an interactive
     // codex that hasn't written its rollout yet would mis-attribute to a
     // nearby stateless exec rollout in the same cwd.
+    const nowMs = this.deps.now().getTime();
     const cached = this.pidToFile.get(pid);
+
     let filePath: string | null;
-    if (cached !== undefined) {
-      filePath = cached;
+    const cachedIsFresh = cached !== undefined && (
+      cached.filePath !== null ||
+      (nowMs - cached.attemptedAtMs) < NEGATIVE_RESOLUTION_TTL_MS
+    );
+    if (cachedIsFresh) {
+      filePath = cached!.filePath;
     } else {
       const attrs = this.deps.getProcessAttrs(pid);
       filePath = attrs
@@ -127,9 +157,7 @@ export class TokenUsageCollector {
           ? this.resolveCodexSessionFile(attrs, command ?? "")
           : this.resolveClaudeSessionFile(attrs)
         : null;
-      if (filePath !== null) {
-        this.pidToFile.set(pid, filePath);
-      }
+      this.pidToFile.set(pid, { filePath, attemptedAtMs: nowMs });
     }
 
     if (!filePath) return null;
@@ -256,6 +284,15 @@ export function encodeClaudeProjectPath(cwd: string): string {
   return cwd.replace(/\//g, "-");
 }
 
+// codex rollout filenames embed the session start timestamp as
+// `rollout-YYYY-MM-DDTHH-mm-ss-<uuid>.jsonl` (dashes for the time portion in
+// place of colons; UTC). The filename ts equals (or is within milliseconds of)
+// the on-disk `session_meta.payload.timestamp` we'd otherwise have to open the
+// file to read. Parsing the filename lets us prune the candidate set before
+// any open()/readSync — which matters when the day directory contains dozens
+// of rollouts and the caller is iterating across many unresolved PIDs.
+const ROLLOUT_FILENAME_TS_RE = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-/;
+
 export function listCodexRolloutFiles(
   root: string,
   pidStartMs: number,
@@ -264,6 +301,8 @@ export function listCodexRolloutFiles(
   // Search the day of pidStart and the day after — covers UTC/local boundary
   // and codex sessions that span midnight. (codex writes UTC in the filename.)
   const startDate = new Date(pidStartMs);
+  const minTsMs = pidStartMs - 1_000;
+  const maxTsMs = pidStartMs + CODEX_SESSION_OPEN_WINDOW_MS;
   const candidates: string[] = [];
   for (let offset = 0; offset <= 1; offset += 1) {
     const d = new Date(startDate.getTime() + offset * 24 * 60 * 60 * 1000);
@@ -278,9 +317,19 @@ export function listCodexRolloutFiles(
       continue;
     }
     for (const name of names) {
-      if (name.startsWith("rollout-") && name.endsWith(".jsonl")) {
-        candidates.push(path.join(dayDir, name));
+      if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
+      // Filename-window prune. peekCodexSessionMeta enforces the same window
+      // against meta.timestampMs after reading the file head; mirroring it
+      // here against the filename's encoded timestamp drops the I/O entirely
+      // for out-of-window candidates. Non-conforming filenames (e.g. test
+      // fixtures named `rollout-A.jsonl`) fall through to peek by design.
+      const m = ROLLOUT_FILENAME_TS_RE.exec(name);
+      if (m) {
+        const isoLike = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+        const tsMs = Date.parse(isoLike);
+        if (Number.isFinite(tsMs) && (tsMs < minTsMs || tsMs > maxTsMs)) continue;
       }
+      candidates.push(path.join(dayDir, name));
     }
   }
   return candidates;

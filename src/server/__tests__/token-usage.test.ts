@@ -294,12 +294,16 @@ describe("TokenUsageCollector — codex", () => {
     expect(getCalls).toBe(2);
   });
 
-  it("does NOT cache negative resolution — retries when rollout file appears later", () => {
+  it("caches negative resolution with TTL — re-resolves after TTL expires, not on every poll", () => {
     // codex creates the rollout file ~14s after process start (live obs).
-    // The first poll can hit BEFORE the file exists; we must re-resolve on
-    // subsequent polls instead of permanently caching null. Otherwise every
-    // codex session whose first poll preceded the rollout — and every short
-    // stateless validator — would silently have no tokens forever.
+    // The first poll can hit BEFORE the file exists, so we must eventually
+    // re-resolve — but not on EVERY poll. Negative resolution is expensive
+    // (ps + lsof spawn + N×64KB rollout-head reads); without a TTL, every
+    // stable orphan PID burns syspolicyd/trustd on every /api/agentapi-processes
+    // poll (root-caused 2026-05-21, see learnings/token-usage-orphan-pid-rollout-fanout-storm.md).
+    // Contract: a null resolution is cached for NEGATIVE_RESOLUTION_TTL_MS
+    // (30s); subsequent lookups within that window return null without
+    // re-running ps/lsof/rollout-scan; lookups after the window re-resolve.
     const sessionId = "019e3442-8352-7282-bc7f-31ea41f2a0fa";
     const startIso = "2026-05-17T13:47:14Z";
     const cwd = "/Users/yzliu/work";
@@ -309,28 +313,37 @@ describe("TokenUsageCollector — codex", () => {
       `rollout-2026-05-17T13-47-14-${sessionId}.jsonl`
     );
 
-    // Phase 1: rollout file doesn't exist yet.
+    // Phase 1: rollout file doesn't exist yet. First lookup pays ps+lsof.
     const files = new Map<string, string>();
     let fs = makeFs(files);
     let getCalls = 0;
+    let nowMs = startMs;
     const collector = new TokenUsageCollector({
       listDir: (dir: string) => { try { return fs.listDir(dir); } catch { return []; } },
       readFile: (p: string) => fs.readFile(p),
       readHead: (p: string, n: number) => fs.readHead(p, n),
       stat: (p: string) => fs.stat(p),
       getProcessAttrs: () => { getCalls += 1; return { startMs, cwd }; },
+      now: () => new Date(nowMs),
       codexSessionsRoot: CODEX_ROOT,
       claudeProjectsRoot: CLAUDE_ROOT
     });
     expect(collector.lookup(99, "codex")).toBeNull();
     expect(getCalls).toBe(1);
 
-    // Phase 2: rollout file appears. Same PID, should re-resolve and succeed.
+    // Phase 1b: second lookup 5s later — served from negative cache, no
+    // ps/lsof exec. This is the line that broke the cost model before the TTL.
+    nowMs += 5_000;
+    expect(collector.lookup(99, "codex")).toBeNull();
+    expect(getCalls).toBe(1);
+
+    // Phase 2: rollout file appears and TTL elapses → re-resolve and succeed.
     files.set(rolloutPath, codexRollout(sessionId, startIso, cwd));
     fs = makeFs(files);
+    nowMs += 35_000; // 40s total — past the 30s TTL
     const usage = collector.lookup(99, "codex");
     expect(usage?.session_file).toBe(rolloutPath);
-    expect(getCalls).toBe(2); // re-resolved, not served from negative cache
+    expect(getCalls).toBe(2);
   });
 
   it("picks the CLOSEST start-time match when multiple rollouts share cwd in-window", () => {
@@ -651,5 +664,98 @@ describe("listCodexRolloutFiles", () => {
       path.join(CODEX_ROOT, "2026", "05", "17", "rollout-A.jsonl"),
       path.join(CODEX_ROOT, "2026", "05", "18", "rollout-B.jsonl")
     ]);
+  });
+
+  it("prunes rollouts whose filename timestamp is before pid_start - 1s", () => {
+    // Filename-window prune: out-of-window candidates are dropped without
+    // opening the file. Mirrors the meta-timestamp check inside
+    // resolveCodexSessionFile so callers don't pay open()+readSync(64KB) per
+    // out-of-window rollout per poll.
+    const startMs = Date.parse("2026-05-17T15:00:00Z");
+    const files = new Map<string, string>([
+      // Earlier on the same day, far outside the [-1s, +5min] window.
+      [path.join(CODEX_ROOT, "2026", "05", "17", "rollout-2026-05-17T01-00-00-old.jsonl"), "x"],
+      // 30s after pid start — inside the window.
+      [path.join(CODEX_ROOT, "2026", "05", "17", "rollout-2026-05-17T15-00-30-current.jsonl"), "y"]
+    ]);
+    const fs = makeFs(files);
+    const found = listCodexRolloutFiles(CODEX_ROOT, startMs, fs.listDir);
+    expect(found).toEqual([
+      path.join(CODEX_ROOT, "2026", "05", "17", "rollout-2026-05-17T15-00-30-current.jsonl")
+    ]);
+  });
+
+  it("prunes rollouts whose filename timestamp is past pid_start + 5min", () => {
+    const startMs = Date.parse("2026-05-17T15:00:00Z");
+    const files = new Map<string, string>([
+      // 1min after pid start — inside window.
+      [path.join(CODEX_ROOT, "2026", "05", "17", "rollout-2026-05-17T15-01-00-in-window.jsonl"), "x"],
+      // 5h after pid start — outside window.
+      [path.join(CODEX_ROOT, "2026", "05", "17", "rollout-2026-05-17T20-00-00-future.jsonl"), "y"]
+    ]);
+    const fs = makeFs(files);
+    const found = listCodexRolloutFiles(CODEX_ROOT, startMs, fs.listDir);
+    expect(found).toEqual([
+      path.join(CODEX_ROOT, "2026", "05", "17", "rollout-2026-05-17T15-01-00-in-window.jsonl")
+    ]);
+  });
+
+  it("passes through filenames that don't match the rollout-<ISO>-<uuid> pattern (back-compat)", () => {
+    // External fixtures and legacy filenames without an encoded timestamp
+    // must reach peekCodexSessionMeta — the filename prune is a fast-path,
+    // not an authoritative filter. peek does the canonical window check
+    // against session_meta.payload.timestamp.
+    const startMs = Date.parse("2026-05-17T15:00:00Z");
+    const files = new Map<string, string>([
+      [path.join(CODEX_ROOT, "2026", "05", "17", "rollout-A.jsonl"), "x"]
+    ]);
+    const fs = makeFs(files);
+    expect(listCodexRolloutFiles(CODEX_ROOT, startMs, fs.listDir)).toEqual([
+      path.join(CODEX_ROOT, "2026", "05", "17", "rollout-A.jsonl")
+    ]);
+  });
+
+  it("at scale: 89 rollouts in a day directory, only the in-window ones survive prune (no file I/O)", () => {
+    // Live observed 2026-05-21: 89 rollouts in ~/.codex/sessions/2026/05/21/.
+    // Pre-fix, every unresolved-PID poll opened+read64KB from all 89. Post-fix,
+    // only candidates whose filename timestamp falls inside the open window
+    // are returned — listDir is the only I/O the function performs.
+    const dayDir = path.join(CODEX_ROOT, "2026", "05", "17");
+    const fakeFiles = new Map<string, string>();
+    // 87 out-of-window rollouts spread across the same UTC day. Skip the
+    // 15:00 hour so no fixture collides with pid_start's [-1s, +5min] window.
+    for (let h = 0; h < 24 && fakeFiles.size < 87; h += 1) {
+      if (h === 15) continue;
+      for (let i = 0; i < 4 && fakeFiles.size < 87; i += 1) {
+        const hh = String(h).padStart(2, "0");
+        const mm = String(i * 13).padStart(2, "0");
+        fakeFiles.set(
+          path.join(dayDir, `rollout-2026-05-17T${hh}-${mm}-00-old-${h}-${i}.jsonl`),
+          "x"
+        );
+      }
+    }
+    // 2 in-window rollouts.
+    fakeFiles.set(path.join(dayDir, "rollout-2026-05-17T15-00-30-near.jsonl"), "y");
+    fakeFiles.set(path.join(dayDir, "rollout-2026-05-17T15-02-15-nearer.jsonl"), "z");
+
+    let listDirCalls = 0;
+    const fs = makeFs(fakeFiles);
+    const trackedListDir = (dir: string): string[] => {
+      listDirCalls += 1;
+      return fs.listDir(dir);
+    };
+
+    const startMs = Date.parse("2026-05-17T15:00:00Z");
+    const found = listCodexRolloutFiles(CODEX_ROOT, startMs, trackedListDir);
+
+    // Only the two in-window rollouts survived; listDir was called exactly
+    // twice (one for the start day, one for the next day — the next day's
+    // dir doesn't exist so listDir throws and is caught).
+    expect(found.sort()).toEqual([
+      path.join(dayDir, "rollout-2026-05-17T15-00-30-near.jsonl"),
+      path.join(dayDir, "rollout-2026-05-17T15-02-15-nearer.jsonl")
+    ]);
+    expect(listDirCalls).toBe(2);
   });
 });
