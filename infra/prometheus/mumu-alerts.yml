@@ -1,0 +1,24 @@
+groups:
+  - name: mumu-phase1
+    rules:
+      - alert: MumuProvisionErrorsHigh
+        expr: rate(mumu_provision_total{status="error"}[5m]) > 1 / 60
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Mumu provisioning errors exceed one per minute.
+      - alert: MumuReadOnlyQueryP50High
+        expr: mumu_read_only_query_duration_ms{quantile="0.5"} > 100
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Mumu read-only query p50 latency exceeds 100ms.
+      - alert: ChatterObservationEvalErrorsHigh
+        expr: rate(chatter_observation_eval_error_total[10m]) > 5 / 60
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Chatter observation evaluation errors exceed five per minute.

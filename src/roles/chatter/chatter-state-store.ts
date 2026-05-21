@@ -2,6 +2,10 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, unlinkS
 import path from "node:path";
 import { z } from "zod";
 import { ChatterObservationProposedPatchSchema } from "../../types";
+import {
+  incrementChatterLastProvisionErrorTotal,
+  incrementChatterLastTurnErrorTotal
+} from "./observability";
 
 export const ChatterInFlightTraceSchema = z.object({
   trace_id: z.string().min(1),
@@ -90,6 +94,7 @@ export class ChatterStateStore {
   }
 
   recordProvisionError(code: string, error: unknown): void {
+    incrementChatterLastProvisionErrorTotal(code);
     this.save({
       ...this.load(),
       last_provision_error: {
@@ -106,6 +111,7 @@ export class ChatterStateStore {
   }
 
   recordTurnError(traceId: string, code: string, error: unknown): void {
+    incrementChatterLastTurnErrorTotal(code);
     this.save({
       ...this.load(),
       last_turn_error: {

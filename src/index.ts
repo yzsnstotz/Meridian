@@ -38,6 +38,7 @@ import { RoleRegistry } from "./roles/role-registry";
 import { RoleRunner, type RehydrationContext } from "./roles/role-runner";
 import { createProcessHandlers } from "./server/process-handlers";
 import { createPromptHandlers } from "./server/prompt-handlers";
+import { createMetricsHandlers } from "./server/metrics-handlers";
 import { HttpServer } from "./server/http-server";
 import { createRoleHandlers, type ContinueDispatcherResponse } from "./server/role-handlers";
 import { createSchedulerHandlers } from "./server/scheduler-handlers";
@@ -188,6 +189,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log,
     fetchAgentapiInstanceIndex
   });
+  const metricsHandlers = createMetricsHandlers();
   const systemMonitorHandlers = createSystemMonitorHandlers({
     stateStore,
     log,
@@ -205,6 +207,7 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     promptHandlers,
     schedulerHandlers,
     processHandlers,
+    metricsHandlers,
     systemMonitorHandlers,
     autoProvisionerHandlers,
     log

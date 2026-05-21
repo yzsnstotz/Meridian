@@ -6,6 +6,7 @@ import path from "node:path";
 import { GUI_LISTEN_HOST, GUI_PORT } from "../config";
 import type { Logger } from "../roles/base-role";
 import type { ProcessHandlers } from "./process-handlers";
+import type { MetricsHandlers } from "./metrics-handlers";
 import type { PromptHandlers } from "./prompt-handlers";
 import type { RoleHandlers } from "./role-handlers";
 import type { SchedulerHandlers } from "./scheduler-handlers";
@@ -19,6 +20,7 @@ export interface HttpServerOptions {
   promptHandlers: PromptHandlers;
   schedulerHandlers?: SchedulerHandlers;
   processHandlers?: ProcessHandlers;
+  metricsHandlers?: MetricsHandlers;
   systemMonitorHandlers?: SystemMonitorHandlers;
   autoProvisionerHandlers?: AutoProvisionerHandlers;
   publicDir?: string;
@@ -34,6 +36,7 @@ export class HttpServer {
   private readonly promptHandlers: PromptHandlers;
   private readonly schedulerHandlers: SchedulerHandlers | null;
   private readonly processHandlers: ProcessHandlers | null;
+  private readonly metricsHandlers: MetricsHandlers | null;
   private readonly systemMonitorHandlers: SystemMonitorHandlers | null;
   private readonly autoProvisionerHandlers: AutoProvisionerHandlers | null;
   private server: Server | null = null;
@@ -47,6 +50,7 @@ export class HttpServer {
     this.promptHandlers = options.promptHandlers;
     this.schedulerHandlers = options.schedulerHandlers ?? null;
     this.processHandlers = options.processHandlers ?? null;
+    this.metricsHandlers = options.metricsHandlers ?? null;
     this.systemMonitorHandlers = options.systemMonitorHandlers ?? null;
     this.autoProvisionerHandlers = options.autoProvisionerHandlers ?? null;
   }
@@ -106,6 +110,10 @@ export class HttpServer {
       }
 
       if (this.processHandlers && await this.processHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.metricsHandlers && await this.metricsHandlers.handle(request, response)) {
         return;
       }
 
