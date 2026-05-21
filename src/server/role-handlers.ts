@@ -222,6 +222,7 @@ type RoleRouteMatch =
   | { kind: "health" }
   | { kind: "list-channels" }
   | { kind: "list-roles" }
+  | { kind: "create-role" }
   | { kind: "preview-agent-dispatcher-prompt" }
   | { kind: "get-role"; threadId: string }
   | { kind: "get-config"; threadId: string }
@@ -580,6 +581,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             return true;
           case "list-roles":
             writeJson(response, 200, await listRoles(stateStore, log));
+            return true;
+          case "create-role":
+            writeJson(response, 201, await handlers.createRole(await readJsonBody(request)));
             return true;
           case "preview-agent-dispatcher-prompt":
             writeJson(response, 200, buildAgentDispatcherPromptPreview(await readJsonBody(request)));
@@ -2151,6 +2155,10 @@ function matchRoleRoute(request: IncomingMessage): RoleRouteMatch | null {
     && parts[2] === "prompt-preview"
   ) {
     return { kind: "preview-agent-dispatcher-prompt" };
+  }
+
+  if (method === "POST" && parts.length === 2 && parts[0] === "api" && parts[1] === "role") {
+    return { kind: "create-role" };
   }
 
   if (method === "GET" && parts.length === 3 && parts[0] === "api" && parts[1] === "role") {

@@ -73,6 +73,39 @@ describe("role config handlers", () => {
     });
   });
 
+  it("POST /api/role wires handlers.createRole (chatter-create form + chatter-init wizard target)", async () => {
+    const harness = createHarness();
+
+    // Same body shape the chatter-create.html form and chatter-init CLI emit;
+    // role_type is on the body (not forced by the route, unlike /api/agent-dispatcher/start).
+    const body = await invokeJson<{ ok: true; thread_id: string; role_type: string }>(
+      harness.roleHandlers,
+      "POST",
+      "/api/role",
+      {
+        thread_id: "agent-dispatcher-generic-create",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: "/tmp/dispatch_plan.md",
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always"
+      }
+    );
+
+    expect(body).toEqual({
+      ok: true,
+      thread_id: "agent-dispatcher-generic-create",
+      role_type: "agent-dispatcher"
+    });
+  });
+
   it("starts an agent-dispatcher role and returns both dispatcher ids", async () => {
     const harness = createHarness();
     const request = createJsonRequest("POST", "/api/agent-dispatcher/start", {
