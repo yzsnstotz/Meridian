@@ -2,6 +2,7 @@ node_modules
 dist/
 *.tsbuildinfo
 *.js.map
+.env
 .env.local
 .meridian_n02/.env
 .DS_Store

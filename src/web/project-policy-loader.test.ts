@@ -100,6 +100,32 @@ describe("interpolatePolicyForUser", () => {
       )
     ).toThrow("Unknown placeholder");
   });
+
+  it("uses the project policy llm_agent_kind when no env override is set", () => {
+    delete process.env.MUMU_LLM_AGENT_KIND;
+    const interpolated = interpolatePolicyForUser(validPolicy, "u_001");
+    expect(interpolated.llm_agent_kind).toBe(validPolicy.llm_agent_kind);
+  });
+
+  it("respects per-project <PROJECT_ID>_LLM_AGENT_KIND env override at interpolation time", () => {
+    process.env.MUMU_LLM_AGENT_KIND = "codex";
+    try {
+      const interpolated = interpolatePolicyForUser(validPolicy, "u_001");
+      expect(interpolated.llm_agent_kind).toBe("codex");
+    } finally {
+      delete process.env.MUMU_LLM_AGENT_KIND;
+    }
+  });
+
+  it("ignores empty/whitespace env override", () => {
+    process.env.MUMU_LLM_AGENT_KIND = "   ";
+    try {
+      const interpolated = interpolatePolicyForUser(validPolicy, "u_001");
+      expect(interpolated.llm_agent_kind).toBe(validPolicy.llm_agent_kind);
+    } finally {
+      delete process.env.MUMU_LLM_AGENT_KIND;
+    }
+  });
 });
 
 describe("runProjectPolicyCli", () => {
