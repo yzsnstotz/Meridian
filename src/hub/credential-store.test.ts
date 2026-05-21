@@ -7,7 +7,12 @@ import {
   CredentialStore,
   CredentialNotFoundError,
   CredentialRevokedError,
-  CredentialForbiddenError
+  CredentialForbiddenError,
+  CredentialImmutableError,
+  HOST_DEFAULT_CODEX_ID,
+  HOST_DEFAULT_CLAUDE_ID,
+  discoverHostDefaultsFromHome,
+  type HostDefaultDescriptor
 } from "./credential-store";
 import type { CredentialRecord } from "./state-store";
 import type { CallerIdentity } from "../types";
@@ -117,7 +122,9 @@ test("resolve succeeds for owner; OAuth returns codex_home + empty env_overrides
   assert.deepEqual(resolved, {
     codex_home: "/tmp/c-A",
     env_overrides: {},
-    credential_id: "c-A"
+    credential_id: "c-A",
+    provider: "codex",
+    is_host_default: false
   });
 });
 
@@ -513,4 +520,140 @@ test("canCallerAccess: non-owner non-admin cannot access", () => {
   const rec = makeOAuth("c-A", "owner-1");
   const store = new CredentialStore({ initialRecords: [rec], credentialsRoot: "/tmp" });
   assert.equal(store.canCallerAccess(rec, makeCaller("intruder")), false);
+});
+
+// ---------------------------------------------------------------------------
+// Host-default discovery: surfaces ~/.codex and ~/.claude as synthetic rows.
+// ---------------------------------------------------------------------------
+
+function fakeHostDiscover(items: HostDefaultDescriptor[]): () => HostDefaultDescriptor[] {
+  return () => items.slice();
+}
+
+test("list() appends synthetic host-default rows from discovery", () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" },
+      { credential_id: HOST_DEFAULT_CLAUDE_ID, credential_label: "Default (claude)", provider: "claude", codex_home_path: "/h/.claude" }
+    ])
+  });
+  const all = store.list();
+  assert.equal(all.length, 2);
+  const codex = all.find((r) => r.credential_id === HOST_DEFAULT_CODEX_ID)!;
+  assert.equal(codex.is_host_default, true);
+  assert.equal(codex.provider, "codex");
+  assert.equal(codex.owner_caller_id, "__host__");
+  const claude = all.find((r) => r.credential_id === HOST_DEFAULT_CLAUDE_ID)!;
+  assert.equal(claude.provider, "claude");
+});
+
+test("getHostDefault returns the discovered descriptor for a provider, undefined when absent", () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" }
+    ])
+  });
+  assert.equal(store.getHostDefault("codex")?.codex_home_path, "/h/.codex");
+  assert.equal(store.getHostDefault("claude"), undefined);
+});
+
+test("host-default rows are visible to any authenticated caller via canCallerAccess", () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" }
+    ])
+  });
+  const synth = store.list()[0];
+  assert.equal(store.canCallerAccess(synth, makeCaller("anyone")), true);
+  // Unauthenticated (empty caller_id) is still blocked.
+  assert.equal(store.canCallerAccess(synth, makeCaller("")), false);
+});
+
+test("resolve on host-default-codex returns codex_home from discovery and stamps provider+is_host_default", () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" }
+    ])
+  });
+  const resolved = store.resolve(HOST_DEFAULT_CODEX_ID, makeCaller("anyone"));
+  assert.deepEqual(resolved, {
+    codex_home: "/h/.codex",
+    env_overrides: {},
+    credential_id: HOST_DEFAULT_CODEX_ID,
+    provider: "codex",
+    is_host_default: true
+  });
+});
+
+test("resolve on host-default-claude carries provider=claude (caller must rely on HOME, not CODEX_HOME)", () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CLAUDE_ID, credential_label: "Default (claude)", provider: "claude", codex_home_path: "/h/.claude" }
+    ])
+  });
+  const resolved = store.resolve(HOST_DEFAULT_CLAUDE_ID, makeCaller("anyone"));
+  assert.equal(resolved?.provider, "claude");
+  assert.equal(resolved?.is_host_default, true);
+});
+
+test("setDefault on host-default id throws CredentialImmutableError (does not mutate disk)", async () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" }
+    ])
+  });
+  await assert.rejects(() => store.setDefault(HOST_DEFAULT_CODEX_ID), CredentialImmutableError);
+});
+
+test("revoke on host-default id throws CredentialImmutableError (would otherwise rm ~/.codex)", async () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" }
+    ])
+  });
+  await assert.rejects(() => store.revoke(HOST_DEFAULT_CODEX_ID), CredentialImmutableError);
+});
+
+test("update on host-default id throws CredentialImmutableError", async () => {
+  const store = new CredentialStore({
+    initialRecords: [],
+    credentialsRoot: "/tmp",
+    discoverHostDefaults: fakeHostDiscover([
+      { credential_id: HOST_DEFAULT_CODEX_ID, credential_label: "Default (codex)", provider: "codex", codex_home_path: "/h/.codex" }
+    ])
+  });
+  await assert.rejects(() => store.update(HOST_DEFAULT_CODEX_ID, { credential_label: "x" }), CredentialImmutableError);
+});
+
+test("discoverHostDefaultsFromHome returns codex row only when auth.json exists, claude row only when .credentials.json exists", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "fake-home-"));
+  // Nothing on disk → no rows.
+  assert.deepEqual(discoverHostDefaultsFromHome(home), []);
+  // Create ~/.codex/auth.json.
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".codex", "auth.json"), "{}");
+  let result = discoverHostDefaultsFromHome(home);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].provider, "codex");
+  // Create ~/.claude/.credentials.json.
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "{}");
+  result = discoverHostDefaultsFromHome(home);
+  assert.equal(result.length, 2);
+  const providers = result.map((r) => r.provider).sort();
+  assert.deepEqual(providers, ["claude", "codex"]);
 });

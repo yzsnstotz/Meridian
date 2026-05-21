@@ -1463,19 +1463,73 @@ export class HubRouter {
       }
     }
 
-    const threadId = await this.instanceManager.spawn(
-      type,
-      message.mode,
-      spawnDir,
-      modelId,
-      message.payload.auto_approve,
-      modelReference.reasoningEffort,
-      message.trace_id,
-      integrationProfile,
-      sandboxMode,
-      message.caller,
-      resolvedCredential
-    );
+    // Auto-fallback to the host-default credential when a user-selected
+    // credential fails to spawn. Mirrors the behavior described to the user
+    // in the Account view: the "Default" row is the fallback when the
+    // chosen credential doesn't work. We only fall back ONCE, only when
+    // (a) the original spawn used a non-null, non-host-default credential,
+    // and (b) a host-default for the matching provider is discoverable.
+    let spawnTargetCredential = resolvedCredential;
+    let usedFallback = false;
+    let threadId: string;
+    try {
+      threadId = await this.instanceManager.spawn(
+        type,
+        message.mode,
+        spawnDir,
+        modelId,
+        message.payload.auto_approve,
+        modelReference.reasoningEffort,
+        message.trace_id,
+        integrationProfile,
+        sandboxMode,
+        message.caller,
+        spawnTargetCredential
+      );
+    } catch (primaryErr) {
+      const fallbackProvider: "codex" | "claude" | null =
+        type === "codex" ? "codex" : type === "claude" ? "claude" : null;
+      const eligible =
+        resolvedCredential !== null &&
+        !resolvedCredential.is_host_default &&
+        fallbackProvider !== null &&
+        this.credentialStore !== undefined;
+      if (!eligible) throw primaryErr;
+      const hostRec = this.credentialStore!.getHostDefault(fallbackProvider!);
+      if (!hostRec) throw primaryErr;
+      this.log.warn(
+        {
+          operation: "spawn_fallback_host_default",
+          trace_id: message.trace_id ?? null,
+          requested_credential_id: resolvedCredential!.credential_id,
+          fallback_credential_id: hostRec.credential_id,
+          provider: fallbackProvider,
+          primary_error: primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
+        },
+        `Spawn with credential ${resolvedCredential!.credential_id} failed; retrying with host-default ${hostRec.credential_id}`
+      );
+      spawnTargetCredential = {
+        codex_home: hostRec.codex_home_path,
+        env_overrides: {},
+        credential_id: hostRec.credential_id,
+        provider: hostRec.provider as "codex" | "claude",
+        is_host_default: true
+      };
+      usedFallback = true;
+      threadId = await this.instanceManager.spawn(
+        type,
+        message.mode,
+        spawnDir,
+        modelId,
+        message.payload.auto_approve,
+        modelReference.reasoningEffort,
+        message.trace_id,
+        integrationProfile,
+        sandboxMode,
+        message.caller,
+        spawnTargetCredential
+      );
+    }
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
     this.instanceManager.attach(threadId, sessionId);
     this.rememberAttachmentMetadata(sessionId, message);
@@ -1483,7 +1537,15 @@ export class HubRouter {
     const baseContent =
       spawned === undefined
         ? `Spawned ${type} instance: ${threadId}`
-        : JSON.stringify({ thread_id: threadId, instance: spawned }, null, 2);
+        : JSON.stringify(
+            {
+              thread_id: threadId,
+              instance: spawned,
+              ...(usedFallback ? { fallback_credential_id: spawnTargetCredential?.credential_id } : {})
+            },
+            null,
+            2
+          );
     return this.buildResult(message, "success", type, this.appendAttachmentSummary(baseContent, threadId), threadId, {
       telegramInlineKeyboard: tryBuildGuiInlineKeyboard(threadId, message.payload.gui_host_port_override)
     });
@@ -2515,6 +2577,7 @@ export class HubRouter {
       kind: r.kind,
       owner_caller_id: r.owner_caller_id,
       is_default: r.is_default,
+      is_host_default: r.is_host_default,
       created_at: r.created_at,
       last_used_at: r.last_used_at,
       revoked_at: r.revoked_at,

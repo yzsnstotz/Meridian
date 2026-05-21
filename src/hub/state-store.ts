@@ -19,7 +19,7 @@ export const CallerRecordSchema = z.object({
 export type CallerRecord = z.input<typeof CallerRecordSchema>;
 
 export const CredentialKindSchema = z.enum(["oauth", "api_key"]);
-export const CredentialProviderSchema = z.enum(["codex"]);
+export const CredentialProviderSchema = z.enum(["codex", "claude"]);
 
 export const CredentialRecordSchema = z.object({
   credential_id: z.string().min(1),
@@ -29,6 +29,12 @@ export const CredentialRecordSchema = z.object({
   owner_caller_id: z.string().min(1),
   codex_home_path: z.string().min(1),
   is_default: z.boolean().default(false),
+  // True for synthetic rows that represent the host machine's ambient
+  // codex/claude login (e.g. ~/.codex/auth.json, ~/.claude/.credentials.json).
+  // These are never persisted; CredentialStore.list() regenerates them each
+  // call from on-disk discovery. They serve as the auto-fallback when a
+  // user-selected credential fails to spawn.
+  is_host_default: z.boolean().default(false),
   created_at: z.string().datetime(),
   last_used_at: z.string().datetime().nullable().default(null),
   revoked_at: z.string().datetime().nullable().default(null),

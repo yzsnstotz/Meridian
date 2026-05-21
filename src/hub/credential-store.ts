@@ -1,13 +1,61 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { CredentialRecord } from "./state-store";
 import type { CallerIdentity } from "../types";
+
+export const HOST_DEFAULT_OWNER = "__host__";
+export const HOST_DEFAULT_CODEX_ID = "host-default-codex";
+export const HOST_DEFAULT_CLAUDE_ID = "host-default-claude";
+
+export interface HostDefaultDescriptor {
+  credential_id: string;
+  credential_label: string;
+  provider: "codex" | "claude";
+  codex_home_path: string;
+}
+
+/**
+ * Default host-default discovery: scans HOME for the canonical ambient
+ * codex/claude login files. Returns a descriptor for each one present.
+ * Codex: ~/.codex/auth.json. Claude: ~/.claude/.credentials.json.
+ * Behavior is read-only — never writes, never deletes.
+ */
+export function discoverHostDefaultsFromHome(homeDir: string = os.homedir()): HostDefaultDescriptor[] {
+  const out: HostDefaultDescriptor[] = [];
+  const codexHome = path.join(homeDir, ".codex");
+  if (fs.existsSync(path.join(codexHome, "auth.json"))) {
+    out.push({
+      credential_id: HOST_DEFAULT_CODEX_ID,
+      credential_label: "Default (codex)",
+      provider: "codex",
+      codex_home_path: codexHome
+    });
+  }
+  const claudeHome = path.join(homeDir, ".claude");
+  if (fs.existsSync(path.join(claudeHome, ".credentials.json"))) {
+    out.push({
+      credential_id: HOST_DEFAULT_CLAUDE_ID,
+      credential_label: "Default (claude)",
+      provider: "claude",
+      codex_home_path: claudeHome
+    });
+  }
+  return out;
+}
 
 export interface CredentialStoreOptions {
   initialRecords: CredentialRecord[];
   credentialsRoot: string;
   onChange?: (records: CredentialRecord[]) => Promise<void> | void;
+  /**
+   * Pluggable so tests can inject fakes. In production the default scans
+   * ~/.codex and ~/.claude for ambient logins on every list() call so the
+   * UI immediately reflects whether the user has signed in/out of either
+   * CLI on the host since hub started.
+   */
+  discoverHostDefaults?: () => HostDefaultDescriptor[];
 }
 
 export class CredentialNotFoundError extends Error {
@@ -38,6 +86,15 @@ export interface ResolvedCredential {
   codex_home: string;
   env_overrides: Record<string, string>;
   credential_id: string;
+  provider: "codex" | "claude";
+  is_host_default: boolean;
+}
+
+export class CredentialImmutableError extends Error {
+  constructor(public readonly credential_id: string) {
+    super(`credential ${credential_id} is immutable (host default)`);
+    this.name = "CredentialImmutableError";
+  }
 }
 
 export interface OAuthSlot {
@@ -49,11 +106,17 @@ export class CredentialStore {
   private readonly records: Map<string, CredentialRecord>;
   private readonly credentialsRoot: string;
   private onChange: (records: CredentialRecord[]) => Promise<void> | void;
+  private readonly discoverHostDefaults: () => HostDefaultDescriptor[];
 
   constructor(opts: CredentialStoreOptions) {
     this.records = new Map(opts.initialRecords.map((r) => [r.credential_id, r]));
     this.credentialsRoot = opts.credentialsRoot;
     this.onChange = opts.onChange ?? (() => {});
+    // Host-default discovery is opt-in at construction time. Production
+    // construction (HubServer.startUp) passes `discoverHostDefaultsFromHome`
+    // explicitly; tests get a no-op default so seeded record counts stay
+    // deterministic regardless of what's on the dev machine's $HOME.
+    this.discoverHostDefaults = opts.discoverHostDefaults ?? (() => []);
   }
 
   /**
@@ -69,11 +132,46 @@ export class CredentialStore {
   }
 
   list(): CredentialRecord[] {
-    return Array.from(this.records.values());
+    const persisted = Array.from(this.records.values());
+    const synthetic = this.synthesizeHostDefaults();
+    return [...persisted, ...synthetic];
   }
 
   get(credentialId: string): CredentialRecord | undefined {
-    return this.records.get(credentialId);
+    const persisted = this.records.get(credentialId);
+    if (persisted) return persisted;
+    return this.synthesizeHostDefaults().find((r) => r.credential_id === credentialId);
+  }
+
+  /**
+   * Discover ambient codex/claude logins on the host and synthesize
+   * ephemeral CredentialRecord rows for them. Never persisted.
+   */
+  private synthesizeHostDefaults(): CredentialRecord[] {
+    const now = new Date().toISOString();
+    return this.discoverHostDefaults().map((d) => ({
+      credential_id: d.credential_id,
+      credential_label: d.credential_label,
+      provider: d.provider,
+      kind: "oauth" as const,
+      owner_caller_id: HOST_DEFAULT_OWNER,
+      codex_home_path: d.codex_home_path,
+      is_default: false,
+      is_host_default: true,
+      created_at: now,
+      last_used_at: null,
+      revoked_at: null,
+      api_key_metadata: null
+    }));
+  }
+
+  /**
+   * Return the host-default credential descriptor for a given provider,
+   * if one is currently discoverable on disk. Used by the router fallback
+   * path on spawn failure.
+   */
+  getHostDefault(provider: "codex" | "claude"): CredentialRecord | undefined {
+    return this.synthesizeHostDefaults().find((r) => r.provider === provider);
   }
 
   /**
@@ -86,6 +184,14 @@ export class CredentialStore {
     caller: CallerIdentity
   ): void {
     if (!credentialId) throw new CredentialNotFoundError(String(credentialId));
+    // Host-default rows are synthetic and accessible to every authenticated
+    // caller — owner_caller_id is the __host__ sentinel, not a real caller.
+    const synthetic = this.synthesizeHostDefaults().find((r) => r.credential_id === credentialId);
+    if (synthetic) {
+      // Authenticated callers are allowed; treat empty caller_id as unauth.
+      if (!caller.caller_id) throw new CredentialForbiddenError(credentialId, caller.caller_id);
+      return;
+    }
     const rec = this.records.get(credentialId);
     if (!rec) throw new CredentialNotFoundError(credentialId);
     if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
@@ -101,6 +207,9 @@ export class CredentialStore {
    * revoked entries to their owners; throwing forms enforce revoked separately.
    */
   canCallerAccess(record: CredentialRecord, caller: CallerIdentity): boolean {
+    // Host-default rows are visible to every authenticated caller — they
+    // describe ambient state of the host machine, not a per-caller secret.
+    if (record.is_host_default) return !!caller.caller_id;
     if (caller.caller_authority === "admin") return true;
     return record.owner_caller_id === caller.caller_id;
   }
@@ -111,6 +220,20 @@ export class CredentialStore {
   ): ResolvedCredential | null {
     if (!credentialId) return null;
     this.assertOwnerOrAdmin(credentialId, caller);
+    const synthetic = this.synthesizeHostDefaults().find((r) => r.credential_id === credentialId);
+    if (synthetic) {
+      // Host-default rows have no secrets file on disk we manage; the agent
+      // CLI reads ambient state directly. Codex honors CODEX_HOME; claude
+      // reads $HOME/.claude with no env override, so we don't set
+      // CODEX_HOME for claude rows (buildChildEnvImpl uses provider to gate).
+      return {
+        codex_home: synthetic.codex_home_path,
+        env_overrides: {},
+        credential_id: synthetic.credential_id,
+        provider: synthetic.provider,
+        is_host_default: true
+      };
+    }
     // assertOwnerOrAdmin guarantees the record exists and is not revoked.
     const rec = this.records.get(credentialId)!;
     const env_overrides =
@@ -119,7 +242,9 @@ export class CredentialStore {
     return {
       codex_home: rec.codex_home_path,
       env_overrides,
-      credential_id: rec.credential_id
+      credential_id: rec.credential_id,
+      provider: rec.provider,
+      is_host_default: false
     };
   }
 
@@ -229,11 +354,18 @@ export class CredentialStore {
   }
 
   async revoke(credentialId: string): Promise<void> {
+    if (this.isHostDefaultId(credentialId)) {
+      throw new CredentialImmutableError(credentialId);
+    }
     const rec = this.records.get(credentialId);
     if (!rec) throw new CredentialNotFoundError(credentialId);
     fs.rmSync(rec.codex_home_path, { recursive: true, force: true });
     rec.revoked_at = new Date().toISOString();
     await this.onChange(this.list());
+  }
+
+  private isHostDefaultId(credentialId: string): boolean {
+    return credentialId === HOST_DEFAULT_CODEX_ID || credentialId === HOST_DEFAULT_CLAUDE_ID;
   }
 
   async update(
@@ -246,6 +378,9 @@ export class CredentialStore {
       key_value?: string;
     }
   ): Promise<void> {
+    if (this.isHostDefaultId(credentialId)) {
+      throw new CredentialImmutableError(credentialId);
+    }
     const rec = this.records.get(credentialId);
     if (!rec) throw new CredentialNotFoundError(credentialId);
     if (rec.revoked_at) throw new CredentialRevokedError(credentialId);
@@ -321,6 +456,12 @@ export class CredentialStore {
   }
 
   async setDefault(credentialId: string): Promise<void> {
+    if (this.isHostDefaultId(credentialId)) {
+      // Host-default rows are inherently the implicit fallback already.
+      // We don't persist a user-pin marker on synthetic rows; the row is
+      // re-synthesized on every list() call.
+      throw new CredentialImmutableError(credentialId);
+    }
     const rec = this.records.get(credentialId);
     if (!rec) throw new CredentialNotFoundError(credentialId);
     if (rec.revoked_at) throw new CredentialRevokedError(credentialId);

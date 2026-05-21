@@ -35,7 +35,7 @@ import { InstanceRegistry } from "./registry";
 import type { OutputDelta } from "../shared/stream-adapter";
 import { OutputBus } from "./output-bus";
 import { HubRouter, type HubRouterOptions, type MonitorUpdateDispatch, type PushDeliveryTarget } from "./router";
-import { CredentialStore } from "./credential-store";
+import { CredentialStore, discoverHostDefaultsFromHome } from "./credential-store";
 import { OAuthLoginJobRegistry } from "./oauth-login-registry";
 import { loadPersistedHubState, type CredentialRecord } from "./state-store";
 
@@ -261,7 +261,11 @@ export class HubServer {
       }
       const credentialStore = new CredentialStore({
         initialRecords: initialCredentials,
-        credentialsRoot
+        credentialsRoot,
+        // Enable host-default discovery in production so the Accounts UI
+        // surfaces the user's ambient ~/.codex and ~/.claude logins as
+        // read-only "Default" rows + automatic fallback target.
+        discoverHostDefaults: () => discoverHostDefaultsFromHome()
       });
       try {
         credentialStore.reconcile();
