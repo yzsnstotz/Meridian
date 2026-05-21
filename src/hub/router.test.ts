@@ -611,23 +611,24 @@ test("HubRouter runs stateless_call Codex threads without resuming prior exec se
   assert.equal(registry.get("codex_stateless_01")?.status, "idle");
 });
 
-test("HubRouter falls back to agentapi bridge after three stream failures", async () => {
+test("HubRouter propagates stream-run error after three stream failures (no agentapi-pane fallback)", async () => {
+  // After the 2026-05-21 streaming-default change there is no agentapi pane
+  // to fall back to for stream-capable agents — `tryHandleStreamRun` throws
+  // when retries are exhausted, instead of silently flipping the registry's
+  // supportsStream=false and routing through `client.sendMessage`.
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "gemini_stream_02",
     agent_type: "gemini",
     mode: "bridge",
-    socket_path: "/tmp/agentapi-gemini_stream_02.sock",
-    pid: 302,
+    socket_path: null,
+    pid: null,
     status: "idle",
     supportsStream: true,
     created_at: new Date().toISOString()
   });
 
   let spawnAttempts = 0;
-  let connectCount = 0;
-  let sentContent = "";
-  let messagePolls = 0;
   const fakeInstanceManager = {
     rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
     snapshotState: () => ({
@@ -647,22 +648,11 @@ test("HubRouter falls back to agentapi bridge after three stream failures", asyn
   const router = new HubRouter(registry, {
     instanceManager: fakeInstanceManager as never,
     clientFactory: () => ({
-      connect: async () => {
-        connectCount += 1;
-      },
+      connect: async () => undefined,
       disconnect: () => undefined,
-      sendMessage: async (content: string) => {
-        sentContent = content;
-        return { ok: true };
-      },
+      sendMessage: async () => ({ ok: true }),
       getStatus: async () => ({ status: "idle" }),
-      getMessages: async () => {
-        messagePolls += 1;
-        if (messagePolls === 1) {
-          return [];
-        }
-        return [{ id: 1, role: "agent", content: "bridge reply" }];
-      }
+      getMessages: async () => []
     })
   });
 
@@ -678,12 +668,10 @@ test("HubRouter falls back to agentapi bridge after three stream failures", asyn
     })
   );
 
-  assert.equal(result.status, "success");
-  assert.equal(result.content, "bridge reply");
+  assert.equal(result.status, "error");
   assert.equal(spawnAttempts, 3);
-  assert.equal(connectCount, 1);
-  assert.equal(registry.get("gemini_stream_02")?.supportsStream, false);
-  assert.match(sentContent, /^ship it\n\nMeridian protocol requirement \(must follow exactly\):/);
+  // supportsStream stays true — the legacy auto-disable behavior is gone.
+  assert.equal(registry.get("gemini_stream_02")?.supportsStream, true);
 });
 
 test("HubRouter detail reuses conversation history details produced for pane/chat", async () => {

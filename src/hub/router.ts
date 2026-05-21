@@ -827,6 +827,7 @@ export class HubRouter {
   private async handleRun(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
+    const client = this.clientFactory(instance.thread_id);
     if (message.caller) {
       this.registry.setCaller(threadId, message.caller, this.now().toISOString());
     }
@@ -835,27 +836,109 @@ export class HubRouter {
     this.persistStateSafely();
 
     try {
-      // After the 2026-05-21 streaming-default change, every codex / claude /
-      // gemini instance carries supportsStream=true and the spawn path does
-      // not create an agentapi pane to fall back to. Every `/api/run` MUST
-      // succeed via the stream-exec path; if `tryHandleStreamRun` exhausts
-      // its retries it throws (instead of returning null + falling back to
-      // `client.sendMessage`, which used to be the pane-typing path).
-      if (!instance.supportsStream) {
+      // After the 2026-05-21 streaming-default change:
+      // - codex / claude / gemini bridge instances have supportsStream=true,
+      //   no agentapi pane, and MUST run via tryHandleStreamRun. Stream
+      //   failure throws (no pane to fall back to).
+      // - cursor (the only non-streaming agent) still spawns an agentapi
+      //   pane and uses the legacy client.sendMessage path below.
+      if (instance.supportsStream) {
+        const streamContent = await this.tryHandleStreamRun(message, threadId);
+        if (streamContent === null) {
+          throw new Error(
+            `Stream run for ${instance.thread_id} returned no content after all retries; no agentapi-pane fallback exists for streaming instances`
+          );
+        }
+        const content = this.formatRunContent(instance.thread_id, streamContent.content);
+        const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
+          attachmentResults: streamContent.attachmentResults
+        });
+        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+        return result;
+      }
+
+      if (!instance.socket_path) {
         throw new Error(
-          `Instance ${instance.thread_id} has supportsStream=false; the non-stream agentapi-pane fallback was removed (no pane is spawned for bridge instances anymore)`
+          `Non-streaming instance ${instance.thread_id} has no socket_path; cannot connect to agentapi pane`
         );
       }
-      const streamContent = await this.tryHandleStreamRun(message, threadId);
-      if (streamContent === null) {
-        throw new Error(
-          `Stream run for ${instance.thread_id} returned no content after all retries; no agentapi-pane fallback exists`
+      await client.connect(instance.socket_path);
+      const previousSnapshot = await this.getLatestAgentMessageSnapshot(client);
+      const runContent = appendSummaryProtocolPrompt(message.payload.content, message.trace_id);
+      const response = await client.sendMessage(runContent, message.payload.attachments, instance.agent_type);
+      const responseAttachmentResults = this.extractAttachmentResults(response);
+      this.registry.setStatus(instance.thread_id, "running");
+      const runLogContext = { trace_id: message.trace_id, thread_id: instance.thread_id };
+      const agentReply = await this.waitForAgentReply(client, previousSnapshot, message.trace_id, runLogContext);
+      if (agentReply === null) {
+        this.log.warn(
+          runLogContext,
+          "Run using fallback content: waitForAgentReply returned null; response body or getLatestAgentMessageSnapshot used as result content"
         );
       }
-      const content = this.formatRunContent(instance.thread_id, streamContent.content);
-      const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
-        attachmentResults: streamContent.attachmentResults
-      });
+      if (agentReply?.kind === "final") {
+        const content = this.formatRunContent(instance.thread_id, agentReply.content);
+        const attachments = this.extractResultAttachments(response);
+        const result = this.buildResult(
+          message,
+          "success",
+          instance.agent_type,
+          content,
+          instance.thread_id,
+          {
+            attachments,
+            attachmentResults: responseAttachmentResults,
+            runState: "completed"
+          }
+        );
+        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+        return result;
+      }
+
+      if (agentReply?.kind === "non_final") {
+        return this.buildPendingRunResult(
+          message,
+          instance.agent_type,
+          instance.thread_id,
+          agentReply.runState,
+          agentReply.content,
+          responseAttachmentResults
+        );
+      }
+
+      const fallbackContent = await this.resolveFallbackRunContent(client, response, previousSnapshot);
+      const fallbackClassification = classifyAgentOutput(fallbackContent);
+      if (fallbackContent === "Agent is processing..." || fallbackClassification.kind === "action_required") {
+        const runState: Exclude<HubRunState, "completed"> =
+          fallbackClassification.kind === "action_required"
+            ? "still_running"
+            : (await this.getClientRunActivity(client)) === "active"
+              ? "still_running"
+              : "timeout";
+        return this.buildPendingRunResult(
+          message,
+          instance.agent_type,
+          instance.thread_id,
+          runState,
+          fallbackContent === "Agent is processing..." ? null : fallbackContent,
+          responseAttachmentResults
+        );
+      }
+
+      const content = this.formatRunContent(instance.thread_id, fallbackContent);
+      const attachments = this.extractResultAttachments(response);
+      const result = this.buildResult(
+        message,
+        "success",
+        instance.agent_type,
+        content,
+        instance.thread_id,
+        {
+          attachments,
+          attachmentResults: responseAttachmentResults,
+          runState: "completed"
+        }
+      );
       this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
       return result;
     } catch (error) {
@@ -879,6 +962,7 @@ export class HubRouter {
           completedAtMs: Date.now()
         });
       }
+      client.disconnect();
     }
   }
 
@@ -908,20 +992,15 @@ export class HubRouter {
       }
     }
 
-    if (this.resolveInstance(threadId).mode === "stateless_call") {
-      throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "stateless stream run failed"));
-    }
-
-    this.registry.setSupportsStream(threadId, false);
-    this.log.warn(
-      {
-        trace_id: message.trace_id,
-        thread_id: threadId,
-        attempts: maxAttempts
-      },
-      "Disabled direct streaming after repeated failures; falling back to agentapi bridge"
-    );
-    return null;
+    // After the 2026-05-21 streaming-default change there is no agentapi pane
+    // to fall back to for bridge-mode codex / claude / gemini. The old
+    // behavior was to flip supportsStream=false on the registry and let
+    // handleRun route to client.sendMessage; that path no longer exists.
+    // Propagate the exception so the dispatcher / caller sees a real failure
+    // instead of silently switching to a non-existent pane.
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(String(lastError ?? "stream run failed after retries"));
   }
 
   private async runStreamAttempt(message: HubMessage, threadId: string): Promise<StreamRunResult> {
