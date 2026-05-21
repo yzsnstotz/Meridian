@@ -3,7 +3,10 @@ import {
   parseBackgroundTriggerDurationMs,
   type ChatterManifest
 } from "./manifest";
-import { incrementChatterBackgroundTriggerTotal } from "./observability";
+import {
+  incrementChatterBackgroundTriggerTotal,
+  incrementChatterObservationEvalErrorTotal
+} from "./observability";
 import type { StructuredWriteEvent } from "./skills/structured";
 
 export interface BackgroundTriggerFireRequest {
@@ -58,6 +61,7 @@ export class BackgroundTriggerEvaluator {
         await this.evaluateTrigger(trigger, event);
       } catch (error) {
         incrementChatterBackgroundTriggerTotal(trigger.name, "error");
+        incrementChatterObservationEvalErrorTotal();
         this.log?.warn("chatter: background trigger evaluation failed", {
           trigger_name: trigger.name,
           record_type: event.type,
