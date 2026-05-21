@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import net from "node:net";
 import { ROLES_SERVICE_ID, ROLES_SOCKET_PATH } from "../../config";
 import { ChatterCandidateObservationSchema } from "../../types";
 import type {
@@ -80,9 +81,19 @@ interface QueuedTurn {
   chatterSessionId?: string;
 }
 
+// Writes a HubResult as a JSON frame to a unix socket path. The default
+// implementation opens a fresh net.createConnection per call (one frame per
+// connection — same wire format as meridian-hub's SocketChannelAdapter), but
+// tests inject a mock to assert delivery without actually binding sockets.
+export type ChatterSocketWriter = (
+  socketPath: string,
+  result: HubResult
+) => Promise<void>;
+
 export interface ChatterRoleOptions {
   scheduleSelfInitiatedTurn?: ScheduleSelfInitiatedTurn;
   now?: () => Date;
+  socketWriter?: ChatterSocketWriter;
 }
 
 type ChatterTurnEnvelopeWithMode =
@@ -225,23 +236,6 @@ export class ChatterRole implements BaseRole {
   }
 
   async onInboundResult(result: HubResult): Promise<void> {
-    // Temp diag (2026-05-22): expose chatter inbound activity at info level so
-    // ADS-driven read-only-query timeouts can be triaged. Revert once the
-    // mumu chatter-inbound transport is validated end-to-end.
-    if (this.ctx) {
-      this.ctx.log.info("chatter: onInboundResult", {
-        chatter_id: this.config.chatter_id,
-        trace_id: result.trace_id,
-        thread_id: result.thread_id,
-        has_ctx: this.ctx !== null,
-        has_session_mgr: this.sessionMgr !== null,
-        has_resolver: this.resolver !== null,
-        has_envelope: result.payload?.chatter !== undefined,
-        has_read_only_query: result.payload?.chatter?.read_only_query !== undefined,
-        chatter_session_id: result.payload?.chatter?.chatter_session_id ?? null
-      });
-    }
-
     if (!this.ctx || !this.sessionMgr || !this.resolver) return;
 
     const trace = this.sessionMgr.getTrace(result.trace_id);
@@ -894,19 +888,7 @@ export class ChatterRole implements BaseRole {
 
   private async forwardToUser(content: string): Promise<void> {
     if (!this.ctx || !this.config.user_reply_channel) return;
-    const msg: HubMessage = {
-      trace_id: randomUUID(),
-      thread_id: this.threadId,
-      actor_id: ROLES_SERVICE_ID,
-      intent: "run",
-      target: "global",
-      priority: 5,
-      payload: { content, attachments: [] },
-      mode: "bridge",
-      reply_channel: this.config.user_reply_channel,
-      suppress_reply: true
-    };
-    await this.ctx.sendToHub(msg);
+    await this.deliverChatterReply(content, {}, "success");
   }
 
   private async forwardChatterReply(
@@ -914,19 +896,7 @@ export class ChatterRole implements BaseRole {
     chatter: NonNullable<HubMessage["payload"]["chatter"]>
   ): Promise<void> {
     if (!this.ctx || !this.config.user_reply_channel) return;
-    const msg: HubMessage = {
-      trace_id: randomUUID(),
-      thread_id: this.threadId,
-      actor_id: ROLES_SERVICE_ID,
-      intent: "run",
-      target: "global",
-      priority: 5,
-      payload: { content, attachments: [], chatter },
-      mode: "bridge",
-      reply_channel: this.config.user_reply_channel,
-      suppress_reply: true
-    };
-    await this.ctx.sendToHub(msg);
+    await this.deliverChatterReply(content, chatter, "success");
   }
 
   private recordTurnError(traceId: string, code: string, error: unknown): void {
@@ -951,15 +921,40 @@ export class ChatterRole implements BaseRole {
     chatterSessionId?: string
   ): Promise<void> {
     if (!this.ctx || !this.config.user_reply_channel) {
-      this.ctx?.log.warn("chatter: forwardReadOnlyQueryResult skipped — no ctx or no user_reply_channel", {
-        chatter_id: this.config.chatter_id,
-        has_ctx: this.ctx !== null,
-        has_user_reply_channel: this.config.user_reply_channel !== undefined,
-        result_ok: result.ok,
-        chatter_session_id: chatterSessionId ?? null
-      });
       return;
     }
+    const envelope: NonNullable<NonNullable<HubResult["payload"]>["chatter"]> = {
+      read_only_query_result: result,
+      ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
+    };
+    const content = JSON.stringify({ read_only_query_result: result });
+    await this.deliverChatterReply(content, envelope, result.ok ? "success" : "error");
+  }
+
+  // Deliver a chatter reply to the user_reply_channel.
+  //
+  // Always queues a HubMessage via ctx.sendToHub (preserves the existing
+  // observation contract for tests + telegram/web channels — their adapters
+  // can read content+chatter from the hub's unified-reply path).
+  //
+  // For socket channels (ADS-driven chatters) we ADDITIONALLY write a
+  // HubResult directly to the user_reply_channel.socket_path. This is the
+  // only path that actually delivers, because the hub's processIncomingMessage
+  // (a) suppresses the unified-reply when message.suppress_reply is true and
+  // (b) builds its result via buildResult, which discards message.payload —
+  // so the chatter envelope (chatter_session_id, read_only_query_result, ...)
+  // would otherwise be lost in transit. The receiver demuxes by
+  // chatter_session_id; without the envelope, it can't.
+  private async deliverChatterReply(
+    content: string,
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>,
+    status: HubResult["status"]
+  ): Promise<void> {
+    if (!this.ctx || !this.config.user_reply_channel) {
+      return;
+    }
+    const replyChannel = this.config.user_reply_channel;
+
     const msg: HubMessage = {
       trace_id: randomUUID(),
       thread_id: this.threadId,
@@ -967,28 +962,45 @@ export class ChatterRole implements BaseRole {
       intent: "run",
       target: "global",
       priority: 5,
-      payload: {
-        content: JSON.stringify({ read_only_query_result: result }),
-        attachments: [],
-        chatter: {
-          read_only_query_result: result,
-          ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
-        }
-      },
+      payload: { content, attachments: [], chatter },
       mode: "bridge",
-      reply_channel: this.config.user_reply_channel,
+      reply_channel: replyChannel,
       suppress_reply: true
     };
-    this.ctx.log.info("chatter: forwardReadOnlyQueryResult → sendToHub", {
-      chatter_id: this.config.chatter_id,
-      trace_id: msg.trace_id,
-      result_ok: result.ok,
-      result_error: result.error ?? null,
-      reply_channel: msg.reply_channel,
-      suppress_reply: msg.suppress_reply,
-      chatter_session_id: chatterSessionId ?? null
-    });
     await this.ctx.sendToHub(msg);
+
+    if (replyChannel.channel === "socket" && replyChannel.socket_path) {
+      await this.writeHubResultToSocket(replyChannel.socket_path, content, chatter, status);
+    }
+  }
+
+  private async writeHubResultToSocket(
+    socketPath: string,
+    content: string,
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>,
+    status: HubResult["status"]
+  ): Promise<void> {
+    const result: HubResult = {
+      trace_id: randomUUID(),
+      thread_id: this.threadId,
+      source: ROLES_SERVICE_ID,
+      status,
+      content,
+      attachments: [],
+      timestamp: new Date().toISOString(),
+      payload: { chatter }
+    };
+
+    const writer = this.options.socketWriter ?? defaultChatterSocketWriter;
+    try {
+      await writer(socketPath, result);
+    } catch (error) {
+      this.ctx?.log.warn("chatter: socket reply delivery failed", {
+        chatter_id: this.config.chatter_id,
+        socket_path: socketPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private async scheduleSelfInitiatedTurn(request: BackgroundTriggerFireRequest): Promise<void> {
@@ -1035,6 +1047,43 @@ export class ChatterRole implements BaseRole {
     await this.dispatchSelfInitiatedRun(turnRequest);
   }
 }
+
+const CHATTER_SOCKET_REPLY_CONNECT_TIMEOUT_MS = 5_000;
+
+const defaultChatterSocketWriter: ChatterSocketWriter = (socketPath, result) =>
+  new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const socket = net.createConnection(socketPath);
+    const settle = (error?: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const timer = setTimeout(() => {
+      socket.destroy(new Error(
+        `chatter socket reply connect timed out after ${CHATTER_SOCKET_REPLY_CONNECT_TIMEOUT_MS}ms`
+      ));
+    }, CHATTER_SOCKET_REPLY_CONNECT_TIMEOUT_MS);
+
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      try {
+        socket.end(JSON.stringify(result), () => settle());
+      } catch (error) {
+        settle(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      settle(error);
+    });
+  });
 
 function composeTurnContent(systemPrompt: string, userContent: string): string {
   return [
