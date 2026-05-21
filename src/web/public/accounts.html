@@ -123,6 +123,8 @@
     }
     tr:last-child td { border-bottom: none; }
     tr.revoked td { opacity: 0.55; }
+    tr.host-default td { background: rgba(59, 130, 246, 0.04); }
+    .muted { color: var(--text-dim); font-style: italic; }
     code, .mono {
       font-family: SF Mono, Fira Code, monospace;
       font-size: 0.78rem;
@@ -249,7 +251,7 @@
   <header>
     <div>
       <h1>Meridian <span class="badge-live">Accounts</span></h1>
-      <p>Codex credentials — OAuth logins and API keys</p>
+      <p>Codex &amp; Claude credentials — OAuth logins, API keys, and the host machine's ambient logins (shown with a <span class="badge default">Default</span> badge and used as automatic fallback when a selected credential fails).</p>
     </div>
     <nav class="header-nav">
       <a href="index.html">Hub</a>

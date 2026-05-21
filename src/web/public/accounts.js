@@ -98,27 +98,40 @@
     tbodyEl.innerHTML = credentials.map(function (c) {
       var revoked = !!c.revoked_at;
       var isDefault = !!c.is_default;
+      var isHostDefault = !!c.is_host_default;
       var kindLabel = c.kind === "oauth" ? "OAuth" : "API Key";
       var kindCls = c.kind === "oauth" ? "kind-oauth" : "kind-api";
       var statusBadges = [];
-      if (isDefault) statusBadges.push('<span class="badge default">Default</span>');
+      if (isHostDefault) statusBadges.push('<span class="badge default" title="Host login — used as automatic fallback when a selected credential fails">Default</span>');
+      if (isDefault && !isHostDefault) statusBadges.push('<span class="badge default">Default</span>');
       if (revoked) statusBadges.push('<span class="badge revoked">Revoked</span>');
       if (statusBadges.length === 0) statusBadges.push('<span class="badge">Active</span>');
 
       var actions = [];
-      actions.push('<button type="button" class="btn btn-small" data-action="edit" data-id="' + escapeHtml(c.credential_id) + '">Edit</button>');
-      if (!revoked && !isDefault) {
-        actions.push('<button type="button" class="btn btn-small" data-action="set-default" data-id="' + escapeHtml(c.credential_id) + '">Set default</button>');
-      }
-      if (!revoked) {
-        actions.push('<button type="button" class="btn btn-small btn-danger" data-action="revoke" data-id="' + escapeHtml(c.credential_id) + '">Revoke</button>');
+      if (isHostDefault) {
+        // Host-default rows describe ambient host login state. They are
+        // read-only — no label edit, no revoke (would delete ~/.codex etc),
+        // no set-default toggle. They already act as the implicit fallback.
+        actions.push('<span class="muted" style="font-size:0.75rem">read-only</span>');
+      } else {
+        actions.push('<button type="button" class="btn btn-small" data-action="edit" data-id="' + escapeHtml(c.credential_id) + '">Edit</button>');
+        if (!revoked && !isDefault) {
+          actions.push('<button type="button" class="btn btn-small" data-action="set-default" data-id="' + escapeHtml(c.credential_id) + '">Set default</button>');
+        }
+        if (!revoked) {
+          actions.push('<button type="button" class="btn btn-small btn-danger" data-action="revoke" data-id="' + escapeHtml(c.credential_id) + '">Revoke</button>');
+        }
       }
 
       var labelCell = escapeHtml(c.credential_label || c.credential_id) +
         '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.15rem"><code>' +
         escapeHtml(c.credential_id) + '</code></div>';
 
-      return '<tr' + (revoked ? ' class="revoked"' : '') + '>' +
+      var rowClasses = [];
+      if (revoked) rowClasses.push("revoked");
+      if (isHostDefault) rowClasses.push("host-default");
+
+      return '<tr' + (rowClasses.length ? ' class="' + rowClasses.join(" ") + '"' : '') + '>' +
         '<td>' + labelCell + '</td>' +
         '<td>' + escapeHtml(c.provider || "codex") + '</td>' +
         '<td><span class="badge ' + kindCls + '">' + kindLabel + '</span></td>' +
@@ -136,7 +149,8 @@
     return api("/api/credentials")
       .then(function (r) {
         var creds = (r.body && Array.isArray(r.body.credentials)) ? r.body.credentials : [];
-        // Sort: defaults first, then non-revoked by label, then revoked.
+        // Sort: pinned defaults first, then host-defaults, then the rest by
+        // label, with revoked at the bottom.
         creds.sort(function (a, b) {
           var aRev = a.revoked_at ? 1 : 0;
           var bRev = b.revoked_at ? 1 : 0;
@@ -144,6 +158,9 @@
           var aDef = a.is_default ? 0 : 1;
           var bDef = b.is_default ? 0 : 1;
           if (aDef !== bDef) return aDef - bDef;
+          var aHost = a.is_host_default ? 0 : 1;
+          var bHost = b.is_host_default ? 0 : 1;
+          if (aHost !== bHost) return aHost - bHost;
           return String(a.credential_label || "").localeCompare(String(b.credential_label || ""));
         });
         renderTable(creds);

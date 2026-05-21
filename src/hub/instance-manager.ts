@@ -2220,7 +2220,13 @@ export function buildChildEnvImpl(
     }
   }
   if (resolvedCredential) {
-    env.CODEX_HOME = resolvedCredential.codex_home;
+    // CODEX_HOME only applies to codex agents — claude reads $HOME/.claude
+    // directly and has no equivalent env-var override. For provider="claude"
+    // the host-default row simply means "inherit ambient HOME", so we skip
+    // any directory injection (env_overrides may still carry API keys etc.).
+    if (resolvedCredential.provider !== "claude") {
+      env.CODEX_HOME = resolvedCredential.codex_home;
+    }
     for (const [k, v] of Object.entries(resolvedCredential.env_overrides)) {
       const ambient = baseEnv[k];
       if (ambient !== undefined && ambient !== v && logger) {

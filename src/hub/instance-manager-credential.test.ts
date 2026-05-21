@@ -15,7 +15,9 @@ test("buildChildEnvImpl injects CODEX_HOME when resolved present", () => {
   const resolved: ResolvedCredential = {
     codex_home: "/tmp/managed-codex-home",
     env_overrides: {},
-    credential_id: "cred-1"
+    credential_id: "cred-1",
+    provider: "codex",
+    is_host_default: false
   };
   const env = buildChildEnvImpl({}, resolved);
   assert.equal(env.CODEX_HOME, "/tmp/managed-codex-home");
@@ -25,7 +27,9 @@ test("buildChildEnvImpl injects env_overrides on top of ambient env", () => {
   const resolved: ResolvedCredential = {
     codex_home: "/tmp/x",
     env_overrides: { OPENAI_API_KEY: "sk-new", CUSTOM_VAR: "value" },
-    credential_id: "cred-2"
+    credential_id: "cred-2",
+    provider: "codex",
+    is_host_default: false
   };
   const env = buildChildEnvImpl({}, resolved);
   assert.equal(env.OPENAI_API_KEY, "sk-new");
@@ -37,8 +41,22 @@ test("buildChildEnvImpl CODEX_HOME from resolved overrides ambient CODEX_HOME", 
   const resolved: ResolvedCredential = {
     codex_home: "/tmp/winning",
     env_overrides: {},
-    credential_id: "cred-3"
+    credential_id: "cred-3",
+    provider: "codex",
+    is_host_default: false
   };
   const env = buildChildEnvImpl(baseEnv, resolved);
   assert.equal(env.CODEX_HOME, "/tmp/winning");
+});
+
+test("buildChildEnvImpl does NOT set CODEX_HOME when provider is claude (claude reads $HOME/.claude)", () => {
+  const resolved: ResolvedCredential = {
+    codex_home: "/h/.claude",
+    env_overrides: {},
+    credential_id: "host-default-claude",
+    provider: "claude",
+    is_host_default: true
+  };
+  const env = buildChildEnvImpl({}, resolved);
+  assert.equal(env.CODEX_HOME, undefined);
 });
