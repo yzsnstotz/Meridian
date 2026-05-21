@@ -65,6 +65,8 @@ type AdsModules = {
     getChatter(input: { user_id: string }): Promise<{ thread_id: string; status: string } | null>;
   };
   MumuProvisioningFailedError: new (...args: unknown[]) => Error;
+  ProvisionerAuthError: new (...args: unknown[]) => Error;
+  ProvisionerProjectNotRegisteredError: new (...args: unknown[]) => Error;
   MumuChatterRouter: new (
     transport: { send(message: HubMessage): Promise<void> },
     options?: Record<string, unknown>
@@ -119,6 +121,13 @@ type HubModules = {
   sendHubIpc: (socketPath: string, message: HubMessage) => Promise<HubResult>;
 };
 
+interface AgentToolCallTrace {
+  thread_id: string;
+  name: "structured.upsert" | "chatter.suggest_observation";
+  origin: "create_from_template" | "style_observe";
+  key?: string;
+}
+
 class MemoryStateStore {
   private state: AppState | null = null;
 
@@ -158,6 +167,7 @@ interface HarnessContext {
   runner: RoleRunner;
   sentToHub: HubMessage[];
   adsEvents: unknown[];
+  agentToolCalls: AgentToolCallTrace[];
   hub: Awaited<ReturnType<HubModules["startIntegrationHub"]>>;
   ads: AdsModules;
   router: InstanceType<AdsModules["MumuChatterRouter"]>;
@@ -238,10 +248,17 @@ describe("V-01-A mumu Phase 1 e2e critical paths", () => {
       expect(createRun?.payload.content).toContain("想要个穿越逆袭");
       expect(createRun?.payload.content).toContain("## Pre-loaded context");
 
-      await upsertStory(chatter, "story-1", TEMPLATE_ID);
       await expect(chatter.handleAgentToolCall("structured.list", {
         type: "story_short_drama"
       })).resolves.toMatchObject({ keys: ["story-1"] });
+      expect(ctx.agentToolCalls).toEqual(expect.arrayContaining([
+        {
+          thread_id: threadId,
+          name: "structured.upsert",
+          origin: "create_from_template",
+          key: "story-1"
+        }
+      ]));
 
       ctx.router.registerFrontendConnection(
         "style-profile-tab",
@@ -257,34 +274,28 @@ describe("V-01-A mumu Phase 1 e2e critical paths", () => {
           template_id: TEMPLATE_ID,
           chatter_session_id: `story-create-${index}`
         });
-        await upsertStory(chatter, `story-${index}`, TEMPLATE_ID);
       }
+      await expect(chatter.handleAgentToolCall("structured.list", {
+        type: "story_short_drama"
+      })).resolves.toMatchObject({ keys: ["story-1", "story-2", "story-3", "story-4", "story-5"] });
 
       await waitFor(
         () => ctx.sentToHub.some((message) => message.payload.chatter?.origin === "trigger"),
         "background trigger did not dispatch a self-initiated turn"
       );
 
-      const suggestion = await chatter.handleAgentToolCall("chatter.suggest_observation", {
-        type: "style_short_drama",
-        description: "User keeps choosing reversal-heavy revenge setups.",
-        proposed_patch: {
-          record_type: "style_short_drama",
-          key: userId,
-          patch: {
-            agent_observed: {
-              recurring_motifs: ["穿越逆袭", "身份反转"]
-            }
-          }
-        }
-      });
-      expect(suggestion).toMatchObject({ ok: true });
-      const observationId = (suggestion as { observation_id: string }).observation_id;
-
       await waitFor(
-        () => ctx.adsEvents.some((event) => isCandidateObservation(event, observationId)),
+        () => ctx.adsEvents.some((event) => isCandidateObservationEvent(event)),
         "ADS did not receive candidate_observation"
       );
+      expect(ctx.agentToolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          thread_id: threadId,
+          name: "chatter.suggest_observation",
+          origin: "style_observe"
+        })
+      ]));
+      const observationId = requireCandidateObservation(ctx.adsEvents).payload.observation_id;
 
       await ctx.router.sendTurn({
         user_id: userId,
@@ -341,10 +352,23 @@ describe("V-01-A mumu Phase 1 e2e critical paths", () => {
       expect(snapshotChatterReadOnlyQueryCounters()).toEqual({ "structured.get|ok": 1 });
       expect(ctx.ads.getCounterValue(ctx.ads.MUMU_LLM_TURN_TOTAL_METRIC)).toBe(llmTurnsBefore);
 
-      const sadLogin = simulateMumuLogin(ctx, sadUsername, ctx.badClient);
-      await expect(sadLogin).rejects.toBeInstanceOf(ctx.ads.MumuProvisioningFailedError);
-      const sadState = JSON.stringify(ctx.stateStore.snapshot());
-      expect(sadState).not.toContain(sadUsername);
+      const sadUser = await ctx.ads.createUser(sadUsername, "password", "tester");
+      ctx.ads.replaceGrantsForUser(sadUser.id, ["ads"], null);
+      const sadLogin = ctx.ads.createPostLoginSession(sadUser, {
+        ensureChatter: (input) => ctx.badClient.ensureChatter(input)
+      });
+      await expect(sadLogin).rejects.toMatchObject({
+        statusCode: 502,
+        responseBody: {
+          ok: false,
+          code: "mumu_provisioning_failed"
+        },
+        cause: expect.any(ctx.ads.ProvisionerAuthError)
+      });
+      await expect(ctx.validClient.getChatter({ user_id: sadUser.id }))
+        .rejects.toBeInstanceOf(ctx.ads.ProvisionerProjectNotRegisteredError);
+      expect(ctx.runner.getRole(`chatter-mumu-user-${sadUser.id}`)).toBeNull();
+      expect(JSON.stringify(ctx.stateStore.snapshot())).not.toContain(sadUser.id);
     } finally {
       const archiveResults = await Promise.all(
         createdUsers.map((createdUserId) => ctx.validClient.archiveChatter({ user_id: createdUserId }))
@@ -389,6 +413,8 @@ async function createHarness(): Promise<HarnessContext> {
   let router: InstanceType<AdsModules["MumuChatterRouter"]>;
   const sentToHub: HubMessage[] = [];
   const adsEvents: unknown[] = [];
+  const agentToolCalls: AgentToolCallTrace[] = [];
+  const storyCountsByThread = new Map<string, number>();
 
   runner = new RoleRunner({
     sendToHub: async (message) => {
@@ -403,6 +429,11 @@ async function createHarness(): Promise<HarnessContext> {
         ...hubMessage,
         suppress_reply: true
       });
+      await applyDeterministicMumuAgentToolEffects({
+        runner,
+        storyCountsByThread,
+        agentToolCalls
+      }, hubMessage);
       await runner.dispatch(result);
     },
     log: silentLog()
@@ -486,6 +517,7 @@ async function createHarness(): Promise<HarnessContext> {
     runner,
     sentToHub,
     adsEvents,
+    agentToolCalls,
     hub,
     ads,
     router,
@@ -584,30 +616,102 @@ async function upsertCopiedTemplateSeed(
   return seed;
 }
 
-async function upsertStory(
-  chatter: ChatterRole,
-  storyId: string,
-  templateId: string
+async function applyDeterministicMumuAgentToolEffects(
+  options: {
+    runner: RoleRunner;
+    storyCountsByThread: Map<string, number>;
+    agentToolCalls: AgentToolCallTrace[];
+  },
+  message: HubMessage
 ): Promise<void> {
+  if (message.intent !== "run" || message.target === "global") {
+    return;
+  }
+
+  const chatter = options.runner.getRole(message.thread_id);
+  if (!(chatter instanceof ChatterRole)) {
+    return;
+  }
+
+  if (
+    message.payload.chatter?.origin === "trigger"
+    && message.payload.chatter.system_prompt_id === "style_observe"
+  ) {
+    const userId = userIdFromMumuThreadId(message.thread_id);
+    if (!userId) {
+      return;
+    }
+
+    options.agentToolCalls.push({
+      thread_id: message.thread_id,
+      name: "chatter.suggest_observation",
+      origin: "style_observe"
+    });
+    await expect(chatter.handleAgentToolCall("chatter.suggest_observation", {
+      type: "style_short_drama",
+      description: "User keeps choosing reversal-heavy revenge setups.",
+      proposed_patch: {
+        record_type: "style_short_drama",
+        key: userId,
+        patch: {
+          agent_observed: {
+            recurring_motifs: ["穿越逆袭", "身份反转"]
+          }
+        }
+      }
+    })).resolves.toMatchObject({ ok: true });
+    return;
+  }
+
+  if (!isCreateFromTemplateAgentRun(message)) {
+    return;
+  }
+
+  const nextStoryNumber = (options.storyCountsByThread.get(message.thread_id) ?? 0) + 1;
+  options.storyCountsByThread.set(message.thread_id, nextStoryNumber);
+  const storyId = `story-${nextStoryNumber}`;
+  options.agentToolCalls.push({
+    thread_id: message.thread_id,
+    name: "structured.upsert",
+    origin: "create_from_template",
+    key: storyId
+  });
   await expect(chatter.handleAgentToolCall("structured.upsert", {
     type: "story_short_drama",
     key: storyId,
-    record: {
-      id: storyId,
-      template_id: templateId,
-      outline: {
-        arc: `${storyId} reversal arc`,
-        episodes: [
-          {
-            no: 1,
-            hook: "身份错位开场",
-            cliff: "主角发现隐藏身份"
-          }
-        ]
-      },
-      fragments: []
-    }
-  })).resolves.toMatchObject({ record: { id: storyId, template_id: templateId } });
+    record: buildStoryRecord(storyId, TEMPLATE_ID)
+  })).resolves.toMatchObject({ record: { id: storyId, template_id: TEMPLATE_ID } });
+}
+
+function isCreateFromTemplateAgentRun(message: HubMessage): boolean {
+  return (
+    message.payload.content.includes("System prompt for this turn:")
+    && message.payload.content.includes("create_from_template")
+    && message.payload.content.includes("structured.upsert('story_short_drama'")
+  );
+}
+
+function buildStoryRecord(storyId: string, templateId: string): Record<string, unknown> {
+  return {
+    id: storyId,
+    template_id: templateId,
+    outline: {
+      arc: `${storyId} reversal arc`,
+      episodes: [
+        {
+          no: 1,
+          hook: "身份错位开场",
+          cliff: "主角发现隐藏身份"
+        }
+      ]
+    },
+    fragments: []
+  };
+}
+
+function userIdFromMumuThreadId(threadId: string): string | null {
+  const prefix = "chatter-mumu-user-";
+  return threadId.startsWith(prefix) ? threadId.slice(prefix.length) : null;
 }
 
 function requireChatter(ctx: HarnessContext, threadId: string): ChatterRole {
@@ -672,6 +776,8 @@ async function loadAdsModules(): Promise<AdsModules> {
     createPostLoginSession: postLogin.createPostLoginSession,
     MumuProvisioningFailedError: postLogin.MumuProvisioningFailedError,
     MumuProvisionerClient: provisioner.MumuProvisionerClient,
+    ProvisionerAuthError: provisioner.ProvisionerAuthError,
+    ProvisionerProjectNotRegisteredError: provisioner.ProvisionerProjectNotRegisteredError,
     MumuChatterRouter: chatterRouter.MumuChatterRouter,
     createMumuReadOnlyQueryClient: readOnly.createMumuReadOnlyQueryClient,
     MUMU_LLM_TURN_TOTAL_METRIC: readOnly.MUMU_LLM_TURN_TOTAL_METRIC,
@@ -811,13 +917,23 @@ function isChatterReply(event: unknown): boolean {
   return isRecord(event) && event.type === "mumu_chatter_reply";
 }
 
-function isCandidateObservation(event: unknown, observationId: string): boolean {
+function isCandidateObservationEvent(
+  event: unknown
+): event is { type: "mumu.candidate_observation"; payload: { observation_id: string } } {
   return (
     isRecord(event)
     && event.type === "mumu.candidate_observation"
     && isRecord(event.payload)
-    && event.payload.observation_id === observationId
+    && typeof event.payload.observation_id === "string"
   );
+}
+
+function requireCandidateObservation(
+  events: unknown[]
+): { type: "mumu.candidate_observation"; payload: { observation_id: string } } {
+  const event = events.find(isCandidateObservationEvent);
+  expect(event).toBeDefined();
+  return event!;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
