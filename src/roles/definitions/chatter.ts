@@ -950,7 +950,16 @@ export class ChatterRole implements BaseRole {
     result: ChatterReadOnlyQueryResult,
     chatterSessionId?: string
   ): Promise<void> {
-    if (!this.ctx || !this.config.user_reply_channel) return;
+    if (!this.ctx || !this.config.user_reply_channel) {
+      this.ctx?.log.warn("chatter: forwardReadOnlyQueryResult skipped — no ctx or no user_reply_channel", {
+        chatter_id: this.config.chatter_id,
+        has_ctx: this.ctx !== null,
+        has_user_reply_channel: this.config.user_reply_channel !== undefined,
+        result_ok: result.ok,
+        chatter_session_id: chatterSessionId ?? null
+      });
+      return;
+    }
     const msg: HubMessage = {
       trace_id: randomUUID(),
       thread_id: this.threadId,
@@ -970,6 +979,15 @@ export class ChatterRole implements BaseRole {
       reply_channel: this.config.user_reply_channel,
       suppress_reply: true
     };
+    this.ctx.log.info("chatter: forwardReadOnlyQueryResult → sendToHub", {
+      chatter_id: this.config.chatter_id,
+      trace_id: msg.trace_id,
+      result_ok: result.ok,
+      result_error: result.error ?? null,
+      reply_channel: msg.reply_channel,
+      suppress_reply: msg.suppress_reply,
+      chatter_session_id: chatterSessionId ?? null
+    });
     await this.ctx.sendToHub(msg);
   }
 
