@@ -29,6 +29,8 @@ describe("system monitor public assets", () => {
     const styleCss = await fs.readFile(path.join(publicDir, "style.css"), "utf8");
 
     expect(monitorScript).toContain('fetchJson("/api/system-monitor")');
+    expect(monitorScript).toContain('monitor_self: "Monitor Self-Check"');
+    expect(monitorScript).toContain('"monitor_self"');
     expect(monitorScript).toContain("setInterval(refresh, MONITOR_POLL_INTERVAL_MS)");
     expect(monitorScript).toContain('<details class="monitor-indicator-card');
     expect(monitorScript).toContain('data-monitor-id="');

@@ -73,7 +73,7 @@ function appStateWithDispatchers(planPaths: string[]): AppState {
 }
 
 describe("buildSystemMonitorSnapshot", () => {
-  it("returns the full 36-indicator inventory and escalates red threshold crossings", async () => {
+  it("returns the full 38-indicator inventory and escalates red threshold crossings", async () => {
     const oldIso = "2026-05-18T01:00:00.000Z";
     const fixtureA = await createDispatcherFixture({
       version: 2,
@@ -185,10 +185,16 @@ describe("buildSystemMonitorSnapshot", () => {
       }
     ];
 
+    let timingNow = 1_000;
     const snapshot = await buildSystemMonitorSnapshot({
       stateStore: { load: async () => appStateWithDispatchers([fixtureA.planPath, fixtureB.planPath]) },
       processSnapshot: async () => processes,
       now: () => new Date("2026-05-18T02:48:33.000Z"),
+      measureNow: () => {
+        const value = timingNow;
+        timingNow += 675;
+        return value;
+      },
       probeHub: async () => ({ reachable: true, latency_ms: 12 }),
       statFile: async (filePath) => {
         if (filePath.endsWith("state.json")) return { size: 11 * 1024 * 1024, mtimeMs: Date.parse("2026-05-18T02:48:30.000Z") };
@@ -224,7 +230,7 @@ describe("buildSystemMonitorSnapshot", () => {
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(36);
+    expect(snapshot.indicators).toHaveLength(38);
     expect(snapshot.any_red).toBe(true);
 
     // D6 fixture: 2 MB fnm_multishells block (above 1 MB yellow, below 10 MB red)
@@ -286,6 +292,22 @@ describe("buildSystemMonitorSnapshot", () => {
     expect(snapshot.indicators.find((i) => i.id === "E5")).toMatchObject({ value: 1, state: "yellow" });
     expect(snapshot.indicators.find((i) => i.id === "E6")).toMatchObject({ value: 0, state: "green" });
     expect(snapshot.indicators.find((i) => i.id === "F2")).toMatchObject({ value: 1, state: "info" });
+    expect(snapshot.indicators.find((i) => i.id === "H1")).toMatchObject({
+      group: "monitor_self",
+      name: "Process snapshot token enrichment",
+      value: "custom",
+      state: "info",
+      source_learning: "token-usage-orphan-pid-rollout-fanout-storm.md"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "H2")).toMatchObject({
+      group: "monitor_self",
+      name: "System monitor snapshot latency",
+      unit: "ms",
+      value: 675,
+      state: "yellow",
+      thresholds: { yellow: 500, red: 2000 },
+      source_learning: "token-usage-orphan-pid-rollout-fanout-storm.md"
+    });
 
     expect(snapshot.indicators.find((i) => i.id === "A1")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "pid 100 codex", detail: expect.stringContaining("completed-thread") }),
@@ -391,6 +413,44 @@ describe("buildSystemMonitorSnapshot", () => {
     expect(e6?.items?.[0]?.detail).toContain("POST-FLIGHT");
 
     await fs.rm(fixture.dir, { recursive: true, force: true });
+  });
+
+  it("builds its default process snapshot with token enrichment disabled", async () => {
+    const snapshot = await buildSystemMonitorSnapshot({
+      stateStore: { load: async () => ({ roles: [], promptStore: {} }) },
+      listProcesses: () => [
+        {
+          pid: 110,
+          ppid: 1,
+          etime: "00:20",
+          command: "/Users/yzliu/.openclaw/npm/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex app-server --listen stdio://"
+        }
+      ],
+      now: () => new Date("2026-05-23T05:00:00.000Z"),
+      measureNow: () => 10,
+      probeHub: async () => ({ reachable: true, latency_ms: 8 }),
+      statFile: async () => null,
+      statFs: async () => ({ freeBytes: 10 * 1024 * 1024 * 1024 }),
+      countLogPatterns: async () => new Map()
+    });
+
+    expect(snapshot.indicators.find((i) => i.id === "H1")).toMatchObject({
+      value: "disabled",
+      state: "green",
+      detail: expect.stringContaining("does not run per-process ps/lsof lookups")
+    });
+    expect(snapshot.indicators.find((i) => i.id === "A5")).toMatchObject({
+      value: 1,
+      state: "green"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "A2")).toMatchObject({
+      value: "skipped",
+      state: "info"
+    });
+    expect(snapshot.indicators.find((i) => i.id === "A3")).toMatchObject({
+      value: "skipped",
+      state: "info"
+    });
   });
 
   it("keeps the API read-only and returns false for unrelated routes", async () => {

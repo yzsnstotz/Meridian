@@ -5,7 +5,8 @@ const MONITOR_GROUP_LABELS = {
   loop_detectors: "Loop Detectors",
   system_resources: "System Resources",
   lifecycle_anomaly: "Lifecycle Anomaly",
-  wedge_staleness: "Wedge / Staleness"
+  wedge_staleness: "Wedge / Staleness",
+  monitor_self: "Monitor Self-Check"
 };
 const MONITOR_GROUP_ORDER = [
   "process_pressure",
@@ -13,7 +14,8 @@ const MONITOR_GROUP_ORDER = [
   "loop_detectors",
   "system_resources",
   "lifecycle_anomaly",
-  "wedge_staleness"
+  "wedge_staleness",
+  "monitor_self"
 ];
 const MONITOR_CARD_STATE_CLASSES = new Set([
   "monitor-card-state-green",
@@ -32,7 +34,9 @@ const MONITOR_DETAIL_HINTS = {
   C7: "Log detector: counts worker-breaker trips in the meridian-roles log.",
   D2: "Log file metric: measures the current meridian-roles log file size.",
   D3: "Log file metric: compares the meridian-roles log size with the previous monitor poll.",
-  D4: "Log file metric: measures the current Meridian hub log file size."
+  D4: "Log file metric: measures the current Meridian hub log file size.",
+  H1: "Self-monitor: confirms this page is not doing live token-usage enrichment.",
+  H2: "Self-monitor: measures how long the system monitor snapshot took to build."
 };
 
 document.addEventListener("DOMContentLoaded", () => {
