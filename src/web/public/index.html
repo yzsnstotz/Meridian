@@ -1187,7 +1187,7 @@
     </div>
     <div style="display:flex; gap:0.5rem; align-items:center;">
       <a class="header-roles-link" href="accounts.html" title="Manage codex accounts and credentials">Accounts</a>
-      <a id="meridian-roles-header-link" class="header-roles-link" href="#" target="_blank" rel="noopener noreferrer" title="meridian-roles web UI (same host, port 7701)">meridian-roles</a>
+      <a id="meridian-roles-header-link" class="header-roles-link" href="#" target="_blank" rel="noopener noreferrer" title="meridian-roles web UI">meridian-roles</a>
     </div>
   </header>
 
@@ -1493,7 +1493,15 @@
         if (!h) {
           return "http://localhost:7701";
         }
-        return "http://" + h + ":7701";
+        // Local dev: meridian-roles runs on its own :7701 on the same host.
+        if (h === "localhost" || h === "127.0.0.1" || h === "::1") {
+          return "http://" + h + ":7701";
+        }
+        // Behind the ADS gateway (e.g. aws.ioex.io) meridian-roles is proxied
+        // at the relative /roles-gui mount — :7701 is loopback-only and not
+        // reachable from a browser. A root-relative path keeps the link on
+        // the gateway host. Override via localStorage meridian_roles_gui_origin.
+        return "/roles-gui";
       }
 
       function syncMeridianRolesHeaderLink() {
