@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { HUB_SOCKET_PATH } from "../../config";
 import type { Logger } from "../../roles/base-role";
@@ -52,6 +53,7 @@ export interface BuildSystemMonitorOptions {
   log?: Logger;
   processSnapshot?: () => Promise<SystemMonitorProcess[]>;
   now?: () => Date;
+  measureNow?: () => number;
   probeHub?: () => Promise<HubProbeResult>;
   statFile?: (filePath: string) => Promise<MonitorFileStat | null>;
   statFs?: (filePath: string) => Promise<MonitorFsStat>;
@@ -63,6 +65,7 @@ export interface BuildSystemMonitorOptions {
   hubLogPath?: string;
   fnmMultishellsPath?: string;
   fetchAgentapiInstanceIndex?: ProcessHandlersOptions["fetchAgentapiInstanceIndex"];
+  listProcesses?: ProcessHandlersOptions["listProcesses"];
 }
 
 interface MonitorRuntimeState {
@@ -71,6 +74,13 @@ interface MonitorRuntimeState {
   previousProcessTotals: Map<string, number>;
   previousProcessSampleAtMs: number | null;
   previousFileStats: Map<string, { size: number; sampledAtMs: number }>;
+}
+
+type ProcessTokenUsageMode = "disabled" | "custom";
+
+interface ProcessLoadResult {
+  processes: SystemMonitorProcess[];
+  tokenUsageMode: ProcessTokenUsageMode;
 }
 
 const DEFAULT_HUB_STATE_PATH = process.env.MERIDIAN_HUB_STATE_PATH
@@ -120,6 +130,8 @@ export function createSystemMonitorHandlers(options: BuildSystemMonitorOptions):
 }
 
 export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOptions): Promise<SystemMonitorSnapshot> {
+  const measureNow = options.measureNow ?? (() => performance.now());
+  const snapshotStartedAtMs = measureNow();
   const now = options.now?.() ?? new Date();
   const nowMs = now.getTime();
   const runtime = options.runtime;
@@ -133,7 +145,7 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   const fnmMultishellsPath = options.fnmMultishellsPath ?? DEFAULT_FNM_MULTISHELLS_PATH;
 
   const [
-    processes,
+    processResult,
     hubProbe,
     lifecycle,
     hubStateStat,
@@ -155,12 +167,14 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
     loadLogCounts(options, hubLogPath, nowMs, errors),
     loadStat(statFile, fnmMultishellsPath, errors)
   ]);
+  const processes = processResult.processes;
   errors.push(...lifecycle.errors);
 
   const indicators: SystemMonitorIndicator[] = [];
   const leakProcesses = processes.filter((process) => process.is_leak);
   const leakedTokenTotal = sumLeakedTokens(leakProcesses);
   const tokenVelocity = computeTokenVelocity(processes, nowMs, runtime);
+  const snapshotLatencyMs = Math.max(0, Math.round(measureNow() - snapshotStartedAtMs));
   const completedAliveProcesses = processes.filter((process) =>
     (process.agent_type === "codex" || process.agent_type === "claude")
     && process.thread_id
@@ -168,8 +182,13 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   );
 
   push(indicators, aboveIndicator("A1", "process_pressure", "Leaked process count", leakProcesses.length, "processes", 1, 3, "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md", processItems(leakProcesses)));
-  push(indicators, aboveIndicator("A2", "process_pressure", "Leaked process token total", leakedTokenTotal, "tokens", 10_000, 100_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenSessionItems(leakProcesses)));
-  push(indicators, aboveIndicator("A3", "process_pressure", "Per-process token velocity", Math.round(tokenVelocity), "tokens/min", 5_000, 50_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenProcessItems(processes)));
+  if (processResult.tokenUsageMode === "disabled") {
+    push(indicators, skippedTokenMetricIndicator("A2", "Leaked process token total"));
+    push(indicators, skippedTokenMetricIndicator("A3", "Per-process token velocity"));
+  } else {
+    push(indicators, aboveIndicator("A2", "process_pressure", "Leaked process token total", leakedTokenTotal, "tokens", 10_000, 100_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenSessionItems(leakProcesses)));
+    push(indicators, aboveIndicator("A3", "process_pressure", "Per-process token velocity", Math.round(tokenVelocity), "tokens/min", 5_000, 50_000, "dispatcher/watchdog-scheduler-cleanup-kill-matcher-drift.md", tokenProcessItems(processes)));
+  }
   push(indicators, aboveIndicator("A4", "process_pressure", "Orphan dispatcher-completed codex CLIs", completedAliveProcesses.length, "processes", 1, 5, "dispatcher/settle-time-terminal-thread-cleanup-gap.md", processItems(completedAliveProcesses)));
   // A5 — codex app-server orphans from the model-catalog RPC dance
   // (src/shared/model-catalog.ts::listCodexModelsViaAppServer). Codex
@@ -238,6 +257,9 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, infoIndicator("G4", "cure_metrics", "Rehydrate PID-dead pruned (24h)", logCount(hubLogCounts, "rehydrate_pid_dead_pruned"), "events", "storm-recurrence-architectural-root-cause.md"));
   push(indicators, aboveIndicator("E7", "lifecycle_anomaly", "\"is not registered\" within 60s of hub restart", logCount(hubLogCounts, "is_not_registered_post_hub_init"), "events", 1, 5, "storm-recurrence-architectural-root-cause.md"));
 
+  push(indicators, tokenEnrichmentModeIndicator(processResult.tokenUsageMode));
+  push(indicators, aboveIndicator("H2", "monitor_self", "System monitor snapshot latency", snapshotLatencyMs, "ms", 500, 2_000, "token-usage-orphan-pid-rollout-fanout-storm.md"));
+
   return {
     polled_at: now.toISOString(),
     any_red: indicators.some((indicator) => indicator.state === "red"),
@@ -246,19 +268,22 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   };
 }
 
-async function loadProcesses(options: BuildSystemMonitorOptions, errors: string[]): Promise<SystemMonitorProcess[]> {
+async function loadProcesses(options: BuildSystemMonitorOptions, errors: string[]): Promise<ProcessLoadResult> {
   try {
     if (options.processSnapshot) {
-      return await options.processSnapshot();
+      return { processes: await options.processSnapshot(), tokenUsageMode: "custom" };
     }
-    return await buildProcessSnapshot({
+    const processes = await buildProcessSnapshot({
       stateStore: options.stateStore,
       log: options.log,
-      fetchAgentapiInstanceIndex: options.fetchAgentapiInstanceIndex
+      fetchAgentapiInstanceIndex: options.fetchAgentapiInstanceIndex,
+      listProcesses: options.listProcesses,
+      tokenUsageCollector: null
     });
+    return { processes, tokenUsageMode: "disabled" };
   } catch (error) {
     errors.push(`process snapshot failed: ${getErrorMessage(error)}`);
-    return [];
+    return { processes: [], tokenUsageMode: "disabled" };
   }
 }
 
@@ -521,6 +546,36 @@ function infoIndicator(
     state: "info",
     source_learning: source
   }, items);
+}
+
+function tokenEnrichmentModeIndicator(mode: ProcessTokenUsageMode): SystemMonitorIndicator {
+  return {
+    id: "H1",
+    group: "monitor_self",
+    name: "Process snapshot token enrichment",
+    value: mode,
+    unit: null,
+    state: mode === "disabled" ? "green" : "info",
+    thresholds: { yellow: "custom process snapshot", red: "live token enrichment enabled" },
+    source_learning: "token-usage-orphan-pid-rollout-fanout-storm.md",
+    detail: mode === "disabled"
+      ? "System Monitor disables token-usage enrichment so polling this endpoint does not run per-process ps/lsof lookups."
+      : "A test or caller supplied a custom process snapshot; token-enrichment safety depends on that caller."
+  };
+}
+
+function skippedTokenMetricIndicator(id: "A2" | "A3", name: string): SystemMonitorIndicator {
+  return {
+    id,
+    group: "process_pressure",
+    name,
+    value: "skipped",
+    unit: null,
+    state: "info",
+    thresholds: { yellow: "token enrichment enabled", red: "token enrichment storm" },
+    source_learning: "token-usage-orphan-pid-rollout-fanout-storm.md",
+    detail: "Skipped because System Monitor disables token-usage enrichment to avoid per-process ps/lsof lookups."
+  };
 }
 
 function logCount(counts: Map<string, number>, key: string): number {
