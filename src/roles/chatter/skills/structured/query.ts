@@ -2,9 +2,9 @@ import { hasRecordType } from "../../manifest";
 import type { MemoryResolver } from "../../memory-resolver";
 import {
   getIndexedFields,
+  loadReconciledStructuredIndex,
   normalizeWhere,
   readRecordsForKeys,
-  readStructuredIndex,
   recordMatchesConditions,
   selectCandidateKeys,
   type StructuredWhere
@@ -32,8 +32,9 @@ export async function queryStructuredRecords(
   }
 
   try {
-    const index = readStructuredIndex(resolver, type);
-    const candidateKeys = selectCandidateKeys(index, conditions, getIndexedFields(resolver.manifest, type));
+    const indexedFields = getIndexedFields(resolver.manifest, type);
+    const index = loadReconciledStructuredIndex(resolver, type, indexedFields);
+    const candidateKeys = selectCandidateKeys(index, conditions, indexedFields);
     const recordsByKey = readRecordsForKeys(resolver, type, candidateKeys);
     return {
       records: candidateKeys
