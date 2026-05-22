@@ -286,20 +286,21 @@ export function encodeClaudeProjectPath(cwd: string): string {
 
 // codex rollout filenames embed the session start timestamp as
 // `rollout-YYYY-MM-DDTHH-mm-ss-<uuid>.jsonl` (dashes for the time portion in
-// place of colons; UTC). The filename ts equals (or is within milliseconds of)
-// the on-disk `session_meta.payload.timestamp` we'd otherwise have to open the
-// file to read. Parsing the filename lets us prune the candidate set before
-// any open()/readSync — which matters when the day directory contains dozens
-// of rollouts and the caller is iterating across many unresolved PIDs.
+// place of colons). Some Codex builds write this timestamp as UTC, while
+// current live rollouts on this host write local wall time. The on-disk
+// `session_meta.payload.timestamp` remains the authoritative UTC timestamp;
+// filename parsing is only a pre-read prune to avoid open()/readSync across
+// dozens of clearly out-of-window rollouts per unresolved PID.
 const ROLLOUT_FILENAME_TS_RE = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-/;
 
 export function listCodexRolloutFiles(
   root: string,
   pidStartMs: number,
-  listDir: (dir: string) => string[]
+  listDir: (dir: string) => string[],
+  options: { localTimezoneOffsetMinutes?: number } = {}
 ): string[] {
   // Search the day of pidStart and the day after — covers UTC/local boundary
-  // and codex sessions that span midnight. (codex writes UTC in the filename.)
+  // and codex sessions that span midnight.
   const startDate = new Date(pidStartMs);
   const minTsMs = pidStartMs - 1_000;
   const maxTsMs = pidStartMs + CODEX_SESSION_OPEN_WINDOW_MS;
@@ -321,18 +322,47 @@ export function listCodexRolloutFiles(
       // Filename-window prune. peekCodexSessionMeta enforces the same window
       // against meta.timestampMs after reading the file head; mirroring it
       // here against the filename's encoded timestamp drops the I/O entirely
-      // for out-of-window candidates. Non-conforming filenames (e.g. test
-      // fixtures named `rollout-A.jsonl`) fall through to peek by design.
-      const m = ROLLOUT_FILENAME_TS_RE.exec(name);
-      if (m) {
-        const isoLike = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
-        const tsMs = Date.parse(isoLike);
-        if (Number.isFinite(tsMs) && (tsMs < minTsMs || tsMs > maxTsMs)) continue;
-      }
+      // for out-of-window candidates. Because the filename timestamp may be
+      // UTC or local wall time, only prune when every plausible interpretation
+      // falls outside the window. Non-conforming filenames (e.g. test fixtures
+      // named `rollout-A.jsonl`) fall through to peek by design.
+      if (!codexRolloutFilenameOverlapsWindow(name, minTsMs, maxTsMs, options.localTimezoneOffsetMinutes)) continue;
       candidates.push(path.join(dayDir, name));
     }
   }
   return candidates;
+}
+
+export function codexRolloutFilenameOverlapsWindow(
+  name: string,
+  minTsMs: number,
+  maxTsMs: number,
+  localTimezoneOffsetMinutes?: number
+): boolean {
+  const candidates = codexRolloutFilenameTimestampCandidates(name, localTimezoneOffsetMinutes);
+  if (candidates.length === 0) return true;
+  return candidates.some((tsMs) => tsMs >= minTsMs && tsMs <= maxTsMs);
+}
+
+function codexRolloutFilenameTimestampCandidates(name: string, localTimezoneOffsetMinutes?: number): number[] {
+  const m = ROLLOUT_FILENAME_TS_RE.exec(name);
+  if (!m) return [];
+
+  const year = Number(m[1]);
+  const monthIndex = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  const hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const second = Number(m[6]);
+  const utcMs = Date.UTC(year, monthIndex, day, hour, minute, second);
+  if (!Number.isFinite(utcMs)) return [];
+
+  const localMs = localTimezoneOffsetMinutes === undefined
+    ? new Date(year, monthIndex, day, hour, minute, second).getTime()
+    : utcMs + localTimezoneOffsetMinutes * 60_000;
+
+  if (!Number.isFinite(localMs) || localMs === utcMs) return [utcMs];
+  return [utcMs, localMs];
 }
 
 interface CodexSessionMeta {
