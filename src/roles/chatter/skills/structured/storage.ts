@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -56,6 +57,19 @@ export function removeFileIfExists(filePath: string): boolean {
 
 export function fileExists(filePath: string): boolean {
   return existsSync(filePath);
+}
+
+// Record keys actually present on disk under `structured/<type>/`, derived
+// from the `<key>.json` files (the `_index.json` sidecar is excluded). This
+// is the ground truth — used to reconcile a possibly-stale `_index.json`.
+export function listStructuredRecordKeysOnDisk(resolver: MemoryResolver, type: string): string[] {
+  const typeDir = path.dirname(resolveStructuredIndexPath(resolver, type));
+  if (!existsSync(typeDir)) {
+    return [];
+  }
+  return readdirSync(typeDir)
+    .filter((name) => name.endsWith(".json") && name !== "_index.json")
+    .map((name) => name.slice(0, -".json".length));
 }
 
 export function structuredErrorFromUnknown(error: unknown): StructuredError {

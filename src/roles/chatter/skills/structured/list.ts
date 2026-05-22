@@ -2,9 +2,9 @@ import { hasRecordType } from "../../manifest";
 import type { MemoryResolver } from "../../memory-resolver";
 import {
   getIndexedFields,
+  loadReconciledStructuredIndex,
   normalizeWhere,
   readRecordsForKeys,
-  readStructuredIndex,
   recordMatchesConditions,
   selectCandidateKeys,
   type StructuredWhere
@@ -27,7 +27,8 @@ export async function listStructuredRecords(
   }
 
   try {
-    const index = readStructuredIndex(resolver, type);
+    const indexedFields = getIndexedFields(resolver.manifest, type);
+    const index = loadReconciledStructuredIndex(resolver, type, indexedFields);
     if (filter === undefined) {
       return { keys: index.keys };
     }
@@ -37,7 +38,7 @@ export async function listStructuredRecords(
       return { error: "invalid_where", details: "filter must be a condition or { and: [...] }" };
     }
 
-    const candidateKeys = selectCandidateKeys(index, conditions, getIndexedFields(resolver.manifest, type));
+    const candidateKeys = selectCandidateKeys(index, conditions, indexedFields);
     const recordsByKey = readRecordsForKeys(resolver, type, candidateKeys);
     return {
       keys: candidateKeys.filter((key) => {

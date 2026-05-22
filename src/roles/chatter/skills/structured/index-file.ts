@@ -2,6 +2,7 @@ import type { ChatterManifest } from "../../manifest";
 import type { MemoryResolver } from "../../memory-resolver";
 import {
   fileExists,
+  listStructuredRecordKeysOnDisk,
   readJsonFile,
   resolveStructuredIndexPath,
   resolveStructuredRecordPath,
@@ -100,6 +101,39 @@ export function rebuildStructuredIndex(
   return Object.keys(byField).length > 0
     ? { keys: normalizedKeys, by_field: byField }
     : { keys: normalizedKeys };
+}
+
+// Load the structured index reconciled against the record files actually on
+// disk. `query`/`list` only ever return keys present in `_index.json`, so a
+// record written straight to disk — e.g. by a coding-agent chatter that has
+// filesystem access but no `structured.*` tool wired — would be invisible.
+// When the on-disk record set drifts from the persisted index, rebuild the
+// index from the files (and best-effort re-persist so the next read is fast).
+// The structured store is thus self-healing for out-of-band writes.
+export function loadReconciledStructuredIndex(
+  resolver: MemoryResolver,
+  type: string,
+  indexedFields: ReadonlyArray<string>
+): StructuredIndex {
+  const persisted = readStructuredIndex(resolver, type);
+  const diskKeys = listStructuredRecordKeysOnDisk(resolver, type);
+
+  const persistedSet = new Set(persisted.keys);
+  const sameKeySet =
+    diskKeys.length === persisted.keys.length && diskKeys.every((key) => persistedSet.has(key));
+  if (sameKeySet) {
+    return persisted;
+  }
+
+  const recordsByKey = readRecordsForKeys(resolver, type, diskKeys);
+  const rebuilt = rebuildStructuredIndex(diskKeys, recordsByKey, indexedFields);
+  try {
+    writeStructuredIndex(resolver, type, rebuilt);
+  } catch {
+    // Best-effort persist: an unwritable index still lets this call return
+    // correct results; the next read just reconciles again.
+  }
+  return rebuilt;
 }
 
 export function normalizeWhere(where: unknown): StructuredCondition[] | null {
