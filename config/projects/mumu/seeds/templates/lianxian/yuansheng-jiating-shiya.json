@@ -1,0 +1,16 @@
+{
+  "id": "yuansheng-jiating-shiya",
+  "title": "原生家庭施压型",
+  "overall_arc": "从伴侣或父母不断索取、干预婚恋选择切入，把“孝顺”和“被控制”拆开讲，帮助连线人识别边界被侵占的位置，最后给出不撕破脸也能立规矩的表达。",
+  "typical_duration_min": 24,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 3, "purpose": "用一句家庭施压原话开场，制造强代入感。" },
+    { "no": 2, "type": "buildup", "duration_min": 5, "purpose": "补齐谁在施压、施压频率、钱和婚恋决定如何被影响。" },
+    { "no": 3, "type": "conflict", "duration_min": 6, "purpose": "区分合理照顾与情感勒索，追问伴侣是否有站出来。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 4, "purpose": "替连线人承认内疚感，同时说明内疚不能当作边界。" },
+    { "no": 5, "type": "interaction", "duration_min": 4, "purpose": "引导观众聊“父母不同意”和“父母控制”的分界线。" },
+    { "no": 6, "type": "closing", "duration_min": 2, "purpose": "收成三句边界话术，便于主播直接给连线人使用。" }
+  ],
+  "audience_note": "适合高互动长段连线，容易触发观众分享家庭经验。",
+  "notes": "语气要稳，不把父母妖魔化，也不替控制行为开脱。"
+}
