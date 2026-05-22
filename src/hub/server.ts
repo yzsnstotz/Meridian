@@ -169,6 +169,7 @@ interface PriorityQueueItem {
   reject: (error: unknown) => void;
 }
 
+const A2A_STREAM_THREAD_ID_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
 const IDEMPOTENCY_CLEANUP_INTERVAL_MS = 60 * 1000;
 const DEFAULT_PRIORITY = 5;
@@ -449,6 +450,10 @@ export class HubServer {
   }
 
   private async handleSocketPayload(socket: net.Socket, raw: string, closeOnComplete: boolean): Promise<void> {
+    if (this.handleA2AStreamSubscription(socket, raw)) {
+      return;
+    }
+
     const result = await this.enqueueMessage(raw);
     if (!socket.writable) {
       return;
@@ -464,6 +469,35 @@ export class HubServer {
       return;
     }
     socket.write(`${JSON.stringify(result)}\n`);
+  }
+
+  private handleA2AStreamSubscription(socket: net.Socket, raw: string): boolean {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      return false;
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+      return false;
+    }
+
+    const frame = parsed as Record<string, unknown>;
+    if (frame.type !== "a2a_stream_subscribe") {
+      return false;
+    }
+
+    const threadId = typeof frame.thread_id === "string" ? frame.thread_id.trim() : "";
+    if (!threadId || !A2A_STREAM_THREAD_ID_PATTERN.test(threadId)) {
+      if (socket.writable) {
+        socket.end(`${JSON.stringify({ type: "a2a_stream_error", error: "Invalid thread_id" })}\n`);
+      }
+      return true;
+    }
+
+    this.registerWebsocketSubscriber(threadId, socket);
+    return true;
   }
 
   private enqueueMessage(raw: string): Promise<HubResult | null> {
