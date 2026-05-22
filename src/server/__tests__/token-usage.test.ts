@@ -700,6 +700,31 @@ describe("listCodexRolloutFiles", () => {
     ]);
   });
 
+  it("keeps rollout filenames written in local wall time when local offset differs from UTC", () => {
+    // Live obs 2026-05-23: codex_10 started at 2026-05-22T20:29:15Z, while
+    // Codex wrote rollout-2026-05-23T05-29-15-*.jsonl on a JST host. The
+    // filename is local wall time, so treating it as UTC puts it 9h in the
+    // future and prunes the real session before session_meta can be checked.
+    const startMs = Date.parse("2026-05-22T20:29:15Z");
+    const localWallTimePath = path.join(
+      CODEX_ROOT, "2026", "05", "23",
+      "rollout-2026-05-23T05-29-15-local.jsonl"
+    );
+    const unrelatedPath = path.join(
+      CODEX_ROOT, "2026", "05", "23",
+      "rollout-2026-05-23T12-00-00-future.jsonl"
+    );
+    const files = new Map<string, string>([
+      [localWallTimePath, "x"],
+      [unrelatedPath, "y"]
+    ]);
+    const fs = makeFs(files);
+    const found = listCodexRolloutFiles(CODEX_ROOT, startMs, fs.listDir, {
+      localTimezoneOffsetMinutes: -9 * 60
+    });
+    expect(found).toEqual([localWallTimePath]);
+  });
+
   it("passes through filenames that don't match the rollout-<ISO>-<uuid> pattern (back-compat)", () => {
     // External fixtures and legacy filenames without an encoded timestamp
     // must reach peekCodexSessionMeta — the filename prune is a fast-path,
