@@ -3695,6 +3695,7 @@
       var wsReconnectTimer = null;
       var WS_MAX_RECONNECT_ATTEMPTS = 20;
       var wsConnected = false;
+      var wsUnavailable = false;
       var initialReplayLines = 200;
       var historyBootstrapPromise = fetchThreadHistory()
         .then(function(entries) {
@@ -3762,25 +3763,32 @@
       }
 
       function connectWebSocket() {
-        if (!threadId || !token) return;
+        if (!threadId || !token || wsUnavailable) return;
         var replayLines = wsReconnectAttempts > 0 ? (serverHistoryAuthoritative ? 0 : 100) : initialReplayLines;
         var url = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
         ws = new WebSocket(url);
         ws.onopen = function() {
           wsReconnectAttempts = 0;
           wsConnected = true;
+          wsUnavailable = false;
           updateAgentStatusIndicator(true);
         };
         ws.onmessage = handleWsMessage;
         ws.onerror = function() {
           if (!wsConnected) {
-            addChatBubble("Error: Could not connect to session. Check token and try again from the hub.", "agent", "", { timestamp: new Date().toISOString() });
+            // Optional legacy terminal stream: history/A2A delivery still works
+            // when this route is absent, so do not surface it as a chat error.
+            wsUnavailable = true;
+            clearTimeout(wsReconnectTimer);
+            updateAgentStatusIndicator(false);
           }
         };
         ws.onclose = function(ev) {
+          var wasConnected = wsConnected;
           wsConnected = false;
           updateAgentStatusIndicator(false);
           if (ev.code === 1000 || ev.code === 1005) return;
+          if (wsUnavailable && !wasConnected) return;
           scheduleWsReconnect();
         };
       }
@@ -3799,9 +3807,9 @@
       function updateAgentStatusIndicator(connected) {
         var statusEl = document.getElementById("agent-status");
         if (!statusEl) return;
-        statusEl.style.color = connected ? "var(--success-color)" : "var(--error-color)";
+        statusEl.style.color = connected ? "var(--success-color)" : (wsUnavailable ? "var(--text-dim)" : "var(--error-color)");
         statusEl.querySelector("div").style.background = "currentColor";
-        statusEl.lastChild.textContent = connected ? " Live" : " Reconnecting…";
+        statusEl.lastChild.textContent = connected ? " Live" : (wsUnavailable ? " History" : " Reconnecting…");
       }
 
       historyBootstrapPromise.finally(function() {
@@ -3815,7 +3823,7 @@
 
       // Auto-reconnect on page visibility change (user returns after being away)
       document.addEventListener("visibilitychange", function() {
-        if (document.visibilityState === "visible" && threadId && token) {
+        if (document.visibilityState === "visible" && threadId && token && !wsUnavailable) {
           if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
             wsReconnectAttempts = 0;
             connectWebSocket();
