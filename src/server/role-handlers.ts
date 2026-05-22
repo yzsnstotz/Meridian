@@ -683,14 +683,10 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
             // delivered asynchronously through its configured
             // user_reply_channel — this endpoint is a fire-and-forget ack.
             const result = HubResultSchema.parse(await readJsonBody(request));
-            const liveRoles = options.runner.listRoles();
-            const matched = liveRoles.some((r) => r.threadId === result.thread_id);
             await options.runner.dispatch(result);
             writeJson(response, 200, {
               ok: true,
               dispatched: true,
-              matched_live_role: matched,
-              live_role_count: liveRoles.length,
               trace_id: result.trace_id,
               thread_id: result.thread_id
             });
