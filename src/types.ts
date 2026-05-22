@@ -376,9 +376,13 @@ export const AgentInstanceSchema = z.object({
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
   mode: BridgeModeSchema,
-  socket_path: z.string().min(1),
+  // A `stopped` / `error` instance has no live socket and no running pid —
+  // the Hub reports these fields as `null`. The status enum already admits
+  // those states, so the schema must too; requiring a non-null string/number
+  // here made one dead instance reject the WHOLE `AgentInstance[]` payload.
+  socket_path: z.string().min(1).nullable(),
   working_dir: z.string().min(1).optional(),
-  pid: z.number().int().nonnegative(),
+  pid: z.number().int().nonnegative().nullable(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
   restart_safe: z.boolean().optional(),
