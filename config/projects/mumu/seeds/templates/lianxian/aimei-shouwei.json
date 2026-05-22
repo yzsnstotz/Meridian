@@ -1,0 +1,16 @@
+{
+  "id": "aimei-shouwei",
+  "title": "暧昧期收尾型",
+  "overall_arc": "围绕暧昧拖太久、关系不给名分展开，先承接连线人的期待，再拆出对方是否只享受情绪价值，最后帮助连线人设计一次清醒、不卑微的摊牌。",
+  "typical_duration_min": 15,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "用“他每天找我聊天，但从不说关系”快速抓住矛盾。" },
+    { "no": 2, "type": "buildup", "duration_min": 3, "purpose": "梳理暧昧时长、付出比例、是否见朋友和是否有排他性。" },
+    { "no": 3, "type": "conflict", "duration_min": 4, "purpose": "指出长期暧昧的核心收益方，以及连线人失去的机会成本。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 2, "purpose": "落共情：不是你想太多，是关系一直不给答案。" },
+    { "no": 5, "type": "interaction", "duration_min": 3, "purpose": "让观众判断多长时间不表态就该止损。" },
+    { "no": 6, "type": "closing", "duration_min": 1, "purpose": "给出一句摊牌话术和一个观察期限。" }
+  ],
+  "audience_note": "适合直播间年轻观众，弹幕参与度高。",
+  "notes": "强调清醒表达，不鼓励情绪化逼问。"
+}

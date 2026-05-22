@@ -1,0 +1,16 @@
+{
+  "id": "banlv-lengbaoli",
+  "title": "伴侣冷暴力型",
+  "overall_arc": "从伴侣长期不回应、回避沟通切入，先帮连线人确认自己的感受不是小题大做，再拆出冷暴力与单纯不会表达的差别，最后给出一次低内耗的沟通和止损方案。",
+  "typical_duration_min": 22,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "用“我发三百字，他回一个嗯”开场，制造强共鸣。" },
+    { "no": 2, "type": "buildup", "duration_min": 5, "purpose": "补齐冷处理频率、冲突触发点和连线人的应对方式。" },
+    { "no": 3, "type": "conflict", "duration_min": 6, "purpose": "区分暂时冷静、回避沟通和用沉默惩罚。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 3, "purpose": "落一句“不回应也是一种回应，只是它把成本丢给了你”。" },
+    { "no": 5, "type": "interaction", "duration_min": 4, "purpose": "让观众判断沉默多久算伤害，并分享处理经验。" },
+    { "no": 6, "type": "closing", "duration_min": 2, "purpose": "给出一次明确沟通模板和停止追问的边界。" }
+  ],
+  "audience_note": "适合深夜情感场，容易沉淀高质量评论。",
+  "notes": "不要把所有沉默都定性为恶意，先看模式和后果。"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "fumu-cuihun",
+  "title": "父母催婚型",
+  "overall_arc": "从父母催婚造成的羞耻和急迫感切入，区分父母的担心、面子和控制欲，帮助连线人把婚恋选择重新拿回自己手里，同时设计一段不激化矛盾的沟通话术。",
+  "typical_duration_min": 17,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "用父母催婚原话开场，让观众马上代入。" },
+    { "no": 2, "type": "buildup", "duration_min": 4, "purpose": "补齐年龄、家庭期待、相亲安排和连线人真实生活状态。" },
+    { "no": 3, "type": "conflict", "duration_min": 4, "purpose": "拆开父母的焦虑和连线人的人生节奏冲突。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 3, "purpose": "承认被催婚不是矫情，是长期被否定选择权。" },
+    { "no": 5, "type": "interaction", "duration_min": 3, "purpose": "让观众分享催婚边界和有效回应。" },
+    { "no": 6, "type": "closing", "duration_min": 1, "purpose": "收成三句沟通话术和一次家庭谈话边界。" }
+  ],
+  "audience_note": "适合节假日前后高频催婚话题。",
+  "notes": "保持对父母动机的复杂理解，不做单边攻击。"
+}

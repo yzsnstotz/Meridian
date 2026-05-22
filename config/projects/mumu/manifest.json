@@ -231,6 +231,234 @@
           }
         }
       }
+    },
+    "template_lianxian": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "overall_arc",
+        "typical_duration_min",
+        "segment_pattern"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "typical_duration_min"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "overall_arc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "typical_duration_min": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 40
+        },
+        "segment_pattern": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "no",
+              "type",
+              "purpose"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "hook",
+                  "buildup",
+                  "conflict",
+                  "empathy_line",
+                  "interaction",
+                  "closing"
+                ]
+              },
+              "duration_min": {
+                "type": "number",
+                "minimum": 0.5
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "audience_note": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "story_lianxian": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": [
+        "id",
+        "template_id",
+        "outline"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "template_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "object",
+          "required": [
+            "arc",
+            "segments"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "arc": {
+              "type": "string"
+            },
+            "segments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "no",
+                  "type",
+                  "summary"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "no": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "hook",
+                      "buildup",
+                      "conflict",
+                      "empathy_line",
+                      "interaction",
+                      "closing"
+                    ]
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "key_line": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "segment_no",
+              "type",
+              "content"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "segment_no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "full_oral_script"
+                ]
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "style_lianxian": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_authored": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "likes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dislikes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tone_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "agent_observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "recurring_motifs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "avoided_patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confirmed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
     }
   },
   "system_prompts": {
@@ -250,6 +478,20 @@
       "fires_on": {
         "type": "after_structured_upsert",
         "record_type": "story_short_drama"
+      },
+      "throttle": {
+        "min_records_since_last_fire": 3,
+        "min_interval": "10m"
+      },
+      "action": {
+        "system_prompt_id": "style_observe"
+      }
+    },
+    {
+      "name": "style_observe_after_lianxian_stories",
+      "fires_on": {
+        "type": "after_structured_upsert",
+        "record_type": "story_lianxian"
       },
       "throttle": {
         "min_records_since_last_fire": 3,
