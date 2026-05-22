@@ -429,8 +429,24 @@ function createTerminalBehaviorHarness(html: string): {
 function createReconnectHarness(html: string): {
   context: Record<string, unknown>;
   urls: string[];
+  bubbles: string[];
+  reconnects: number[];
+  sockets: Array<{
+    onopen: (() => void) | null;
+    onmessage: ((event: { data: string }) => void) | null;
+    onerror: (() => void) | null;
+    onclose: ((event: { code: number }) => void) | null;
+  }>;
 } {
   const urls: string[] = [];
+  const bubbles: string[] = [];
+  const reconnects: number[] = [];
+  const sockets: Array<{
+    onopen: (() => void) | null;
+    onmessage: ((event: { data: string }) => void) | null;
+    onerror: (() => void) | null;
+    onclose: ((event: { code: number }) => void) | null;
+  }> = [];
 
   class FakeWebSocket {
     onopen: (() => void) | null = null;
@@ -440,6 +456,7 @@ function createReconnectHarness(html: string): {
 
     constructor(readonly url: string) {
       urls.push(url);
+      sockets.push(this);
     }
   }
 
@@ -449,6 +466,7 @@ function createReconnectHarness(html: string): {
     base: "http://127.0.0.1:3000",
     ws: null,
     wsConnected: false,
+    wsUnavailable: false,
     wsReconnectAttempts: 1,
     wsReconnectTimer: null,
     WS_MAX_RECONNECT_ATTEMPTS: 20,
@@ -457,13 +475,17 @@ function createReconnectHarness(html: string): {
     serverHistoryAuthoritative: true,
     WebSocket: FakeWebSocket,
     handleWsMessage: () => undefined,
-    addChatBubble: () => undefined,
+    addChatBubble: (text: string) => {
+      bubbles.push(text);
+    },
     updateAgentStatusIndicator: () => undefined,
-    scheduleWsReconnect: () => undefined
+    scheduleWsReconnect: () => {
+      reconnects.push(Date.now());
+    }
   };
 
   bindTerminalFunctions(html, context, ["connectWebSocket"]);
-  return { context, urls };
+  return { context, urls, bubbles, reconnects, sockets };
 }
 
 test("shared layout baseline css enforces full-width and full-height viewport", async () => {
@@ -1222,6 +1244,19 @@ test("terminal reconnect requests zero replay lines after authoritative history 
   context.wsReconnectAttempts = 1;
   connectWebSocket();
   assert.match(urls[1] ?? "", /replay_lines=100/);
+});
+
+test("terminal missing websocket endpoint degrades without chat error alarm", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { context, bubbles, reconnects, sockets } = createReconnectHarness(terminalHtml);
+  const connectWebSocket = context.connectWebSocket as () => void;
+
+  connectWebSocket();
+  sockets[0]?.onerror?.();
+  sockets[0]?.onclose?.({ code: 1006 });
+
+  assert.deepEqual(bubbles, []);
+  assert.deepEqual(reconnects, []);
 });
 
 test("terminal layout includes sidebar session history and model picker", async () => {
