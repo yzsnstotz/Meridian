@@ -138,7 +138,22 @@ export class A2AClient {
     }
 
     try {
-      return AgentInstanceSchema.array().parse(JSON.parse(content));
+      const raw: unknown = JSON.parse(content);
+      if (!Array.isArray(raw)) {
+        throw new Error("expected a JSON array");
+      }
+      // Parse element-by-element: a single malformed instance must not drop
+      // the live ones. The old `.array().parse()` rejected the entire list on
+      // any bad element, which hid every running agent from the dispatcher
+      // and flooded the log with `invalid AgentInstance[] response`.
+      const instances: AgentInstance[] = [];
+      for (const entry of raw) {
+        const parsed = AgentInstanceSchema.safeParse(entry);
+        if (parsed.success) {
+          instances.push(parsed.data);
+        }
+      }
+      return instances;
     } catch (error) {
       throw new Error(`list failed: invalid AgentInstance[] response: ${asError(error).message}`);
     }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AgentDispatcherConfigSchema,
+  AgentInstanceSchema,
   HubMessageSchema,
   HubResultSchema,
   PmResolverConfigSchema,
@@ -180,5 +181,39 @@ describe("payload.chatter.context_refs schema symmetry", () => {
       payload: { chatter }
     });
     expect(inbound.payload?.chatter?.context_refs).toEqual(chatter.context_refs);
+  });
+});
+
+describe("AgentInstanceSchema socket_path / pid nullability", () => {
+  const liveInstance = {
+    thread_id: "codex-01",
+    agent_type: "codex" as const,
+    mode: "bridge" as const,
+    socket_path: "/tmp/agentapi-codex-01.sock",
+    pid: 4321,
+    status: "running" as const,
+    created_at: "2026-05-22T00:00:00.000Z"
+  };
+
+  it("accepts a live instance with a socket path and pid", () => {
+    expect(AgentInstanceSchema.safeParse(liveInstance).success).toBe(true);
+  });
+
+  it("accepts stopped / errored instances whose socket_path and pid are null", () => {
+    // The Hub reports `socket_path`/`pid` as `null` once an instance is
+    // stopped or errored. AgentInstanceStatusSchema already admits those
+    // states, so the schema must accept the null fields — otherwise one dead
+    // instance rejected the whole AgentInstance[] list (see a2a/client.ts).
+    expect(
+      AgentInstanceSchema.safeParse({ ...liveInstance, status: "stopped", socket_path: null, pid: null }).success
+    ).toBe(true);
+    expect(
+      AgentInstanceSchema.safeParse({ ...liveInstance, status: "error", socket_path: null, pid: null }).success
+    ).toBe(true);
+  });
+
+  it("still rejects a genuinely malformed instance", () => {
+    expect(AgentInstanceSchema.safeParse({ ...liveInstance, thread_id: "" }).success).toBe(false);
+    expect(AgentInstanceSchema.safeParse({ ...liveInstance, status: "bogus" }).success).toBe(false);
   });
 });
