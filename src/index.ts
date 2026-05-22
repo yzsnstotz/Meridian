@@ -144,7 +144,17 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
   // Opt out by setting MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART=true.
   const autoResume = (process.env.MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART ?? "").toLowerCase() === "true";
   if (!autoResume) {
-    await forcePauseAllDispatchersOnStartup(stateStore, log);
+    const warmRehydratedDispatcherIds = new Set(
+      startupActivations
+        .filter((activation) =>
+          activation.roleState.roleType === "agent-dispatcher"
+          && !activation.rehydrationContext.needsReactivation
+        )
+        .map((activation) => activation.roleState.threadId)
+    );
+    await forcePauseAllDispatchersOnStartup(stateStore, log, {
+      exemptThreadIds: warmRehydratedDispatcherIds
+    });
   } else {
     log.warn("MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART=true — skipping restart hold; dispatchers will auto-activate");
   }
@@ -593,12 +603,19 @@ async function reconcileStartupPmResolvers(
  * because the loop's first iteration already happened by the time those
  * breakers see their first request.
  */
+interface ForcePauseAllDispatchersOnStartupOptions {
+  exemptThreadIds?: Iterable<string>;
+}
+
 export async function forcePauseAllDispatchersOnStartup(
   stateStore: StateStore,
-  log: typeof console
+  log: typeof console,
+  options: ForcePauseAllDispatchersOnStartupOptions = {}
 ): Promise<void> {
   let pausedCount = 0;
   let skippedTerminal = 0;
+  let skippedWarmRehydrated = 0;
+  const exemptThreadIds = new Set(options.exemptThreadIds ?? []);
   const state = await loadAppState(stateStore);
   const TERMINAL_STATUSES = new Set(["completed", "failed", "deactivated", "terminated"]);
   const nextRoles = state.roles.map((role) => {
@@ -612,6 +629,10 @@ export async function forcePauseAllDispatchersOnStartup(
     if (role.status === PAUSED_ROLE_STATUS) {
       return role; // already paused
     }
+    if (exemptThreadIds.has(role.threadId)) {
+      skippedWarmRehydrated += 1;
+      return role;
+    }
     pausedCount += 1;
     return { ...role, status: PAUSED_ROLE_STATUS };
   });
@@ -619,11 +640,15 @@ export async function forcePauseAllDispatchersOnStartup(
     await stateStore.save({ roles: nextRoles, promptStore: state.promptStore });
     log.warn("Restart safety hold: forced PAUSED on agent-dispatcher roles", {
       paused: pausedCount,
+      skippedWarmRehydrated,
       skippedTerminal,
       hint: "Resume each dispatcher via the GUI/CLI once you've verified Hub is healthy. Set MERIDIAN_ROLES_AUTO_RESUME_ON_RESTART=true to disable this hold."
     });
   } else {
-    log.info("Restart safety hold: no non-paused dispatchers to hold", { skippedTerminal });
+    log.info("Restart safety hold: no non-paused dispatchers to hold", {
+      skippedWarmRehydrated,
+      skippedTerminal
+    });
   }
 }
 

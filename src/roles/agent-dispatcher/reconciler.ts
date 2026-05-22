@@ -314,20 +314,27 @@ export async function reconcile(
     }
   }
 
-  // A blocked/failed worker can recover even when its `hub_result` is non-null
-  // but stale: PM resolution + validator feedback drive the worker through a
-  // fresh attempt that writes a clean `<<<MERIDIAN-STATUS>>> outcome: complete`
-  // marker to the report file, but the run-tool callback never delivers the
-  // new hub_result (transient IPC/transport drop — same fingerprint as
-  // PR #191's C-01). The earlier recovery loops do not catch this:
+  // A blocked/failed worker, or a running validator rework, can recover even
+  // when its `hub_result` is non-null but stale: PM resolution + validator
+  // feedback drive the worker through a fresh attempt that writes a clean
+  // `<<<MERIDIAN-STATUS>>> outcome: complete` marker to the report file, but
+  // the run-tool callback never delivers the new hub_result (transient
+  // IPC/transport drop — same fingerprint as PR #191's C-01 and the W-02
+  // warm-restart gap on agent-dispatcher-3adca628). The earlier recovery loops
+  // do not catch this:
   //   • The main loop scopes to RECONCILABLE_STATUSES = {running, abandoned}.
   //   • The artifact-synthesis loop above is gated on `hub_result === null`.
-  // Without this sweep, the worker stays parked at `blocked` indefinitely
-  // even though the on-disk artifact unambiguously shows completion.
+  //   • Running validation rework deliberately ignores hub_results older than
+  //     last_seen_at, but until this sweep also checked `running`, a fresh
+  //     report marker could still be masked by the stale hub_result.
+  // Without this sweep, the worker stays parked indefinitely even though the
+  // on-disk artifact unambiguously shows completion.
   const staleHubResultOverrides = new Map<string, { hubResult: HubResult; staleTimestamp: string | null }>();
   for (const [workerId, worker] of Object.entries(state.workers)) {
     if (
-      (worker.status !== "blocked" && worker.status !== "failed")
+      (worker.status !== "blocked"
+        && worker.status !== "failed"
+        && !(worker.status === "running" && isValidationReworkAwaitingFreshResult(worker, worker.hub_result)))
       || worker.hub_result === null
       || justReconciledWorkerIds.has(workerId)
     ) {
@@ -340,18 +347,23 @@ export async function reconcile(
     }
 
     const slice = sliceContentFromStartedAt(artifact.content, worker.started_at);
-    if (!outputArtifactHasPassingWorkerMarker(slice, workerId)) {
+    if (!outputArtifactHasRecoverableCompletionSignal(slice, workerId)) {
       continue;
     }
 
-    // Confirm the artifact slice is genuinely newer than the stale hub_result
-    // we already have. If every timestamp in the slice predates or matches the
-    // stale hub_result, we have nothing new to recover and would re-trigger
-    // the recovery on every reconciler tick.
+    // Confirm the artifact is genuinely newer than the stale hub_result we
+    // already have. Most reports include ISO timestamps, but some human-facing
+    // attempt headings use local labels like `JST`; in that case the artifact
+    // mtime is the durable freshness signal.
     const staleHubTimestamp = worker.hub_result.timestamp ?? null;
     const staleHubMs = staleHubTimestamp ? Date.parse(staleHubTimestamp) : NaN;
-    if (!Number.isNaN(staleHubMs) && !sliceHasTimestampNewerThan(slice, staleHubMs)) {
-      continue;
+    if (!Number.isNaN(staleHubMs)) {
+      const timestampFreshness = getSliceTimestampFreshness(slice, staleHubMs);
+      const artifactIsFresh = timestampFreshness.hasNewerTimestamp
+        || (!timestampFreshness.hasTimestamp && artifact.mtimeMs > staleHubMs);
+      if (!artifactIsFresh) {
+        continue;
+      }
     }
 
     const synthesized: HubResult = {
@@ -754,29 +766,33 @@ function synthesizeOutputArtifactHubResult(
   };
 }
 
-// Returns true when the provided text contains at least one ISO 8601 timestamp
-// strictly newer than `referenceMs`. Used to confirm that a recovered artifact
-// slice represents a fresh attempt and not the same content the stale
-// hub_result already reflected.
-function sliceHasTimestampNewerThan(slice: string, referenceMs: number): boolean {
-  if (Number.isNaN(referenceMs)) {
-    return true;
-  }
+// Scans for ISO 8601 timestamps in an artifact slice. The stale-result
+// override uses this to prefer explicit report timestamps, only falling back to
+// artifact mtime when the slice has no parseable timestamp at all.
+function getSliceTimestampFreshness(slice: string, referenceMs: number): {
+  hasTimestamp: boolean;
+  hasNewerTimestamp: boolean;
+} {
   const isoPattern = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\b/g;
   let match: RegExpExecArray | null;
+  let hasTimestamp = false;
   while ((match = isoPattern.exec(slice)) !== null) {
     const ts = Date.parse(match[1]!);
-    if (!Number.isNaN(ts) && ts > referenceMs) {
-      return true;
+    if (Number.isNaN(ts)) {
+      continue;
+    }
+    hasTimestamp = true;
+    if (ts > referenceMs) {
+      return { hasTimestamp, hasNewerTimestamp: true };
     }
   }
-  return false;
+  return { hasTimestamp, hasNewerTimestamp: false };
 }
 
 function readFirstOutputArtifact(
   expectedOutputs: string[],
   startedAt: string
-): { path: string; content: string } | null {
+): { path: string; content: string; mtimeMs: number } | null {
   for (const outputPath of expectedOutputs) {
     const artifactPath = findExistingOutputArtifactPaths(outputPath, startedAt, reconciliationFs)[0];
     if (!artifactPath) {
@@ -784,9 +800,11 @@ function readFirstOutputArtifact(
     }
 
     try {
+      const stat = reconciliationFs.statSync(artifactPath);
       return {
         path: artifactPath,
-        content: reconciliationFs.readFileSync(artifactPath, "utf8")
+        content: reconciliationFs.readFileSync(artifactPath, "utf8"),
+        mtimeMs: stat.mtimeMs
       };
     } catch {
       continue;
@@ -1526,6 +1544,10 @@ function outputArtifactHasCompletionSignal(content: string, workerId: string): b
     return true;
   }
 
+  if (outputArtifactHasLatestAttemptCompletionSignal(content, workerId)) {
+    return true;
+  }
+
   return outputArtifactReferencesWorker(content, workerId)
     && /^#\s+.*\bCompletion Report\b/im.test(content)
     && validationSectionHasPassingEvidence(content)
@@ -1533,10 +1555,68 @@ function outputArtifactHasCompletionSignal(content: string, workerId: string): b
     && !hubResultContainsBlockSignal({ content });
 }
 
+function outputArtifactHasRecoverableCompletionSignal(content: string, workerId: string): boolean {
+  return outputArtifactHasPassingWorkerMarker(content, workerId)
+    || outputArtifactHasCompletionSignal(content, workerId);
+}
+
+function outputArtifactHasLatestAttemptCompletionSignal(content: string, workerId: string): boolean {
+  if (!outputArtifactReferencesWorker(content, workerId)) {
+    return false;
+  }
+
+  const latestAttempt = extractLastMarkdownSectionMatching(content, /^Attempt\s+\d+\b/i);
+  if (!latestAttempt || !outputArtifactReferencesWorker(latestAttempt, workerId)) {
+    return false;
+  }
+
+  if (!extractMarkdownSection(latestAttempt, "Validation")) {
+    return false;
+  }
+
+  return validationSectionHasPassingEvidence(latestAttempt)
+    && !isNonCompletionContent(latestAttempt)
+    && !hubResultContainsBlockSignal({ content: latestAttempt })
+    && !hubResultContainsFailureSignal({ content: latestAttempt });
+}
+
 function validationSectionHasPassingEvidence(content: string): boolean {
   const section = extractMarkdownSection(content, "Validation") ?? content;
-  return (/\bPASS\b/.test(section) || /✅/.test(section))
+  return (/\b(?:PASS|PASSED)\b/i.test(section) || /✅/.test(section))
     && !/(?:^|\n)\s*(?:[-*]\s*)?.*\bFAIL\b/i.test(section);
+}
+
+function extractLastMarkdownSectionMatching(content: string, headingPattern: RegExp): string | null {
+  const lines = content.split(/\r?\n/);
+  let activeStartIndex = -1;
+  let activeHeadingLevel = 0;
+  let lastSection: string | null = null;
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    const match = line.match(/^(#{2,6})\s+(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    const level = match[1]?.length ?? 0;
+    if (activeStartIndex !== -1 && level <= activeHeadingLevel) {
+      lastSection = lines.slice(activeStartIndex, index).join("\n");
+      activeStartIndex = -1;
+    }
+
+    const title = match[2] ?? "";
+    if (headingPattern.test(title)) {
+      activeStartIndex = index + 1;
+      activeHeadingLevel = level;
+    }
+  }
+
+  if (activeStartIndex !== -1) {
+    lastSection = lines.slice(activeStartIndex).join("\n");
+  }
+
+  return lastSection;
 }
 
 function extractMarkdownSection(content: string, heading: string): string | null {
