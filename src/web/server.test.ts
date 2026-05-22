@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { Duplex } from "node:stream";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import type { Socket } from "node:net";
 
 import { config } from "../config";
 import { ProviderCapabilityListSchema, ProviderCapabilitySchema, type HubMessage, type ThreadProgressSnapshot } from "../types";
@@ -12,6 +14,21 @@ process.env.ALLOWED_USER_IDS ??= "123456789";
 process.env.MERIDIAN_DISABLE_WEB_AUTOSTART = "true";
 
 const webServerModulePromise = import("./server");
+
+class FakeHubSocket extends Duplex {
+  written = "";
+
+  _read(): void {}
+
+  _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.written += chunk.toString();
+    callback();
+  }
+
+  pushLine(line: string): void {
+    this.push(`${line}\n`);
+  }
+}
 
 async function createStaticDir(): Promise<string> {
   const staticDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-static-"));
@@ -170,6 +187,70 @@ test("Web Interface Server returns log file contents for an authorized request",
       logDir
     });
   } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server streams A2A terminal events with replay", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-a2a-stream-"));
+  const hubSocket = new FakeHubSocket();
+  const replayLine = JSON.stringify({
+    type: "a2a_message",
+    taskId: "trace-replay",
+    taskState: "working",
+    parts: [{ type: "text", text: "replayed" }]
+  });
+  const liveLine = JSON.stringify({
+    type: "a2a_message",
+    taskId: "trace-live",
+    taskState: "completed",
+    parts: [{ type: "text", text: "live" }]
+  });
+
+  try {
+    await fs.promises.mkdir(path.join(logDir, "GUI"), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(logDir, "GUI", "a2a-codex_01.log"),
+      `${JSON.stringify({ type: "a2a_message", taskId: "older", taskState: "working", parts: [] })}\n${replayLine}\n`
+    );
+
+    await withServer(async ({ baseUrl }) => {
+      const controller = new AbortController();
+      const response = await fetch(
+        `${baseUrl}/api/a2a_stream?thread_id=codex_01&replay_lines=1&token=secret-token`,
+        { signal: controller.signal }
+      );
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+      assert.match(hubSocket.written, /"type":"a2a_stream_subscribe"/);
+      assert.match(hubSocket.written, /"thread_id":"codex_01"/);
+
+      const reader = response.body?.getReader();
+      assert.ok(reader);
+      const decoder = new TextDecoder();
+      let observed = "";
+      while (!observed.includes("replayed")) {
+        const next = await reader.read();
+        assert.equal(next.done, false);
+        observed += decoder.decode(next.value, { stream: true });
+      }
+
+      hubSocket.pushLine(liveLine);
+      while (!observed.includes("live")) {
+        const next = await reader.read();
+        assert.equal(next.done, false);
+        observed += decoder.decode(next.value, { stream: true });
+      }
+
+      controller.abort();
+      assert.match(observed, new RegExp(`data: ${replayLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      assert.match(observed, new RegExp(`data: ${liveLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    }, {
+      logDir,
+      hubSocketFactory: () => hubSocket as unknown as Socket
+    });
+  } finally {
+    hubSocket.destroy();
     await fs.promises.rm(logDir, { recursive: true, force: true });
   }
 });

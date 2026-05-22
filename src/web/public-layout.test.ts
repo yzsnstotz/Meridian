@@ -437,6 +437,12 @@ function createReconnectHarness(html: string): {
     onerror: (() => void) | null;
     onclose: ((event: { code: number }) => void) | null;
   }>;
+  eventSources: Array<{
+    onopen: (() => void) | null;
+    onmessage: ((event: { data: string }) => void) | null;
+    onerror: (() => void) | null;
+    close: () => void;
+  }>;
 } {
   const urls: string[] = [];
   const bubbles: string[] = [];
@@ -446,6 +452,12 @@ function createReconnectHarness(html: string): {
     onmessage: ((event: { data: string }) => void) | null;
     onerror: (() => void) | null;
     onclose: ((event: { code: number }) => void) | null;
+  }> = [];
+  const eventSources: Array<{
+    onopen: (() => void) | null;
+    onmessage: ((event: { data: string }) => void) | null;
+    onerror: (() => void) | null;
+    close: () => void;
   }> = [];
 
   class FakeWebSocket {
@@ -457,6 +469,22 @@ function createReconnectHarness(html: string): {
     constructor(readonly url: string) {
       urls.push(url);
       sockets.push(this);
+    }
+  }
+
+  class FakeEventSource {
+    onopen: (() => void) | null = null;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    readyState = 0;
+
+    constructor(readonly url: string) {
+      urls.push(url);
+      eventSources.push(this);
+    }
+
+    close(): void {
+      this.readyState = 2;
     }
   }
 
@@ -474,6 +502,7 @@ function createReconnectHarness(html: string): {
     serverHistoryRestored: true,
     serverHistoryAuthoritative: true,
     WebSocket: FakeWebSocket,
+    EventSource: FakeEventSource,
     handleWsMessage: () => undefined,
     addChatBubble: (text: string) => {
       bubbles.push(text);
@@ -485,7 +514,7 @@ function createReconnectHarness(html: string): {
   };
 
   bindTerminalFunctions(html, context, ["connectWebSocket"]);
-  return { context, urls, bubbles, reconnects, sockets };
+  return { context, urls, bubbles, reconnects, sockets, eventSources };
 }
 
 test("shared layout baseline css enforces full-width and full-height viewport", async () => {
@@ -1246,11 +1275,24 @@ test("terminal reconnect requests zero replay lines after authoritative history 
   assert.match(urls[1] ?? "", /replay_lines=100/);
 });
 
+test("terminal live stream prefers proxied A2A EventSource over websocket upgrade", async () => {
+  const terminalHtml = await readTerminalHtml();
+  const { context, urls, eventSources } = createReconnectHarness(terminalHtml);
+  const connectWebSocket = context.connectWebSocket as () => void;
+
+  connectWebSocket();
+
+  assert.equal(eventSources.length, 1);
+  assert.match(urls[0] ?? "", /\/api\/a2a_stream\?/);
+  assert.doesNotMatch(urls[0] ?? "", /\/ws\/terminal/);
+});
+
 test("terminal missing websocket endpoint degrades without chat error alarm", async () => {
   const terminalHtml = await readTerminalHtml();
   const { context, bubbles, reconnects, sockets } = createReconnectHarness(terminalHtml);
   const connectWebSocket = context.connectWebSocket as () => void;
 
+  context.EventSource = undefined;
   connectWebSocket();
   sockets[0]?.onerror?.();
   sockets[0]?.onclose?.({ code: 1006 });

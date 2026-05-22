@@ -107,6 +107,11 @@ const historyQuerySchema = z.object({
   max_raw_chars: z.coerce.number().int().min(0).max(200000).optional()
 });
 
+const a2aStreamQuerySchema = z.object({
+  thread_id: z.string().min(1).regex(/^[A-Za-z0-9_.:-]+$/),
+  replay_lines: z.coerce.number().int().min(0).max(1000).default(0)
+});
+
 const logFileReadQuerySchema = z.object({
   path: z.string().min(1)
 });
@@ -670,6 +675,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/a2a_stream" && request.method === "GET") {
+      await this.handleA2AStreamRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/run" && request.method === "POST") {
       await this.handleRunRequest(request, response);
       return;
@@ -984,6 +994,126 @@ export class WebInterfaceServer {
       this.logger.warn({ err: e }, "log file clear failed");
       this.respondJson(response, 500, { error: "Failed to clear log file" });
     }
+  }
+
+  private async handleA2AStreamRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    let query: z.infer<typeof a2aStreamQuerySchema>;
+    try {
+      query = a2aStreamQuerySchema.parse({
+        thread_id: requestUrl.searchParams.get("thread_id"),
+        replay_lines: requestUrl.searchParams.get("replay_lines") ?? undefined
+      });
+    } catch {
+      this.respondJson(response, 400, { error: "Invalid A2A stream parameters" });
+      return;
+    }
+
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "connection": "keep-alive",
+      "x-accel-buffering": "no"
+    });
+    response.write(": connected\n\n");
+
+    let hubSocket: net.Socket | null = null;
+    let cleanedUp = false;
+    const keepAliveTimer = setInterval(() => {
+      if (!response.destroyed && !response.writableEnded) {
+        response.write(": keepalive\n\n");
+      }
+    }, 15000);
+    keepAliveTimer.unref();
+
+    const cleanup = () => {
+      if (cleanedUp) {
+        return;
+      }
+      cleanedUp = true;
+      clearInterval(keepAliveTimer);
+      hubSocket?.destroy();
+    };
+
+    request.on("aborted", cleanup);
+    response.on("close", cleanup);
+
+    try {
+      hubSocket = this.hubSocketFactory(this.hubSocketPath);
+      hubSocket.setEncoding("utf8");
+
+      let buffer = "";
+      hubSocket.on("data", (chunk: string | Buffer) => {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const payload = line.trim();
+          if (payload) {
+            this.writeSseData(response, payload);
+          }
+        }
+      });
+      hubSocket.on("error", (error) => {
+        this.logger.warn({ thread_id: query.thread_id, err: error.message }, "A2A stream hub socket failed");
+        if (!response.destroyed && !response.writableEnded) {
+          this.writeSseEvent(response, "error", JSON.stringify({ error: "Hub stream disconnected" }));
+          response.end();
+        }
+      });
+      hubSocket.on("close", () => {
+        if (!response.destroyed && !response.writableEnded) {
+          response.end();
+        }
+      });
+      hubSocket.write(`${JSON.stringify({ type: "a2a_stream_subscribe", thread_id: query.thread_id })}\n`);
+
+      await this.writeA2AReplay(response, query.thread_id, query.replay_lines);
+    } catch (error) {
+      this.logger.warn(
+        { thread_id: query.thread_id, err: error instanceof Error ? error.message : String(error) },
+        "A2A stream setup failed"
+      );
+      if (!response.destroyed && !response.writableEnded) {
+        this.writeSseEvent(response, "error", JSON.stringify({ error: "Failed to open A2A stream" }));
+        response.end();
+      }
+    }
+  }
+
+  private async writeA2AReplay(response: http.ServerResponse, threadId: string, replayLines: number): Promise<void> {
+    if (replayLines <= 0 || response.destroyed || response.writableEnded) {
+      return;
+    }
+
+    const logPath = path.join(this.logDir, "GUI", `a2a-${threadId}.log`);
+    try {
+      const content = await fs.promises.readFile(logPath, "utf8");
+      const lines = content.split(/\r?\n/).filter(Boolean).slice(-replayLines);
+      for (const line of lines) {
+        this.writeSseData(response, line);
+      }
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== "ENOENT") {
+        this.logger.warn({ thread_id: threadId, err: err.message }, "A2A stream replay read failed");
+      }
+    }
+  }
+
+  private writeSseData(response: http.ServerResponse, payload: string): void {
+    if (response.destroyed || response.writableEnded) {
+      return;
+    }
+    response.write(`data: ${payload.replace(/\r?\n/g, "\\n")}\n\n`);
+  }
+
+  private writeSseEvent(response: http.ServerResponse, event: string, payload: string): void {
+    if (response.destroyed || response.writableEnded) {
+      return;
+    }
+    response.write(`event: ${event}\n`);
+    this.writeSseData(response, payload);
   }
 
   private async handleRunRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

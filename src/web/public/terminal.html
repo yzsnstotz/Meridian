@@ -3688,7 +3688,7 @@
         term = { write: function () {} };
       }
 
-      // WebSocket connection (only when thread_id and token present; otherwise server returns 401 and pane stays empty)
+      // Live A2A stream (only when thread_id and token present; otherwise server returns 401 and pane stays empty)
       var base = window.MeridianWeb.apiBase();
       var ws = null;
       var wsReconnectAttempts = 0;
@@ -3765,6 +3765,26 @@
       function connectWebSocket() {
         if (!threadId || !token || wsUnavailable) return;
         var replayLines = wsReconnectAttempts > 0 ? (serverHistoryAuthoritative ? 0 : 100) : initialReplayLines;
+        if (typeof EventSource === "function") {
+          var streamUrl = base + "/api/a2a_stream?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
+          ws = new EventSource(streamUrl);
+          ws.onopen = function() {
+            wsReconnectAttempts = 0;
+            wsConnected = true;
+            wsUnavailable = false;
+            updateAgentStatusIndicator(true);
+          };
+          ws.onmessage = handleWsMessage;
+          ws.onerror = function() {
+            wsConnected = false;
+            updateAgentStatusIndicator(false);
+            if (ws && ws.readyState === 2) {
+              scheduleWsReconnect();
+            }
+          };
+          return;
+        }
+
         var url = (base.replace(/^http/, "ws")) + "/ws/terminal?thread_id=" + encodeURIComponent(threadId) + "&token=" + encodeURIComponent(token) + "&replay_lines=" + replayLines;
         ws = new WebSocket(url);
         ws.onopen = function() {
@@ -3812,6 +3832,10 @@
         statusEl.lastChild.textContent = connected ? " Live" : (wsUnavailable ? " History" : " Reconnecting…");
       }
 
+      function isLiveConnectionClosed() {
+        return !ws || ws.readyState === 2 || ws.readyState === 3;
+      }
+
       historyBootstrapPromise.finally(function() {
         if (threadId && token) {
           connectWebSocket();
@@ -3824,7 +3848,7 @@
       // Auto-reconnect on page visibility change (user returns after being away)
       document.addEventListener("visibilitychange", function() {
         if (document.visibilityState === "visible" && threadId && token && !wsUnavailable) {
-          if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+          if (isLiveConnectionClosed()) {
             wsReconnectAttempts = 0;
             connectWebSocket();
           }
