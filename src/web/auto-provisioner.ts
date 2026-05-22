@@ -16,6 +16,7 @@ import {
   loadProjectPolicy
 } from "./project-policy-loader";
 import type { InterpolatedProjectPolicy } from "./project-policy-schema";
+import { ensureCodexTrustEntry, llmAgentKindUsesCodexTrust } from "./codex-auto-trust";
 import {
   ChatterStateStore,
   type ChatterProvisionError,
@@ -157,6 +158,19 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
 
       try {
         await fs.mkdir(interpolated.memory_folder, { recursive: true });
+        // Append a `[projects."<memory_folder>"]` block to ~/.codex/config.toml
+        // when the chatter is codex-backed, so the first turn doesn't hang
+        // at codex's "Do you trust this directory?" prompt. Belt-and-
+        // suspenders today (the hub spawns codex with
+        // --dangerously-bypass-approvals-and-sandbox which masks the prompt
+        // anyway), but cheap insurance for when the sandbox tightens.
+        // Idempotent + never-throws — see codex-auto-trust.ts.
+        if (llmAgentKindUsesCodexTrust(interpolated.llm_agent_kind)) {
+          await ensureCodexTrustEntry({
+            memoryFolder: interpolated.memory_folder,
+            disabled: process.env.MUMU_DISABLE_CODEX_AUTO_TRUST?.toLowerCase() === "true"
+          });
+        }
         await options.createRole(body);
       } catch (error) {
         if (!isHttpError(error) || error.statusCode >= 500) {
