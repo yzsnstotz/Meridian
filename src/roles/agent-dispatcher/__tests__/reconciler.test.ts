@@ -2213,6 +2213,322 @@ describe("reconcile", () => {
     );
   });
 
+  it("recovers a running validation rework whose stale hub_result masks a fresh passing artifact marker", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const startedAt = "2026-05-22T19:30:35.643Z";
+    const staleHubTimestamp = "2026-05-22T19:54:17.078Z";
+    const feedbackDeliveredAt = "2026-05-22T20:00:06.338Z";
+    const freshAttemptTimestamp = "2026-05-22T20:03:21.000Z";
+
+    const outputPath = await harness.writeOutput("reports/W-02.md", [
+      `## Attempt 1 - ${staleHubTimestamp}`,
+      "",
+      "Implemented first pass.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: W-02",
+      "role: worker",
+      "outcome: complete",
+      "notes: first pass",
+      "<<<END>>>",
+      "",
+      "## Validator Report - W-02 - Cycle 1",
+      "",
+      "Blocking issue: fix readiness classification.",
+      "",
+      `## Attempt 2 - ${freshAttemptTimestamp}`,
+      "",
+      "Addressed validator feedback.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: W-02",
+      "role: worker",
+      "outcome: complete",
+      `report_path: ${path.join("reports", "W-02.md")}`,
+      "notes: validator feedback fixed",
+      "<<<END>>>",
+      ""
+    ].join("\n"));
+
+    const runningRework = {
+      ...buildRunningWorker("codex_07", outputPath, startedAt),
+      last_seen_at: feedbackDeliveredAt,
+      validation: {
+        current_cycle: 1,
+        max_fix_cycles: 5,
+        validator_thread_id: null,
+        last_score: 0.5,
+        last_feedback: "fix readiness classification",
+        history: [{
+          cycle: 1,
+          score: 0.5,
+          feedback: "fix readiness classification",
+          validator_thread_id: "codex_08",
+          timestamp: feedbackDeliveredAt
+        }],
+        spawn_failure_count: 0,
+        last_spawn_failure_at: null
+      },
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "codex_07",
+        source: "codex",
+        status: "success" as const,
+        run_state: "completed" as const,
+        content: "Attempt 1 complete.\n<<<MERIDIAN-STATUS>>>\nworker_id: W-02\nrole: worker\noutcome: complete\n<<<END>>>",
+        attachments: [],
+        timestamp: staleHubTimestamp
+      }
+    };
+
+    harness.store.save(buildState({
+      workers: { "W-02": runningRework }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    const recovered = harness.store.load().workers["W-02"];
+    expect(recovered?.status).toBe("awaiting_validation");
+    expect(recovered?.hub_result).toMatchObject({
+      thread_id: "codex_07",
+      source: "output_artifact",
+      status: "success",
+      run_state: "completed",
+      content: expect.stringContaining("validator feedback fixed"),
+      timestamp: FIXED_NOW
+    });
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "W-02",
+        from: "running",
+        to: "awaiting_validation",
+        trigger: "output_artifact:passing_worker_marker:postdates_stale_hub_result"
+      })
+    );
+  });
+
+  it("recovers a running validation rework from a non-ISO report timestamp when the artifact mtime is fresh", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const startedAt = "2026-05-22T19:30:35.643Z";
+    const staleHubTimestamp = "2026-05-22T19:54:17.078Z";
+    const feedbackDeliveredAt = "2026-05-22T20:00:06.338Z";
+    const freshArtifactMtime = "2026-05-22T20:03:21.000Z";
+
+    const outputPath = await harness.writeOutput("reports/W-02.md", [
+      "## Attempt 1 - 2026-05-23 04:53:33 JST",
+      "",
+      "Implemented first pass.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: W-02",
+      "role: worker",
+      "outcome: complete",
+      "notes: first pass",
+      "<<<END>>>",
+      "",
+      "## Validator Report - W-02 - Cycle 1",
+      "",
+      "Blocking issue: fix readiness classification.",
+      "",
+      "## Attempt 2 - 2026-05-23 05:03:21 JST",
+      "",
+      "Addressed validator feedback.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: W-02",
+      "role: worker",
+      "outcome: complete",
+      `report_path: ${path.join("reports", "W-02.md")}`,
+      "notes: validator feedback fixed",
+      "<<<END>>>",
+      ""
+    ].join("\n"));
+    await fsp.utimes(outputPath, new Date(freshArtifactMtime), new Date(freshArtifactMtime));
+
+    const runningRework = {
+      ...buildRunningWorker("codex_07", outputPath, startedAt),
+      last_seen_at: feedbackDeliveredAt,
+      validation: {
+        current_cycle: 1,
+        max_fix_cycles: 5,
+        validator_thread_id: null,
+        last_score: 0.5,
+        last_feedback: "fix readiness classification",
+        history: [{
+          cycle: 1,
+          score: 0.5,
+          feedback: "fix readiness classification",
+          validator_thread_id: "codex_08",
+          timestamp: feedbackDeliveredAt
+        }],
+        spawn_failure_count: 0,
+        last_spawn_failure_at: null
+      },
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "codex_07",
+        source: "codex",
+        status: "success" as const,
+        run_state: "completed" as const,
+        content: "Attempt 1 complete.\n<<<MERIDIAN-STATUS>>>\nworker_id: W-02\nrole: worker\noutcome: complete\n<<<END>>>",
+        attachments: [],
+        timestamp: staleHubTimestamp
+      }
+    };
+
+    harness.store.save(buildState({
+      workers: { "W-02": runningRework }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    const recovered = harness.store.load().workers["W-02"];
+    expect(recovered?.status).toBe("awaiting_validation");
+    expect(recovered?.hub_result).toMatchObject({
+      thread_id: "codex_07",
+      source: "output_artifact",
+      status: "success",
+      run_state: "completed",
+      content: expect.stringContaining("validator feedback fixed"),
+      timestamp: FIXED_NOW
+    });
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "W-02",
+        from: "running",
+        to: "awaiting_validation",
+        trigger: "output_artifact:passing_worker_marker:postdates_stale_hub_result"
+      })
+    );
+  });
+
+  it("recovers a running validation rework from a fresh markerless retry report", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const startedAt = "2026-05-22T19:30:35.643Z";
+    const staleHubTimestamp = "2026-05-22T19:54:17.078Z";
+    const feedbackDeliveredAt = "2026-05-22T20:00:06.338Z";
+    const freshArtifactMtime = "2026-05-22T20:04:23.425Z";
+
+    const outputPath = await harness.writeOutput("reports/W-02.md", [
+      "# W-02 Report - Renderer Readiness Backoff and In-App Recovery",
+      "",
+      "## Attempt 1 - 2026-05-23 04:53:33 JST",
+      "",
+      "Worker: W-02 / gpt-5.5",
+      "Commit: `eab3d2be4c0bbee594fd8150b2422b69fbfa523e`",
+      "",
+      "### Validation",
+      "",
+      "Passed:",
+      "",
+      "- `npm --workspace apps/client test -- --run toolMethod` - 2 files, 6 tests passed.",
+      "",
+      "## Validator Report - W-02 - Cycle 1",
+      "",
+      "- Timestamp: 2026-05-22T20:00:06.325Z",
+      "",
+      "Blocking issue 1: classify pairing-required too broadly.",
+      "Blocking issue 2: detect readiness ignored installed=false.",
+      "",
+      "## Attempt 2 - 2026-05-23 05:03:21 JST",
+      "",
+      "Worker: W-02 / gpt-5.5",
+      "Commit: `c82dac2c59534a2e8347b9a31a053425268c27dd`",
+      "PR: https://github.com/yzsnstotz/clawso/pull/633",
+      "",
+      "### Validator Feedback Addressed",
+      "",
+      "- Pairing classification now requires a pairing marker.",
+      "- Blocked detect legs now render and dispatch the non-ready status.",
+      "",
+      "### Validation",
+      "",
+      "Red checks observed before production changes:",
+      "",
+      "- `npm --workspace apps/client test -- --run toolMethod` failed on the generic adapter case.",
+      "",
+      "Passed after fixes:",
+      "",
+      "- `npm run client:typecheck`",
+      "- `npm --workspace apps/client test -- --run toolMethod` - 2 files, 7 tests passed.",
+      "- `npm --workspace apps/client test -- --run PairingUpgradeBanner` - 1 file, 5 tests passed.",
+      "- `git diff --check`",
+      ""
+    ].join("\n"));
+    await fsp.utimes(outputPath, new Date(freshArtifactMtime), new Date(freshArtifactMtime));
+
+    const runningRework = {
+      ...buildRunningWorker("codex_07", outputPath, startedAt),
+      last_seen_at: feedbackDeliveredAt,
+      validation: {
+        current_cycle: 1,
+        max_fix_cycles: 5,
+        validator_thread_id: null,
+        last_score: 0.5,
+        last_feedback: "fix readiness classification",
+        history: [{
+          cycle: 1,
+          score: 0.5,
+          feedback: "fix readiness classification",
+          validator_thread_id: "codex_08",
+          timestamp: feedbackDeliveredAt
+        }],
+        spawn_failure_count: 0,
+        last_spawn_failure_at: null
+      },
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "codex_07",
+        source: "codex",
+        status: "success" as const,
+        run_state: "completed" as const,
+        content: "Attempt 1 complete.",
+        attachments: [],
+        timestamp: staleHubTimestamp
+      }
+    };
+
+    harness.store.save(buildState({
+      workers: { "W-02": runningRework }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    const recovered = harness.store.load().workers["W-02"];
+    expect(recovered?.status).toBe("awaiting_validation");
+    expect(recovered?.hub_result).toMatchObject({
+      thread_id: "codex_07",
+      source: "output_artifact",
+      status: "success",
+      run_state: "completed",
+      content: expect.stringContaining("Passed after fixes"),
+      timestamp: FIXED_NOW
+    });
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "W-02",
+        from: "running",
+        to: "awaiting_validation",
+        trigger: "output_artifact:passing_worker_marker:postdates_stale_hub_result"
+      })
+    );
+  });
+
   it("does not re-recover when the artifact slice has no timestamp newer than the stale hub_result", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

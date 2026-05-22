@@ -5,7 +5,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StateStore } from "./state-store";
-import { hasStartupRecoverableDispatchWork, resolveDispatchPlanPathsFromState } from "./index";
+import {
+  forcePauseAllDispatchersOnStartup,
+  hasStartupRecoverableDispatchWork,
+  resolveDispatchPlanPathsFromState
+} from "./index";
 import { buildEmptyRunState } from "./roles/scheduler/scheduler-state-store";
 import { AgentDispatcherConfigSchema, type SchedulerConfig } from "./types";
 
@@ -743,6 +747,52 @@ describe("hasStartupRecoverableDispatchWork", () => {
     }, null, 2)}\n`, "utf8");
 
     await expect(hasStartupRecoverableDispatchWork(buildAgentDispatcherConfig(dispatchPlanPath))).resolves.toBe(true);
+  });
+});
+
+describe("forcePauseAllDispatchersOnStartup", () => {
+  it("does not pause dispatchers whose live hub sessions were warm-rehydrated", async () => {
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "meridian-roles-startup-pause-exempt-"));
+    tempDirectories.add(directory);
+
+    const dispatchPlanPath = path.join(directory, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(directory, "state.json"));
+    await fs.writeFile(dispatchPlanPath, "# Dispatch Plan\n", "utf8");
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-live",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        },
+        {
+          threadId: "agent-dispatcher-needs-reactivation",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        },
+        {
+          threadId: "agent-dispatcher-completed",
+          roleType: "agent-dispatcher",
+          status: "completed",
+          config: buildAgentDispatcherConfig(dispatchPlanPath)
+        }
+      ],
+      promptStore: {}
+    });
+
+    await forcePauseAllDispatchersOnStartup(stateStore, console, {
+      exemptThreadIds: new Set(["agent-dispatcher-live"])
+    });
+
+    await expect(stateStore.load()).resolves.toMatchObject({
+      roles: [
+        { threadId: "agent-dispatcher-live", status: "active" },
+        { threadId: "agent-dispatcher-needs-reactivation", status: "paused" },
+        { threadId: "agent-dispatcher-completed", status: "completed" }
+      ]
+    });
   });
 });
 
