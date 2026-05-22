@@ -103,6 +103,7 @@ const LIVE_WORKER_STATUSES = new Set<string>([
   "fix_requested",
   "blocked"
 ]);
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 
 function isLiveWorkerStatus(status: string | undefined | null): boolean {
   return status !== undefined && status !== null && LIVE_WORKER_STATUSES.has(status);
@@ -341,116 +342,21 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
     //     unbound — better to show a labeled stateless group than to attach
     //     a wrong worker.
     const activeOwners = await buildActiveStatelessOwners(options.stateStore, log);
-    if (activeOwners.length > 0) {
-      const usedOwnerThreadIds = new Set<string>();
-      const usedRootPids = new Set<number>();
-      // Pre-bucket stateless candidate roots: an unbound managed process whose
-      // argv matches `codex exec --json` and whose parent process is NOT also
-      // a stateless codex (i.e. it's the top of its own stateless tree). The
-      // native binary child has `node …/codex exec --json` as its parent, so
-      // the root is whichever PID's parent is meridian-hub or otherwise
-      // outside this stateless chain.
-      const statelessCandidates: ProcessSnapshotEntry[] = [];
-      for (const entry of entries) {
-        if (entry.origin !== "managed") continue;
-        if (entry.binding !== null) continue;
-        if (entry.thread_id !== null) continue;
-        if (entry.agent_type !== "codex") continue;
-        if (!CODEX_EXEC_JSON_PATTERN.test(entry.command)) continue;
-        // Root = whichever PID's parent is not also a stateless `codex exec
-        // --json` process. The native binary's parent is the node shim
-        // (also matches the pattern), so the shim is the root.
-        const parent = byPid.get(entry.ppid);
-        if (parent && CODEX_EXEC_JSON_PATTERN.test(parent.command)) continue;
-        statelessCandidates.push(entry);
-      }
-      // Build a parent→children map within candidate roots so the synthesized
-      // binding propagates to the native binary child (and any deeper descendants).
-      function descendantsOf(rootPid: number): ProcessSnapshotEntry[] {
-        const out: ProcessSnapshotEntry[] = [];
-        const stack = [rootPid];
-        const seen = new Set<number>([rootPid]);
-        while (stack.length > 0) {
-          const here = stack.pop()!;
-          for (const e of entries) {
-            if (seen.has(e.pid)) continue;
-            if (e.ppid !== here) continue;
-            if (e.origin !== "managed") continue;
-            if (e.thread_id !== null) continue;
-            seen.add(e.pid);
-            out.push(e);
-            stack.push(e.pid);
-          }
-        }
-        return out;
-      }
-      // Process attrs come from `ps` etime on the entry itself; parse it into
-      // an approximate start epoch via the snapshot's `captured_at`. We use a
-      // 60s tolerance to absorb the gap between lifecycle `started_at` (when
-      // the orchestrator recorded the thread_id) and the actual codex process
-      // spawn (which can be a few seconds later under hub load).
-      const nowMs = Date.now();
-      function approximateStartMs(etime: string): number | null {
-        // ps etime forms: "MM:SS", "HH:MM:SS", "DD-HH:MM:SS". Parse to seconds.
-        const m = etime.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
-        if (!m) return null;
-        const days = Number(m[1] ?? 0);
-        const hours = Number(m[2] ?? 0);
-        const mins = Number(m[3] ?? 0);
-        const secs = Number(m[4] ?? 0);
-        if (![days, hours, mins, secs].every(Number.isFinite)) return null;
-        return nowMs - (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1000;
-      }
-      const TOLERANCE_MS = 60 * 1000;
-      for (const root of statelessCandidates) {
-        const startMs = approximateStartMs(root.etime);
-        if (startMs === null) continue;
-        // Find owners whose recorded started_at sits within TOLERANCE_MS of
-        // the process's approximate start. Skip owners already used by an
-        // earlier root in this pass (1-to-1 binding).
-        const matches: ActiveStatelessOwner[] = [];
-        for (const owner of activeOwners) {
-          if (usedOwnerThreadIds.has(owner.thread_id)) continue;
-          if (!owner.started_at) {
-            // Owners without started_at are too ambiguous — only bind when
-            // they're the ONLY active owner in the whole snapshot AND only
-            // one stateless candidate exists. Handled below as a fallback.
-            continue;
-          }
-          const ownerMs = Date.parse(owner.started_at);
-          if (!Number.isFinite(ownerMs)) continue;
-          if (Math.abs(ownerMs - startMs) <= TOLERANCE_MS) {
-            matches.push(owner);
-          }
-        }
-        let chosen: ActiveStatelessOwner | null = null;
-        if (matches.length === 1) {
-          chosen = matches[0];
-        } else if (matches.length === 0
-          && statelessCandidates.length === 1
-          && activeOwners.length === 1) {
-          // Singleton fallback: only one stateless candidate AND only one
-          // active owner — even without a timestamp, this is unambiguous.
-          chosen = activeOwners[0];
-        }
-        if (!chosen) continue;
-        usedOwnerThreadIds.add(chosen.thread_id);
-        usedRootPids.add(root.pid);
-        const binding: BindingSnapshot = {
-          dispatcher_role_id: chosen.dispatcher_role_id,
-          worker_id: chosen.worker_id,
-          role: chosen.role,
-          status: "running",
-          started_at: chosen.started_at
-        };
-        root.binding = binding;
-        root.thread_id = chosen.thread_id;
-        for (const descendant of descendantsOf(root.pid)) {
-          descendant.binding = binding;
-          descendant.thread_id = chosen.thread_id;
-        }
-      }
-    }
+    bindUnboundCodexExecOwners(entries, byPid, activeOwners, {
+      allowSingletonFallback: true
+    });
+
+    // Streaming bridge inference pass. Since 2026-05-21 Meridian registers
+    // stream-capable bridge instances as metadata-only (`pid: null`,
+    // `socket_path: null`) and each run forks a Hub-child `codex exec --json`
+    // process. That means the Hub instance registry cannot provide a pid →
+    // thread_id mapping for dispatcher/worker bridge turns. Bind remaining
+    // unbound codex-exec roots to active dispatcher/worker lifecycle owners
+    // only when exactly one owner start time matches the process start window.
+    const activeBridgeOwners = await buildActiveStreamingBridgeOwners(options.stateStore, log);
+    bindUnboundCodexExecOwners(entries, byPid, activeBridgeOwners, {
+      allowSingletonFallback: false
+    });
 
     // Token-attribution dedupe: claude resolves via cwd + birthtime match, so
     // a Hub-direct `claude --print` started near the same time in the same
@@ -786,6 +692,9 @@ async function buildThreadIndex(
     }
 
     for (const [workerId, w] of Object.entries(lifecycleState.workers)) {
+      if (workerId === DISPATCHER_WORKER_ID && w.thread_id === dispThreadId) {
+        continue;
+      }
       // Bind whenever the worker thread is one the run-tool intentionally
       // keeps alive (see tool-gateway/tools/run.ts:335 cleanupWorkerThread).
       // `awaiting_validation` / `fix_requested` / `blocked` all keep the
@@ -882,17 +791,26 @@ async function buildThreadIndex(
   return index;
 }
 
+const PROCESS_OWNER_START_TOLERANCE_MS = 60 * 1000;
+
+interface ActiveProcessOwner {
+  thread_id: string;
+  dispatcher_role_id: string;
+  worker_id: string;
+  role: BindingSnapshot["role"];
+  status: string;
+  started_at: string | null;
+}
+
 // Lifecycle-store snapshot of validator / PM resolver threads that are
 // currently active (recorded as "running" with a non-empty thread_id). Used by
 // the inference pass in buildSnapshot() to bind stateless `codex exec --json`
 // processes that Meridian Hub does not expose via /api/list (and therefore
 // `fetchAgentapiInstanceIndex` cannot map their PID).
-export interface ActiveStatelessOwner {
+export interface ActiveStatelessOwner extends ActiveProcessOwner {
   thread_id: string;          // lifecycle-recorded thread_id (e.g. "codex_08")
-  dispatcher_role_id: string;
-  worker_id: string;
   role: "validator" | "pm_resolver";
-  started_at: string | null;
+  status: "running";
 }
 
 async function buildActiveStatelessOwners(
@@ -933,6 +851,7 @@ async function buildActiveStatelessOwners(
           dispatcher_role_id: role.threadId,
           worker_id: workerId,
           role: "validator",
+          status: "running",
           started_at: w.last_seen_at ?? w.started_at ?? null
         });
       }
@@ -953,11 +872,209 @@ async function buildActiveStatelessOwners(
         dispatcher_role_id: role.threadId,
         worker_id: pm.worker_id ?? pm.issue?.worker_id ?? "(unknown)",
         role: "pm_resolver",
+        status: "running",
         started_at: pm.started_at ?? null
       });
     }
   }
   return owners;
+}
+
+interface ActiveStreamingBridgeOwner extends ActiveProcessOwner {
+  role: "dispatcher" | "worker";
+}
+
+async function buildActiveStreamingBridgeOwners(
+  stateStore: Pick<StateStore, "load">,
+  log: Logger
+): Promise<ActiveStreamingBridgeOwner[]> {
+  const owners: ActiveStreamingBridgeOwner[] = [];
+  const stateRaw = await stateStore.load();
+  const state = (stateRaw ?? { roles: [], promptStore: {} }) as AppState;
+  for (const role of state.roles) {
+    if (role.roleType !== "agent-dispatcher") {
+      continue;
+    }
+    const parsed = AgentDispatcherConfigSchema.safeParse(role.config);
+    if (!parsed.success) {
+      continue;
+    }
+    const planPath = parsed.data.dispatch_plan_path;
+    const sidecarPath = path.join(path.dirname(planPath), "dispatch_threads.json");
+    let lifecycleState: DispatchThreadStateV2;
+    try {
+      lifecycleState = new LifecycleStore(sidecarPath).load();
+    } catch (error) {
+      log.debug?.("processes: failed to read sidecar for streaming bridge inference", {
+        sidecarPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      continue;
+    }
+
+    const dispatcherThreadId = lifecycleState.dispatcher.thread_id?.trim();
+    if (dispatcherThreadId && lifecycleState.dispatcher.status === "running") {
+      owners.push({
+        thread_id: dispatcherThreadId,
+        dispatcher_role_id: role.threadId,
+        worker_id: "DISPATCHER",
+        role: "dispatcher",
+        status: lifecycleState.dispatcher.status,
+        started_at: lifecycleState.dispatcher.started_at
+      });
+    }
+
+    for (const [workerId, worker] of Object.entries(lifecycleState.workers)) {
+      const workerThreadId = worker.thread_id?.trim();
+      if (workerId === DISPATCHER_WORKER_ID && workerThreadId === dispatcherThreadId) {
+        continue;
+      }
+      if (!workerThreadId || !isLiveWorkerStatus(worker.status)) {
+        continue;
+      }
+      owners.push({
+        thread_id: workerThreadId,
+        dispatcher_role_id: role.threadId,
+        worker_id: workerId,
+        role: "worker",
+        status: worker.status,
+        started_at: worker.started_at ?? null
+      });
+    }
+  }
+  return owners;
+}
+
+function bindUnboundCodexExecOwners(
+  entries: ProcessSnapshotEntry[],
+  byPid: Map<number, ProcInfo>,
+  owners: ActiveProcessOwner[],
+  options: { allowSingletonFallback: boolean }
+): void {
+  if (owners.length === 0) {
+    return;
+  }
+
+  const candidates = collectUnboundCodexExecRoots(entries, byPid);
+  if (candidates.length === 0) {
+    return;
+  }
+
+  const usedOwnerThreadIds = new Set<string>();
+  const nowMs = Date.now();
+  for (const root of candidates) {
+    const startMs = approximateStartMs(root.etime, nowMs);
+    if (startMs === null) {
+      continue;
+    }
+
+    const matches: ActiveProcessOwner[] = [];
+    for (const owner of owners) {
+      if (usedOwnerThreadIds.has(owner.thread_id)) {
+        continue;
+      }
+      if (!owner.started_at) {
+        continue;
+      }
+      const ownerMs = Date.parse(owner.started_at);
+      if (!Number.isFinite(ownerMs)) {
+        continue;
+      }
+      if (Math.abs(ownerMs - startMs) <= PROCESS_OWNER_START_TOLERANCE_MS) {
+        matches.push(owner);
+      }
+    }
+
+    let chosen: ActiveProcessOwner | null = null;
+    if (matches.length === 1) {
+      chosen = matches[0];
+    } else if (
+      options.allowSingletonFallback
+      && matches.length === 0
+      && candidates.length === 1
+      && owners.length === 1
+    ) {
+      // Singleton fallback is intentionally limited to stateless validator/PM
+      // inference. Streaming bridge owners always carry a started_at in the
+      // lifecycle store, and timestamp ambiguity should leave the row unbound.
+      chosen = owners[0];
+    }
+
+    if (!chosen) {
+      continue;
+    }
+
+    usedOwnerThreadIds.add(chosen.thread_id);
+    const binding: BindingSnapshot = {
+      dispatcher_role_id: chosen.dispatcher_role_id,
+      worker_id: chosen.worker_id,
+      role: chosen.role,
+      status: chosen.status,
+      started_at: chosen.started_at
+    };
+    root.binding = binding;
+    root.thread_id = chosen.thread_id;
+    for (const descendant of descendantsOf(root.pid, entries)) {
+      descendant.binding = binding;
+      descendant.thread_id = chosen.thread_id;
+    }
+  }
+}
+
+function collectUnboundCodexExecRoots(
+  entries: ProcessSnapshotEntry[],
+  byPid: Map<number, ProcInfo>
+): ProcessSnapshotEntry[] {
+  const candidates: ProcessSnapshotEntry[] = [];
+  for (const entry of entries) {
+    if (entry.origin !== "managed") continue;
+    if (entry.binding !== null) continue;
+    if (entry.thread_id !== null) continue;
+    if (entry.agent_type !== "codex") continue;
+    if (!CODEX_EXEC_JSON_PATTERN.test(entry.command)) continue;
+    // Root = whichever PID's parent is not also a `codex exec --json`
+    // process. The native binary's parent is the node shim, so the shim is
+    // the root and descendants inherit the synthesized binding.
+    const parent = byPid.get(entry.ppid);
+    if (parent && CODEX_EXEC_JSON_PATTERN.test(parent.command)) continue;
+    candidates.push(entry);
+  }
+  return candidates;
+}
+
+function descendantsOf(rootPid: number, entries: ProcessSnapshotEntry[]): ProcessSnapshotEntry[] {
+  const out: ProcessSnapshotEntry[] = [];
+  const stack = [rootPid];
+  const seen = new Set<number>([rootPid]);
+  while (stack.length > 0) {
+    const here = stack.pop()!;
+    for (const entry of entries) {
+      if (seen.has(entry.pid)) continue;
+      if (entry.ppid !== here) continue;
+      if (entry.origin !== "managed") continue;
+      if (entry.thread_id !== null) continue;
+      seen.add(entry.pid);
+      out.push(entry);
+      stack.push(entry.pid);
+    }
+  }
+  return out;
+}
+
+function approximateStartMs(etime: string, nowMs: number): number | null {
+  // ps etime forms: "MM:SS", "HH:MM:SS", "DD-HH:MM:SS". Parse to seconds.
+  const match = etime.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+  if (!match) {
+    return null;
+  }
+  const days = Number(match[1] ?? 0);
+  const hours = Number(match[2] ?? 0);
+  const mins = Number(match[3] ?? 0);
+  const secs = Number(match[4] ?? 0);
+  if (![days, hours, mins, secs].every(Number.isFinite)) {
+    return null;
+  }
+  return nowMs - (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1000;
 }
 
 function defaultListProcesses(): ProcInfo[] {

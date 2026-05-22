@@ -457,6 +457,94 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.leak).toBe(0);
   });
 
+  it("binds streaming bridge codex exec pairs to live dispatcher and worker owners without Hub PID mapping", async () => {
+    // Meridian streaming bridge instances intentionally have pid/socket_path
+    // null in /api/instances. The live OS process is the per-run
+    // `codex exec --json` child under the Hub, so the Processes tab must
+    // recover ownership from lifecycle start times instead of treating these
+    // sessioned bridge turns as stateless calls.
+    const nowMs = Date.now();
+    const dispatcherStartedAt = new Date(nowMs - 12 * 60 * 1000).toISOString();
+    const workerStartedAt = new Date(nowMs - 3 * 60 * 1000).toISOString();
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "codex_01", started_at: dispatcherStartedAt, status: "running" },
+      workers: {
+        "DISPATCHER": {
+          thread_id: "codex_01",
+          trace_id: null,
+          started_at: dispatcherStartedAt,
+          last_seen_at: dispatcherStartedAt,
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "W-01": {
+          thread_id: "codex_04",
+          trace_id: null,
+          started_at: workerStartedAt,
+          last_seen_at: workerStartedAt,
+          status: "running",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      fetchAgentapiInstanceIndex: async () => new Map(),
+      listProcesses: (): ProcInfo[] => [
+        { pid: 38500, ppid: 1, etime: "30:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 42283, ppid: 38500, etime: "12:00", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 42284, ppid: 42283, etime: "12:00", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 14442, ppid: 38500, etime: "03:00", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"xhigh\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 14443, ppid: 14442, etime: "03:00", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex exec --json -c model_reasoning_effort=\"xhigh\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+      ]
+    });
+
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const byPid = new Map<number, {
+      thread_id: string | null;
+      binding: { role: string; worker_id: string } | null;
+      is_leak: boolean;
+    }>(payload.processes.map((p: {
+      pid: number;
+      thread_id: string | null;
+      binding: { role: string; worker_id: string } | null;
+      is_leak: boolean;
+    }) => [p.pid, p]));
+
+    expect(byPid.get(42283)).toMatchObject({
+      thread_id: "codex_01",
+      binding: { role: "dispatcher", worker_id: "DISPATCHER" },
+      is_leak: false
+    });
+    expect(byPid.get(42284)).toMatchObject({
+      thread_id: "codex_01",
+      binding: { role: "dispatcher", worker_id: "DISPATCHER" },
+      is_leak: false
+    });
+    expect(byPid.get(14442)).toMatchObject({
+      thread_id: "codex_04",
+      binding: { role: "worker", worker_id: "W-01" },
+      is_leak: false
+    });
+    expect(byPid.get(14443)).toMatchObject({
+      thread_id: "codex_04",
+      binding: { role: "worker", worker_id: "W-01" },
+      is_leak: false
+    });
+    expect(payload.managed_bound).toBe(4);
+    expect(payload.leak).toBe(0);
+  });
+
   it("also matches `tsx src/hub/index.ts` (dev-mode hub) as a hub ancestor", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
