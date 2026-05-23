@@ -26,6 +26,7 @@ export interface DispatchContinuationWorkerRow {
 }
 
 export interface ResolveEligibleServiceContinueWorkersOptions {
+  includeImplicitRunningWorker?: boolean;
   limit?: number;
 }
 
@@ -49,9 +50,12 @@ export function resolveEligibleServiceContinueWorkers(
     return preflightGateWorker ? [preflightGateWorker].slice(0, limit) : [];
   }
 
-  const implicitWorker = resolveImplicitContinueWorker(rows, lifecycleState);
-  if (implicitWorker) {
-    return [implicitWorker].slice(0, limit);
+  const includeImplicitRunningWorker = options.includeImplicitRunningWorker ?? true;
+  if (includeImplicitRunningWorker) {
+    const implicitWorker = resolveImplicitContinueWorker(rows, lifecycleState);
+    if (implicitWorker) {
+      return [implicitWorker].slice(0, limit);
+    }
   }
 
   const rowsByWorker = indexRowsByWorker(rows);

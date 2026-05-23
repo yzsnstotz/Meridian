@@ -355,6 +355,10 @@ describe("role config handlers", () => {
         mode: "bridge",
         kill_policy: "always",
         auto_approve: false,
+        parallel_dispatch: {
+          enabled: false,
+          max_concurrency: 1
+        },
         pm_resolver: {
           enabled: true,
           agent_type: "codex",
@@ -1476,6 +1480,174 @@ describe("role config handlers", () => {
       expect(launchDispatcher).toHaveBeenCalledTimes(1);
       expect(lifecycleStore.load().workers["R-08"]?.status).toBe("abandoned");
       await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain("| ⚠️ ABANDONED | 5 | R-08 | Delta Check | CODEX | R-07 | CLI Integration PRD | local IPC failed |");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts multiple eligible workers up to max_concurrency when parallel dispatch is enabled", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| ⬜ | 1 | R-01 | First independent task | CODEX | PRE-FLIGHT | TaskSpec | ready |",
+        "| ⬜ | 1 | R-02 | Second independent task | CODEX | PRE-FLIGHT | TaskSpec | ready |",
+        "| ⬜ | 2 | R-03 | Downstream task | CODEX | R-01 | TaskSpec | waits |"
+      ].join("\n"), "utf8");
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-parallel-continue",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 2
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-parallel-continue");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued_parallel",
+        started_workers: ["R-01", "R-02"],
+        running_workers: ["R-01", "R-02"],
+        available_slots: 0,
+        max_concurrency: 2
+      });
+      expect(launchDispatchWorker).toHaveBeenCalledTimes(2);
+      expect(launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["R-01", "R-02"]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not start dependency-blocked workers even when parallel slots are available", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-deps-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| ⬜ | 1 | R-01 | First independent task | CODEX | PRE-FLIGHT | TaskSpec | ready |",
+        "| ⬜ | 2 | R-02 | Downstream task | CODEX | R-01 | TaskSpec | waits |"
+      ].join("\n"), "utf8");
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-parallel-deps",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-parallel-deps");
+
+      expect(result).toMatchObject({
+        status: "continued_parallel",
+        started_workers: ["R-01"]
+      });
+      expect(launchDispatchWorker).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses running workers to reduce available parallel slots", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-slots-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const lifecyclePath = path.join(tempDir, "dispatch_threads.json");
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| 🔄 | 1 | R-01 | Already running | CODEX | PRE-FLIGHT | TaskSpec | running |",
+        "| ⬜ | 1 | R-02 | Second task | CODEX | PRE-FLIGHT | TaskSpec | ready |",
+        "| ⬜ | 1 | R-03 | Third task | CODEX | PRE-FLIGHT | TaskSpec | ready |"
+      ].join("\n"), "utf8");
+      await fs.writeFile(lifecyclePath, JSON.stringify({
+        version: 2,
+        dispatcher: { thread_id: null, started_at: null, status: "pending" },
+        workers: {
+          "R-01": buildLifecycleWorker({
+            thread_id: "thread-r01",
+            status: "running"
+          })
+        },
+        last_reconciled_at: null
+      }, null, 2), "utf8");
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-parallel-slots",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 2
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-parallel-slots");
+
+      expect(result).toMatchObject({
+        status: "continued_parallel",
+        started_workers: ["R-02"],
+        running_workers: ["R-01", "R-02"],
+        available_slots: 0
+      });
+      expect(launchDispatchWorker).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
