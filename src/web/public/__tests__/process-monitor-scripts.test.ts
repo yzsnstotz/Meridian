@@ -141,6 +141,22 @@ describe("processes tab — token flash + history", () => {
     expect(js).toMatch(/seen\.add\(u\.session_file\)/);
   });
 
+  it("processes table labels Hub-managed unbound bridge threads separately from external processes", async () => {
+    const html = await fs.readFile(path.join(publicDir, "index.html"), "utf8");
+    const js = await fs.readFile(path.join(publicDir, "app.js"), "utf8");
+    const css = await fs.readFile(path.join(publicDir, "style.css"), "utf8");
+
+    expect(html).toContain("meridian-hub");
+    expect(html).toContain("live in Meridian Hub but are not claimed by this Meridian-roles state");
+    expect(js).toContain('p.origin === "hub"');
+    expect(js).toContain('"hub-managed"');
+    expect(js).toContain("Hub-managed ");
+    expect(js).toContain("origin-hub");
+    expect(css).toContain(".origin-hub");
+    expect(css).toContain(".row-group-hub-managed td");
+    expect(css).toContain(".group-kind-badge.group-kind-hub-managed");
+  });
+
   it("CSS defines styles for the group-header row + session anchor/shared tags", async () => {
     const css = await fs.readFile(path.join(publicDir, "style.css"), "utf8");
     expect(css).toContain(".row-group-header td");

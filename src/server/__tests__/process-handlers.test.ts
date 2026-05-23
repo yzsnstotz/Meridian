@@ -633,6 +633,48 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.leak).toBe(0);
   });
 
+  it("emits unbound live Hub bridge threads instead of dropping them", async () => {
+    // A live Meridian Hub bridge instance can be owned by another caller
+    // (ADS) or by a Meridian-roles dispatcher that is no longer registered in
+    // this service's state file. It still needs to show in the Processes tab
+    // so operators can reconcile the Hub's active-thread count with the
+    // roles-local lifecycle view.
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      listProcesses: (): ProcInfo[] => [],
+      fetchAgentapiInstances: async () => [
+        {
+          thread_id: "codex_52",
+          agent_type: "codex",
+          mode: "bridge",
+          socket_path: null,
+          working_dir: "/Users/yzliu/work/Docs",
+          pid: null,
+          status: "running",
+          created_at: "2026-05-23T10:14:05.881Z",
+          restart_safe: true,
+          auto_approve: false
+        }
+      ]
+    });
+
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+
+    expect(payload.processes).toHaveLength(1);
+    expect(payload.processes[0]).toMatchObject({
+      pid: null,
+      thread_id: "codex_52",
+      origin: "hub",
+      binding: null,
+      is_leak: false
+    });
+    expect(payload.hub_managed).toBe(1);
+    expect(payload.managed_bound).toBe(0);
+    expect(payload.leak).toBe(0);
+  });
+
   it("also matches `tsx src/hub/index.ts` (dev-mode hub) as a hub ancestor", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },

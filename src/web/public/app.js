@@ -388,6 +388,7 @@ function setupProcessMonitor() {
         const total = Number(data.total ?? data.processes.length);
         const managedBound = Number(data.managed_bound ?? 0);
         const managedLeak = Number(data.managed_leak ?? 0);
+        const hubManaged = Number(data.hub_managed ?? 0);
         const orphan = Number(data.orphan ?? 0);
         const external = Number(data.external ?? 0);
         const leak = Number(data.leak ?? 0);
@@ -398,6 +399,7 @@ function setupProcessMonitor() {
         summaryEl.innerHTML =
           `<span>total: <strong>${total}</strong></span>`
           + `<span class="muted">meridian-roles bound: ${managedBound}</span>`
+          + (hubManaged > 0 ? `<span class="muted">meridian-hub unbound: ${hubManaged}</span>` : "")
           + `<span class="${leak > 0 ? "leak-callout" : "muted"}">leak: ${leak}</span>`
           + `<span class="muted">orphan: ${orphan}</span>`
           + `<span class="muted">external: ${external}</span>`
@@ -441,6 +443,9 @@ function setupProcessMonitor() {
       }
       if (p.is_leak) {
         return `leak:${p.thread_id ?? p.pid}`;
+      }
+      if (p.origin === "hub") {
+        return `hub:${p.thread_id ?? p.pid ?? "hub"}`;
       }
       if (p.origin === "orphan") {
         return `orphan:${p.thread_id ?? p.pid}`;
@@ -605,6 +610,13 @@ function setupProcessMonitor() {
         subtitle = head.thread_id
           ? `thread <code>${escapeHtml(head.thread_id)}</code> · reparented to init`
           : `reparented to init`;
+      } else if (key.startsWith("hub:")) {
+        kind = "hub-managed";
+        title = `Hub-managed ${escapeHtml(head.agent_type ?? "agent")} thread`;
+        const parts = [];
+        if (head.thread_id) parts.push(`thread <code>${escapeHtml(head.thread_id)}</code>`);
+        parts.push("live in Meridian Hub but not claimed by this Meridian-roles state");
+        subtitle = parts.join(" · ");
       } else if (key.startsWith("stateless:")) {
         kind = "stateless";
         const rootPid = key.slice("stateless:".length);
@@ -634,8 +646,9 @@ function setupProcessMonitor() {
       worker: 3,
       validator: 4,
       pm_resolver: 5,
-      stateless: 6,
-      external: 7
+      "hub-managed": 6,
+      stateless: 7,
+      external: 8
     };
     groups.sort((a, b) => {
       const oa = kindOrder[a.kind] ?? 9;
@@ -726,6 +739,7 @@ function setupProcessMonitor() {
       dispatcher: "dispatcher",
       validator: "validator",
       pm_resolver: "pm-resolver",
+      "hub-managed": "hub",
       "managed-leak": "LEAK",
       orphan: "orphan",
       stateless: "stateless",
@@ -758,12 +772,16 @@ function setupProcessMonitor() {
       ? '<span class="leak-dot" title="LEAK — meridian-roles spawned this process but no dispatcher claims its thread_id"></span>'
       : entry.origin === "managed"
         ? '<span class="ok-dot" title="meridian-roles managed; bound to a running worker"></span>'
+        : entry.origin === "hub"
+          ? '<span class="warn-dot" title="meridian-hub managed; no local Meridian-roles dispatcher binding"></span>'
         : entry.origin === "orphan"
           ? '<span class="leak-dot" title="ORPHAN — codex/claude survived after its agentapi parent died"></span>'
           : '<span class="external-dot" title="external — not spawned by meridian-roles (terminal session, Claude Code, etc.)"></span>';
 
     const originTag = entry.origin === "managed"
       ? '<span class="origin-tag origin-managed">meridian-roles</span>'
+      : entry.origin === "hub"
+        ? '<span class="origin-tag origin-hub">meridian-hub</span>'
       : entry.origin === "orphan"
         ? '<span class="origin-tag origin-orphan">orphan</span>'
         : '<span class="origin-tag origin-external">external</span>';
@@ -789,6 +807,8 @@ function setupProcessMonitor() {
       : '<span class="muted">—</span>';
     const baseClass = entry.is_leak
       ? "row-leak row-in-group"
+      : entry.origin === "hub"
+        ? "row-hub row-in-group"
       : entry.origin === "external"
         ? "row-external row-in-group"
         : "row-in-group";
