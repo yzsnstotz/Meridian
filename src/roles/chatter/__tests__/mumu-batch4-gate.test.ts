@@ -115,7 +115,7 @@ describe("BATCH-4-GATE mumu real-manifest dry run", () => {
     expect(run).toBeDefined();
     expect(run!.payload.content).toContain("## Pre-loaded context");
     expect(run!.payload.content).toContain(`"title": "${seed.title}"`);
-    expect(run!.payload.content).toContain("# 创建剧情 (create_from_template)");
+    expect(run!.payload.content).toContain("# 创建剧本 (create_from_template)");
     expect(run!.payload.content).toContain("请基于这个模版生成一个 12 集短剧大纲。");
   });
 });

@@ -10,7 +10,7 @@ import {
 import {
   fileExists,
   removeFileIfExists,
-  resolveStructuredRecordPath,
+  resolveStructuredRecordWritePath,
   structuredErrorFromUnknown,
   type StructuredError,
   unknownType
@@ -28,7 +28,7 @@ export async function deleteStructuredRecord(
   }
 
   try {
-    const recordPath = resolveStructuredRecordPath(resolver, type, key);
+    const recordPath = resolveStructuredRecordWritePath(resolver, type, key);
     if (!fileExists(recordPath)) {
       return { error: "not_found" };
     }

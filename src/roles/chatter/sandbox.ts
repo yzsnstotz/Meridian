@@ -8,10 +8,11 @@ import {
   type StructuredSkillName
 } from "./skills/structured";
 import type { ChatterManifest } from "./manifest";
-import type { MemoryResolver } from "./memory-resolver";
+import type { MemoryResolver, ResolvedSandboxRoot } from "./memory-resolver";
 
 export interface SandboxSpawnPlanInput {
   memoryFolder: string;
+  sandboxRoots?: ReadonlyArray<ResolvedSandboxRoot>;
   skillAllowlist: ReadonlyArray<string>;
   // Free-form: meridian-hub owns the allowed-kinds list. The local
   // settings.json sandbox doesn't branch on the value today, so any
@@ -44,6 +45,13 @@ export class SeedsInitError extends Error {
   }
 }
 
+export class ManifestSandboxModeConflictError extends Error {
+  constructor() {
+    super("manifest_sandbox_mode_conflict: sandbox_roots cannot be combined with copy_on_provision seeds_init");
+    this.name = "ManifestSandboxModeConflictError";
+  }
+}
+
 const BUILTIN_MEMORY_TOOLS: ReadonlyArray<ToolDescriptor> = [
   { name: "chatter.memory.read", description: "Read a memory entry by logical key." },
   { name: "chatter.memory.write", description: "Write a memory entry by logical key (session mode only)." },
@@ -62,12 +70,22 @@ const STRUCTURED_TOOL_DESCRIPTORS = new Map<StructuredSkillName, ToolDescriptor>
 export function buildSandboxSpawnPlan(input: SandboxSpawnPlanInput): SandboxSpawnPlan {
   const sandboxDir = path.join(input.memoryFolder, ".chatter-sandbox");
   const settingsPath = path.join(sandboxDir, "settings.json");
+  const sandboxRoots = input.sandboxRoots?.length
+    ? input.sandboxRoots
+    : [{ rootInput: input.memoryFolder, rootReal: input.memoryFolder, mode: "rw" as const }];
+  const allowedPaths = sandboxRoots.flatMap((root) => [
+    `Read(${root.rootReal}/**)`,
+    ...(root.mode === "rw" ? [`Write(${root.rootReal}/**)`] : [])
+  ]);
+  const additionalDirectories = sandboxRoots
+    .map((root) => root.rootReal)
+    .filter((root) => root !== input.memoryFolder);
 
   const settings = {
     permissions: {
-      allow: [`Read(${input.memoryFolder}/**)`, `Write(${input.memoryFolder}/**)`],
+      allow: allowedPaths,
       deny: ["Bash(*)", "WebFetch(*)", "WebSearch(*)", "Read(/**)", "Write(/**)"],
-      additionalDirectories: [] as string[]
+      additionalDirectories
     },
     enabledMcpjsonServers: [] as string[],
     disableAllHooks: true
@@ -130,6 +148,22 @@ export async function initializeSeedsOnProvision(input: {
       throw error;
     }
     throw new SeedsInitError("seeds_init_failed", error);
+  }
+}
+
+/**
+ * Phase 2's `sandbox_roots` is an additive mount: the user's RW folder stays
+ * intact and RO seed roots become readable. Switching from seed copy to
+ * sandbox roots never deletes or migrates existing user files; callers must
+ * disable copy-on-provision in project policy before activating the new
+ * manifest shape.
+ */
+export function assertSandboxRootsSeedModeCompatible(input: {
+  manifest: ChatterManifest;
+  seedsInit: ChatterManifest["seeds_init"];
+}): void {
+  if (input.manifest.sandbox_roots?.length && input.seedsInit?.mode === "copy_on_provision") {
+    throw new ManifestSandboxModeConflictError();
   }
 }
 

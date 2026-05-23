@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
-import type { MemoryResolver } from "./memory-resolver";
+import { DeniedReadOnlyRootError, type MemoryResolver } from "./memory-resolver";
 
 export type MemoryMode = "stateless" | "session";
 
@@ -27,6 +27,9 @@ export interface MemorySkills {
 }
 
 function errString(e: unknown): string {
+  if (e instanceof DeniedReadOnlyRootError) {
+    return e.code;
+  }
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -40,7 +43,7 @@ export function makeMemorySkills(resolver: MemoryResolver, mode: MemoryMode): Me
     async read(args) {
       let resolved: string;
       try {
-        resolved = resolver.resolveBinding(args.binding, args.vars);
+        resolved = resolver.resolveBindingForRead(args.binding, args.vars);
       } catch (e) {
         return { ok: false, error: errString(e) };
       }
@@ -60,7 +63,7 @@ export function makeMemorySkills(resolver: MemoryResolver, mode: MemoryMode): Me
       }
       let resolved: string;
       try {
-        resolved = resolver.resolveBinding(args.binding, args.vars);
+        resolved = resolver.resolveBindingForWrite(args.binding, args.vars);
       } catch (e) {
         return { ok: false, error: errString(e) };
       }
@@ -79,18 +82,23 @@ export function makeMemorySkills(resolver: MemoryResolver, mode: MemoryMode): Me
     },
 
     async list(args) {
-      let resolved: string;
+      let dirs: string[];
       try {
-        resolved = resolver.resolveBinding(args.binding, args.vars);
+        dirs = resolver.resolveBindingParentPathsForRead(args.binding, args.vars);
       } catch (e) {
         return { ok: false, error: errString(e) };
       }
-      const dir = path.dirname(resolved);
-      if (!existsSync(dir)) {
-        return { ok: true, entries: [] };
-      }
       try {
-        return { ok: true, entries: readdirSync(dir) };
+        const entries = new Set<string>();
+        for (const dir of dirs) {
+          if (!existsSync(dir)) {
+            continue;
+          }
+          for (const entry of readdirSync(dir)) {
+            entries.add(entry);
+          }
+        }
+        return { ok: true, entries: [...entries].sort() };
       } catch (e) {
         return { ok: false, error: errString(e) };
       }

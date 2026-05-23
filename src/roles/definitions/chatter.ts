@@ -21,6 +21,7 @@ import {
 } from "../chatter/manifest";
 import { MemoryResolver } from "../chatter/memory-resolver";
 import {
+  assertSandboxRootsSeedModeCompatible,
   buildSandboxSpawnPlan,
   initializeSeedsOnProvision,
   type SandboxSpawnPlan
@@ -143,15 +144,17 @@ export class ChatterRole implements BaseRole {
     const manifest = this.config.template
       ? loadManifestFromTemplate(this.config.template)
       : loadManifestFromFile(this.config.manifest_path as string);
+    const seedsInit = this.config.seeds_init
+      ? {
+          mode: "copy_on_provision" as const,
+          source_path: this.config.seeds_init.source_path ?? manifest.seeds_init?.source_path
+        }
+      : manifest.seeds_init;
+    assertSandboxRootsSeedModeCompatible({ manifest, seedsInit });
     this.resolver = new MemoryResolver(this.config.memory_folder, manifest);
     await initializeSeedsOnProvision({
       resolver: this.resolver,
-      seedsInit: this.config.seeds_init
-        ? {
-            mode: "copy_on_provision",
-            source_path: this.config.seeds_init.source_path ?? manifest.seeds_init?.source_path
-          }
-        : manifest.seeds_init
+      seedsInit
     });
     this.skillHandlers.clear();
     this.store = new ChatterStateStore(this.config.memory_folder);
@@ -178,6 +181,7 @@ export class ChatterRole implements BaseRole {
     this.sessionMgr.rehydrate();
     this.sandboxPlan = buildSandboxSpawnPlan({
       memoryFolder: this.config.memory_folder,
+      sandboxRoots: this.resolver.sandboxRoots,
       skillAllowlist: this.config.skill_allowlist,
       llmAgentKind: this.config.llm_agent_kind
     });
