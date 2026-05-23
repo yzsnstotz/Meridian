@@ -231,6 +231,50 @@ describe("multi-root structured skills", () => {
     );
   });
 
+  it("allows RW index shadowing when an RO seed root already has _index.json", async () => {
+    const userRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-index-shadow-rw-")));
+    const roRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-index-shadow-ro-")));
+    writeStructuredRecord(roRoot, "seed-a", story("seed-a", "Seed A", "seed"));
+    const roIndexPath = path.join(roRoot, "structured", "story_test", "_index.json");
+    writeFileSync(
+      roIndexPath,
+      `${JSON.stringify({
+        keys: ["seed-a"],
+        by_field: {
+          genre: { seed: ["seed-a"] },
+          status: { draft: ["seed-a"] }
+        }
+      }, null, 2)}\n`
+    );
+    const roRecordPath = path.join(roRoot, "structured", "story_test", "seed-a.json");
+    const roRecordBefore = readFileSync(roRecordPath, "utf8");
+    const roIndexBefore = readFileSync(roIndexPath, "utf8");
+    const manifestPath = writeManifest(userRoot, {
+      sandbox_roots: [
+        { root: userRoot, mode: "rw" },
+        { root: roRoot, mode: "ro" }
+      ]
+    });
+    const resolver = new MemoryResolver(userRoot, loadManifestFromFile(manifestPath));
+    const skills = makeStructuredSkills(resolver);
+
+    await expect(skills.upsert("story_test", "new-user", story("new-user", "New User", "user"))).resolves.toEqual({
+      record: story("new-user", "New User", "user")
+    });
+
+    expect(existsSync(path.join(userRoot, "structured", "story_test", "new-user.json"))).toBe(true);
+    expect(existsSync(path.join(userRoot, "structured", "story_test", "_index.json"))).toBe(true);
+    expect(readFileSync(roRecordPath, "utf8")).toBe(roRecordBefore);
+    expect(readFileSync(roIndexPath, "utf8")).toBe(roIndexBefore);
+    await expect(skills.list("story_test")).resolves.toEqual({ keys: ["new-user", "seed-a"] });
+    await expect(skills.query("story_test", { field: "status", op: "eq", value: "draft" })).resolves.toEqual({
+      records: [
+        story("new-user", "New User", "user"),
+        story("seed-a", "Seed A", "seed")
+      ]
+    });
+  });
+
   it("reconciles direct JSON records from both RW and RO roots into list and query", async () => {
     const userRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-reconcile-rw-")));
     const roRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-reconcile-ro-")));
