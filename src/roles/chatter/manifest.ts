@@ -37,6 +37,13 @@ const BackgroundTriggerSchema = z
   })
   .strict();
 
+const SandboxRootSchema = z
+  .object({
+    root: z.string().min(1),
+    mode: z.enum(["rw", "ro"])
+  })
+  .strict();
+
 export class InvalidRecordSchemaError extends Error {
   constructor(
     public readonly recordType: string,
@@ -59,6 +66,7 @@ export const ChatterManifestSchema = z
     })).optional(),
     background_triggers: z.array(BackgroundTriggerSchema).optional(),
     read_only_allowlist: z.array(z.string().min(1)).optional(),
+    sandbox_roots: z.array(SandboxRootSchema).optional(),
     seeds_init: z.object({
       mode: z.enum(["copy_on_provision"]),
       source_path: z.string().min(1).optional()

@@ -4,8 +4,9 @@ import {
   fileExists,
   listStructuredRecordKeysOnDisk,
   readJsonFile,
-  resolveStructuredIndexPath,
-  resolveStructuredRecordPath,
+  resolveStructuredIndexReadPath,
+  resolveStructuredIndexWritePath,
+  resolveStructuredRecordReadPath,
   writeJsonFileAtomic
 } from "./storage";
 
@@ -23,7 +24,7 @@ export interface StructuredCondition {
 export type StructuredWhere = StructuredCondition | { and: StructuredCondition[] };
 
 export function readStructuredIndex(resolver: MemoryResolver, type: string): StructuredIndex {
-  const indexPath = resolveStructuredIndexPath(resolver, type);
+  const indexPath = resolveStructuredIndexReadPath(resolver, type);
   if (!fileExists(indexPath)) {
     return { keys: [] };
   }
@@ -41,7 +42,7 @@ export function writeStructuredIndex(
   type: string,
   index: StructuredIndex
 ): void {
-  writeJsonFileAtomic(resolveStructuredIndexPath(resolver, type), normalizeIndex(index));
+  writeJsonFileAtomic(resolveStructuredIndexWritePath(resolver, type), normalizeIndex(index));
 }
 
 export function getIndexedFields(manifest: ChatterManifest, type: string): string[] {
@@ -63,7 +64,7 @@ export function readRecordsForKeys(
 ): Map<string, unknown> {
   const records = new Map<string, unknown>();
   for (const key of keys) {
-    const recordPath = resolveStructuredRecordPath(resolver, type, key);
+    const recordPath = resolveStructuredRecordReadPath(resolver, type, key);
     if (fileExists(recordPath)) {
       records.set(key, readJsonFile(recordPath));
     }

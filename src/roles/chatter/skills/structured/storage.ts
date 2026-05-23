@@ -8,11 +8,12 @@ import {
   writeFileSync
 } from "node:fs";
 import path from "node:path";
-import { MemoryResolver, SandboxViolationError } from "../../memory-resolver";
+import { DeniedReadOnlyRootError, MemoryResolver, SandboxViolationError } from "../../memory-resolver";
 
 export type StructuredErrorCode =
   | "schema_violation"
   | "sandbox_violation"
+  | "denied_ro_root"
   | "not_found"
   | "unknown_type"
   | "invalid_where"
@@ -22,6 +23,7 @@ export type StructuredErrorCode =
 export interface StructuredError {
   error: StructuredErrorCode;
   details?: unknown;
+  attempted_path?: string;
 }
 
 export function resolveStructuredRecordPath(
@@ -29,11 +31,35 @@ export function resolveStructuredRecordPath(
   type: string,
   key: string
 ): string {
-  return resolver.resolveMemoryPath("structured", type, `${key}.json`);
+  return resolveStructuredRecordReadPath(resolver, type, key);
+}
+
+export function resolveStructuredRecordReadPath(
+  resolver: MemoryResolver,
+  type: string,
+  key: string
+): string {
+  return resolver.resolveMemoryPathForRead("structured", type, `${key}.json`);
+}
+
+export function resolveStructuredRecordWritePath(
+  resolver: MemoryResolver,
+  type: string,
+  key: string
+): string {
+  return resolver.resolveMemoryPathForWrite("structured", type, `${key}.json`);
 }
 
 export function resolveStructuredIndexPath(resolver: MemoryResolver, type: string): string {
-  return resolver.resolveMemoryPath("structured", type, "_index.json");
+  return resolveStructuredIndexReadPath(resolver, type);
+}
+
+export function resolveStructuredIndexReadPath(resolver: MemoryResolver, type: string): string {
+  return resolver.resolveMemoryPathForRead("structured", type, "_index.json");
+}
+
+export function resolveStructuredIndexWritePath(resolver: MemoryResolver, type: string): string {
+  return resolver.resolveMemoryPathForWrite("structured", type, "_index.json");
 }
 
 export function readJsonFile(filePath: string): unknown {
@@ -63,16 +89,24 @@ export function fileExists(filePath: string): boolean {
 // from the `<key>.json` files (the `_index.json` sidecar is excluded). This
 // is the ground truth — used to reconcile a possibly-stale `_index.json`.
 export function listStructuredRecordKeysOnDisk(resolver: MemoryResolver, type: string): string[] {
-  const typeDir = path.dirname(resolveStructuredIndexPath(resolver, type));
-  if (!existsSync(typeDir)) {
-    return [];
+  const keys = new Set<string>();
+  for (const typeDir of resolver.resolveMemoryPathCandidatesForRead("structured", type)) {
+    if (!existsSync(typeDir)) {
+      continue;
+    }
+    for (const name of readdirSync(typeDir)) {
+      if (name.endsWith(".json") && name !== "_index.json") {
+        keys.add(name.slice(0, -".json".length));
+      }
+    }
   }
-  return readdirSync(typeDir)
-    .filter((name) => name.endsWith(".json") && name !== "_index.json")
-    .map((name) => name.slice(0, -".json".length));
+  return [...keys].sort();
 }
 
 export function structuredErrorFromUnknown(error: unknown): StructuredError {
+  if (error instanceof DeniedReadOnlyRootError) {
+    return { error: "denied_ro_root", attempted_path: error.attemptedPath };
+  }
   if (error instanceof SandboxViolationError) {
     return { error: "sandbox_violation", details: error.message };
   }

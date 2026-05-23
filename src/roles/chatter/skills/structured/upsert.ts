@@ -8,7 +8,7 @@ import {
   writeStructuredIndex
 } from "./index-file";
 import {
-  resolveStructuredRecordPath,
+  resolveStructuredRecordWritePath,
   structuredErrorFromUnknown,
   type StructuredError,
   writeJsonFileAtomic
@@ -28,7 +28,7 @@ export async function upsertStructuredRecord(
   }
 
   try {
-    const recordPath = resolveStructuredRecordPath(resolver, type, key);
+    const recordPath = resolveStructuredRecordWritePath(resolver, type, key);
     const index = readStructuredIndex(resolver, type);
     const records = readRecordsForKeys(resolver, type, index.keys.filter((existing) => existing !== key));
     records.set(key, validation.value);
