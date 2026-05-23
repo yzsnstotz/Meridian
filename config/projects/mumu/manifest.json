@@ -1192,6 +1192,9 @@
     "style_user_write": {
       "prompt_path": "seeds/prompts/style_user_write.md"
     },
+    "style_refine_user_write": {
+      "prompt_path": "seeds/prompts/style_refine_user_write.md"
+    },
     "optimize_from_template": {
       "prompt_path": "seeds/prompts/optimize_from_template.md"
     },
