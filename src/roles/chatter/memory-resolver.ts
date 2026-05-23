@@ -132,6 +132,12 @@ export class MemoryResolver {
     return this.resolveRelativePathForWrite(this.safeRelativeMemoryPath(segments));
   }
 
+  resolveMemoryPathForWriteAllowingReadOnlyShadow(...segments: string[]): string {
+    return this.resolveRelativePathForWrite(this.safeRelativeMemoryPath(segments), {
+      allowReadOnlyShadow: true
+    });
+  }
+
   resolveMemoryPathCandidatesForRead(...segments: string[]): string[] {
     return this.resolveRelativePathCandidatesForRead(this.safeRelativeMemoryPath(segments));
   }
@@ -197,7 +203,10 @@ export class MemoryResolver {
       }])[0].path;
   }
 
-  private resolveRelativePathForWrite(relativePath: string): string {
+  private resolveRelativePathForWrite(
+    relativePath: string,
+    options: { allowReadOnlyShadow?: boolean } = {}
+  ): string {
     for (const candidate of this.resolveRelativePathCandidates(relativePath, this.rwRoots)) {
       if (existsSync(candidate.path)) {
         return candidate.path;
@@ -207,7 +216,7 @@ export class MemoryResolver {
     const roMatch = this.resolveRelativePathCandidates(relativePath, this.roRoots).find((candidate) =>
       existsSync(candidate.path)
     );
-    if (roMatch) {
+    if (roMatch && !options.allowReadOnlyShadow) {
       throw new DeniedReadOnlyRootError(roMatch.path);
     }
 

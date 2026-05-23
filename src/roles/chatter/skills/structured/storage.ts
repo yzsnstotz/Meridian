@@ -59,7 +59,7 @@ export function resolveStructuredIndexReadPath(resolver: MemoryResolver, type: s
 }
 
 export function resolveStructuredIndexWritePath(resolver: MemoryResolver, type: string): string {
-  return resolver.resolveMemoryPathForWrite("structured", type, "_index.json");
+  return resolver.resolveMemoryPathForWriteAllowingReadOnlyShadow("structured", type, "_index.json");
 }
 
 export function readJsonFile(filePath: string): unknown {
