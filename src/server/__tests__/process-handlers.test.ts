@@ -545,6 +545,94 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.leak).toBe(0);
   });
 
+  it("emits hub-registered streaming bridge threads with no live process as managed rows", async () => {
+    // Streaming bridge instances stay registered in meridian-hub with
+    // pid/socket_path null while idle between turns. The Processes tab is the
+    // operator's "alive agent threads" view, so lifecycle-bound Hub threads
+    // must remain visible even when no `codex exec --json` child is currently
+    // present in `ps`.
+    const dispatcherStartedAt = "2026-05-23T11:11:33.057Z";
+    const workerStartedAt = "2026-05-23T11:12:01.522Z";
+    const fixture = await createSidecarFixture({
+      version: 2,
+      dispatcher: { thread_id: "codex_67", started_at: dispatcherStartedAt, status: "running" },
+      workers: {
+        "PRE-FLIGHT": {
+          thread_id: "codex_68",
+          trace_id: null,
+          started_at: workerStartedAt,
+          last_seen_at: "2026-05-23T11:18:39.822Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => appStateWithDispatcher(fixture) },
+      listProcesses: (): ProcInfo[] => [],
+      fetchAgentapiInstances: async () => [
+        {
+          thread_id: "codex_67",
+          agent_type: "codex",
+          mode: "bridge",
+          socket_path: null,
+          pid: null,
+          status: "running",
+          created_at: dispatcherStartedAt,
+          restart_safe: true,
+          auto_approve: true
+        },
+        {
+          thread_id: "codex_68",
+          agent_type: "codex",
+          mode: "bridge",
+          socket_path: null,
+          pid: null,
+          status: "running",
+          created_at: workerStartedAt,
+          restart_safe: true,
+          auto_approve: true
+        }
+      ]
+    });
+
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const byThread = new Map<string, {
+      pid: number | null;
+      origin: string;
+      binding: { worker_id: string; role: string } | null;
+      is_leak: boolean;
+    }>(payload.processes.map((p: {
+      thread_id: string;
+      pid: number | null;
+      origin: string;
+      binding: { worker_id: string; role: string } | null;
+      is_leak: boolean;
+    }) => [p.thread_id, p]));
+
+    expect(byThread.get("codex_67")).toMatchObject({
+      pid: null,
+      origin: "managed",
+      binding: { worker_id: "DISPATCHER", role: "dispatcher" },
+      is_leak: false
+    });
+    expect(byThread.get("codex_68")).toMatchObject({
+      pid: null,
+      origin: "managed",
+      binding: { worker_id: "PRE-FLIGHT", role: "worker" },
+      is_leak: false
+    });
+    expect(payload.total).toBe(2);
+    expect(payload.managed_bound).toBe(2);
+    expect(payload.leak).toBe(0);
+  });
+
   it("also matches `tsx src/hub/index.ts` (dev-mode hub) as a hub ancestor", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },

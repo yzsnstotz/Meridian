@@ -64,6 +64,7 @@ export interface BuildSystemMonitorOptions {
   rolesLogPath?: string;
   hubLogPath?: string;
   fnmMultishellsPath?: string;
+  fetchAgentapiInstances?: ProcessHandlersOptions["fetchAgentapiInstances"];
   fetchAgentapiInstanceIndex?: ProcessHandlersOptions["fetchAgentapiInstanceIndex"];
   listProcesses?: ProcessHandlersOptions["listProcesses"];
 }
@@ -276,6 +277,7 @@ async function loadProcesses(options: BuildSystemMonitorOptions, errors: string[
     const processes = await buildProcessSnapshot({
       stateStore: options.stateStore,
       log: options.log,
+      fetchAgentapiInstances: options.fetchAgentapiInstances,
       fetchAgentapiInstanceIndex: options.fetchAgentapiInstanceIndex,
       listProcesses: options.listProcesses,
       tokenUsageCollector: null
@@ -596,7 +598,7 @@ function withItems(indicator: SystemMonitorIndicator, items?: SystemMonitorIndic
 
 function processItems(processes: SystemMonitorProcess[]): SystemMonitorIndicatorItem[] {
   return processes.map((process) => ({
-    label: `pid ${process.pid} ${process.agent_type ?? "unknown"}`,
+    label: `${processPidLabel(process)} ${process.agent_type ?? "unknown"}`,
     href: process.binding?.dispatcher_role_id ? roleDetailHref(process.binding.dispatcher_role_id) : undefined,
     detail: processDetail(process)
   }));
@@ -606,14 +608,14 @@ function tokenProcessItems(processes: SystemMonitorProcess[]): SystemMonitorIndi
   return processes
     .filter((process) => process.token_usage)
     .map((process) => ({
-      label: `pid ${process.pid} ${process.agent_type ?? "unknown"} ${process.token_usage?.total_tokens.toLocaleString()} tokens`,
+      label: `${processPidLabel(process)} ${process.agent_type ?? "unknown"} ${process.token_usage?.total_tokens.toLocaleString()} tokens`,
       href: process.binding?.dispatcher_role_id ? roleDetailHref(process.binding.dispatcher_role_id) : undefined,
       detail: processDetail(process)
     }));
 }
 
 function tokenSessionItems(processes: SystemMonitorProcess[]): SystemMonitorIndicatorItem[] {
-  const sessions = new Map<string, { tokens: number; pids: number[]; href?: string; detailParts: string[] }>();
+  const sessions = new Map<string, { tokens: number; pids: string[]; href?: string; detailParts: string[] }>();
   for (const process of processes) {
     if (!process.token_usage) {
       continue;
@@ -626,7 +628,7 @@ function tokenSessionItems(processes: SystemMonitorProcess[]): SystemMonitorIndi
       detailParts: []
     };
     current.tokens = Math.max(current.tokens, process.token_usage.total_tokens);
-    current.pids.push(process.pid);
+    current.pids.push(processPidLabel(process));
     current.detailParts.push(processDetail(process));
     if (!current.href && process.binding?.dispatcher_role_id) {
       current.href = roleDetailHref(process.binding.dispatcher_role_id);
@@ -655,6 +657,10 @@ function processDetail(process: SystemMonitorProcess): string {
     tokenUsage,
     `command ${truncate(process.command, 180)}`
   ].join("; ");
+}
+
+function processPidLabel(process: SystemMonitorProcess): string {
+  return process.pid === null ? "hub" : `pid ${process.pid}`;
 }
 
 function roleDetailHref(roleId: string): string {

@@ -262,6 +262,7 @@ function setupProcessMonitor() {
   function applyTokenFlashing(processes) {
     const livePids = new Set();
     for (const p of processes) {
+      if (!Number.isFinite(p.pid)) continue;
       livePids.add(p.pid);
       const cur = p.token_usage ? Number(p.token_usage.total_tokens) : null;
       const prev = prevTokenTotals.get(p.pid);
@@ -277,9 +278,12 @@ function setupProcessMonitor() {
 
   function captureDepartedProcesses(currentProcesses, previousProcesses) {
     if (!Array.isArray(previousProcesses) || previousProcesses.length === 0) return;
-    const curPids = new Set(currentProcesses.map((p) => p.pid));
+    const curPids = new Set(currentProcesses
+      .filter((p) => Number.isFinite(p.pid))
+      .map((p) => p.pid));
     const nowIso = new Date().toISOString();
     for (const prev of previousProcesses) {
+      if (!Number.isFinite(prev.pid)) continue;
       if (curPids.has(prev.pid)) continue;
       processHistory.set(prev.pid, {
         entry: prev,
@@ -417,7 +421,9 @@ function setupProcessMonitor() {
   //   { key, kind, title, subtitle, processes, tokenTotals, isLeak }
   // sorted leaks-first then by kind-priority.
   function buildProcessGroups(processes) {
-    const byPid = new Map(processes.map((p) => [p.pid, p]));
+    const byPid = new Map(processes
+      .filter((p) => Number.isFinite(p.pid))
+      .map((p) => [p.pid, p]));
 
     function provisionalKey(p) {
       if (p.binding) {
@@ -454,8 +460,8 @@ function setupProcessMonitor() {
     for (const p of processes) {
       const k = provisionalKey(p);
       if (k !== null) {
-        provisional.set(p.pid, k);
-      } else {
+        provisional.set(p, k);
+      } else if (Number.isFinite(p.pid)) {
         statelessPids.add(p.pid);
       }
     }
@@ -469,14 +475,14 @@ function setupProcessMonitor() {
       return cur;
     }
     for (const p of processes) {
-      if (statelessPids.has(p.pid)) {
-        provisional.set(p.pid, `stateless:${statelessRoot(p).pid}`);
+      if (Number.isFinite(p.pid) && statelessPids.has(p.pid)) {
+        provisional.set(p, `stateless:${statelessRoot(p).pid}`);
       }
     }
 
     const buckets = new Map();
     for (const p of processes) {
-      const k = provisional.get(p.pid);
+      const k = provisional.get(p) ?? `untracked:${p.thread_id ?? p.pid ?? "hub"}`;
       if (!buckets.has(k)) buckets.set(k, []);
       buckets.get(k).push(p);
     }
@@ -485,8 +491,11 @@ function setupProcessMonitor() {
     for (const [key, members] of buckets) {
       // Sort members parent→child so an agentapi row comes before its codex
       // child, and the codex node shim comes before the native binary.
-      const memberPids = new Set(members.map((p) => p.pid));
+      const memberPids = new Set(members
+        .filter((p) => Number.isFinite(p.pid))
+        .map((p) => p.pid));
       function depth(p) {
+        if (!Number.isFinite(p.pid) || !Number.isFinite(p.ppid)) return 0;
         let d = 0;
         let cur = p;
         while (d < 12) {
@@ -632,12 +641,19 @@ function setupProcessMonitor() {
       const oa = kindOrder[a.kind] ?? 9;
       const ob = kindOrder[b.kind] ?? 9;
       if (oa !== ob) return oa - ob;
-      const ap = Math.min(...a.processes.map((p) => p.pid));
-      const bp = Math.min(...b.processes.map((p) => p.pid));
+      const ap = processSortPid(a);
+      const bp = processSortPid(b);
       return ap - bp;
     });
 
     return groups;
+  }
+
+  function processSortPid(group) {
+    const numeric = group.processes
+      .map((p) => p.pid)
+      .filter((pid) => Number.isFinite(pid));
+    return numeric.length > 0 ? Math.min(...numeric) : Number.MAX_SAFE_INTEGER;
   }
 
   function renderGroup(group) {
@@ -787,8 +803,8 @@ function setupProcessMonitor() {
     return `<tr class="${klass}">`
       + `<td>${dot}</td>`
       + `<td>${originTag}</td>`
-      + `<td><code>${entry.pid}</code></td>`
-      + `<td><code class="muted">${entry.ppid}</code></td>`
+      + `<td>${renderPid(entry.pid)}</td>`
+      + `<td>${renderPid(entry.ppid, true)}</td>`
       + `<td>${treeGlyph}${escapeHtml(entry.agent_type ?? "?")}</td>`
       + `<td>${threadId}</td>`
       + `<td>${worker}</td>`
@@ -796,6 +812,13 @@ function setupProcessMonitor() {
       + `<td>${escapeHtml(entry.etime ?? "")}</td>`
       + `<td>${tokens}</td>`
       + "</tr>";
+  }
+
+  function renderPid(pid, muted) {
+    if (Number.isFinite(pid)) {
+      return `<code${muted ? ' class="muted"' : ""}>${pid}</code>`;
+    }
+    return '<span class="muted">hub</span>';
   }
 
   function renderTokenCell(entry, group) {
