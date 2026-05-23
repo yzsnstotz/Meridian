@@ -1,14 +1,23 @@
 # 连线剧本 Seed Templates — Editorial Review
 
+PM / product owner checklist before BATCH-B-GATE.
+
+## Existing / unchanged
+
+| File | Pattern | Status |
+|---|---|---|
+| `aimei-shouwei.json` | 暧昧期收尾型 | Existing seed; unchanged in B-6. |
+| `banlv-lengbaoli.json` | 伴侣冷暴力型 | Existing seed; unchanged in B-6. |
+| `fumu-cuihun.json` | 父母催婚型 | Existing seed; unchanged in B-6. |
+| `qianren-fanhui.json` | 前任反悔型 | Existing seed; unchanged in B-6. |
+| `xiangqin-lvzhan-lvbai.json` | 相亲屡战屡败型 | Existing seed; unchanged in B-6. |
+| `yidi-fenshou.json` | 异地分手型 | Existing seed; unchanged in B-6. |
+| `yuansheng-jiating-shiya.json` | 原生家庭施压型 | Existing seed; unchanged in B-6. |
+
+## New Phase 2 top-ups requiring PM review
+
 | File | Pattern | Review focus |
 |---|---|---|
-| `qianren-fanhui.json` | 前任反悔型 | 复合判断要避免替用户直接做决定。 |
-| `yidi-fenshou.json` | 异地分手型 | 异地关系不要天然判死刑，重点看成本和计划。 |
-| `yuansheng-jiating-shiya.json` | 原生家庭施压型 | 注意边界表达，不妖魔化父母。 |
-| `xiangqin-lvzhan-lvbai.json` | 相亲屡战屡败型 | 避免羞辱单身或年龄焦虑。 |
-| `aimei-shouwei.json` | 暧昧期收尾型 | 摊牌话术要清醒，不鼓励情绪逼问。 |
-| `fumu-cuihun.json` | 父母催婚型 | 节假日高频话题，保留家庭关系复杂度。 |
-| `banlv-lengbaoli.json` | 伴侣冷暴力型 | 区分冷静、不会表达和沉默惩罚。 |
-
-These are phase-1.5 draft formulas. Editorial can tune titles, segment lengths,
-and wording without changing the `template_lianxian` schema.
+| `fanzha-tixing.json` | 网恋借钱反诈型 | 反诈提醒要保护连线人，避免羞辱受害者或替代警方判断。 |
+| `po-xi-tiaojie.json` | 婆媳同住调解型 | 婆媳矛盾要落在边界和伴侣责任，不脸谱化任何一方。 |
+| `zhichang-weiqu.json` | 职场委屈倾诉型 | 职场建议要兼顾证据、沟通窗口和现金流，避免鼓励冲动裸辞。 |

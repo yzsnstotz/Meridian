@@ -1,11 +1,19 @@
 # short_drama Seed Editorial Review
 
-PM / product owner checklist before BATCH-4-GATE:
+PM / product owner checklist before BATCH-B-GATE.
 
-- [ ] `chuanyue-nixi.json` — confirm palace intrigue, modern-skill premise, and final sequel hook match the desired mumu content tone.
-- [ ] `haomen-nuelian.json` — confirm虐恋 intensity, divorce premise, and non-forced-reunion ending are acceptable.
-- [ ] `xiandai-xiuzhen.json` — confirm urban cultivation metaphors, grassroots protagonist, and anti-monopoly framing are on brand.
-- [ ] `zhichang-dalian.json` — confirm workplace details, evidence-led reversals, and直播运营 beats are plausible.
-- [ ] `chongsheng-guilai.json` — confirm rebirth revenge setup, entertainment-industry copyright line, and courtroom escalation are usable.
-- [ ] `zhanshen-guilai.json` — confirm war-god identity reveal cadence, family-protection tone, and action restraint are acceptable.
-- [ ] `huiguniang-nixi.json` — confirm substitute-bride premise, jewelry-restoration profession, and slow-burn romance balance are acceptable.
+## Existing / unchanged
+
+- [x] `chongsheng-guilai.json` — existing seed; unchanged in B-6.
+- [x] `chuanyue-nixi.json` — existing seed; unchanged in B-6.
+- [x] `haomen-nuelian.json` — existing seed; unchanged in B-6.
+- [x] `huiguniang-nixi.json` — existing seed; unchanged in B-6.
+- [x] `xiandai-xiuzhen.json` — existing seed; unchanged in B-6.
+- [x] `zhanshen-guilai.json` — existing seed; unchanged in B-6.
+- [x] `zhichang-dalian.json` — existing seed; unchanged in B-6.
+
+## New Phase 2 top-ups requiring PM review
+
+- [ ] `jiating-hejie.json` — confirm family reconciliation, old-shop defense, and light suspense elements fit the desired mumu tone.
+- [ ] `shuangxian-xuanyi.json` — confirm dual-line suspense, monitoring-footage premise, and memory-recovery twist are acceptable.
+- [ ] `wuhui-jiechu.json` — confirm misunderstanding repair, medical evidence path, and slow emotional reconciliation are usable.
