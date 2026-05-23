@@ -30,6 +30,7 @@ import { parseMeridianStatusMarker } from "./meridian-status-marker";
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+export const PM_RESOLVER_LIVENESS_GRACE_MS = 90 * 1000;
 
 // Validator spawn/run failure backoff. After this many consecutive failures
 // (validator spawn errors, run errors, parse errors — anything that ends in
@@ -60,6 +61,27 @@ export function isValidatorSpawnBackoffActive(
     return false;
   }
   return nowMs - lastFailureMs < VALIDATOR_SPAWN_FAILURE_BACKOFF_MS;
+}
+
+export function isPmResolverLivenessGraceActive(
+  entry: Pick<PmResolverLifecycleState, "started_at" | "last_seen_at" | "result">,
+  nowMs: number = Date.now()
+): boolean {
+  if (entry.result) {
+    return false;
+  }
+
+  const startedAtMs = Date.parse(entry.started_at);
+  if (Number.isNaN(startedAtMs)) {
+    return false;
+  }
+
+  const lastSeenAtMs = entry.last_seen_at ? Date.parse(entry.last_seen_at) : NaN;
+  const observedAtMs = Number.isNaN(lastSeenAtMs)
+    ? startedAtMs
+    : Math.max(startedAtMs, lastSeenAtMs);
+
+  return nowMs - observedAtMs < PM_RESOLVER_LIVENESS_GRACE_MS;
 }
 
 const LegacyWorkerThreadEntrySchema = z.object({
