@@ -1540,6 +1540,10 @@ function outputArtifactsContainCompletionSignal(paths: string[], workerId: strin
 }
 
 function outputArtifactHasCompletionSignal(content: string, workerId: string): boolean {
+  if (outputArtifactHasPassingWorkerMarker(content, workerId)) {
+    return true;
+  }
+
   if (outputArtifactReferencesWorker(content, workerId) && outputArtifactHasPassingDecision(content)) {
     return true;
   }

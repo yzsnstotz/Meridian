@@ -930,8 +930,13 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     }
 
     const dispatchPlanPath = context.effectiveConfig.dispatch_plan_path;
-    const dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
+    let dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
     let lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    if (shouldReconcileBeforeContinue(lifecycleState)) {
+      await reconcileBeforeContinue(dispatchPlanPath, log, sendHubRequestImpl);
+      dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
+      lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
+    }
     let effectiveWorkerId = workerId
       ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldActivateAfterContinue = context.status !== ACTIVE_ROLE_STATUS;
@@ -3435,6 +3440,44 @@ export async function loadDispatchLifecycleState(dispatchPlanPath: string, log: 
       pm_resolvers: [],
       last_reconciled_at: null
     };
+  }
+}
+
+function shouldReconcileBeforeContinue(lifecycleState: DispatchThreadStateV2): boolean {
+  return Object.values(lifecycleState.workers).some((worker) => {
+    return worker.status === "running" || worker.status === "abandoned";
+  });
+}
+
+async function reconcileBeforeContinue(
+  dispatchPlanPath: string,
+  log: Logger,
+  sendHubRequestImpl: (message: HubMessage) => Promise<HubResult>
+): Promise<void> {
+  const lifecycleStore = new LifecycleStore(resolveDispatchThreadPath(dispatchPlanPath), {
+    dispatchPlanPath,
+    log
+  });
+
+  try {
+    const report = await reconcile(lifecycleStore, {
+      serviceId: ROLES_SERVICE_ID,
+      sendRequest: sendHubRequestImpl
+    } as unknown as A2AClient);
+
+    if (report.changed.length > 0) {
+      log.info("Continue dispatcher reconciliation detected changes", {
+        event: "continue_dispatcher_reconciliation_changed",
+        dispatch_plan_path: dispatchPlanPath,
+        changes: report.changed
+      });
+    }
+  } catch (error) {
+    log.warn("Continue dispatcher reconciliation failed", {
+      event: "continue_dispatcher_reconciliation_failed",
+      dispatch_plan_path: dispatchPlanPath,
+      error: getErrorMessage(error)
+    });
   }
 }
 
