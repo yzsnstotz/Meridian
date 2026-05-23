@@ -30,7 +30,7 @@
         <p id="role-subtitle" class="lede">Fetching dispatcher detail.</p>
       </section>
 
-      <section class="panel detail-sticky-head">
+      <section class="panel detail-sticky-head dispatcher-control-panel">
         <div class="panel-heading">
           <h2>Role Summary</h2>
           <div id="role-panel-links" class="panel-links">
@@ -39,7 +39,7 @@
           </div>
         </div>
         <dl id="role-summary" class="summary-grid"></dl>
-        <div id="agent-dispatcher-hub-controls" class="dispatcher-hub-controls" hidden>
+        <div id="agent-dispatcher-hub-controls" class="dispatcher-command-strip" hidden>
           <p id="agent-dispatcher-start-hub-feedback" class="feedback" role="status" aria-live="polite"></p>
           <div class="card-actions">
             <button type="button" id="agent-dispatcher-continue-btn" class="primary-button" hidden>
@@ -55,29 +55,24 @@
               Deactivate
             </button>
           </div>
-          <p class="muted hub-controls-hint">
-            Spawns or replaces the Hub dispatcher thread. Use when <code>dispatcher_thread_id</code> is
-            <code>pending</code>, or after editing <code>dispatch_threads.json</code>. Pause/Resume only toggles
-            the control session and does not launch Hub. Deactivate removes the role entry entirely.
-          </p>
         </div>
 
-        <div id="agent-dispatcher-talkbox" class="dispatcher-hub-controls" hidden>
-          <h3 class="muted" style="margin: 0 0 0.5rem 0; font-size: 0.95rem;">Reply to dispatcher</h3>
+        <details id="agent-dispatcher-talkbox" class="dispatcher-direct-panel" hidden>
+          <summary class="dispatcher-direct-summary">
+            <span>Direct messages</span>
+            <code id="agent-dispatcher-talk-target">dispatcher</code>
+          </summary>
           <form id="agent-dispatcher-talk-form" class="dispatch-detail-talk">
             <textarea id="agent-dispatcher-talk-input" class="dispatch-detail-talk-input"
-              name="content" rows="3"
+              name="content" rows="2"
               placeholder="Send a message directly to the dispatcher controller thread..."></textarea>
             <div class="dispatch-detail-talk-actions">
               <button type="submit" class="ghost-button dispatch-detail-action-button">Send</button>
               <span id="agent-dispatcher-talk-feedback" class="dispatch-detail-talk-status"></span>
             </div>
+            <div id="agent-dispatcher-talk-replies" class="dispatch-direct-replies" hidden></div>
           </form>
-          <p class="muted hub-controls-hint">
-            Delivers a fire-and-forget <code>intent: "run"</code> message to the dispatcher's
-            <code>dispatcher_thread_id</code> via <code>/api/hub-relay</code>.
-          </p>
-        </div>
+        </details>
       </section>
 
       <section id="dispatch-plan-panel" class="panel" hidden>
