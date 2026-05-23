@@ -1,0 +1,16 @@
+{
+  "id": "po-xi-tiaojie",
+  "title": "婆媳同住调解型",
+  "overall_arc": "围绕婚后同住、家务分工和伴侣不站出来展开，先把婆媳表面冲突拆成边界、空间和伴侣责任，再帮助主播引导连线人提出可执行的家庭规则，而不是把问题变成两代女性互相指责。",
+  "typical_duration_min": 23,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 3, "purpose": "用“我做饭被挑，不做又说我懒”开场，迅速带出同住压迫感。" },
+    { "no": 2, "type": "buildup", "duration_min": 5, "purpose": "梳理住房归属、经济贡献、家务分工、伴侣态度和冲突频率。" },
+    { "no": 3, "type": "conflict", "duration_min": 6, "purpose": "指出核心不是婆媳谁赢，而是小家庭边界和伴侣是否承担沟通责任。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 3, "purpose": "承接连线人的委屈：你不是不孝顺，你是在没有规则的屋子里被消耗。" },
+    { "no": 5, "type": "interaction", "duration_min": 4, "purpose": "让观众分享同住边界清单，带出可复制的规则。" },
+    { "no": 6, "type": "closing", "duration_min": 2, "purpose": "收成一次三方谈话模板：空间、家务、探访和伴侣承诺分别落地。" }
+  ],
+  "audience_note": "适合中长段连线，容易引发已婚观众分享具体家庭规则。",
+  "notes": "避免把婆婆或儿媳脸谱化，重点放在边界和伴侣责任。"
+}
