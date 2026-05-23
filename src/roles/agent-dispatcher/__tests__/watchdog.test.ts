@@ -579,6 +579,89 @@ describe("ReconciliationWatchdog", () => {
     expect(stallCallback).not.toHaveBeenCalled();
   });
 
+  it("invokes onDispatcherStalled when dispatcher hub reports running but the controller turn is complete", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    await fsp.writeFile(
+      path.join(harness.directory, "dispatch_plan.md"),
+      [
+        "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| ✅ | 0 | PRE-FLIGHT | Environment health check | CODEX | — | Complete. |",
+        "| ⛔ BLOCKED | 1 | A-2 | Worker needs PM | CODEX | PRE-FLIGHT | Needs PM resolution. |",
+        "| ⬜ | 1 | BATCH-A-GATE | Next eligible worker | CODEX | PRE-FLIGHT | Ready to continue. |"
+      ].join("\n"),
+      "utf8"
+    );
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        DISPATCHER: {
+          thread_id: "d-01",
+          trace_id: "dispatcher-trace",
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:02:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "PRE-FLIGHT": {
+          thread_id: "preflight-thread",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        },
+        "A-2": {
+          thread_id: "a2-thread",
+          trace_id: null,
+          started_at: "2026-04-03T12:10:00.000Z",
+          last_seen_at: "2026-04-03T12:15:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      }
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("d-01", "running"));
+    const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      onDispatcherStalled: stallCallback
+    });
+
+    await watchdog.sweep();
+
+    expect(stallCallback).toHaveBeenCalledTimes(1);
+    expect(stallCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+        dispatcherStatus: "running_controller_idle",
+        pendingWorkerCount: 1,
+        continueWorkerId: "BATCH-A-GATE"
+      })
+    );
+  });
+
   it("invokes onDispatcherStalled when dispatcher hub reports running but a worker is awaiting validation with no validator spawned", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
@@ -1849,6 +1932,84 @@ describe("ReconciliationWatchdog", () => {
 });
 
 describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
+  it("preserves a newly-started hub-missing PM resolver during the spawn/run grace window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-fresh",
+          status: "running",
+          started_at: "2026-04-03T13:59:30.000Z",
+          last_seen_at: "2026-04-03T13:59:30.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
+        }
+      ]
+    });
+
+    const hubSend = vi.fn((): HubResult => ({
+      trace_id: "trace",
+      thread_id: "pm-thread-fresh",
+      source: "codex",
+      status: "error",
+      content: "unknown thread: no registered agent instance found for thread_id=pm-thread-fresh",
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+    const { hubClient } = createHubClient(hubSend);
+    const aliveSpy = vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread");
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find((e) => e.thread_id === "pm-thread-fresh");
+    expect(entry?.status).toBe("running");
+    expect(hubSend).not.toHaveBeenCalledWith(expect.objectContaining({ target: "pm-thread-fresh" }));
+    expect(aliveSpy).not.toHaveBeenCalledWith("pm-thread-fresh");
+  });
+
   it("evicts a stale PM resolver whose hub thread is missing", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));

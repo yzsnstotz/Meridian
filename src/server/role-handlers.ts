@@ -23,6 +23,7 @@ import {
   hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
   hubResultContainsHitLimit,
+  isPmResolverLivenessGraceActive,
   isPmResolverHubResult,
   isValidatorSpawnBackoffActive
 } from "../roles/agent-dispatcher/lifecycle-store";
@@ -3309,7 +3310,20 @@ async function findLivePmResolversForWorker(
   }
   const live: PmResolverLifecycleState[] = [];
   let evictedCount = 0;
+  const nowMs = Date.now();
   for (const entry of candidates) {
+    if (isPmResolverLivenessGraceActive(entry, nowMs)) {
+      log.info("PM resolver is inside liveness grace; preserving entry for startup/run registration", {
+        event: "pm_resolver_liveness_grace_preserved",
+        worker_id: workerId,
+        pm_thread_id: entry.thread_id,
+        started_at: entry.started_at,
+        last_seen_at: entry.last_seen_at
+      });
+      live.push(entry);
+      continue;
+    }
+
     // `recordPmResolverTransportStall` (pm-resolver.ts) explicitly retains the
     // thread on a transport-class run rejection (hub overload, request timeout,
     // IPC drop) so the operator can take over via the GUI talk-box. The PM

@@ -15,7 +15,11 @@ import type { Logger } from "../base-role";
 import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 import { autoResolve } from "./auto-resolver";
 import { runAutoForceCompleteSweep } from "./auto-force-complete-reconciler";
-import { isValidatorSpawnBackoffActive, LifecycleStore } from "./lifecycle-store";
+import {
+  isPmResolverLivenessGraceActive,
+  isValidatorSpawnBackoffActive,
+  LifecycleStore
+} from "./lifecycle-store";
 import { isHubTransportEvidence, isMissingThreadEvidence } from "./missing-thread";
 import {
   DEFAULT_RECONCILE_STALE_TIMEOUT_MS,
@@ -340,9 +344,22 @@ export class ReconciliationWatchdog {
       return;
     }
 
+    const nowMs = this.now();
     for (const entry of runningEntries) {
       const pmThreadId = entry.thread_id?.trim();
       if (!pmThreadId) {
+        continue;
+      }
+
+      if (isPmResolverLivenessGraceActive(entry, nowMs)) {
+        this.log.info("Watchdog: PM resolver is inside liveness grace; preserving entry", {
+          event: "watchdog_pm_resolver_liveness_grace_preserved",
+          dispatchPlanPath,
+          pm_thread_id: pmThreadId,
+          worker_id: entry.issue?.worker_id ?? null,
+          started_at: entry.started_at,
+          last_seen_at: entry.last_seen_at
+        });
         continue;
       }
 
@@ -629,13 +646,20 @@ export class ReconciliationWatchdog {
           // only a continueDispatcher tick will. Fall through to fire the
           // stall callback in those cases instead of returning.
           const pendingValidationOrchestration = hasPendingValidatorOrchestration(state);
-          if (!pendingValidationOrchestration && !isStaleSyntheticDispatcherWorker(state, Date.now())) {
+          const dispatcherControllerIdle = hasTerminalDispatcherControllerTurn(state);
+          if (
+            !pendingValidationOrchestration
+            && !isStaleSyntheticDispatcherWorker(state, this.now())
+            && !dispatcherControllerIdle
+          ) {
             return;
           }
 
           dispatcherStatus = pendingValidationOrchestration
             ? "running_validation_pending"
-            : "running_stale";
+            : dispatcherControllerIdle
+              ? "running_controller_idle"
+              : "running_stale";
         } else {
           dispatcherStatus = observation.rawStatus ?? observation.kind;
         }
@@ -744,6 +768,19 @@ function isStaleTimestamp(value: string, nowMs: number, staleTimeoutMs: number):
   }
 
   return nowMs - valueMs >= staleTimeoutMs;
+}
+
+function hasTerminalDispatcherControllerTurn(state: DispatchThreadStateV2): boolean {
+  const dispatcherWorker = state.workers[DISPATCHER_WORKER_ID];
+  if (!dispatcherWorker) {
+    return false;
+  }
+
+  return dispatcherWorker.status === "completed"
+    || dispatcherWorker.status === "failed"
+    || dispatcherWorker.status === "blocked"
+    || dispatcherWorker.status === "abandoned"
+    || dispatcherWorker.status === "skipped";
 }
 
 async function resolveRecoverableWorkerState(
