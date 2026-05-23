@@ -20,5 +20,5 @@
     "chat_id": "ads:mumu:{user_id}",
     "socket_path": "/var/run/ads-mumu.sock"
   },
-  "seeds_init": { "mode": "copy_on_provision" }
+  "seeds_init": { "mode": "none" }
 }

@@ -190,11 +190,11 @@ function validateSeeds(options: {
     if (!statSync(recordTypeDir).isDirectory()) {
       continue;
     }
-    const validator = options.compiledSchemas.get(recordType);
-    if (!validator) {
+    const seedSchema = resolveSeedRecordSchema(options.compiledSchemas, recordType);
+    if (!seedSchema) {
       options.errors.push({
         category: "seeds",
-        detail: `${recordTypeDir}: no record_schemas.${recordType} entry for seed type`
+        detail: `${recordTypeDir}: no record_schemas.${recordType} or record_schemas.template_${recordType} entry for seed type`
       });
       continue;
     }
@@ -210,8 +210,8 @@ function validateSeeds(options: {
         options.errors.push({ category: "seeds", detail: `${seedPath}: ${parsed.error}` });
         continue;
       }
-      if (!validator(parsed.value)) {
-        for (const error of validator.errors ?? []) {
+      if (!seedSchema(parsed.value)) {
+        for (const error of seedSchema.errors ?? []) {
           options.errors.push({
             category: "seeds",
             detail: `${seedPath}${error.instancePath || ""}: ${formatAjvError(error)}`
@@ -222,6 +222,24 @@ function validateSeeds(options: {
   }
 
   return count;
+}
+
+function resolveSeedRecordSchema(
+  compiledSchemas: ReadonlyMap<string, ValidateFunction>,
+  seedDirectoryName: string
+): ValidateFunction | undefined {
+  const exact = compiledSchemas.get(seedDirectoryName);
+  if (exact) {
+    return exact;
+  }
+
+  const templateRecordType = `template_${seedDirectoryName}`;
+  const templateValidator = compiledSchemas.get(templateRecordType);
+  if (templateValidator) {
+    return templateValidator;
+  }
+
+  return undefined;
 }
 
 function validateSystemPrompts(manifest: ChatterManifest, manifestDir: string, errors: ValidationError[]): void {
@@ -271,7 +289,11 @@ function validateReadOnlyAllowlist(manifest: ChatterManifest, errors: Validation
 }
 
 function resolveSeedsDir(manifest: ChatterManifest, manifestDir: string, seedsPathArg?: string): string | undefined {
-  const raw = seedsPathArg ?? manifest.seeds_init?.source_path;
+  if (seedsPathArg) {
+    return path.resolve(seedsPathArg);
+  }
+
+  const raw = manifest.seeds_init?.source_path;
   if (!raw) {
     return undefined;
   }

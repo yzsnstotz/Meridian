@@ -32,7 +32,7 @@ function makeCtx() {
   return { ctx, sent };
 }
 
-function makeConfig(memoryFolder: string, manifestPath: string, seedsSourcePath: string): ChatterRoleConfig {
+function makeConfig(memoryFolder: string, manifestPath: string): ChatterRoleConfig {
   return {
     chatter_id: "mumu-test-user",
     memory_folder: memoryFolder,
@@ -40,10 +40,6 @@ function makeConfig(memoryFolder: string, manifestPath: string, seedsSourcePath:
     allowed_modes: ["stateless", "session"],
     skill_allowlist: ["structured.upsert", "structured.get", "structured.query", "structured.list"],
     llm_agent_kind: "claude-code",
-    seeds_init: {
-      mode: "copy_on_provision",
-      source_path: seedsSourcePath
-    },
     user_reply_channel: ADS_REPLY_CHANNEL
   };
 }
@@ -74,22 +70,35 @@ async function driveSpawnResponse(role: ChatterRole, spawnMsg: HubMessage, newAg
 }
 
 describe("BATCH-4-GATE mumu real-manifest dry run", () => {
-  it("copies real seeds and dispatches a create_from_template turn with a real template context ref", async () => {
+  it("dispatches a create_from_template turn with Phase 2 sandbox roots and a real template context ref", async () => {
     const repoRoot = process.cwd();
     const memoryFolder = realpathSync(mkdtempSync(path.join(tmpdir(), "mumu-batch4-memory-")));
-    const manifestPath = path.join(repoRoot, "config/projects/mumu/manifest.json");
-    const seedsSourcePath = path.join(repoRoot, "config/projects/mumu/seeds");
+    const manifestDir = realpathSync(mkdtempSync(path.join(tmpdir(), "mumu-batch4-manifest-")));
+    const liveManifestPath = path.join(repoRoot, "config/projects/mumu/manifest.json");
+    const manifestPath = path.join(manifestDir, "manifest.json");
+    const seedsRoot = path.join(repoRoot, "config/projects/mumu/seeds");
     const seedFile = "chongsheng-guilai.json";
+    const manifest = JSON.parse(readFileSync(liveManifestPath, "utf8")) as {
+      sandbox_roots?: unknown;
+      system_prompts?: Record<string, { prompt_path: string }>;
+    };
+    manifest.sandbox_roots = [
+      { root: memoryFolder, mode: "rw" },
+      { root: seedsRoot, mode: "ro" }
+    ];
+    for (const prompt of Object.values(manifest.system_prompts ?? {})) {
+      prompt.prompt_path = path.join(repoRoot, "config/projects/mumu", prompt.prompt_path);
+    }
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
     const { ctx, sent } = makeCtx();
-    const role = new ChatterRole("chatter-mumu-test-user", makeConfig(memoryFolder, manifestPath, seedsSourcePath));
+    const role = new ChatterRole("chatter-mumu-test-user", makeConfig(memoryFolder, manifestPath));
     await role.onActivate(ctx);
 
-    const copiedSeedPath = path.join(memoryFolder, "templates/short_drama", seedFile);
-    expect(existsSync(path.join(memoryFolder, ".seeds_initialized"))).toBe(true);
-    expect(existsSync(copiedSeedPath)).toBe(true);
-
-    const seed = JSON.parse(readFileSync(copiedSeedPath, "utf8")) as { id: string; title: string };
+    expect(existsSync(path.join(memoryFolder, ".seeds_initialized"))).toBe(false);
+    const seed = JSON.parse(
+      readFileSync(path.join(seedsRoot, "templates/short_drama", seedFile), "utf8")
+    ) as { id: string; title: string };
     const structuredDir = path.join(memoryFolder, "structured/template_short_drama");
     mkdirSync(structuredDir, { recursive: true });
     writeFileSync(path.join(structuredDir, `${seed.id}.json`), `${JSON.stringify(seed, null, 2)}\n`);
