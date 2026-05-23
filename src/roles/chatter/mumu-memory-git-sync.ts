@@ -133,6 +133,7 @@ export interface MumuMemoryGitPushOutcome {
   conflict?: boolean;
   stdout?: string;
   stderr?: string;
+  message?: string;
 }
 
 export type MumuMemoryGitPushFunction = (request: MumuMemoryGitPushRequest) => Promise<MumuMemoryGitPushOutcome>;
@@ -803,13 +804,9 @@ async function defaultGitPush(
       ok: false,
       stdout: failure.stdout,
       stderr: failure.stderr,
-      errorClass: classifyPushFailure({
-        ok: false,
-        stdout: failure.stdout,
-        stderr: failure.stderr,
-        errorClass: failure.message
-      })
+      message: failure.message
     };
+    outcome.errorClass = classifyPushFailure(outcome);
     outcome.conflict = outcome.errorClass === "conflict_pending";
     return outcome;
   }
@@ -819,15 +816,15 @@ function classifyPushFailure(outcome: MumuMemoryGitPushOutcome | null): string {
   if (!outcome) {
     return "git_push_failed";
   }
-  if (outcome.errorClass) {
-    return outcome.errorClass;
-  }
-  const details = `${outcome.stdout ?? ""}\n${outcome.stderr ?? ""}`;
+  const details = `${outcome.message ?? ""}\n${outcome.stdout ?? ""}\n${outcome.stderr ?? ""}`;
   if (/non-fast-forward|fetch first|failed to push some refs|rejected/iu.test(details)) {
     return "conflict_pending";
   }
   if (/authentication failed|permission denied|repository not found|403/u.test(details.toLowerCase())) {
     return "github_auth_failed";
+  }
+  if (outcome.errorClass && /^[a-z][a-z0-9_]*$/u.test(outcome.errorClass)) {
+    return outcome.errorClass;
   }
   return "git_push_failed";
 }
