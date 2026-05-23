@@ -1611,6 +1611,8 @@ function bindDispatchDetailActions(rootEl, feedbackEl, options) {
     const textarea = form.querySelector("textarea[name='content']");
     const submitBtn = form.querySelector("button[type='submit']");
     const localFeedback = form.querySelector("[data-talk-feedback]");
+    const transcriptEl = form.querySelector("[data-talk-transcript]");
+    const talkKey = form.getAttribute("data-talk-key") || `${detailKind}:${threadIdAttr}`;
     if (!threadIdAttr || !(textarea instanceof HTMLTextAreaElement)) {
       return;
     }
@@ -1625,44 +1627,39 @@ function bindDispatchDetailActions(rootEl, feedbackEl, options) {
       submitBtn.disabled = true;
     }
     if (localFeedback) {
-      localFeedback.textContent = `Sending to ${detailKind}...`;
+      localFeedback.textContent = `Waiting for ${detailKind} reply...`;
     }
     setFeedback(`Sending message to ${detailKind} thread ${threadIdAttr}...`);
+    const sentAt = new Date().toISOString();
     try {
-      const traceId = (typeof crypto !== "undefined" && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      // Fire-and-forget: GUI talk-to-thread is "deliver, don't wait".
-      // Without `suppress_reply` the role-handlers hub-relay path waits up
-      // to 30s for the agent run to complete and surfaces a timeout error
-      // even though the message has already been delivered to the worker.
-      const message = {
-        trace_id: traceId,
-        thread_id: threadIdAttr,
-        actor_id: "service:meridian-roles",
-        intent: "run",
-        target: threadIdAttr,
-        priority: 5,
-        mode: "bridge",
-        suppress_reply: true,
-        reply_channel: { channel: "web", chat_id: "service:meridian-roles" },
-        payload: { content, attachments: [] }
-      };
-      await fetchJson(options.hubRelayUrl(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(message)
+      const result = await sendDirectHubMessage({
+        hubRelayUrl: options.hubRelayUrl,
+        threadId: threadIdAttr,
+        content
       });
       textarea.value = "";
+      const entries = appendDirectTalkTranscript(options.directTalkTranscripts, talkKey, {
+        sentAt,
+        targetLabel: formatOwnerKindLabel(detailKind),
+        targetThread: threadIdAttr,
+        request: content,
+        reply: result
+      });
+      renderDirectTalkTranscriptContainer(transcriptEl, entries);
       if (localFeedback) {
-        localFeedback.textContent = "Sent.";
+        localFeedback.textContent = "Reply received.";
       }
-      setFeedback(`Message delivered to ${detailKind} thread ${threadIdAttr}.`);
-      if (typeof options.afterAction === "function") {
-        await options.afterAction();
-      }
+      setFeedback(`Reply received from ${detailKind} thread ${threadIdAttr}.`);
     } catch (error) {
       const msg = getErrorMessage(error);
+      const entries = appendDirectTalkTranscript(options.directTalkTranscripts, talkKey, {
+        sentAt,
+        targetLabel: formatOwnerKindLabel(detailKind),
+        targetThread: threadIdAttr,
+        request: content,
+        error: msg
+      });
+      renderDirectTalkTranscriptContainer(transcriptEl, entries);
       if (localFeedback) {
         localFeedback.textContent = msg;
       }
@@ -1673,6 +1670,118 @@ function bindDispatchDetailActions(rootEl, feedbackEl, options) {
       }
     }
   });
+}
+
+async function sendDirectHubMessage({ hubRelayUrl, threadId, content }) {
+  const message = {
+    trace_id: createHubTraceId(),
+    thread_id: threadId,
+    actor_id: "service:meridian-roles",
+    intent: "run",
+    target: threadId,
+    priority: 5,
+    mode: "bridge",
+    reply_channel: { channel: "web", chat_id: "service:meridian-roles" },
+    payload: { content, attachments: [] }
+  };
+
+  return fetchJson(hubRelayUrl(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(message)
+  });
+}
+
+function createHubTraceId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  const hex = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0");
+  const variant = (8 + Math.floor(Math.random() * 4)).toString(16);
+  return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-${variant}${hex().slice(1)}-${hex()}${hex()}${hex()}`;
+}
+
+function appendDirectTalkTranscript(transcripts, key, entry) {
+  if (!transcripts || !key) {
+    return [entry];
+  }
+
+  const entries = transcripts.get(key) ?? [];
+  const nextEntries = [...entries, entry].slice(-6);
+  transcripts.set(key, nextEntries);
+  return nextEntries;
+}
+
+function hydrateDirectTalkTranscripts(rootEl, transcripts) {
+  if (!rootEl || !transcripts) {
+    return;
+  }
+
+  rootEl.querySelectorAll("[data-talk-transcript][data-talk-key]").forEach((container) => {
+    const key = container.getAttribute("data-talk-key");
+    renderDirectTalkTranscriptContainer(container, key ? transcripts.get(key) ?? [] : []);
+  });
+}
+
+function renderDirectTalkTranscriptContainer(container, entries) {
+  if (!container) {
+    return;
+  }
+
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  container.hidden = safeEntries.length === 0;
+  container.innerHTML = safeEntries.length > 0
+    ? safeEntries.map(renderDirectTalkTranscriptEntry).join("")
+    : "";
+}
+
+function renderDirectTalkTranscriptEntry(entry) {
+  const sentAt = formatTimestamp(entry.sentAt);
+  const targetLabel = entry.targetLabel || "thread";
+  const targetThread = entry.targetThread || "---";
+  const status = entry.error
+    ? "error"
+    : [entry.reply?.status, entry.reply?.run_state].filter(Boolean).join(" / ") || "reply";
+  const replyLabel = entry.error ? "No Reply Captured" : "Reply";
+  const replyContent = entry.error
+    ? entry.error
+    : formatDirectTalkReplyContent(entry.reply);
+
+  return `
+    <article class="dispatch-direct-reply ${entry.error ? "dispatch-direct-reply-error" : ""}">
+      <div class="dispatch-direct-reply-meta">
+        <span>${escapeHtml(targetLabel)} <code>${escapeHtml(targetThread)}</code></span>
+        <span>${escapeHtml(sentAt)} / ${escapeHtml(status)}</span>
+      </div>
+      <div class="dispatch-direct-reply-grid">
+        <div class="dispatch-direct-message">
+          <p>You</p>
+          <pre>${escapeHtml(entry.request || "")}</pre>
+        </div>
+        <div class="dispatch-direct-message">
+          <p>${escapeHtml(replyLabel)}</p>
+          <pre>${escapeHtml(replyContent)}</pre>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function formatDirectTalkReplyContent(reply) {
+  if (!reply) {
+    return "Reply returned without content.";
+  }
+
+  const content = normalizeText(reply.content);
+  if (content) {
+    return content;
+  }
+
+  return [
+    normalizeText(reply.summary_text),
+    normalizeText(reply.details_text)
+  ].filter(Boolean).join("\n\n") || "Reply returned without content.";
 }
 
 function renderSchedulerDispatchProgress(data) {
@@ -2485,6 +2594,8 @@ async function setupRoleDetail() {
   const dispatcherTalkForm = document.getElementById("agent-dispatcher-talk-form");
   const dispatcherTalkInput = document.getElementById("agent-dispatcher-talk-input");
   const dispatcherTalkFeedback = document.getElementById("agent-dispatcher-talk-feedback");
+  const dispatcherTalkTarget = document.getElementById("agent-dispatcher-talk-target");
+  const dispatcherTalkReplies = document.getElementById("agent-dispatcher-talk-replies");
 
   if (!title || !subtitle || !summary || !tasks || !empty || !promptsLink || !configLink) {
     return;
@@ -2496,6 +2607,8 @@ async function setupRoleDetail() {
   let deactivateBound = false;
   let dispatcherTalkBound = false;
   let dispatchPlanActionsBound = false;
+  const directTalkTranscripts = new Map();
+  const dispatcherTalkKey = `dispatcher:${threadId}`;
 
   const defaultEmptyMessage = empty.textContent;
   bindLocationNavigation(dashboardLink);
@@ -2519,6 +2632,8 @@ async function setupRoleDetail() {
     }
 
     const isAgentDispatcher = detail.role_type === "agent-dispatcher";
+    document.body.classList.toggle("role-detail-agent-dispatcher", isAgentDispatcher);
+    summary.classList.toggle("role-summary-dispatcher", isAgentDispatcher);
 
     title.textContent = detail.thread_id;
     subtitle.textContent = isAgentDispatcher
@@ -2671,13 +2786,22 @@ async function setupRoleDetail() {
 
       // Reply-to-dispatcher talk-box: show whenever the dispatcher has a
       // recorded thread id (including paused). The Hub will queue the
-      // message via /api/hub-relay; if the thread is dead the queue accepts
-      // but the agent never replies — that's an audit-trail outcome, not
-      // an error condition we can surface synchronously with suppress_reply.
+      // message via /api/hub-relay and the GUI keeps a local transcript of
+      // the synchronous Hub reply when one arrives.
       const dispatcherThreadId = (detail.dispatcher_thread_id || "").trim();
       if (dispatcherTalkbox) {
         dispatcherTalkbox.hidden = dispatcherThreadId.length === 0;
       }
+      if (dispatcherTalkTarget) {
+        dispatcherTalkTarget.textContent = dispatcherThreadId || "pending";
+      }
+      if (dispatcherTalkForm) {
+        dispatcherTalkForm.setAttribute("data-talk-key", dispatcherTalkKey);
+      }
+      renderDirectTalkTranscriptContainer(
+        dispatcherTalkReplies,
+        directTalkTranscripts.get(dispatcherTalkKey) ?? []
+      );
       if (!dispatcherTalkBound && dispatcherTalkForm && dispatcherTalkInput) {
         dispatcherTalkBound = true;
         dispatcherTalkForm.addEventListener("submit", async (event) => {
@@ -2701,36 +2825,39 @@ async function setupRoleDetail() {
             submitBtn.disabled = true;
           }
           if (dispatcherTalkFeedback) {
-            dispatcherTalkFeedback.textContent = `Sending to ${targetThread}...`;
+            dispatcherTalkFeedback.textContent = `Waiting for reply from ${targetThread}...`;
           }
+          const sentAt = new Date().toISOString();
           try {
-            const traceId = (typeof crypto !== "undefined" && crypto.randomUUID)
-              ? crypto.randomUUID()
-              : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            const message = {
-              trace_id: traceId,
-              thread_id: targetThread,
-              actor_id: "service:meridian-roles",
-              intent: "run",
-              target: targetThread,
-              priority: 5,
-              mode: "bridge",
-              suppress_reply: true,
-              reply_channel: { channel: "web", chat_id: "service:meridian-roles" },
-              payload: { content, attachments: [] }
-            };
-            await fetchJson("/api/hub-relay", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(message)
+            const result = await sendDirectHubMessage({
+              hubRelayUrl: () => "/api/hub-relay",
+              threadId: targetThread,
+              content
             });
             dispatcherTalkInput.value = "";
+            const entries = appendDirectTalkTranscript(directTalkTranscripts, dispatcherTalkKey, {
+              sentAt,
+              targetLabel: "dispatcher",
+              targetThread,
+              request: content,
+              reply: result
+            });
+            renderDirectTalkTranscriptContainer(dispatcherTalkReplies, entries);
             if (dispatcherTalkFeedback) {
-              dispatcherTalkFeedback.textContent = `Sent to ${targetThread}.`;
+              dispatcherTalkFeedback.textContent = `Reply received from ${targetThread}.`;
             }
           } catch (error) {
+            const message = getErrorMessage(error);
+            const entries = appendDirectTalkTranscript(directTalkTranscripts, dispatcherTalkKey, {
+              sentAt,
+              targetLabel: "dispatcher",
+              targetThread,
+              request: content,
+              error: message
+            });
+            renderDirectTalkTranscriptContainer(dispatcherTalkReplies, entries);
             if (dispatcherTalkFeedback) {
-              dispatcherTalkFeedback.textContent = getErrorMessage(error);
+              dispatcherTalkFeedback.textContent = message;
             }
           } finally {
             if (submitBtn instanceof HTMLButtonElement) {
@@ -2753,6 +2880,7 @@ async function setupRoleDetail() {
           humanResolveUrl: (workerId) =>
             `/api/roles/${encodeURIComponent(threadId)}/worker/${encodeURIComponent(workerId)}/human-resolve`,
           hubRelayUrl: () => `/api/hub-relay`,
+          directTalkTranscripts,
           afterAction: async () => { await render(); }
         });
         dispatchPlanBody.addEventListener("click", async (event) => {
@@ -2898,6 +3026,7 @@ async function setupRoleDetail() {
         const dispatchDetails = Array.isArray(detail.dispatch_details) ? detail.dispatch_details : [];
         const renderedPlanRows = renderDispatchPlanRows(rows, dispatchDetails);
         dispatchPlanBody.innerHTML = renderedPlanRows;
+        hydrateDirectTalkTranscripts(dispatchPlanBody, directTalkTranscripts);
         dispatchPlanEmpty.hidden = renderedPlanRows.length > 0;
         dispatchPlanTableShell.hidden = renderedPlanRows.length === 0;
       }
@@ -3586,6 +3715,8 @@ function renderDispatchDetailActions({ taskId, threadId, detailKind, showHumanRe
   const taskAttr = escapeHtml(taskId || "");
   const threadAttr = escapeHtml(threadId || "");
   const kindAttr = escapeHtml(detailKind || "worker");
+  const talkKey = [detailKind || "worker", threadId || "", taskId || ""].join(":");
+  const talkKeyAttr = escapeHtml(talkKey);
   const humanResolveBtn = showHumanResolve && taskId
     ? `<button type="button" class="ghost-button dispatch-detail-action-button"
         data-detail-action="human-resolve"
@@ -3598,7 +3729,8 @@ function renderDispatchDetailActions({ taskId, threadId, detailKind, showHumanRe
     ? `<form class="dispatch-detail-talk" data-detail-action="talk"
         data-detail-thread-id="${threadAttr}"
         data-detail-kind="${kindAttr}"
-        data-detail-worker-id="${taskAttr}">
+        data-detail-worker-id="${taskAttr}"
+        data-talk-key="${talkKeyAttr}">
         <label class="dispatch-detail-talk-label" for="dispatch-detail-talk-${taskAttr}">
           Talk directly to ${kindAttr}
         </label>
@@ -3609,6 +3741,7 @@ function renderDispatchDetailActions({ taskId, threadId, detailKind, showHumanRe
           <button type="submit" class="ghost-button dispatch-detail-action-button">Send</button>
           <span class="dispatch-detail-talk-status" data-talk-feedback></span>
         </div>
+        <div class="dispatch-direct-replies" data-talk-transcript data-talk-key="${talkKeyAttr}" hidden></div>
       </form>`
     : "";
   if (!humanResolveBtn && !talkForm) {
