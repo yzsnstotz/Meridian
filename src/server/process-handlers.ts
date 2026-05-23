@@ -6,13 +6,18 @@ import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import type { Logger } from "../roles/base-role";
 import type { StateStore } from "../state-store";
 import { TokenUsageCollector, type TokenUsage } from "./token-usage";
-import { AgentDispatcherConfigSchema, type DispatchThreadStateV2, type AppState } from "../types";
+import { AgentDispatcherConfigSchema, type AgentInstance, type DispatchThreadStateV2, type AppState } from "../types";
 
 export interface ProcessHandlersOptions {
   stateStore: Pick<StateStore, "load">;
   log?: Logger;
   // Test seam — defaults to `ps -A -o pid,ppid,etime,command`.
   listProcesses?: () => ProcInfo[];
+  // Optional: full Hub instance registry. Streaming bridge instances are
+  // registered as pid/socket_path null while idle between turns, so this is
+  // the only source that can keep those alive threads visible in the Processes
+  // tab when no OS child is currently running.
+  fetchAgentapiInstances?: () => Promise<AgentInstance[]>;
   // Optional: when Meridian Hub spawns agentapi via TCP port (the host kernel
   // doesn't support --socket), the agentapi argv has no /tmp/agentapi-<id>.sock
   // marker. Hub-direct `codex exec` validator/PM calls also have no agentapi
@@ -50,10 +55,10 @@ export interface ProcInfo {
 export type ProcessOrigin = "managed" | "external" | "orphan";
 
 export interface ProcessSnapshotEntry {
-  pid: number;
-  ppid: number;
+  pid: number | null;
+  ppid: number | null;
   etime: string;
-  agent_type: "agentapi" | "codex" | "claude" | null;
+  agent_type: "agentapi" | AgentInstance["agent_type"] | null;
   thread_id: string | null;
   origin: ProcessOrigin;
   binding: BindingSnapshot | null;
@@ -102,6 +107,11 @@ const LIVE_WORKER_STATUSES = new Set<string>([
   "awaiting_validation",
   "fix_requested",
   "blocked"
+]);
+const LIVE_HUB_INSTANCE_STATUSES = new Set<AgentInstance["status"]>([
+  "idle",
+  "running",
+  "waiting"
 ]);
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 
@@ -164,11 +174,26 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
     const candidates = procs.filter((p) => isAgentShaped(p.command));
     const index = await buildThreadIndex(options.stateStore, log);
 
-    // Build the pid → thread_id map ONCE per request from the Hub instance
-    // registry (when wired). Used as the TCP-port fallback for agentapi
-    // processes whose argv lacks the canonical socket marker.
+    // Build the Hub instance view ONCE per request (when wired). The full list
+    // supplies two things:
+    //   1. pid → thread_id fallback for TCP-port agentapi / Hub-direct calls.
+    //   2. synthetic rows for lifecycle-bound bridge threads that are alive in
+    //      Hub but currently have no OS child process.
+    let hubInstances: AgentInstance[] = [];
     let pidToThreadId: Map<number, string> | null = null;
-    if (options.fetchAgentapiInstanceIndex) {
+    if (options.fetchAgentapiInstances) {
+      try {
+        hubInstances = await options.fetchAgentapiInstances();
+        pidToThreadId = buildPidToThreadIdFromInstances(hubInstances);
+      } catch (error) {
+        log.debug?.("processes: fetchAgentapiInstances failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        hubInstances = [];
+        pidToThreadId = null;
+      }
+    }
+    if (!pidToThreadId && options.fetchAgentapiInstanceIndex) {
       try {
         pidToThreadId = await options.fetchAgentapiInstanceIndex();
       } catch (error) {
@@ -358,6 +383,8 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       allowSingletonFallback: false
     });
 
+    appendHubInstanceOnlyRows(entries, hubInstances, index);
+
     // Token-attribution dedupe: claude resolves via cwd + birthtime match, so
     // a Hub-direct `claude --print` started near the same time in the same
     // cwd as a bound agentapi-managed claude often resolves to the SAME
@@ -389,7 +416,9 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
         e.is_leak ? 0 : e.origin === "managed" ? 1 : 2;
       const diff = order(a) - order(b);
       if (diff !== 0) return diff;
-      return a.pid - b.pid;
+      const pidDiff = processSortPid(a) - processSortPid(b);
+      if (pidDiff !== 0) return pidDiff;
+      return (a.thread_id ?? "").localeCompare(b.thread_id ?? "");
     });
   }
 
@@ -402,7 +431,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
       try {
         const snapshot = await buildSnapshot();
         if (tokenUsageCollector) {
-          tokenUsageCollector.retain(new Set(snapshot.map((e) => e.pid)));
+          tokenUsageCollector.retain(new Set(snapshot.map((e) => e.pid).filter((pid): pid is number => pid !== null)));
         }
         const managed = snapshot.filter((e) => e.origin === "managed");
         const external = snapshot.filter((e) => e.origin === "external");
@@ -499,6 +528,10 @@ function summarizeTokenUsage(entries: ProcessSnapshotEntry[]): TokenTotals {
     totals.total_tokens += u.total_tokens;
   }
   return totals;
+}
+
+function processSortPid(entry: ProcessSnapshotEntry): number {
+  return entry.pid ?? Number.MAX_SAFE_INTEGER;
 }
 
 function isAgentShaped(command: string): boolean {
@@ -650,6 +683,75 @@ function resolveThreadIdFromPidMappedAncestor(
     cursor = parent;
   }
   return null;
+}
+
+function buildPidToThreadIdFromInstances(instances: AgentInstance[]): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const inst of instances) {
+    if (typeof inst.pid === "number" && inst.pid > 0 && inst.thread_id) {
+      map.set(inst.pid, inst.thread_id);
+    }
+  }
+  return map;
+}
+
+function appendHubInstanceOnlyRows(
+  entries: ProcessSnapshotEntry[],
+  hubInstances: AgentInstance[],
+  index: Map<string, BindingSnapshot>
+): void {
+  if (hubInstances.length === 0) {
+    return;
+  }
+
+  const seenThreadIds = new Set(
+    entries
+      .map((entry) => entry.thread_id)
+      .filter((threadId): threadId is string => typeof threadId === "string" && threadId.trim().length > 0)
+  );
+
+  for (const inst of hubInstances) {
+    const threadId = inst.thread_id?.trim();
+    if (!threadId || seenThreadIds.has(threadId)) {
+      continue;
+    }
+    if (!LIVE_HUB_INSTANCE_STATUSES.has(inst.status)) {
+      continue;
+    }
+
+    const binding = index.get(threadId) ?? null;
+    if (!binding) {
+      continue;
+    }
+
+    entries.push({
+      pid: null,
+      ppid: null,
+      etime: "",
+      agent_type: inst.agent_type,
+      thread_id: threadId,
+      origin: "managed",
+      binding,
+      is_leak: false,
+      command: formatHubInstanceCommand(inst),
+      token_usage: null
+    });
+    seenThreadIds.add(threadId);
+  }
+}
+
+function formatHubInstanceCommand(inst: AgentInstance): string {
+  const parts = [
+    "meridian-hub instance",
+    `mode=${inst.mode}`,
+    `status=${inst.status}`,
+    `pid=${inst.pid ?? "null"}`,
+    `socket=${inst.socket_path ?? "null"}`
+  ];
+  if (inst.model_id) {
+    parts.push(`model=${inst.model_id}`);
+  }
+  return parts.join(" ");
 }
 
 async function buildThreadIndex(
@@ -1014,6 +1116,9 @@ function bindUnboundCodexExecOwners(
     };
     root.binding = binding;
     root.thread_id = chosen.thread_id;
+    if (root.pid === null) {
+      continue;
+    }
     for (const descendant of descendantsOf(root.pid, entries)) {
       descendant.binding = binding;
       descendant.thread_id = chosen.thread_id;
@@ -1032,6 +1137,7 @@ function collectUnboundCodexExecRoots(
     if (entry.thread_id !== null) continue;
     if (entry.agent_type !== "codex") continue;
     if (!CODEX_EXEC_JSON_PATTERN.test(entry.command)) continue;
+    if (entry.ppid === null) continue;
     // Root = whichever PID's parent is not also a `codex exec --json`
     // process. The native binary's parent is the node shim, so the shim is
     // the root and descendants inherit the synthesized binding.
@@ -1049,6 +1155,7 @@ function descendantsOf(rootPid: number, entries: ProcessSnapshotEntry[]): Proces
   while (stack.length > 0) {
     const here = stack.pop()!;
     for (const entry of entries) {
+      if (entry.pid === null || entry.ppid === null) continue;
       if (seen.has(entry.pid)) continue;
       if (entry.ppid !== here) continue;
       if (entry.origin !== "managed") continue;
