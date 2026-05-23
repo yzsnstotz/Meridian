@@ -25,17 +25,54 @@ export interface DispatchContinuationWorkerRow {
   notes?: string | null;
 }
 
+export interface ResolveEligibleServiceContinueWorkersOptions {
+  limit?: number;
+}
+
 export function resolveServiceContinueWorker(
   rows: DispatchContinuationPlanRow[],
   lifecycleState: DispatchThreadStateV2
 ): string | null {
+  return resolveEligibleServiceContinueWorkers(rows, lifecycleState, { limit: 1 })[0] ?? null;
+}
+
+export function resolveEligibleServiceContinueWorkers(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2,
+  options: ResolveEligibleServiceContinueWorkersOptions = {}
+): string[] {
+  const limit = options.limit && options.limit > 0
+    ? Math.floor(options.limit)
+    : Number.POSITIVE_INFINITY;
   const preflightGateWorker = resolvePreflightGateWorker(rows, lifecycleState);
   if (preflightGateWorker !== undefined) {
-    return preflightGateWorker;
+    return preflightGateWorker ? [preflightGateWorker].slice(0, limit) : [];
   }
 
-  return resolveImplicitContinueWorker(rows, lifecycleState)
-    ?? resolveFirstEligibleContinueWorker(rows, lifecycleState);
+  const implicitWorker = resolveImplicitContinueWorker(rows, lifecycleState);
+  if (implicitWorker) {
+    return [implicitWorker].slice(0, limit);
+  }
+
+  const rowsByWorker = indexRowsByWorker(rows);
+  const eligibleWorkers: string[] = [];
+  for (const row of rows) {
+    if (!isEligibleServiceContinueRow(row, rows, rowsByWorker, lifecycleState)) {
+      continue;
+    }
+
+    const workerId = row.worker.trim();
+    if (workerId.length === 0) {
+      continue;
+    }
+
+    eligibleWorkers.push(workerId);
+    if (eligibleWorkers.length >= limit) {
+      break;
+    }
+  }
+
+  return eligibleWorkers;
 }
 
 export function resolveManualInterventionWorker(
@@ -337,19 +374,6 @@ function resolvePreflightGateWorker(
   return preflightRow.status.trim() === "🔄" && isImplicitContinueRow(preflightRow, lifecycleState)
     ? preflightRow.worker.trim()
     : null;
-}
-
-function resolveFirstEligibleContinueWorker(
-  rows: DispatchContinuationPlanRow[],
-  lifecycleState: DispatchThreadStateV2
-): string | null {
-  const rowsByWorker = indexRowsByWorker(rows);
-  const eligibleWorkers = rows
-    .filter((row) => isEligibleServiceContinueRow(row, rows, rowsByWorker, lifecycleState))
-    .map((row) => row.worker.trim())
-    .filter((workerId) => workerId.length > 0);
-
-  return eligibleWorkers[0] ?? null;
 }
 
 function isEligibleServiceContinueRow(

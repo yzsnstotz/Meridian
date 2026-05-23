@@ -17,7 +17,8 @@ describe("buildSystemPrompt", () => {
       kill_policy: "always",
       auto_approve: true,
       resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}",
-      pm_resolver_config_json: "{\"enabled\":true,\"agent_type\":\"codex\",\"mode\":\"bridge\",\"auto_approve\":false}"
+      pm_resolver_config_json: "{\"enabled\":true,\"agent_type\":\"codex\",\"mode\":\"bridge\",\"auto_approve\":false}",
+      parallel_dispatch_config_json: "{\"enabled\":true,\"max_concurrency\":3}"
     };
   }
 
@@ -39,6 +40,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("auto_approve: true");
     expect(prompt).toContain('resolved_model_map_json: {"CODEX":{"provider":"codex","model_id":"gpt-5.4"}}');
     expect(prompt).toContain('pm_resolver_config_json: {"enabled":true,"agent_type":"codex","mode":"bridge","auto_approve":false}');
+    expect(prompt).toContain('parallel_dispatch_config_json: {"enabled":true,"max_concurrency":3}');
   });
 
   it("does not leave template markers in the output", () => {

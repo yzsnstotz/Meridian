@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  resolveEligibleServiceContinueWorkers,
   resolveManualInterventionWorker,
   resolveServiceContinueWorker
 } from "../service-continuation";
@@ -12,6 +13,41 @@ describe("service continuation", () => {
       { status: "⬜", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "-" },
       { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" }
     ], createLifecycleState())).toBe("PRE-FLIGHT");
+  });
+
+  it("returns multiple independent eligible workers for parallel continuation", () => {
+    const rows = [
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "R-02", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "2", worker: "R-03", model: "CODEX", depends_on: "R-01" }
+    ];
+
+    expect(resolveEligibleServiceContinueWorkers(rows, createLifecycleState(), { limit: 3 }))
+      .toEqual(["R-01", "R-02"]);
+    expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBe("R-01");
+  });
+
+  it("limits parallel eligible workers in plan order", () => {
+    const rows = [
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "R-02", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "R-03", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ];
+
+    expect(resolveEligibleServiceContinueWorkers(rows, createLifecycleState(), { limit: 2 }))
+      .toEqual(["R-01", "R-02"]);
+  });
+
+  it("keeps PRE-FLIGHT exclusive in parallel continuation", () => {
+    const rows = [
+      { status: "⬜", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "R-01", model: "CODEX", depends_on: "—" }
+    ];
+
+    expect(resolveEligibleServiceContinueWorkers(rows, createLifecycleState(), { limit: 2 }))
+      .toEqual(["PRE-FLIGHT"]);
   });
 
   it("resolves prefix wildcard dependencies such as all E-XX", () => {
