@@ -45,6 +45,10 @@ export interface ProcInfo {
 //   "managed":  meridian-roles spawned this (either an `agentapi server` or a
 //               codex/claude CLI whose PPID chain leads to an agentapi parent
 //               we can see)
+//   "hub":      Meridian Hub reports this as a live thread, but this
+//               meridian-roles service has no dispatcher lifecycle binding for
+//               it. It may belong to another caller (ADS) or to a roles
+//               dispatcher no longer registered in local state.
 //   "external": agent-shaped process the user is running themselves
 //               (terminal `codex`, interactive `claude`, Claude Code session,
 //               other tools). NOT a leak — just noise the operator can
@@ -52,7 +56,7 @@ export interface ProcInfo {
 //   "orphan":   meridian-roles AGENTAPI is gone but its codex/claude child
 //               survived (the documented active-tool-process.ts:39 pattern).
 //               Treated as a leak because operator needs to clean these up.
-export type ProcessOrigin = "managed" | "external" | "orphan";
+export type ProcessOrigin = "managed" | "hub" | "external" | "orphan";
 
 export interface ProcessSnapshotEntry {
   pid: number | null;
@@ -413,7 +417,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
 
     return entries.sort((a, b) => {
       const order = (e: ProcessSnapshotEntry) =>
-        e.is_leak ? 0 : e.origin === "managed" ? 1 : 2;
+        e.is_leak ? 0 : e.origin === "managed" ? 1 : e.origin === "hub" ? 2 : 3;
       const diff = order(a) - order(b);
       if (diff !== 0) return diff;
       const pidDiff = processSortPid(a) - processSortPid(b);
@@ -434,6 +438,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           tokenUsageCollector.retain(new Set(snapshot.map((e) => e.pid).filter((pid): pid is number => pid !== null)));
         }
         const managed = snapshot.filter((e) => e.origin === "managed");
+        const hub = snapshot.filter((e) => e.origin === "hub");
         const external = snapshot.filter((e) => e.origin === "external");
         const orphan = snapshot.filter((e) => e.origin === "orphan");
         const leak = snapshot.filter((e) => e.is_leak).length;
@@ -450,6 +455,7 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
           // calls (no thread_id) as managed_leak even though is_leak excludes
           // them — the badge and the row indicators contradicted each other.
           managed_leak: managed.filter((e) => e.is_leak).length,
+          hub_managed: hub.length,
           orphan: orphan.length,
           external: external.length,
           leak,
@@ -720,9 +726,6 @@ function appendHubInstanceOnlyRows(
     }
 
     const binding = index.get(threadId) ?? null;
-    if (!binding) {
-      continue;
-    }
 
     entries.push({
       pid: null,
@@ -730,7 +733,7 @@ function appendHubInstanceOnlyRows(
       etime: "",
       agent_type: inst.agent_type,
       thread_id: threadId,
-      origin: "managed",
+      origin: binding ? "managed" : "hub",
       binding,
       is_leak: false,
       command: formatHubInstanceCommand(inst),
