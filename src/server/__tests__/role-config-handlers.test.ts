@@ -1741,6 +1741,270 @@ describe("role config handlers", () => {
     }
   });
 
+  it("reconciles a stale completed running worker before launching a downstream worker", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-reconcile-before-launch-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const reportPath = path.join(tempDir, "reports", "W-02.md");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-m0"
+    }));
+    const sendHubRequest = vi.fn(async (message: HubMessage): Promise<HubResult> => {
+      if (message.intent === "status") {
+        return buildHubStatusResult(message.thread_id, "running");
+      }
+      if (message.intent === "history") {
+        return buildHubHistoryResult(message.thread_id, []);
+      }
+      throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
+    });
+
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 1 | W-01 | Complete first prerequisite | CODEX | — | TaskSpec | done |",
+      "| 🔄 | 1 | W-02 | Complete second prerequisite | CODEX | W-01 | TaskSpec | stale running |",
+      "| ⬜ | 2 | M-0 | Merge completed prerequisites | CODEX-HIGH | W-01, W-02 | TaskSpec | should launch |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(reportPath, [
+      "# W-02 Report",
+      "",
+      "The worker completed its assignment.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: W-02",
+      "role: worker",
+      "outcome: complete",
+      `report_path: ${reportPath}`,
+      "notes: completed before lifecycle callback landed",
+      "<<<END>>>"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-23T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "W-01": buildLifecycleWorker({
+          thread_id: "worker-thread-w01",
+          status: "completed"
+        }),
+        "W-02": buildLifecycleWorker({
+          thread_id: "worker-thread-w02",
+          status: "running",
+          started_at: "2026-05-23T00:00:00.000Z",
+          last_seen_at: "2026-05-23T00:00:00.000Z",
+          expected_outputs: [reportPath]
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        null,
+        sendHubRequest,
+        null,
+        launchDispatchWorker
+      );
+      await createAgentDispatcherRole(
+        harness.roleHandlers,
+        "agent-dispatcher-continue-reconcile-before-launch",
+        dispatchPlanPath
+      );
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-reconcile-before-launch/continue"
+      )).resolves.toMatchObject({
+        ok: true,
+        status: "continued",
+        message: "continued: M-0",
+        worker: "M-0"
+      });
+
+      expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "M-0",
+        dispatchPlanPath
+      }));
+      expect(lifecycleStore.load().workers["W-02"]?.status).toBe("completed");
+      await expect(fs.readFile(dispatchPlanPath, "utf8")).resolves.toContain(
+        "| ✅ | 1 | W-02 | Complete second prerequisite | CODEX | W-01 | TaskSpec | stale running |"
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reconciles a stale completed validation worker before starting its validator", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-reconcile-before-validation-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const reportPath = path.join(tempDir, "reports", "W-03.md");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-should-not-launch"
+    }));
+    const sendHubRequest = vi.fn(async (message: HubMessage): Promise<HubResult> => {
+      if (message.intent === "status") {
+        return buildHubStatusResult(message.thread_id, "running");
+      }
+      if (message.intent === "history") {
+        return buildHubHistoryResult(message.thread_id, []);
+      }
+      throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
+    });
+    const fetchSpy = vi.fn((input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      const url = input instanceof Request
+        ? input.url
+        : input instanceof URL
+          ? input.href
+          : input.toString();
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/spawn") {
+        return Promise.resolve(new Response(JSON.stringify({
+          ok: true,
+          thread_id: "validator-thread-w03"
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }));
+      }
+
+      if (pathname === "/api/run") {
+        return new Promise<Response>(() => undefined);
+      }
+
+      throw new Error(`unexpected Meridian API request: ${pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| 🔄 | 1 | W-03 | Implement validated task | CODEX | — | TaskSpec | stale running |",
+      "| ⬜ | 2 | M-0 | Merge after validation | CODEX-HIGH | W-03 | TaskSpec | must wait |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(reportPath, [
+      "# W-03 Report",
+      "",
+      "The worker completed and emitted a terminal marker.",
+      "",
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: W-03",
+      "role: worker",
+      "outcome: complete",
+      `report_path: ${reportPath}`,
+      "notes: ready for validation",
+      "<<<END>>>"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-23T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "W-03": buildLifecycleWorker({
+          thread_id: "worker-thread-w03",
+          status: "running",
+          started_at: "2026-05-23T00:00:00.000Z",
+          last_seen_at: "2026-05-23T00:00:00.000Z",
+          expected_outputs: [reportPath],
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 3,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        null,
+        sendHubRequest,
+        null,
+        launchDispatchWorker
+      );
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-continue-reconcile-before-validation",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          pass_threshold: 0.85,
+          max_fix_cycles: 3,
+          base_branch: "main"
+        }
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-reconcile-before-validation/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "validation_in_progress",
+        message: "validation started for W-03",
+        worker: "W-03",
+        validation_outcome: "started"
+      });
+
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+      await waitForExpect(() => {
+        expect(lifecycleStore.load().workers["W-03"]).toMatchObject({
+          status: "awaiting_validation",
+          validation: {
+            validator_thread_id: "validator-thread-w03"
+          }
+        });
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("kills orphaned worker threads and restores dispatch files when continue hits a detached run bootstrap failure", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-bootstrap-failure-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -6148,6 +6412,38 @@ function buildHubResult(content: string): HubResult {
     content,
     attachments: [],
     timestamp: "2026-04-03T00:00:00.000Z"
+  };
+}
+
+function buildHubStatusResult(threadId: string, status: string): HubResult {
+  return {
+    trace_id: "trace-status",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    content: JSON.stringify({
+      instance: {
+        thread_id: threadId,
+        status
+      },
+      agent_status: {
+        status
+      }
+    }),
+    attachments: [],
+    timestamp: "2026-05-23T00:30:00.000Z"
+  };
+}
+
+function buildHubHistoryResult(threadId: string, entries: unknown[]): HubResult {
+  return {
+    trace_id: "trace-history",
+    thread_id: threadId,
+    source: "codex",
+    status: "success",
+    content: JSON.stringify(entries),
+    attachments: [],
+    timestamp: "2026-05-23T00:30:00.000Z"
   };
 }
 
