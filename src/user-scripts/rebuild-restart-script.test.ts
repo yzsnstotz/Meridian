@@ -4,6 +4,27 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("user_scripts/rebuild_restart.sh", () => {
+  it("syncs to origin/main before killing, building, and relaunching roles", async () => {
+    const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart.sh"), "utf8");
+
+    expect(script).toContain("sync_origin_main()");
+    expect(script).toContain("git fetch origin main --prune");
+    expect(script).toContain("git merge --ff-only FETCH_HEAD");
+    expect(script).toContain("MERIDIAN_ROLES_REBUILD_ORIGIN_MAIN_SYNCED=1");
+    expect(script).toContain('exec "${ROOT_DIR}/user_scripts/rebuild_restart.sh"');
+    expect(script).toContain('sync_origin_main "$@"');
+
+    const syncIndex = script.indexOf('sync_origin_main "$@"');
+    const killIndex = script.indexOf('kill_runtime_service "meridian-roles"');
+    const buildIndex = script.indexOf('echo "Building meridian-roles..."');
+    const startIndex = script.indexOf('echo "Starting meridian-roles in background..."');
+
+    expect(syncIndex).toBeGreaterThanOrEqual(0);
+    expect(syncIndex).toBeLessThan(killIndex);
+    expect(killIndex).toBeLessThan(buildIndex);
+    expect(buildIndex).toBeLessThan(startIndex);
+  });
+
   it("exports and health-checks the Meridian Hub socket before declaring roles healthy", async () => {
     const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart.sh"), "utf8");
 

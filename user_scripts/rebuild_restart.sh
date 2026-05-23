@@ -23,6 +23,59 @@ echo "meridian-roles rebuild_restart: CWD=$(pwd) USER=$(id -un) UID=$(id -u) GID
 echo "meridian-roles rebuild_restart: node=$(command -v node 2>/dev/null || echo MISSING) npm=$(command -v npm 2>/dev/null || echo MISSING)" >&2
 echo "meridian-roles rebuild_restart: node_version=$(node -v 2>/dev/null || echo MISSING) npm_version=$(npm -v 2>/dev/null || echo MISSING)" >&2
 
+sync_origin_main() {
+  if [[ "${MERIDIAN_ROLES_REBUILD_SKIP_GIT_SYNC:-}" == "1" ]]; then
+    echo "meridian-roles rebuild_restart: skipping origin/main sync (MERIDIAN_ROLES_REBUILD_SKIP_GIT_SYNC=1)" >&2
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required to sync origin/main before rebuilding meridian-roles" >&2
+    exit 1
+  fi
+
+  git rev-parse --is-inside-work-tree >/dev/null
+
+  local dirty
+  dirty="$(git status --porcelain --untracked-files=no)"
+  if [[ -n "${dirty}" ]]; then
+    echo "Refusing to rebuild meridian-roles from a tracked-dirty checkout; source must be origin/main." >&2
+    printf '%s\n' "${dirty}" >&2
+    exit 1
+  fi
+
+  local before target after
+  before="$(git rev-parse HEAD)"
+
+  echo "meridian-roles rebuild_restart: fetching origin/main" >&2
+  git fetch origin main --prune
+  target="$(git rev-parse FETCH_HEAD)"
+  git merge --ff-only FETCH_HEAD
+  after="$(git rev-parse HEAD)"
+
+  if [[ "${after}" != "${target}" ]]; then
+    echo "Refusing to rebuild meridian-roles: HEAD ${after} does not match origin/main ${target}" >&2
+    exit 1
+  fi
+
+  dirty="$(git status --porcelain --untracked-files=no)"
+  if [[ -n "${dirty}" ]]; then
+    echo "Refusing to rebuild meridian-roles from a tracked-dirty checkout after origin/main sync." >&2
+    printf '%s\n' "${dirty}" >&2
+    exit 1
+  fi
+
+  if [[ "${before}" != "${after}" && "${MERIDIAN_ROLES_REBUILD_ORIGIN_MAIN_SYNCED:-}" != "1" ]]; then
+    echo "meridian-roles rebuild_restart: checkout updated to origin/main; re-executing rebuild script from the new source" >&2
+    export MERIDIAN_ROLES_REBUILD_ORIGIN_MAIN_SYNCED=1
+    exec "${ROOT_DIR}/user_scripts/rebuild_restart.sh" "$@"
+  fi
+
+  echo "meridian-roles rebuild_restart: source commit $(git rev-parse --short HEAD)" >&2
+}
+
+sync_origin_main "$@"
+
 for env_file in "$ROOT_DIR/.env" "$ROOT_DIR/.env.local"; do
   if [[ -f "$env_file" ]]; then
     set -a
