@@ -31,8 +31,16 @@ export interface StructuredWriteEvent {
   record: unknown;
 }
 
+export interface StructuredDeleteEvent {
+  name: "structured.delete";
+  type: string;
+  key: string;
+}
+
+export type StructuredEvent = StructuredWriteEvent | StructuredDeleteEvent;
+
 export interface StructuredSkillsOptions {
-  onEvent?: (event: StructuredWriteEvent) => void | Promise<void>;
+  onEvent?: (event: StructuredEvent) => void | Promise<void>;
 }
 
 export interface StructuredSkills {
@@ -87,7 +95,15 @@ export function makeStructuredSkills(
     },
 
     async delete(type, key) {
-      return withTypeLock(type, () => deleteStructuredRecord(resolver, type, key));
+      const result = await withTypeLock(type, () => deleteStructuredRecord(resolver, type, key));
+      if (!isStructuredError(result)) {
+        try {
+          await options.onEvent?.({ name: "structured.delete", type, key });
+        } catch {
+          // Event subscribers are downstream side effects; the delete already succeeded.
+        }
+      }
+      return result;
     },
 
     async list(type, filter) {

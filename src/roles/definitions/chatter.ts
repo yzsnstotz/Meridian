@@ -44,7 +44,7 @@ import {
 import {
   makeStructuredSkills,
   registerStructuredSkills,
-  type StructuredWriteEvent,
+  type StructuredEvent,
   type StructuredSkills,
   type StructuredSkillName
 } from "../chatter/skills/structured";
@@ -177,7 +177,9 @@ export class ChatterRole implements BaseRole {
     this.structuredSkills = makeStructuredSkills(this.resolver, {
       onEvent: async (event) => {
         this.enqueueStructuredMemoryCommit(event);
-        await this.triggerEvaluator?.handleStructuredWrite(event);
+        if (event.name === "structured.write") {
+          await this.triggerEvaluator?.handleStructuredWrite(event);
+        }
       }
     });
     this.observationCache = new ObservationCache(this.store, {
@@ -640,9 +642,9 @@ export class ChatterRole implements BaseRole {
     }
   }
 
-  private enqueueStructuredMemoryCommit(event: StructuredWriteEvent): void {
+  private enqueueStructuredMemoryCommit(event: StructuredEvent): void {
     this.enqueueMemoryCommit({
-      eventKind: "structured_write",
+      eventKind: event.name === "structured.delete" ? "structured_delete" : "structured_write",
       recordType: event.type,
       key: event.key
     });
@@ -653,7 +655,9 @@ export class ChatterRole implements BaseRole {
   }
 
   private enqueueMemoryCommit(
-    event: { eventKind: "structured_write"; recordType: string; key: string } | { eventKind: "turn_write" }
+    event:
+      | { eventKind: "structured_write" | "structured_delete"; recordType: string; key: string }
+      | { eventKind: "turn_write" }
   ): void {
     if (!this.memoryGitSyncQueue) {
       return;

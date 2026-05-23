@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -74,6 +74,37 @@ describe("MumuMemoryGitSyncQueue", () => {
     await queue.flush(root);
 
     expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("2");
+  });
+
+  it("commits deletion events as durable git history", async () => {
+    const root = makeRoot();
+    const recordPath = "structured/story_short_drama/s1.json";
+    writeJson(root, recordPath, { id: "s1", title: "One" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    rmSync(path.join(root, recordPath));
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_delete",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("2");
+    expect(git(root, "ls-files")).not.toContain(recordPath);
+    expect(git(root, "show", "--name-status", "--format=", "HEAD")).toContain(`D\t${recordPath}`);
   });
 
   it("excludes raw uploads, binary exports, caches, and files above the threshold", async () => {

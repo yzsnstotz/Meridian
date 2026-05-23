@@ -196,6 +196,26 @@ describe("structured skills", () => {
     });
   });
 
+  it("emits structured.delete after a successful delete", async () => {
+    const onEvent = vi.fn();
+    skills = makeStructuredSkills(resolver, { onEvent });
+    await skills.upsert("story_short_drama", "s1", validStory({
+      id: "s1",
+      title: "Alpha",
+      genre: "rebirth",
+      status: "draft"
+    }));
+    onEvent.mockClear();
+
+    await expect(skills.delete("story_short_drama", "s1")).resolves.toEqual({ deleted: true });
+
+    expect(onEvent).toHaveBeenCalledWith({
+      name: "structured.delete",
+      type: "story_short_drama",
+      key: "s1"
+    });
+  });
+
   it("exports descriptors and a registry helper for structured agent tools", () => {
     expect(STRUCTURED_SKILL_NAMES).toEqual([
       "structured.upsert",

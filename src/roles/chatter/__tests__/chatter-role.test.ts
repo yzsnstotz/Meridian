@@ -330,6 +330,43 @@ describe("ChatterRole — structured agent tools", () => {
     });
     expect(JSON.stringify((archiveQueue.enqueue as ReturnType<typeof vi.fn>).mock.calls[0])).not.toContain("Alpha");
   });
+
+  it("enqueues local archive commits after successful structured deletes", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-structured-role-")));
+    const manifestPath = writeStructuredManifest(root);
+    const { ctx } = makeCtx();
+    const archiveQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const role = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root, {
+        template: undefined,
+        manifest_path: manifestPath,
+        skill_allowlist: ["structured.upsert", "structured.delete"]
+      }),
+      { memoryGitSyncQueue: archiveQueue }
+    ) as AgentToolCallable;
+    await role.onActivate(ctx);
+    await role.handleAgentToolCall("structured.upsert", {
+      type: "story_short_drama",
+      key: "s1",
+      record: { id: "s1", title: "Alpha", status: "draft" }
+    });
+    (archiveQueue.enqueue as ReturnType<typeof vi.fn>).mockClear();
+
+    await role.handleAgentToolCall("structured.delete", {
+      type: "story_short_drama",
+      key: "s1"
+    });
+
+    expect(archiveQueue.enqueue).toHaveBeenCalledWith({
+      memoryRoot: root,
+      userId: path.basename(root),
+      eventKind: "structured_delete",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "chatter"
+    });
+  });
 });
 
 describe("ChatterRole — session-mode memory + stateless behavior", () => {
