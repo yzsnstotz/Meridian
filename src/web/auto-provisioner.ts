@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
 
 import { z } from "zod";
 
@@ -22,6 +23,11 @@ import {
   type ChatterProvisionError,
   type ChatterTurnError
 } from "../roles/chatter/chatter-state-store";
+import {
+  getDefaultMumuMemoryGitSyncQueue,
+  type MumuMemoryGitEventKind,
+  type MumuMemoryGitSyncQueueLike
+} from "../roles/chatter/mumu-memory-git-sync";
 import { AppStateSchema, type AppState, type ChatterRoleConfig } from "../types";
 
 type PersistableStateStore = {
@@ -40,14 +46,35 @@ export interface AutoProvisionerHandlersOptions {
   resolveActiveRole?: (threadId: string) => { roleType?: string; config?: unknown } | null;
   callerAuth?: CallerAuthMiddleware;
   repoRoot?: string;
+  memoryGitSyncQueue?: MumuMemoryGitSyncQueueLike;
 }
 
 type AutoProvisionerRoute =
   | { action: "ensure"; projectId: string; userId: string }
   | { action: "archive"; projectId: string; userId: string }
-  | { action: "get"; projectId: string; userId: string };
+  | { action: "get"; projectId: string; userId: string }
+  | { action: "memory-archive-enqueue"; projectId: string; userId: string };
 
 const EmptyAutoProvisionerBodySchema = z.object({}).strict();
+const ArchiveEnqueueBodySchema = z.object({
+  event_kind: z.enum(["structured_write", "structured_delete", "turn_write", "direct_write", "restore_write"]),
+  repo_root: z.string().min(1).optional(),
+  record_type: z.string().min(1).optional(),
+  key: z.string().min(1).optional()
+}).strict().superRefine((value, ctx) => {
+  if (
+    (value.event_kind === "structured_write"
+      || value.event_kind === "structured_delete"
+      || value.event_kind === "direct_write"
+      || value.event_kind === "restore_write")
+    && (!value.record_type || !value.key)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "record_type and key are required for structured archive events"
+    });
+  }
+});
 const EMPTY_APP_STATE: AppState = { roles: [], promptStore: {} };
 const ensureLocks = new Map<string, Promise<unknown>>();
 
@@ -88,7 +115,9 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
         }
 
         assertCallerMayAccessProject(callerId, route.projectId);
-        validateEmptyBody(request as CallerAuthenticatedRequest);
+        if (route.action !== "memory-archive-enqueue") {
+          validateEmptyBody(request as CallerAuthenticatedRequest);
+        }
 
         switch (route.action) {
           case "ensure":
@@ -106,6 +135,13 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
             writeJson(response, 200, result);
             return true;
           }
+          case "memory-archive-enqueue":
+            writeJson(
+              response,
+              200,
+              await enqueueMemoryArchive(route.projectId, route.userId, request as CallerAuthenticatedRequest)
+            );
+            return true;
         }
       } catch (error) {
         if (error instanceof ForbiddenProjectError) {
@@ -232,6 +268,44 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
     };
   }
 
+  async function enqueueMemoryArchive(
+    projectId: string,
+    userId: string,
+    request: CallerAuthenticatedRequest
+  ): Promise<{ queued: true }> {
+    const rawBody = request.body_bytes ?? Buffer.alloc(0);
+    const parsed = ArchiveEnqueueBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
+    if (!parsed.success) {
+      throw createHttpError(422, "invalid_archive_enqueue_body", {
+        error: "invalid_archive_enqueue_body",
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path,
+          message: issue.message
+        }))
+      });
+    }
+
+    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+    const interpolated = interpolatePolicyForUser(policy, userId);
+    if (
+      parsed.data.repo_root
+      && path.resolve(parsed.data.repo_root) !== path.resolve(interpolated.memory_folder)
+    ) {
+      throw createHttpError(422, "repo_root_mismatch", { error: "repo_root_mismatch" });
+    }
+
+    const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
+    queue.enqueue({
+      memoryRoot: interpolated.memory_folder,
+      userId,
+      eventKind: parsed.data.event_kind as MumuMemoryGitEventKind,
+      source: "ads_direct",
+      ...(parsed.data.record_type ? { recordType: parsed.data.record_type } : {}),
+      ...(parsed.data.key ? { key: parsed.data.key } : {})
+    });
+    return { queued: true };
+  }
+
   async function findChatter(threadId: string): Promise<{ status: string } | null> {
     const activeRole = options.resolveActiveRole?.(threadId);
     if (activeRole?.roleType === "chatter") {
@@ -356,18 +430,31 @@ function matchAutoProvisionerRoute(request: IncomingMessage): AutoProvisionerRou
     .filter(Boolean)
     .map((part) => decodeURIComponent(part));
 
-  if (parts.length !== 6 || parts[0] !== "api" || parts[1] !== "projects" || parts[3] !== "users") {
+  if (
+    (parts.length !== 6 && parts.length !== 7)
+    || parts[0] !== "api"
+    || parts[1] !== "projects"
+    || parts[3] !== "users"
+  ) {
     return null;
   }
 
-  if (method === "POST" && parts[5] === "ensure-chatter") {
+  if (parts.length === 6 && method === "POST" && parts[5] === "ensure-chatter") {
     return { action: "ensure", projectId: parts[2]!, userId: parts[4]! };
   }
-  if (method === "POST" && parts[5] === "archive-chatter") {
+  if (parts.length === 6 && method === "POST" && parts[5] === "archive-chatter") {
     return { action: "archive", projectId: parts[2]!, userId: parts[4]! };
   }
-  if (method === "GET" && parts[5] === "chatter") {
+  if (parts.length === 6 && method === "GET" && parts[5] === "chatter") {
     return { action: "get", projectId: parts[2]!, userId: parts[4]! };
+  }
+  if (
+    parts.length === 7
+    && method === "POST"
+    && parts[5] === "memory-archive"
+    && parts[6] === "enqueue"
+  ) {
+    return { action: "memory-archive-enqueue", projectId: parts[2]!, userId: parts[4]! };
   }
 
   return null;

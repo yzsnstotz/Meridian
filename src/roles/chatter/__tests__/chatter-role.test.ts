@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   mkdtempSync,
   realpathSync,
@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChatterRole } from "../../definitions/chatter";
+import type { MumuMemoryGitSyncQueueLike } from "../mumu-memory-git-sync";
 import type { HubMessage, HubResult, ChatterRoleConfig, ReplyChannel } from "../../../types";
 import type { RoleContext } from "../../base-role";
 
@@ -296,6 +297,76 @@ describe("ChatterRole — structured agent tools", () => {
       role.handleAgentToolCall("structured.get", { type: "story_short_drama", key: "s1" })
     ).resolves.toMatchObject({ error: "denied_skill" });
   });
+
+  it("enqueues local archive commits after successful structured writes without passing record content", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-structured-role-")));
+    const manifestPath = writeStructuredManifest(root);
+    const { ctx } = makeCtx();
+    const archiveQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const role = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root, {
+        template: undefined,
+        manifest_path: manifestPath,
+        skill_allowlist: ["structured.upsert"]
+      }),
+      { memoryGitSyncQueue: archiveQueue }
+    ) as AgentToolCallable;
+    await role.onActivate(ctx);
+
+    await role.handleAgentToolCall("structured.upsert", {
+      type: "story_short_drama",
+      key: "s1",
+      record: { id: "s1", title: "Alpha", status: "draft" }
+    });
+
+    expect(archiveQueue.enqueue).toHaveBeenCalledWith({
+      memoryRoot: root,
+      userId: path.basename(root),
+      eventKind: "structured_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "chatter"
+    });
+    expect(JSON.stringify((archiveQueue.enqueue as ReturnType<typeof vi.fn>).mock.calls[0])).not.toContain("Alpha");
+  });
+
+  it("enqueues local archive commits after successful structured deletes", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-structured-role-")));
+    const manifestPath = writeStructuredManifest(root);
+    const { ctx } = makeCtx();
+    const archiveQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const role = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root, {
+        template: undefined,
+        manifest_path: manifestPath,
+        skill_allowlist: ["structured.upsert", "structured.delete"]
+      }),
+      { memoryGitSyncQueue: archiveQueue }
+    ) as AgentToolCallable;
+    await role.onActivate(ctx);
+    await role.handleAgentToolCall("structured.upsert", {
+      type: "story_short_drama",
+      key: "s1",
+      record: { id: "s1", title: "Alpha", status: "draft" }
+    });
+    (archiveQueue.enqueue as ReturnType<typeof vi.fn>).mockClear();
+
+    await role.handleAgentToolCall("structured.delete", {
+      type: "story_short_drama",
+      key: "s1"
+    });
+
+    expect(archiveQueue.enqueue).toHaveBeenCalledWith({
+      memoryRoot: root,
+      userId: path.basename(root),
+      eventKind: "structured_delete",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "chatter"
+    });
+  });
 });
 
 describe("ChatterRole — session-mode memory + stateless behavior", () => {
@@ -318,6 +389,28 @@ describe("ChatterRole — session-mode memory + stateless behavior", () => {
     expect(existsSync(path.join(root, "turns"))).toBe(true);
     const dateDirs = readdirSync(path.join(root, "turns"));
     expect(dateDirs.length).toBe(1);
+  });
+
+  it("session-mode turn enqueues a local archive commit after the turn log write", async () => {
+    const archiveQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const made = makeCtx();
+    const roleWithArchive = new ChatterRole(
+      "chatter-tenant-a",
+      makeConfig(root),
+      { memoryGitSyncQueue: archiveQueue }
+    );
+    await roleWithArchive.onActivate(made.ctx);
+
+    await roleWithArchive.onInboundResult(
+      makeTurnResult("remember this", { payload: { chatter: { mode: "session" } } })
+    );
+
+    expect(archiveQueue.enqueue).toHaveBeenCalledWith({
+      memoryRoot: root,
+      userId: path.basename(root),
+      eventKind: "turn_write",
+      source: "chatter"
+    });
   });
 
   it("stateless-mode turn does NOT write memory but still spawns", async () => {
