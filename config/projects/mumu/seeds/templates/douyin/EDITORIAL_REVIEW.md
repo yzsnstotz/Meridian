@@ -17,3 +17,12 @@ PM / product owner checklist before BATCH-B-GATE:
 
 These are Codex first drafts for PM F1 editorial review. Editorial may tune wording,
 titles, and beat pacing without changing the `template_douyin` schema.
+
+## PM Resolver Review — 2026-05-24 JST
+
+Status: approved for Phase 2 seed use.
+
+Review notes:
+- All 10 drafts match the PM-approved medium-structured douyin spine: hook, setup, conflict, twist, payoff, CTA, and visual beats.
+- Safety-sensitive drafts keep the required guardrails: no misleading medical/legal/safety claims, no occupational mockery, no victim shaming, no brand dependency, and no unsafe overpromising.
+- No schema or filename changes are required before BATCH-B-GATE.

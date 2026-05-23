@@ -17,3 +17,12 @@ PM / product owner checklist before BATCH-B-GATE:
 
 These are Codex first drafts for PM F1 editorial review. Editorial may tune
 wording, titles, and beat pacing without changing the `template_variety` schema.
+
+## PM Resolver Review — 2026-05-24 JST
+
+Status: approved for Phase 2 seed use.
+
+Review notes:
+- All 10 drafts match the PM-approved variety run-of-show spine: premise, cast roles, segments, recurring bits, and audience hook.
+- Safety-sensitive drafts keep the required guardrails: no unsafe imitation framing, no humiliating competition notes, no medical/legal/financial advice, no unfair commercial claims, and no cultural or occupational caricature.
+- No schema or filename changes are required before BATCH-B-GATE.
