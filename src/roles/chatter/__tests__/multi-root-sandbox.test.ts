@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -8,13 +7,12 @@ import {
   realpathSync,
   writeFileSync
 } from "node:fs";
-import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ChatterRole } from "../../definitions/chatter";
 import type { RoleContext } from "../../base-role";
-import type { ChatterRoleConfig, HubMessage, HubResult, ReplyChannel } from "../../../types";
+import type { ChatterRoleConfig, HubMessage, ReplyChannel } from "../../../types";
 import { loadManifestFromFile } from "../manifest";
 import { DeniedReadOnlyRootError, MemoryResolver } from "../memory-resolver";
 import { makeStructuredSkills } from "../skills/structured";
@@ -83,31 +81,6 @@ function story(id: string, title = id, genre = "seed", status = "draft"): Record
   return { id, title, genre, status };
 }
 
-function makeTurnResult(content: string, overrides: Partial<HubResult> = {}): HubResult {
-  return {
-    trace_id: randomUUID(),
-    thread_id: "chatter-tenant-a",
-    source: "ads",
-    status: "success",
-    content,
-    attachments: [],
-    timestamp: new Date().toISOString(),
-    ...overrides
-  };
-}
-
-async function driveSpawnResponse(role: ChatterRole, spawnMsg: HubMessage, newAgentThreadId: string): Promise<void> {
-  await role.onInboundResult({
-    trace_id: spawnMsg.trace_id,
-    thread_id: newAgentThreadId,
-    source: spawnMsg.target,
-    status: "success",
-    content: `spawned ${newAgentThreadId}`,
-    attachments: [],
-    timestamp: new Date().toISOString()
-  });
-}
-
 function writeStructuredRecord(root: string, key: string, value: unknown): void {
   const dir = path.join(root, "structured", "story_test");
   mkdirSync(dir, { recursive: true });
@@ -115,72 +88,49 @@ function writeStructuredRecord(root: string, key: string, value: unknown): void 
 }
 
 describe("multi-root chatter sandbox", () => {
-  it("keeps Phase 1 project-policy seeds_init copy_on_provision working through a live-manifest chatter turn", async () => {
-    const memoryFolder = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-phase1-memory-")));
-    const seedsSource = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-phase1-seeds-")));
-    await fs.mkdir(path.join(seedsSource, "templates", "short_drama"), { recursive: true });
-    await fs.writeFile(
-      path.join(seedsSource, "templates", "short_drama", "phase1.json"),
-      "{\"id\":\"phase1\"}",
-      "utf8"
-    );
-
+  it("keeps the live mumu project policy aligned with Phase 2 sandbox roots", () => {
     const manifestPath = path.resolve("config/projects/mumu/manifest.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { sandbox_roots?: unknown };
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      record_schemas?: Record<string, unknown>;
+      sandbox_roots?: unknown;
+      system_prompts?: Record<string, unknown>;
+      background_triggers?: Array<{ fires_on?: { record_type?: string } }>;
+    };
     const policy = JSON.parse(readFileSync(path.resolve("config/projects/mumu.json"), "utf8")) as {
       allowed_modes: ChatterRoleConfig["allowed_modes"];
       skill_allowlist: ChatterRoleConfig["skill_allowlist"];
       llm_agent_kind: ChatterRoleConfig["llm_agent_kind"];
       seeds_init?: { mode?: string };
     };
-    expect(manifest.sandbox_roots).toBeUndefined();
-    expect(policy.seeds_init?.mode).toBe("copy_on_provision");
+    const recordTypes = Object.keys(manifest.record_schemas ?? {});
 
-    const sent: HubMessage[] = [];
-    const role = new ChatterRole("chatter-tenant-a", {
-      ...makeConfig(memoryFolder, manifestPath),
-      allowed_modes: policy.allowed_modes,
-      skill_allowlist: policy.skill_allowlist,
-      llm_agent_kind: policy.llm_agent_kind,
-      seeds_init: { mode: "copy_on_provision", source_path: seedsSource }
-    });
-
-    await role.onActivate({
-      ...makeCtx(),
-      sendToHub: async (msg) => {
-        sent.push(msg as HubMessage);
-      }
-    });
-
-    expect(readFileSync(path.join(memoryFolder, "templates", "short_drama", "phase1.json"), "utf8")).toBe(
-      "{\"id\":\"phase1\"}"
-    );
-    expect(existsSync(path.join(memoryFolder, ".seeds_initialized"))).toBe(true);
-
-    await role.onInboundResult(makeTurnResult("hello from Phase 1 shape", {
-      payload: { chatter: { mode: "session", chatter_session_id: "ads-phase1" } }
+    expect(recordTypes).toHaveLength(12);
+    expect(recordTypes).toEqual(expect.arrayContaining([
+      "template_short_drama",
+      "story_short_drama",
+      "style_short_drama",
+      "template_lianxian",
+      "story_lianxian",
+      "style_lianxian",
+      "template_douyin",
+      "story_douyin",
+      "style_douyin",
+      "template_variety",
+      "story_variety",
+      "style_variety"
+    ]));
+    expect(manifest.sandbox_roots).toEqual([
+      { root: "/data/mumu/users/{user_id}", mode: "rw" },
+      { root: "/etc/meridian-roles/projects/mumu/seeds", mode: "ro" }
+    ]);
+    expect(policy.seeds_init?.mode).toBe("none");
+    expect(manifest.system_prompts).toEqual(expect.objectContaining({
+      optimize_from_template: { prompt_path: "seeds/prompts/optimize_from_template.md" },
+      extract_template_from_draft: { prompt_path: "seeds/prompts/extract_template_from_draft.md" }
     }));
-    const spawn = sent.find((msg) => msg.intent === "spawn");
-    expect(spawn).toBeDefined();
-
-    await driveSpawnResponse(role, spawn!, "claude_phase1");
-    const run = sent.find((msg) => msg.intent === "run" && msg.target === "claude_phase1");
-    expect(run?.payload.content).toBe("hello from Phase 1 shape");
-
-    await role.onInboundResult({
-      trace_id: run!.trace_id,
-      thread_id: "claude_phase1",
-      source: "claude",
-      status: "success",
-      content: "phase1 reply",
-      attachments: [],
-      timestamp: new Date().toISOString(),
-      run_state: "completed"
-    });
-    const reply = sent.find(
-      (msg) => msg.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && msg.payload.content === "phase1 reply"
+    expect(manifest.background_triggers?.map((trigger) => trigger.fires_on?.record_type)).toEqual(
+      expect.arrayContaining(["story_short_drama", "story_lianxian", "story_douyin", "story_variety"])
     );
-    expect(reply).toBeDefined();
   });
 
   it("activates a Phase 2 manifest with RW and RO roots without copying seeds", async () => {

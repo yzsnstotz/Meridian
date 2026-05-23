@@ -9,8 +9,10 @@
 
 - `style_observe_after_stories` / `story_short_drama` → 观察 `story_short_drama`，候选补丁写向 `style_short_drama`
 - `style_observe_after_lianxian_stories` / `story_lianxian` → 观察 `story_lianxian`，候选补丁写向 `style_lianxian`
+- `style_observe_after_douyin_stories` / `story_douyin` → 观察 `story_douyin`，候选补丁写向 `style_douyin`
+- `style_observe_after_variety_stories` / `story_variety` → 观察 `story_variety`，候选补丁写向 `style_variety`
 
-不要跨 genre 混写风格档案。短剧偏好和连线口播偏好必须隔离。
+不要跨 genre 混写风格档案。短剧、连线口播、抖音短视频、综艺脚本偏好必须隔离。
 
 ## 你的任务
 
@@ -26,6 +28,8 @@
    - 短剧：反派动机、转折类型、cliff 频率、用户反复删改的表达。
    - 连线：开场钩子风格、共情金句偏好、冲突推进节奏、互动收尾习惯、
      用户明确规避的话题或口吻。
+   - 抖音：开头三秒钩子、节奏密度、字幕口吻、镜头/画面偏好、CTA 偏好。
+   - 综艺：主持人口吻、环节节奏、幽默风格、冲突边界、观众互动、情绪深度。
 4. 只有发现 `user_authored` 和 `agent_observed` 都未覆盖的有意义模式时，
    才调用 `chatter.suggest_observation` 发起候选观察：
    - `type`: `"recurring_motif"` / `"avoided_pattern"` /
@@ -33,7 +37,11 @@
    - `description`: 给用户看的自然语言说明，40-80 字，友善、克制、非命令式。
    - `proposed_patch.record_type`: 必须是当前 genre 对应的 `style_<genre>`。
    - `proposed_patch`: 只能写入 `style_<genre>.agent_observed` 的合法字段。
-     当前可用字段是 `recurring_motifs` 和 `avoided_patterns`；不要新增 schema 外字段。
+     不要新增 schema 外字段。可用字段包括：
+     - `style_short_drama`: `recurring_motifs`, `avoided_patterns`
+     - `style_lianxian`: `recurring_motifs`, `avoided_patterns`
+     - `style_douyin`: `hook_style`, `pacing`, `caption_style`, `language_style`, `visual_style`, `cta_preference`
+     - `style_variety`: `host_voice`, `pacing`, `humor_style`, `conflict_boundary`, `audience_interaction`, `emotional_depth`
 
 ## 严格规则
 

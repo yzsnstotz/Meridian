@@ -34,6 +34,43 @@ describe("runValidateManifestCli", () => {
     expect(io.stdout()).toContain("read_only_allowlist=3");
   });
 
+  it("validates genre-named template seed directories against template record schemas", async () => {
+    const seedsRoot = mkdtempSync(path.join(tmpdir(), "validate-genre-seeds-"));
+    const seedDir = path.join(seedsRoot, "templates", "short_drama");
+    mkdirSync(seedDir, { recursive: true });
+    writeFileSync(path.join(seedDir, "rebirth.json"), JSON.stringify({
+      id: "rebirth",
+      title: "Rebirth Contract",
+      episode_count: 12
+    }));
+    const io = createIo();
+
+    const exitCode = await runValidateManifestCli([
+      "validate-manifest",
+      VALID_MANIFEST,
+      seedsRoot
+    ], io.streams);
+
+    expect(exitCode).toBe(0);
+    expect(io.stderr()).toBe("");
+    expect(io.stdout()).toContain("seed_files=1");
+  });
+
+  it("resolves explicit relative seeds paths from the current working directory", async () => {
+    const cwdRelativeSeeds = path.relative(process.cwd(), VALID_SEEDS);
+    const io = createIo();
+
+    const exitCode = await runValidateManifestCli([
+      "validate-manifest",
+      VALID_MANIFEST,
+      cwdRelativeSeeds
+    ], io.streams);
+
+    expect(exitCode).toBe(0);
+    expect(io.stderr()).toBe("");
+    expect(io.stdout()).toContain("seed_files=1");
+  });
+
   it("returns non-zero for a background trigger record reference and cites the field path", async () => {
     const io = createIo();
 
