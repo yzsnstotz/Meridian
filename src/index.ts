@@ -1424,6 +1424,7 @@ export async function tryContinueDispatchWorker(
 
 function isActiveContinuationStatus(status: ContinueDispatcherResponse["status"]): boolean {
   return status === "continued"
+    || status === "continued_parallel"
     || status === "validation_in_progress"
     || status === "validation_feedback_delivered";
 }

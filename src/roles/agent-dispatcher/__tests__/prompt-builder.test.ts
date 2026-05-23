@@ -78,6 +78,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("`⚠️ ABANDONED` first, then retryable `❌`, then `⬜` rows");
     expect(prompt).toContain("send the final completion notify and stop");
     expect(prompt).toContain("status: \"continued\"");
+    expect(prompt).toContain("status: \"continued_parallel\"");
     expect(prompt).toContain("status: \"still_blocked\"");
     expect(prompt).toContain("status: \"manual_intervention_required\"");
     expect(prompt).toContain("status: \"local_tool_bootstrap_failed\"");

@@ -92,6 +92,71 @@ describe("watchdog direct dispatcher recovery", () => {
 
     expect(continueDispatcher).toHaveBeenCalledWith("agent-dispatcher-validation-recovery", "N-05");
   });
+
+  it("treats parallel continuation as active watchdog progress", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-watchdog-parallel-"));
+    tempDirs.push(tempDir);
+
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(tempDir, "state.json"));
+    await stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-parallel-watchdog",
+          roleType: "agent-dispatcher",
+          status: "needs_reactivation",
+          config: {
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: path.join(tempDir, "dispatch_command.md"),
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:ops"
+              }
+            ],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            parallel_dispatch: {
+              enabled: true,
+              max_concurrency: 2
+            }
+          }
+        }
+      ],
+      promptStore: {}
+    });
+
+    const continueDispatcher = vi.fn<WatchdogContinueDispatcher>().mockResolvedValue({
+      ok: true,
+      status: "continued_parallel",
+      message: "continued parallel: R-01, R-02",
+      started_workers: ["R-01", "R-02"]
+    });
+
+    await expect(
+      tryContinueDispatchWorker(
+        stateStore,
+        dispatchPlanPath,
+        "R-01",
+        continueDispatcher,
+        silentLog()
+      )
+    ).resolves.toEqual({
+      status: "continued_parallel",
+      workerId: "R-01",
+      message: "continued parallel: R-01, R-02"
+    });
+
+    await expect(stateStore.load()).resolves.toMatchObject({
+      roles: [
+        {
+          threadId: "agent-dispatcher-parallel-watchdog",
+          status: "active"
+        }
+      ]
+    });
+  });
 });
 
 describe("watchdog PM resolver repeat guard", () => {
