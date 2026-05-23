@@ -11,6 +11,66 @@ log() {
   printf '[rebuild_restart] %s\n' "$1"
 }
 
+sync_origin_main() {
+  if [[ "${MERIDIAN_REBUILD_SKIP_GIT_SYNC:-}" == "1" ]]; then
+    log "Skipping origin/main sync (MERIDIAN_REBUILD_SKIP_GIT_SYNC=1)"
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required to sync origin/main before rebuild" >&2
+    exit 1
+  fi
+
+  (
+    cd "${ROOT_DIR}"
+    git rev-parse --is-inside-work-tree >/dev/null
+  )
+
+  local dirty
+  dirty="$(cd "${ROOT_DIR}" && git status --porcelain --untracked-files=no)"
+  if [[ -n "${dirty}" ]]; then
+    echo "Refusing to rebuild Meridian from a tracked-dirty checkout; source must be origin/main." >&2
+    printf '%s\n' "${dirty}" >&2
+    exit 1
+  fi
+
+  local before target after
+  before="$(cd "${ROOT_DIR}" && git rev-parse HEAD)"
+
+  log "Fetching origin/main"
+  (
+    cd "${ROOT_DIR}"
+    git fetch origin main --prune
+    target="$(git rev-parse FETCH_HEAD)"
+    git merge --ff-only FETCH_HEAD
+    after="$(git rev-parse HEAD)"
+
+    if [[ "${after}" != "${target}" ]]; then
+      echo "Refusing to rebuild Meridian: HEAD ${after} does not match origin/main ${target}" >&2
+      exit 1
+    fi
+  )
+
+  after="$(cd "${ROOT_DIR}" && git rev-parse HEAD)"
+  dirty="$(cd "${ROOT_DIR}" && git status --porcelain --untracked-files=no)"
+  if [[ -n "${dirty}" ]]; then
+    echo "Refusing to rebuild Meridian from a tracked-dirty checkout after origin/main sync." >&2
+    printf '%s\n' "${dirty}" >&2
+    exit 1
+  fi
+
+  if [[ "${before}" != "${after}" && "${MERIDIAN_REBUILD_ORIGIN_MAIN_SYNCED:-}" != "1" ]]; then
+    log "Checkout updated to origin/main; re-executing rebuild script from the new source"
+    export MERIDIAN_REBUILD_ORIGIN_MAIN_SYNCED=1
+    exec "${ROOT_DIR}/user_scripts/rebuild_restart.sh" "$@"
+  fi
+
+  log "Source commit: $(cd "${ROOT_DIR}" && git rev-parse --short HEAD)"
+}
+
+sync_origin_main "$@"
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required" >&2
   exit 1
