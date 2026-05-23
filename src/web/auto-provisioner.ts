@@ -26,6 +26,7 @@ import {
 import {
   getDefaultMumuMemoryGitSyncQueue,
   type MumuMemoryGitEventKind,
+  type MumuMemoryRemoteArchive,
   type MumuMemoryGitSyncQueueLike
 } from "../roles/chatter/mumu-memory-git-sync";
 import { AppStateSchema, type AppState, type ChatterRoleConfig } from "../types";
@@ -56,11 +57,21 @@ type AutoProvisionerRoute =
   | { action: "memory-archive-enqueue"; projectId: string; userId: string };
 
 const EmptyAutoProvisionerBodySchema = z.object({}).strict();
+const ArchiveRemoteSchema = z.object({
+  push_enabled: z.boolean(),
+  state: z.enum(["ready", "blocked", "disabled"]),
+  owner: z.string().min(1),
+  repo_name: z.string().min(1),
+  repo_full_name: z.string().min(1),
+  private: z.boolean().nullable(),
+  status_callback_url: z.string().url().optional()
+}).strict();
 const ArchiveEnqueueBodySchema = z.object({
   event_kind: z.enum(["structured_write", "structured_delete", "turn_write", "direct_write", "restore_write"]),
   repo_root: z.string().min(1).optional(),
   record_type: z.string().min(1).optional(),
-  key: z.string().min(1).optional()
+  key: z.string().min(1).optional(),
+  archive: ArchiveRemoteSchema.optional()
 }).strict().superRefine((value, ctx) => {
   if (
     (value.event_kind === "structured_write"
@@ -301,7 +312,8 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
       eventKind: parsed.data.event_kind as MumuMemoryGitEventKind,
       source: "ads_direct",
       ...(parsed.data.record_type ? { recordType: parsed.data.record_type } : {}),
-      ...(parsed.data.key ? { key: parsed.data.key } : {})
+      ...(parsed.data.key ? { key: parsed.data.key } : {}),
+      ...(parsed.data.archive ? { remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive } : {})
     });
     return { queued: true };
   }

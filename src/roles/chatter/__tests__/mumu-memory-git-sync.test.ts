@@ -132,6 +132,154 @@ describe("MumuMemoryGitSyncQueue", () => {
       "turns/2026-05-24/turn-0001.md"
     ]);
   });
+
+  it("pushes ready service-owned private archives without exposing the service token in git arguments", async () => {
+    const root = makeRoot();
+    writeJson(root, "structured/story_short_drama/s1.json", { id: "s1", title: "Story" });
+    const pushCalls: unknown[] = [];
+    const statusUpdates: unknown[] = [];
+    const fetchCalls: Array<{ url: string; authorization?: string }> = [];
+    const queue = new MumuMemoryGitSyncQueue({
+      debounceMs: 0,
+      maxFileBytes: 1024 * 1024,
+      serviceGithubToken: "service-token-should-never-be-in-argv",
+      fetchImpl: async (url: string, init?: { headers?: Record<string, string> }) => {
+        fetchCalls.push({ url, authorization: init?.headers?.Authorization });
+        return new Response(
+          JSON.stringify({ name: "mumu-archive-u1", full_name: "yzsnstotz/mumu-archive-u1", private: true }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      },
+      gitPush: async (request: unknown) => {
+        pushCalls.push(request);
+        return { ok: true };
+      },
+      statusReporter: async (status: unknown) => {
+        statusUpdates.push(status);
+      }
+    } as never);
+
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "direct_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "ads_direct",
+      remoteArchive: {
+        push_enabled: true,
+        state: "ready",
+        owner: "yzsnstotz",
+        repo_name: "mumu-archive-u1",
+        repo_full_name: "yzsnstotz/mumu-archive-u1",
+        private: true,
+        status_callback_url: "http://127.0.0.1:3101/api/mumu/internal/archive-status/u1"
+      }
+    } as never);
+
+    const result = await queue.flush(root) as unknown as {
+      remote?: { status?: string; lastPushedCommit?: string | null };
+    };
+
+    expect(result?.remote?.status).toBe("pushed");
+    expect(result?.remote?.lastPushedCommit).toMatch(/^[a-f0-9]{40}$/u);
+    expect(pushCalls).toHaveLength(1);
+    expect(JSON.stringify(pushCalls)).not.toContain("service-token-should-never-be-in-argv");
+    expect(fetchCalls[0]?.url).toBe("https://api.github.com/repos/yzsnstotz/mumu-archive-u1");
+    expect(fetchCalls[0]?.authorization).toBe("Bearer service-token-should-never-be-in-argv");
+    expect(statusUpdates).toHaveLength(1);
+    expect(JSON.stringify(statusUpdates[0])).toContain('"status":"pushed"');
+  });
+
+  it("keeps local commits active and reports blocked status when a remote archive is public", async () => {
+    const root = makeRoot();
+    writeJson(root, "structured/story_short_drama/s1.json", { id: "s1", title: "Story" });
+    const pushCalls: unknown[] = [];
+    const queue = new MumuMemoryGitSyncQueue({
+      debounceMs: 0,
+      maxFileBytes: 1024 * 1024,
+      serviceGithubToken: "service-token",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({ name: "mumu-archive-u1", full_name: "yzsnstotz/mumu-archive-u1", private: false }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        ),
+      gitPush: async (request: unknown) => {
+        pushCalls.push(request);
+        return { ok: true };
+      }
+    } as never);
+
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "direct_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "ads_direct",
+      remoteArchive: {
+        push_enabled: true,
+        state: "ready",
+        owner: "yzsnstotz",
+        repo_name: "mumu-archive-u1",
+        repo_full_name: "yzsnstotz/mumu-archive-u1",
+        private: true
+      }
+    } as never);
+
+    const result = await queue.flush(root) as unknown as { remote?: { status?: string; blockedReason?: string } };
+
+    expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("1");
+    expect(pushCalls).toHaveLength(0);
+    expect(result.remote).toMatchObject({ status: "blocked", blockedReason: "public_repo" });
+  });
+
+  it("reports conflict_pending when the service-owned remote rejects a non-fast-forward push", async () => {
+    const root = makeRoot();
+    writeJson(root, "structured/story_short_drama/s1.json", { id: "s1", title: "Story" });
+    const statusUpdates: unknown[] = [];
+    const queue = new MumuMemoryGitSyncQueue({
+      debounceMs: 0,
+      maxFileBytes: 1024 * 1024,
+      serviceGithubToken: "service-token",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({ name: "mumu-archive-u1", full_name: "yzsnstotz/mumu-archive-u1", private: true }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        ),
+      gitPush: async () => ({
+        ok: false,
+        conflict: true,
+        stderr: "rejected non-fast-forward"
+      }),
+      statusReporter: async (status: unknown) => {
+        statusUpdates.push(status);
+      }
+    } as never);
+
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "direct_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "ads_direct",
+      remoteArchive: {
+        push_enabled: true,
+        state: "ready",
+        owner: "yzsnstotz",
+        repo_name: "mumu-archive-u1",
+        repo_full_name: "yzsnstotz/mumu-archive-u1",
+        private: true
+      }
+    } as never);
+
+    const result = await queue.flush(root) as unknown as { remote?: { status?: string; lastErrorClass?: string } };
+
+    expect(result.remote).toMatchObject({ status: "conflict_pending", lastErrorClass: "conflict_pending" });
+    expect(statusUpdates).toHaveLength(1);
+    expect(JSON.stringify(statusUpdates[0])).toContain('"status":"conflict_pending"');
+  });
 });
 
 function makeRoot(): string {
