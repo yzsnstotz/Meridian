@@ -21,3 +21,13 @@ PM / product owner checklist before BATCH-B-GATE.
 | `fanzha-tixing.json` | 网恋借钱反诈型 | 反诈提醒要保护连线人，避免羞辱受害者或替代警方判断。 |
 | `po-xi-tiaojie.json` | 婆媳同住调解型 | 婆媳矛盾要落在边界和伴侣责任，不脸谱化任何一方。 |
 | `zhichang-weiqu.json` | 职场委屈倾诉型 | 职场建议要兼顾证据、沟通窗口和现金流，避免鼓励冲动裸辞。 |
+
+## PM Resolver Review — 2026-05-24 JST
+
+Status: approved for Phase 2 seed use.
+
+Review notes:
+- `fanzha-tixing.json` protects the caller and frames police/legal escalation as a necessary external step, not streamer judgment.
+- `po-xi-tiaojie.json` keeps the conflict on boundaries and partner responsibility instead of stereotyping either side.
+- `zhichang-weiqu.json` balances evidence, communication, cash flow, and career path; it does not encourage impulsive resignation.
+- No schema or filename changes are required before BATCH-B-GATE.

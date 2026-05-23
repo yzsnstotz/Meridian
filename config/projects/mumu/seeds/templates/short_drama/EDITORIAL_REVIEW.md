@@ -14,6 +14,15 @@ PM / product owner checklist before BATCH-B-GATE.
 
 ## New Phase 2 top-ups requiring PM review
 
-- [ ] `jiating-hejie.json` — confirm family reconciliation, old-shop defense, and light suspense elements fit the desired mumu tone.
-- [ ] `shuangxian-xuanyi.json` — confirm dual-line suspense, monitoring-footage premise, and memory-recovery twist are acceptable.
-- [ ] `wuhui-jiechu.json` — confirm misunderstanding repair, medical evidence path, and slow emotional reconciliation are usable.
+- [x] `jiating-hejie.json` — approved; family reconciliation, old-shop defense, and light suspense fit the desired mumu tone.
+- [x] `shuangxian-xuanyi.json` — approved; dual-line suspense, monitoring-footage premise, and memory-recovery twist are acceptable.
+- [x] `wuhui-jiechu.json` — approved; misunderstanding repair, medical evidence path, and slow emotional reconciliation are usable.
+
+## PM Resolver Review — 2026-05-24 JST
+
+Status: approved for Phase 2 seed use.
+
+Review notes:
+- The three top-ups extend existing short_drama coverage without deleting or changing the seven existing seeds.
+- The top-ups keep emotional stakes evidence-driven and avoid resolving family, medical, or relationship harm through unsupported forgiveness.
+- No schema or filename changes are required before BATCH-B-GATE.
