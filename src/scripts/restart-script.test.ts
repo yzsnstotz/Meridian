@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 const restartScriptPath = path.resolve(process.cwd(), "user_scripts/restart.sh");
 const terminateScriptPath = path.resolve(process.cwd(), "user_scripts/terminate.sh");
+const rebuildRestartScriptPath = path.resolve(process.cwd(), "user_scripts/rebuild_restart.sh");
 
 async function readRestartScript(): Promise<string> {
   return fs.readFile(restartScriptPath, "utf8");
@@ -13,6 +14,30 @@ async function readRestartScript(): Promise<string> {
 async function readTerminateScript(): Promise<string> {
   return fs.readFile(terminateScriptPath, "utf8");
 }
+
+async function readRebuildRestartScript(): Promise<string> {
+  return fs.readFile(rebuildRestartScriptPath, "utf8");
+}
+
+test("rebuild_restart.sh syncs to origin/main before building and always relaunches services", async () => {
+  const script = await readRebuildRestartScript();
+
+  assert.match(script, /sync_origin_main\(\)/);
+  assert.match(script, /git fetch origin main --prune/);
+  assert.match(script, /git merge --ff-only FETCH_HEAD/);
+  assert.match(script, /MERIDIAN_REBUILD_ORIGIN_MAIN_SYNCED=1/);
+  assert.match(script, /exec "\$\{ROOT_DIR\}\/user_scripts\/rebuild_restart\.sh"/);
+  assert.match(script, /sync_origin_main "\$@"/);
+
+  const syncIndex = script.indexOf('sync_origin_main "$@"');
+  const buildIndex = script.indexOf('log "Building project"');
+  const terminateIndex = script.indexOf('log "Terminating previous-generation services and stragglers"');
+  const restartIndex = script.indexOf('log "Restarting services"');
+
+  assert.ok(syncIndex >= 0 && syncIndex < buildIndex, "origin/main sync must happen before build");
+  assert.ok(buildIndex >= 0 && buildIndex < terminateIndex, "build must complete before old services are killed");
+  assert.ok(terminateIndex >= 0 && terminateIndex < restartIndex, "restart must happen after termination");
+});
 
 test("restart.sh keep-agents PM2 mode avoids direct process kills before socket cleanup", async () => {
   const script = await readRestartScript();
