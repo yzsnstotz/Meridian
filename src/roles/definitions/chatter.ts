@@ -44,9 +44,15 @@ import {
 import {
   makeStructuredSkills,
   registerStructuredSkills,
+  type StructuredWriteEvent,
   type StructuredSkills,
   type StructuredSkillName
 } from "../chatter/skills/structured";
+import {
+  getDefaultMumuMemoryGitSyncQueue,
+  isMumuUserMemoryRoot,
+  type MumuMemoryGitSyncQueueLike
+} from "../chatter/mumu-memory-git-sync";
 
 const ROLES_SOCKET_REPLY_CHANNEL: ReplyChannel = {
   channel: "socket",
@@ -95,6 +101,7 @@ export interface ChatterRoleOptions {
   scheduleSelfInitiatedTurn?: ScheduleSelfInitiatedTurn;
   now?: () => Date;
   socketWriter?: ChatterSocketWriter;
+  memoryGitSyncQueue?: MumuMemoryGitSyncQueueLike | false;
 }
 
 type ChatterTurnEnvelopeWithMode =
@@ -115,6 +122,7 @@ export class ChatterRole implements BaseRole {
   private observationCache: ObservationCache | null = null;
   private structuredSkills: StructuredSkills | null = null;
   private triggerEvaluator: BackgroundTriggerEvaluator | null = null;
+  private memoryGitSyncQueue: MumuMemoryGitSyncQueueLike | null = null;
   private skillHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
 
   /**
@@ -165,8 +173,12 @@ export class ChatterRole implements BaseRole {
       now: this.options.now,
       log: ctx.log
     });
+    this.memoryGitSyncQueue = resolveMemoryGitSyncQueue(this.config.memory_folder, this.options);
     this.structuredSkills = makeStructuredSkills(this.resolver, {
-      onEvent: (event) => this.triggerEvaluator?.handleStructuredWrite(event)
+      onEvent: async (event) => {
+        this.enqueueStructuredMemoryCommit(event);
+        await this.triggerEvaluator?.handleStructuredWrite(event);
+      }
     });
     this.observationCache = new ObservationCache(this.store, {
       now: this.options.now
@@ -202,6 +214,7 @@ export class ChatterRole implements BaseRole {
     this.observationCache = null;
     this.structuredSkills = null;
     this.triggerEvaluator = null;
+    this.memoryGitSyncQueue = null;
     this.skillHandlers.clear();
   }
 
@@ -617,11 +630,48 @@ export class ChatterRole implements BaseRole {
     const skills = makeMemorySkills(this.resolver!, "session");
     const date = new Date().toISOString().slice(0, 10);
     const turnId = randomUUID().slice(0, 8);
-    await skills.write({
+    const result = await skills.write({
       binding: "conversation_log",
       vars: { date, turn_id: turnId },
       content: `---\nmode: session\nrole: user\nchatter_session_id: ${envelope.chatter_session_id ?? ""}\n---\n\n${content}`
     });
+    if (result.ok) {
+      this.enqueueTurnMemoryCommit();
+    }
+  }
+
+  private enqueueStructuredMemoryCommit(event: StructuredWriteEvent): void {
+    this.enqueueMemoryCommit({
+      eventKind: "structured_write",
+      recordType: event.type,
+      key: event.key
+    });
+  }
+
+  private enqueueTurnMemoryCommit(): void {
+    this.enqueueMemoryCommit({ eventKind: "turn_write" });
+  }
+
+  private enqueueMemoryCommit(
+    event: { eventKind: "structured_write"; recordType: string; key: string } | { eventKind: "turn_write" }
+  ): void {
+    if (!this.memoryGitSyncQueue) {
+      return;
+    }
+    try {
+      this.memoryGitSyncQueue.enqueue({
+        memoryRoot: this.config.memory_folder,
+        userId: pathBasename(this.config.memory_folder),
+        source: "chatter",
+        ...event
+      });
+    } catch (error) {
+      this.ctx?.log.warn("chatter: memory archive enqueue failed", {
+        chatter_id: this.config.chatter_id,
+        event_kind: event.eventKind,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private kickoffSpawn(): void {
@@ -1165,4 +1215,22 @@ function stableJsonKey(value: unknown): string {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveMemoryGitSyncQueue(
+  memoryFolder: string,
+  options: ChatterRoleOptions
+): MumuMemoryGitSyncQueueLike | null {
+  if (options.memoryGitSyncQueue === false) {
+    return null;
+  }
+  if (options.memoryGitSyncQueue) {
+    return options.memoryGitSyncQueue;
+  }
+  return isMumuUserMemoryRoot(memoryFolder) ? getDefaultMumuMemoryGitSyncQueue() : null;
+}
+
+function pathBasename(value: string): string {
+  const parts = value.split(/[\\/]/u).filter(Boolean);
+  return parts[parts.length - 1] ?? "";
 }

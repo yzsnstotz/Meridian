@@ -11,6 +11,7 @@ import { createRequireCallerAuth, type CallerAuthenticatedRequest } from "./call
 import { loadCallerRegistry } from "./caller-registry";
 import type { ProjectPolicy } from "./project-policy-schema";
 import { createAutoProvisionerHandlers } from "./auto-provisioner";
+import type { MumuMemoryGitSyncQueueLike } from "../roles/chatter/mumu-memory-git-sync";
 import type { AppState } from "../types";
 
 const tempDirectories = new Set<string>();
@@ -265,6 +266,85 @@ describe("createAutoProvisionerHandlers", () => {
     expect(serialized).not.toContain("manifest_path");
     expect(serialized).not.toContain("credential_id");
   });
+
+  it("queues direct ADS memory archive events through a strict content-free API", async () => {
+    process.env.ADS_HMAC_KEY = "super-secret";
+    const repoRoot = await createRepoRoot();
+    await writeCaller(repoRoot);
+    await writePolicy(repoRoot, "mumu", validPolicy);
+    const registry = await loadCallerRegistry({ repoRoot });
+    const memoryGitSyncQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const handlers = createHarness({
+      repoRoot,
+      callerAuth: createRequireCallerAuth({ registry }),
+      memoryGitSyncQueue
+    });
+
+    const response = await invokeSigned(
+      handlers.handle,
+      "POST",
+      "/api/projects/mumu/users/u_001/memory-archive/enqueue",
+      {
+        event_kind: "direct_write",
+        record_type: "story_short_drama",
+        key: "s1"
+      }
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({ queued: true });
+    expect(memoryGitSyncQueue.enqueue).toHaveBeenCalledWith({
+      memoryRoot: "/tmp/mumu-users/u_001",
+      userId: "u_001",
+      eventKind: "direct_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "ads_direct"
+    });
+  });
+
+  it("rejects direct archive enqueue bodies that include content or a mismatched repo root", async () => {
+    process.env.ADS_HMAC_KEY = "super-secret";
+    const repoRoot = await createRepoRoot();
+    await writeCaller(repoRoot);
+    await writePolicy(repoRoot, "mumu", validPolicy);
+    const registry = await loadCallerRegistry({ repoRoot });
+    const memoryGitSyncQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const handlers = createHarness({
+      repoRoot,
+      callerAuth: createRequireCallerAuth({ registry }),
+      memoryGitSyncQueue
+    });
+
+    const withContent = await invokeSigned(
+      handlers.handle,
+      "POST",
+      "/api/projects/mumu/users/u_001/memory-archive/enqueue",
+      {
+        event_kind: "direct_write",
+        record_type: "story_short_drama",
+        key: "s1",
+        record: { title: "must not cross this API" }
+      }
+    );
+    const mismatchedRoot = await invokeSigned(
+      handlers.handle,
+      "POST",
+      "/api/projects/mumu/users/u_001/memory-archive/enqueue",
+      {
+        event_kind: "direct_write",
+        record_type: "story_short_drama",
+        key: "s1",
+        repo_root: "/tmp/another-user"
+      }
+    );
+
+    expect(withContent.statusCode).toBe(422);
+    expect(withContent.body).toMatchObject({ error: "invalid_archive_enqueue_body" });
+    expect(mismatchedRoot.statusCode).toBe(422);
+    expect(mismatchedRoot.body).toEqual({ error: "repo_root_mismatch" });
+    expect(memoryGitSyncQueue.enqueue).not.toHaveBeenCalled();
+  });
 });
 
 function createHarness(options: {
@@ -272,12 +352,14 @@ function createHarness(options: {
   callerAuth: ReturnType<typeof createRequireCallerAuth>;
   createRole?: (body: unknown) => Promise<unknown>;
   deactivateRole?: (threadId: string) => Promise<void>;
+  memoryGitSyncQueue?: MumuMemoryGitSyncQueueLike;
 }) {
   return createAutoProvisionerHandlers({
     repoRoot: options.repoRoot,
     callerAuth: options.callerAuth,
     createRole: options.createRole ?? vi.fn().mockResolvedValue({ ok: true }),
     deactivateRole: options.deactivateRole ?? vi.fn().mockResolvedValue(undefined),
+    memoryGitSyncQueue: options.memoryGitSyncQueue,
     stateStore: new MemoryStateStore()
   });
 }
