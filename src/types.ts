@@ -103,6 +103,25 @@ export const ChatterCandidateObservationSchema = z.object({
 });
 export type ChatterCandidateObservation = z.infer<typeof ChatterCandidateObservationSchema>;
 
+export const ChatterExtractStageSchema = z.enum([
+  "uploaded",
+  "asking_genre",
+  "asking_main_hook",
+  "asking_cliff_pattern",
+  "asking_transition_types",
+  "awaiting_final_confirm",
+  "committed"
+]);
+export type ChatterExtractStage = z.infer<typeof ChatterExtractStageSchema>;
+
+export const ChatterExtractStateSchema = z.object({
+  stage: ChatterExtractStageSchema,
+  question: z.string().min(1).optional(),
+  options: z.array(z.string().min(1)).optional(),
+  draft_template: z.record(z.string(), z.unknown()).optional()
+});
+export type ChatterExtractState = z.infer<typeof ChatterExtractStateSchema>;
+
 export const ChatterTurnOriginSchema = z.enum(["user", "trigger"]).default("user").optional();
 export type ChatterTurnOrigin = NonNullable<z.infer<typeof ChatterTurnOriginSchema>>;
 
@@ -114,6 +133,7 @@ export const ChatterTurnEnvelopeSchema = z.object({
   context_refs: z.array(z.object({ type: z.string(), key: z.string() })).optional(),
   read_only_query: ChatterReadOnlyQuerySchema.optional(),
   read_only_query_result: ChatterReadOnlyQueryResultSchema.optional(),
+  extract_state: ChatterExtractStateSchema.optional(),
   candidate_observation: ChatterCandidateObservationSchema.optional(),
   observation_id: z.string().uuid().optional(),
   control: z.enum(["new", "interrupt", "confirm_observation", "reject_observation"]).optional()

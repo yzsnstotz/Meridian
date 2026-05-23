@@ -184,6 +184,77 @@ describe("payload.chatter.context_refs schema symmetry", () => {
   });
 });
 
+describe("payload.chatter.extract_state schema symmetry", () => {
+  it("preserves the UploadExtract state contract through outbound HubMessage and inbound HubResult parsing", () => {
+    const extractState = {
+      stage: "awaiting_final_confirm" as const,
+      question: "对吗？要改什么吗？",
+      options: ["确认", "调整 hook", "重来"],
+      draft_template: {
+        id: "template-abc",
+        title: "反转复仇短剧",
+        cliff_pattern: "every_episode"
+      }
+    };
+    const chatter = {
+      mode: "session" as const,
+      chatter_session_id: "ads-session-1",
+      system_prompt_id: "extract_template_from_draft",
+      extract_state: extractState
+    };
+
+    const outbound = HubMessageSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789012",
+      thread_id: "ads",
+      actor_id: "ads",
+      intent: "run",
+      target: "chatter-tenant-a",
+      payload: {
+        content: "uploaded draft",
+        attachments: [],
+        chatter
+      },
+      mode: "bridge",
+      reply_channel: { channel: "web", chat_id: "web:ops" }
+    });
+    expect(outbound.payload.chatter?.extract_state).toEqual(extractState);
+
+    const inbound = HubResultSchema.parse({
+      trace_id: "12345678-1234-4234-8234-123456789012",
+      thread_id: "chatter-tenant-a",
+      source: "ads",
+      status: "success",
+      content: "preview ready",
+      attachments: [],
+      timestamp: "2026-05-20T00:00:00.000Z",
+      payload: { chatter }
+    });
+    expect(inbound.payload?.chatter?.extract_state).toEqual(extractState);
+  });
+
+  it("rejects extract_state stages outside the fixed seven-value contract", () => {
+    expect(() =>
+      HubMessageSchema.parse({
+        trace_id: "12345678-1234-4234-8234-123456789012",
+        thread_id: "ads",
+        actor_id: "ads",
+        intent: "run",
+        target: "chatter-tenant-a",
+        payload: {
+          content: "uploaded draft",
+          attachments: [],
+          chatter: {
+            mode: "session",
+            extract_state: { stage: "asking_title" }
+          }
+        },
+        mode: "bridge",
+        reply_channel: { channel: "web", chat_id: "web:ops" }
+      })
+    ).toThrow();
+  });
+});
+
 describe("AgentInstanceSchema socket_path / pid nullability", () => {
   const liveInstance = {
     thread_id: "codex-01",
