@@ -532,6 +532,12 @@ export const PmResolverConfigSchema = z.object({
 });
 export type PmResolverConfig = z.infer<typeof PmResolverConfigSchema>;
 
+export const ParallelDispatchConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  max_concurrency: z.number().int().min(1).default(1)
+});
+export type ParallelDispatchConfig = z.infer<typeof ParallelDispatchConfigSchema>;
+
 export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   dispatch_plan_path: z.string().min(1),
   command_file_path: z.string().min(1),
@@ -547,7 +553,8 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
   model_map: DispatchModelMapSchema.optional(),
   use_agent_dispatcher: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional(),
-  pm_resolver: PmResolverConfigSchema.optional()
+  pm_resolver: PmResolverConfigSchema.optional(),
+  parallel_dispatch: ParallelDispatchConfigSchema.optional()
 })
   .superRefine((value, ctx) => {
     const hasReplyChannels = Array.isArray(value.user_reply_channels) && value.user_reply_channels.length > 0;
@@ -564,13 +571,18 @@ export const AgentDispatcherConfigSchema = DispatcherConfigSchema.extend({
       ?? (value.user_reply_channel ? [cloneReplyChannel(value.user_reply_channel)] : []);
     const primaryReplyChannel = userReplyChannels[0];
     const pmResolver = normalizePmResolverConfig(value.pm_resolver, userReplyChannels);
+    const parallelDispatch = value.parallel_dispatch ?? {
+      enabled: false,
+      max_concurrency: 1
+    };
 
     return {
       ...value,
       user_reply_channel: primaryReplyChannel ? cloneReplyChannel(primaryReplyChannel) : undefined,
       user_reply_channels: userReplyChannels,
       use_agent_dispatcher: value.use_agent_dispatcher ?? true,
-      pm_resolver: pmResolver
+      pm_resolver: pmResolver,
+      parallel_dispatch: parallelDispatch
     };
 });
 export type AgentDispatcherConfig = z.infer<typeof AgentDispatcherConfigSchema>;
@@ -592,7 +604,8 @@ export const AgentDispatcherEditorConfigSchema = z.object({
   kill_policy: KillPolicySchema,
   auto_approve: z.boolean().default(false),
   validator: ValidatorConfigSchema.optional(),
-  pm_resolver: PmResolverConfigSchema
+  pm_resolver: PmResolverConfigSchema,
+  parallel_dispatch: ParallelDispatchConfigSchema
 }).strict();
 export type AgentDispatcherEditorConfig = z.infer<typeof AgentDispatcherEditorConfigSchema>;
 

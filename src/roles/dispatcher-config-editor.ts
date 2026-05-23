@@ -55,7 +55,8 @@ export function toEditableAgentDispatcherConfig(config: AgentDispatcherConfig): 
     pm_resolver: {
       ...config.pm_resolver,
       user_reply_channels: config.pm_resolver.user_reply_channels?.map((replyChannel) => ({ ...replyChannel }))
-    }
+    },
+    parallel_dispatch: { ...config.parallel_dispatch }
   };
 }
 

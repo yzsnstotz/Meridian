@@ -741,6 +741,34 @@ describe("role config handlers", () => {
       });
   });
 
+  it("persists parallel dispatch config when starting an agent-dispatcher", async () => {
+    const harness = createHarness();
+
+    await createRole(harness.roleHandlers, {
+      thread_id: "agent-dispatcher-parallel-start",
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always",
+      parallel_dispatch: {
+        enabled: true,
+        max_concurrency: 3
+      }
+    });
+
+    await expect(harness.roleHandlers.getConfig("agent-dispatcher-parallel-start")).resolves.toMatchObject({
+      config: {
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        }
+      }
+    });
+  });
+
   it("persists credential_id config patches for an agent-dispatcher", async () => {
     // Regression: PR #244 added credential_id to AgentDispatcherConfigSchema
     // but missed AgentDispatcherConfigPatchSchema (.strict()), so the GUI
@@ -792,6 +820,51 @@ describe("role config handlers", () => {
     const persistedAfterClear = (await harness.stateStore.load())
       ?.roles.find((role) => role.threadId === "agent-dispatcher-credential-patch")?.config as { credential_id?: string };
     expect(persistedAfterClear?.credential_id).toBeUndefined();
+  });
+
+  it("persists runtime parallel dispatch config patches for an agent-dispatcher", async () => {
+    const harness = createHarness({
+      roles: [
+        {
+          threadId: "agent-dispatcher-parallel-patch",
+          roleType: "agent-dispatcher",
+          config: {
+            tasks: [],
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always"
+          },
+          status: "active"
+        }
+      ],
+      promptStore: {}
+    });
+
+    await expect(harness.roleHandlers.patchConfig("agent-dispatcher-parallel-patch", {
+      parallel_dispatch: {
+        enabled: true,
+        max_concurrency: 4
+      }
+    })).resolves.toMatchObject({
+      config: {
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 4
+        }
+      }
+    });
+
+    const persisted = (await harness.stateStore.load())
+      ?.roles.find((role) => role.threadId === "agent-dispatcher-parallel-patch")?.config;
+    expect(persisted).toMatchObject({
+      parallel_dispatch: {
+        enabled: true,
+        max_concurrency: 4
+      }
+    });
   });
 
   it("persists validator config patches for an agent-dispatcher", async () => {

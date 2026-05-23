@@ -102,6 +102,7 @@ import {
   HubMessageSchema,
   HubResultSchema,
   KillPolicySchema,
+  ParallelDispatchConfigSchema,
   PmResolverConfigSchema,
   ReplyChannelSchema,
   ValidatorConfigSchema,
@@ -159,6 +160,7 @@ const CreateRoleBodySchema = z.object({
   use_agent_dispatcher: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional(),
   pm_resolver: PmResolverConfigSchema.optional(),
+  parallel_dispatch: ParallelDispatchConfigSchema.optional(),
   config: z.unknown().optional()
 });
 
@@ -196,7 +198,8 @@ const AgentDispatcherConfigPatchSchema = z.object({
   kill_policy: KillPolicySchema.optional(),
   auto_approve: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional(),
-  pm_resolver: PmResolverConfigSchema.optional()
+  pm_resolver: PmResolverConfigSchema.optional(),
+  parallel_dispatch: ParallelDispatchConfigSchema.optional()
 }).strict();
 
 const UpdateWorkerStatusRequestSchema = z.object({
@@ -538,6 +541,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           user_reply_channels: patch.pm_resolver.user_reply_channels
             ?? config.user_reply_channels.map((replyChannel) => ({ ...replyChannel }))
         };
+      }
+      if (patch.parallel_dispatch !== undefined) {
+        config.parallel_dispatch = patch.parallel_dispatch;
       }
 
       // Persist to state store
@@ -1824,6 +1830,9 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     auto_approve: parsed.data.auto_approve ?? (nestedConfig as { auto_approve?: unknown }).auto_approve,
     validator: parsed.data.validator ?? (nestedConfig as { validator?: unknown }).validator,
     pm_resolver: parsed.data.pm_resolver ?? (nestedConfig as { pm_resolver?: unknown }).pm_resolver,
+    parallel_dispatch:
+      parsed.data.parallel_dispatch
+      ?? (nestedConfig as { parallel_dispatch?: unknown }).parallel_dispatch,
     use_agent_dispatcher:
       parsed.data.use_agent_dispatcher
       ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
