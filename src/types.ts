@@ -125,6 +125,15 @@ export type ChatterExtractState = z.infer<typeof ChatterExtractStateSchema>;
 export const ChatterTurnOriginSchema = z.enum(["user", "trigger"]).default("user").optional();
 export type ChatterTurnOrigin = NonNullable<z.infer<typeof ChatterTurnOriginSchema>>;
 
+export const ChatterCoeditTargetSchema = z.object({
+  label: z.string().min(1).max(160),
+  path: z.string().min(1).max(240),
+  block_id: z.string().min(1).max(240).optional(),
+  story_id: z.string().min(1).max(240).optional(),
+  value: z.string().max(20_000).optional()
+});
+export type ChatterCoeditTarget = z.infer<typeof ChatterCoeditTargetSchema>;
+
 export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]).optional(),
   chatter_session_id: z.string().min(1).optional(),
@@ -136,6 +145,7 @@ export const ChatterTurnEnvelopeSchema = z.object({
   extract_state: ChatterExtractStateSchema.optional(),
   candidate_observation: ChatterCandidateObservationSchema.optional(),
   observation_id: z.string().uuid().optional(),
+  coedit_target: ChatterCoeditTargetSchema.optional(),
   control: z.enum(["new", "interrupt", "confirm_observation", "reject_observation"]).optional()
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
