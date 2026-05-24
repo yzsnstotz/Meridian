@@ -3586,6 +3586,78 @@ describe("role config handlers", () => {
     }
   });
 
+  it("launches a pending POST-FLIGHT row whose ALL-PRIOR dependencies are terminal", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-all-prior-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const launchDispatcher = vi.fn(async () => ({
+      ok: true,
+      threadId: "dispatcher-thread-123"
+    }));
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-post-flight"
+    }));
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 0 | PRE-FLIGHT | Setup | CODEX-HIGH | — | TaskSpec | done |",
+      "| ✅ | 5 | V-02-C | Final validation | CODEX-XHIGH | PRE-FLIGHT | TaskSpec | done |",
+      "| ⬜ | ∞ | POST-FLIGHT | Cleanup | CODEX-HIGH | ALL-PRIOR | — | cleanup |"
+    ].join("\n"), "utf8");
+    await fs.writeFile(sidecarPath, `${JSON.stringify({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-05-24T08:20:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "PRE-FLIGHT": {
+          status: "completed",
+          thread_id: "worker-pre-flight",
+          started_at: "2026-05-24T08:21:00.000Z",
+          last_seen_at: "2026-05-24T08:22:00.000Z"
+        },
+        "V-02-C": {
+          status: "completed",
+          thread_id: "worker-v02c",
+          started_at: "2026-05-24T08:23:00.000Z",
+          last_seen_at: "2026-05-24T08:24:00.000Z"
+        }
+      },
+      last_reconciled_at: null
+    }, null, 2)}\n`, "utf8");
+
+    try {
+      const harness = createHarness(undefined, undefined, [], null, null, null, launchDispatcher, launchDispatchWorker);
+      await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-continue-all-prior", dispatchPlanPath);
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-continue-all-prior/continue"
+      )).resolves.toEqual({
+        ok: true,
+        status: "continued",
+        message: "continued: POST-FLIGHT",
+        dispatcher_thread_id: "dispatcher-thread-123",
+        worker: "POST-FLIGHT"
+      });
+
+      expect(launchDispatcher).toHaveBeenCalledTimes(1);
+      expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "POST-FLIGHT",
+        dispatchPlanPath
+      }));
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("selects the first eligible pending worker through service-owned continue when multiple workers are available", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-first-eligible-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
