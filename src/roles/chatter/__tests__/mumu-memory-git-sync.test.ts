@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { MumuMemoryGitSyncQueue } from "../mumu-memory-git-sync";
 import {
+  createMumuMemorySavepoint,
+  readMumuMemorySnapshot,
+  listMumuMemorySavepoints
+} from "../mumu-memory-savepoints";
+import {
   renderChatterPrometheusMetrics,
   resetChatterObservabilityForTests,
   snapshotMumuArchivePressureCounters,
@@ -234,6 +239,168 @@ describe("MumuMemoryGitSyncQueue", () => {
     expect(statusUpdates).toHaveLength(1);
     expect(JSON.stringify(statusUpdates[0])).toContain('"status":"pushed"');
     expect(snapshotMumuGitPushCounters()).toEqual({ pushed: 1 });
+  });
+
+  it("pushes annotated savepoint refs with metadata while keeping labels out of ref names", async () => {
+    const root = makeRoot();
+    writeJson(root, "structured/story_short_drama/s1.json", { id: "s1", title: "Story" });
+    const pushCalls: Array<{ refspecs: string[] }> = [];
+    const queue = new MumuMemoryGitSyncQueue({
+      debounceMs: 0,
+      maxFileBytes: 1024 * 1024,
+      serviceGithubToken: "service-token",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({ name: "mumu-archive-u1", full_name: "yzsnstotz/mumu-archive-u1", private: true }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        ),
+      gitPush: async (request: { refspecs: string[] }) => {
+        pushCalls.push(request);
+        return { ok: true };
+      }
+    } as never);
+
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_short_drama",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const savepoint = await createMumuMemorySavepoint(root, {
+      label: "private draft label",
+      id: "sp-test-one",
+      now: () => new Date("2026-05-24T03:04:05.000Z")
+    });
+
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "direct_write",
+      recordType: "savepoint",
+      key: savepoint.id,
+      source: "ads_direct",
+      remoteArchive: {
+        push_enabled: true,
+        state: "ready",
+        owner: "yzsnstotz",
+        repo_name: "mumu-archive-u1",
+        repo_full_name: "yzsnstotz/mumu-archive-u1",
+        private: true
+      }
+    } as never);
+    await queue.flush(root);
+
+    expect(savepoint.label).toBe("private draft label");
+    expect(savepoint.ref_name).toBe("refs/tags/mumu-savepoints/sp-test-one");
+    expect(savepoint.ref_name).not.toContain("private");
+    expect(git(root, "tag", "-n99", "mumu-savepoints/sp-test-one")).toContain("private draft label");
+    expect(pushCalls.at(-1)?.refspecs).toContain("refs/tags/mumu-savepoints/sp-test-one:refs/tags/mumu-savepoints/sp-test-one");
+  });
+
+  it("reads an older savepoint snapshot with first-class style changes without mutating current files", async () => {
+    const root = makeRoot();
+    const stylePath = "structured/style_douyin/u1.json";
+    writeJson(root, stylePath, {
+      user_authored: {
+        likes: ["old hook"],
+        dislikes: ["old drag"],
+        tone_keywords: ["old tone"],
+        notes: "old notes"
+      },
+      agent_observed: {
+        recurring_motifs: ["old motif"],
+        avoided_patterns: ["old avoid"]
+      }
+    });
+    writeJson(root, "structured/story_douyin/s1.json", { id: "s1", title: "Old story" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "style_douyin",
+      key: "u1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const savepoint = await createMumuMemorySavepoint(root, {
+      label: "before style edit",
+      id: "sp-style-before",
+      now: () => new Date("2026-05-24T03:04:05.000Z")
+    });
+
+    writeJson(root, stylePath, {
+      user_authored: {
+        likes: ["new hook"],
+        dislikes: ["new drag"],
+        tone_keywords: ["new tone"],
+        notes: "new notes"
+      },
+      agent_observed: {
+        recurring_motifs: ["new motif"],
+        avoided_patterns: ["new avoid"]
+      }
+    });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "style_douyin",
+      key: "u1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const snapshot = await readMumuMemorySnapshot(root, savepoint.id);
+
+    expect(readFileSync(path.join(root, stylePath), "utf8")).toContain("new hook");
+    expect(snapshot.savepoint.id).toBe("sp-style-before");
+    expect(snapshot.records.some((record) => record.type === "story_douyin" && record.key === "s1")).toBe(true);
+    expect(snapshot.style_records).toHaveLength(1);
+    expect(snapshot.style_records[0]).toMatchObject({
+      type: "style_douyin",
+      key: "u1",
+      genre: "douyin",
+      user_authored: {
+        likes: ["old hook"],
+        dislikes: ["old drag"],
+        tone_keywords: ["old tone"],
+        notes: "old notes"
+      },
+      agent_observed: {
+        recurring_motifs: ["old motif"],
+        avoided_patterns: ["old avoid"]
+      }
+    });
+    expect(snapshot.style_changes).toHaveLength(1);
+    expect(snapshot.style_changes[0]).toMatchObject({
+      status: "modified",
+      type: "style_douyin",
+      key: "u1",
+      before: {
+        user_authored: {
+          likes: ["old hook"]
+        }
+      },
+      after: {
+        user_authored: {
+          likes: ["new hook"]
+        }
+      }
+    });
+    expect(await listMumuMemorySavepoints(root)).toEqual([
+      expect.objectContaining({
+        id: "sp-style-before",
+        label: "before style edit",
+        commit_sha: savepoint.commit_sha,
+        short_commit: savepoint.commit_sha.slice(0, 12),
+        restore_available: true
+      })
+    ]);
   });
 
   it("keeps local commits active and reports blocked status when a remote archive is public", async () => {
