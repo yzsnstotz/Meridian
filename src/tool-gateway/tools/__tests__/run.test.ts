@@ -229,6 +229,44 @@ describe("run tool", () => {
     });
   });
 
+  it("resolves dispatch artifact outputs from notes under the command directory", async () => {
+    const hubResult = buildHubResult("Worker completed", "success");
+    mockRun.mockResolvedValue(toApiResult(hubResult));
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath === "/tmp/dispatch/agent_dispatch_command.md") {
+        return "# Agent Dispatch Command\n";
+      }
+
+      if (filePath === "/tmp/dispatch/dispatch_plan.md") {
+        return [
+          "# Dispatch Plan",
+          "",
+          "| Status | Batch | Worker | Task | Model | Depends On | Report File | Notes |",
+          "|--------|-------|--------|------|-------|------------|-------------|-------|",
+          "| 🔄 | 3 | OBS-STOP | Stop sampler | CODEX | SMOKE | reports/OBS-STOP.md | Produce `observability/summary.md`. |"
+        ].join("\n");
+      }
+
+      throw new Error(`Unexpected readFile path: ${String(filePath)}`);
+    });
+
+    await runTool.execute({
+      thread_id: "thread-obs-stop",
+      command: "/tmp/dispatch/agent_dispatch_command.md",
+      worker: "OBS-STOP"
+    });
+
+    const lifecycleStore = getLifecycleStore();
+
+    expect(lifecycleStore.recordWorkerStart).toHaveBeenCalledWith(
+      "OBS-STOP",
+      "thread-obs-stop",
+      "11111111-1111-4111-8111-111111111111",
+      ["/tmp/dispatch/reports/OBS-STOP.md", "/tmp/dispatch/observability/summary.md"],
+      expect.any(String)
+    );
+  });
+
   it("emits a slim preamble that references the command file path instead of inlining its body", async () => {
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
