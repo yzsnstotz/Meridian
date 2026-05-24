@@ -14,7 +14,7 @@ import { RoleRunner } from "../../src/roles/role-runner";
 import { createPromptHandlers, type PromptHandlers } from "../../src/server/prompt-handlers";
 import { createRoleHandlers, type RoleHandlers } from "../../src/server/role-handlers";
 import { StateStore } from "../../src/state-store";
-import { AppStateSchema, type AppState, type DispatchThreadStateV2, type HubResult } from "../../src/types";
+import { AppStateSchema, type AppState, type DispatchThreadStateV2, type HubMessage, type HubResult } from "../../src/types";
 
 export interface DispatchPlanRowInput {
   status?: string;
@@ -51,6 +51,7 @@ export interface AgentDispatcherHarnessOptions {
   planRows?: DispatchPlanRowInput[];
   attachToThread?: (threadId: string) => Promise<void>;
   getThreadDetail?: (threadId: string) => Promise<string>;
+  sendHubRequest?: (message: HubMessage) => Promise<HubResult>;
 }
 
 export async function startAgentDispatcherHarness(
@@ -102,6 +103,7 @@ export async function startAgentDispatcherHarness(
     stateStore,
     attachToThread: options.attachToThread,
     getThreadDetail: options.getThreadDetail,
+    sendHubRequest: options.sendHubRequest,
     launchDispatchWorker: async (workerConfig): Promise<LaunchDispatchWorkerResult> => {
       workerLaunches.push(workerConfig);
       const threadId = `worker-thread-${workerLaunches.length}`;

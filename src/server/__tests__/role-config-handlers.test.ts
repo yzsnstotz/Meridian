@@ -1623,7 +1623,14 @@ describe("role config handlers", () => {
         last_reconciled_at: null
       }, null, 2), "utf8");
 
-      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      const sendHubRequest = vi.fn(async (message: HubMessage): Promise<HubResult> => {
+        if (message.intent === "status" && message.target === "thread-r01") {
+          return buildHubStatusResult("thread-r01", "running");
+        }
+
+        throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
+      });
+      const harness = createHarness(undefined, undefined, [], null, null, sendHubRequest, null, launchDispatchWorker);
       await createRole(harness.roleHandlers, {
         thread_id: "agent-dispatcher-parallel-slots",
         role_type: "agent-dispatcher",
