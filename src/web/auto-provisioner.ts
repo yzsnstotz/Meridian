@@ -35,6 +35,8 @@ import {
   createMumuMemorySavepoint,
   listMumuMemorySavepoints,
   readMumuMemorySnapshot,
+  restoreMumuMemorySavepoint,
+  type MumuMemoryRestoreScope,
   type MumuMemorySavepointSyncStatus
 } from "../roles/chatter/mumu-memory-savepoints";
 import { AppStateSchema, type AppState, type ChatterRoleConfig } from "../types";
@@ -65,7 +67,8 @@ type AutoProvisionerRoute =
   | { action: "memory-archive-enqueue"; projectId: string; userId: string }
   | { action: "memory-savepoint-create"; projectId: string; userId: string }
   | { action: "memory-savepoint-list"; projectId: string; userId: string }
-  | { action: "memory-savepoint-read"; projectId: string; userId: string; savepointId: string };
+  | { action: "memory-savepoint-read"; projectId: string; userId: string; savepointId: string }
+  | { action: "memory-savepoint-restore"; projectId: string; userId: string; savepointId: string };
 
 const EmptyAutoProvisionerBodySchema = z.object({}).strict();
 const ArchiveRemoteSchema = z.object({
@@ -99,6 +102,15 @@ const ArchiveEnqueueBodySchema = z.object({
 });
 const SavepointCreateBodySchema = z.object({
   label: z.string().max(160).optional(),
+  archive: ArchiveRemoteSchema.optional()
+}).strict();
+const SavepointRestoreScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("root") }).strict(),
+  z.object({ kind: z.literal("record_type"), record_type: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("record"), record_type: z.string().min(1), key: z.string().min(1) }).strict()
+]);
+const SavepointRestoreBodySchema = z.object({
+  scope: SavepointRestoreScopeSchema.optional(),
   archive: ArchiveRemoteSchema.optional()
 }).strict();
 const EMPTY_APP_STATE: AppState = { roles: [], promptStore: {} };
@@ -141,7 +153,11 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
         }
 
         assertCallerMayAccessProject(callerId, route.projectId);
-        if (route.action !== "memory-archive-enqueue" && route.action !== "memory-savepoint-create") {
+        if (
+          route.action !== "memory-archive-enqueue"
+          && route.action !== "memory-savepoint-create"
+          && route.action !== "memory-savepoint-restore"
+        ) {
           validateEmptyBody(request as CallerAuthenticatedRequest);
         }
 
@@ -182,6 +198,13 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
             return true;
           case "memory-savepoint-read":
             writeJson(response, 200, await readMemorySavepoint(route.projectId, route.userId, route.savepointId));
+            return true;
+          case "memory-savepoint-restore":
+            writeJson(
+              response,
+              200,
+              await restoreMemorySavepoint(route.projectId, route.userId, route.savepointId, request as CallerAuthenticatedRequest)
+            );
             return true;
         }
       } catch (error) {
@@ -425,6 +448,46 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
     return { ok: true, snapshot: await readMumuMemorySnapshot(interpolated.memory_folder, savepointId) };
   }
 
+  async function restoreMemorySavepoint(
+    projectId: string,
+    userId: string,
+    savepointId: string,
+    request: CallerAuthenticatedRequest
+  ): Promise<{ ok: true; restore: Awaited<ReturnType<typeof restoreMumuMemorySavepoint>>; queued: boolean }> {
+    const rawBody = request.body_bytes ?? Buffer.alloc(0);
+    const parsed = SavepointRestoreBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
+    if (!parsed.success) {
+      throw createHttpError(422, "invalid_savepoint_restore_body", {
+        error: "invalid_savepoint_restore_body",
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path,
+          message: issue.message
+        }))
+      });
+    }
+
+    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+    const interpolated = interpolatePolicyForUser(policy, userId);
+    const scope = parsed.data.scope as MumuMemoryRestoreScope | undefined;
+    const restore = await restoreMumuMemorySavepoint(interpolated.memory_folder, savepointId, { scope });
+
+    if (parsed.data.archive) {
+      const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
+      const target = restoreEventTarget(restore.scope, restore.savepoint.id);
+      queue.enqueue({
+        memoryRoot: interpolated.memory_folder,
+        userId,
+        eventKind: "restore_write",
+        source: "restore",
+        recordType: target.recordType,
+        key: target.key,
+        remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive
+      });
+    }
+
+    return { ok: true, restore, queued: Boolean(parsed.data.archive) };
+  }
+
   async function findChatter(threadId: string): Promise<{ status: string } | null> {
     const activeRole = options.resolveActiveRole?.(threadId);
     if (activeRole?.roleType === "chatter") {
@@ -550,7 +613,7 @@ function matchAutoProvisionerRoute(request: IncomingMessage): AutoProvisionerRou
     .map((part) => decodeURIComponent(part));
 
   if (
-    (parts.length !== 6 && parts.length !== 7 && parts.length !== 8)
+    (parts.length !== 6 && parts.length !== 7 && parts.length !== 8 && parts.length !== 9)
     || parts[0] !== "api"
     || parts[1] !== "projects"
     || parts[3] !== "users"
@@ -599,6 +662,15 @@ function matchAutoProvisionerRoute(request: IncomingMessage): AutoProvisionerRou
   ) {
     return { action: "memory-savepoint-read", projectId: parts[2]!, userId: parts[4]!, savepointId: parts[7]! };
   }
+  if (
+    parts.length === 9
+    && method === "POST"
+    && parts[5] === "memory-archive"
+    && parts[6] === "savepoints"
+    && parts[8] === "restore"
+  ) {
+    return { action: "memory-savepoint-restore", projectId: parts[2]!, userId: parts[4]!, savepointId: parts[7]! };
+  }
 
   return null;
 }
@@ -620,11 +692,27 @@ function statusForSavepointError(error: MumuMemorySavepointError): number {
   if (error.code === "no_archive_commit") {
     return 409;
   }
+  if (error.code === "invalid_restore_scope") {
+    return 422;
+  }
   return 404;
 }
 
 function publicSavepointErrorCode(error: MumuMemorySavepointError): string {
   return error.code === "invalid_savepoint_id" ? "savepoint_not_found" : error.code;
+}
+
+function restoreEventTarget(
+  scope: MumuMemoryRestoreScope,
+  savepointId: string
+): { recordType: string; key: string } {
+  if (scope.kind === "record") {
+    return { recordType: scope.record_type, key: scope.key };
+  }
+  if (scope.kind === "record_type") {
+    return { recordType: scope.record_type, key: savepointId };
+  }
+  return { recordType: "memory_root", key: savepointId };
 }
 
 class CallerPolicyOverrideError extends Error {

@@ -10,9 +10,14 @@ const SAVEPOINT_TAG_PREFIX = "mumu-savepoints";
 const SAVEPOINT_REF_PREFIX = `refs/tags/${SAVEPOINT_TAG_PREFIX}`;
 const SAVEPOINT_ID_PATTERN = /^sp-[A-Za-z0-9][A-Za-z0-9_-]{1,95}$/u;
 const LABEL_MAX_LENGTH = 160;
+const RESTORE_RECORD_TYPE_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,127}$/u;
 
 export type MumuMemorySavepointSyncStatus = "local" | "pending" | "pushed" | "paused" | "blocked" | "failed";
 export type MumuMemorySnapshotChangeStatus = "added" | "modified" | "deleted";
+export type MumuMemoryRestoreScope =
+  | { kind: "root" }
+  | { kind: "record_type"; record_type: string }
+  | { kind: "record"; record_type: string; key: string };
 
 export interface MumuMemorySavepoint {
   id: string;
@@ -65,6 +70,16 @@ export interface MumuMemorySnapshot {
   style_changes: MumuMemoryStyleSnapshotChange[];
 }
 
+export interface MumuMemoryRestoreResult {
+  savepoint: MumuMemorySavepoint;
+  scope: MumuMemoryRestoreScope;
+  previous_head_sha: string | null;
+  safety_commit_sha: string | null;
+  restore_commit_sha: string;
+  restored_paths: string[];
+  deleted_paths: string[];
+}
+
 export interface CreateMumuMemorySavepointOptions {
   label?: string | null;
   id?: string;
@@ -73,7 +88,15 @@ export interface CreateMumuMemorySavepointOptions {
 }
 
 export class MumuMemorySavepointError extends Error {
-  constructor(readonly code: "invalid_savepoint_id" | "no_archive_commit" | "savepoint_not_found", message = code) {
+  constructor(
+    readonly code:
+      | "invalid_savepoint_id"
+      | "no_archive_commit"
+      | "savepoint_not_found"
+      | "invalid_restore_scope"
+      | "restore_source_not_found",
+    message = code
+  ) {
     super(message);
     this.name = "MumuMemorySavepointError";
   }
@@ -194,6 +217,55 @@ export async function readMumuMemorySnapshot(
   };
 }
 
+export async function restoreMumuMemorySavepoint(
+  memoryRoot: string,
+  savepointId: string,
+  options: { scope?: MumuMemoryRestoreScope } = {}
+): Promise<MumuMemoryRestoreResult> {
+  const root = path.resolve(memoryRoot);
+  const scope = normalizeRestoreScope(options.scope);
+  const savepoint = await readSavepoint(root, savepointId, "local");
+  const sourcePaths = await listRestoreSourcePaths(root, savepoint.commit_sha, scope);
+  const sourceContents = new Map<string, string>();
+  for (const relativePath of sourcePaths) {
+    sourceContents.set(relativePath, await readTextAtCommit(root, savepoint.commit_sha, relativePath));
+  }
+
+  const previousHeadSha = await readHeadSha(root);
+  const safetyCommitSha = await commitSafetySnapshotIfDirty(root);
+  const currentPaths = scope.kind === "record" ? [] : await listCurrentRestorePaths(root, scope);
+  const sourcePathSet = new Set(sourcePaths);
+  const deletedPaths = currentPaths.filter((relativePath) => !sourcePathSet.has(relativePath));
+
+  for (const relativePath of deletedPaths) {
+    assertSafeRelativePath(relativePath);
+    await fs.rm(path.join(root, relativePath), { force: true });
+  }
+  for (const [relativePath, content] of sourceContents) {
+    assertSafeRelativePath(relativePath);
+    const destination = path.join(root, relativePath);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.writeFile(destination, content, "utf8");
+  }
+
+  await git(root, ["add", "-A", "--", ...restorePathspecs(scope)]);
+  await git(root, ["commit", "--allow-empty", "-m", `mumu memory restore savepoint ${savepoint.id}`]);
+  const restoreCommitSha = await readHeadSha(root);
+  if (!restoreCommitSha) {
+    throw new MumuMemorySavepointError("restore_source_not_found");
+  }
+
+  return {
+    savepoint,
+    scope,
+    previous_head_sha: previousHeadSha,
+    safety_commit_sha: safetyCommitSha,
+    restore_commit_sha: restoreCommitSha,
+    restored_paths: sourcePaths,
+    deleted_paths: deletedPaths
+  };
+}
+
 async function readSavepoint(
   memoryRoot: string,
   savepointId: string,
@@ -247,6 +319,45 @@ async function listStructuredPathsAtCommit(memoryRoot: string, commitSha: string
   return stdout
     .split("\0")
     .filter((relativePath) => descriptorFromStructuredPath(relativePath) !== null);
+}
+
+async function listRestoreSourcePaths(
+  memoryRoot: string,
+  commitSha: string,
+  scope: MumuMemoryRestoreScope
+): Promise<string[]> {
+  if (scope.kind === "record") {
+    const recordPath = structuredRecordPath(scope.record_type, scope.key);
+    try {
+      await git(memoryRoot, ["cat-file", "-e", `${commitSha}:${recordPath}`]);
+    } catch {
+      throw new MumuMemorySavepointError("restore_source_not_found");
+    }
+    return [recordPath];
+  }
+
+  const pathspecs = restorePathspecs(scope);
+  const { stdout } = await git(memoryRoot, ["ls-tree", "-r", "-z", "--name-only", commitSha, "--", ...pathspecs]);
+  return stdout
+    .split("\0")
+    .filter(Boolean)
+    .map((relativePath) => relativePath.split(path.sep).join("/"))
+    .filter(isDurableRestorePath)
+    .sort();
+}
+
+async function listCurrentRestorePaths(memoryRoot: string, scope: MumuMemoryRestoreScope): Promise<string[]> {
+  try {
+    const { stdout } = await git(memoryRoot, ["ls-files", "-z", "--", ...restorePathspecs(scope)]);
+    return stdout
+      .split("\0")
+      .filter(Boolean)
+      .map((relativePath) => relativePath.split(path.sep).join("/"))
+      .filter(isDurableRestorePath)
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 async function listSnapshotChanges(memoryRoot: string, commitSha: string): Promise<MumuMemorySnapshotChange[]> {
@@ -331,6 +442,15 @@ async function readJsonAtCommit(memoryRoot: string, commitSha: string, relativeP
   }
 }
 
+async function readTextAtCommit(memoryRoot: string, commitSha: string, relativePath: string): Promise<string> {
+  try {
+    const { stdout } = await git(memoryRoot, ["show", `${commitSha}:${relativePath}`]);
+    return stdout;
+  } catch {
+    throw new MumuMemorySavepointError("restore_source_not_found");
+  }
+}
+
 async function readJsonFromWorktree(memoryRoot: string, relativePath: string): Promise<unknown | undefined> {
   try {
     return JSON.parse(await fs.readFile(path.join(memoryRoot, relativePath), "utf8"));
@@ -348,6 +468,21 @@ async function readHeadSha(memoryRoot: string): Promise<string | null> {
   }
 }
 
+async function commitSafetySnapshotIfDirty(memoryRoot: string): Promise<string | null> {
+  const { stdout } = await git(memoryRoot, ["status", "--porcelain"]);
+  if (!stdout.trim()) {
+    return null;
+  }
+  await git(memoryRoot, ["add", "-A"]);
+  try {
+    await git(memoryRoot, ["diff", "--cached", "--quiet"]);
+    return null;
+  } catch {
+    await git(memoryRoot, ["commit", "-m", "mumu memory safety before restore"]);
+    return readHeadSha(memoryRoot);
+  }
+}
+
 function normalizeLabel(label: unknown): string | null {
   if (typeof label !== "string") {
     return null;
@@ -359,6 +494,70 @@ function normalizeLabel(label: unknown): string | null {
 function assertValidSavepointId(savepointId: string): void {
   if (!SAVEPOINT_ID_PATTERN.test(savepointId)) {
     throw new MumuMemorySavepointError("invalid_savepoint_id");
+  }
+}
+
+function normalizeRestoreScope(scope: MumuMemoryRestoreScope | undefined): MumuMemoryRestoreScope {
+  if (!scope) {
+    return { kind: "root" };
+  }
+  if (scope.kind === "root") {
+    return { kind: "root" };
+  }
+  if (scope.kind === "record_type") {
+    assertValidRecordType(scope.record_type);
+    return { kind: "record_type", record_type: scope.record_type };
+  }
+  if (scope.kind === "record") {
+    assertValidRecordType(scope.record_type);
+    assertValidRecordKey(scope.key);
+    return { kind: "record", record_type: scope.record_type, key: scope.key };
+  }
+  throw new MumuMemorySavepointError("invalid_restore_scope");
+}
+
+function assertValidRecordType(recordType: string): void {
+  if (!RESTORE_RECORD_TYPE_PATTERN.test(recordType)) {
+    throw new MumuMemorySavepointError("invalid_restore_scope");
+  }
+}
+
+function assertValidRecordKey(key: string): void {
+  if (!key || key.includes("/") || key.includes("\\") || key.includes("\0") || key === "." || key === "..") {
+    throw new MumuMemorySavepointError("invalid_restore_scope");
+  }
+}
+
+function structuredRecordPath(recordType: string, key: string): string {
+  assertValidRecordType(recordType);
+  assertValidRecordKey(key);
+  return `structured/${recordType}/${key}.json`;
+}
+
+function restorePathspecs(scope: MumuMemoryRestoreScope): string[] {
+  if (scope.kind === "root") {
+    return ["structured", "turns"];
+  }
+  if (scope.kind === "record_type") {
+    assertValidRecordType(scope.record_type);
+    return [`structured/${scope.record_type}`];
+  }
+  return [structuredRecordPath(scope.record_type, scope.key)];
+}
+
+function isDurableRestorePath(relativePath: string): boolean {
+  return relativePath.startsWith("structured/") || relativePath.startsWith("turns/");
+}
+
+function assertSafeRelativePath(relativePath: string): void {
+  const normalized = relativePath.split(path.sep).join("/");
+  if (
+    !isDurableRestorePath(normalized)
+    || normalized.startsWith("/")
+    || normalized.includes("\0")
+    || normalized.split("/").some((part) => part === "..")
+  ) {
+    throw new MumuMemorySavepointError("invalid_restore_scope");
   }
 }
 

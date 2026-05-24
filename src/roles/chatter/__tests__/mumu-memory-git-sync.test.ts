@@ -8,7 +8,8 @@ import { MumuMemoryGitSyncQueue } from "../mumu-memory-git-sync";
 import {
   createMumuMemorySavepoint,
   readMumuMemorySnapshot,
-  listMumuMemorySavepoints
+  listMumuMemorySavepoints,
+  restoreMumuMemorySavepoint
 } from "../mumu-memory-savepoints";
 import {
   renderChatterPrometheusMetrics,
@@ -401,6 +402,155 @@ describe("MumuMemoryGitSyncQueue", () => {
         restore_available: true
       })
     ]);
+  });
+
+  it("restores a selected story record as a new current commit without deleting other records", async () => {
+    const root = makeRoot();
+    const storyPath = "structured/story_douyin/s1.json";
+    const otherStoryPath = "structured/story_douyin/s2.json";
+    writeJson(root, storyPath, { id: "s1", title: "Original story" });
+    writeJson(root, otherStoryPath, { id: "s2", title: "Other story" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const savepoint = await createMumuMemorySavepoint(root, {
+      id: "sp-story-before",
+      now: () => new Date("2026-05-24T03:04:05.000Z")
+    });
+
+    writeJson(root, storyPath, { id: "s1", title: "Current story" });
+    writeJson(root, otherStoryPath, { id: "s2", title: "Other current story" });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const result = await restoreMumuMemorySavepoint(root, savepoint.id, {
+      scope: { kind: "record", record_type: "story_douyin", key: "s1" }
+    });
+
+    expect(result.previous_head_sha).not.toBe(savepoint.commit_sha);
+    expect(result.restore_commit_sha).toMatch(/^[a-f0-9]{40}$/u);
+    expect(result.restored_paths).toEqual([storyPath]);
+    expect(result.deleted_paths).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(root, storyPath), "utf8"))).toMatchObject({ title: "Original story" });
+    expect(JSON.parse(readFileSync(path.join(root, otherStoryPath), "utf8"))).toMatchObject({ title: "Other current story" });
+    expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("3");
+    expect(git(root, "log", "--oneline", "-1")).toContain("mumu memory restore savepoint sp-story-before");
+    expect(git(root, "cat-file", "-t", savepoint.commit_sha).trim()).toBe("commit");
+  });
+
+  it("restores style records and creates a safety commit for uncommitted current state", async () => {
+    const root = makeRoot();
+    const stylePath = "structured/style_douyin/u1.json";
+    writeJson(root, stylePath, {
+      user_authored: { likes: ["savepoint style"], dislikes: [], tone_keywords: ["old"], notes: "old" },
+      agent_observed: { recurring_motifs: ["motif"], avoided_patterns: [] }
+    });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "style_douyin",
+      key: "u1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const savepoint = await createMumuMemorySavepoint(root, { id: "sp-style-restore" });
+
+    writeJson(root, stylePath, {
+      user_authored: { likes: ["unsaved style"], dislikes: [], tone_keywords: ["new"], notes: "new" },
+      agent_observed: { recurring_motifs: ["motif"], avoided_patterns: [] }
+    });
+
+    const result = await restoreMumuMemorySavepoint(root, savepoint.id, {
+      scope: { kind: "record", record_type: "style_douyin", key: "u1" }
+    });
+
+    expect(result.safety_commit_sha).toMatch(/^[a-f0-9]{40}$/u);
+    expect(JSON.parse(readFileSync(path.join(root, stylePath), "utf8"))).toMatchObject({
+      user_authored: { likes: ["savepoint style"] }
+    });
+    expect(git(root, "show", `${result.safety_commit_sha}:${stylePath}`)).toContain("unsaved style");
+    expect(git(root, "log", "--oneline", "-2")).toContain("mumu memory safety before restore");
+    expect(git(root, "log", "--oneline", "-1")).toContain("mumu memory restore savepoint sp-style-restore");
+  });
+
+  it("restores a record type scope by removing current records missing from the savepoint", async () => {
+    const root = makeRoot();
+    writeJson(root, "structured/story_douyin/s1.json", { id: "s1", title: "Original" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const savepoint = await createMumuMemorySavepoint(root, { id: "sp-type-restore" });
+
+    writeJson(root, "structured/story_douyin/s1.json", { id: "s1", title: "Current" });
+    writeJson(root, "structured/story_douyin/s2.json", { id: "s2", title: "New current only" });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s2",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const result = await restoreMumuMemorySavepoint(root, savepoint.id, {
+      scope: { kind: "record_type", record_type: "story_douyin" }
+    });
+
+    expect(result.restored_paths).toContain("structured/story_douyin/s1.json");
+    expect(result.deleted_paths).toContain("structured/story_douyin/s2.json");
+    expect(existsSync(path.join(root, "structured/story_douyin/s2.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(path.join(root, "structured/story_douyin/s1.json"), "utf8"))).toMatchObject({
+      title: "Original"
+    });
+  });
+
+  it("leaves current content unchanged when restore targets an invalid savepoint", async () => {
+    const root = makeRoot();
+    const storyPath = "structured/story_douyin/s1.json";
+    writeJson(root, storyPath, { id: "s1", title: "Current story" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const before = readFileSync(path.join(root, storyPath), "utf8");
+    const headBefore = git(root, "rev-parse", "HEAD").trim();
+
+    await expect(restoreMumuMemorySavepoint(root, "sp-missing-savepoint", {
+      scope: { kind: "record", record_type: "story_douyin", key: "s1" }
+    })).rejects.toMatchObject({ code: "savepoint_not_found" });
+
+    expect(readFileSync(path.join(root, storyPath), "utf8")).toBe(before);
+    expect(git(root, "rev-parse", "HEAD").trim()).toBe(headBefore);
   });
 
   it("keeps local commits active and reports blocked status when a remote archive is public", async () => {
