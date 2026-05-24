@@ -8,6 +8,7 @@ import {
   incrementMumuGitCommitTotal,
   incrementMumuGitPushTotal,
   observeMumuArchivePressure,
+  type MumuArchiveLargeFileExcludedReason,
   type MumuGitCommitKind
 } from "./observability";
 
@@ -74,6 +75,12 @@ export interface MumuMemoryGitArchiveMetadata {
   largest_tracked_file_bytes: number;
   turn_log_bytes_total: number;
   large_file_excluded_count: number;
+  large_file_excluded_reasons?: Partial<Record<MumuArchiveLargeFileExcludedReason, number>>;
+}
+
+interface ArchiveGuardResult {
+  excludedCount: number;
+  excludedReasons: Partial<Record<MumuArchiveLargeFileExcludedReason, number>>;
 }
 
 export interface MumuMemoryGitCommitResult {
@@ -262,8 +269,8 @@ export class MumuMemoryGitSyncQueue implements MumuMemoryGitSyncQueueLike {
       await ensureGitignore(memoryRoot);
 
       await git(memoryRoot, ["add", "-A"]);
-      const largeFileExcludedCount = await applyArchiveGuard(memoryRoot, this.maxFileBytes);
-      const metadataBeforeCommit = await collectArchiveMetadata(memoryRoot, largeFileExcludedCount);
+      const archiveGuard = await applyArchiveGuard(memoryRoot, this.maxFileBytes);
+      const metadataBeforeCommit = await collectArchiveMetadata(memoryRoot, archiveGuard);
 
       if (await isIndexClean(memoryRoot)) {
         observeMumuArchivePressure(metadataBeforeCommit);
@@ -278,7 +285,7 @@ export class MumuMemoryGitSyncQueue implements MumuMemoryGitSyncQueueLike {
       }
 
       await git(memoryRoot, ["commit", "-m", commitMessageForEvents(events)]);
-      const metadata = await collectArchiveMetadata(memoryRoot, largeFileExcludedCount);
+      const metadata = await collectArchiveMetadata(memoryRoot, archiveGuard);
       observeMumuArchivePressure(metadata);
       incrementMumuGitCommitTotal(metricKind, "committed");
       const result = {
@@ -549,31 +556,37 @@ async function ensureGitignore(memoryRoot: string): Promise<void> {
   }
 }
 
-async function applyArchiveGuard(memoryRoot: string, maxFileBytes: number): Promise<number> {
+async function applyArchiveGuard(memoryRoot: string, maxFileBytes: number): Promise<ArchiveGuardResult> {
   const staged = await listStagedPaths(memoryRoot);
-  let excluded = 0;
+  const excludedReasons: Partial<Record<MumuArchiveLargeFileExcludedReason, number>> = {};
   for (const relativePath of staged) {
     const verdict = await shouldTrackPath(memoryRoot, relativePath, maxFileBytes);
     if (!verdict.track) {
-      if (verdict.large) {
-        excluded += 1;
+      if (verdict.reason) {
+        excludedReasons[verdict.reason] = (excludedReasons[verdict.reason] ?? 0) + 1;
       }
       await git(memoryRoot, ["rm", "--cached", "--ignore-unmatch", "--", relativePath]);
     }
   }
-  return excluded;
+  return {
+    excludedCount: Object.values(excludedReasons).reduce((sum, count) => sum + (count ?? 0), 0),
+    excludedReasons
+  };
 }
 
 async function shouldTrackPath(
   memoryRoot: string,
   relativePath: string,
   maxFileBytes: number
-): Promise<{ track: boolean; large: boolean }> {
+): Promise<{ track: boolean; reason?: MumuArchiveLargeFileExcludedReason }> {
   if (relativePath === ".gitignore") {
-    return { track: true, large: false };
+    return { track: true };
   }
-  if (!isDurableRelativePath(relativePath) || isGeneratedOrBinaryPath(relativePath)) {
-    return { track: false, large: false };
+  if (!isDurableRelativePath(relativePath)) {
+    return { track: false, reason: "raw_upload" };
+  }
+  if (isGeneratedOrBinaryPath(relativePath)) {
+    return { track: false, reason: "binary" };
   }
 
   const absolutePath = path.join(memoryRoot, relativePath);
@@ -581,18 +594,18 @@ async function shouldTrackPath(
   try {
     stat = await fs.stat(absolutePath);
   } catch {
-    return { track: true, large: false };
+    return { track: true };
   }
   if (!stat.isFile()) {
-    return { track: false, large: false };
+    return { track: false, reason: "raw_upload" };
   }
   if (stat.size > maxFileBytes) {
-    return { track: false, large: true };
+    return { track: false, reason: "threshold" };
   }
   if (await looksBinary(absolutePath)) {
-    return { track: false, large: false };
+    return { track: false, reason: "binary" };
   }
-  return { track: true, large: false };
+  return { track: true };
 }
 
 function isDurableRelativePath(relativePath: string): boolean {
@@ -644,7 +657,7 @@ async function readHeadSha(memoryRoot: string): Promise<string | null> {
 
 async function collectArchiveMetadata(
   memoryRoot: string,
-  largeFileExcludedCount: number
+  archiveGuard: ArchiveGuardResult
 ): Promise<MumuMemoryGitArchiveMetadata> {
   const tracked = await listTrackedPaths(memoryRoot);
   let largest = 0;
@@ -670,7 +683,8 @@ async function collectArchiveMetadata(
     repo_size_bytes: await directorySize(path.join(memoryRoot, ".git")),
     largest_tracked_file_bytes: largest,
     turn_log_bytes_total: turnLogBytes,
-    large_file_excluded_count: largeFileExcludedCount
+    large_file_excluded_count: archiveGuard.excludedCount,
+    large_file_excluded_reasons: archiveGuard.excludedReasons
   };
 }
 
