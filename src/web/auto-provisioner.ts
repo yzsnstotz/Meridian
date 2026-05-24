@@ -23,6 +23,7 @@ import {
   type ChatterProvisionError,
   type ChatterTurnError
 } from "../roles/chatter/chatter-state-store";
+import { incrementMumuArchiveProvisionTotal } from "../roles/chatter/observability";
 import {
   getDefaultMumuMemoryGitSyncQueue,
   type MumuMemoryGitEventKind,
@@ -131,9 +132,11 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
         }
 
         switch (route.action) {
-          case "ensure":
-            writeJson(response, 200, await ensureChatter(route.projectId, route.userId));
+          case "ensure": {
+            const result = await ensureChatterWithTelemetry(route.projectId, route.userId);
+            writeJson(response, 200, result);
             return true;
+          }
           case "archive":
             writeJson(response, 200, await archiveChatter(route.projectId, route.userId));
             return true;
@@ -180,6 +183,20 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
       }
     }
   };
+
+  async function ensureChatterWithTelemetry(
+    projectId: string,
+    userId: string
+  ): Promise<{ thread_id: string; status: "existing" | "created" }> {
+    try {
+      const result = await ensureChatter(projectId, userId);
+      incrementMumuArchiveProvisionTotal(result.status);
+      return result;
+    } catch (error) {
+      incrementMumuArchiveProvisionTotal("error");
+      throw error;
+    }
+  }
 
   async function ensureChatter(
     projectId: string,
