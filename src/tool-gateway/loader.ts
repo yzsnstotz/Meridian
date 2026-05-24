@@ -28,6 +28,10 @@ export async function loadToolsFromDirectory(toolsDir: string, registry: ToolReg
 
     try {
       const loaded = loadModuleFresh(modulePath);
+      if (isHelperModule(loaded)) {
+        continue;
+      }
+
       const tool = extractToolDefinition(loaded);
       if (!isToolDefinition(tool)) {
         console.warn(`Skipping invalid tool module: ${modulePath}`);
@@ -53,6 +57,16 @@ function extractToolDefinition(loaded: unknown): unknown {
   }
 
   return "default" in loaded ? (loaded as { default?: unknown }).default : loaded;
+}
+
+function isHelperModule(loaded: unknown): boolean {
+  if (!loaded || typeof loaded !== "object") {
+    return false;
+  }
+
+  return !("default" in loaded)
+    && !("name" in loaded)
+    && !("execute" in loaded);
 }
 
 function isSupportedToolFile(fileName: string): boolean {

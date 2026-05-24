@@ -15,6 +15,12 @@ import killTool from "./kill";
 import type { ToolDefinition, ToolResult } from "../registry";
 
 const DEV_HISTORY_DIRECTORY = "dev_history";
+const DISPATCH_ARTIFACT_DIRECTORIES = new Set([
+  DEV_HISTORY_DIRECTORY,
+  "logs",
+  "observability",
+  "reports"
+]);
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
@@ -1035,7 +1041,8 @@ function resolveExpectedOutputPath(
   }
 
   const normalizedCandidate = normalizePathForComparison(candidatePath);
-  if (normalizedCandidate === DEV_HISTORY_DIRECTORY || normalizedCandidate.startsWith(`${DEV_HISTORY_DIRECTORY}/`)) {
+  const firstSegment = normalizedCandidate.split("/")[0];
+  if (firstSegment && DISPATCH_ARTIFACT_DIRECTORIES.has(firstSegment)) {
     return path.resolve(path.dirname(commandPath), candidatePath);
   }
 

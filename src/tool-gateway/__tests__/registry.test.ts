@@ -57,6 +57,7 @@ describe("loadToolsFromDirectory", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await fs.writeFile(path.join(toolsDir, "valid.js"), buildToolModule("spawn", "Spawn a worker"));
+    await fs.writeFile(path.join(toolsDir, "helper.js"), "exports.readHelper = () => 'helper';");
     await fs.writeFile(path.join(toolsDir, "invalid.js"), "module.exports = { default: { nope: true } };");
     await fs.writeFile(path.join(toolsDir, "broken.js"), "throw new Error('broken tool');");
     await fs.writeFile(path.join(toolsDir, "readme.md"), "# ignored\n");
