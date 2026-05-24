@@ -510,12 +510,51 @@ describe("V-02-A mumu Phase 2 e2e critical paths", () => {
         content: "Use flashbacks and evidence reveals."
       });
       expect(extractStage(finalConfirmReply)).toBe("awaiting_final_confirm");
-      const committedReply = await sendExtractTurn(ctx, {
+
+      const extractFinalConfirmEvents: unknown[] = [];
+      const finalConfirmCandidateReply = await sendExtractTurn(ctx, {
         userId,
         threadId,
         extractSessionId,
         state: extractState(finalConfirmReply),
-        content: "Confirm"
+        content: "Confirm",
+        captureEvents: extractFinalConfirmEvents
+      });
+      expect(extractStage(finalConfirmCandidateReply)).toBe("awaiting_final_confirm");
+      const extractObservation = requireCandidateObservation(extractFinalConfirmEvents).payload.observation_id;
+      expect(ctx.agentToolCalls).toEqual(expect.arrayContaining([
+        { thread_id: threadId, name: "chatter.suggest_observation", origin: "extract_template_from_draft", key: EXTRACTED_TEMPLATE_ID }
+      ]));
+      expect(ctx.agentToolCalls).not.toEqual(expect.arrayContaining([
+        { thread_id: threadId, name: "structured.upsert", origin: "extract_template_from_draft", key: EXTRACTED_TEMPLATE_ID }
+      ]));
+      await expect(chatter.handleAgentToolCall("structured.list", {
+        type: "template_short_drama"
+      })).resolves.toMatchObject({ keys: expect.not.arrayContaining([EXTRACTED_TEMPLATE_ID]) });
+
+      await ctx.router.sendTurn({
+        user_id: userId,
+        mumu_thread_id: threadId,
+        content: "",
+        mode: "stateless",
+        chatter_session_id: "extract-confirm-v02a-1",
+        control: "confirm_observation",
+        observation_id: extractObservation
+      }, { connection: { send: (event) => { ctx.adsEvents.push(event); } } });
+      await waitFor(
+        () => ctx.adsEvents.some((event) => isChatterReply(event, "extract-confirm-v02a-1") && JSON.stringify(event).includes("observation_confirmed")),
+        "extract confirmation reply missing"
+      );
+      await expect(chatter.handleAgentToolCall("structured.list", {
+        type: "template_short_drama"
+      })).resolves.toMatchObject({ keys: expect.arrayContaining([EXTRACTED_TEMPLATE_ID]) });
+
+      const committedReply = await sendExtractTurn(ctx, {
+        userId,
+        threadId,
+        extractSessionId,
+        state: { stage: "committed" },
+        content: null
       });
       expect(extractStage(committedReply)).toBe("committed");
       await expect(chatter.handleAgentToolCall("structured.list", {
@@ -1093,6 +1132,7 @@ async function sendExtractTurn(
     state: { stage: ExtractStage; question?: string; options?: string[]; draft_template?: Record<string, unknown> };
     content: string | null;
     attachmentRef?: string;
+    captureEvents?: unknown[];
   }
 ): Promise<Record<string, any>> {
   const events: unknown[] = [];
@@ -1110,7 +1150,15 @@ async function sendExtractTurn(
       ...(input.attachmentRef ? { attachment_ref: input.attachmentRef } : {}),
       ...(attachments ? { attachments } : {})
     },
-    { operation_hint: "outline", connection: { send: (event) => { events.push(event); } } }
+    {
+      operation_hint: "outline",
+      connection: {
+        send: (event) => {
+          events.push(event);
+          input.captureEvents?.push(event);
+        }
+      }
+    }
   );
   await waitFor(() => events.some((event) => isChatterReply(event, input.extractSessionId)), `extract reply missing for ${input.state.stage}`);
   return events.find((event) => isChatterReply(event, input.extractSessionId)) as Record<string, any>;
@@ -1196,20 +1244,38 @@ async function applyDeterministicMumuAgentToolEffects(
 
   if (envelope?.system_prompt_id === "extract_template_from_draft") {
     const currentStage = envelope.extract_state?.stage ?? "uploaded";
-    const next = nextExtractState(currentStage);
     if (currentStage === "awaiting_final_confirm") {
+      const extractedTemplate = buildShortDramaTemplate(EXTRACTED_TEMPLATE_ID, "Extracted template");
       options.agentToolCalls.push({
         thread_id: message.thread_id,
-        name: "structured.upsert",
+        name: "chatter.suggest_observation",
         origin: "extract_template_from_draft",
         key: EXTRACTED_TEMPLATE_ID
       });
-      await expect(chatter.handleAgentToolCall("structured.upsert", {
-        type: "template_short_drama",
-        key: EXTRACTED_TEMPLATE_ID,
-        record: buildShortDramaTemplate(EXTRACTED_TEMPLATE_ID, "Extracted template")
-      })).resolves.toMatchObject({ record: { id: EXTRACTED_TEMPLATE_ID } });
+      await expect(chatter.handleAgentToolCall("chatter.suggest_observation", {
+        type: "extracted_template",
+        description: "我把你的剧本抽成了 template_short_drama，请确认",
+        proposed_patch: {
+          record_type: "template_short_drama",
+          key: EXTRACTED_TEMPLATE_ID,
+          patch: extractedTemplate
+        }
+      })).resolves.toMatchObject({ ok: true, observation_id: expect.any(String) });
+      return {
+        content: "extract candidate proposed",
+        chatter: {
+          extract_state: {
+            stage: "awaiting_final_confirm",
+            question: "Confirm extracted template?",
+            draft_template: extractedTemplate
+          },
+          ...(envelope.chatter_session_id ? { chatter_session_id: envelope.chatter_session_id } : {}),
+          ...(envelope.attachment_ref ? { attachment_ref: envelope.attachment_ref } : {})
+        }
+      };
     }
+
+    const next = nextExtractState(currentStage);
     return {
       content: `extract stage ${next.stage}`,
       chatter: {
