@@ -4,6 +4,13 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import {
+  incrementMumuGitCommitTotal,
+  incrementMumuGitPushTotal,
+  observeMumuArchivePressure,
+  type MumuGitCommitKind
+} from "./observability";
+
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_DEBOUNCE_MS = 5_000;
@@ -248,32 +255,43 @@ export class MumuMemoryGitSyncQueue implements MumuMemoryGitSyncQueueLike {
     memoryRoot: string,
     events: MumuMemoryGitSyncEvent[]
   ): Promise<MumuMemoryGitCommitResult> {
-    await fs.mkdir(memoryRoot, { recursive: true });
-    await ensureGitRepository(memoryRoot);
-    await ensureGitignore(memoryRoot);
+    const metricKind = metricKindForEvents(events);
+    try {
+      await fs.mkdir(memoryRoot, { recursive: true });
+      await ensureGitRepository(memoryRoot);
+      await ensureGitignore(memoryRoot);
 
-    await git(memoryRoot, ["add", "-A"]);
-    const largeFileExcludedCount = await applyArchiveGuard(memoryRoot, this.maxFileBytes);
-    const metadataBeforeCommit = await collectArchiveMetadata(memoryRoot, largeFileExcludedCount);
+      await git(memoryRoot, ["add", "-A"]);
+      const largeFileExcludedCount = await applyArchiveGuard(memoryRoot, this.maxFileBytes);
+      const metadataBeforeCommit = await collectArchiveMetadata(memoryRoot, largeFileExcludedCount);
 
-    if (await isIndexClean(memoryRoot)) {
+      if (await isIndexClean(memoryRoot)) {
+        observeMumuArchivePressure(metadataBeforeCommit);
+        incrementMumuGitCommitTotal(metricKind, "noop");
+        const result = {
+          memoryRoot,
+          committed: false,
+          commitSha: await readHeadSha(memoryRoot),
+          metadata: metadataBeforeCommit
+        };
+        return this.withRemotePush(memoryRoot, events, result);
+      }
+
+      await git(memoryRoot, ["commit", "-m", commitMessageForEvents(events)]);
+      const metadata = await collectArchiveMetadata(memoryRoot, largeFileExcludedCount);
+      observeMumuArchivePressure(metadata);
+      incrementMumuGitCommitTotal(metricKind, "committed");
       const result = {
         memoryRoot,
-        committed: false,
+        committed: true,
         commitSha: await readHeadSha(memoryRoot),
-        metadata: metadataBeforeCommit
+        metadata
       };
       return this.withRemotePush(memoryRoot, events, result);
+    } catch (error) {
+      incrementMumuGitCommitTotal(metricKind, "error");
+      throw error;
     }
-
-    await git(memoryRoot, ["commit", "-m", commitMessageForEvents(events)]);
-    const result = {
-      memoryRoot,
-      committed: true,
-      commitSha: await readHeadSha(memoryRoot),
-      metadata: await collectArchiveMetadata(memoryRoot, largeFileExcludedCount)
-    };
-    return this.withRemotePush(memoryRoot, events, result);
   }
 
   private async withRemotePush(
@@ -350,6 +368,7 @@ export class MumuMemoryGitSyncQueue implements MumuMemoryGitSyncQueueLike {
     }
 
     await this.reportRemoteStatus(userId, remoteArchive, remoteResult);
+    incrementMumuGitPushTotal(remoteResult.status);
     return remoteResult;
   }
 
@@ -700,6 +719,17 @@ function commitMessageForEvents(events: MumuMemoryGitSyncEvent[]): string {
     }
   }
   return "mumu memory update";
+}
+
+function metricKindForEvents(events: MumuMemoryGitSyncEvent[]): MumuGitCommitKind {
+  if (events.length === 0) {
+    return "none";
+  }
+  const kinds = new Set(events.map((event) => event.eventKind));
+  if (kinds.size !== 1) {
+    return "mixed";
+  }
+  return events[0]?.eventKind ?? "none";
 }
 
 function latestRemoteArchive(events: MumuMemoryGitSyncEvent[]): MumuMemoryRemoteArchive | null {

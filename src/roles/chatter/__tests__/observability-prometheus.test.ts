@@ -8,7 +8,14 @@ const REQUIRED_CHATTER_METRICS = [
   "chatter_read_only_query_total",
   "chatter_observation_eval_error_total",
   "chatter_last_provision_error_total",
-  "chatter_last_turn_error_total"
+  "chatter_last_turn_error_total",
+  "mumu_git_commit_total",
+  "mumu_git_push_total",
+  "mumu_archive_provision_total",
+  "mumu_archive_repo_size_bucket_total",
+  "mumu_archive_largest_tracked_file_size_bucket_total",
+  "mumu_archive_turn_log_size_bucket_total",
+  "mumu_archive_large_file_excluded_total"
 ] as const;
 
 describe("Chatter Prometheus observability contract", () => {

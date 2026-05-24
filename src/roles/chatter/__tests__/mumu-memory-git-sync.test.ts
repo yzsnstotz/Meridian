@@ -5,10 +5,18 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MumuMemoryGitSyncQueue } from "../mumu-memory-git-sync";
+import {
+  renderChatterPrometheusMetrics,
+  resetChatterObservabilityForTests,
+  snapshotMumuArchivePressureCounters,
+  snapshotMumuGitCommitCounters,
+  snapshotMumuGitPushCounters
+} from "../observability";
 
 const roots: string[] = [];
 
 afterEach(async () => {
+  resetChatterObservabilityForTests();
   for (const root of roots.splice(0)) {
     await import("node:fs/promises").then((fs) => fs.rm(root, { recursive: true, force: true }));
   }
@@ -133,6 +141,42 @@ describe("MumuMemoryGitSyncQueue", () => {
     ]);
   });
 
+  it("records content-free git commit and archive pressure telemetry", async () => {
+    const root = makeRoot();
+    writeJson(root, "structured/story_short_drama/s1.json", { id: "s1", title: "Story" });
+    writeText(root, "turns/2026-05-24/turn-0001.md", "x".repeat(80));
+    writeText(root, "turns/2026-05-24/oversized.md", "x".repeat(200));
+
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 100 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "turn_write",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    expect(snapshotMumuGitCommitCounters()).toEqual({ "turn_write|committed": 1 });
+    const pressureCounters = snapshotMumuArchivePressureCounters();
+    expect(pressureCounters).toMatchObject({
+      "largest_tracked_file_size|le_1kb": 1,
+      "turn_log_size|le_1kb": 1,
+      large_file_excluded_total: 1
+    });
+    const repoSizeBuckets = Object.entries(pressureCounters)
+      .filter(([key]) => key.startsWith("repo_size|"));
+    expect(repoSizeBuckets).toHaveLength(1);
+    expect(repoSizeBuckets[0]?.[1]).toBe(1);
+
+    const metrics = renderChatterPrometheusMetrics();
+    expect(metrics).toContain('mumu_git_commit_total{kind="turn_write",status="committed"} 1');
+    expect(metrics).toMatch(/mumu_archive_repo_size_bucket_total\{bucket="(?:le|gt)_[^"]+"\} 1/u);
+    expect(metrics).toContain('mumu_archive_large_file_excluded_total 1');
+    expect(metrics).not.toContain(root);
+    expect(metrics).not.toContain("u1");
+    expect(metrics).not.toContain("s1");
+  });
+
   it("pushes ready service-owned private archives without exposing the service token in git arguments", async () => {
     const root = makeRoot();
     writeJson(root, "structured/story_short_drama/s1.json", { id: "s1", title: "Story" });
@@ -189,6 +233,7 @@ describe("MumuMemoryGitSyncQueue", () => {
     expect(fetchCalls[0]?.authorization).toBe("Bearer service-token-should-never-be-in-argv");
     expect(statusUpdates).toHaveLength(1);
     expect(JSON.stringify(statusUpdates[0])).toContain('"status":"pushed"');
+    expect(snapshotMumuGitPushCounters()).toEqual({ pushed: 1 });
   });
 
   it("keeps local commits active and reports blocked status when a remote archive is public", async () => {
@@ -232,6 +277,7 @@ describe("MumuMemoryGitSyncQueue", () => {
     expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("1");
     expect(pushCalls).toHaveLength(0);
     expect(result.remote).toMatchObject({ status: "blocked", blockedReason: "public_repo" });
+    expect(snapshotMumuGitPushCounters()).toEqual({ blocked: 1 });
   });
 
   it("reports conflict_pending when the service-owned remote rejects a non-fast-forward push", async () => {

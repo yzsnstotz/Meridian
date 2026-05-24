@@ -12,6 +12,10 @@ import { loadCallerRegistry } from "./caller-registry";
 import type { ProjectPolicy } from "./project-policy-schema";
 import { createAutoProvisionerHandlers } from "./auto-provisioner";
 import type { MumuMemoryGitSyncQueueLike } from "../roles/chatter/mumu-memory-git-sync";
+import {
+  resetChatterObservabilityForTests,
+  snapshotMumuArchiveProvisionCounters
+} from "../roles/chatter/observability";
 import type { AppState } from "../types";
 
 const tempDirectories = new Set<string>();
@@ -34,6 +38,7 @@ const validPolicy = {
 } satisfies ProjectPolicy;
 
 afterEach(async () => {
+  resetChatterObservabilityForTests();
   delete process.env.ADS_HMAC_KEY;
   await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
   tempDirectories.clear();
@@ -142,6 +147,7 @@ describe("createAutoProvisionerHandlers", () => {
         }
       }
     });
+    expect(snapshotMumuArchiveProvisionCounters()).toEqual({ created: 1, existing: 1 });
   });
 
   it("passes copy_on_provision seed source from registry policy into chatter config", async () => {
@@ -191,6 +197,7 @@ describe("createAutoProvisionerHandlers", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.body).toEqual({ error: "role_creation_failed", upstream_status: 503 });
+    expect(snapshotMumuArchiveProvisionCounters()).toEqual({ error: 1 });
   });
 
   it("returns role_creation_failed when internal role creation throws a plain error", async () => {
