@@ -18,8 +18,8 @@ const REQUIRED_CHATTER_METRICS = [
   "mumu_archive_provision_total",
   "mumu_savepoint_total",
   "mumu_restore_total",
-  "mumu_archive_repo_size_bucket_total",
-  "mumu_archive_largest_file_bucket_total",
+  "mumu_archive_repo_size_bucket",
+  "mumu_archive_largest_file_bucket",
   "mumu_archive_largest_tracked_file_size_bucket_total",
   "mumu_archive_turn_log_size_bucket_total",
   "mumu_archive_large_file_excluded_total"
@@ -32,6 +32,8 @@ describe("Chatter Prometheus observability contract", () => {
     for (const metric of REQUIRED_CHATTER_METRICS) {
       expect(source).toContain(metric);
     }
+    expect(source).not.toContain("mumu_archive_repo_size_bucket_total");
+    expect(source).not.toContain("mumu_archive_largest_file_bucket_total");
   });
 
   it("ships alert rules that reference only existing chatter counters", () => {
@@ -40,6 +42,7 @@ describe("Chatter Prometheus observability contract", () => {
     expect(alerts).toContain("chatter_observation_eval_error_total");
     expect(alerts).toContain("chatter_sandbox_root_write_denied_total");
     expect(alerts).toContain("mumu_restore_total");
+    expect(alerts).toContain("mumu_archive_largest_file_bucket");
     for (const referenced of alerts.match(/\bchatter_[a-z_]+_total\b/gu) ?? []) {
       expect(REQUIRED_CHATTER_METRICS).toContain(referenced as (typeof REQUIRED_CHATTER_METRICS)[number]);
     }

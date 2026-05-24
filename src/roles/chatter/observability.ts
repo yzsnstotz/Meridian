@@ -44,8 +44,8 @@ export const MUMU_GIT_PUSH_TOTAL_METRIC = "mumu_git_push_total";
 export const MUMU_ARCHIVE_PROVISION_TOTAL_METRIC = "mumu_archive_provision_total";
 export const MUMU_SAVEPOINT_TOTAL_METRIC = "mumu_savepoint_total";
 export const MUMU_RESTORE_TOTAL_METRIC = "mumu_restore_total";
-export const MUMU_ARCHIVE_REPO_SIZE_BUCKET_TOTAL_METRIC = "mumu_archive_repo_size_bucket_total";
-export const MUMU_ARCHIVE_LARGEST_FILE_BUCKET_TOTAL_METRIC = "mumu_archive_largest_file_bucket_total";
+export const MUMU_ARCHIVE_REPO_SIZE_BUCKET_METRIC = "mumu_archive_repo_size_bucket";
+export const MUMU_ARCHIVE_LARGEST_FILE_BUCKET_METRIC = "mumu_archive_largest_file_bucket";
 export const MUMU_ARCHIVE_LARGEST_TRACKED_FILE_SIZE_BUCKET_TOTAL_METRIC = "mumu_archive_largest_tracked_file_size_bucket_total";
 export const MUMU_ARCHIVE_TURN_LOG_SIZE_BUCKET_TOTAL_METRIC = "mumu_archive_turn_log_size_bucket_total";
 export const MUMU_ARCHIVE_LARGE_FILE_EXCLUDED_TOTAL_METRIC = "mumu_archive_large_file_excluded_total";
@@ -356,10 +356,10 @@ export function renderChatterPrometheusMetrics(): string {
     ...renderLabeledCounterMap(MUMU_SAVEPOINT_TOTAL_METRIC, "status", mumuSavepointCounters),
     "# TYPE mumu_restore_total counter",
     ...renderLabeledCounterMap(MUMU_RESTORE_TOTAL_METRIC, "status", mumuRestoreCounters),
-    "# TYPE mumu_archive_repo_size_bucket_total counter",
-    ...renderMumuArchivePressureCounters("repo_size", MUMU_ARCHIVE_REPO_SIZE_BUCKET_TOTAL_METRIC),
-    "# TYPE mumu_archive_largest_file_bucket_total counter",
-    ...renderMumuArchivePressureCounters("largest_file", MUMU_ARCHIVE_LARGEST_FILE_BUCKET_TOTAL_METRIC),
+    "# TYPE mumu_archive_repo_size_bucket counter",
+    ...renderMumuArchivePressureCounters("repo_size", MUMU_ARCHIVE_REPO_SIZE_BUCKET_METRIC),
+    "# TYPE mumu_archive_largest_file_bucket counter",
+    ...renderMumuArchivePressureCounters("largest_file", MUMU_ARCHIVE_LARGEST_FILE_BUCKET_METRIC),
     "# TYPE mumu_archive_largest_tracked_file_size_bucket_total counter",
     ...renderMumuArchivePressureCounters("largest_tracked_file_size", MUMU_ARCHIVE_LARGEST_TRACKED_FILE_SIZE_BUCKET_TOTAL_METRIC),
     "# TYPE mumu_archive_turn_log_size_bucket_total counter",

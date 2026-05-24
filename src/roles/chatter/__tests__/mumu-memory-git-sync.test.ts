@@ -176,7 +176,7 @@ describe("MumuMemoryGitSyncQueue", () => {
 
     const metrics = renderChatterPrometheusMetrics();
     expect(metrics).toContain('mumu_git_commit_total{kind="turn_write",status="committed"} 1');
-    expect(metrics).toMatch(/mumu_archive_repo_size_bucket_total\{bucket="(?:le|gt)_[^"]+"\} 1/u);
+    expect(metrics).toMatch(/mumu_archive_repo_size_bucket\{bucket="(?:le|gt)_[^"]+"\} 1/u);
     expect(metrics).toContain('mumu_archive_large_file_excluded_total{reason="threshold"} 1');
     expect(metrics).not.toContain(root);
     expect(metrics).not.toContain("u1");

@@ -29,13 +29,6 @@ groups:
           severity: warn
         annotations:
           summary: Chatter read-only root write denials exceed ten per minute.
-      - alert: MumuArchiveProvisionFailed
-        expr: rate(mumu_archive_provision_total{status="error"}[10m]) > 0
-        for: 10m
-        labels:
-          severity: warn
-        annotations:
-          summary: Mumu archive provisioning is failing.
       - alert: MumuRestoreFailed
         expr: rate(mumu_restore_total{status="failed"}[10m]) > 0
         for: 10m
@@ -44,7 +37,7 @@ groups:
         annotations:
           summary: Mumu savepoint restore is failing.
       - alert: MumuArchiveLargestFileThresholdReached
-        expr: rate(mumu_archive_largest_file_bucket_total{bucket="gt_100mb"}[30m]) > 0
+        expr: rate(mumu_archive_largest_file_bucket{bucket="gt_100mb"}[30m]) > 0
         for: 30m
         labels:
           severity: warn
