@@ -108,7 +108,8 @@ describe("AgentDispatcherRole", () => {
       kill_policy: "always",
       auto_approve: false,
       resolved_model_map_json: "{}",
-      pm_resolver_config_json: "{\"enabled\":true,\"agent_type\":\"codex\",\"mode\":\"bridge\",\"auto_approve\":false,\"user_reply_channels\":[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]}"
+      pm_resolver_config_json: "{\"enabled\":true,\"agent_type\":\"codex\",\"mode\":\"bridge\",\"auto_approve\":false,\"user_reply_channels\":[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]}",
+      parallel_dispatch_config_json: "{\"enabled\":false,\"max_concurrency\":1}"
     });
     expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
     expect(harness.launchDispatcher).toHaveBeenCalledWith({

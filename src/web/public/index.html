@@ -244,6 +244,32 @@
               </label>
             </div>
 
+            <fieldset class="field-group" id="agent-dispatcher-parallel-group">
+              <legend>Parallel Dispatch</legend>
+              <div class="validator-toggle-row">
+                <input
+                  type="checkbox"
+                  id="agent-dispatcher-parallel-enabled"
+                  name="parallel_dispatch_enabled"
+                />
+                <label for="agent-dispatcher-parallel-enabled">Enable dependency-aware parallel worker dispatch</label>
+              </div>
+              <div id="agent-dispatcher-parallel-fields" class="validator-fields" hidden>
+                <label class="field">
+                  <span>max_concurrency</span>
+                  <input
+                    id="agent-dispatcher-parallel-max-concurrency"
+                    name="parallel_dispatch_max_concurrency"
+                    type="number"
+                    min="2"
+                    max="32"
+                    step="1"
+                    value="2"
+                  />
+                </label>
+              </div>
+            </fieldset>
+
             <!-- Validator Config (Issue #1: accessible at launch time) -->
             <fieldset class="field-group" id="agent-dispatcher-validator-group">
               <legend>Validator</legend>

@@ -59,6 +59,8 @@ describe("dispatch-start tool", () => {
       plan: harness.planPath,
       model_map: "CODEX=codex:o3-mini,UNKNOWN=claude:claude-sonnet-4-6",
       auto_approve: "true",
+      parallel: "true",
+      max_concurrency: "3",
       pm_agent_type: "claude",
       pm_model_id: "claude-opus-4-7",
       pm_mode: "bridge",
@@ -77,6 +79,10 @@ describe("dispatch-start tool", () => {
         dispatcher_thread_id: "hub-thread-5678",
         reply_channel_source: "service",
         auto_approve: true,
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        },
         pm_resolver: {
           enabled: true,
           agent_type: "claude",
@@ -121,6 +127,10 @@ describe("dispatch-start tool", () => {
         ],
         auto_approve: true,
         config: {
+          parallel_dispatch: {
+            enabled: true,
+            max_concurrency: 3
+          },
           pm_resolver: {
             enabled: true,
             agent_type: "claude",

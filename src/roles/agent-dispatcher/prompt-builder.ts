@@ -21,6 +21,7 @@ export interface PromptVars {
   auto_approve: boolean;
   resolved_model_map_json?: string;
   pm_resolver_config_json?: string;
+  parallel_dispatch_config_json?: string;
 }
 
 const TOOL_ENTRYPOINT = MERIDIAN_TOOL_DISPLAY_COMMAND;
@@ -36,7 +37,10 @@ export function buildSystemPromptFromConfig(
     | "kill_policy"
     | "auto_approve"
     | "model_map"
-  > & { pm_resolver?: AgentDispatcherConfig["pm_resolver"] }
+  > & {
+    pm_resolver?: AgentDispatcherConfig["pm_resolver"];
+    parallel_dispatch?: AgentDispatcherConfig["parallel_dispatch"];
+  }
 ): string {
   return buildSystemPrompt({
     dispatch_plan_path: config.dispatch_plan_path,
@@ -50,7 +54,11 @@ export function buildSystemPromptFromConfig(
     kill_policy: config.kill_policy,
     auto_approve: config.auto_approve,
     resolved_model_map_json: JSON.stringify(config.model_map ?? {}),
-    pm_resolver_config_json: JSON.stringify(config.pm_resolver ?? {})
+    pm_resolver_config_json: JSON.stringify(config.pm_resolver ?? {}),
+    parallel_dispatch_config_json: JSON.stringify(config.parallel_dispatch ?? {
+      enabled: false,
+      max_concurrency: 1
+    })
   });
 }
 
@@ -77,6 +85,9 @@ export function buildSystemPrompt(vars: PromptVars): string {
   const pmResolverConfigJson = vars.pm_resolver_config_json?.trim().length
     ? vars.pm_resolver_config_json.trim()
     : "{}";
+  const parallelDispatchConfigJson = vars.parallel_dispatch_config_json?.trim().length
+    ? vars.parallel_dispatch_config_json.trim()
+    : "{\"enabled\":false,\"max_concurrency\":1}";
 
   return [
     "# Role",
@@ -95,6 +106,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `auto_approve: ${autoApprove}`,
     `resolved_model_map_json: ${resolvedModelMapJson}`,
     `pm_resolver_config_json: ${pmResolverConfigJson}`,
+    `parallel_dispatch_config_json: ${parallelDispatchConfigJson}`,
     "Approval policy crosses the Meridian boundary as neutral `auto_approve`; Meridian owns provider-specific flag mapping.",
     "The `meridian-tool` executable lives in the Meridian-roles repo, but dispatcher commands still run inside the worker sandbox rooted at `dispatch_repo_root`.",
     "Docs live under `docs_root` unless the dispatch command says otherwise.",
@@ -104,8 +116,9 @@ export function buildSystemPrompt(vars: PromptVars): string {
     `Use only \`${TOOL_ENTRYPOINT} <command>\`. All commands return JSON; check \`ok\` and \`status\` before acting.`,
     "",
     `1. \`${TOOL_ENTRYPOINT} continue-dispatcher --dispatcher ${dispatcherRoleId} [--worker <worker_id>]\``,
-    '   Returns `{"ok":true,"status":"continued","worker":"R-03"}`, `{"ok":true,"status":"still_blocked",...}`, or `{"ok":true,"status":"manual_intervention_required",...}`.',
+    '   Returns `{"ok":true,"status":"continued","worker":"R-03"}`, `{"ok":true,"status":"continued_parallel","started_workers":["R-01","R-02"]}`, `{"ok":true,"status":"still_blocked",...}`, or `{"ok":true,"status":"manual_intervention_required",...}`.',
     "   Asks Meridian-roles to choose the next eligible worker and launch it. Do not resolve model routing or call worker `spawn` / `run` yourself.",
+    "   When `parallel_dispatch_config_json.enabled` is true, the service may start multiple dependency-eligible workers in one continue tick. Do not spawn around the service scheduler.",
     "",
     `2. \`${TOOL_ENTRYPOINT} kill --thread-id <id>\``,
     "   Best-effort kill. Must not block forward progress.",
@@ -126,7 +139,7 @@ export function buildSystemPrompt(vars: PromptVars): string {
     "- For operator-directed work: `continue-dispatcher --dispatcher <dispatcher_role_id> --worker <worker_id>`.",
     "- If any non-human row is already `🔄`, do not try to route around it locally. Re-read, wait, or notify a human.",
     "Step 3. Interpret responses by JSON shape:",
-    '- `status: "continued"`: worker launched. Re-read plan later and continue.',
+    '- `status: "continued"` / `status: "continued_parallel"`: worker(s) launched. Re-read plan later and continue.',
     '- `status: "plan_complete"`: all non-human workers have reached a terminal state. Send the final completion notify and stop immediately.',
     '- `status: "still_blocked"`: do not force a launch. Re-read; notify human if block persists.',
     '- `status: "validation_in_progress"` / `"validation_feedback_delivered"`: validation cycle is live. Re-read later, do not escalate.',

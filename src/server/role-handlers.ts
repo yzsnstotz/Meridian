@@ -55,6 +55,7 @@ import { SchedulerStateStore } from "../roles/scheduler/scheduler-state-store";
 import {
   hasRecoverableDispatchWork,
   isHumanDispatchRow,
+  resolveEligibleServiceContinueWorkers,
   resolveManualInterventionWorker,
   resolveServiceContinueWorker,
   type DispatchContinuationPlanRow
@@ -102,6 +103,7 @@ import {
   HubMessageSchema,
   HubResultSchema,
   KillPolicySchema,
+  ParallelDispatchConfigSchema,
   PmResolverConfigSchema,
   ReplyChannelSchema,
   ValidatorConfigSchema,
@@ -159,6 +161,7 @@ const CreateRoleBodySchema = z.object({
   use_agent_dispatcher: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional(),
   pm_resolver: PmResolverConfigSchema.optional(),
+  parallel_dispatch: ParallelDispatchConfigSchema.optional(),
   config: z.unknown().optional()
 });
 
@@ -196,7 +199,8 @@ const AgentDispatcherConfigPatchSchema = z.object({
   kill_policy: KillPolicySchema.optional(),
   auto_approve: z.boolean().optional(),
   validator: ValidatorConfigSchema.optional(),
-  pm_resolver: PmResolverConfigSchema.optional()
+  pm_resolver: PmResolverConfigSchema.optional(),
+  parallel_dispatch: ParallelDispatchConfigSchema.optional()
 }).strict();
 
 const UpdateWorkerStatusRequestSchema = z.object({
@@ -409,11 +413,19 @@ export interface RoleDetailResponse {
 
 export interface ContinueDispatcherResponse {
   ok: true;
-  status: "continued" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required" | "validation_in_progress" | "validation_feedback_delivered";
+  status: "continued" | "continued_parallel" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required" | "validation_in_progress" | "validation_feedback_delivered";
   message: string;
   dispatcher_thread_id?: string;
   worker?: string;
+  started_workers?: string[];
   running_workers?: string[];
+  available_slots?: number;
+  max_concurrency?: number;
+  launch_failures?: Array<{
+    worker: string;
+    error: string;
+    local_tool_bootstrap_failure?: boolean;
+  }>;
   pm_resolver_thread_ids?: string[];
   resume_result?: Awaited<ReturnType<typeof executeResumeWorkerAction>>;
   error?: string;
@@ -538,6 +550,9 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           user_reply_channels: patch.pm_resolver.user_reply_channels
             ?? config.user_reply_channels.map((replyChannel) => ({ ...replyChannel }))
         };
+      }
+      if (patch.parallel_dispatch !== undefined) {
+        config.parallel_dispatch = patch.parallel_dispatch;
       }
 
       // Persist to state store
@@ -912,6 +927,195 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     }
   }
 
+  async function resolveEffectiveDispatcherThreadIdForContinue(
+    threadId: string,
+    dispatchPlanPath: string,
+    lifecycleState: DispatchThreadStateV2
+  ): Promise<string | undefined> {
+    let effectiveDispatcherThreadId = (() => {
+      const activeRole = options.runner.getRole(threadId);
+      if (activeRole?.roleType === "agent-dispatcher") {
+        return extractDispatcherThreadId(activeRole) ?? lifecycleState.dispatcher.thread_id ?? undefined;
+      }
+
+      return lifecycleState.dispatcher.thread_id ?? undefined;
+    })();
+
+    effectiveDispatcherThreadId = await validateDispatcherThreadForContinue(
+      dispatchPlanPath,
+      threadId,
+      effectiveDispatcherThreadId,
+      attachToThread,
+      log,
+      async () => {
+        await persistAgentDispatcherRoleStatus(stateStore, threadId, NEEDS_REACTIVATION_ROLE_STATUS);
+      }
+    );
+
+    return effectiveDispatcherThreadId;
+  }
+
+  async function continueParallelDispatcherForRole(args: {
+    threadId: string;
+    context: RoleConfigContext;
+    dispatchPlanData: DispatchPlanData;
+    lifecycleState: DispatchThreadStateV2;
+    dispatchPlanPath: string;
+    shouldActivateAfterContinue: boolean;
+    dispatcherThreadId?: string;
+  }): Promise<ContinueDispatcherResponse | null> {
+    const parallelConfig = args.context.effectiveConfig.parallel_dispatch;
+    if (!parallelConfig.enabled) {
+      return null;
+    }
+
+    const maxConcurrency = parallelConfig.max_concurrency;
+    const activeWorkers = findActiveRunningNonHumanWorkers(args.dispatchPlanData.rows, args.lifecycleState);
+    const availableSlots = Math.max(0, maxConcurrency - activeWorkers.length);
+    if (availableSlots <= 0) {
+      return {
+        ok: true,
+        status: "still_blocked",
+        message: `still blocked: parallel worker limit reached (${activeWorkers.length}/${maxConcurrency})`,
+        ...(args.dispatcherThreadId ? { dispatcher_thread_id: args.dispatcherThreadId } : {}),
+        running_workers: activeWorkers,
+        available_slots: 0,
+        max_concurrency: maxConcurrency
+      };
+    }
+
+    const candidates = resolveEligibleServiceContinueWorkers(
+      args.dispatchPlanData.rows,
+      args.lifecycleState,
+      {
+        includeImplicitRunningWorker: false,
+        limit: availableSlots
+      }
+    ).filter((workerId) => !activeWorkers.includes(workerId));
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const startedWorkers: string[] = [];
+    const launchFailures: NonNullable<ContinueDispatcherResponse["launch_failures"]> = [];
+    const pmResolverThreadIds: string[] = [];
+    const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, args.threadId);
+
+    for (const workerId of candidates) {
+      const latestLifecycleState = await loadDispatchLifecycleState(args.dispatchPlanPath, log);
+      const latestActiveWorkers = findActiveRunningNonHumanWorkers(args.dispatchPlanData.rows, latestLifecycleState);
+      if (latestActiveWorkers.length >= maxConcurrency || startedWorkers.length >= availableSlots) {
+        break;
+      }
+      if (latestActiveWorkers.includes(workerId)) {
+        continue;
+      }
+
+      const workerState = latestLifecycleState.workers[workerId];
+      if (
+        !args.context.effectiveConfig.validator?.enabled
+        && (
+          workerState?.status === "awaiting_validation"
+          || workerState?.status === "fix_requested"
+        )
+      ) {
+        return {
+          ok: true,
+          status: "manual_intervention_required",
+          message: `manual intervention required: ${workerId} is in ${workerState.status} but validator config is disabled; enable the validator on this dispatcher or apply a different resume action (retry/skip/force-complete)`,
+          worker: workerId
+        };
+      }
+
+      const lifecycleStoreForPmGate = new LifecycleStore(resolveDispatchThreadPath(args.dispatchPlanPath));
+      const { live: livePmResolvers } = await findLivePmResolversForWorker(
+        latestLifecycleState,
+        workerId,
+        lifecycleStoreForPmGate,
+        attachToThread,
+        log,
+        sendHubRequestImpl
+      );
+      if (livePmResolvers.length > 0) {
+        pmResolverThreadIds.push(...livePmResolvers.map((entry) => entry.thread_id));
+        continue;
+      }
+
+      const continued = await continueDispatchWorker(
+        args.context.effectiveConfig,
+        args.dispatchPlanData.rows,
+        workerId,
+        launchDispatchWorkerImpl,
+        undefined,
+        otherDispatchPlanPaths
+      );
+      if (!continued.ok) {
+        launchFailures.push({
+          worker: workerId,
+          error: continued.error ?? "Failed to launch dispatch worker",
+          ...(continued.localToolBootstrapFailure ? { local_tool_bootstrap_failure: true } : {})
+        });
+        continue;
+      }
+
+      startedWorkers.push(workerId);
+    }
+
+    if (startedWorkers.length === 0) {
+      if (launchFailures.length > 0) {
+        const firstFailure = launchFailures[0]!;
+        return {
+          ok: true,
+          status: firstFailure.local_tool_bootstrap_failure ? "local_tool_bootstrap_failed" : "still_blocked",
+          message: firstFailure.local_tool_bootstrap_failure
+            ? `local tool bootstrap failed: ${firstFailure.error}`
+            : `still blocked: failed to launch ${firstFailure.worker}: ${firstFailure.error}`,
+          worker: firstFailure.worker,
+          error: firstFailure.error,
+          launch_failures: launchFailures,
+          max_concurrency: maxConcurrency
+        };
+      }
+
+      if (pmResolverThreadIds.length > 0) {
+        return {
+          ok: true,
+          status: "still_blocked",
+          message: `still blocked: PM resolver(s) ${pmResolverThreadIds.join(", ")} resolving eligible parallel worker(s)`,
+          ...(args.dispatcherThreadId ? { dispatcher_thread_id: args.dispatcherThreadId } : {}),
+          pm_resolver_thread_ids: pmResolverThreadIds,
+          running_workers: activeWorkers,
+          available_slots: availableSlots,
+          max_concurrency: maxConcurrency
+        };
+      }
+
+      return null;
+    }
+
+    if (args.shouldActivateAfterContinue) {
+      await setAgentDispatcherStatus(args.threadId, ACTIVE_ROLE_STATUS);
+    }
+
+    const finalLifecycleState = await loadDispatchLifecycleState(args.dispatchPlanPath, log);
+    const runningWorkers = Array.from(new Set([
+      ...findActiveRunningNonHumanWorkers(args.dispatchPlanData.rows, finalLifecycleState),
+      ...startedWorkers
+    ]));
+
+    return {
+      ok: true,
+      status: "continued_parallel",
+      message: `continued parallel: ${startedWorkers.join(", ")}`,
+      ...(args.dispatcherThreadId ? { dispatcher_thread_id: args.dispatcherThreadId } : {}),
+      started_workers: startedWorkers,
+      running_workers: runningWorkers,
+      available_slots: Math.max(0, maxConcurrency - runningWorkers.length),
+      max_concurrency: maxConcurrency,
+      ...(launchFailures.length > 0 ? { launch_failures: launchFailures } : {})
+    };
+  }
+
   async function continueDispatcherForRole(threadId: string, workerId?: string): Promise<ContinueDispatcherResponse> {
     const context = await loadRoleConfigContext(threadId, stateStore, resolveActiveRoleBinding);
     if (context.roleType !== "agent-dispatcher") {
@@ -941,6 +1145,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     let effectiveWorkerId = workerId
       ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
     const shouldActivateAfterContinue = context.status !== ACTIVE_ROLE_STATUS;
+    const isParallelAutoContinue = !workerId && context.effectiveConfig.parallel_dispatch.enabled;
 
     const initialManualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (initialManualInterventionWorkerId) {
@@ -952,7 +1157,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       lifecycleState,
       effectiveWorkerId
     );
-    if (preValidationRunningWorkers.length > 0) {
+    if (!isParallelAutoContinue && preValidationRunningWorkers.length > 0) {
       return {
         ok: true,
         status: "still_blocked",
@@ -973,7 +1178,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         log,
         attachToThread,
         options.meridianApi,
-        effectiveWorkerId,
+        isParallelAutoContinue ? null : effectiveWorkerId,
         sendHubRequestImpl,
         otherDispatchPlanPathsForValidator
       );
@@ -989,6 +1194,26 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (manualInterventionWorkerId) {
       return buildManualInterventionResponse(manualInterventionWorkerId, lifecycleState);
+    }
+
+    if (isParallelAutoContinue) {
+      const effectiveDispatcherThreadId = await resolveEffectiveDispatcherThreadIdForContinue(
+        threadId,
+        dispatchPlanPath,
+        lifecycleState
+      );
+      const parallelResult = await continueParallelDispatcherForRole({
+        threadId,
+        context,
+        dispatchPlanData,
+        lifecycleState,
+        dispatchPlanPath,
+        shouldActivateAfterContinue,
+        dispatcherThreadId: effectiveDispatcherThreadId
+      });
+      if (parallelResult) {
+        return parallelResult;
+      }
     }
 
     const runningWorkers = findBlockingRunningNonHumanWorkers(
@@ -1043,23 +1268,10 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       }
     }
 
-    let effectiveDispatcherThreadId = (() => {
-      const activeRole = options.runner.getRole(threadId);
-      if (activeRole?.roleType === "agent-dispatcher") {
-        return extractDispatcherThreadId(activeRole) ?? lifecycleState.dispatcher.thread_id ?? undefined;
-      }
-
-      return lifecycleState.dispatcher.thread_id ?? undefined;
-    })();
-    effectiveDispatcherThreadId = await validateDispatcherThreadForContinue(
-      dispatchPlanPath,
+    const effectiveDispatcherThreadId = await resolveEffectiveDispatcherThreadIdForContinue(
       threadId,
-      effectiveDispatcherThreadId,
-      attachToThread,
-      log,
-      async () => {
-        await persistAgentDispatcherRoleStatus(stateStore, threadId, NEEDS_REACTIVATION_ROLE_STATUS);
-      }
+      dispatchPlanPath,
+      lifecycleState
     );
 
     try {
@@ -1824,6 +2036,9 @@ function normalizeCreateBody(body: unknown, forcedRoleType?: RoleType): {
     auto_approve: parsed.data.auto_approve ?? (nestedConfig as { auto_approve?: unknown }).auto_approve,
     validator: parsed.data.validator ?? (nestedConfig as { validator?: unknown }).validator,
     pm_resolver: parsed.data.pm_resolver ?? (nestedConfig as { pm_resolver?: unknown }).pm_resolver,
+    parallel_dispatch:
+      parsed.data.parallel_dispatch
+      ?? (nestedConfig as { parallel_dispatch?: unknown }).parallel_dispatch,
     use_agent_dispatcher:
       parsed.data.use_agent_dispatcher
       ?? (nestedConfig as { use_agent_dispatcher?: unknown }).use_agent_dispatcher
@@ -2584,6 +2799,36 @@ function findBlockingRunningNonHumanWorkers(
   return findRunningNonHumanWorkers(rows)
     .filter((candidate) => candidate !== effectiveWorkerId)
     .filter((candidate) => !isLifecycleTerminal(lifecycleState, candidate));
+}
+
+function findActiveRunningNonHumanWorkers(
+  rows: DispatchPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string[] {
+  const running = new Set<string>();
+  for (const worker of findRunningNonHumanWorkers(rows)) {
+    const workerId = worker.trim();
+    if (workerId && !isLifecycleTerminal(lifecycleState, workerId)) {
+      running.add(workerId);
+    }
+  }
+
+  for (const row of rows) {
+    if (isHumanDispatchRow(row)) {
+      continue;
+    }
+
+    const workerId = row.worker.trim();
+    if (!workerId) {
+      continue;
+    }
+
+    if (lifecycleState.workers[workerId]?.status === "running") {
+      running.add(workerId);
+    }
+  }
+
+  return Array.from(running);
 }
 
 function isLifecycleTerminal(lifecycleState: DispatchThreadStateV2, workerId: string): boolean {

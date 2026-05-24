@@ -5,10 +5,12 @@ import { z } from "zod";
 
 import {
   DispatchModelMapSchema,
+  ParallelDispatchConfigSchema,
   PmResolverConfigSchema,
   ReplyChannelSchema,
   type DispatchModelMap,
   type DispatchModelOverride,
+  type ParallelDispatchConfig,
   type PmResolverConfig
 } from "../../types";
 import {
@@ -105,6 +107,16 @@ const dispatchStartTool: ToolDefinition = {
       required: false,
       description: "Whether Meridian should enable neutral auto-approve for dispatcher launches"
     },
+    parallel: {
+      type: "string",
+      required: false,
+      description: "Enable dependency-aware parallel worker dispatch"
+    },
+    max_concurrency: {
+      type: "string",
+      required: false,
+      description: "Maximum concurrent workers when parallel dispatch is enabled"
+    },
     pm_enabled: {
       type: "string",
       required: false,
@@ -153,6 +165,8 @@ const dispatchStartTool: ToolDefinition = {
         dispatchRepoRoot: params.repo_root,
         docsRoot: params.docs_root,
         autoApprove: parseOptionalBoolean(params.auto_approve),
+        parallel: params.parallel,
+        maxConcurrency: params.max_concurrency,
         pmEnabled: params.pm_enabled,
         pmAgentType: params.pm_agent_type,
         pmModelId: params.pm_model_id,
@@ -178,6 +192,8 @@ export async function executeDispatchStart(args: {
   dispatchRepoRoot?: string;
   docsRoot?: string;
   autoApprove?: boolean;
+  parallel?: string;
+  maxConcurrency?: string;
   pmEnabled?: string;
   pmAgentType?: string;
   pmModelId?: string;
@@ -217,6 +233,10 @@ export async function executeDispatchStart(args: {
     autoApprove: args.pmAutoApprove,
     replyChannels: args.pmReplyChannels
   });
+  const parallelDispatch = parseParallelDispatchConfig({
+    enabled: args.parallel,
+    maxConcurrency: args.maxConcurrency
+  });
 
   const response = await postRolesServiceJson<unknown>("/api/agent-dispatcher/start", {
     dispatch_plan_path: args.planPath,
@@ -226,6 +246,7 @@ export async function executeDispatchStart(args: {
     user_reply_channels: replyChannels.channels,
     auto_approve: args.autoApprove ?? false,
     config: {
+      parallel_dispatch: parallelDispatch,
       pm_resolver: pmResolver,
       model_map: parsedModelMap
     }
@@ -257,6 +278,7 @@ export async function executeDispatchStart(args: {
       reply_channel_source: replyChannels.source,
       model_map: parsedModelMap,
       auto_approve: args.autoApprove ?? false,
+      parallel_dispatch: parallelDispatch,
       pm_resolver: pmResolver,
       warnings: warnings.warnings,
       dispatch_status: await buildDispatchStatusReport(args.planPath)
@@ -309,6 +331,23 @@ function parsePmResolverConfig(args: {
   }
 
   return PmResolverConfigSchema.parse(raw);
+}
+
+function parseParallelDispatchConfig(args: {
+  enabled?: string;
+  maxConcurrency?: string;
+}): ParallelDispatchConfig {
+  const enabled = parseOptionalBoolean(args.enabled) ?? false;
+  const rawMax = requireParam(args.maxConcurrency);
+  const maxConcurrency = rawMax ? Number.parseInt(rawMax, 10) : 1;
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+    throw new Error("max_concurrency must be a positive integer");
+  }
+
+  return ParallelDispatchConfigSchema.parse({
+    enabled,
+    max_concurrency: enabled ? maxConcurrency : 1
+  });
 }
 
 function parseReplyChannelsJson(value: string): unknown[] {

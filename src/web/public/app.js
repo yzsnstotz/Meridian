@@ -984,6 +984,40 @@ function collectPmResolverConfig(prefix) {
   return config;
 }
 
+function collectParallelDispatchConfig(prefix, options = {}) {
+  const enabledElement = document.getElementById(`${prefix}-enabled`);
+  const maxElement = document.getElementById(`${prefix}-max-concurrency`);
+  const enabled = enabledElement?.type === "checkbox"
+    ? enabledElement.checked === true
+    : enabledElement?.value === "true";
+  const rawMax = parseInt(maxElement?.value, 10);
+  const maxConcurrency = Number.isFinite(rawMax) && rawMax > 0 ? rawMax : 1;
+  const minEnabledConcurrency = options.minEnabledConcurrency ?? 2;
+
+  if (enabled && maxConcurrency < minEnabledConcurrency) {
+    throw new Error(`max_concurrency must be at least ${minEnabledConcurrency} when parallel dispatch is enabled.`);
+  }
+
+  return {
+    enabled,
+    max_concurrency: enabled ? maxConcurrency : 1
+  };
+}
+
+function setupParallelDispatchToggle(prefix) {
+  const enabled = document.getElementById(`${prefix}-enabled`);
+  const fields = document.getElementById(`${prefix}-fields`);
+  if (!enabled || !fields) {
+    return;
+  }
+
+  const refresh = () => {
+    fields.hidden = enabled.checked !== true;
+  };
+  enabled.addEventListener("change", refresh);
+  refresh();
+}
+
 function collectPmResolverElements(prefix) {
   return [
     `${prefix}-enabled`,
@@ -1980,6 +2014,7 @@ async function setupDashboard() {
   setupTabNavigation();
   setupCreateRoleMenu();
   setupValidatorToggle();
+  setupParallelDispatchToggle("agent-dispatcher-parallel");
   setupPmResolverToggle("agent-dispatcher-pm-enabled", "agent-dispatcher-pm-fields");
   setupPmResolverToggle("new-scheduler-pm-enabled", "new-scheduler-pm-fields");
   setupSchedulerCreation();
@@ -2384,6 +2419,11 @@ async function setupDashboard() {
       payload.validator = validatorConfig;
     }
     payload.pm_resolver = collectPmResolverConfig("agent-dispatcher-pm");
+    try {
+      payload.parallel_dispatch = collectParallelDispatchConfig("agent-dispatcher-parallel");
+    } catch {
+      payload.parallel_dispatch = { enabled: false, max_concurrency: 1 };
+    }
 
     const response = await fetchJson("/api/agent-dispatcher/prompt-preview", {
       method: "POST",
@@ -2444,6 +2484,12 @@ async function setupDashboard() {
       agentDispatcherFeedback.textContent = getErrorMessage(error);
       return;
     }
+    try {
+      payload.parallel_dispatch = collectParallelDispatchConfig("agent-dispatcher-parallel");
+    } catch (error) {
+      agentDispatcherFeedback.textContent = getErrorMessage(error);
+      return;
+    }
 
     Object.keys(payload).forEach((key) => {
       if (payload[key] === "") {
@@ -2470,6 +2516,10 @@ async function setupDashboard() {
       const pmFields = document.getElementById("agent-dispatcher-pm-fields");
       if (pmToggle) pmToggle.checked = true;
       if (pmFields) pmFields.hidden = false;
+      const parallelToggle = document.getElementById("agent-dispatcher-parallel-enabled");
+      const parallelFields = document.getElementById("agent-dispatcher-parallel-fields");
+      if (parallelToggle) parallelToggle.checked = false;
+      if (parallelFields) parallelFields.hidden = true;
       await loadAgentDispatcherReplyOptions();
       agentDispatcherPromptDirty = false;
       await refreshAgentDispatcherPromptPreview({ force: true });
@@ -2508,6 +2558,19 @@ async function setupDashboard() {
   });
 
   collectPmResolverElements("agent-dispatcher-pm").forEach((element) => {
+    ["input", "change"].forEach((eventName) => {
+      element.addEventListener(eventName, () => {
+        void refreshAgentDispatcherPromptPreview().catch((error) => {
+          agentDispatcherFeedback.textContent = getErrorMessage(error);
+        });
+      });
+    });
+  });
+
+  [
+    "agent-dispatcher-parallel-enabled",
+    "agent-dispatcher-parallel-max-concurrency"
+  ].map((id) => document.getElementById(id)).filter(Boolean).forEach((element) => {
     ["input", "change"].forEach((eventName) => {
       element.addEventListener(eventName, () => {
         void refreshAgentDispatcherPromptPreview().catch((error) => {
@@ -3349,6 +3412,8 @@ async function setupConfigEditor() {
   const cfgMode = document.getElementById("cfg-mode");
   const cfgKillPolicy = document.getElementById("cfg-kill-policy");
   const cfgAutoApprove = document.getElementById("cfg-auto-approve");
+  const cfgParallelEnabled = document.getElementById("cfg-parallel-enabled");
+  const cfgParallelMaxConcurrency = document.getElementById("cfg-parallel-max-concurrency");
   const cfgReplyChannels = document.getElementById("cfg-reply-channels");
 
   // Validator config fields
@@ -3389,6 +3454,9 @@ async function setupConfigEditor() {
     if (cfgKillPolicy) cfgKillPolicy.value = config.kill_policy || "always";
     if (cfgAutoApprove) cfgAutoApprove.value = String(config.auto_approve === true);
     if (cfgCredentialId) cfgCredentialId.value = config.credential_id || "";
+    const parallel = config.parallel_dispatch || {};
+    if (cfgParallelEnabled) cfgParallelEnabled.value = String(parallel.enabled === true);
+    if (cfgParallelMaxConcurrency) cfgParallelMaxConcurrency.value = parallel.max_concurrency ?? 1;
     if (cfgReplyChannels) cfgReplyChannels.value = JSON.stringify(config.user_reply_channels || [], null, 2);
 
     // Validator fields
@@ -3422,6 +3490,8 @@ async function setupConfigEditor() {
     if (cfgKillPolicy) cfgKillPolicy.disabled = disabled;
     if (cfgAutoApprove) cfgAutoApprove.disabled = disabled;
     if (cfgCredentialId) cfgCredentialId.disabled = disabled;
+    if (cfgParallelEnabled) cfgParallelEnabled.disabled = disabled;
+    if (cfgParallelMaxConcurrency) cfgParallelMaxConcurrency.readOnly = disabled;
     if (cfgValidatorEnabled) cfgValidatorEnabled.disabled = disabled;
     if (cfgValidatorAgentType) cfgValidatorAgentType.disabled = disabled;
     if (cfgValidatorMode) cfgValidatorMode.disabled = disabled;
@@ -3462,6 +3532,7 @@ async function setupConfigEditor() {
     // Send `null` when blank so the server clears any previously-stored value;
     // any non-empty value forwards through to /api/spawn as credential_id.
     if (cfgCredentialId) patch.credential_id = cfgCredentialId.value.trim() || null;
+    patch.parallel_dispatch = collectParallelDispatchConfig("cfg-parallel", { minEnabledConcurrency: 1 });
 
     if (cfgValidatorEnabled) {
       const validatorAgentType = cfgValidatorAgentType?.value || "codex";
@@ -3509,7 +3580,7 @@ async function setupConfigEditor() {
     }
     status.textContent = response.can_edit
       ? (isAgentDispatcherConfig
-        ? "Editable fields: dispatch_plan_path, command_file_path, agent_type, model_id, mode, kill_policy, auto_approve, validator, pm_resolver. Changes apply to subsequent launches."
+        ? "Editable fields: dispatch_plan_path, command_file_path, agent_type, model_id, mode, kill_policy, auto_approve, parallel_dispatch, validator, pm_resolver. Changes apply to subsequent launches."
         : "Only tasks and taskspec are editable here. Runtime task fields are reset on save.")
       : response.blocked_reason || "Editing is temporarily unavailable.";
   };
@@ -4844,6 +4915,8 @@ function formatContinueResult(result) {
   switch (result?.status) {
     case "continued":
       return message || "continued";
+    case "continued_parallel":
+      return message || "continued parallel";
     case "still_blocked":
       return message || "still blocked";
     case "manual_intervention_required":

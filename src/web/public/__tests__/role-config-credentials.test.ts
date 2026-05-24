@@ -28,6 +28,11 @@ describe("role-config credential selectors", () => {
     expect(indexHtml).toContain('id="agent-dispatcher-pm-credential-id"');
     expect(indexHtml).toContain('name="pm_credential_id"');
 
+    expect(indexHtml).toContain('id="agent-dispatcher-parallel-enabled"');
+    expect(indexHtml).toContain('name="parallel_dispatch_enabled"');
+    expect(indexHtml).toContain('id="agent-dispatcher-parallel-max-concurrency"');
+    expect(indexHtml).toContain('name="parallel_dispatch_max_concurrency"');
+
     // Default option text is exposed so operators understand what blank means
     expect(indexHtml).toMatch(/Use default codex login/);
 
@@ -41,6 +46,8 @@ describe("role-config credential selectors", () => {
     expect(configHtml).toContain('id="cfg-credential-id"');
     expect(configHtml).toContain('id="cfg-validator-credential-id"');
     expect(configHtml).toContain('id="cfg-pm-credential-id"');
+    expect(configHtml).toContain('id="cfg-parallel-enabled"');
+    expect(configHtml).toContain('id="cfg-parallel-max-concurrency"');
 
     // Default option text is exposed so operators understand what blank means
     expect(configHtml).toMatch(/Use default codex login/);
@@ -70,5 +77,9 @@ describe("role-config credential selectors", () => {
     expect(appScript).toMatch(/cfg-credential-id/);
     expect(appScript).toMatch(/cfg-validator-credential-id/);
     expect(appScript).toMatch(/cfg-pm-credential-id/);
+
+    expect(appScript).toMatch(/collectParallelDispatchConfig/);
+    expect(appScript).toMatch(/parallel_dispatch/);
+    expect(appScript).toMatch(/max_concurrency/);
   });
 });

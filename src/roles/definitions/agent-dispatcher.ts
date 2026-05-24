@@ -235,7 +235,8 @@ export class AgentDispatcherRole implements BaseRole {
       kill_policy: this.config.kill_policy,
       auto_approve: this.config.auto_approve,
       resolved_model_map_json: JSON.stringify(this.resolveDispatchModelMap()),
-      pm_resolver_config_json: JSON.stringify(this.config.pm_resolver)
+      pm_resolver_config_json: JSON.stringify(this.config.pm_resolver),
+      parallel_dispatch_config_json: JSON.stringify(this.config.parallel_dispatch)
     });
     return configuredSystemPrompt && configuredSystemPrompt.length > 0
       ? materializeDispatcherSystemPrompt(configuredSystemPrompt, this.threadId)
@@ -467,7 +468,8 @@ function snapshotConfig(config: AgentDispatcherConfig): AgentDispatcherConfig {
       ])
     ) : undefined,
     user_reply_channel: config.user_reply_channel ? { ...config.user_reply_channel } : undefined,
-    user_reply_channels: config.user_reply_channels.map((replyChannel) => ({ ...replyChannel }))
+    user_reply_channels: config.user_reply_channels.map((replyChannel) => ({ ...replyChannel })),
+    parallel_dispatch: { ...config.parallel_dispatch }
   };
 }
 

@@ -84,6 +84,50 @@ describe("role config mode defaults", () => {
     expect(scheduler.pm_resolver).toEqual(agentDispatcher.pm_resolver);
   });
 
+  it("defaults dispatcher parallel dispatch off with one slot", () => {
+    const agentDispatcher = AgentDispatcherConfigSchema.parse({
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: replyChannels
+    });
+
+    expect(agentDispatcher.parallel_dispatch).toEqual({
+      enabled: false,
+      max_concurrency: 1
+    });
+  });
+
+  it("preserves explicit dispatcher parallel dispatch config", () => {
+    const agentDispatcher = AgentDispatcherConfigSchema.parse({
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: replyChannels,
+      parallel_dispatch: {
+        enabled: true,
+        max_concurrency: 3
+      }
+    });
+
+    expect(agentDispatcher.parallel_dispatch).toEqual({
+      enabled: true,
+      max_concurrency: 3
+    });
+  });
+
+  it("rejects invalid dispatcher parallel dispatch max_concurrency", () => {
+    const parsed = AgentDispatcherConfigSchema.safeParse({
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      user_reply_channels: replyChannels,
+      parallel_dispatch: {
+        enabled: true,
+        max_concurrency: 0
+      }
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("allows PM resolver to choose its own model and informing channels", () => {
     const pmResolver = PmResolverConfigSchema.parse({
       enabled: true,

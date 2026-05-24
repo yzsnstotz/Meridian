@@ -128,6 +128,22 @@
                 </select>
               </label>
             </div>
+            <fieldset class="field-group">
+              <legend>Parallel Dispatch</legend>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>enabled</span>
+                  <select id="cfg-parallel-enabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>max_concurrency</span>
+                  <input id="cfg-parallel-max-concurrency" type="number" min="1" max="32" step="1" value="1" />
+                </label>
+              </div>
+            </fieldset>
             <label class="field">
               <span>user_reply_channels</span>
               <textarea id="cfg-reply-channels" class="editor-textarea" rows="4" readonly style="min-height: 80px"></textarea>
