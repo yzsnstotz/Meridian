@@ -42,6 +42,22 @@
 
 FE 会根据该字段渲染对应 UI，例如单选 chip、文本输入或模版预览。
 
+如果当前运行环境不能真正附带 `payload.chatter.extract_state`，你必须在普通回复后追加一个 strict JSON 代码块，ChatterRole 会解析它并转成结构化字段：
+
+```json
+{
+  "payload": {
+    "chatter": {
+      "extract_state": {
+        "stage": "<current_stage>",
+        "question": "<本轮要用户回答的问题，可选>",
+        "options": ["<候选 1>", "<候选 2>", "<候选 3>"]
+      }
+    }
+  }
+}
+```
+
 ## 严格规则
 
 - 不要在 `awaiting_final_confirm` 之前 emit `draft_template`。用户没确认到最终预览阶段前，看不到完整模版。
@@ -54,6 +70,26 @@ FE 会根据该字段渲染对应 UI，例如单选 chip、文本输入或模版
   - `proposed_patch.record_type`: `"template_<genre>"`
   - `proposed_patch.key`: 新 UUID
   - `proposed_patch.patch`: 完整 template JSON
+- 如果当前运行环境没有真正暴露 `chatter.suggest_observation`，不要说“无法调用工具”。在同一个 strict JSON 代码块中加入：
+
+```json
+{
+  "mumu_structured_fallback": {
+    "tool": "chatter.suggest_observation",
+    "args": {
+      "type": "extracted_template",
+      "description": "我把你的剧本抽成了 template_<genre>，请确认",
+      "proposed_patch": {
+        "record_type": "template_<genre>",
+        "key": "<new_uuid>",
+        "patch": { "...": "完整 template JSON" }
+      }
+    }
+  }
+}
+```
+
+该 fallback 等价于一次候选建议调用，仍然必须等待用户最终确认后才会写入。
 - 用户中途说“重来”“重新开始”“清空重新抽取”等意思时，复位 `extract_state.stage` 到 `uploaded`，清空已收集的部分回答，并重新开始确认。
 - 用户中途关页面后再回来时，ChatterRole 会缓存 `extract_state` 24h；你必须从上次 stage 继续，不要让用户重新上传或重新回答已经确认的信息。
 - `committed` 阶段只做简短确认，不要再发新的 candidate，不要重新生成 template。

@@ -28,6 +28,10 @@ import {
 } from "../chatter/sandbox";
 import { makeMemorySkills } from "../chatter/memory-skills";
 import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../chatter/allowlist";
+import {
+  parseAgentStructuredFallback,
+  stripAgentStructuredFallbackContent
+} from "../chatter/agent-structured-fallback";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
 import { ObservationCache } from "../chatter/observation-cache";
 import {
@@ -784,12 +788,18 @@ export class ChatterRole implements BaseRole {
   private async onAgentTurnResponse(result: HubResult): Promise<void> {
     const trace = this.sessionMgr!.getTrace(result.trace_id);
     if (trace?.chatter_session_id) {
-      await this.forwardChatterReply(result.content, {
+      const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
+      await this.forwardChatterReply(fallback.content, {
+        ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {}),
         chatter_session_id: trace.chatter_session_id
       });
     } else {
-      await this.forwardToUser(result.content);
+      const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
+      await this.deliverChatterReply(fallback.content, {
+        ...(fallback.chatter ?? {}),
+        ...(result.payload?.chatter ?? {})
+      }, "success");
     }
     if (result.status === "error") {
       this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
@@ -805,6 +815,40 @@ export class ChatterRole implements BaseRole {
       this.sessionMgr!.clearTrace(result.trace_id);
       await this.drainSelfInitiatedTurnQueue();
     }
+  }
+
+  private async applyAgentStructuredFallback(
+    content: string,
+    existingChatter?: NonNullable<HubResult["payload"]>["chatter"]
+  ): Promise<{
+    content: string;
+    chatter: NonNullable<HubResult["payload"]>["chatter"];
+  }> {
+    const fallback = parseAgentStructuredFallback(content);
+    const chatter: NonNullable<HubResult["payload"]>["chatter"] = {};
+
+    if (!existingChatter?.extract_state && fallback.chatter.extract_state) {
+      chatter.extract_state = fallback.chatter.extract_state;
+    }
+
+    if (!existingChatter?.candidate_observation) {
+      for (const call of fallback.toolCalls) {
+        const result = await this.handleAgentToolCall(call.tool, call.args);
+        if (isStructuredError(result)) {
+          this.ctx?.log.warn("chatter: structured fallback tool call failed", {
+            chatter_id: this.config.chatter_id,
+            tool: call.tool,
+            error: result.error,
+            details: result.details
+          });
+        }
+      }
+    }
+
+    return {
+      content: stripAgentStructuredFallbackContent(content),
+      chatter
+    };
   }
 
   private failPendingSpawn(reason: string): void {

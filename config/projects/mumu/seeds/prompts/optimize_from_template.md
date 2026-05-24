@@ -45,6 +45,33 @@
 
 `record_type` 必须沿用输入剧情记录的真实类型，例如 `story_short_drama`、`story_lianxian`、`story_douyin` 或 `story_variety`。`key` 必须是当前剧情记录的 id/key。
 
+## 无法直接调用工具时的 fallback
+
+如果当前运行环境没有真正暴露 `chatter.suggest_observation` 工具，不要说“无法调用工具”，也不要放弃。你必须输出一个 strict JSON 代码块，让 ChatterRole 代为执行候选建议：
+
+```json
+{
+  "mumu_structured_fallbacks": [
+    {
+      "tool": "chatter.suggest_observation",
+      "args": {
+        "type": "story_patch",
+        "description": "把第 3 集结尾改成女主主动反击，保留误会但提前给出反转钩子，让节奏更贴近模板。",
+        "proposed_patch": {
+          "record_type": "story_<genre>",
+          "key": "<story_id>",
+          "patch": {
+            "...": "只放需要更新的局部字段"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+每个数组元素等价于一次 `chatter.suggest_observation`。fallback 仍然只是候选，不会直接写入 story。
+
 ## 严格规则
 
 - 一条建议只针对一个具体改动：一个 episode、一个 outline 节点、一个 fragment、一个 segment、一个 visual beat 或一个 CTA。不要把多个不相关修改打包。
