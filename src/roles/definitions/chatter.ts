@@ -31,6 +31,8 @@ import { assertModeAllowed, assertSkillAllowed, ChatterPolicyError } from "../ch
 import { ChatterStateStore } from "../chatter/chatter-state-store";
 import { ObservationCache } from "../chatter/observation-cache";
 import {
+  incrementChatterExtractStateResumeTotal,
+  incrementChatterExtractStateTransitionTotal,
   incrementChatterReadOnlyQueryTotal,
   incrementChatterSelfInitiatedTurnErrorTotal,
   incrementChatterSelfInitiatedTurnTotal
@@ -124,6 +126,7 @@ export class ChatterRole implements BaseRole {
   private triggerEvaluator: BackgroundTriggerEvaluator | null = null;
   private memoryGitSyncQueue: MumuMemoryGitSyncQueueLike | null = null;
   private skillHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
+  private extractStageBySession = new Map<string, string>();
 
   /**
    * In-flight spawn trace_id; set when we send intent:"spawn" and cleared
@@ -346,6 +349,8 @@ export class ChatterRole implements BaseRole {
       return;
     }
 
+    this.recordExtractStateObservability(envelope);
+
     const systemPromptId = envelope.system_prompt_id;
     let systemPrompt: string | undefined;
     if (systemPromptId !== undefined) {
@@ -385,6 +390,21 @@ export class ChatterRole implements BaseRole {
     }
 
     await this.dispatchRun(dispatchContent, envelope.chatter_session_id);
+  }
+
+  private recordExtractStateObservability(envelope: ChatterTurnEnvelopeWithMode): void {
+    const extractState = envelope.extract_state;
+    if (!extractState) {
+      return;
+    }
+    const sessionKey = envelope.chatter_session_id ?? "__unknown_extract_session__";
+    const previousStage = this.extractStageBySession.get(sessionKey);
+    const fromStage = previousStage ?? "start";
+    incrementChatterExtractStateTransitionTotal(fromStage, extractState.stage);
+    if (!previousStage && extractState.stage !== "uploaded") {
+      incrementChatterExtractStateResumeTotal();
+    }
+    this.extractStageBySession.set(sessionKey, extractState.stage);
   }
 
   private async handleSuggestObservation(args: unknown): Promise<unknown> {

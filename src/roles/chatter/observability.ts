@@ -11,8 +11,11 @@ export type MumuGitCommitKind =
 export type MumuGitCommitStatus = "committed" | "noop" | "error";
 export type MumuGitPushStatus = "skipped" | "pushed" | "blocked" | "conflict_pending" | "failed";
 export type MumuArchiveProvisionStatus = "created" | "existing" | "error";
+export type MumuSavepointStatus = "created" | "failed";
+export type MumuRestoreStatus = "restored" | "failed";
 export type MumuArchivePressureKind =
   | "repo_size"
+  | "largest_file"
   | "largest_tracked_file_size"
   | "turn_log_size";
 
@@ -21,7 +24,10 @@ export interface MumuArchivePressureSample {
   largest_tracked_file_bytes: number;
   turn_log_bytes_total: number;
   large_file_excluded_count: number;
+  large_file_excluded_reasons?: Partial<Record<MumuArchiveLargeFileExcludedReason, number>>;
 }
+
+export type MumuArchiveLargeFileExcludedReason = "raw_upload" | "binary" | "threshold";
 
 export const CHATTER_SELF_INITIATED_TURN_TOTAL_METRIC = "chatter_self_initiated_turn_total";
 export const CHATTER_SELF_INITIATED_TURN_ERROR_TOTAL_METRIC = "chatter_self_initiated_turn_error_total";
@@ -29,10 +35,17 @@ export const CHATTER_READ_ONLY_QUERY_TOTAL_METRIC = "chatter_read_only_query_tot
 export const CHATTER_OBSERVATION_EVAL_ERROR_TOTAL_METRIC = "chatter_observation_eval_error_total";
 export const CHATTER_LAST_PROVISION_ERROR_TOTAL_METRIC = "chatter_last_provision_error_total";
 export const CHATTER_LAST_TURN_ERROR_TOTAL_METRIC = "chatter_last_turn_error_total";
+export const CHATTER_SANDBOX_ROOT_WRITE_DENIED_TOTAL_METRIC = "chatter_sandbox_root_write_denied_total";
+export const CHATTER_ETAG_MISMATCH_TOTAL_METRIC = "chatter_etag_mismatch_total";
+export const CHATTER_EXTRACT_STATE_TRANSITION_TOTAL_METRIC = "chatter_extract_state_transition_total";
+export const CHATTER_EXTRACT_STATE_RESUME_TOTAL_METRIC = "chatter_extract_state_resume_total";
 export const MUMU_GIT_COMMIT_TOTAL_METRIC = "mumu_git_commit_total";
 export const MUMU_GIT_PUSH_TOTAL_METRIC = "mumu_git_push_total";
 export const MUMU_ARCHIVE_PROVISION_TOTAL_METRIC = "mumu_archive_provision_total";
+export const MUMU_SAVEPOINT_TOTAL_METRIC = "mumu_savepoint_total";
+export const MUMU_RESTORE_TOTAL_METRIC = "mumu_restore_total";
 export const MUMU_ARCHIVE_REPO_SIZE_BUCKET_TOTAL_METRIC = "mumu_archive_repo_size_bucket_total";
+export const MUMU_ARCHIVE_LARGEST_FILE_BUCKET_TOTAL_METRIC = "mumu_archive_largest_file_bucket_total";
 export const MUMU_ARCHIVE_LARGEST_TRACKED_FILE_SIZE_BUCKET_TOTAL_METRIC = "mumu_archive_largest_tracked_file_size_bucket_total";
 export const MUMU_ARCHIVE_TURN_LOG_SIZE_BUCKET_TOTAL_METRIC = "mumu_archive_turn_log_size_bucket_total";
 export const MUMU_ARCHIVE_LARGE_FILE_EXCLUDED_TOTAL_METRIC = "mumu_archive_large_file_excluded_total";
@@ -43,12 +56,18 @@ const selfInitiatedTurnCounters = new Map<string, number>();
 const selfInitiatedTurnErrorCounters = new Map<string, number>();
 const lastProvisionErrorCounters = new Map<string, number>();
 const lastTurnErrorCounters = new Map<string, number>();
+const sandboxRootWriteDeniedCounters = new Map<string, number>();
+const etagMismatchCounters = new Map<string, number>();
+const extractStateTransitionCounters = new Map<string, number>();
+let extractStateResumeCounter = 0;
 const mumuGitCommitCounters = new Map<string, number>();
 const mumuGitPushCounters = new Map<string, number>();
 const mumuArchiveProvisionCounters = new Map<string, number>();
+const mumuSavepointCounters = new Map<string, number>();
+const mumuRestoreCounters = new Map<string, number>();
 const mumuArchivePressureCounters = new Map<string, number>();
+const mumuArchiveLargeFileExcludedCounters = new Map<string, number>();
 let observationEvalErrorCounter = 0;
-let mumuArchiveLargeFileExcludedCounter = 0;
 
 export function incrementChatterReadOnlyQueryTotal(
   skill: string,
@@ -145,6 +164,54 @@ export function resetChatterLastTurnErrorCountersForTests(): void {
   lastTurnErrorCounters.clear();
 }
 
+export function incrementChatterSandboxRootWriteDeniedTotal(rootMode: "ro" | "rw" = "ro"): void {
+  incrementCounter(sandboxRootWriteDeniedCounters, rootMode);
+}
+
+export function snapshotChatterSandboxRootWriteDeniedCounters(): Record<string, number> {
+  return snapshotMap(sandboxRootWriteDeniedCounters);
+}
+
+export function resetChatterSandboxRootWriteDeniedCountersForTests(): void {
+  sandboxRootWriteDeniedCounters.clear();
+}
+
+export function incrementChatterEtagMismatchTotal(recordType: string): void {
+  incrementCounter(etagMismatchCounters, recordType);
+}
+
+export function snapshotChatterEtagMismatchCounters(): Record<string, number> {
+  return snapshotMap(etagMismatchCounters);
+}
+
+export function resetChatterEtagMismatchCountersForTests(): void {
+  etagMismatchCounters.clear();
+}
+
+export function incrementChatterExtractStateTransitionTotal(fromStage: string, toStage: string): void {
+  incrementCounter(extractStateTransitionCounters, `${fromStage}|${toStage}`);
+}
+
+export function snapshotChatterExtractStateTransitionCounters(): Record<string, number> {
+  return snapshotMap(extractStateTransitionCounters);
+}
+
+export function resetChatterExtractStateTransitionCountersForTests(): void {
+  extractStateTransitionCounters.clear();
+}
+
+export function incrementChatterExtractStateResumeTotal(): void {
+  extractStateResumeCounter += 1;
+}
+
+export function snapshotChatterExtractStateResumeCounter(): number {
+  return extractStateResumeCounter;
+}
+
+export function resetChatterExtractStateResumeCounterForTests(): void {
+  extractStateResumeCounter = 0;
+}
+
 export function incrementMumuGitCommitTotal(kind: MumuGitCommitKind, status: MumuGitCommitStatus): void {
   incrementCounter(mumuGitCommitCounters, `${kind}|${status}`);
 }
@@ -181,23 +248,61 @@ export function resetMumuArchiveProvisionCountersForTests(): void {
   mumuArchiveProvisionCounters.clear();
 }
 
+export function incrementMumuSavepointTotal(status: MumuSavepointStatus): void {
+  incrementCounter(mumuSavepointCounters, status);
+}
+
+export function snapshotMumuSavepointCounters(): Record<string, number> {
+  return snapshotMap(mumuSavepointCounters);
+}
+
+export function resetMumuSavepointCountersForTests(): void {
+  mumuSavepointCounters.clear();
+}
+
+export function incrementMumuRestoreTotal(status: MumuRestoreStatus): void {
+  incrementCounter(mumuRestoreCounters, status);
+}
+
+export function snapshotMumuRestoreCounters(): Record<string, number> {
+  return snapshotMap(mumuRestoreCounters);
+}
+
+export function resetMumuRestoreCountersForTests(): void {
+  mumuRestoreCounters.clear();
+}
+
 export function observeMumuArchivePressure(sample: MumuArchivePressureSample): void {
   incrementMumuArchivePressureBucket("repo_size", sample.repo_size_bytes);
+  incrementMumuArchivePressureBucket("largest_file", sample.largest_tracked_file_bytes);
   incrementMumuArchivePressureBucket("largest_tracked_file_size", sample.largest_tracked_file_bytes);
   incrementMumuArchivePressureBucket("turn_log_size", sample.turn_log_bytes_total);
-  mumuArchiveLargeFileExcludedCounter += sample.large_file_excluded_count;
+  for (const [reason, count] of Object.entries(sample.large_file_excluded_reasons ?? {})) {
+    if (count !== undefined && count > 0) {
+      incrementCounter(mumuArchiveLargeFileExcludedCounters, reason, count);
+    }
+  }
+  const reasonTotal = Object.values(sample.large_file_excluded_reasons ?? {}).reduce((sum, count) => sum + (count ?? 0), 0);
+  const unclassifiedCount = sample.large_file_excluded_count - reasonTotal;
+  if (unclassifiedCount > 0) {
+    incrementCounter(mumuArchiveLargeFileExcludedCounters, "threshold", unclassifiedCount);
+  }
 }
 
 export function snapshotMumuArchivePressureCounters(): Record<string, number> {
   return {
     ...snapshotMap(mumuArchivePressureCounters),
-    large_file_excluded_total: mumuArchiveLargeFileExcludedCounter
+    ...Object.fromEntries(
+      [...mumuArchiveLargeFileExcludedCounters.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([reason, value]) => [`large_file_excluded_total|${reason}`, value])
+    )
   };
 }
 
 export function resetMumuArchivePressureCountersForTests(): void {
   mumuArchivePressureCounters.clear();
-  mumuArchiveLargeFileExcludedCounter = 0;
+  mumuArchiveLargeFileExcludedCounters.clear();
 }
 
 export function resetChatterObservabilityForTests(): void {
@@ -207,9 +312,15 @@ export function resetChatterObservabilityForTests(): void {
   resetChatterObservationEvalErrorCounterForTests();
   resetChatterLastProvisionErrorCountersForTests();
   resetChatterLastTurnErrorCountersForTests();
+  resetChatterSandboxRootWriteDeniedCountersForTests();
+  resetChatterEtagMismatchCountersForTests();
+  resetChatterExtractStateTransitionCountersForTests();
+  resetChatterExtractStateResumeCounterForTests();
   resetMumuGitCommitCountersForTests();
   resetMumuGitPushCountersForTests();
   resetMumuArchiveProvisionCountersForTests();
+  resetMumuSavepointCountersForTests();
+  resetMumuRestoreCountersForTests();
   resetMumuArchivePressureCountersForTests();
 }
 
@@ -227,20 +338,34 @@ export function renderChatterPrometheusMetrics(): string {
     ...renderLabeledCounterMap(CHATTER_LAST_PROVISION_ERROR_TOTAL_METRIC, "code", lastProvisionErrorCounters),
     "# TYPE chatter_last_turn_error_total counter",
     ...renderLabeledCounterMap(CHATTER_LAST_TURN_ERROR_TOTAL_METRIC, "code", lastTurnErrorCounters),
+    "# TYPE chatter_sandbox_root_write_denied_total counter",
+    ...renderLabeledCounterMap(CHATTER_SANDBOX_ROOT_WRITE_DENIED_TOTAL_METRIC, "root_mode", sandboxRootWriteDeniedCounters),
+    "# TYPE chatter_etag_mismatch_total counter",
+    ...renderLabeledCounterMap(CHATTER_ETAG_MISMATCH_TOTAL_METRIC, "record_type", etagMismatchCounters),
+    "# TYPE chatter_extract_state_transition_total counter",
+    ...renderChatterExtractStateTransitionCounters(),
+    "# TYPE chatter_extract_state_resume_total counter",
+    `${CHATTER_EXTRACT_STATE_RESUME_TOTAL_METRIC} ${extractStateResumeCounter}`,
     "# TYPE mumu_git_commit_total counter",
     ...renderMumuGitCommitCounters(),
     "# TYPE mumu_git_push_total counter",
     ...renderLabeledCounterMap(MUMU_GIT_PUSH_TOTAL_METRIC, "status", mumuGitPushCounters),
     "# TYPE mumu_archive_provision_total counter",
     ...renderLabeledCounterMap(MUMU_ARCHIVE_PROVISION_TOTAL_METRIC, "status", mumuArchiveProvisionCounters),
+    "# TYPE mumu_savepoint_total counter",
+    ...renderLabeledCounterMap(MUMU_SAVEPOINT_TOTAL_METRIC, "status", mumuSavepointCounters),
+    "# TYPE mumu_restore_total counter",
+    ...renderLabeledCounterMap(MUMU_RESTORE_TOTAL_METRIC, "status", mumuRestoreCounters),
     "# TYPE mumu_archive_repo_size_bucket_total counter",
     ...renderMumuArchivePressureCounters("repo_size", MUMU_ARCHIVE_REPO_SIZE_BUCKET_TOTAL_METRIC),
+    "# TYPE mumu_archive_largest_file_bucket_total counter",
+    ...renderMumuArchivePressureCounters("largest_file", MUMU_ARCHIVE_LARGEST_FILE_BUCKET_TOTAL_METRIC),
     "# TYPE mumu_archive_largest_tracked_file_size_bucket_total counter",
     ...renderMumuArchivePressureCounters("largest_tracked_file_size", MUMU_ARCHIVE_LARGEST_TRACKED_FILE_SIZE_BUCKET_TOTAL_METRIC),
     "# TYPE mumu_archive_turn_log_size_bucket_total counter",
     ...renderMumuArchivePressureCounters("turn_log_size", MUMU_ARCHIVE_TURN_LOG_SIZE_BUCKET_TOTAL_METRIC),
     "# TYPE mumu_archive_large_file_excluded_total counter",
-    `${MUMU_ARCHIVE_LARGE_FILE_EXCLUDED_TOTAL_METRIC} ${mumuArchiveLargeFileExcludedCounter}`
+    ...renderLabeledCounterMap(MUMU_ARCHIVE_LARGE_FILE_EXCLUDED_TOTAL_METRIC, "reason", mumuArchiveLargeFileExcludedCounters)
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -266,6 +391,15 @@ function renderMumuGitCommitCounters(): string[] {
     .map(([key, value]) => {
       const [kind = "", status = ""] = key.split("|");
       return `${MUMU_GIT_COMMIT_TOTAL_METRIC}{kind="${escapeLabelValue(kind)}",status="${escapeLabelValue(status)}"} ${value}`;
+    });
+}
+
+function renderChatterExtractStateTransitionCounters(): string[] {
+  return [...extractStateTransitionCounters.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      const [fromStage = "", toStage = ""] = key.split("|");
+      return `${CHATTER_EXTRACT_STATE_TRANSITION_TOTAL_METRIC}{from_stage="${escapeLabelValue(fromStage)}",to_stage="${escapeLabelValue(toStage)}"} ${value}`;
     });
 }
 

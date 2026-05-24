@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { DeniedReadOnlyRootError, MemoryResolver, SandboxViolationError } from "../../memory-resolver";
+import { incrementChatterSandboxRootWriteDeniedTotal } from "../../observability";
 
 export type StructuredErrorCode =
   | "schema_violation"
@@ -105,6 +106,7 @@ export function listStructuredRecordKeysOnDisk(resolver: MemoryResolver, type: s
 
 export function structuredErrorFromUnknown(error: unknown): StructuredError {
   if (error instanceof DeniedReadOnlyRootError) {
+    incrementChatterSandboxRootWriteDeniedTotal("ro");
     return { error: "denied_ro_root", attempted_path: error.attemptedPath };
   }
   if (error instanceof SandboxViolationError) {

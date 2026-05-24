@@ -167,7 +167,7 @@ describe("MumuMemoryGitSyncQueue", () => {
     expect(pressureCounters).toMatchObject({
       "largest_tracked_file_size|le_1kb": 1,
       "turn_log_size|le_1kb": 1,
-      large_file_excluded_total: 1
+      "large_file_excluded_total|threshold": 1
     });
     const repoSizeBuckets = Object.entries(pressureCounters)
       .filter(([key]) => key.startsWith("repo_size|"));
@@ -177,7 +177,7 @@ describe("MumuMemoryGitSyncQueue", () => {
     const metrics = renderChatterPrometheusMetrics();
     expect(metrics).toContain('mumu_git_commit_total{kind="turn_write",status="committed"} 1');
     expect(metrics).toMatch(/mumu_archive_repo_size_bucket_total\{bucket="(?:le|gt)_[^"]+"\} 1/u);
-    expect(metrics).toContain('mumu_archive_large_file_excluded_total 1');
+    expect(metrics).toContain('mumu_archive_large_file_excluded_total{reason="threshold"} 1');
     expect(metrics).not.toContain(root);
     expect(metrics).not.toContain("u1");
     expect(metrics).not.toContain("s1");

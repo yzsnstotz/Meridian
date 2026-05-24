@@ -23,7 +23,11 @@ import {
   type ChatterProvisionError,
   type ChatterTurnError
 } from "../roles/chatter/chatter-state-store";
-import { incrementMumuArchiveProvisionTotal } from "../roles/chatter/observability";
+import {
+  incrementMumuArchiveProvisionTotal,
+  incrementMumuRestoreTotal,
+  incrementMumuSavepointTotal
+} from "../roles/chatter/observability";
 import {
   getDefaultMumuMemoryGitSyncQueue,
   type MumuMemoryGitEventKind,
@@ -394,39 +398,45 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
     userId: string,
     request: CallerAuthenticatedRequest
   ): Promise<{ ok: true; savepoint: Awaited<ReturnType<typeof createMumuMemorySavepoint>>; queued: boolean }> {
-    const rawBody = request.body_bytes ?? Buffer.alloc(0);
-    const parsed = SavepointCreateBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
-    if (!parsed.success) {
-      throw createHttpError(422, "invalid_savepoint_create_body", {
-        error: "invalid_savepoint_create_body",
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path,
-          message: issue.message
-        }))
+    try {
+      const rawBody = request.body_bytes ?? Buffer.alloc(0);
+      const parsed = SavepointCreateBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
+      if (!parsed.success) {
+        throw createHttpError(422, "invalid_savepoint_create_body", {
+          error: "invalid_savepoint_create_body",
+          issues: parsed.error.issues.map((issue) => ({
+            path: issue.path,
+            message: issue.message
+          }))
+        });
+      }
+
+      const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+      const interpolated = interpolatePolicyForUser(policy, userId);
+      const savepoint = await createMumuMemorySavepoint(interpolated.memory_folder, {
+        label: parsed.data.label,
+        syncStatus: syncStatusForArchive(parsed.data.archive)
       });
+
+      if (parsed.data.archive) {
+        const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
+        queue.enqueue({
+          memoryRoot: interpolated.memory_folder,
+          userId,
+          eventKind: "direct_write",
+          source: "ads_direct",
+          recordType: "savepoint",
+          key: savepoint.id,
+          remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive
+        });
+      }
+
+      incrementMumuSavepointTotal("created");
+      return { ok: true, savepoint, queued: Boolean(parsed.data.archive) };
+    } catch (error) {
+      incrementMumuSavepointTotal("failed");
+      throw error;
     }
-
-    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
-    const interpolated = interpolatePolicyForUser(policy, userId);
-    const savepoint = await createMumuMemorySavepoint(interpolated.memory_folder, {
-      label: parsed.data.label,
-      syncStatus: syncStatusForArchive(parsed.data.archive)
-    });
-
-    if (parsed.data.archive) {
-      const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
-      queue.enqueue({
-        memoryRoot: interpolated.memory_folder,
-        userId,
-        eventKind: "direct_write",
-        source: "ads_direct",
-        recordType: "savepoint",
-        key: savepoint.id,
-        remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive
-      });
-    }
-
-    return { ok: true, savepoint, queued: Boolean(parsed.data.archive) };
   }
 
   async function listMemorySavepoints(
@@ -454,38 +464,44 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
     savepointId: string,
     request: CallerAuthenticatedRequest
   ): Promise<{ ok: true; restore: Awaited<ReturnType<typeof restoreMumuMemorySavepoint>>; queued: boolean }> {
-    const rawBody = request.body_bytes ?? Buffer.alloc(0);
-    const parsed = SavepointRestoreBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
-    if (!parsed.success) {
-      throw createHttpError(422, "invalid_savepoint_restore_body", {
-        error: "invalid_savepoint_restore_body",
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path,
-          message: issue.message
-        }))
-      });
+    try {
+      const rawBody = request.body_bytes ?? Buffer.alloc(0);
+      const parsed = SavepointRestoreBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
+      if (!parsed.success) {
+        throw createHttpError(422, "invalid_savepoint_restore_body", {
+          error: "invalid_savepoint_restore_body",
+          issues: parsed.error.issues.map((issue) => ({
+            path: issue.path,
+            message: issue.message
+          }))
+        });
+      }
+
+      const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+      const interpolated = interpolatePolicyForUser(policy, userId);
+      const scope = parsed.data.scope as MumuMemoryRestoreScope | undefined;
+      const restore = await restoreMumuMemorySavepoint(interpolated.memory_folder, savepointId, { scope });
+
+      if (parsed.data.archive) {
+        const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
+        const target = restoreEventTarget(restore.scope, restore.savepoint.id);
+        queue.enqueue({
+          memoryRoot: interpolated.memory_folder,
+          userId,
+          eventKind: "restore_write",
+          source: "restore",
+          recordType: target.recordType,
+          key: target.key,
+          remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive
+        });
+      }
+
+      incrementMumuRestoreTotal("restored");
+      return { ok: true, restore, queued: Boolean(parsed.data.archive) };
+    } catch (error) {
+      incrementMumuRestoreTotal("failed");
+      throw error;
     }
-
-    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
-    const interpolated = interpolatePolicyForUser(policy, userId);
-    const scope = parsed.data.scope as MumuMemoryRestoreScope | undefined;
-    const restore = await restoreMumuMemorySavepoint(interpolated.memory_folder, savepointId, { scope });
-
-    if (parsed.data.archive) {
-      const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
-      const target = restoreEventTarget(restore.scope, restore.savepoint.id);
-      queue.enqueue({
-        memoryRoot: interpolated.memory_folder,
-        userId,
-        eventKind: "restore_write",
-        source: "restore",
-        recordType: target.recordType,
-        key: target.key,
-        remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive
-      });
-    }
-
-    return { ok: true, restore, queued: Boolean(parsed.data.archive) };
   }
 
   async function findChatter(threadId: string): Promise<{ status: string } | null> {
