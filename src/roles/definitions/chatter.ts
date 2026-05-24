@@ -88,6 +88,8 @@ function agentTypeForKind(kind: ChatterRoleConfig["llm_agent_kind"]): string {
 interface QueuedTurn {
   content: string;
   chatterSessionId?: string;
+  attachments: HubResult["attachments"];
+  chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
 }
 
 // Writes a HubResult as a JSON frame to a unix socket path. The default
@@ -379,17 +381,32 @@ export class ChatterRole implements BaseRole {
 
     if (this.pendingSpawnTraceId !== null) {
       // Spawn still handshaking; queue this turn — onSpawnResponse drains.
-      this.pendingTurns.push({ content: dispatchContent, chatterSessionId: envelope.chatter_session_id });
+      this.pendingTurns.push({
+        content: dispatchContent,
+        chatterSessionId: envelope.chatter_session_id,
+        attachments: result.attachments,
+        chatter: envelope
+      });
       return;
     }
 
     if (this.sessionMgr!.currentSessionId === null) {
       this.kickoffSpawn();
-      this.pendingTurns.push({ content: dispatchContent, chatterSessionId: envelope.chatter_session_id });
+      this.pendingTurns.push({
+        content: dispatchContent,
+        chatterSessionId: envelope.chatter_session_id,
+        attachments: result.attachments,
+        chatter: envelope
+      });
       return;
     }
 
-    await this.dispatchRun(dispatchContent, envelope.chatter_session_id);
+    await this.dispatchRun({
+      content: dispatchContent,
+      chatterSessionId: envelope.chatter_session_id,
+      attachments: result.attachments,
+      chatter: envelope
+    });
   }
 
   private recordExtractStateObservability(envelope: ChatterTurnEnvelopeWithMode): void {
@@ -522,10 +539,11 @@ export class ChatterRole implements BaseRole {
         confirmed_at: (this.options.now?.() ?? new Date()).toISOString()
       }
     });
+    const stampedValidation = validateRecord(this.resolver!.manifest, proposedPatch.record_type, stamped);
     return this.structuredSkills!.upsert(
       proposedPatch.record_type,
       proposedPatch.key,
-      stamped
+      stampedValidation.ok ? stamped : patched
     );
   }
 
@@ -758,7 +776,7 @@ export class ChatterRole implements BaseRole {
 
     const queued = this.pendingTurns.splice(0);
     for (const turn of queued) {
-      await this.dispatchRun(turn.content, turn.chatterSessionId);
+      await this.dispatchRun(turn);
     }
     await this.drainSelfInitiatedTurnQueue();
   }
@@ -767,6 +785,7 @@ export class ChatterRole implements BaseRole {
     const trace = this.sessionMgr!.getTrace(result.trace_id);
     if (trace?.chatter_session_id) {
       await this.forwardChatterReply(result.content, {
+        ...(result.payload?.chatter ?? {}),
         chatter_session_id: trace.chatter_session_id
       });
     } else {
@@ -837,13 +856,13 @@ export class ChatterRole implements BaseRole {
     }
   }
 
-  private async dispatchRun(content: string, chatterSessionId?: string): Promise<void> {
+  private async dispatchRun(turn: QueuedTurn): Promise<void> {
     const traceId = randomUUID();
     this.sessionMgr!.registerTrace({
       trace_id: traceId,
       purpose: "agent_turn",
       agent_session_id: this.sessionMgr!.currentSessionId,
-      ...(chatterSessionId ? { chatter_session_id: chatterSessionId } : {})
+      ...(turn.chatterSessionId ? { chatter_session_id: turn.chatterSessionId } : {})
     });
 
     const runMsg: HubMessage = {
@@ -853,7 +872,7 @@ export class ChatterRole implements BaseRole {
       intent: "run",
       target: this.sessionMgr!.currentSessionId as string,
       priority: 5,
-      payload: { content, attachments: [] },
+      payload: { content: turn.content, attachments: turn.attachments, chatter: turn.chatter },
       mode: "bridge",
       reply_channel: ROLES_SOCKET_REPLY_CHANNEL,
       suppress_reply: false

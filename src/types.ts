@@ -143,6 +143,7 @@ export const ChatterTurnEnvelopeSchema = z.object({
   read_only_query: ChatterReadOnlyQuerySchema.optional(),
   read_only_query_result: ChatterReadOnlyQueryResultSchema.optional(),
   extract_state: ChatterExtractStateSchema.optional(),
+  attachment_ref: z.string().min(1).optional(),
   candidate_observation: ChatterCandidateObservationSchema.optional(),
   observation_id: z.string().uuid().optional(),
   coedit_target: ChatterCoeditTargetSchema.optional(),
