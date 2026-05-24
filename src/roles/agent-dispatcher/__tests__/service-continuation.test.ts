@@ -106,6 +106,14 @@ describe("service continuation", () => {
     ], createLifecycleState())).toBe("SUMMARY-GATE");
   });
 
+  it("resolves ALL-PRIOR dependencies against rows before the current worker", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "5", worker: "V-02-C", model: "CODEX-XHIGH", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "∞", worker: "POST-FLIGHT", model: "CODEX-HIGH", depends_on: "ALL-PRIOR" }
+    ], createLifecycleState())).toBe("POST-FLIGHT");
+  });
+
   it("does not resolve all above when any earlier row is non-terminal", () => {
     expect(resolveServiceContinueWorker([
       { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
