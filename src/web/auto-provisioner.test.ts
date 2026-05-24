@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { Readable } from "node:stream";
@@ -41,6 +42,7 @@ afterEach(async () => {
   resetChatterObservabilityForTests();
   delete process.env.ADS_HMAC_KEY;
   await Promise.all(Array.from(tempDirectories, (directory) => fs.rm(directory, { recursive: true, force: true })));
+  await fs.rm("/tmp/mumu-users/u_001", { recursive: true, force: true });
   tempDirectories.clear();
 });
 
@@ -352,6 +354,130 @@ describe("createAutoProvisionerHandlers", () => {
     expect(mismatchedRoot.body).toEqual({ error: "repo_root_mismatch" });
     expect(memoryGitSyncQueue.enqueue).not.toHaveBeenCalled();
   });
+
+  it("creates, lists, and reads content-free memory savepoints through caller-auth APIs", async () => {
+    process.env.ADS_HMAC_KEY = "super-secret";
+    const repoRoot = await createRepoRoot();
+    await writeCaller(repoRoot);
+    await writePolicy(repoRoot, "mumu", validPolicy);
+    await fs.mkdir("/tmp/mumu-users/u_001/structured/style_douyin", { recursive: true });
+    await fs.writeFile(
+      "/tmp/mumu-users/u_001/structured/style_douyin/u_001.json",
+      `${JSON.stringify({
+        user_authored: {
+          likes: ["savepoint style"],
+          dislikes: [],
+          tone_keywords: ["direct"],
+          notes: "first-class"
+        },
+        agent_observed: {
+          recurring_motifs: ["motif"],
+          avoided_patterns: []
+        }
+      })}\n`,
+      "utf8"
+    );
+    git("/tmp/mumu-users/u_001", "init", "-b", "main");
+    git("/tmp/mumu-users/u_001", "config", "user.name", "Test");
+    git("/tmp/mumu-users/u_001", "config", "user.email", "test@example.com");
+    git("/tmp/mumu-users/u_001", "add", "-A");
+    git("/tmp/mumu-users/u_001", "commit", "-m", "initial memory");
+    const registry = await loadCallerRegistry({ repoRoot });
+    const memoryGitSyncQueue: MumuMemoryGitSyncQueueLike = { enqueue: vi.fn() };
+    const handlers = createHarness({
+      repoRoot,
+      callerAuth: createRequireCallerAuth({ registry }),
+      memoryGitSyncQueue
+    });
+
+    const createResponse = await invokeSigned(
+      handlers.handle,
+      "POST",
+      "/api/projects/mumu/users/u_001/memory-archive/savepoints",
+      {
+        label: "label stays in tag metadata",
+        archive: {
+          push_enabled: true,
+          state: "ready",
+          owner: "yzsnstotz",
+          repo_name: "mumu-archive-u1",
+          repo_full_name: "yzsnstotz/mumu-archive-u1",
+          private: true
+        }
+      }
+    );
+    expect(createResponse.statusCode).toBe(200);
+    expect(createResponse.body).toMatchObject({
+      ok: true,
+      savepoint: {
+        label: "label stays in tag metadata",
+        sync_status: "pending",
+        restore_available: true
+      }
+    });
+    const savepointId = (createResponse.body as { savepoint: { id: string } }).savepoint.id;
+    expect(memoryGitSyncQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      memoryRoot: "/tmp/mumu-users/u_001",
+      userId: "u_001",
+      eventKind: "direct_write",
+      recordType: "savepoint",
+      key: savepointId,
+      source: "ads_direct"
+    }));
+
+    const listResponse = await invokeJson(
+      handlers.handle,
+      "GET",
+      "/api/projects/mumu/users/u_001/memory-archive/savepoints",
+      undefined,
+      signedHeaders(Buffer.alloc(0))
+    );
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.body).toMatchObject({
+      ok: true,
+      savepoints: [
+        {
+          id: savepointId,
+          label: "label stays in tag metadata",
+          restore_available: true
+        }
+      ]
+    });
+
+    const snapshotResponse = await invokeJson(
+      handlers.handle,
+      "GET",
+      `/api/projects/mumu/users/u_001/memory-archive/savepoints/${encodeURIComponent(savepointId)}`,
+      undefined,
+      signedHeaders(Buffer.alloc(0))
+    );
+    expect(snapshotResponse.statusCode).toBe(200);
+    expect(snapshotResponse.body).toMatchObject({
+      ok: true,
+      snapshot: {
+        savepoint: { id: savepointId },
+        style_records: [
+          {
+            type: "style_douyin",
+            genre: "douyin",
+            user_authored: {
+              likes: ["savepoint style"]
+            }
+          }
+        ]
+      }
+    });
+
+    const invalidSnapshot = await invokeJson(
+      handlers.handle,
+      "GET",
+      "/api/projects/mumu/users/u_001/memory-archive/savepoints/not-a-real-savepoint",
+      undefined,
+      signedHeaders(Buffer.alloc(0))
+    );
+    expect(invalidSnapshot.statusCode).toBe(404);
+    expect(invalidSnapshot.body).toEqual({ error: "savepoint_not_found" });
+  });
 });
 
 function createHarness(options: {
@@ -381,6 +507,10 @@ class MemoryStateStore {
   async save(state: AppState): Promise<void> {
     this.state = JSON.parse(JSON.stringify(state));
   }
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
 
 async function invokeSigned(

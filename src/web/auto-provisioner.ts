@@ -30,6 +30,13 @@ import {
   type MumuMemoryRemoteArchive,
   type MumuMemoryGitSyncQueueLike
 } from "../roles/chatter/mumu-memory-git-sync";
+import {
+  MumuMemorySavepointError,
+  createMumuMemorySavepoint,
+  listMumuMemorySavepoints,
+  readMumuMemorySnapshot,
+  type MumuMemorySavepointSyncStatus
+} from "../roles/chatter/mumu-memory-savepoints";
 import { AppStateSchema, type AppState, type ChatterRoleConfig } from "../types";
 
 type PersistableStateStore = {
@@ -55,7 +62,10 @@ type AutoProvisionerRoute =
   | { action: "ensure"; projectId: string; userId: string }
   | { action: "archive"; projectId: string; userId: string }
   | { action: "get"; projectId: string; userId: string }
-  | { action: "memory-archive-enqueue"; projectId: string; userId: string };
+  | { action: "memory-archive-enqueue"; projectId: string; userId: string }
+  | { action: "memory-savepoint-create"; projectId: string; userId: string }
+  | { action: "memory-savepoint-list"; projectId: string; userId: string }
+  | { action: "memory-savepoint-read"; projectId: string; userId: string; savepointId: string };
 
 const EmptyAutoProvisionerBodySchema = z.object({}).strict();
 const ArchiveRemoteSchema = z.object({
@@ -87,6 +97,10 @@ const ArchiveEnqueueBodySchema = z.object({
     });
   }
 });
+const SavepointCreateBodySchema = z.object({
+  label: z.string().max(160).optional(),
+  archive: ArchiveRemoteSchema.optional()
+}).strict();
 const EMPTY_APP_STATE: AppState = { roles: [], promptStore: {} };
 const ensureLocks = new Map<string, Promise<unknown>>();
 
@@ -127,7 +141,7 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
         }
 
         assertCallerMayAccessProject(callerId, route.projectId);
-        if (route.action !== "memory-archive-enqueue") {
+        if (route.action !== "memory-archive-enqueue" && route.action !== "memory-savepoint-create") {
           validateEmptyBody(request as CallerAuthenticatedRequest);
         }
 
@@ -156,6 +170,19 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
               await enqueueMemoryArchive(route.projectId, route.userId, request as CallerAuthenticatedRequest)
             );
             return true;
+          case "memory-savepoint-create":
+            writeJson(
+              response,
+              200,
+              await createMemorySavepoint(route.projectId, route.userId, request as CallerAuthenticatedRequest)
+            );
+            return true;
+          case "memory-savepoint-list":
+            writeJson(response, 200, await listMemorySavepoints(route.projectId, route.userId));
+            return true;
+          case "memory-savepoint-read":
+            writeJson(response, 200, await readMemorySavepoint(route.projectId, route.userId, route.savepointId));
+            return true;
         }
       } catch (error) {
         if (error instanceof ForbiddenProjectError) {
@@ -175,6 +202,10 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
         }
         if (isHttpError(error)) {
           writeJson(response, error.statusCode, error.publicBody ?? { error: error.message });
+          return true;
+        }
+        if (error instanceof MumuMemorySavepointError) {
+          writeJson(response, statusForSavepointError(error), { error: publicSavepointErrorCode(error) });
           return true;
         }
 
@@ -335,6 +366,65 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
     return { queued: true };
   }
 
+  async function createMemorySavepoint(
+    projectId: string,
+    userId: string,
+    request: CallerAuthenticatedRequest
+  ): Promise<{ ok: true; savepoint: Awaited<ReturnType<typeof createMumuMemorySavepoint>>; queued: boolean }> {
+    const rawBody = request.body_bytes ?? Buffer.alloc(0);
+    const parsed = SavepointCreateBodySchema.safeParse(rawBody.length === 0 ? {} : parseJsonBody(rawBody));
+    if (!parsed.success) {
+      throw createHttpError(422, "invalid_savepoint_create_body", {
+        error: "invalid_savepoint_create_body",
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path,
+          message: issue.message
+        }))
+      });
+    }
+
+    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+    const interpolated = interpolatePolicyForUser(policy, userId);
+    const savepoint = await createMumuMemorySavepoint(interpolated.memory_folder, {
+      label: parsed.data.label,
+      syncStatus: syncStatusForArchive(parsed.data.archive)
+    });
+
+    if (parsed.data.archive) {
+      const queue = options.memoryGitSyncQueue ?? getDefaultMumuMemoryGitSyncQueue();
+      queue.enqueue({
+        memoryRoot: interpolated.memory_folder,
+        userId,
+        eventKind: "direct_write",
+        source: "ads_direct",
+        recordType: "savepoint",
+        key: savepoint.id,
+        remoteArchive: parsed.data.archive as MumuMemoryRemoteArchive
+      });
+    }
+
+    return { ok: true, savepoint, queued: Boolean(parsed.data.archive) };
+  }
+
+  async function listMemorySavepoints(
+    projectId: string,
+    userId: string
+  ): Promise<{ ok: true; savepoints: Awaited<ReturnType<typeof listMumuMemorySavepoints>> }> {
+    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+    const interpolated = interpolatePolicyForUser(policy, userId);
+    return { ok: true, savepoints: await listMumuMemorySavepoints(interpolated.memory_folder) };
+  }
+
+  async function readMemorySavepoint(
+    projectId: string,
+    userId: string,
+    savepointId: string
+  ): Promise<{ ok: true; snapshot: Awaited<ReturnType<typeof readMumuMemorySnapshot>> }> {
+    const policy = await loadProjectPolicy(projectId, { repoRoot: options.repoRoot });
+    const interpolated = interpolatePolicyForUser(policy, userId);
+    return { ok: true, snapshot: await readMumuMemorySnapshot(interpolated.memory_folder, savepointId) };
+  }
+
   async function findChatter(threadId: string): Promise<{ status: string } | null> {
     const activeRole = options.resolveActiveRole?.(threadId);
     if (activeRole?.roleType === "chatter") {
@@ -460,7 +550,7 @@ function matchAutoProvisionerRoute(request: IncomingMessage): AutoProvisionerRou
     .map((part) => decodeURIComponent(part));
 
   if (
-    (parts.length !== 6 && parts.length !== 7)
+    (parts.length !== 6 && parts.length !== 7 && parts.length !== 8)
     || parts[0] !== "api"
     || parts[1] !== "projects"
     || parts[3] !== "users"
@@ -485,8 +575,56 @@ function matchAutoProvisionerRoute(request: IncomingMessage): AutoProvisionerRou
   ) {
     return { action: "memory-archive-enqueue", projectId: parts[2]!, userId: parts[4]! };
   }
+  if (
+    parts.length === 7
+    && method === "POST"
+    && parts[5] === "memory-archive"
+    && parts[6] === "savepoints"
+  ) {
+    return { action: "memory-savepoint-create", projectId: parts[2]!, userId: parts[4]! };
+  }
+  if (
+    parts.length === 7
+    && method === "GET"
+    && parts[5] === "memory-archive"
+    && parts[6] === "savepoints"
+  ) {
+    return { action: "memory-savepoint-list", projectId: parts[2]!, userId: parts[4]! };
+  }
+  if (
+    parts.length === 8
+    && method === "GET"
+    && parts[5] === "memory-archive"
+    && parts[6] === "savepoints"
+  ) {
+    return { action: "memory-savepoint-read", projectId: parts[2]!, userId: parts[4]!, savepointId: parts[7]! };
+  }
 
   return null;
+}
+
+function syncStatusForArchive(archive: MumuMemoryRemoteArchive | undefined): MumuMemorySavepointSyncStatus {
+  if (!archive) {
+    return "local";
+  }
+  if (!archive.push_enabled) {
+    return "paused";
+  }
+  if (archive.state !== "ready" || archive.private === false) {
+    return "blocked";
+  }
+  return "pending";
+}
+
+function statusForSavepointError(error: MumuMemorySavepointError): number {
+  if (error.code === "no_archive_commit") {
+    return 409;
+  }
+  return 404;
+}
+
+function publicSavepointErrorCode(error: MumuMemorySavepointError): string {
+  return error.code === "invalid_savepoint_id" ? "savepoint_not_found" : error.code;
 }
 
 class CallerPolicyOverrideError extends Error {
