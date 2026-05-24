@@ -484,7 +484,7 @@ function resolveAllAboveDependencyRows(
   rows: DispatchContinuationPlanRow[]
 ): DispatchContinuationPlanRow[] | null {
   const normalizedClause = normalizeDependencyText(dependencyClause).toUpperCase();
-  if (normalizedClause !== "ALL ABOVE") {
+  if (normalizedClause !== "ALL ABOVE" && normalizedClause !== "ALL PRIOR" && normalizedClause !== "ALL-PRIOR") {
     return null;
   }
 
