@@ -248,7 +248,7 @@ export async function restoreMumuMemorySavepoint(
     await fs.writeFile(destination, content, "utf8");
   }
 
-  await git(root, ["add", "-A", "--", ...restorePathspecs(scope)]);
+  await stageRestoreChanges(root, sourcePaths, deletedPaths);
   await git(root, ["commit", "--allow-empty", "-m", `mumu memory restore savepoint ${savepoint.id}`]);
   const restoreCommitSha = await readHeadSha(root);
   if (!restoreCommitSha) {
@@ -358,6 +358,14 @@ async function listCurrentRestorePaths(memoryRoot: string, scope: MumuMemoryRest
   } catch {
     return [];
   }
+}
+
+async function stageRestoreChanges(memoryRoot: string, restoredPaths: string[], deletedPaths: string[]): Promise<void> {
+  const pathspecs = Array.from(new Set([...restoredPaths, ...deletedPaths]));
+  if (!pathspecs.length) {
+    return;
+  }
+  await git(memoryRoot, ["add", "-A", "--", ...pathspecs]);
 }
 
 async function listSnapshotChanges(memoryRoot: string, commitSha: string): Promise<MumuMemorySnapshotChange[]> {

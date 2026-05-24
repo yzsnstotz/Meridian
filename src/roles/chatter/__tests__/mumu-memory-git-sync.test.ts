@@ -528,6 +528,53 @@ describe("MumuMemoryGitSyncQueue", () => {
     });
   });
 
+  it("restores a structured-only root savepoint when turns never existed", async () => {
+    const root = makeRoot();
+    const storyPath = "structured/story_douyin/s1.json";
+    const currentOnlyPath = "structured/story_douyin/s2.json";
+    writeJson(root, storyPath, { id: "s1", title: "Original" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s1",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const savepoint = await createMumuMemorySavepoint(root, { id: "sp-root-structured-only" });
+    expect(existsSync(path.join(root, "turns"))).toBe(false);
+
+    writeJson(root, storyPath, { id: "s1", title: "Current" });
+    writeJson(root, currentOnlyPath, { id: "s2", title: "Current only" });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "s2",
+      source: "chatter"
+    });
+    await queue.flush(root);
+    const currentHead = git(root, "rev-parse", "HEAD").trim();
+
+    const result = await restoreMumuMemorySavepoint(root, savepoint.id, { scope: { kind: "root" } });
+
+    expect(result.previous_head_sha).toBe(currentHead);
+    expect(result.restore_commit_sha).toMatch(/^[a-f0-9]{40}$/u);
+    expect(result.restored_paths).toEqual([storyPath]);
+    expect(result.deleted_paths).toEqual([currentOnlyPath]);
+    expect(JSON.parse(readFileSync(path.join(root, storyPath), "utf8"))).toMatchObject({ title: "Original" });
+    expect(existsSync(path.join(root, currentOnlyPath))).toBe(false);
+    expect(existsSync(path.join(root, "turns"))).toBe(false);
+    expect(git(root, "rev-list", "--count", "HEAD").trim()).toBe("3");
+    expect(git(root, "log", "--oneline", "-1")).toContain("mumu memory restore savepoint sp-root-structured-only");
+    expect(git(root, "cat-file", "-t", savepoint.commit_sha).trim()).toBe("commit");
+    expect(git(root, "cat-file", "-t", currentHead).trim()).toBe("commit");
+    expect(git(root, "status", "--porcelain")).toBe("");
+  });
+
   it("leaves current content unchanged when restore targets an invalid savepoint", async () => {
     const root = makeRoot();
     const storyPath = "structured/story_douyin/s1.json";
