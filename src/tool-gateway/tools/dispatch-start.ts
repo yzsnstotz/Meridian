@@ -107,6 +107,26 @@ const dispatchStartTool: ToolDefinition = {
       required: false,
       description: "Whether Meridian should enable neutral auto-approve for dispatcher launches"
     },
+    agent_type: {
+      type: "string",
+      required: false,
+      description: "Agent type for dispatcher launches"
+    },
+    model_id: {
+      type: "string",
+      required: false,
+      description: "Model id for dispatcher launches"
+    },
+    mode: {
+      type: "string",
+      required: false,
+      description: "Bridge mode for dispatcher launches"
+    },
+    kill_policy: {
+      type: "string",
+      required: false,
+      description: "Kill policy for dispatcher launches"
+    },
     parallel: {
       type: "string",
       required: false,
@@ -165,6 +185,10 @@ const dispatchStartTool: ToolDefinition = {
         dispatchRepoRoot: params.repo_root,
         docsRoot: params.docs_root,
         autoApprove: parseOptionalBoolean(params.auto_approve),
+        agentType: params.agent_type,
+        modelId: params.model_id,
+        mode: params.mode,
+        killPolicy: params.kill_policy,
         parallel: params.parallel,
         maxConcurrency: params.max_concurrency,
         pmEnabled: params.pm_enabled,
@@ -192,6 +216,10 @@ export async function executeDispatchStart(args: {
   dispatchRepoRoot?: string;
   docsRoot?: string;
   autoApprove?: boolean;
+  agentType?: string;
+  modelId?: string;
+  mode?: string;
+  killPolicy?: string;
   parallel?: string;
   maxConcurrency?: string;
   pmEnabled?: string;
@@ -246,6 +274,10 @@ export async function executeDispatchStart(args: {
     user_reply_channels: replyChannels.channels,
     auto_approve: args.autoApprove ?? false,
     config: {
+      ...(requireParam(args.agentType) ? { agent_type: requireParam(args.agentType) } : {}),
+      ...(requireParam(args.modelId) ? { model_id: requireParam(args.modelId) } : {}),
+      ...(requireParam(args.mode) ? { mode: requireParam(args.mode) } : {}),
+      ...(requireParam(args.killPolicy) ? { kill_policy: requireParam(args.killPolicy) } : {}),
       parallel_dispatch: parallelDispatch,
       pm_resolver: pmResolver,
       model_map: parsedModelMap
@@ -276,6 +308,10 @@ export async function executeDispatchStart(args: {
       dispatcher_thread_id: parsedResponse.data.dispatcher_thread_id,
       reply_channels: replyChannels.channels,
       reply_channel_source: replyChannels.source,
+      agent_type: requireParam(args.agentType) || undefined,
+      model_id: requireParam(args.modelId) || undefined,
+      mode: requireParam(args.mode) || undefined,
+      kill_policy: requireParam(args.killPolicy) || undefined,
       model_map: parsedModelMap,
       auto_approve: args.autoApprove ?? false,
       parallel_dispatch: parallelDispatch,

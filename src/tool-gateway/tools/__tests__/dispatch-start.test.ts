@@ -59,6 +59,10 @@ describe("dispatch-start tool", () => {
       plan: harness.planPath,
       model_map: "CODEX=codex:o3-mini,UNKNOWN=claude:claude-sonnet-4-6",
       auto_approve: "true",
+      agent_type: "codex",
+      model_id: "gpt-5.5 high",
+      mode: "bridge",
+      kill_policy: "always",
       parallel: "true",
       max_concurrency: "3",
       pm_agent_type: "claude",
@@ -78,6 +82,10 @@ describe("dispatch-start tool", () => {
         dispatcher_id: "agent-dispatcher-1234",
         dispatcher_thread_id: "hub-thread-5678",
         reply_channel_source: "service",
+        agent_type: "codex",
+        model_id: "gpt-5.5 high",
+        mode: "bridge",
+        kill_policy: "always",
         auto_approve: true,
         parallel_dispatch: {
           enabled: true,
@@ -127,6 +135,10 @@ describe("dispatch-start tool", () => {
         ],
         auto_approve: true,
         config: {
+          agent_type: "codex",
+          model_id: "gpt-5.5 high",
+          mode: "bridge",
+          kill_policy: "always",
           parallel_dispatch: {
             enabled: true,
             max_concurrency: 3
