@@ -6,6 +6,15 @@ describe("Scenario D: Agent-dispatcher continuation", () => {
   it("continues the first eligible worker and waits for dependencies before launching the next", async () => {
     const harness = await startAgentDispatcherHarness({
       name: "meridian-roles-scenario-d",
+      sendHubRequest: async () => ({
+        trace_id: "scenario-d-status",
+        thread_id: "scenario-d-status",
+        source: "codex",
+        status: "success",
+        content: JSON.stringify({ status: "running" }),
+        attachments: [],
+        timestamp: new Date().toISOString()
+      }),
       planRows: [
         {
           worker: "W-01",
