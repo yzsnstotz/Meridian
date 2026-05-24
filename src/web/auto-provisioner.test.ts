@@ -468,6 +468,61 @@ describe("createAutoProvisionerHandlers", () => {
       }
     });
 
+    await fs.writeFile(
+      "/tmp/mumu-users/u_001/structured/style_douyin/u_001.json",
+      `${JSON.stringify({
+        user_authored: {
+          likes: ["current style"],
+          dislikes: [],
+          tone_keywords: ["current"],
+          notes: "current"
+        },
+        agent_observed: {
+          recurring_motifs: ["current motif"],
+          avoided_patterns: []
+        }
+      })}\n`,
+      "utf8"
+    );
+    (memoryGitSyncQueue.enqueue as ReturnType<typeof vi.fn>).mockClear();
+    const restoreResponse = await invokeSigned(
+      handlers.handle,
+      "POST",
+      `/api/projects/mumu/users/u_001/memory-archive/savepoints/${encodeURIComponent(savepointId)}/restore`,
+      {
+        scope: { kind: "record", record_type: "style_douyin", key: "u_001" },
+        archive: {
+          push_enabled: true,
+          state: "ready",
+          owner: "yzsnstotz",
+          repo_name: "mumu-archive-u1",
+          repo_full_name: "yzsnstotz/mumu-archive-u1",
+          private: true
+        }
+      }
+    );
+    expect(restoreResponse.statusCode).toBe(200);
+    expect(restoreResponse.body).toMatchObject({
+      ok: true,
+      queued: true,
+      restore: {
+        savepoint: { id: savepointId },
+        scope: { kind: "record", record_type: "style_douyin", key: "u_001" },
+        restored_paths: ["structured/style_douyin/u_001.json"]
+      }
+    });
+    expect(
+      JSON.parse(await fs.readFile("/tmp/mumu-users/u_001/structured/style_douyin/u_001.json", "utf8"))
+    ).toMatchObject({ user_authored: { likes: ["savepoint style"] } });
+    expect(memoryGitSyncQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      memoryRoot: "/tmp/mumu-users/u_001",
+      userId: "u_001",
+      eventKind: "restore_write",
+      recordType: "style_douyin",
+      key: "u_001",
+      source: "restore"
+    }));
+
     const invalidSnapshot = await invokeJson(
       handlers.handle,
       "GET",
