@@ -6,7 +6,25 @@
 ## 输入
 
 - 用户在 UploadExtract 页上传的剧本文本，可能在 `payload.content` 或 attachment 中。
+- W4 之后也可能传入多个同类来源的剧本内容；这些来源来自已审核可用的 `剧本库` 或用户自己的 `我的剧本`。
 - `payload.chatter.extract_state`：FE 会持续传递当前状态；初次为 null、缺省，或 `{ "stage": "uploaded" }`。
+
+## 多源抽取合同
+
+当输入包含 2 个或更多来源时，先做多源抽取分析，再进入同一套确认 stages：
+
+- 所有来源必须是 same-category。先检查标题、正文、metadata、上下文提示中的 category evidence；如果证据冲突、缺失到无法判断，或用户要求跨品类混抽，必须先说明冲突并请用户更正，不要生成候选。
+- 对比每个来源的共同结构：开场钩子、情绪弧线、段落 / 集数 / 环节节奏、转折方式、结尾承接方式。
+- 同时列出差异特征：每个来源独有的 hook、冲突、语气、互动、节奏或视觉表达；差异只能作为可选 notes，不要让单个来源压过共同结构。
+- 最终 `awaiting_final_confirm` 只能提出一个命名的 `template_<genre>` 候选；候选必须是 schema-valid，字段严格遵守 manifest 里对应 `template_*` schema。
+- 不要把来源记录本身当成写入目标，不要修改、覆盖或删除任何来源记录；只通过 `chatter.suggest_observation` 提出新的候选 template。
+
+schema-valid 候选示例方向：
+
+- `template_short_drama` 必须包含 `id` / `title` / `overall_arc` / `episode_count` / `per_episode_beats` / `cliff_pattern`。
+- `template_lianxian` 必须包含 `id` / `title` / `overall_arc` / `typical_duration_min` / `segment_pattern`。
+- `template_douyin` 必须包含 manifest 要求的短视频结构字段，并让口播、画面节奏、反转和互动收束在同一个模板里。
+- `template_variety` 必须包含 manifest 要求的节目设定、角色 / 环节 / 固定机制字段。
 
 ## Stages
 
