@@ -425,6 +425,88 @@ describe("MumuMemoryGitSyncQueue", () => {
     });
   });
 
+  it("lists, reads, and plans record-type restore from project savepoint metadata", async () => {
+    const root = makeRoot();
+    const projectStoryPath = "structured/story_douyin/story-project-a.json";
+    const otherProjectStoryPath = "structured/story_douyin/story-project-b.json";
+    const stylePath = "structured/style_douyin/project-style.json";
+    writeJson(root, projectStoryPath, { id: "story-project-a", title: "Project A v1" });
+    writeJson(root, otherProjectStoryPath, { id: "story-project-b", title: "Project B v1" });
+    writeJson(root, stylePath, {
+      user_authored: { likes: ["warm"], dislikes: [], tone_keywords: ["bright"], notes: "project style" },
+      agent_observed: { recurring_motifs: ["street"], avoided_patterns: [] }
+    });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "story-project-a",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const savepoint = await createMumuMemorySavepoint(root, {
+      id: "sp-project-restore-plan",
+      now: () => new Date("2026-05-24T03:04:05.000Z"),
+      metadata: {
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-project-a",
+        project_name: "Project A",
+        genre: "douyin",
+        entry_source: "template",
+        created_from_surface: "story_create_workbench",
+        included_paths: [stylePath, projectStoryPath]
+      }
+    });
+
+    writeJson(root, projectStoryPath, { id: "story-project-a", title: "Project A current" });
+    writeJson(root, otherProjectStoryPath, { id: "story-project-b", title: "Project B current" });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "story-project-a",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const listed = await listMumuMemorySavepoints(root);
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: savepoint.id,
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-project-a",
+        project_name: "Project A",
+        genre: "douyin",
+        entry_source: "template",
+        created_from_surface: "story_create_workbench",
+        included_paths: [projectStoryPath, stylePath]
+      })
+    ]);
+
+    const snapshot = await readMumuMemorySnapshot(root, savepoint.id);
+    expect(snapshot.records.map((record) => record.path).sort()).toEqual([projectStoryPath, stylePath]);
+
+    const result = await restoreMumuMemorySavepoint(root, savepoint.id, {
+      scope: { kind: "record_type", record_type: "story_douyin" }
+    });
+
+    expect(result.restored_paths).toEqual([projectStoryPath]);
+    expect(result.deleted_paths).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(root, projectStoryPath), "utf8"))).toMatchObject({
+      title: "Project A v1"
+    });
+    expect(JSON.parse(readFileSync(path.join(root, otherProjectStoryPath), "utf8"))).toMatchObject({
+      title: "Project B current"
+    });
+    expect(readFileSync(path.join(root, stylePath), "utf8")).toContain("project style");
+  });
+
   it("reads an older savepoint snapshot with first-class style changes without mutating current files", async () => {
     const root = makeRoot();
     const stylePath = "structured/style_douyin/u1.json";

@@ -93,6 +93,24 @@ describe("mumu creative-spine registry", () => {
     expect(prompt).toContain("不要为单个镜头创建独立口播稿");
   });
 
+  it("covers every manifest story category in the create prompt", () => {
+    const registry = JSON.parse(readProjectFile("creative-spine.json")) as CreativeSpine;
+    const manifest = JSON.parse(readProjectFile("manifest.json")) as {
+      record_schemas?: Record<string, unknown>;
+    };
+    const prompt = readProjectFile("seeds/prompts/create_from_template.md");
+    const storyGenres = Object.keys(manifest.record_schemas ?? {})
+      .filter((schemaName) => schemaName.startsWith("story_"))
+      .map((schemaName) => schemaName.slice("story_".length))
+      .sort();
+
+    expect(storyGenres).toEqual(Object.keys(registry).sort());
+    for (const genre of storyGenres) {
+      expect(prompt).toContain(`### ${genre}: story_${genre}`);
+      expect(prompt).toContain(`structured/story_${genre}/<uuid>.json`);
+    }
+  });
+
   it("requires the user-reply block contract in every mumu generation prompt", () => {
     for (const promptPath of ["seeds/prompts/create_from_template.md", "seeds/prompts/optimize_from_template.md"]) {
       expectReplyBlockContract(readProjectFile(promptPath));

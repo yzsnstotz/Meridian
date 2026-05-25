@@ -50,6 +50,42 @@ describe("mumu prompt parts", () => {
     });
   });
 
+  it("renders protected contracts before the user request when preferences are absent", () => {
+    const rendered = renderMumuPromptParts(buildMumuPromptParts({
+      systemPromptId: "optimize_from_template",
+      systemPrompt: "BASE SYSTEM",
+      contextBlock: "## Pre-loaded context\ncontext body",
+      envelopePromptParts: [
+        {
+          id: "ads_contract:optimize_from_template:douyin",
+          kind: "ads_contract",
+          content: "ADS CONTRACT"
+        },
+        {
+          id: "user_request:optimize_from_template",
+          kind: "user_request",
+          content: "USER REQUEST"
+        }
+      ],
+      legacyUserContent: "legacy duplicate"
+    }));
+
+    expect(rendered.content.indexOf("BASE SYSTEM")).toBeLessThan(rendered.content.indexOf("## Pre-loaded context"));
+    expect(rendered.content.indexOf("## Pre-loaded context")).toBeLessThan(rendered.content.indexOf("ADS CONTRACT"));
+    expect(rendered.content.indexOf("ADS CONTRACT")).toBeLessThan(rendered.content.indexOf("USER REQUEST"));
+    expect(rendered.content).not.toContain("Account creative preferences for this turn");
+    expect(rendered.content).not.toContain("legacy duplicate");
+    expect(rendered.diagnostics).toEqual({
+      prompt_part_ids: [
+        "system_prompt:optimize_from_template",
+        "context:resolved",
+        "ads_contract:optimize_from_template:douyin",
+        "user_request:optimize_from_template"
+      ],
+      preference_status: "not_provided"
+    });
+  });
+
   it("keeps minimal legacy turns byte-for-byte while adding diagnostics ids", () => {
     const parts = buildMumuPromptParts({
       legacyUserContent: "plain user turn"
