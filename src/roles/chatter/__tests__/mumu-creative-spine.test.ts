@@ -25,6 +25,21 @@ function readProjectFile(relativePath: string): string {
   return readFileSync(path.join(mumuRoot, relativePath), "utf8");
 }
 
+function expectReplyBlockContract(prompt: string): void {
+  expect(prompt).toContain("<<<MUMU-USER-REPLY>>>");
+  expect(prompt).toContain("<<<END-MUMU-USER-REPLY>>>");
+  expect(prompt).toMatch(/只(?:能)?(?:输出|包含|出现)一个|必须且只能|且只输出一个/u);
+}
+
+function expectNoReplyLeakInstructions(prompt: string): void {
+  for (const line of prompt.split(/\r?\n/u)) {
+    if (!/(回复|对话)/u.test(line)) {
+      continue;
+    }
+    expect(line).not.toMatch(/(structured\/|\.json|record_type|template_id|JSON 校验|已写入|落库|文件路径|路径|工具|实现步骤)/iu);
+  }
+}
+
 function fragmentTypes(entry: CreativeSpine[string]): string[] {
   return [
     ...entry.canonical_artifacts,
@@ -76,5 +91,33 @@ describe("mumu creative-spine registry", () => {
 
     expect(prompt).toContain("full_script -> visual_beats");
     expect(prompt).toContain("不要为单个镜头创建独立口播稿");
+  });
+
+  it("requires the user-reply block contract in every mumu generation prompt", () => {
+    for (const promptPath of ["seeds/prompts/create_from_template.md", "seeds/prompts/optimize_from_template.md"]) {
+      expectReplyBlockContract(readProjectFile(promptPath));
+    }
+  });
+
+  it("keeps user reply instructions free of implementation narration", () => {
+    for (const promptPath of ["seeds/prompts/create_from_template.md", "seeds/prompts/optimize_from_template.md"]) {
+      expectNoReplyLeakInstructions(readProjectFile(promptPath));
+    }
+  });
+
+  it("spells out douyin and variety create behavior", () => {
+    const prompt = readProjectFile("seeds/prompts/create_from_template.md");
+
+    expect(prompt).toContain("生成完整抖音短视频");
+    expect(prompt).toContain("先生成或更新整条视频的 full_script");
+    expect(prompt).toContain("再从 full_script 派生 visual_beats[]");
+    expect(prompt).toContain("单个镜头");
+    expect(prompt).toContain("对应切片");
+
+    expect(prompt).toContain("story_variety");
+    expect(prompt).toContain("run_of_show");
+    expect(prompt).toContain("host_script");
+    expect(prompt).toContain("主持照读稿");
+    expect(prompt).toContain("辅助资料");
   });
 });
