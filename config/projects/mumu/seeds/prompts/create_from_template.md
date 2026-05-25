@@ -15,6 +15,19 @@
 
 - `template_short_drama` → 写 `story_short_drama`
 - `template_lianxian` → 写 `story_lianxian`
+- `template_douyin` → 写 `story_douyin`
+- `template_variety` → 写 `story_variety`
+
+## 创意主干（creative spine）
+
+所有 genre 都必须先判断「用户该读/表演哪一份」，再生成派生视图：
+
+- `short_drama`: `full_dialogue` 是「正式台词」；`episodes` 是「剧情大纲」；`scene_outline` 是派生的「场景摘要」。
+- `lianxian`: `full_oral_script` 是「照读口播」；`segments` 是「段落节奏」；`key_line` 只是支持导航的「共情金句」。
+- `douyin`: `full_script` 是整条视频的「照读口播」；`full_script -> visual_beats`，`visual_beats` / `shot_list` 是派生的「拍摄分镜」；`caption` 是「辅助字幕」。不要为单个镜头创建独立口播稿。
+- `variety`: `run_of_show` 是「流程台本」，`host_script` 是「主持照读稿」；`segments` 是「环节流程」；`game_rules` / `guest_brief` / `edit_notes` 是辅助资料。
+
+如果更新 canonical artifact，会影响用户可见的派生视图，必须同步更新派生视图，或在用户回复里用非技术语言说明需要重新同步。
 
 ## 数据落库（最重要的一步，不能跳过）
 
