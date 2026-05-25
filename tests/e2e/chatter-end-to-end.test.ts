@@ -18,7 +18,7 @@
  * (sendToHub outbound + dispatch inbound + claimsTrace routing) is real.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, realpathSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RoleRegistry } from "../../src/roles/role-registry";
@@ -54,9 +54,14 @@ function makeConfig(memoryFolder: string, overrides: Partial<ChatterRoleConfig> 
 
 function makeTurnResult(
   content: string,
-  opts: { mode?: "stateless" | "session"; control?: "new" | "interrupt" } = {}
+  opts: {
+    mode?: "stateless" | "session";
+    control?: "new" | "interrupt";
+    chatter_session_id?: string;
+    project_id?: string;
+  } = {}
 ): HubResult {
-  const { mode = "session", control } = opts;
+  const { mode = "session", control, chatter_session_id, project_id } = opts;
   return {
     trace_id: crypto.randomUUID(),
     thread_id: CHATTER_THREAD_ID,
@@ -65,7 +70,7 @@ function makeTurnResult(
     content,
     attachments: [],
     timestamp: new Date().toISOString(),
-    payload: { chatter: { mode, control } }
+    payload: { chatter: { mode, control, chatter_session_id, project_id } }
   };
 }
 
@@ -92,6 +97,26 @@ function makeAgentReply(runMsg: HubMessage, content: string): HubResult {
     timestamp: new Date().toISOString(),
     run_state: "completed"
   };
+}
+
+function readTurnFiles(root: string): string[] {
+  const turnsRoot = path.join(root, "turns");
+  if (!existsSync(turnsRoot)) {
+    return [];
+  }
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.name.endsWith(".md")) {
+        files.push(readFileSync(entryPath, "utf8"));
+      }
+    }
+  };
+  walk(turnsRoot);
+  return files;
 }
 
 describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
@@ -166,7 +191,10 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
   it("agent reply on the run trace forwards only the MUMU user reply block", async () => {
     const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
-    await runner.dispatch(makeTurnResult("question?"));
+    await runner.dispatch(makeTurnResult("question?", {
+      chatter_session_id: "session-visible-reply",
+      project_id: "project-visible-reply"
+    }));
     const spawn = sent.find((m) => m.intent === "spawn")!;
     await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
     const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
@@ -188,6 +216,14 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
       fallback_used: false
     });
     expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
+    const turnFiles = readTurnFiles(memoryFolder);
+    const assistantTurn = turnFiles.find((file) => file.includes("role: assistant"));
+    expect(assistantTurn).toBeDefined();
+    expect(assistantTurn).toContain("project_id: project-visible-reply");
+    expect(assistantTurn).toContain("chatter_session_id: session-visible-reply");
+    expect(assistantTurn).toContain("transcript_origin: assistant_reply");
+    expect(assistantTurn).toContain(`display_content_json: ${JSON.stringify("这是给用户看的回答")}`);
+    expect(assistantTurn).toContain("internal structured/story_douyin/a.json notes");
   });
 
   it("agent reply on the run trace uses fallback for malformed raw output", async () => {

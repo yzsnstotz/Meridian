@@ -15,6 +15,10 @@ export const ChatterInFlightTraceSchema = z.object({
   purpose: z.enum(["spawn", "agent_turn", "job_dispatch"]),
   agent_session_id: z.string().min(1).nullable().default(null),
   chatter_session_id: z.string().min(1).optional(),
+  project_id: z.string().min(1).optional(),
+  story_id: z.string().min(1).optional(),
+  template_id: z.string().min(1).optional(),
+  genre: z.string().min(1).optional(),
   diagnostics: MumuChatterDiagnosticsSchema.optional(),
   registered_at: z.string().datetime()
 });

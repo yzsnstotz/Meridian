@@ -131,6 +131,8 @@ type ChatterTurnEnvelopeWithMode =
     mode: "stateless" | "session";
   };
 
+type ChatterMemoryTurnRole = "user" | "assistant";
+
 export class ChatterRole implements BaseRole {
   readonly roleType = "chatter" as const;
   readonly threadId: string;
@@ -682,24 +684,30 @@ export class ChatterRole implements BaseRole {
 
   private async writeTurnToMemory(
     envelope: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>,
-    content: string
+    content: string,
+    options: {
+      role?: ChatterMemoryTurnRole;
+      displayContent?: string;
+      transcriptOrigin?: NonNullable<ChatterEnvelope["transcript"]>["origin"];
+    } = {}
   ): Promise<void> {
     const skills = makeMemorySkills(this.resolver!, "session");
     const date = new Date().toISOString().slice(0, 10);
     const turnId = randomUUID().slice(0, 8);
+    const role = options.role ?? "user";
+    const transcriptOrigin = options.transcriptOrigin ?? envelope.transcript?.origin;
+    const displayContent = options.displayContent ?? envelope.transcript?.user_display_content;
     const frontmatter = [
       "---",
       "mode: session",
-      "role: user",
+      `role: ${role}`,
       `chatter_session_id: ${envelope.chatter_session_id ?? ""}`,
       ...(envelope.project_id ? [`project_id: ${envelope.project_id}`] : []),
       ...(envelope.story_id ? [`story_id: ${envelope.story_id}`] : []),
       ...(envelope.template_id ? [`template_id: ${envelope.template_id}`] : []),
       ...(envelope.genre ? [`genre: ${envelope.genre}`] : []),
-      ...(envelope.transcript?.origin ? [`transcript_origin: ${envelope.transcript.origin}`] : []),
-      ...(envelope.transcript?.user_display_content
-        ? [`display_content_json: ${JSON.stringify(envelope.transcript.user_display_content)}`]
-        : []),
+      ...(transcriptOrigin ? [`transcript_origin: ${transcriptOrigin}`] : []),
+      ...(displayContent ? [`display_content_json: ${JSON.stringify(displayContent)}`] : []),
       "---"
     ].join("\n");
     const result = await skills.write({
@@ -821,8 +829,13 @@ export class ChatterRole implements BaseRole {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {}),
         chatter_session_id: trace.chatter_session_id,
+        ...(trace.project_id ? { project_id: trace.project_id } : {}),
+        ...(trace.story_id ? { story_id: trace.story_id } : {}),
+        ...(trace.template_id ? { template_id: trace.template_id } : {}),
+        ...(trace.genre ? { genre: trace.genre } : {}),
         ...(trace.diagnostics ? { diagnostics: trace.diagnostics } : {})
       });
+      await this.writeAssistantTurnToMemory(reply.chatter, fallback.content, reply.content);
       await this.forwardChatterReply(reply.content, reply.chatter);
     } else {
       const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
@@ -894,6 +907,21 @@ export class ChatterRole implements BaseRole {
   private isMumuUserReplyChannel(): boolean {
     const replyChannel = this.config.user_reply_channel;
     return replyChannel.channel === "socket" && replyChannel.chat_id.startsWith("ads:mumu:");
+  }
+
+  private async writeAssistantTurnToMemory(
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>,
+    rawContent: string,
+    displayContent: string
+  ): Promise<void> {
+    if (!this.resolver || !this.isMumuUserReplyChannel() || !chatter.chatter_session_id) {
+      return;
+    }
+    await this.writeTurnToMemory(chatter, rawContent, {
+      role: "assistant",
+      displayContent,
+      transcriptOrigin: "assistant_reply"
+    });
   }
 
   private async applyAgentStructuredFallback(
@@ -986,6 +1014,10 @@ export class ChatterRole implements BaseRole {
       purpose: "agent_turn",
       agent_session_id: this.sessionMgr!.currentSessionId,
       ...(turn.chatterSessionId ? { chatter_session_id: turn.chatterSessionId } : {}),
+      ...(turn.chatter.project_id ? { project_id: turn.chatter.project_id } : {}),
+      ...(turn.chatter.story_id ? { story_id: turn.chatter.story_id } : {}),
+      ...(turn.chatter.template_id ? { template_id: turn.chatter.template_id } : {}),
+      ...(turn.chatter.genre ? { genre: turn.chatter.genre } : {}),
       ...(turn.chatter.diagnostics ? { diagnostics: turn.chatter.diagnostics } : {})
     });
 
