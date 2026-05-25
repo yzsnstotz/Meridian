@@ -327,6 +327,19 @@ describe("AgentInstanceSchema socket_path / pid nullability", () => {
     ).toBe(true);
   });
 
+  it("preserves streaming bridge metadata needed by the process monitor", () => {
+    const parsed = AgentInstanceSchema.parse({
+      ...liveInstance,
+      supportsStream: true,
+      codexSessionId: "019e3390-b9ef-70e2-a48c-96bb38c62574",
+      last_interaction_at: "2026-05-22T00:01:00.000Z"
+    });
+
+    expect(parsed.supportsStream).toBe(true);
+    expect(parsed.codexSessionId).toBe("019e3390-b9ef-70e2-a48c-96bb38c62574");
+    expect(parsed.last_interaction_at).toBe("2026-05-22T00:01:00.000Z");
+  });
+
   it("still rejects a genuinely malformed instance", () => {
     expect(AgentInstanceSchema.safeParse({ ...liveInstance, thread_id: "" }).success).toBe(false);
     expect(AgentInstanceSchema.safeParse({ ...liveInstance, status: "bogus" }).success).toBe(false);

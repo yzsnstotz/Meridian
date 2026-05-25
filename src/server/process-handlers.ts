@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { LifecycleStore } from "../roles/agent-dispatcher/lifecycle-store";
 import type { Logger } from "../roles/base-role";
 import type { StateStore } from "../state-store";
-import { TokenUsageCollector, type TokenUsage } from "./token-usage";
+import { TokenUsageCollector, extractCodexResumeSessionId, type TokenUsage } from "./token-usage";
 import { AgentDispatcherConfigSchema, type AgentInstance, type DispatchThreadStateV2, type AppState } from "../types";
 
 export interface ProcessHandlersOptions {
@@ -88,13 +88,12 @@ const AGENTAPI_SOCKET_PATTERN = /\/agentapi-([^/\s]+?)\.sock/;
 const AGENTAPI_PORT_PATTERN = /--port=(\d+)/;
 // `agentapi server` parent (real or symlinked binary path)
 const AGENTAPI_COMMAND_PATTERN = /(?:^|[\s/])agentapi\s+server(?:\s|$)/;
-// `codex exec --json …` — the canonical Hub-direct stateless-call argv shape
-// used by validator-orchestrator (mode="stateless_call") and pm-resolver. The
-// `--json` flag is what disambiguates it from a user-launched `codex exec`
-// (interactive mode never gets --json from meridian-roles paths). Matches a
-// path-prefixed `codex` too (`/.../bin/codex exec --json`) — mirrors the
-// allowance in CODEX_COMMAND_PATTERN.
-const CODEX_EXEC_JSON_PATTERN = /(?:^|[\s/])codex\s+exec\s+--json(?:\s|$)/;
+// `codex exec ... --json` — the canonical Hub-direct streaming argv shape
+// used by bridge turns and stateless validator/PM calls. This includes both
+// first turns (`codex exec --json`) and resumed threads
+// (`codex exec resume <session> --json`). The `--json` flag disambiguates it
+// from a user-launched interactive `codex exec`.
+const CODEX_EXEC_JSON_PATTERN = /(?:^|[\s/])codex\s+exec(?:\s|$)(?=.*--json(?:\s|$))/;
 // Codex CLI — bare `codex `, native binary path `.../codex/codex` or `.../codex`,
 // or node-wrapped `node .../codex`. Matches the executable name after start, a
 // path separator, or whitespace.
@@ -386,6 +385,8 @@ export function createProcessHandlers(options: ProcessHandlersOptions): ProcessH
     bindUnboundCodexExecOwners(entries, byPid, activeBridgeOwners, {
       allowSingletonFallback: false
     });
+
+    bindUnboundHubStreamingBridgeRuns(entries, byPid, buildActiveHubStreamingBridgeOwners(hubInstances));
 
     appendHubInstanceOnlyRows(entries, hubInstances, index);
 
@@ -989,6 +990,14 @@ interface ActiveStreamingBridgeOwner extends ActiveProcessOwner {
   role: "dispatcher" | "worker";
 }
 
+interface ActiveHubStreamingBridgeOwner {
+  thread_id: string;
+  agent_type: AgentInstance["agent_type"];
+  status: AgentInstance["status"];
+  started_at: string | null;
+  codex_session_id: string | null;
+}
+
 async function buildActiveStreamingBridgeOwners(
   stateStore: Pick<StateStore, "load">,
   log: Logger
@@ -1048,6 +1057,113 @@ async function buildActiveStreamingBridgeOwners(
     }
   }
   return owners;
+}
+
+function buildActiveHubStreamingBridgeOwners(instances: AgentInstance[]): ActiveHubStreamingBridgeOwner[] {
+  const owners: ActiveHubStreamingBridgeOwner[] = [];
+  for (const inst of instances) {
+    const threadId = inst.thread_id?.trim();
+    if (!threadId) {
+      continue;
+    }
+    if (inst.mode !== "bridge" || inst.status !== "running") {
+      continue;
+    }
+    if (inst.agent_type !== "codex" && inst.agent_type !== "claude") {
+      continue;
+    }
+    if (inst.supportsStream !== true && inst.socket_path !== null) {
+      continue;
+    }
+    const lastInteractionAt = typeof inst.last_interaction_at === "string"
+      && inst.last_interaction_at.trim().length > 0
+      ? inst.last_interaction_at.trim()
+      : null;
+    owners.push({
+      thread_id: threadId,
+      agent_type: inst.agent_type,
+      status: inst.status,
+      started_at: lastInteractionAt,
+      codex_session_id: typeof inst.codexSessionId === "string" && inst.codexSessionId.trim().length > 0
+        ? inst.codexSessionId.trim()
+        : null
+    });
+  }
+  return owners;
+}
+
+function bindUnboundHubStreamingBridgeRuns(
+  entries: ProcessSnapshotEntry[],
+  byPid: Map<number, ProcInfo>,
+  owners: ActiveHubStreamingBridgeOwner[]
+): void {
+  if (owners.length === 0) {
+    return;
+  }
+
+  const candidates = collectUnboundHubStreamRoots(entries, byPid);
+  if (candidates.length === 0) {
+    return;
+  }
+
+  const usedOwnerThreadIds = new Set<string>();
+  const nowMs = Date.now();
+  for (const root of candidates) {
+    const startMs = approximateStartMs(root.etime, nowMs);
+    const resumeSessionId = root.agent_type === "codex"
+      ? extractCodexResumeSessionId(root.command)
+      : null;
+    const matches: ActiveHubStreamingBridgeOwner[] = [];
+
+    for (const owner of owners) {
+      if (usedOwnerThreadIds.has(owner.thread_id)) {
+        continue;
+      }
+      if (owner.agent_type !== root.agent_type) {
+        continue;
+      }
+      if (
+        owner.agent_type === "codex"
+        && owner.codex_session_id
+        && resumeSessionId
+        && owner.codex_session_id === resumeSessionId
+      ) {
+        matches.push(owner);
+        continue;
+      }
+      if (!owner.started_at || startMs === null) {
+        continue;
+      }
+      const ownerMs = Date.parse(owner.started_at);
+      if (!Number.isFinite(ownerMs)) {
+        continue;
+      }
+      if (Math.abs(ownerMs - startMs) <= PROCESS_OWNER_START_TOLERANCE_MS) {
+        matches.push(owner);
+      }
+    }
+
+    if (matches.length !== 1) {
+      continue;
+    }
+
+    const chosen = matches[0];
+    usedOwnerThreadIds.add(chosen.thread_id);
+    markHubOwnedRun(root, chosen.thread_id);
+    if (root.pid === null) {
+      continue;
+    }
+    for (const descendant of descendantsOf(root.pid, entries)) {
+      markHubOwnedRun(descendant, chosen.thread_id);
+    }
+  }
+}
+
+function markHubOwnedRun(entry: ProcessSnapshotEntry, threadId: string): void {
+  entry.origin = "hub";
+  entry.thread_id = threadId;
+  entry.binding = null;
+  entry.is_leak = false;
 }
 
 function bindUnboundCodexExecOwners(
@@ -1149,6 +1265,41 @@ function collectUnboundCodexExecRoots(
     candidates.push(entry);
   }
   return candidates;
+}
+
+function collectUnboundHubStreamRoots(
+  entries: ProcessSnapshotEntry[],
+  byPid: Map<number, ProcInfo>
+): ProcessSnapshotEntry[] {
+  const candidates: ProcessSnapshotEntry[] = [];
+  for (const entry of entries) {
+    if (entry.origin !== "managed") continue;
+    if (entry.binding !== null) continue;
+    if (entry.thread_id !== null) continue;
+    if (entry.ppid === null) continue;
+    if (entry.agent_type === "codex") {
+      if (!CODEX_EXEC_JSON_PATTERN.test(entry.command)) continue;
+    } else if (entry.agent_type !== "claude") {
+      continue;
+    }
+
+    const parent = byPid.get(entry.ppid);
+    if (parent && isSameUnboundHubStreamProcess(parent.command, entry.agent_type)) {
+      continue;
+    }
+    candidates.push(entry);
+  }
+  return candidates;
+}
+
+function isSameUnboundHubStreamProcess(command: string, agentType: ProcessSnapshotEntry["agent_type"]): boolean {
+  if (agentType === "codex") {
+    return CODEX_EXEC_JSON_PATTERN.test(command);
+  }
+  if (agentType === "claude") {
+    return CLAUDE_COMMAND_PATTERN.test(command);
+  }
+  return false;
 }
 
 function descendantsOf(rootPid: number, entries: ProcessSnapshotEntry[]): ProcessSnapshotEntry[] {
