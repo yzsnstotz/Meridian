@@ -393,15 +393,21 @@ export class SessionManager {
     const lifecycleStore = this.getLifecycleStore();
     const lifecycleState = lifecycleStore.load();
     const runningWorkers = lifecycleStore.getWorkersInState("running");
+    const runningDispatcherWorker = runningWorkers.find((worker) => worker.worker_id === DISPATCHER_WORKER_ID);
+    const runningTaskWorkers = runningWorkers.filter((worker) => worker.worker_id !== DISPATCHER_WORKER_ID);
     const staleWorkersKilled: string[] = [];
     let dispatcherCleared = false;
 
-    if (lifecycleState.dispatcher.thread_id) {
-      await this.killThread(lifecycleState.dispatcher.thread_id);
+    const dispatcherThreadIds = uniqueNonEmpty([
+      lifecycleState.dispatcher.thread_id,
+      runningDispatcherWorker?.thread_id
+    ]);
+    for (const dispatcherThreadId of dispatcherThreadIds) {
+      await this.killThread(dispatcherThreadId);
       dispatcherCleared = true;
     }
 
-    for (const worker of runningWorkers) {
+    for (const worker of runningTaskWorkers) {
       await this.killThread(worker.thread_id);
       staleWorkersKilled.push(worker.worker_id);
     }
@@ -421,7 +427,7 @@ export class SessionManager {
     if (staleWorkersKilled.length > 0) {
       const planWorkerStatuses = readPlanWorkerStatuses(this.dispatchPlanPath);
       const freshState = lifecycleStore.load();
-      for (const worker of runningWorkers) {
+      for (const worker of runningTaskWorkers) {
         const workerState = freshState.workers[worker.worker_id];
         if (!workerState || workerState.status !== "running") {
           continue;
@@ -441,6 +447,7 @@ export class SessionManager {
 
       if (dispatcherCleared) {
         freshState.dispatcher = buildPendingDispatcherState();
+        delete freshState.workers[DISPATCHER_WORKER_ID];
       }
 
       if (workersReconciled || dispatcherCleared) {
@@ -449,6 +456,7 @@ export class SessionManager {
     } else if (dispatcherCleared) {
       const nextState = lifecycleStore.load();
       nextState.dispatcher = buildPendingDispatcherState();
+      delete nextState.workers[DISPATCHER_WORKER_ID];
       lifecycleStore.save(nextState);
     }
 
@@ -712,7 +720,7 @@ function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function uniqueNonEmpty(values: string[]): string[] {
+function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const value of values) {

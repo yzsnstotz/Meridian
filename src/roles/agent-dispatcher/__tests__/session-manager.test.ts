@@ -143,6 +143,17 @@ describe("SessionManager", () => {
       started_at: FIXED_NOW,
       status: "running"
     });
+    expect(lifecycle.getState().workers.DISPATCHER).toEqual({
+      thread_id: "dispatcher-thread-123",
+      trace_id: null,
+      started_at: FIXED_NOW,
+      last_seen_at: FIXED_NOW,
+      status: "running",
+      expected_outputs: [],
+      hub_result: null,
+      command_preamble: null,
+      retry_count: 0
+    });
   });
 
   it("persists pause and resume state through the state store", async () => {
@@ -688,6 +699,7 @@ describe("SessionManager", () => {
     // Both workers have no hub_result, but plan shows ✅ → completed (not abandoned)
     expect(lifecycle.getState().workers["R-01"]?.status).toBe("completed");
     expect(lifecycle.getState().workers["R-02"]?.status).toBe("completed");
+    expect(lifecycle.getState().workers).not.toHaveProperty("DISPATCHER");
   });
 
   it("skips kill attempts when lifecycle store has no running dispatcher or workers", async () => {
@@ -850,6 +862,17 @@ function createLifecycleStoreMock(initialState?: DispatchThreadStateV2): {
         thread_id: threadId,
         started_at: FIXED_NOW,
         status: "running"
+      };
+      state.workers.DISPATCHER = {
+        thread_id: threadId,
+        trace_id: null,
+        started_at: FIXED_NOW,
+        last_seen_at: FIXED_NOW,
+        status: "running",
+        expected_outputs: [],
+        hub_result: null,
+        command_preamble: null,
+        retry_count: 0
       };
     }),
     getWorkersInState: vi.fn((status) => {
