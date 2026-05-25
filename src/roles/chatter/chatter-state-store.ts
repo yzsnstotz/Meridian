@@ -7,6 +7,9 @@ import {
   incrementChatterLastTurnErrorTotal
 } from "./observability";
 
+export const ChatterAgentSessionStatusSchema = z.enum(["unbound", "alive", "dead", "restarting"]);
+export type ChatterAgentSessionStatus = z.infer<typeof ChatterAgentSessionStatusSchema>;
+
 export const ChatterInFlightTraceSchema = z.object({
   trace_id: z.string().min(1),
   // "spawn" — outbound intent:"spawn" awaiting the new agent thread_id.
@@ -52,20 +55,28 @@ export const ChatterObservationCacheEntrySchema = z.object({
 });
 export type ChatterObservationCacheEntry = z.infer<typeof ChatterObservationCacheEntrySchema>;
 
-export const ChatterPersistedStateSchema = z.object({
+const ChatterPersistedStateRawSchema = z.object({
   version: z.literal(1),
   agent_session_id: z.string().min(1).nullable().default(null),
+  agent_session_status: ChatterAgentSessionStatusSchema.optional(),
   in_flight_traces: z.array(ChatterInFlightTraceSchema).default([]),
   last_provision_error: ChatterProvisionErrorSchema.optional(),
   last_turn_error: ChatterTurnErrorSchema.optional(),
   trigger_state: z.record(z.string().min(1), ChatterTriggerThrottleStateSchema).optional(),
   observations: z.record(z.string().uuid(), ChatterObservationCacheEntrySchema).optional()
 });
-export type ChatterPersistedState = z.infer<typeof ChatterPersistedStateSchema>;
+export const ChatterPersistedStateSchema = ChatterPersistedStateRawSchema.transform((state) => ({
+  ...state,
+  agent_session_status:
+    state.agent_session_status ?? (state.agent_session_id ? "alive" : "unbound")
+}));
+export type ChatterPersistedState = z.output<typeof ChatterPersistedStateSchema>;
+export type ChatterPersistedStateInput = z.input<typeof ChatterPersistedStateSchema>;
 
 export const EMPTY_CHATTER_STATE: ChatterPersistedState = {
   version: 1,
   agent_session_id: null,
+  agent_session_status: "unbound",
   in_flight_traces: []
 };
 
@@ -84,7 +95,7 @@ export class ChatterStateStore {
     return ChatterPersistedStateSchema.parse(JSON.parse(raw));
   }
 
-  save(state: ChatterPersistedState): void {
+  save(state: ChatterPersistedStateInput): void {
     const validated = ChatterPersistedStateSchema.parse(state);
     mkdirSync(this.stateDir, { recursive: true });
     const tmp = `${this.stateFile}.${process.pid}.${Date.now()}.tmp`;
@@ -112,7 +123,8 @@ export class ChatterStateStore {
   }
 
   clearProvisionError(): void {
-    const { last_provision_error: _lastProvisionError, ...state } = this.load();
+    const state = this.load();
+    delete state.last_provision_error;
     this.save(state);
   }
 
@@ -130,7 +142,8 @@ export class ChatterStateStore {
   }
 
   clearTurnError(): void {
-    const { last_turn_error: _lastTurnError, ...state } = this.load();
+    const state = this.load();
+    delete state.last_turn_error;
     this.save(state);
   }
 

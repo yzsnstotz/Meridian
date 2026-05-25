@@ -194,6 +194,17 @@ export const MumuChatterDiagnosticsSchema = z.object({
 });
 export type MumuChatterDiagnostics = z.infer<typeof MumuChatterDiagnosticsSchema>;
 
+export const MumuAgentSessionStatusSchema = z.enum(["unbound", "alive", "dead", "restarting"]);
+export type MumuAgentSessionStatus = z.infer<typeof MumuAgentSessionStatusSchema>;
+
+export const MumuChatterSessionStateSchema = z.object({
+  transcript_session_id: z.string().min(1),
+  agent_session_id: z.string().min(1).nullable(),
+  agent_session_status: MumuAgentSessionStatusSchema,
+  history_replay: z.boolean()
+});
+export type MumuChatterSessionState = z.infer<typeof MumuChatterSessionStateSchema>;
+
 export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]).optional(),
   chatter_session_id: z.string().min(1).optional(),
@@ -214,6 +225,7 @@ export const ChatterTurnEnvelopeSchema = z.object({
   candidate_observation: ChatterCandidateObservationSchema.optional(),
   observation_id: z.string().uuid().optional(),
   coedit_target: ChatterCoeditTargetSchema.optional(),
+  session_state: MumuChatterSessionStateSchema.optional(),
   control: z.enum(["new", "interrupt", "confirm_observation", "reject_observation"]).optional(),
   reply_parse: MumuReplyParseDiagnosticsSchema.optional()
 });

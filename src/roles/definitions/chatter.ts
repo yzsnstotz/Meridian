@@ -362,7 +362,7 @@ export class ChatterRole implements BaseRole {
     }
 
     if (envelope.control === "new") {
-      await this.handleControlNew();
+      await this.handleControlNew(envelope.chatter_session_id);
       return;
     }
 
@@ -759,6 +759,7 @@ export class ChatterRole implements BaseRole {
   private kickoffSpawn(): void {
     const traceId = randomUUID();
     this.pendingSpawnTraceId = traceId;
+    this.sessionMgr!.markSessionRestarting();
     this.sessionMgr!.registerTrace({
       trace_id: traceId,
       purpose: "spawn",
@@ -835,6 +836,7 @@ export class ChatterRole implements BaseRole {
         ...(trace.genre ? { genre: trace.genre } : {}),
         ...(trace.diagnostics ? { diagnostics: trace.diagnostics } : {})
       });
+      reply.chatter = this.withSessionState(reply.chatter, trace.chatter_session_id);
       await this.writeAssistantTurnToMemory(reply.chatter, fallback.content, reply.content);
       await this.forwardChatterReply(reply.content, reply.chatter);
     } else {
@@ -843,6 +845,7 @@ export class ChatterRole implements BaseRole {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {})
       });
+      reply.chatter = this.withSessionState(reply.chatter, reply.chatter.chatter_session_id);
       await this.deliverChatterReply(reply.content, reply.chatter, "success");
     }
     if (result.status === "error") {
@@ -963,9 +966,15 @@ export class ChatterRole implements BaseRole {
       this.sessionMgr!.clearTrace(this.pendingSpawnTraceId);
       this.pendingSpawnTraceId = null;
     }
+    this.sessionMgr!.markSessionDead();
     const queued = this.pendingTurns.splice(0);
     for (let i = 0; i < queued.length; i += 1) {
-      void this.forwardToUser(`error: ${reason}`).catch(() => undefined);
+      const turn = queued[i]!;
+      void this.deliverChatterReply(
+        `error: ${reason}`,
+        this.withSessionState(turn.chatter, turn.chatterSessionId),
+        "error"
+      ).catch(() => undefined);
     }
   }
 
@@ -1038,12 +1047,23 @@ export class ChatterRole implements BaseRole {
       await this.ctx!.sendToHub(runMsg);
       this.clearTurnError();
     } catch (e) {
-      this.sessionMgr!.clearTrace(traceId);
-      this.recordTurnError(traceId, "agent_dispatch_failed", e);
-      await this.forwardToUser(
-        `error: agent dispatch failed: ${e instanceof Error ? e.message : String(e)}`
-      );
+      await this.recoverAgentDispatchFailure(traceId, turn, e);
     }
+  }
+
+  private async recoverAgentDispatchFailure(traceId: string, turn: QueuedTurn, error: unknown): Promise<void> {
+    this.sessionMgr!.clearTrace(traceId);
+    this.recordTurnError(traceId, "agent_dispatch_failed", error);
+    this.sessionMgr!.markSessionDead();
+    this.pendingTurns.unshift(turn);
+    if (this.pendingSpawnTraceId === null) {
+      this.kickoffSpawn();
+    }
+    await this.deliverChatterReply(
+      "创作助手连接已断开，正在重新连接。",
+      this.withSessionState(turn.chatter, turn.chatterSessionId),
+      "partial"
+    );
   }
 
   private async dispatchSelfInitiatedRun(request: SelfInitiatedTurnRequest): Promise<void> {
@@ -1097,7 +1117,7 @@ export class ChatterRole implements BaseRole {
     }
   }
 
-  private async handleControlNew(): Promise<void> {
+  private async handleControlNew(chatterSessionId?: string): Promise<void> {
     if (this.pendingSpawnTraceId !== null) {
       await this.forwardToUser(
         "error: cannot rotate session while spawn is in progress; try again after current spawn completes"
@@ -1123,7 +1143,10 @@ export class ChatterRole implements BaseRole {
     }
 
     this.sessionMgr!.unbindAgentSession();
-    await this.forwardToUser("new session pending: next turn will spawn a fresh agent");
+    await this.forwardChatterReply(
+      "new session pending: next turn will spawn a fresh agent",
+      this.withSessionState({}, chatterSessionId)
+    );
   }
 
   private handleControlInterrupt(): void {
@@ -1150,6 +1173,21 @@ export class ChatterRole implements BaseRole {
   ): Promise<void> {
     if (!this.ctx || !this.config.user_reply_channel) return;
     await this.deliverChatterReply(content, chatter, "success");
+  }
+
+  private withSessionState(
+    chatter: NonNullable<HubMessage["payload"]["chatter"]>,
+    transcriptSessionId: string | undefined,
+    historyReplay = false
+  ): NonNullable<HubMessage["payload"]["chatter"]> {
+    if (!this.sessionMgr || !transcriptSessionId) {
+      return chatter;
+    }
+    return {
+      ...chatter,
+      chatter_session_id: chatter.chatter_session_id ?? transcriptSessionId,
+      session_state: this.sessionMgr.sessionStateFor(transcriptSessionId, historyReplay)
+    };
   }
 
   private recordTurnError(traceId: string, code: string, error: unknown): void {

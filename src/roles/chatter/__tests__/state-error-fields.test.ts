@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -46,6 +46,7 @@ describe("ChatterStateStore error fields", () => {
     expect(store.load()).toEqual({
       version: 1,
       agent_session_id: null,
+      agent_session_status: "unbound",
       in_flight_traces: []
     });
   });
@@ -134,11 +135,13 @@ describe("ChatterStateStore error fields", () => {
     expect(failedState.last_turn_error?.ts).toEqual(expect.any(String));
     expect(failedState.last_turn_error?.message).not.toContain("/Users/yzliu");
 
+    const recoverySpawn = sent.find((message) => message.intent === "spawn")!;
+    expect(recoverySpawn).toBeDefined();
     failRunDispatch = false;
-    await role.onInboundResult(makeTurnResult("success", { payload: { chatter: { mode: "session" } } }));
+    await driveSpawnResponse(role, recoverySpawn, "claude_08");
     const clearedState = new ChatterStateStore(root).load();
 
-    expect(sent.find((message) => message.intent === "run" && message.target === "claude_07")).toBeDefined();
+    expect(sent.find((message) => message.intent === "run" && message.target === "claude_08")).toBeDefined();
     expect(clearedState.last_turn_error).toBeUndefined();
   });
 
