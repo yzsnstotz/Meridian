@@ -119,6 +119,34 @@ describe("mumu creative-spine registry", () => {
     }
   });
 
+  it("defines multi-source extraction and schema-valid candidate requirements", () => {
+    const prompt = readProjectFile("seeds/prompts/extract_template_from_draft.md");
+
+    expect(prompt).toContain("多源抽取");
+    expect(prompt).toContain("共同结构");
+    expect(prompt).toContain("差异特征");
+    expect(prompt).toContain("same-category");
+    expect(prompt).toContain("category evidence");
+    expect(prompt).toContain("template_<genre>");
+    expect(prompt).toContain("schema-valid");
+    expect(prompt).toContain("template_lianxian");
+    expect(prompt).toContain("overall_arc");
+    expect(prompt).toContain("segment_pattern");
+    expect(prompt).toContain("chatter.suggest_observation");
+    expect(prompt).not.toContain("structured.upsert 写入");
+  });
+
+  it("tells create turns that selected references are context-only", () => {
+    const prompt = readProjectFile("seeds/prompts/create_from_template.md");
+
+    expect(prompt).toContain("参考素材");
+    expect(prompt).toContain("script_library_<genre>");
+    expect(prompt).toContain("story_<genre>");
+    expect(prompt).toContain("context_refs");
+    expect(prompt).toContain("不要改写、删除或覆盖原始参考素材");
+    expect(prompt).toContain("不能把参考素材当作 target_story_id");
+  });
+
   it("keeps user reply instructions free of implementation narration", () => {
     for (const promptPath of ["seeds/prompts/create_from_template.md", "seeds/prompts/optimize_from_template.md"]) {
       expectNoReplyLeakInstructions(readProjectFile(promptPath));

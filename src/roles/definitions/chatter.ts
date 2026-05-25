@@ -626,7 +626,11 @@ export class ChatterRole implements BaseRole {
       entries.push(await this.buildContextEntry(ref));
     }
 
-    return ["## Pre-loaded context", ...entries].join("\n");
+    return [
+      "## Pre-loaded context",
+      "Reference-only context: use these records for comparison, inspiration, and continuity; do not mutate, overwrite, delete, or write back to the referenced record. Writable targets must come from explicit story_id or target_story_id fields, not from context_refs.",
+      ...entries
+    ].join("\n");
   }
 
   private async buildContextEntry(ref: { type: string; key: string }): Promise<string> {
