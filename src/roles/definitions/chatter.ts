@@ -10,6 +10,8 @@ import type {
   ChatterRoleConfig,
   HubMessage,
   HubResult,
+  MumuChatterDiagnostics,
+  MumuReplyParseDiagnostics,
   ReplyChannel
 } from "../../types";
 import type { BaseRole, RoleContext } from "../base-role";
@@ -65,6 +67,10 @@ import {
   isMumuUserMemoryRoot,
   type MumuMemoryGitSyncQueueLike
 } from "../chatter/mumu-memory-git-sync";
+import {
+  buildMumuPromptParts,
+  renderMumuPromptParts
+} from "../chatter/prompt-parts";
 
 const ROLES_SOCKET_REPLY_CHANNEL: ReplyChannel = {
   channel: "socket",
@@ -118,8 +124,10 @@ export interface ChatterRoleOptions {
   memoryGitSyncQueue?: MumuMemoryGitSyncQueueLike | false;
 }
 
+type ChatterEnvelope = NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
+
 type ChatterTurnEnvelopeWithMode =
-  NonNullable<NonNullable<HubResult["payload"]>["chatter"]> & {
+  ChatterEnvelope & {
     mode: "stateless" | "session";
   };
 
@@ -373,17 +381,16 @@ export class ChatterRole implements BaseRole {
       }
     }
 
-    const promptBlocks: string[] = [];
     const contextBlock = await this.buildContextBlock(envelope.context_refs);
-    if (contextBlock !== null) {
-      promptBlocks.push(contextBlock);
-    }
-    if (systemPrompt !== undefined) {
-      promptBlocks.push(systemPrompt);
-    }
-    const dispatchContent = promptBlocks.length > 0
-      ? composeTurnContent(promptBlocks.join("\n\n"), result.content)
-      : result.content;
+    const renderedPrompt = renderMumuPromptParts(buildMumuPromptParts({
+      systemPromptId,
+      systemPrompt,
+      contextBlock,
+      envelopePromptParts: envelope.prompt_parts,
+      legacyUserContent: result.content
+    }));
+    const dispatchContent = renderedPrompt.content;
+    const dispatchChatter = withPromptDiagnostics(stripRawPromptParts(envelope), renderedPrompt.diagnostics);
 
     if (envelope.mode === "session") {
       await this.writeTurnToMemory(envelope, result.content);
@@ -395,7 +402,7 @@ export class ChatterRole implements BaseRole {
         content: dispatchContent,
         chatterSessionId: envelope.chatter_session_id,
         attachments: result.attachments,
-        chatter: envelope
+        chatter: dispatchChatter
       });
       return;
     }
@@ -406,7 +413,7 @@ export class ChatterRole implements BaseRole {
         content: dispatchContent,
         chatterSessionId: envelope.chatter_session_id,
         attachments: result.attachments,
-        chatter: envelope
+        chatter: dispatchChatter
       });
       return;
     }
@@ -415,7 +422,7 @@ export class ChatterRole implements BaseRole {
       content: dispatchContent,
       chatterSessionId: envelope.chatter_session_id,
       attachments: result.attachments,
-      chatter: envelope
+      chatter: dispatchChatter
     });
   }
 
@@ -680,10 +687,25 @@ export class ChatterRole implements BaseRole {
     const skills = makeMemorySkills(this.resolver!, "session");
     const date = new Date().toISOString().slice(0, 10);
     const turnId = randomUUID().slice(0, 8);
+    const frontmatter = [
+      "---",
+      "mode: session",
+      "role: user",
+      `chatter_session_id: ${envelope.chatter_session_id ?? ""}`,
+      ...(envelope.project_id ? [`project_id: ${envelope.project_id}`] : []),
+      ...(envelope.story_id ? [`story_id: ${envelope.story_id}`] : []),
+      ...(envelope.template_id ? [`template_id: ${envelope.template_id}`] : []),
+      ...(envelope.genre ? [`genre: ${envelope.genre}`] : []),
+      ...(envelope.transcript?.origin ? [`transcript_origin: ${envelope.transcript.origin}`] : []),
+      ...(envelope.transcript?.user_display_content
+        ? [`display_content_json: ${JSON.stringify(envelope.transcript.user_display_content)}`]
+        : []),
+      "---"
+    ].join("\n");
     const result = await skills.write({
       binding: "conversation_log",
       vars: { date, turn_id: turnId },
-      content: `---\nmode: session\nrole: user\nchatter_session_id: ${envelope.chatter_session_id ?? ""}\n---\n\n${content}`
+      content: `${frontmatter}\n\n${content}`
     });
     if (result.ok) {
       this.enqueueTurnMemoryCommit();
@@ -798,7 +820,8 @@ export class ChatterRole implements BaseRole {
       const reply = this.applyMumuUserReplyBoundary(fallback.content, {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {}),
-        chatter_session_id: trace.chatter_session_id
+        chatter_session_id: trace.chatter_session_id,
+        ...(trace.diagnostics ? { diagnostics: trace.diagnostics } : {})
       });
       await this.forwardChatterReply(reply.content, reply.chatter);
     } else {
@@ -833,20 +856,21 @@ export class ChatterRole implements BaseRole {
     chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
   } {
     if (!this.isMumuUserReplyChannel()) {
-      return { content, chatter };
+      return { content, chatter: stripRawPromptParts(chatter) };
     }
 
     if (chatter.reply_parse) {
       if (!containsUnsafeMumuUserReplyContent(content)) {
-        return { content, chatter };
+        return {
+          content,
+          chatter: withReplyParseDiagnostics(stripRawPromptParts(chatter), chatter.reply_parse)
+        };
       }
       const fallback = fallbackMumuUserReply("unsafe_content", chatter.reply_parse.valid_block_count);
+      const replyParse = mumuUserReplyParseDiagnostics(fallback);
       return {
         content: fallback.content,
-        chatter: {
-          ...chatter,
-          reply_parse: mumuUserReplyParseDiagnostics(fallback)
-        }
+        chatter: withReplyParseDiagnostics(stripRawPromptParts(chatter), replyParse)
       };
     }
 
@@ -860,12 +884,10 @@ export class ChatterRole implements BaseRole {
       });
     }
 
+    const replyParse = mumuUserReplyParseDiagnostics(parsed);
     return {
       content: parsed.content,
-      chatter: {
-        ...chatter,
-        reply_parse: mumuUserReplyParseDiagnostics(parsed)
-      }
+      chatter: withReplyParseDiagnostics(stripRawPromptParts(chatter), replyParse)
     };
   }
 
@@ -963,7 +985,8 @@ export class ChatterRole implements BaseRole {
       trace_id: traceId,
       purpose: "agent_turn",
       agent_session_id: this.sessionMgr!.currentSessionId,
-      ...(turn.chatterSessionId ? { chatter_session_id: turn.chatterSessionId } : {})
+      ...(turn.chatterSessionId ? { chatter_session_id: turn.chatterSessionId } : {}),
+      ...(turn.chatter.diagnostics ? { diagnostics: turn.chatter.diagnostics } : {})
     });
 
     const runMsg: HubMessage = {
@@ -1283,14 +1306,38 @@ const defaultChatterSocketWriter: ChatterSocketWriter = (socketPath, result) =>
     });
   });
 
-function composeTurnContent(systemPrompt: string, userContent: string): string {
-  return [
-    "System prompt for this turn:",
-    systemPrompt.trimEnd(),
-    "",
-    "User turn:",
-    userContent
-  ].join("\n");
+function stripRawPromptParts(chatter: ChatterEnvelope): ChatterEnvelope {
+  const safeChatter = { ...chatter };
+  delete safeChatter.prompt_parts;
+  return safeChatter;
+}
+
+function withPromptDiagnostics(
+  chatter: ChatterEnvelope,
+  diagnostics: Pick<MumuChatterDiagnostics, "prompt_part_ids" | "preference_status">
+): ChatterEnvelope {
+  return {
+    ...chatter,
+    diagnostics: {
+      ...(chatter.diagnostics ?? {}),
+      prompt_part_ids: diagnostics.prompt_part_ids,
+      preference_status: chatter.diagnostics?.preference_status ?? diagnostics.preference_status
+    }
+  };
+}
+
+function withReplyParseDiagnostics(
+  chatter: ChatterEnvelope,
+  replyParse: MumuReplyParseDiagnostics
+): ChatterEnvelope {
+  return {
+    ...chatter,
+    reply_parse: replyParse,
+    diagnostics: {
+      ...(chatter.diagnostics ?? {}),
+      reply_parse: { ...replyParse }
+    }
+  };
 }
 
 function contextPlaceholder(ref: { type: string; key: string }): string {

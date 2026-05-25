@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ChatterObservationProposedPatchSchema } from "../../types";
+import { ChatterObservationProposedPatchSchema, MumuChatterDiagnosticsSchema } from "../../types";
 import {
   incrementChatterLastProvisionErrorTotal,
   incrementChatterLastTurnErrorTotal
@@ -15,6 +15,7 @@ export const ChatterInFlightTraceSchema = z.object({
   purpose: z.enum(["spawn", "agent_turn", "job_dispatch"]),
   agent_session_id: z.string().min(1).nullable().default(null),
   chatter_session_id: z.string().min(1).optional(),
+  diagnostics: MumuChatterDiagnosticsSchema.optional(),
   registered_at: z.string().datetime()
 });
 export type ChatterInFlightTrace = z.infer<typeof ChatterInFlightTraceSchema>;

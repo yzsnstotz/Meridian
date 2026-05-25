@@ -212,6 +212,62 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
     expect(JSON.stringify(forwarded)).not.toContain("JSON 校验");
   });
 
+  it("agent reply carries diagnostics ids without exposing raw prompt parts", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
+    await runner.activate(role);
+    await runner.dispatch({
+      ...makeTurnResult("legacy technical content", { mode: "session" }),
+      payload: {
+        chatter: {
+          mode: "session",
+          chatter_session_id: "session-diagnostics",
+          prompt_parts: [
+            {
+              id: "ads_contract:create_from_template:douyin",
+              kind: "ads_contract",
+              content: "write structured/story_douyin/story-001.json"
+            },
+            {
+              id: "user_request:create_from_template",
+              kind: "user_request",
+              content: "生成完整抖音短视频"
+            }
+          ]
+        }
+      }
+    });
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
+    expect(run.payload.chatter?.diagnostics?.prompt_part_ids).toEqual([
+      "ads_contract:create_from_template:douyin",
+      "user_request:create_from_template"
+    ]);
+    expect(run.payload.chatter?.prompt_parts).toBeUndefined();
+
+    await runner.dispatch(makeAgentReply(run,
+      "<<<MUMU-USER-REPLY>>>\n"
+        + "这是给用户看的回答\n"
+        + "<<<END-MUMU-USER-REPLY>>>"
+    ));
+
+    const forwarded = sent.find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "这是给用户看的回答"
+    );
+    expect(forwarded).toBeDefined();
+    expect(forwarded!.payload.chatter?.prompt_parts).toBeUndefined();
+    expect(forwarded!.payload.chatter?.diagnostics?.prompt_part_ids).toEqual([
+      "ads_contract:create_from_template:douyin",
+      "user_request:create_from_template"
+    ]);
+    expect(forwarded!.payload.chatter?.diagnostics?.reply_parse).toMatchObject({
+      ok: true,
+      status: "parsed",
+      fallback_used: false
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
+  });
+
   it("stateless turn does NOT write memory but still spawns", async () => {
     const role = registry.create(
       "chatter",

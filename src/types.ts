@@ -152,12 +152,61 @@ export const MumuReplyParseDiagnosticsSchema = z.object({
 });
 export type MumuReplyParseDiagnostics = z.infer<typeof MumuReplyParseDiagnosticsSchema>;
 
+export const MumuTranscriptOriginSchema = z.enum([
+  "typed_chat",
+  "direct_generation",
+  "coedit",
+  "control",
+  "assistant_reply"
+]);
+export type MumuTranscriptOrigin = z.infer<typeof MumuTranscriptOriginSchema>;
+
+export const MumuTranscriptEnvelopeSchema = z.object({
+  user_display_content: z.string().min(1).max(20_000).optional(),
+  assistant_display_content: z.string().min(1).max(20_000).optional(),
+  origin: MumuTranscriptOriginSchema.optional()
+});
+export type MumuTranscriptEnvelope = z.infer<typeof MumuTranscriptEnvelopeSchema>;
+
+export const MumuPromptPartKindSchema = z.enum([
+  "base_system_prompt",
+  "context",
+  "account_preferences",
+  "ads_contract",
+  "user_request"
+]);
+export type MumuPromptPartKind = z.infer<typeof MumuPromptPartKindSchema>;
+
+export const MumuPromptPartSchema = z.object({
+  id: z.string().min(1).max(160),
+  kind: MumuPromptPartKindSchema,
+  content: z.string().min(1).max(120_000)
+});
+export type MumuPromptPart = z.infer<typeof MumuPromptPartSchema>;
+
+export const MumuPreferenceStatusSchema = z.enum(["not_provided", "applied", "ignored", "invalid"]);
+export type MumuPreferenceStatus = z.infer<typeof MumuPreferenceStatusSchema>;
+
+export const MumuChatterDiagnosticsSchema = z.object({
+  prompt_part_ids: z.array(z.string().min(1).max(160)).optional(),
+  preference_status: MumuPreferenceStatusSchema.optional(),
+  reply_parse: MumuReplyParseDiagnosticsSchema.optional()
+});
+export type MumuChatterDiagnostics = z.infer<typeof MumuChatterDiagnosticsSchema>;
+
 export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]).optional(),
   chatter_session_id: z.string().min(1).optional(),
+  project_id: z.string().min(1).optional(),
+  story_id: z.string().min(1).optional(),
+  template_id: z.string().min(1).optional(),
+  genre: z.string().min(1).optional(),
   system_prompt_id: z.string().min(1).optional(),
   origin: ChatterTurnOriginSchema,
   context_refs: z.array(z.object({ type: z.string(), key: z.string() })).optional(),
+  transcript: MumuTranscriptEnvelopeSchema.optional(),
+  prompt_parts: z.array(MumuPromptPartSchema).optional(),
+  diagnostics: MumuChatterDiagnosticsSchema.optional(),
   read_only_query: ChatterReadOnlyQuerySchema.optional(),
   read_only_query_result: ChatterReadOnlyQueryResultSchema.optional(),
   extract_state: ChatterExtractStateSchema.optional(),
