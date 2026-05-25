@@ -30,6 +30,7 @@ import { parseMeridianStatusMarker } from "./meridian-status-marker";
 const EPOCH_ISO = new Date(0).toISOString();
 const DISPATCH_PLAN_FILENAME = "dispatch_plan.md";
 const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
+const DISPATCHER_WORKER_ID = "DISPATCHER";
 export const PM_RESOLVER_LIVENESS_GRACE_MS = 90 * 1000;
 
 // Validator spawn/run failure backoff. After this many consecutive failures
@@ -181,13 +182,44 @@ export class LifecycleStore {
   }
 
   recordDispatcher(threadId: string): void {
+    const trimmedThreadId = threadId.trim();
+    if (!trimmedThreadId) {
+      return;
+    }
+
     const state = this.load();
+    const nowIso = this.now();
     const previousStatus = state.dispatcher.status;
     state.dispatcher = {
-      thread_id: threadId,
-      started_at: this.now(),
+      thread_id: trimmedThreadId,
+      started_at: nowIso,
       status: "running"
     };
+
+    const previousDispatcherWorker = state.workers[DISPATCHER_WORKER_ID];
+    const previousDispatcherWorkerStatus = previousDispatcherWorker?.status ?? "pending";
+    const hasSameThreadRunContext = !!(
+      previousDispatcherWorker
+      && previousDispatcherWorker.status === "running"
+      && previousDispatcherWorker.thread_id === trimmedThreadId
+      && previousDispatcherWorker.command_preamble
+    );
+
+    if (!hasSameThreadRunContext) {
+      state.workers[DISPATCHER_WORKER_ID] = {
+        thread_id: trimmedThreadId,
+        trace_id: null,
+        started_at: nowIso,
+        last_seen_at: nowIso,
+        status: "running",
+        expected_outputs: [],
+        hub_result: null,
+        command_preamble: null,
+        retry_count: previousDispatcherWorker?.retry_count ?? 0
+      };
+      this.logTransition(DISPATCHER_WORKER_ID, previousDispatcherWorkerStatus, "running", "record_dispatcher");
+    }
+
     this.logTransition("dispatcher", previousStatus, "running", "record_dispatcher");
     this.save(state);
   }

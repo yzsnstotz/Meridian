@@ -203,6 +203,69 @@ describe("LifecycleStore", () => {
     expect(after.workers["C-01"]?.expected_outputs).toEqual(["report.md"]);
   });
 
+  it("recordDispatcher synchronizes the DISPATCHER worker row to the active dispatcher thread", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart(
+      "DISPATCHER",
+      "dispatcher-thread-old",
+      "11111111-1111-4111-8111-111111111111",
+      ["old-report.md"],
+      "# Worker Identity\nDISPATCHER"
+    );
+    harness.store.recordWorkerResult("DISPATCHER", buildHubResult({
+      thread_id: "dispatcher-thread-old",
+      status: "success",
+      timestamp: "2026-04-03T12:00:00.000Z"
+    }));
+
+    harness.store.recordDispatcher("dispatcher-thread-new");
+
+    const state = harness.store.load();
+    expect(state.dispatcher).toMatchObject({
+      thread_id: "dispatcher-thread-new",
+      status: "running"
+    });
+    expect(state.workers.DISPATCHER).toMatchObject({
+      thread_id: "dispatcher-thread-new",
+      trace_id: null,
+      status: "running",
+      expected_outputs: [],
+      hub_result: null,
+      command_preamble: null,
+      retry_count: 0
+    });
+    expect(state.workers.DISPATCHER?.started_at).toBe(state.dispatcher.started_at);
+    expect(state.workers.DISPATCHER?.last_seen_at).toBe(state.dispatcher.started_at);
+  });
+
+  it("recordDispatcher keeps a richer DISPATCHER row when the active thread already matches", async () => {
+    const harness = await createHarness();
+
+    harness.store.recordWorkerStart(
+      "DISPATCHER",
+      "dispatcher-thread-same",
+      "22222222-2222-4222-8222-222222222222",
+      ["report.md"],
+      "# Worker Identity\nDISPATCHER"
+    );
+
+    harness.store.recordDispatcher("dispatcher-thread-same");
+
+    const state = harness.store.load();
+    expect(state.dispatcher).toMatchObject({
+      thread_id: "dispatcher-thread-same",
+      status: "running"
+    });
+    expect(state.workers.DISPATCHER).toMatchObject({
+      thread_id: "dispatcher-thread-same",
+      trace_id: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+      expected_outputs: ["report.md"],
+      command_preamble: "# Worker Identity\nDISPATCHER"
+    });
+  });
+
   it("maps a success HubResult to completed", async () => {
     const harness = await createHarness();
     harness.store.recordWorkerStart("N-01", "worker-thread-111", "11111111-1111-4111-8111-111111111111", []);
