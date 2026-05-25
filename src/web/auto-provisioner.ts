@@ -39,6 +39,7 @@ import {
   listMumuMemorySavepoints,
   readMumuMemorySnapshot,
   restoreMumuMemorySavepoint,
+  type CreateMumuMemorySavepointMetadata,
   type MumuMemoryRestoreScope,
   type MumuMemorySavepointSyncStatus
 } from "../roles/chatter/mumu-memory-savepoints";
@@ -105,8 +106,35 @@ const ArchiveEnqueueBodySchema = z.object({
 });
 const SavepointCreateBodySchema = z.object({
   label: z.string().max(160).optional(),
+  scope_kind: z.enum(["account", "project"]).default("account"),
+  project_id: z.string().min(1).optional(),
+  current_story_id: z.string().min(1).nullable().optional(),
+  project_name: z.string().min(1).max(160).nullable().optional(),
+  project_description: z.string().min(1).max(500).nullable().optional(),
+  genre: z.string().min(1).nullable().optional(),
+  entry_source: z.string().min(1).nullable().optional(),
+  created_from_surface: z.string().min(1).max(120).nullable().optional(),
+  included_paths: z.array(z.string().min(1).max(500)).optional(),
   archive: ArchiveRemoteSchema.optional()
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.scope_kind !== "project") {
+    return;
+  }
+  if (!value.project_id) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["project_id"],
+      message: "project_id is required for project savepoints"
+    });
+  }
+  if (!value.included_paths?.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["included_paths"],
+      message: "included_paths are required for project savepoints"
+    });
+  }
+});
 const SavepointRestoreScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("root") }).strict(),
   z.object({ kind: z.literal("record_type"), record_type: z.string().min(1) }).strict(),
@@ -118,6 +146,25 @@ const SavepointRestoreBodySchema = z.object({
 }).strict();
 const EMPTY_APP_STATE: AppState = { roles: [], promptStore: {} };
 const ensureLocks = new Map<string, Promise<unknown>>();
+
+function savepointMetadataFromCreateBody(
+  body: z.infer<typeof SavepointCreateBodySchema>
+): CreateMumuMemorySavepointMetadata | undefined {
+  if (body.scope_kind !== "project") {
+    return undefined;
+  }
+  return {
+    scope_kind: "project",
+    project_id: body.project_id!,
+    ...(body.current_story_id ? { current_story_id: body.current_story_id } : {}),
+    ...(body.project_name ? { project_name: body.project_name } : {}),
+    ...(body.project_description ? { project_description: body.project_description } : {}),
+    ...(body.genre ? { genre: body.genre } : {}),
+    ...(body.entry_source ? { entry_source: body.entry_source } : {}),
+    ...(body.created_from_surface ? { created_from_surface: body.created_from_surface } : {}),
+    included_paths: body.included_paths ?? []
+  };
+}
 
 export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOptions): AutoProvisionerHandlers {
   const callerAuth = options.callerAuth ?? requireCallerAuth;
@@ -400,7 +447,8 @@ export function createAutoProvisionerHandlers(options: AutoProvisionerHandlersOp
       const interpolated = interpolatePolicyForUser(policy, userId);
       const savepoint = await createMumuMemorySavepoint(interpolated.memory_folder, {
         label: parsed.data.label,
-        syncStatus: syncStatusForArchive(parsed.data.archive)
+        syncStatus: syncStatusForArchive(parsed.data.archive),
+        metadata: savepointMetadataFromCreateBody(parsed.data)
       });
 
       if (parsed.data.archive) {

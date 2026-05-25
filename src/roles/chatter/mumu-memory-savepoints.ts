@@ -14,10 +14,47 @@ const RESTORE_RECORD_TYPE_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,127}$/u;
 
 export type MumuMemorySavepointSyncStatus = "local" | "pending" | "pushed" | "paused" | "blocked" | "failed";
 export type MumuMemorySnapshotChangeStatus = "added" | "modified" | "deleted";
+export type MumuMemorySavepointScopeKind = "account" | "project";
 export type MumuMemoryRestoreScope =
   | { kind: "root" }
   | { kind: "record_type"; record_type: string }
   | { kind: "record"; record_type: string; key: string };
+
+export interface MumuAccountMemorySavepointMetadata {
+  scope_kind: "account";
+  project_id: null;
+  current_story_id: null;
+  project_name: null;
+  project_description: null;
+  genre: null;
+  entry_source: null;
+  created_from_surface: null;
+  included_paths: [];
+}
+
+export interface MumuProjectMemorySavepointMetadata {
+  scope_kind: "project";
+  project_id: string;
+  current_story_id: string | null;
+  project_name: string | null;
+  project_description: string | null;
+  genre: string | null;
+  entry_source: string | null;
+  created_from_surface: string | null;
+  included_paths: string[];
+}
+
+export type MumuMemorySavepointMetadata =
+  | MumuAccountMemorySavepointMetadata
+  | MumuProjectMemorySavepointMetadata;
+
+export type CreateMumuMemorySavepointMetadata =
+  | { scope_kind?: "account" }
+  | ({
+    scope_kind: "project";
+    project_id: string;
+    included_paths: string[];
+  } & Partial<Omit<MumuProjectMemorySavepointMetadata, "scope_kind" | "project_id" | "included_paths">>);
 
 export interface MumuMemorySavepoint {
   id: string;
@@ -28,6 +65,15 @@ export interface MumuMemorySavepoint {
   ref_name: string;
   sync_status: MumuMemorySavepointSyncStatus;
   restore_available: boolean;
+  scope_kind: MumuMemorySavepointScopeKind;
+  project_id: string | null;
+  current_story_id: string | null;
+  project_name: string | null;
+  project_description: string | null;
+  genre: string | null;
+  entry_source: string | null;
+  created_from_surface: string | null;
+  included_paths: string[];
 }
 
 export interface MumuMemorySnapshotRecord {
@@ -85,6 +131,7 @@ export interface CreateMumuMemorySavepointOptions {
   id?: string;
   now?: () => Date;
   syncStatus?: MumuMemorySavepointSyncStatus;
+  metadata?: CreateMumuMemorySavepointMetadata;
 }
 
 export class MumuMemorySavepointError extends Error {
@@ -118,11 +165,13 @@ export async function createMumuMemorySavepoint(
 
   const createdAt = (options.now?.() ?? new Date()).toISOString();
   const label = normalizeLabel(options.label);
+  const savepointMetadata = normalizeCreateSavepointMetadata(options.metadata);
   const metadata = {
     version: 1,
     id,
     created_at: createdAt,
-    ...(label ? { label } : {})
+    ...(label ? { label } : {}),
+    ...tagMetadataPayload(savepointMetadata)
   };
   const tagName = tagShortName(id);
   await git(root, ["tag", "-a", tagName, commitSha, "-m", JSON.stringify(metadata)]);
@@ -134,7 +183,8 @@ export async function createMumuMemorySavepoint(
     short_commit: commitSha.slice(0, 12),
     ref_name: savepointRefName(id),
     sync_status: options.syncStatus ?? "local",
-    restore_available: true
+    restore_available: true,
+    ...savepointMetadata
   };
 }
 
@@ -180,7 +230,10 @@ export async function readMumuMemorySnapshot(
 ): Promise<MumuMemorySnapshot> {
   const root = path.resolve(memoryRoot);
   const savepoint = await readSavepoint(root, savepointId, "local");
-  const paths = await listStructuredPathsAtCommit(root, savepoint.commit_sha);
+  const paths = filterPathsForSavepoint(
+    await listStructuredPathsAtCommit(root, savepoint.commit_sha),
+    savepoint
+  );
   const records = (
     await Promise.all(
       paths.map(async (relativePath): Promise<MumuMemorySnapshotRecord | null> => {
@@ -201,7 +254,10 @@ export async function readMumuMemorySnapshot(
     )
   ).filter((value): value is MumuMemorySnapshotRecord => value !== null);
 
-  const changes = await listSnapshotChanges(root, savepoint.commit_sha);
+  const changes = filterChangesForSavepoint(
+    await listSnapshotChanges(root, savepoint.commit_sha),
+    savepoint
+  );
   const styleRecords = records
     .map(toStyleSnapshotRecord)
     .filter((value): value is MumuMemoryStyleSnapshotRecord => Boolean(value));
@@ -225,7 +281,7 @@ export async function restoreMumuMemorySavepoint(
   const root = path.resolve(memoryRoot);
   const scope = normalizeRestoreScope(options.scope);
   const savepoint = await readSavepoint(root, savepointId, "local");
-  const sourcePaths = await listRestoreSourcePaths(root, savepoint.commit_sha, scope);
+  const sourcePaths = await listRestoreSourcePaths(root, savepoint.commit_sha, scope, savepoint);
   const sourceContents = new Map<string, string>();
   for (const relativePath of sourcePaths) {
     sourceContents.set(relativePath, await readTextAtCommit(root, savepoint.commit_sha, relativePath));
@@ -233,7 +289,7 @@ export async function restoreMumuMemorySavepoint(
 
   const previousHeadSha = await readHeadSha(root);
   const safetyCommitSha = await commitSafetySnapshotIfDirty(root);
-  const currentPaths = scope.kind === "record" ? [] : await listCurrentRestorePaths(root, scope);
+  const currentPaths = scope.kind === "record" ? [] : await listCurrentRestorePaths(root, scope, savepoint);
   const sourcePathSet = new Set(sourcePaths);
   const deletedPaths = currentPaths.filter((relativePath) => !sourcePathSet.has(relativePath));
 
@@ -289,11 +345,15 @@ async function readSavepoint(
     short_commit: commit.slice(0, 12),
     ref_name: refName,
     sync_status: syncStatus,
-    restore_available: Boolean(commit)
+    restore_available: Boolean(commit),
+    ...tag.metadata
   };
 }
 
-async function readTagMetadata(memoryRoot: string, refName: string): Promise<{ label: string | null; createdAt: string }> {
+async function readTagMetadata(
+  memoryRoot: string,
+  refName: string
+): Promise<{ label: string | null; createdAt: string; metadata: MumuMemorySavepointMetadata }> {
   const { stdout } = await git(memoryRoot, ["for-each-ref", "--format=%(taggerdate:iso-strict)%00%(contents)", refName]);
   const nulIndex = stdout.indexOf("\0");
   const taggerDate = nulIndex >= 0 ? stdout.slice(0, nulIndex).trim() : "";
@@ -301,7 +361,8 @@ async function readTagMetadata(memoryRoot: string, refName: string): Promise<{ l
   const parsed = parseTagMetadata(contents);
   return {
     label: normalizeLabel(parsed.label),
-    createdAt: typeof parsed.created_at === "string" && parsed.created_at ? parsed.created_at : taggerDate
+    createdAt: typeof parsed.created_at === "string" && parsed.created_at ? parsed.created_at : taggerDate,
+    metadata: normalizeTagSavepointMetadata(parsed)
   };
 }
 
@@ -314,6 +375,140 @@ function parseTagMetadata(contents: string): Record<string, unknown> {
   }
 }
 
+function accountSavepointMetadata(): MumuAccountMemorySavepointMetadata {
+  return {
+    scope_kind: "account",
+    project_id: null,
+    current_story_id: null,
+    project_name: null,
+    project_description: null,
+    genre: null,
+    entry_source: null,
+    created_from_surface: null,
+    included_paths: []
+  };
+}
+
+function normalizeCreateSavepointMetadata(value: CreateMumuMemorySavepointMetadata | undefined): MumuMemorySavepointMetadata {
+  if (!value || value.scope_kind !== "project") {
+    return accountSavepointMetadata();
+  }
+  const projectId = normalizeMetadataString(value.project_id);
+  const includedPaths = normalizeIncludedPaths(value.included_paths);
+  if (!projectId || includedPaths.length === 0) {
+    throw new MumuMemorySavepointError("invalid_restore_scope");
+  }
+  return {
+    scope_kind: "project",
+    project_id: projectId,
+    current_story_id: normalizeMetadataString(value.current_story_id),
+    project_name: normalizeMetadataString(value.project_name),
+    project_description: normalizeMetadataString(value.project_description),
+    genre: normalizeMetadataString(value.genre),
+    entry_source: normalizeMetadataString(value.entry_source),
+    created_from_surface: normalizeMetadataString(value.created_from_surface),
+    included_paths: includedPaths
+  };
+}
+
+function normalizeTagSavepointMetadata(value: Record<string, unknown>): MumuMemorySavepointMetadata {
+  if (value.scope_kind !== "project") {
+    return accountSavepointMetadata();
+  }
+  const projectId = normalizeMetadataString(value.project_id);
+  const includedPaths = normalizeIncludedPaths(value.included_paths);
+  if (!projectId || includedPaths.length === 0) {
+    return accountSavepointMetadata();
+  }
+  return {
+    scope_kind: "project",
+    project_id: projectId,
+    current_story_id: normalizeMetadataString(value.current_story_id),
+    project_name: normalizeMetadataString(value.project_name),
+    project_description: normalizeMetadataString(value.project_description),
+    genre: normalizeMetadataString(value.genre),
+    entry_source: normalizeMetadataString(value.entry_source),
+    created_from_surface: normalizeMetadataString(value.created_from_surface),
+    included_paths: includedPaths
+  };
+}
+
+function tagMetadataPayload(metadata: MumuMemorySavepointMetadata): Record<string, unknown> {
+  if (metadata.scope_kind === "account") {
+    return {};
+  }
+  return {
+    scope_kind: metadata.scope_kind,
+    project_id: metadata.project_id,
+    ...(metadata.current_story_id ? { current_story_id: metadata.current_story_id } : {}),
+    ...(metadata.project_name ? { project_name: metadata.project_name } : {}),
+    ...(metadata.project_description ? { project_description: metadata.project_description } : {}),
+    ...(metadata.genre ? { genre: metadata.genre } : {}),
+    ...(metadata.entry_source ? { entry_source: metadata.entry_source } : {}),
+    ...(metadata.created_from_surface ? { created_from_surface: metadata.created_from_surface } : {}),
+    included_paths: metadata.included_paths
+  };
+}
+
+function normalizeMetadataString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.replace(/\u0000/gu, "").trim();
+  return trimmed || null;
+}
+
+function normalizeIncludedPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const normalized = normalizeIncludedPath(entry);
+    if (normalized) {
+      seen.add(normalized);
+    }
+  }
+  return [...seen].sort();
+}
+
+function normalizeIncludedPath(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.replace(/\\/gu, "/").replace(/^\.\/+/u, "").trim();
+  if (
+    !normalized
+    || normalized.startsWith("/")
+    || normalized.endsWith("/")
+    || normalized.includes("\0")
+    || !isDurableRestorePath(normalized)
+    || normalized.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function filterPathsForSavepoint(paths: string[], savepoint: MumuMemorySavepoint): string[] {
+  if (savepoint.scope_kind !== "project") {
+    return paths;
+  }
+  const includedPaths = new Set(savepoint.included_paths);
+  return paths.filter((relativePath) => includedPaths.has(relativePath));
+}
+
+function filterChangesForSavepoint(
+  changes: MumuMemorySnapshotChange[],
+  savepoint: MumuMemorySavepoint
+): MumuMemorySnapshotChange[] {
+  if (savepoint.scope_kind !== "project") {
+    return changes;
+  }
+  const includedPaths = new Set(savepoint.included_paths);
+  return changes.filter((change) => includedPaths.has(change.path));
+}
+
 async function listStructuredPathsAtCommit(memoryRoot: string, commitSha: string): Promise<string[]> {
   const { stdout } = await git(memoryRoot, ["ls-tree", "-r", "-z", "--name-only", commitSha, "--", "structured"]);
   return stdout
@@ -324,8 +519,20 @@ async function listStructuredPathsAtCommit(memoryRoot: string, commitSha: string
 async function listRestoreSourcePaths(
   memoryRoot: string,
   commitSha: string,
-  scope: MumuMemoryRestoreScope
+  scope: MumuMemoryRestoreScope,
+  savepoint: MumuMemorySavepoint
 ): Promise<string[]> {
+  const projectCandidates = projectRestoreCandidatePaths(savepoint, scope);
+  if (projectCandidates) {
+    if (!projectCandidates.length) {
+      if (scope.kind === "record") {
+        throw new MumuMemorySavepointError("restore_source_not_found");
+      }
+      return [];
+    }
+    return listExistingPathsAtCommit(memoryRoot, commitSha, projectCandidates, scope.kind === "record");
+  }
+
   if (scope.kind === "record") {
     const recordPath = structuredRecordPath(scope.record_type, scope.key);
     try {
@@ -346,7 +553,80 @@ async function listRestoreSourcePaths(
     .sort();
 }
 
-async function listCurrentRestorePaths(memoryRoot: string, scope: MumuMemoryRestoreScope): Promise<string[]> {
+function projectRestoreCandidatePaths(
+  savepoint: MumuMemorySavepoint,
+  scope: MumuMemoryRestoreScope
+): string[] | null {
+  if (savepoint.scope_kind !== "project") {
+    return null;
+  }
+  if (scope.kind === "root") {
+    return savepoint.included_paths;
+  }
+  if (scope.kind === "record_type") {
+    const prefix = `structured/${scope.record_type}/`;
+    return savepoint.included_paths.filter((relativePath) => relativePath.startsWith(prefix));
+  }
+  const recordPath = structuredRecordPath(scope.record_type, scope.key);
+  return savepoint.included_paths.includes(recordPath) ? [recordPath] : [];
+}
+
+async function listExistingPathsAtCommit(
+  memoryRoot: string,
+  commitSha: string,
+  relativePaths: string[],
+  requireAll: boolean
+): Promise<string[]> {
+  const existing: string[] = [];
+  for (const relativePath of relativePaths) {
+    assertSafeRelativePath(relativePath);
+    try {
+      await git(memoryRoot, ["cat-file", "-e", `${commitSha}:${relativePath}`]);
+      existing.push(relativePath);
+    } catch {
+      if (requireAll) {
+        throw new MumuMemorySavepointError("restore_source_not_found");
+      }
+    }
+  }
+  return existing.sort();
+}
+
+async function listCurrentIncludedPaths(memoryRoot: string, relativePaths: string[]): Promise<string[]> {
+  const safePaths = relativePaths.map((relativePath) => {
+    assertSafeRelativePath(relativePath);
+    return relativePath;
+  });
+  if (!safePaths.length) {
+    return [];
+  }
+  try {
+    const { stdout } = await git(memoryRoot, ["ls-files", "-z", "--", ...safePaths]);
+    const safeSet = new Set(safePaths);
+    return stdout
+      .split("\0")
+      .filter(Boolean)
+      .map((relativePath) => relativePath.split(path.sep).join("/"))
+      .filter((relativePath) => safeSet.has(relativePath))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+async function listCurrentRestorePaths(
+  memoryRoot: string,
+  scope: MumuMemoryRestoreScope,
+  savepoint: MumuMemorySavepoint
+): Promise<string[]> {
+  const projectCandidates = projectRestoreCandidatePaths(savepoint, scope);
+  if (projectCandidates) {
+    if (!projectCandidates.length) {
+      return [];
+    }
+    return listCurrentIncludedPaths(memoryRoot, projectCandidates);
+  }
+
   try {
     const { stdout } = await git(memoryRoot, ["ls-files", "-z", "--", ...restorePathspecs(scope)]);
     return stdout

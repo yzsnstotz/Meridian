@@ -302,6 +302,129 @@ describe("MumuMemoryGitSyncQueue", () => {
     expect(pushCalls.at(-1)?.refspecs).toContain("refs/tags/mumu-savepoints/sp-test-one:refs/tags/mumu-savepoints/sp-test-one");
   });
 
+  it("serializes project savepoint metadata and filters snapshots to included paths", async () => {
+    const root = makeRoot();
+    const projectStoryPath = "structured/story_douyin/story-project-a.json";
+    const otherStoryPath = "structured/story_douyin/story-project-b.json";
+    writeJson(root, projectStoryPath, { id: "story-project-a", title: "Project A" });
+    writeJson(root, otherStoryPath, { id: "story-project-b", title: "Project B" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "story-project-a",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const savepoint = await createMumuMemorySavepoint(root, {
+      label: "Project A version",
+      id: "sp-project-a",
+      now: () => new Date("2026-05-24T03:04:05.000Z"),
+      metadata: {
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-project-a",
+        project_name: "日本生活 AI 日记",
+        project_description: "记录一个普通人在日本边工作边生活。",
+        genre: "douyin",
+        entry_source: "blank",
+        created_from_surface: "story_create_workbench",
+        included_paths: [projectStoryPath]
+      }
+    });
+
+    const tagContents = git(root, "tag", "-n99", "mumu-savepoints/sp-project-a");
+    expect(tagContents).toContain('"scope_kind":"project"');
+    expect(tagContents).toContain('"project_id":"project-a"');
+    expect(tagContents).toContain(projectStoryPath);
+    expect(await listMumuMemorySavepoints(root)).toEqual([
+      expect.objectContaining({
+        id: savepoint.id,
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-project-a",
+        project_name: "日本生活 AI 日记",
+        genre: "douyin",
+        entry_source: "blank",
+        created_from_surface: "story_create_workbench",
+        included_paths: [projectStoryPath]
+      })
+    ]);
+
+    const snapshot = await readMumuMemorySnapshot(root, savepoint.id);
+    expect(snapshot.savepoint.scope_kind).toBe("project");
+    expect(snapshot.records.map((record) => record.path)).toEqual([projectStoryPath]);
+  });
+
+  it("keeps legacy savepoints account-scoped and restores project savepoints only from included paths", async () => {
+    const root = makeRoot();
+    const projectStoryPath = "structured/story_douyin/story-project-a.json";
+    const otherStoryPath = "structured/story_douyin/story-project-b.json";
+    writeJson(root, projectStoryPath, { id: "story-project-a", title: "Old Project A" });
+    writeJson(root, otherStoryPath, { id: "story-project-b", title: "Old Project B" });
+    const queue = new MumuMemoryGitSyncQueue({ debounceMs: 0, maxFileBytes: 1024 * 1024 });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "story-project-a",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const legacy = await createMumuMemorySavepoint(root, {
+      id: "sp-legacy-account",
+      now: () => new Date("2026-05-24T03:04:05.000Z")
+    });
+    const project = await createMumuMemorySavepoint(root, {
+      id: "sp-project-only",
+      now: () => new Date("2026-05-24T03:04:06.000Z"),
+      metadata: {
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-project-a",
+        genre: "douyin",
+        created_from_surface: "story_create_workbench",
+        included_paths: [projectStoryPath]
+      }
+    });
+
+    writeJson(root, projectStoryPath, { id: "story-project-a", title: "Current Project A" });
+    writeJson(root, otherStoryPath, { id: "story-project-b", title: "Current Project B" });
+    queue.enqueue({
+      memoryRoot: root,
+      userId: "u1",
+      eventKind: "structured_write",
+      recordType: "story_douyin",
+      key: "story-project-a",
+      source: "chatter"
+    });
+    await queue.flush(root);
+
+    const legacySnapshot = await readMumuMemorySnapshot(root, legacy.id);
+    expect(legacySnapshot.savepoint).toMatchObject({
+      scope_kind: "account",
+      project_id: null,
+      included_paths: []
+    });
+
+    const result = await restoreMumuMemorySavepoint(root, project.id, { scope: { kind: "root" } });
+
+    expect(result.scope).toEqual({ kind: "root" });
+    expect(result.restored_paths).toEqual([projectStoryPath]);
+    expect(result.deleted_paths).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(root, projectStoryPath), "utf8"))).toMatchObject({
+      title: "Old Project A"
+    });
+    expect(JSON.parse(readFileSync(path.join(root, otherStoryPath), "utf8"))).toMatchObject({
+      title: "Current Project B"
+    });
+  });
+
   it("reads an older savepoint snapshot with first-class style changes without mutating current files", async () => {
     const root = makeRoot();
     const stylePath = "structured/style_douyin/u1.json";
