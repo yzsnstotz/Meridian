@@ -33,7 +33,7 @@ import {
 
 const ADS_REPLY = {
   channel: "socket" as const,
-  chat_id: "ads:e2e",
+  chat_id: "ads:mumu:e2e",
   socket_path: "/tmp/ads-e2e.sock"
 };
 
@@ -163,7 +163,7 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
     expect(run!.payload.content).toBe("ask");
   });
 
-  it("agent reply on the run trace forwards content to user_reply_channel", async () => {
+  it("agent reply on the run trace forwards only the MUMU user reply block", async () => {
     const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
     await runner.dispatch(makeTurnResult("question?"));
@@ -171,12 +171,45 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
     await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
     const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
 
-    await runner.dispatch(makeAgentReply(run, "the answer"));
+    await runner.dispatch(makeAgentReply(run,
+      "internal structured/story_douyin/a.json notes\n"
+        + "<<<MUMU-USER-REPLY>>>\n"
+        + "这是给用户看的回答\n"
+        + "<<<END-MUMU-USER-REPLY>>>"
+    ));
 
     const forwarded = sent.find(
-      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "the answer"
+      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "这是给用户看的回答"
     );
     expect(forwarded).toBeDefined();
+    expect(forwarded!.payload.chatter?.reply_parse).toMatchObject({
+      ok: true,
+      status: "parsed",
+      fallback_used: false
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
+  });
+
+  it("agent reply on the run trace uses fallback for malformed raw output", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
+    await runner.activate(role);
+    await runner.dispatch(makeTurnResult("question?"));
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
+
+    await runner.dispatch(makeAgentReply(run, "已写入 structured/story_douyin/a.json，JSON 校验通过"));
+
+    const forwarded = sent.find((m) => m.reply_channel.chat_id === ADS_REPLY.chat_id);
+    expect(forwarded).toBeDefined();
+    expect(forwarded!.payload.content).toBe("已生成初稿，我把结构放在右侧。你可以继续让我展开、修改或换一个方向。");
+    expect(forwarded!.payload.chatter?.reply_parse).toMatchObject({
+      ok: false,
+      status: "missing_markers",
+      fallback_used: true
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
+    expect(JSON.stringify(forwarded)).not.toContain("JSON 校验");
   });
 
   it("stateless turn does NOT write memory but still spawns", async () => {

@@ -33,6 +33,12 @@ import {
   stripAgentStructuredFallbackContent
 } from "../chatter/agent-structured-fallback";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
+import {
+  containsUnsafeMumuUserReplyContent,
+  fallbackMumuUserReply,
+  mumuUserReplyParseDiagnostics,
+  parseMumuUserReply
+} from "../chatter/mumu-user-reply";
 import { ObservationCache } from "../chatter/observation-cache";
 import {
   incrementChatterExtractStateResumeTotal,
@@ -789,17 +795,19 @@ export class ChatterRole implements BaseRole {
     const trace = this.sessionMgr!.getTrace(result.trace_id);
     if (trace?.chatter_session_id) {
       const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
-      await this.forwardChatterReply(fallback.content, {
+      const reply = this.applyMumuUserReplyBoundary(fallback.content, {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {}),
         chatter_session_id: trace.chatter_session_id
       });
+      await this.forwardChatterReply(reply.content, reply.chatter);
     } else {
       const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
-      await this.deliverChatterReply(fallback.content, {
+      const reply = this.applyMumuUserReplyBoundary(fallback.content, {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {})
-      }, "success");
+      });
+      await this.deliverChatterReply(reply.content, reply.chatter, "success");
     }
     if (result.status === "error") {
       this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
@@ -815,6 +823,55 @@ export class ChatterRole implements BaseRole {
       this.sessionMgr!.clearTrace(result.trace_id);
       await this.drainSelfInitiatedTurnQueue();
     }
+  }
+
+  private applyMumuUserReplyBoundary(
+    content: string,
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>
+  ): {
+    content: string;
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
+  } {
+    if (!this.isMumuUserReplyChannel()) {
+      return { content, chatter };
+    }
+
+    if (chatter.reply_parse) {
+      if (!containsUnsafeMumuUserReplyContent(content)) {
+        return { content, chatter };
+      }
+      const fallback = fallbackMumuUserReply("unsafe_content", chatter.reply_parse.valid_block_count);
+      return {
+        content: fallback.content,
+        chatter: {
+          ...chatter,
+          reply_parse: mumuUserReplyParseDiagnostics(fallback)
+        }
+      };
+    }
+
+    const parsed = parseMumuUserReply(content);
+    if (!parsed.ok) {
+      this.ctx?.log.warn("chatter: mumu user reply parser used fallback", {
+        chatter_id: this.config.chatter_id,
+        status: parsed.status,
+        valid_block_count: parsed.valid_block_count,
+        raw_content_length: content.length
+      });
+    }
+
+    return {
+      content: parsed.content,
+      chatter: {
+        ...chatter,
+        reply_parse: mumuUserReplyParseDiagnostics(parsed)
+      }
+    };
+  }
+
+  private isMumuUserReplyChannel(): boolean {
+    const replyChannel = this.config.user_reply_channel;
+    return replyChannel.channel === "socket" && replyChannel.chat_id.startsWith("ads:mumu:");
   }
 
   private async applyAgentStructuredFallback(

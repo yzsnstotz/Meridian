@@ -134,6 +134,24 @@ export const ChatterCoeditTargetSchema = z.object({
 });
 export type ChatterCoeditTarget = z.infer<typeof ChatterCoeditTargetSchema>;
 
+export const MumuReplyParseStatusSchema = z.enum([
+  "parsed",
+  "missing_markers",
+  "reversed_markers",
+  "unterminated_block",
+  "empty_block",
+  "unsafe_content"
+]);
+export type MumuReplyParseStatus = z.infer<typeof MumuReplyParseStatusSchema>;
+
+export const MumuReplyParseDiagnosticsSchema = z.object({
+  ok: z.boolean(),
+  status: MumuReplyParseStatusSchema,
+  fallback_used: z.boolean(),
+  valid_block_count: z.number().int().min(0)
+});
+export type MumuReplyParseDiagnostics = z.infer<typeof MumuReplyParseDiagnosticsSchema>;
+
 export const ChatterTurnEnvelopeSchema = z.object({
   mode: z.enum(["stateless", "session"]).optional(),
   chatter_session_id: z.string().min(1).optional(),
@@ -147,7 +165,8 @@ export const ChatterTurnEnvelopeSchema = z.object({
   candidate_observation: ChatterCandidateObservationSchema.optional(),
   observation_id: z.string().uuid().optional(),
   coedit_target: ChatterCoeditTargetSchema.optional(),
-  control: z.enum(["new", "interrupt", "confirm_observation", "reject_observation"]).optional()
+  control: z.enum(["new", "interrupt", "confirm_observation", "reject_observation"]).optional(),
+  reply_parse: MumuReplyParseDiagnosticsSchema.optional()
 });
 export type ChatterTurnEnvelope = z.infer<typeof ChatterTurnEnvelopeSchema>;
 
