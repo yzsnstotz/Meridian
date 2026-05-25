@@ -113,6 +113,7 @@ describe("mumu creative-spine registry", () => {
     expect(prompt).toContain("再从 full_script 派生 visual_beats[]");
     expect(prompt).toContain("单个镜头");
     expect(prompt).toContain("对应切片");
+    expect(prompt).toContain("已同步照读口播和拍摄分镜");
 
     expect(prompt).toContain("story_variety");
     expect(prompt).toContain("run_of_show");
