@@ -10,6 +10,8 @@ import type {
   ChatterRoleConfig,
   HubMessage,
   HubResult,
+  MumuChatterDiagnostics,
+  MumuReplyParseDiagnostics,
   ReplyChannel
 } from "../../types";
 import type { BaseRole, RoleContext } from "../base-role";
@@ -33,6 +35,12 @@ import {
   stripAgentStructuredFallbackContent
 } from "../chatter/agent-structured-fallback";
 import { ChatterStateStore } from "../chatter/chatter-state-store";
+import {
+  containsUnsafeMumuUserReplyContent,
+  fallbackMumuUserReply,
+  mumuUserReplyParseDiagnostics,
+  parseMumuUserReply
+} from "../chatter/mumu-user-reply";
 import { ObservationCache } from "../chatter/observation-cache";
 import {
   incrementChatterExtractStateResumeTotal,
@@ -59,6 +67,10 @@ import {
   isMumuUserMemoryRoot,
   type MumuMemoryGitSyncQueueLike
 } from "../chatter/mumu-memory-git-sync";
+import {
+  buildMumuPromptParts,
+  renderMumuPromptParts
+} from "../chatter/prompt-parts";
 
 const ROLES_SOCKET_REPLY_CHANNEL: ReplyChannel = {
   channel: "socket",
@@ -112,10 +124,14 @@ export interface ChatterRoleOptions {
   memoryGitSyncQueue?: MumuMemoryGitSyncQueueLike | false;
 }
 
+type ChatterEnvelope = NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
+
 type ChatterTurnEnvelopeWithMode =
-  NonNullable<NonNullable<HubResult["payload"]>["chatter"]> & {
+  ChatterEnvelope & {
     mode: "stateless" | "session";
   };
+
+type ChatterMemoryTurnRole = "user" | "assistant";
 
 export class ChatterRole implements BaseRole {
   readonly roleType = "chatter" as const;
@@ -367,17 +383,16 @@ export class ChatterRole implements BaseRole {
       }
     }
 
-    const promptBlocks: string[] = [];
     const contextBlock = await this.buildContextBlock(envelope.context_refs);
-    if (contextBlock !== null) {
-      promptBlocks.push(contextBlock);
-    }
-    if (systemPrompt !== undefined) {
-      promptBlocks.push(systemPrompt);
-    }
-    const dispatchContent = promptBlocks.length > 0
-      ? composeTurnContent(promptBlocks.join("\n\n"), result.content)
-      : result.content;
+    const renderedPrompt = renderMumuPromptParts(buildMumuPromptParts({
+      systemPromptId,
+      systemPrompt,
+      contextBlock,
+      envelopePromptParts: envelope.prompt_parts,
+      legacyUserContent: result.content
+    }));
+    const dispatchContent = renderedPrompt.content;
+    const dispatchChatter = withPromptDiagnostics(stripRawPromptParts(envelope), renderedPrompt.diagnostics);
 
     if (envelope.mode === "session") {
       await this.writeTurnToMemory(envelope, result.content);
@@ -389,7 +404,7 @@ export class ChatterRole implements BaseRole {
         content: dispatchContent,
         chatterSessionId: envelope.chatter_session_id,
         attachments: result.attachments,
-        chatter: envelope
+        chatter: dispatchChatter
       });
       return;
     }
@@ -400,7 +415,7 @@ export class ChatterRole implements BaseRole {
         content: dispatchContent,
         chatterSessionId: envelope.chatter_session_id,
         attachments: result.attachments,
-        chatter: envelope
+        chatter: dispatchChatter
       });
       return;
     }
@@ -409,7 +424,7 @@ export class ChatterRole implements BaseRole {
       content: dispatchContent,
       chatterSessionId: envelope.chatter_session_id,
       attachments: result.attachments,
-      chatter: envelope
+      chatter: dispatchChatter
     });
   }
 
@@ -669,15 +684,36 @@ export class ChatterRole implements BaseRole {
 
   private async writeTurnToMemory(
     envelope: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>,
-    content: string
+    content: string,
+    options: {
+      role?: ChatterMemoryTurnRole;
+      displayContent?: string;
+      transcriptOrigin?: NonNullable<ChatterEnvelope["transcript"]>["origin"];
+    } = {}
   ): Promise<void> {
     const skills = makeMemorySkills(this.resolver!, "session");
     const date = new Date().toISOString().slice(0, 10);
     const turnId = randomUUID().slice(0, 8);
+    const role = options.role ?? "user";
+    const transcriptOrigin = options.transcriptOrigin ?? envelope.transcript?.origin;
+    const displayContent = options.displayContent ?? envelope.transcript?.user_display_content;
+    const frontmatter = [
+      "---",
+      "mode: session",
+      `role: ${role}`,
+      `chatter_session_id: ${envelope.chatter_session_id ?? ""}`,
+      ...(envelope.project_id ? [`project_id: ${envelope.project_id}`] : []),
+      ...(envelope.story_id ? [`story_id: ${envelope.story_id}`] : []),
+      ...(envelope.template_id ? [`template_id: ${envelope.template_id}`] : []),
+      ...(envelope.genre ? [`genre: ${envelope.genre}`] : []),
+      ...(transcriptOrigin ? [`transcript_origin: ${transcriptOrigin}`] : []),
+      ...(displayContent ? [`display_content_json: ${JSON.stringify(displayContent)}`] : []),
+      "---"
+    ].join("\n");
     const result = await skills.write({
       binding: "conversation_log",
       vars: { date, turn_id: turnId },
-      content: `---\nmode: session\nrole: user\nchatter_session_id: ${envelope.chatter_session_id ?? ""}\n---\n\n${content}`
+      content: `${frontmatter}\n\n${content}`
     });
     if (result.ok) {
       this.enqueueTurnMemoryCommit();
@@ -789,17 +825,25 @@ export class ChatterRole implements BaseRole {
     const trace = this.sessionMgr!.getTrace(result.trace_id);
     if (trace?.chatter_session_id) {
       const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
-      await this.forwardChatterReply(fallback.content, {
+      const reply = this.applyMumuUserReplyBoundary(fallback.content, {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {}),
-        chatter_session_id: trace.chatter_session_id
+        chatter_session_id: trace.chatter_session_id,
+        ...(trace.project_id ? { project_id: trace.project_id } : {}),
+        ...(trace.story_id ? { story_id: trace.story_id } : {}),
+        ...(trace.template_id ? { template_id: trace.template_id } : {}),
+        ...(trace.genre ? { genre: trace.genre } : {}),
+        ...(trace.diagnostics ? { diagnostics: trace.diagnostics } : {})
       });
+      await this.writeAssistantTurnToMemory(reply.chatter, fallback.content, reply.content);
+      await this.forwardChatterReply(reply.content, reply.chatter);
     } else {
       const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
-      await this.deliverChatterReply(fallback.content, {
+      const reply = this.applyMumuUserReplyBoundary(fallback.content, {
         ...(fallback.chatter ?? {}),
         ...(result.payload?.chatter ?? {})
-      }, "success");
+      });
+      await this.deliverChatterReply(reply.content, reply.chatter, "success");
     }
     if (result.status === "error") {
       this.recordTurnError(result.trace_id, "agent_turn_failed", result.content);
@@ -815,6 +859,69 @@ export class ChatterRole implements BaseRole {
       this.sessionMgr!.clearTrace(result.trace_id);
       await this.drainSelfInitiatedTurnQueue();
     }
+  }
+
+  private applyMumuUserReplyBoundary(
+    content: string,
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>
+  ): {
+    content: string;
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
+  } {
+    if (!this.isMumuUserReplyChannel()) {
+      return { content, chatter: stripRawPromptParts(chatter) };
+    }
+
+    if (chatter.reply_parse) {
+      if (!containsUnsafeMumuUserReplyContent(content)) {
+        return {
+          content,
+          chatter: withReplyParseDiagnostics(stripRawPromptParts(chatter), chatter.reply_parse)
+        };
+      }
+      const fallback = fallbackMumuUserReply("unsafe_content", chatter.reply_parse.valid_block_count);
+      const replyParse = mumuUserReplyParseDiagnostics(fallback);
+      return {
+        content: fallback.content,
+        chatter: withReplyParseDiagnostics(stripRawPromptParts(chatter), replyParse)
+      };
+    }
+
+    const parsed = parseMumuUserReply(content);
+    if (!parsed.ok) {
+      this.ctx?.log.warn("chatter: mumu user reply parser used fallback", {
+        chatter_id: this.config.chatter_id,
+        status: parsed.status,
+        valid_block_count: parsed.valid_block_count,
+        raw_content_length: content.length
+      });
+    }
+
+    const replyParse = mumuUserReplyParseDiagnostics(parsed);
+    return {
+      content: parsed.content,
+      chatter: withReplyParseDiagnostics(stripRawPromptParts(chatter), replyParse)
+    };
+  }
+
+  private isMumuUserReplyChannel(): boolean {
+    const replyChannel = this.config.user_reply_channel;
+    return replyChannel.channel === "socket" && replyChannel.chat_id.startsWith("ads:mumu:");
+  }
+
+  private async writeAssistantTurnToMemory(
+    chatter: NonNullable<NonNullable<HubResult["payload"]>["chatter"]>,
+    rawContent: string,
+    displayContent: string
+  ): Promise<void> {
+    if (!this.resolver || !this.isMumuUserReplyChannel() || !chatter.chatter_session_id) {
+      return;
+    }
+    await this.writeTurnToMemory(chatter, rawContent, {
+      role: "assistant",
+      displayContent,
+      transcriptOrigin: "assistant_reply"
+    });
   }
 
   private async applyAgentStructuredFallback(
@@ -906,7 +1013,12 @@ export class ChatterRole implements BaseRole {
       trace_id: traceId,
       purpose: "agent_turn",
       agent_session_id: this.sessionMgr!.currentSessionId,
-      ...(turn.chatterSessionId ? { chatter_session_id: turn.chatterSessionId } : {})
+      ...(turn.chatterSessionId ? { chatter_session_id: turn.chatterSessionId } : {}),
+      ...(turn.chatter.project_id ? { project_id: turn.chatter.project_id } : {}),
+      ...(turn.chatter.story_id ? { story_id: turn.chatter.story_id } : {}),
+      ...(turn.chatter.template_id ? { template_id: turn.chatter.template_id } : {}),
+      ...(turn.chatter.genre ? { genre: turn.chatter.genre } : {}),
+      ...(turn.chatter.diagnostics ? { diagnostics: turn.chatter.diagnostics } : {})
     });
 
     const runMsg: HubMessage = {
@@ -1226,14 +1338,38 @@ const defaultChatterSocketWriter: ChatterSocketWriter = (socketPath, result) =>
     });
   });
 
-function composeTurnContent(systemPrompt: string, userContent: string): string {
-  return [
-    "System prompt for this turn:",
-    systemPrompt.trimEnd(),
-    "",
-    "User turn:",
-    userContent
-  ].join("\n");
+function stripRawPromptParts(chatter: ChatterEnvelope): ChatterEnvelope {
+  const safeChatter = { ...chatter };
+  delete safeChatter.prompt_parts;
+  return safeChatter;
+}
+
+function withPromptDiagnostics(
+  chatter: ChatterEnvelope,
+  diagnostics: Pick<MumuChatterDiagnostics, "prompt_part_ids" | "preference_status">
+): ChatterEnvelope {
+  return {
+    ...chatter,
+    diagnostics: {
+      ...(chatter.diagnostics ?? {}),
+      prompt_part_ids: diagnostics.prompt_part_ids,
+      preference_status: chatter.diagnostics?.preference_status ?? diagnostics.preference_status
+    }
+  };
+}
+
+function withReplyParseDiagnostics(
+  chatter: ChatterEnvelope,
+  replyParse: MumuReplyParseDiagnostics
+): ChatterEnvelope {
+  return {
+    ...chatter,
+    reply_parse: replyParse,
+    diagnostics: {
+      ...(chatter.diagnostics ?? {}),
+      reply_parse: { ...replyParse }
+    }
+  };
 }
 
 function contextPlaceholder(ref: { type: string; key: string }): string {

@@ -18,7 +18,7 @@
  * (sendToHub outbound + dispatch inbound + claimsTrace routing) is real.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, realpathSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RoleRegistry } from "../../src/roles/role-registry";
@@ -33,7 +33,7 @@ import {
 
 const ADS_REPLY = {
   channel: "socket" as const,
-  chat_id: "ads:e2e",
+  chat_id: "ads:mumu:e2e",
   socket_path: "/tmp/ads-e2e.sock"
 };
 
@@ -54,9 +54,14 @@ function makeConfig(memoryFolder: string, overrides: Partial<ChatterRoleConfig> 
 
 function makeTurnResult(
   content: string,
-  opts: { mode?: "stateless" | "session"; control?: "new" | "interrupt" } = {}
+  opts: {
+    mode?: "stateless" | "session";
+    control?: "new" | "interrupt";
+    chatter_session_id?: string;
+    project_id?: string;
+  } = {}
 ): HubResult {
-  const { mode = "session", control } = opts;
+  const { mode = "session", control, chatter_session_id, project_id } = opts;
   return {
     trace_id: crypto.randomUUID(),
     thread_id: CHATTER_THREAD_ID,
@@ -65,7 +70,7 @@ function makeTurnResult(
     content,
     attachments: [],
     timestamp: new Date().toISOString(),
-    payload: { chatter: { mode, control } }
+    payload: { chatter: { mode, control, chatter_session_id, project_id } }
   };
 }
 
@@ -92,6 +97,26 @@ function makeAgentReply(runMsg: HubMessage, content: string): HubResult {
     timestamp: new Date().toISOString(),
     run_state: "completed"
   };
+}
+
+function readTurnFiles(root: string): string[] {
+  const turnsRoot = path.join(root, "turns");
+  if (!existsSync(turnsRoot)) {
+    return [];
+  }
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.name.endsWith(".md")) {
+        files.push(readFileSync(entryPath, "utf8"));
+      }
+    }
+  };
+  walk(turnsRoot);
+  return files;
 }
 
 describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
@@ -163,7 +188,45 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
     expect(run!.payload.content).toBe("ask");
   });
 
-  it("agent reply on the run trace forwards content to user_reply_channel", async () => {
+  it("agent reply on the run trace forwards only the MUMU user reply block", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
+    await runner.activate(role);
+    await runner.dispatch(makeTurnResult("question?", {
+      chatter_session_id: "session-visible-reply",
+      project_id: "project-visible-reply"
+    }));
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
+
+    await runner.dispatch(makeAgentReply(run,
+      "internal structured/story_douyin/a.json notes\n"
+        + "<<<MUMU-USER-REPLY>>>\n"
+        + "这是给用户看的回答\n"
+        + "<<<END-MUMU-USER-REPLY>>>"
+    ));
+
+    const forwarded = sent.find(
+      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "这是给用户看的回答"
+    );
+    expect(forwarded).toBeDefined();
+    expect(forwarded!.payload.chatter?.reply_parse).toMatchObject({
+      ok: true,
+      status: "parsed",
+      fallback_used: false
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
+    const turnFiles = readTurnFiles(memoryFolder);
+    const assistantTurn = turnFiles.find((file) => file.includes("role: assistant"));
+    expect(assistantTurn).toBeDefined();
+    expect(assistantTurn).toContain("project_id: project-visible-reply");
+    expect(assistantTurn).toContain("chatter_session_id: session-visible-reply");
+    expect(assistantTurn).toContain("transcript_origin: assistant_reply");
+    expect(assistantTurn).toContain(`display_content_json: ${JSON.stringify("这是给用户看的回答")}`);
+    expect(assistantTurn).toContain("internal structured/story_douyin/a.json notes");
+  });
+
+  it("agent reply on the run trace uses fallback for malformed raw output", async () => {
     const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
     await runner.activate(role);
     await runner.dispatch(makeTurnResult("question?"));
@@ -171,12 +234,74 @@ describe("Chatter e2e — full spawn-then-run contract via RoleRunner", () => {
     await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
     const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
 
-    await runner.dispatch(makeAgentReply(run, "the answer"));
+    await runner.dispatch(makeAgentReply(run, "已写入 structured/story_douyin/a.json，JSON 校验通过"));
+
+    const forwarded = sent.find((m) => m.reply_channel.chat_id === ADS_REPLY.chat_id);
+    expect(forwarded).toBeDefined();
+    expect(forwarded!.payload.content).toBe("已生成初稿，我把结构放在右侧。你可以继续让我展开、修改或换一个方向。");
+    expect(forwarded!.payload.chatter?.reply_parse).toMatchObject({
+      ok: false,
+      status: "missing_markers",
+      fallback_used: true
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
+    expect(JSON.stringify(forwarded)).not.toContain("JSON 校验");
+  });
+
+  it("agent reply carries diagnostics ids without exposing raw prompt parts", async () => {
+    const role = registry.create("chatter", CHATTER_THREAD_ID, makeConfig(memoryFolder));
+    await runner.activate(role);
+    await runner.dispatch({
+      ...makeTurnResult("legacy technical content", { mode: "session" }),
+      payload: {
+        chatter: {
+          mode: "session",
+          chatter_session_id: "session-diagnostics",
+          prompt_parts: [
+            {
+              id: "ads_contract:create_from_template:douyin",
+              kind: "ads_contract",
+              content: "write structured/story_douyin/story-001.json"
+            },
+            {
+              id: "user_request:create_from_template",
+              kind: "user_request",
+              content: "生成完整抖音短视频"
+            }
+          ]
+        }
+      }
+    });
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await runner.dispatch(makeSpawnResponse(spawn, "claude_07"));
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_07")!;
+    expect(run.payload.chatter?.diagnostics?.prompt_part_ids).toEqual([
+      "ads_contract:create_from_template:douyin",
+      "user_request:create_from_template"
+    ]);
+    expect(run.payload.chatter?.prompt_parts).toBeUndefined();
+
+    await runner.dispatch(makeAgentReply(run,
+      "<<<MUMU-USER-REPLY>>>\n"
+        + "这是给用户看的回答\n"
+        + "<<<END-MUMU-USER-REPLY>>>"
+    ));
 
     const forwarded = sent.find(
-      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "the answer"
+      (m) => m.reply_channel.chat_id === ADS_REPLY.chat_id && m.payload.content === "这是给用户看的回答"
     );
     expect(forwarded).toBeDefined();
+    expect(forwarded!.payload.chatter?.prompt_parts).toBeUndefined();
+    expect(forwarded!.payload.chatter?.diagnostics?.prompt_part_ids).toEqual([
+      "ads_contract:create_from_template:douyin",
+      "user_request:create_from_template"
+    ]);
+    expect(forwarded!.payload.chatter?.diagnostics?.reply_parse).toMatchObject({
+      ok: true,
+      status: "parsed",
+      fallback_used: false
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("structured/story_douyin");
   });
 
   it("stateless turn does NOT write memory but still spawns", async () => {

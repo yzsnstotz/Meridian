@@ -677,10 +677,9 @@
               "type": {
                 "type": "string",
                 "enum": [
+                  "full_script",
                   "shot_list",
-                  "dialogue",
-                  "caption",
-                  "full_script"
+                  "caption"
                 ]
               },
               "content": {

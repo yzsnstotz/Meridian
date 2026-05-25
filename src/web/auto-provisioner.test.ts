@@ -391,6 +391,15 @@ describe("createAutoProvisionerHandlers", () => {
       "/api/projects/mumu/users/u_001/memory-archive/savepoints",
       {
         label: "label stays in tag metadata",
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-a",
+        project_name: "日本生活 AI 日记",
+        project_description: "记录日常创作。",
+        genre: "douyin",
+        entry_source: "blank",
+        created_from_surface: "story_create_workbench",
+        included_paths: ["structured/style_douyin/u_001.json"],
         archive: {
           push_enabled: true,
           state: "ready",
@@ -406,6 +415,10 @@ describe("createAutoProvisionerHandlers", () => {
       ok: true,
       savepoint: {
         label: "label stays in tag metadata",
+        scope_kind: "project",
+        project_id: "project-a",
+        current_story_id: "story-a",
+        included_paths: ["structured/style_douyin/u_001.json"],
         sync_status: "pending",
         restore_available: true
       }
@@ -434,6 +447,9 @@ describe("createAutoProvisionerHandlers", () => {
         {
           id: savepointId,
           label: "label stays in tag metadata",
+          scope_kind: "project",
+          project_id: "project-a",
+          included_paths: ["structured/style_douyin/u_001.json"],
           restore_available: true
         }
       ]
@@ -450,7 +466,12 @@ describe("createAutoProvisionerHandlers", () => {
     expect(snapshotResponse.body).toMatchObject({
       ok: true,
       snapshot: {
-        savepoint: { id: savepointId },
+        savepoint: {
+          id: savepointId,
+          scope_kind: "project",
+          project_id: "project-a",
+          included_paths: ["structured/style_douyin/u_001.json"]
+        },
         style_records: [
           {
             type: "style_douyin",
