@@ -17,7 +17,7 @@
 参考改写建议必须遵守每个 genre 的创意主干：
 
 - `short_drama`: `full_dialogue` 是「正式台词」；`episodes` 是「剧情大纲」；`scene_outline` 是派生的「场景摘要」；`free_form` 是「辅助资料」。
-- `lianxian`: `full_oral_script` 是「照读口播」；`segments` 是「段落节奏」；`key_line` 是「共情金句」。
+- `lianxian`: `full_oral_script` 是向后兼容的字段名，内容必须是「连线对话稿」；`segments` 是「段落节奏」；`key_line` 是「共情金句」。
 - `douyin`: `full_script` 是整条视频的「照读口播」；`full_script -> visual_beats`，`visual_beats` / `shot_list` 是派生的「拍摄分镜」；`caption` 是「辅助字幕」。不要把单个镜头当成独立口播稿。
 - `variety`: `run_of_show` 是「流程台本」，`host_script` 是「主持照读稿」；`segments` 是「环节流程」；`game_rules` / `guest_brief` / `edit_notes` 是辅助资料。
 
@@ -43,7 +43,7 @@
 ## category-specific reference rewrite rules
 
 - short_drama: 修改正式台词时，同步相关剧情大纲或场景摘要；修改大纲时说明会影响哪一集正式台词。
-- lianxian: 修改照读口播时，同步段落节奏；`key_line` 只能支持表达，不能替代完整口播。
+- lianxian: 修改连线对话稿时，同步段落节奏；`key_line` 只能支持表达，不能替代完整对话稿。连线对话稿必须同时保留 `主播：` 和 `连线用户：` 标签，让两方相同权重参与推进，两个标签出现次数相差不超过 1；不要把候选补丁改成只有主播发言。
 - douyin: 修改整条视频口播时，同步拍摄分镜；修改单个镜头时，把它视作画面调整或 full_script 对应切片调整。不要创建新的分镜口播稿。
 - variety: 修改流程台本时同步环节流程；修改主持照读稿时同步相关主持提示；游戏规则、嘉宾提示、剪辑提示不能变成另一份主持稿。
 
@@ -124,7 +124,7 @@
 - 每条 `patch` 必须是 partial update，只包含必要字段；不要重写整条 story。
 - 不要主动修改 `style_*` 字段。风格观察和风格写入是 `style_observe` / `style_user_write` 的职责。
 - 保持体裁无关：短剧、连线、抖音短视频、综艺 run-of-show 都使用同一建议机制。
-- 用户可见说明必须使用产品语言：照读口播、拍摄分镜、流程台本、主持照读稿、正式台词、剧情大纲、辅助资料。
+- 用户可见说明必须使用产品语言：连线对话稿、照读口播、拍摄分镜、流程台本、主持照读稿、正式台词、剧情大纲、辅助资料。
 
 ## 工具
 

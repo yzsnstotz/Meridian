@@ -26,7 +26,7 @@
 所有 genre 都必须先判断「用户该读/表演哪一份」，再生成派生视图：
 
 - `short_drama`: `full_dialogue` 是「正式台词」；`episodes` 是「剧情大纲」；`scene_outline` 是派生的「场景摘要」；`free_form` 是「辅助资料」。
-- `lianxian`: `full_oral_script` 是「照读口播」；`segments` 是「段落节奏」；`key_line` 只是支持导航的「共情金句」。
+- `lianxian`: `full_oral_script` 是向后兼容的字段名，内容必须是「连线对话稿」；`segments` 是「段落节奏」；`key_line` 只是支持导航的「共情金句」。
 - `douyin`: `full_script` 是整条视频的「照读口播」；`full_script -> visual_beats`，`visual_beats` / `shot_list` 是派生的「拍摄分镜」；`caption` 是「辅助字幕」。不要为单个镜头创建独立口播稿。
 - `variety`: `run_of_show` 是「流程台本」，`host_script` 是「主持照读稿」；`segments` 是「环节流程」；`game_rules` / `guest_brief` / `edit_notes` 是辅助资料。
 
@@ -96,7 +96,7 @@
     ]
   },
   "fragments": [
-    { "segment_no": 1, "type": "full_oral_script", "content": "该段口播原话，包含停顿提示 / 情绪标记 / 互动 cue" }
+    { "segment_no": 1, "type": "full_oral_script", "content": "主播：开场接住情绪并提出问题。\n连线用户：回答自己的困惑和真实处境。\n主播：追问或拆解关键事实。\n连线用户：补充反应、犹豫或选择。" }
   ]
 }
 ```
@@ -109,18 +109,20 @@
 - `segment.type` 只能是 `"hook"` / `"buildup"` / `"conflict"` / `"empathy_line"` / `"interaction"` / `"closing"`。
 - `fragment` 只允许 `segment_no` / `type` / `content`。
 - `fragment.type` 只能是 `"full_oral_script"`。
+- 兼容性说明：字段名沿用 `full_oral_script`，但 `content` 不是单人口播；它必须是主播与连线用户相同权重的双人连线对话稿。
+- 每个 `fragment.content` 必须同时包含明确的 `主播：` 和 `连线用户：` 标签，两个标签以对话轮次推进，出现次数相差不超过 1；不要只写主播一方。
 
 创建行为：
 
 - 先生成连线情绪弧线和段落节奏。
-- 用户要求展开第 N 段口播时，补充或更新这一段的 `full_oral_script`。
-- 用户要求生成完整连线稿时，为每段生成照读口播，并让段落摘要与完整口播顺序一致。
+- 用户要求展开第 N 段连线对话稿时，补充或更新这一段的 `full_oral_script`。
+- 用户要求生成完整连线稿时，为每段生成主播和连线用户相同权重的对话稿，并让段落摘要与完整对话稿顺序一致。
 
 最终块建议内容：
 
 - 一句情绪弧线。
 - 段落节奏摘要。
-- 一个自然下一步，例如「可以继续让我展开第 1 段口播」。
+- 一个自然下一步，例如「可以继续让我展开第 1 段连线对话稿」。
 
 ### douyin: story_douyin
 
