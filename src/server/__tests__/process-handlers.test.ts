@@ -675,6 +675,88 @@ describe("/api/agentapi-processes — origin classification", () => {
     expect(payload.leak).toBe(0);
   });
 
+  it("attributes live Hub streaming bridge codex resume processes to their Hub thread and keeps token_usage visible", async () => {
+    // Streaming bridge instances are metadata-only in Meridian Hub
+    // (pid/socket_path null). During a turn, Hub forks `codex exec ... --json`
+    // as a child process. The Processes tab must attach that transient child
+    // back to the Hub thread; otherwise operators see an idle-looking
+    // hub-managed thread with no tokens, plus a separate anonymous stateless
+    // process that actually carries the token total.
+    const runStartedAt = new Date(Date.now() - 5_000).toISOString();
+    const usage: TokenUsage = {
+      source: "codex",
+      input_tokens: 1234,
+      cached_input_tokens: 100,
+      output_tokens: 456,
+      reasoning_output_tokens: 78,
+      total_tokens: 1690,
+      session_file: "/fake/.codex/sessions/2026/05/23/rollout-2026-05-23T10-00-00-019e3390-b9ef-70e2-a48c-96bb38c62574.jsonl",
+      session_id: "019e3390-b9ef-70e2-a48c-96bb38c62574"
+    };
+    const stub: Pick<TokenUsageCollector, "lookup" | "retain"> = {
+      lookup: (pid: number) => (pid === 1201 || pid === 1202) ? usage : null,
+      retain: () => undefined
+    };
+    const handlers = createProcessHandlers({
+      stateStore: { load: async () => emptyState() },
+      tokenUsageCollector: stub as TokenUsageCollector,
+      listProcesses: (): ProcInfo[] => [
+        { pid: 1100, ppid: 1, etime: "10:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 1201, ppid: 1100, etime: "00:05", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec resume 019e3390-b9ef-70e2-a48c-96bb38c62574 --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 1202, ppid: 1201, etime: "00:05", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec resume 019e3390-b9ef-70e2-a48c-96bb38c62574 --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+      ],
+      fetchAgentapiInstances: async () => [
+        {
+          thread_id: "codex_52",
+          agent_type: "codex",
+          mode: "bridge",
+          supportsStream: true,
+          codexSessionId: "019e3390-b9ef-70e2-a48c-96bb38c62574",
+          socket_path: null,
+          working_dir: "/Users/yzliu/work",
+          pid: null,
+          status: "running",
+          created_at: "2026-05-23T10:00:00.000Z",
+          last_interaction_at: runStartedAt,
+          restart_safe: true,
+          auto_approve: true
+        } as never
+      ]
+    });
+
+    const { res, body } = makeResponse();
+    await handlers.handle(makeRequest("/api/agentapi-processes"), res);
+    const payload = JSON.parse(body());
+    const byPid = new Map<number, {
+      origin: string;
+      thread_id: string | null;
+      token_usage: TokenUsage | null;
+      is_leak: boolean;
+    }>(
+      payload.processes
+        .filter((p: { pid: number | null }) => p.pid !== null)
+        .map((p: { pid: number; origin: string; thread_id: string | null; token_usage: TokenUsage | null; is_leak: boolean }) => [p.pid, p])
+    );
+
+    expect(payload.processes.find((p: { pid: number | null }) => p.pid === null)).toBeUndefined();
+    expect(byPid.get(1201)).toMatchObject({
+      origin: "hub",
+      thread_id: "codex_52",
+      is_leak: false,
+      token_usage: { total_tokens: 1690 }
+    });
+    expect(byPid.get(1202)).toMatchObject({
+      origin: "hub",
+      thread_id: "codex_52",
+      is_leak: false,
+      token_usage: { total_tokens: 1690 }
+    });
+    expect(payload.token_totals).toMatchObject({
+      sessions: 1,
+      total_tokens: 1690
+    });
+  });
+
   it("also matches `tsx src/hub/index.ts` (dev-mode hub) as a hub ancestor", async () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },

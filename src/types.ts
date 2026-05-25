@@ -406,6 +406,8 @@ export const AgentInstanceSchema = z.object({
   thread_id: z.string().min(1),
   agent_type: AgentTypeSchema,
   model_id: z.string().min(1).optional(),
+  supportsStream: z.boolean().optional(),
+  codexSessionId: z.string().min(1).optional(),
   mode: BridgeModeSchema,
   // A `stopped` / `error` instance has no live socket and no running pid —
   // the Hub reports these fields as `null`. The status enum already admits
@@ -416,6 +418,7 @@ export const AgentInstanceSchema = z.object({
   pid: z.number().int().nonnegative().nullable(),
   status: AgentInstanceStatusSchema,
   created_at: z.string().datetime(),
+  last_interaction_at: z.string().datetime().nullable().optional(),
   restart_safe: z.boolean().optional(),
   auto_approve: z.boolean().default(false)
 });

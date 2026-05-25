@@ -234,6 +234,29 @@ describe("TokenUsageCollector — codex", () => {
     expect(usage?.input_tokens).toBe(18222);
   });
 
+  it("resolves `codex exec resume <session> --json` to the existing rollout even when the pid started much later", () => {
+    const { files, rolloutPath, cwd } = setup();
+    const fs = makeFs(files);
+    const collector = new TokenUsageCollector({
+      ...fs,
+      getProcessAttrs: () => ({
+        startMs: Date.parse("2026-05-17T12:00:00Z"),
+        cwd
+      }),
+      codexSessionsRoot: CODEX_ROOT,
+      claudeProjectsRoot: CLAUDE_ROOT
+    });
+
+    const usage = collector.lookup(
+      12346,
+      "codex",
+      "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec resume 019e3390-b9ef-70e2-a48c-96bb38c62574 --json --model gpt-5.5"
+    );
+
+    expect(usage?.session_file).toBe(rolloutPath);
+    expect(usage?.total_tokens).toBe(18847);
+  });
+
   it("returns null when cwd doesn't match any rollout", () => {
     const { files, startMs } = setup();
     const fs = makeFs(files);

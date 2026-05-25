@@ -192,6 +192,14 @@ export class TokenUsageCollector {
   private resolveCodexSessionFile(attrs: ProcessAttrs, command: string): string | null {
     if (!attrs.cwd) return null;
 
+    const resumeSessionId = extractCodexResumeSessionId(command);
+    if (resumeSessionId) {
+      const resumed = this.resolveCodexSessionFileById(attrs, resumeSessionId);
+      if (resumed) {
+        return resumed;
+      }
+    }
+
     const wantSource: "exec" | "cli" = isCodexExecCommand(command) ? "exec" : "cli";
     const candidates = listCodexRolloutFiles(this.deps.codexSessionsRoot, attrs.startMs, this.deps.listDir);
     let best: { path: string; delta: number } | null = null;
@@ -208,6 +216,29 @@ export class TokenUsageCollector {
       const delta = Math.abs(meta.timestampMs - attrs.startMs);
       if (best === null || delta < best.delta) {
         best = { path: filePath, delta };
+      }
+    }
+    return best?.path ?? null;
+  }
+
+  private resolveCodexSessionFileById(attrs: ProcessAttrs, sessionId: string): string | null {
+    if (!attrs.cwd) return null;
+
+    const candidates = listCodexRolloutFilesBySessionId(
+      this.deps.codexSessionsRoot,
+      sessionId,
+      this.deps.listDir
+    );
+    let best: { path: string; mtimeMs: number } | null = null;
+    for (const filePath of candidates) {
+      const meta = peekCodexSessionMeta(filePath, this.deps.readHead);
+      if (!meta || meta.id !== sessionId || meta.cwd !== attrs.cwd) {
+        continue;
+      }
+      const st = this.deps.stat(filePath);
+      const mtimeMs = st?.mtimeMs ?? meta.timestampMs;
+      if (best === null || mtimeMs > best.mtimeMs) {
+        best = { path: filePath, mtimeMs };
       }
     }
     return best?.path ?? null;
@@ -333,6 +364,59 @@ export function listCodexRolloutFiles(
   return candidates;
 }
 
+export function listCodexRolloutFilesBySessionId(
+  root: string,
+  sessionId: string,
+  listDir: (dir: string) => string[]
+): string[] {
+  const trimmedSessionId = sessionId.trim();
+  if (!trimmedSessionId || trimmedSessionId.includes("/") || trimmedSessionId.includes("\\")) {
+    return [];
+  }
+
+  const out: string[] = [];
+  let years: string[];
+  try {
+    years = listDir(root);
+  } catch {
+    return out;
+  }
+
+  for (const year of years.filter((name) => /^\d{4}$/.test(name))) {
+    const yearDir = path.join(root, year);
+    let months: string[];
+    try {
+      months = listDir(yearDir);
+    } catch {
+      continue;
+    }
+    for (const month of months.filter((name) => /^\d{2}$/.test(name))) {
+      const monthDir = path.join(yearDir, month);
+      let days: string[];
+      try {
+        days = listDir(monthDir);
+      } catch {
+        continue;
+      }
+      for (const day of days.filter((name) => /^\d{2}$/.test(name))) {
+        const dayDir = path.join(monthDir, day);
+        let names: string[];
+        try {
+          names = listDir(dayDir);
+        } catch {
+          continue;
+        }
+        for (const name of names) {
+          if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
+          if (!name.includes(trimmedSessionId)) continue;
+          out.push(path.join(dayDir, name));
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export function codexRolloutFilenameOverlapsWindow(
   name: string,
   minTsMs: number,
@@ -405,6 +489,11 @@ export function peekCodexSessionMeta(filePath: string, readHead: (p: string, len
 // source="cli" (interactive / agentapi-bound).
 export function isCodexExecCommand(command: string): boolean {
   return /(?:^|[\s/])codex\s+exec(?:\s|$)/.test(command);
+}
+
+export function extractCodexResumeSessionId(command: string): string | null {
+  const match = command.match(/(?:^|[\s/])codex\s+exec\s+resume\s+([^\s]+)(?:\s|$)/);
+  return match?.[1]?.trim() || null;
 }
 
 // Walk lines from the end; the last `token_count` event carries the cumulative
