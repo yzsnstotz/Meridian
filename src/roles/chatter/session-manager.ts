@@ -1,7 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { ChatterStateStore, type ChatterInFlightTrace } from "./chatter-state-store";
+import {
+  ChatterStateStore,
+  type ChatterAgentSessionStatus,
+  type ChatterInFlightTrace
+} from "./chatter-state-store";
 
 export type SessionProbe = (sessionId: string) => Promise<boolean>;
+
+export interface ChatterSessionState {
+  transcript_session_id: string;
+  agent_session_id: string | null;
+  agent_session_status: ChatterAgentSessionStatus;
+  history_replay: boolean;
+}
 
 export interface SelfInitiatedTurnRequest {
   system_prompt_id: string;
@@ -15,6 +26,7 @@ export interface QueuedSelfInitiatedTurn extends SelfInitiatedTurnRequest {
 
 export class SessionManager {
   private agentSessionId: string | null = null;
+  private agentSessionStatus: ChatterAgentSessionStatus = "unbound";
   private inFlight: Map<string, ChatterInFlightTrace> = new Map();
   private selfInitiatedTurnQueue: QueuedSelfInitiatedTurn[] = [];
   private needsNew = false;
@@ -23,6 +35,10 @@ export class SessionManager {
 
   get currentSessionId(): string | null {
     return this.agentSessionId;
+  }
+
+  get currentSessionStatus(): ChatterAgentSessionStatus {
+    return this.agentSessionStatus;
   }
 
   get currentInFlightTraces(): ReadonlyArray<ChatterInFlightTrace> {
@@ -44,6 +60,7 @@ export class SessionManager {
   rehydrate(): void {
     const state = this.store.load();
     this.agentSessionId = state.agent_session_id;
+    this.agentSessionStatus = state.agent_session_status;
     this.inFlight = new Map(state.in_flight_traces.map((t) => [t.trace_id, t]));
     this.needsNew = false;
   }
@@ -56,6 +73,7 @@ export class SessionManager {
   start(): string {
     if (this.agentSessionId !== null) return this.agentSessionId;
     this.agentSessionId = randomUUID();
+    this.agentSessionStatus = "alive";
     this.needsNew = false;
     this.persist();
     return this.agentSessionId;
@@ -67,6 +85,7 @@ export class SessionManager {
    */
   bindAgentSession(threadId: string): void {
     this.agentSessionId = threadId;
+    this.agentSessionStatus = "alive";
     this.needsNew = false;
     this.persist();
   }
@@ -78,8 +97,16 @@ export class SessionManager {
    */
   unbindAgentSession(): void {
     this.agentSessionId = null;
+    this.agentSessionStatus = "restarting";
     this.inFlight.clear();
     this.selfInitiatedTurnQueue = [];
+    this.needsNew = true;
+    this.persist();
+  }
+
+  markSessionRestarting(): void {
+    this.agentSessionId = null;
+    this.agentSessionStatus = "restarting";
     this.needsNew = true;
     this.persist();
   }
@@ -89,6 +116,7 @@ export class SessionManager {
     this.inFlight.clear();
     this.selfInitiatedTurnQueue = [];
     this.agentSessionId = randomUUID();
+    this.agentSessionStatus = "alive";
     this.needsNew = false;
     this.persist();
     return { previousTraces, newSessionId: this.agentSessionId };
@@ -151,6 +179,7 @@ export class SessionManager {
 
   markSessionDead(): void {
     this.agentSessionId = null;
+    this.agentSessionStatus = "dead";
     this.inFlight.clear();
     this.selfInitiatedTurnQueue = [];
     this.needsNew = true;
@@ -167,7 +196,18 @@ export class SessionManager {
       this.markSessionDead();
       return false;
     }
+    this.agentSessionStatus = "alive";
+    this.persist();
     return true;
+  }
+
+  sessionStateFor(transcriptSessionId: string, historyReplay = false): ChatterSessionState {
+    return {
+      transcript_session_id: transcriptSessionId,
+      agent_session_id: historyReplay ? null : this.agentSessionId,
+      agent_session_status: historyReplay ? "unbound" : this.agentSessionStatus,
+      history_replay: historyReplay
+    };
   }
 
   private persist(): void {
@@ -176,6 +216,7 @@ export class SessionManager {
       ...current,
       version: 1,
       agent_session_id: this.agentSessionId,
+      agent_session_status: this.agentSessionStatus,
       in_flight_traces: [...this.inFlight.values()]
     });
   }

@@ -175,8 +175,30 @@ describe("SessionManager", () => {
       mgr.registerTrace({ trace_id: "t1", purpose: "agent_turn", agent_session_id: mgr.currentSessionId });
       mgr.markSessionDead();
       expect(mgr.currentSessionId).toBe(null);
+      expect(mgr.currentSessionStatus).toBe("dead");
       expect(mgr.currentInFlightTraces).toEqual([]);
       expect(mgr.needsNewSession).toBe(true);
+    });
+  });
+
+  describe("session state", () => {
+    it("keeps transcript and live agent thread state separate", () => {
+      mgr.bindAgentSession("claude-live-1");
+      expect(mgr.sessionStateFor("story-create-transcript-1")).toEqual({
+        transcript_session_id: "story-create-transcript-1",
+        agent_session_id: "claude-live-1",
+        agent_session_status: "alive",
+        history_replay: false
+      });
+
+      mgr.unbindAgentSession();
+      expect(mgr.sessionStateFor("story-create-transcript-2")).toEqual({
+        transcript_session_id: "story-create-transcript-2",
+        agent_session_id: null,
+        agent_session_status: "restarting",
+        history_replay: false
+      });
+      expect(store.load().agent_session_status).toBe("restarting");
     });
   });
 
@@ -194,6 +216,7 @@ describe("SessionManager", () => {
       const ok = await mgr.probeAndRecover(async () => true);
       expect(ok).toBe(true);
       expect(mgr.currentSessionId).toBe(id);
+      expect(mgr.currentSessionStatus).toBe("alive");
       expect(mgr.needsNewSession).toBe(false);
     });
 

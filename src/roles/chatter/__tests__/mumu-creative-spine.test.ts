@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { loadManifestFromFile, validateRecord } from "../manifest";
 
 const repoRoot = process.cwd();
 const mumuRoot = path.join(repoRoot, "config", "projects", "mumu");
@@ -9,6 +10,7 @@ type Artifact = {
   key: string;
   source: "fragment" | "outline";
   label: string;
+  description?: string;
 };
 
 type CreativeSpine = Record<
@@ -138,5 +140,72 @@ describe("mumu creative-spine registry", () => {
     expect(prompt).toContain("host_script");
     expect(prompt).toContain("主持照读稿");
     expect(prompt).toContain("辅助资料");
+  });
+
+  it("defines lianxian fragments as equal-weight host-caller dialogue scripts", () => {
+    const registry = JSON.parse(readProjectFile("creative-spine.json")) as CreativeSpine;
+    const createPrompt = readProjectFile("seeds/prompts/create_from_template.md");
+    const optimizePrompt = readProjectFile("seeds/prompts/optimize_from_template.md");
+    const lianxianCanonical = registry.lianxian?.canonical_artifacts[0];
+
+    expect(lianxianCanonical).toMatchObject({
+      key: "full_oral_script",
+      label: "连线对话稿"
+    });
+    expect(lianxianCanonical?.description).toContain("主播");
+    expect(lianxianCanonical?.description).toContain("连线用户");
+
+    for (const prompt of [createPrompt, optimizePrompt]) {
+      expect(prompt).toContain("主播：");
+      expect(prompt).toContain("连线用户：");
+      expect(prompt).toContain("相同权重");
+      expect(prompt).toContain("出现次数相差不超过 1");
+      expect(prompt).not.toContain("`full_oral_script` 是「照读口播」");
+    }
+  });
+
+  it("validates lianxian dialogue fragments include both speaker labels", () => {
+    const manifest = loadManifestFromFile(path.join(mumuRoot, "manifest.json"));
+    const baseRecord = {
+      id: "story-1",
+      template_id: "template-1",
+      outline: {
+        arc: "先承接连线用户的犹豫，再由主播追问和拆解，最后共同落到可执行建议。",
+        segments: [
+          {
+            no: 1,
+            type: "hook",
+            summary: "连线用户讲出困惑，主播接住情绪并追问关键事实。"
+          }
+        ]
+      }
+    };
+
+    expect(validateRecord(manifest, "story_lianxian", {
+      ...baseRecord,
+      fragments: [
+        {
+          segment_no: 1,
+          type: "full_oral_script",
+          content: "主播：你先慢慢说，最卡住你的点是什么？\n连线用户：我怕自己一心软又回去了。\n主播：那我们先把他这次回头的动机拆开。\n连线用户：我也想知道这算不算真的改变。"
+        }
+      ]
+    }).ok).toBe(true);
+
+    const hostOnly = validateRecord(manifest, "story_lianxian", {
+      ...baseRecord,
+      fragments: [
+        {
+          segment_no: 1,
+          type: "full_oral_script",
+          content: "主播：你不要急，我们先拆问题。主播：这件事的关键不是他回来，而是他为什么回来。"
+        }
+      ]
+    });
+
+    expect(hostOnly.ok).toBe(false);
+    if (!hostOnly.ok) {
+      expect(hostOnly.errors.some((error) => error.instancePath.endsWith("/content"))).toBe(true);
+    }
   });
 });

@@ -12,7 +12,7 @@
 - `style_observe_after_douyin_stories` / `story_douyin` → 观察 `story_douyin`，候选补丁写向 `style_douyin`
 - `style_observe_after_variety_stories` / `story_variety` → 观察 `story_variety`，候选补丁写向 `style_variety`
 
-不要跨 genre 混写风格档案。短剧、连线口播、抖音短视频、综艺脚本偏好必须隔离。
+不要跨 genre 混写风格档案。短剧、连线对话稿、抖音短视频、综艺脚本偏好必须隔离。
 
 ## 你的任务
 

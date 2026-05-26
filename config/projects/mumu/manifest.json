@@ -407,7 +407,9 @@
                 ]
               },
               "content": {
-                "type": "string"
+                "type": "string",
+                "description": "Backward-compatible full_oral_script field. Content must be a two-speaker lianxian dialogue script with both 主播 and 连线用户 labels.",
+                "pattern": "^(?=[\\s\\S]*主播[：:])(?=[\\s\\S]*连线用户[：:])[\\s\\S]*$"
               }
             }
           }

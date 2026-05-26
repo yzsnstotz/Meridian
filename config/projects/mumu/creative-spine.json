@@ -42,9 +42,9 @@
       {
         "key": "full_oral_script",
         "source": "fragment",
-        "label": "照读口播",
+        "label": "连线对话稿",
         "role": "canonical_performance",
-        "description": "The full oral script the user should read."
+        "description": "The equal-weight host-caller dialogue script with both 主播 and 连线用户 turns."
       }
     ],
     "planning_artifacts": [

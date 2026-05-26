@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChatterRole } from "../../definitions/chatter";
+import { ChatterStateStore } from "../chatter-state-store";
 import type { MumuMemoryGitSyncQueueLike } from "../mumu-memory-git-sync";
 import type { HubMessage, HubResult, ChatterRoleConfig, ReplyChannel } from "../../../types";
 import type { RoleContext } from "../../base-role";
@@ -239,6 +240,57 @@ describe("ChatterRole — activation + spawn handshake", () => {
     expect(run).toBeDefined();
     expect(run!.payload.content).toBe("next");
   });
+
+  it("recovers a dead bound agent thread by marking it restarting and spawning a fresh agent", async () => {
+    let failDeadRun = false;
+    const deadRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-dead-agent-")));
+    const recoveredSent: HubMessage[] = [];
+    const recoveringCtx: RoleContext = {
+      sendToHub: async (msg) => {
+        const hubMessage = msg as HubMessage;
+        if (failDeadRun && hubMessage.intent === "run" && hubMessage.target === "claude_dead") {
+          throw new Error("Routing failed: No registered agent instance found for thread_id=claude_dead");
+        }
+        recoveredSent.push(hubMessage);
+      },
+      listInstances: async () => [],
+      log: { debug() {}, info() {}, warn() {}, error() {} }
+    };
+    const recoveringRole = new ChatterRole("chatter-tenant-a", makeConfig(deadRoot));
+    await recoveringRole.onActivate(recoveringCtx);
+
+    await recoveringRole.onInboundResult(
+      makeTurnResult("first", {
+        payload: { chatter: { mode: "session", chatter_session_id: "ads-transcript-1" } }
+      })
+    );
+    const initialSpawn = recoveredSent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(recoveringRole, initialSpawn, "claude_dead");
+    recoveredSent.length = 0;
+
+    failDeadRun = true;
+    await recoveringRole.onInboundResult(
+      makeTurnResult("second", {
+        payload: { chatter: { mode: "session", chatter_session_id: "ads-transcript-1" } }
+      })
+    );
+
+    const recoveringState = new ChatterStateStore(deadRoot).load();
+    expect(recoveringState.agent_session_id).toBe(null);
+    expect(recoveringState.agent_session_status).toBe("restarting");
+    const recoverySpawn = recoveredSent.find((m) => m.intent === "spawn");
+    expect(recoverySpawn).toBeDefined();
+    expect(recoveredSent.some((m) => String(m.payload.content).includes("No registered agent instance"))).toBe(false);
+
+    failDeadRun = false;
+    await driveSpawnResponse(recoveringRole, recoverySpawn!, "claude_fresh");
+    const recoveredRun = recoveredSent.find((m) => m.intent === "run" && m.target === "claude_fresh");
+    expect(recoveredRun?.payload.content).toBe("second");
+    expect(new ChatterStateStore(deadRoot).load()).toMatchObject({
+      agent_session_id: "claude_fresh",
+      agent_session_status: "alive"
+    });
+  });
 });
 
 describe("ChatterRole — structured agent tools", () => {
@@ -463,7 +515,9 @@ describe("ChatterRole — control commands", () => {
     sent.length = 0;
 
     await role.onInboundResult(
-      makeTurnResult("reset", { payload: { chatter: { mode: "session", control: "new" } } })
+      makeTurnResult("reset", {
+        payload: { chatter: { mode: "session", chatter_session_id: "session-clean-1", control: "new" } }
+      })
     );
 
     const kill = sent.find((m) => m.intent === "kill" && m.target === "claude_07");
@@ -472,6 +526,12 @@ describe("ChatterRole — control commands", () => {
       (m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && /new session pending/i.test(m.payload.content)
     );
     expect(ack).toBeDefined();
+    expect(ack?.payload.chatter?.session_state).toEqual({
+      transcript_session_id: "session-clean-1",
+      agent_session_id: null,
+      agent_session_status: "restarting",
+      history_replay: false
+    });
   });
 
   it("/new during pending spawn is rejected (no state change)", async () => {
@@ -490,7 +550,9 @@ describe("ChatterRole — control commands", () => {
 
   it("/new before any spawn: unbinds, no kill, acks", async () => {
     await role.onInboundResult(
-      makeTurnResult("reset", { payload: { chatter: { mode: "session", control: "new" } } })
+      makeTurnResult("reset", {
+        payload: { chatter: { mode: "session", chatter_session_id: "session-clean-2", control: "new" } }
+      })
     );
     expect(sent.find((m) => m.intent === "kill")).toBeUndefined();
     expect(sent.find((m) => m.intent === "spawn")).toBeUndefined();
@@ -498,6 +560,12 @@ describe("ChatterRole — control commands", () => {
       (m) => m.reply_channel.chat_id === ADS_REPLY_CHANNEL.chat_id && /new session pending/i.test(m.payload.content)
     );
     expect(ack).toBeDefined();
+    expect(ack?.payload.chatter?.session_state).toEqual({
+      transcript_session_id: "session-clean-2",
+      agent_session_id: null,
+      agent_session_status: "restarting",
+      history_replay: false
+    });
   });
 
   it("/interrupt cancels pending spawn + clears in-flight + acks", async () => {
