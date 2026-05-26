@@ -151,6 +151,49 @@ describe("ChatterRole payload.chatter.context_refs", () => {
     expect(run.payload.content).toContain("draft episode one");
   });
 
+  it("keeps multiple pre-loaded references as non-mutating context", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-context-refs-")));
+    const manifestPath = writeStructuredManifest(root);
+    writeStructuredRecord(root, "template_short_drama", "template-abc", {
+      id: "template-abc",
+      title: "Opening Hook",
+      beats: ["cold open", "choice point"]
+    });
+    writeStructuredRecord(root, "template_short_drama", "template-def", {
+      id: "template-def",
+      title: "Evidence Reveal",
+      beats: ["hidden proof", "public reversal"]
+    });
+    const { ctx, sent } = makeCtx();
+    const role = new ChatterRole("chatter-tenant-a", makeConfig(root, manifestPath));
+    await role.onActivate(ctx);
+
+    const run = await dispatchFirstRun(role, sent, makeTurnResult("draft episode one", {
+      payload: {
+        chatter: {
+          mode: "session",
+          chatter_session_id: "ads-session-1",
+          context_refs: [
+            { type: "template_short_drama", key: "template-abc" },
+            { type: "template_short_drama", key: "template-def" }
+          ]
+        }
+      }
+    }));
+
+    expect(run.payload.content).toContain("## Pre-loaded context");
+    expect(run.payload.content).toContain("Reference-only context");
+    expect(run.payload.content).toContain("do not mutate, overwrite, delete, or write back");
+    expect(run.payload.content).toContain('"title": "Opening Hook"');
+    expect(run.payload.content).toContain('"title": "Evidence Reveal"');
+    expect(run.payload.content.indexOf("Opening Hook")).toBeLessThan(
+      run.payload.content.indexOf("Evidence Reveal")
+    );
+    expect(run.payload.content.indexOf("## Pre-loaded context")).toBeLessThan(
+      run.payload.content.indexOf("User turn:")
+    );
+  });
+
   it("injects a placeholder and logs a warning when a referenced record is missing", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-context-refs-")));
     const manifestPath = writeStructuredManifest(root);
