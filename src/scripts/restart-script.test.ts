@@ -56,8 +56,17 @@ test("rebuild_restart.sh passes reset-state through to terminate and restart onl
   assert.match(script, /restart_args=\(\)/);
   assert.match(script, /terminate_args\+=\("--reset-state"\)/);
   assert.match(script, /restart_args\+=\("--reset-state"\)/);
-  assert.match(script, /"\$\{ROOT_DIR\}\/user_scripts\/terminate\.sh" "\$\{terminate_args\[@\]\}"/);
-  assert.match(script, /"\$\{ROOT_DIR\}\/user_scripts\/restart\.sh" "\$\{restart_args\[@\]\}"/);
+  // Empty-array passthrough must use ${arr[@]+"${arr[@]}"} so macOS bash
+  // 3.2 does not raise an unbound-variable error under `set -u` when no
+  // --reset-state was supplied (regression: 2026-05-29).
+  assert.match(
+    script,
+    /"\$\{ROOT_DIR\}\/user_scripts\/terminate\.sh" \$\{terminate_args\[@\]\+"\$\{terminate_args\[@\]\}"\}/
+  );
+  assert.match(
+    script,
+    /"\$\{ROOT_DIR\}\/user_scripts\/restart\.sh" \$\{restart_args\[@\]\+"\$\{restart_args\[@\]\}"\}/
+  );
 });
 
 test("rebuild_restart_meridian_only_cold.sh invokes the meridian-only chain with reset-state", async () => {

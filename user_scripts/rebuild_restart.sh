@@ -115,10 +115,13 @@ log "Building project"
 # previous service crashed and left orphaned. terminate.sh now delegates the
 # agentapi sweep to kill_all_agentapi.sh.
 log "Terminating previous-generation services and stragglers"
-"${ROOT_DIR}/user_scripts/terminate.sh" "${terminate_args[@]}" || true
+# Use ${arr[@]+"${arr[@]}"} so an empty array does not trip `set -u` on
+# macOS bash 3.2, which treats "${arr[@]}" as an unbound expansion when
+# the array has no elements.
+"${ROOT_DIR}/user_scripts/terminate.sh" ${terminate_args[@]+"${terminate_args[@]}"} || true
 
 log "Restarting services"
-"${ROOT_DIR}/user_scripts/restart.sh" "${restart_args[@]}"
+"${ROOT_DIR}/user_scripts/restart.sh" ${restart_args[@]+"${restart_args[@]}"}
 
 if [[ -n "${MERIDIAN_REBUILD_SKIP_ROLES:-}" ]]; then
   log "Skipping meridian-roles restart (MERIDIAN_REBUILD_SKIP_ROLES set)"
