@@ -210,14 +210,6 @@ interface MonitorProgressDispatchContext {
   timestamp: string;
 }
 
-interface OutputBusDeliveryContext {
-  threadId: string;
-  source: AgentType;
-  timestamp: string;
-  replyChannels: ReplyChannel[];
-  historyBacked: boolean;
-}
-
 const PUSH_DEDUP_TAIL_CHARS = 600;
 
 export class HubServer {
@@ -237,7 +229,9 @@ export class HubServer {
   private priorityQueueDraining = false;
   private readonly lastPushDedupByThread = new Map<string, PushDedupState>();
   private readonly monitorProgressContextByTrace = new Map<string, MonitorProgressDispatchContext>();
-  private readonly outputBusDeliveryContextByTrace = new Map<string, OutputBusDeliveryContext>();
+  // Adapter delivery context now lives on OutputBus (so HubRouter streaming
+  // runs can register their own contexts too). We keep this map for the
+  // legacy `outputBusThreadByTrace` lookup path used by the websocket sink.
   private readonly outputBusThreadByTrace = new Map<string, string>();
   private readonly websocketSubscribersByThread = new Map<string, Set<net.Socket>>();
 
@@ -969,17 +963,18 @@ export class HubServer {
           targets: targetsToNotify,
           timestamp: progressSnapshot.updated_at
         });
-        this.outputBusDeliveryContextByTrace.set(traceId, {
+        this.outputBus.beginAdapterDelivery(traceId, {
           threadId,
           source: progressSnapshot.source,
           timestamp: progressSnapshot.updated_at,
           replyChannels,
-          historyBacked: false
+          historyBacked: false,
+          mode: "monitor_progress"
         });
         try {
           this.outputBus.pushSnapshot(traceId, progressSnapshot.content);
         } finally {
-          this.outputBusDeliveryContextByTrace.delete(traceId);
+          this.outputBus.endAdapterDelivery(traceId);
           this.monitorProgressContextByTrace.delete(traceId);
         }
       }
@@ -1007,8 +1002,16 @@ export class HubServer {
   }
 
   private async dispatchOutputBusDelta(traceId: string, delta: OutputDelta): Promise<void> {
-    const context = this.outputBusDeliveryContextByTrace.get(traceId);
+    const context = this.outputBus.getAdapterDeliveryContext(traceId);
     if (!context) {
+      return;
+    }
+
+    // In `"agent_stream"` mode the final `"result"` / `"error"` HubResult
+    // for this trace is delivered through the regular run-return path,
+    // so we must forward only the incremental `"working"` deltas here —
+    // otherwise the reply channel sees a duplicate final.
+    if (context.mode === "agent_stream" && delta.phase !== "working") {
       return;
     }
 
@@ -1033,7 +1036,9 @@ export class HubServer {
             bot_id: replyChannel.bot_id ?? null,
             err: error instanceof Error ? error.message : String(error)
           },
-          "Failed to deliver monitor progress update"
+          context.mode === "agent_stream"
+            ? "Failed to deliver agent stream delta"
+            : "Failed to deliver monitor progress update"
         );
       });
     }
@@ -1041,7 +1046,7 @@ export class HubServer {
 
   private dispatchOutputBusWebsocketMessage(traceId: string, message: A2AMessage): void {
     const threadId =
-      this.outputBusDeliveryContextByTrace.get(traceId)?.threadId ?? this.outputBusThreadByTrace.get(traceId) ?? null;
+      this.outputBus.getAdapterDeliveryContext(traceId)?.threadId ?? this.outputBusThreadByTrace.get(traceId) ?? null;
     if (!threadId) {
       return;
     }
@@ -1405,7 +1410,7 @@ export class HubServer {
 
   private clearPushAccumulators(): void {
     this.lastPushDedupByThread.clear();
-    this.outputBusDeliveryContextByTrace.clear();
+    this.outputBus.clearAdapterDeliveryContexts();
     this.outputBusThreadByTrace.clear();
     this.websocketSubscribersByThread.clear();
   }
