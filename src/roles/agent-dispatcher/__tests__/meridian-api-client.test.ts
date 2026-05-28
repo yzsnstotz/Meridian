@@ -186,4 +186,55 @@ describe("createMeridianApiClient", () => {
 
     await expect(client.listCredentials()).rejects.toThrow(/auth/i);
   });
+
+  it("listCredentials() skips malformed entries and keeps valid credentials usable in dropdowns", async () => {
+    process.env.MERIDIAN_INTERNAL_BOOTSTRAP_KEY = "test-bootstrap-seed";
+    const seenRequests: Array<{ url: URL; init: RequestInit }> = [];
+    const fakeList = [
+      {
+        credential_id: "cred-okay",
+        credential_label: "Good Credential",
+        provider: "codex",
+        kind: "oauth",
+        owner_caller_id: "meridian-roles",
+        is_default: false,
+        created_at: "2026-05-29T00:00:00Z"
+      },
+      {
+        // Malformed object that previously failed strict validation (`api_key_metadata`
+        // is an object but missing required fields).
+        credential_id: "cred-key",
+        credential_label: "Api-Key Credential",
+        kind: "api_key",
+        api_key_metadata: { base_url: "https://api.openai.com/v1" }
+      },
+      {
+        // Non-object rows are now ignored instead of aborting the entire list.
+        kind: "oauth",
+        provider: "codex"
+      }
+    ];
+    const httpFetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      seenRequests.push({ url: url as URL, init: init ?? {} });
+      return new Response(JSON.stringify({ credentials: fakeList }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+
+    const client = createMeridianApiClient({
+      baseUrl: "http://127.0.0.1:3000",
+      token: "web-token",
+      fetch: httpFetch as typeof fetch
+    });
+
+    const result = await client.listCredentials();
+
+    expect(seenRequests).toHaveLength(1);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.credential_id).toBe("cred-okay");
+    expect(result[1]?.credential_id).toBe("cred-key");
+    expect(result[1]?.api_key_metadata).toBeNull();
+    expect(result[1]?.credential_label).toBe("Api-Key Credential");
+  });
 });
