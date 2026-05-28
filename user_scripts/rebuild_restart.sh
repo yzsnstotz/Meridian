@@ -76,6 +76,25 @@ sync_origin_main() {
 
 sync_origin_main "$@"
 
+RESET_STATE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset-state)
+      RESET_STATE=1
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: ./user_scripts/rebuild_restart.sh [--reset-state]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: ./user_scripts/rebuild_restart.sh [--reset-state]" >&2
+      exit 1
+      ;;
+  esac
+done
+
 for env_file in "$ROOT_DIR/.env" "$ROOT_DIR/.env.local"; do
   if [[ -f "$env_file" ]]; then
     set -a
@@ -107,6 +126,29 @@ export HUB_SOCKET_PATH
 if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
   export MERIDIAN_INTERNAL_BOOTSTRAP_KEY
 fi
+
+resolve_state_file_path() {
+  if [[ -n "${STATE_FILE_PATH:-}" ]]; then
+    printf '%s\n' "${STATE_FILE_PATH}"
+    return 0
+  fi
+
+  local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+  printf '%s\n' "${state_home}/meridian-roles/state.json"
+}
+
+reset_roles_state() {
+  local state_path legacy_state_path
+  state_path="$(resolve_state_file_path)"
+  legacy_state_path="/tmp/meridian-roles/state.json"
+
+  echo "Resetting meridian-roles state: ${state_path}"
+  rm -f "${state_path}" 2>/dev/null || true
+  if [[ "${state_path}" != "${legacy_state_path}" ]]; then
+    echo "Resetting legacy meridian-roles state: ${legacy_state_path}"
+    rm -f "${legacy_state_path}" 2>/dev/null || true
+  fi
+}
 
 shell_escape() {
   printf '%q' "$1"
@@ -369,6 +411,11 @@ kill_repo_port_listeners
 
 echo "Cleaning stale socket: ${ROLES_SOCKET_PATH}"
 rm -f "${ROLES_SOCKET_PATH}" 2>/dev/null || true
+if [[ "${RESET_STATE}" -eq 1 ]]; then
+  reset_roles_state
+else
+  echo "Preserving meridian-roles state: $(resolve_state_file_path)"
+fi
 
 # Install / refresh node_modules. The Maintenance Hub "Rebuild & restart"
 # button at http://127.0.0.1:8765/ is the entry point operators use after a
