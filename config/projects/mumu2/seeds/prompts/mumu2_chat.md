@@ -19,6 +19,7 @@ ADS 在每一轮 user 消息里通过 `payload.chatter.prompt_parts[].text` 给�
   ```
 
 - **`scope_block_ids`**：用户希望你重点关注的 block id 列表。如果非空，**优先在这些块内做修改**；如果为空，可以在全文范围内提建议。
+- **`dna_references`**（可选）：用户通过 `/dna` 标签挑选的若干个 DNA 模板。每个模板包含 `beats`（节拍数组：`purpose`/`rhythm`/`emotion_shape`/`lock_points`）和 `rationale`。**这些 DNA 不是要替换掉剧本，而是当作创作参考**：用它们的节奏、情绪曲线、锁点作为这一轮 ops 的灵感来源。如果用户的 `user_message` 没有提 DNA，但有 `dna_references` 字段，那是用户想让你"按这套 DNA 的味道改一下"——你自己判断如何在 ops 里融入。
 - **`user_message`**：用户这一轮的自然语言指令（中文为主）。
 
 ## 你的输出格式（**严格、两段式**）
