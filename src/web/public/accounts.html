@@ -307,6 +307,17 @@
           <input id="oauth-label-input" type="text" placeholder="e.g. work-codex" maxlength="64" autocomplete="off" />
           <div id="oauth-label-error" class="field-error"></div>
         </div>
+        <div class="field">
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; cursor:pointer">
+            <input id="oauth-mode-headless" type="checkbox" style="margin-top:0.2rem" />
+            <span>
+              <strong>Headless (device code)</strong>
+              <span style="display:block; color: var(--text-dim); font-size: 0.8rem; margin-top: 0.15rem">
+                Use when this server can't open a browser callback to itself — e.g. Meridian deployed on a remote box (AWS, VPS). The hub will show a code; enter it on any device that can browse the web.
+              </span>
+            </span>
+          </label>
+        </div>
       </div>
 
       <div id="oauth-status-block" style="display:none">
@@ -321,6 +332,16 @@
               <button type="button" id="oauth-copy-url" class="btn btn-small">Copy</button>
               <a id="oauth-open-url" class="btn btn-small" target="_blank" rel="noopener noreferrer">Open</a>
             </div>
+          </div>
+          <div id="oauth-code-block" style="display:none; margin-top:0.5rem">
+            <div class="login-url-box">
+              <strong style="margin-right:0.25rem">Code:</strong>
+              <code id="oauth-user-code" style="font-size:1.05rem; letter-spacing:0.05em"></code>
+              <button type="button" id="oauth-copy-code" class="btn btn-small">Copy</button>
+            </div>
+            <p style="margin:0.4rem 0 0; color: var(--text-dim); font-size: 0.8rem;">
+              Open the URL above on any device, sign in, and enter this code. The hub will detect the login automatically.
+            </p>
           </div>
           <details id="oauth-log-details" style="display:none; margin-top:0.5rem">
             <summary>Show details</summary>

@@ -2,7 +2,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { CredentialStore, OAuthSlot } from "./credential-store";
-import { extractCodexLoginUrl } from "./oauth-url-extract";
+import { extractCodexDeviceCode, extractCodexLoginUrl } from "./oauth-url-extract";
 
 export type OAuthLoginStatus =
   | "pending"
@@ -12,12 +12,22 @@ export type OAuthLoginStatus =
   | "cancelled"
   | "timeout";
 
+export type OAuthLoginMode = "browser" | "device";
+
 export interface OAuthLoginJobOptions {
   credentialStore: CredentialStore;
   owner_caller_id: string;
   credential_label: string;
   codexLoginCommand?: string;
   codexLoginArgs?: string[];
+  /**
+   * "browser" (default): codex prints a localhost callback URL and runs a
+   * loopback listener; this only works when the user's browser can reach the
+   * codex process. "device": codex prints a verification URL + short user
+   * code and polls the IdP — works headlessly, including when the hub is
+   * deployed on a remote box (AWS, etc.) the user's browser can't reach.
+   */
+  mode?: OAuthLoginMode;
   timeoutMs?: number;
   urlCaptureWindowMs?: number;
   /**
@@ -46,6 +56,14 @@ export class OAuthLoginJob {
   public error_code: string | null = null;
   public error_message: string | null = null;
   public readonly logBuffer: string[] = [];
+  /**
+   * Device-flow output. Both fields stay null in browser mode. `login_url` is
+   * also mirrored to `verification_uri` so existing UI / poll consumers that
+   * only look at `login_url` keep showing a usable URL in device mode.
+   */
+  public mode: OAuthLoginMode = "browser";
+  public user_code: string | null = null;
+  public verification_uri: string | null = null;
 
   private readonly opts: Required<OAuthLoginJobOptions>;
   private slot: OAuthSlot | null = null;
@@ -87,11 +105,13 @@ export class OAuthLoginJob {
       credential_label: opts.credential_label,
       codexLoginCommand: opts.codexLoginCommand ?? "codex",
       codexLoginArgs: opts.codexLoginArgs ?? ["login"],
+      mode: opts.mode ?? "browser",
       timeoutMs: opts.timeoutMs ?? 10 * 60 * 1000,
       urlCaptureWindowMs: opts.urlCaptureWindowMs ?? 30_000,
       pollIntervalMs: opts.pollIntervalMs ?? 500,
       urlCaptureRetries: opts.urlCaptureRetries ?? 2
     };
+    this.mode = this.opts.mode;
   }
 
   /**
@@ -150,7 +170,15 @@ export class OAuthLoginJob {
       this.appendLog(`[retry ${this.attemptCount}/${this.opts.urlCaptureRetries + 1}] respawning codex login`);
     }
 
-    const thisChild = spawn(this.opts.codexLoginCommand, this.opts.codexLoginArgs, {
+    // Device mode flips on `codex login --device-auth`. Tests / advanced callers
+    // can pre-include the flag; don't duplicate it if so.
+    const baseArgs = this.opts.codexLoginArgs;
+    const argv =
+      this.opts.mode === "device" && !baseArgs.includes("--device-auth")
+        ? [...baseArgs, "--device-auth"]
+        : baseArgs;
+
+    const thisChild = spawn(this.opts.codexLoginCommand, argv, {
       env: { ...process.env, CODEX_HOME: this.slot.codex_home },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -158,9 +186,19 @@ export class OAuthLoginJob {
 
     const tryExtractFromBuffer = (combined: string) => {
       if (this.login_url) return;
-      const url = extractCodexLoginUrl(combined);
-      if (!url) return;
-      this.login_url = url;
+      if (this.opts.mode === "device") {
+        const dc = extractCodexDeviceCode(combined);
+        if (!dc) return;
+        this.verification_uri = dc.verification_uri;
+        this.user_code = dc.user_code;
+        // Mirror onto login_url so existing UI / poll consumers that only
+        // look at login_url still get a usable URL in device mode.
+        this.login_url = dc.verification_uri;
+      } else {
+        const url = extractCodexLoginUrl(combined);
+        if (!url) return;
+        this.login_url = url;
+      }
       this.expires_at = new Date(Date.now() + this.opts.timeoutMs).toISOString();
       if (this.status === "pending") this.status = "awaiting_browser";
     };

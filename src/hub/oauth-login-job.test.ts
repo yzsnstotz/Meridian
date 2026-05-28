@@ -562,3 +562,81 @@ test("TIMEOUT: timeoutMs while awaiting_browser flips to timeout", async () => {
     else process.env.FAKE_CODEX_DELAY_MS = prev;
   }
 });
+
+test("DEVICE MODE: job captures verification_uri + user_code and appends --device-auth", async () => {
+  // The fake codex fixture switches to device-code banner output when it sees
+  // `--device-auth` in argv. We pass mode="device" with empty args; the job
+  // should append the flag, capture both the URL and the code, mirror the URL
+  // onto login_url for back-compat, and complete normally once auth.json is
+  // written.
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-device-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const job = new OAuthLoginJob({
+    credentialStore: store,
+    owner_caller_id: "c1",
+    credential_label: "headless",
+    codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+    codexLoginArgs: [],
+    mode: "device",
+    timeoutMs: 10_000,
+    urlCaptureWindowMs: 5_000
+  });
+  await job.start();
+
+  for (let i = 0; i < 100; i++) {
+    if (job.status === "awaiting_browser") break;
+    await wait(50);
+  }
+  assert.equal(job.status, "awaiting_browser");
+  assert.equal(job.mode, "device");
+  assert.equal(job.verification_uri, "https://auth.openai.com/codex/device");
+  assert.equal(job.user_code, "FAKE-CODE1");
+  // login_url is mirrored for back-compat with consumers that only look at it.
+  assert.equal(job.login_url, "https://auth.openai.com/codex/device");
+
+  for (let i = 0; i < 200; i++) {
+    if ((job.status as OAuthLoginStatus) === "completed") break;
+    await wait(50);
+  }
+  assert.equal(job.status, "completed");
+  assert.ok(job.credential_id);
+});
+
+test("DEVICE MODE: explicit --device-auth in args is not duplicated", () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-dedup-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const job = new OAuthLoginJob({
+    credentialStore: store,
+    owner_caller_id: "c1",
+    credential_label: "x",
+    codexLoginArgs: ["login", "--device-auth"],
+    mode: "device"
+  });
+  const opts = (job as unknown as { opts: { codexLoginArgs: string[] } }).opts;
+  assert.deepEqual(opts.codexLoginArgs, ["login", "--device-auth"]);
+});
+
+test("BROWSER MODE (default): no --device-auth, no user_code", async () => {
+  // Sanity: default behavior unchanged when mode is omitted.
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "oauth-job-browser-"));
+  const store = new CredentialStore({ initialRecords: [], credentialsRoot: tmpdir });
+  const job = new OAuthLoginJob({
+    credentialStore: store,
+    owner_caller_id: "c1",
+    credential_label: "browser",
+    codexLoginCommand: path.resolve("tests/fixtures/fake-codex-login.sh"),
+    codexLoginArgs: [],
+    timeoutMs: 5_000,
+    urlCaptureWindowMs: 3_000
+  });
+  await job.start();
+  for (let i = 0; i < 100; i++) {
+    if (job.status === "awaiting_browser") break;
+    await wait(50);
+  }
+  assert.equal(job.status, "awaiting_browser");
+  assert.equal(job.mode, "browser");
+  assert.equal(job.login_url, "https://chatgpt.com/auth/test");
+  assert.equal(job.user_code, null);
+  assert.equal(job.verification_uri, null);
+});

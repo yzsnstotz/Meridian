@@ -2,10 +2,14 @@
 # Fake `codex login` used by OAuthLoginJob integration tests.
 # Honors env vars (all optional):
 #   FAKE_CODEX_URL           — URL to emit on stdout. Default: https://chatgpt.com/auth/test
+#                              (in device mode, defaults to https://auth.openai.com/codex/device)
 #   FAKE_CODEX_URL_DELAY_MS  — ms to wait before printing URL. Default: 0
 #   FAKE_CODEX_DELAY_MS      — ms to wait before writing auth.json. Default: 200
 #   FAKE_CODEX_FAIL          — if non-empty, exit 1 BEFORE writing auth.json
 #   FAKE_CODEX_NO_URL        — if non-empty, skip printing the URL entirely
+#   FAKE_CODEX_CODE          — user code to emit in device mode. Default: FAKE-CODE1
+# Switches based on argv: if any argument is `--device-auth`, prints the
+# device-code style banner (URL + user code) instead of a single URL.
 # Writes auth.json into $CODEX_HOME (which must be set by the caller).
 
 set -e
@@ -15,7 +19,20 @@ if [[ -z "${CODEX_HOME:-}" ]]; then
   exit 2
 fi
 
-URL="${FAKE_CODEX_URL:-https://chatgpt.com/auth/test}"
+DEVICE_MODE=0
+for arg in "$@"; do
+  if [[ "$arg" == "--device-auth" ]]; then
+    DEVICE_MODE=1
+    break
+  fi
+done
+
+if [[ "$DEVICE_MODE" -eq 1 ]]; then
+  URL="${FAKE_CODEX_URL:-https://auth.openai.com/codex/device}"
+else
+  URL="${FAKE_CODEX_URL:-https://chatgpt.com/auth/test}"
+fi
+CODE="${FAKE_CODEX_CODE:-FAKE-CODE1}"
 URL_DELAY_MS="${FAKE_CODEX_URL_DELAY_MS:-0}"
 DELAY_MS="${FAKE_CODEX_DELAY_MS:-200}"
 
@@ -26,7 +43,19 @@ if [[ "$URL_DELAY_MS" -gt 0 ]]; then
 fi
 
 if [[ -z "${FAKE_CODEX_NO_URL:-}" ]]; then
-  if [[ -n "${FAKE_CODEX_FRAGMENT_URL:-}" ]]; then
+  if [[ "$DEVICE_MODE" -eq 1 ]]; then
+    cat <<EOF
+Follow these steps to sign in with ChatGPT using device code authorization:
+
+1. Open this link in your browser and sign in to your account
+   $URL
+
+2. Enter this one-time code (expires in 15 minutes)
+   $CODE
+
+Device codes are a common phishing target. Never share this code.
+EOF
+  elif [[ -n "${FAKE_CODEX_FRAGMENT_URL:-}" ]]; then
     # Emit the URL in two writes with no newline between them, to reproduce
     # the production failure mode where a `data` event chunk boundary fell
     # inside the URL string and the per-line extractor never saw a complete
