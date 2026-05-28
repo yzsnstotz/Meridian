@@ -1012,7 +1012,29 @@ export class HubServer {
     // so we must forward only the incremental `"working"` deltas here —
     // otherwise the reply channel sees a duplicate final.
     if (context.mode === "agent_stream" && delta.phase !== "working") {
+      this.log.info(
+        {
+          trace_id: traceId,
+          thread_id: context.threadId,
+          phase: delta.phase,
+          text_len: delta.text?.length ?? 0
+        },
+        "mumu2 streaming: skipping non-working phase delta"
+      );
       return;
+    }
+
+    if (context.mode === "agent_stream") {
+      this.log.info(
+        {
+          trace_id: traceId,
+          thread_id: context.threadId,
+          text_len: delta.text?.length ?? 0,
+          target: context.replyChannels[0]?.chat_id ?? "unknown",
+          socket: context.replyChannels[0]?.socket_path ?? "unknown"
+        },
+        "mumu2 streaming: dispatching delta"
+      );
     }
 
     const result = HubResultSchema.parse({
