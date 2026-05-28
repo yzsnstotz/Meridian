@@ -25,6 +25,25 @@ describe("user_scripts/rebuild_restart.sh", () => {
     expect(buildIndex).toBeLessThan(startIndex);
   });
 
+  it("supports explicit reset-state for cold maintenance restarts", async () => {
+    const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart.sh"), "utf8");
+
+    expect(script).toContain("RESET_STATE=0");
+    expect(script).toContain("--reset-state");
+    expect(script).toContain("reset_roles_state()");
+    expect(script).toContain("resolve_state_file_path()");
+    expect(script).toContain("STATE_FILE_PATH");
+    expect(script).toContain("/tmp/meridian-roles/state.json");
+    expect(script).toContain("Resetting meridian-roles state");
+    expect(script).toContain("Preserving meridian-roles state");
+  });
+
+  it("provides a cold wrapper for Maintenance Hub cold reset buttons", async () => {
+    const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart_cold.sh"), "utf8");
+
+    expect(script).toContain('exec "${ROOT_DIR}/user_scripts/rebuild_restart.sh" --reset-state');
+  });
+
   it("exports and health-checks the Meridian Hub socket before declaring roles healthy", async () => {
     const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart.sh"), "utf8");
 
