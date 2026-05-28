@@ -827,6 +827,23 @@ export class ChatterRole implements BaseRole {
   }
 
   private async onAgentTurnResponse(result: HubResult): Promise<void> {
+    // Streaming partial: forward the prose half through the
+    // user_reply_channel as status:"partial" so the UI can render the
+    // agent's natural-language reply incrementally. Skip everything from
+    // [OPS_JSON] onward — that's structured ops still being typed.
+    // Partials don't clear the trace (final lands later).
+    if (result.status === "partial" && this.isMumu2UserReplyChannel()) {
+      const proseSoFar = this.extractMumu2PartialProse(result.content);
+      if (proseSoFar.length > 0) {
+        await this.deliverChatterReply(
+          proseSoFar,
+          { ...(result.payload?.chatter ?? {}) },
+          "partial"
+        );
+      }
+      return;
+    }
+
     const trace = this.sessionMgr!.getTrace(result.trace_id);
     if (trace?.chatter_session_id) {
       const fallback = await this.applyAgentStructuredFallback(result.content, result.payload?.chatter);
@@ -914,6 +931,31 @@ export class ChatterRole implements BaseRole {
   private isMumuUserReplyChannel(): boolean {
     const replyChannel = this.config.user_reply_channel;
     return replyChannel.channel === "socket" && replyChannel.chat_id.startsWith("ads:mumu:");
+  }
+
+  /**
+   * mumu2 wires a *different* socket from legacy mumu (chat_id pattern
+   * `ads:mumu2:<user>`). mumu2's reply parser does not use the
+   * `<<<MUMU-USER-REPLY>>>` markers — it parses a two-section format
+   * (prose + [OPS_JSON] + JSON ops). For partial deltas we forward the
+   * prose only (everything before [OPS_JSON]) so the UI streams natural
+   * language instead of a half-formed JSON.
+   */
+  private isMumu2UserReplyChannel(): boolean {
+    const replyChannel = this.config.user_reply_channel;
+    return replyChannel.channel === "socket" && replyChannel.chat_id.startsWith("ads:mumu2:");
+  }
+
+  /**
+   * Pull the prose half out of a streaming buffer. The chatter agent's
+   * mumu2 system prompt requires output of the form
+   *   <prose>\n[OPS_JSON]\n{...}
+   * so we stop forwarding at the first occurrence of the sentinel. If
+   * the sentinel hasn't arrived yet, the whole buffer IS prose.
+   */
+  private extractMumu2PartialProse(rawBuffer: string): string {
+    const sentinelIdx = rawBuffer.indexOf("[OPS_JSON]");
+    return (sentinelIdx >= 0 ? rawBuffer.slice(0, sentinelIdx) : rawBuffer).trimEnd();
   }
 
   private async writeAssistantTurnToMemory(
