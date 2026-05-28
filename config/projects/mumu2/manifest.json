@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "layers": "flat",
+  "index": "none",
+  "bindings": {
+    "conversation_log": "turns/<turn_id>.md"
+  },
+  "sandbox_roots": [
+    {
+      "root": "/data/mumu2/users/{user_id}",
+      "mode": "rw"
+    },
+    {
+      "root": "/etc/meridian-roles/projects/mumu2/seeds",
+      "mode": "ro"
+    }
+  ],
+  "system_prompts": {
+    "mumu2_chat": { "prompt_path": "seeds/prompts/mumu2_chat.md" },
+    "mumu2_abstract": { "prompt_path": "seeds/prompts/mumu2_abstract.md" }
+  }
+}

@@ -4,6 +4,7 @@ dist/
 *.js.map
 .env
 .env.local
+.env.bak*
 .meridian_n02/.env
 .DS_Store
 AGENT.md
