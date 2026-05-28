@@ -2,6 +2,7 @@ import type { A2AAdapterLike, A2AMessage } from "../shared/a2a-adapter";
 import { DefaultA2AAdapter } from "../shared/a2a-adapter";
 import { DiffEngine } from "../shared/diff-engine";
 import type { OutputDelta } from "../shared/stream-adapter";
+import type { AgentType, ReplyChannel } from "../types";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -23,6 +24,29 @@ export interface OutputBusOptions {
   adapterOutput?: OutputBusDispatchSink;
   websocketOutput?: OutputBusDispatchSink;
   recordOutput?: OutputBusRecordHook;
+}
+
+/**
+ * Tells `dispatchOutputBusDelta` (in HubServer) where to forward each delta
+ * for a given trace_id. Registered by whichever subsystem owns the trace —
+ * the monitor-progress poller for `"monitor_progress"`, and HubRouter's
+ * streaming runs for `"agent_stream"`. Cleared in a `finally` once the run
+ * (or snapshot) ends so dispatchOutputBusDelta short-circuits afterward.
+ */
+export interface OutputBusDeliveryContext {
+  threadId: string;
+  source: AgentType;
+  timestamp: string;
+  replyChannels: ReplyChannel[];
+  historyBacked: boolean;
+  /**
+   * `"monitor_progress"` (default for back-compat) forwards every delta as
+   * a HubResult to the reply channel. `"agent_stream"` forwards only
+   * `"working"`-phase deltas — the final `"result"` / `"error"` HubResult
+   * for that trace already flows through the run-return path, so we must
+   * not double-emit it here.
+   */
+  mode?: "monitor_progress" | "agent_stream";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -100,6 +124,12 @@ export class OutputBus {
   private adapterOutput: OutputBusDispatchSink | null;
   private websocketOutput: OutputBusDispatchSink | null;
   private recordOutput: OutputBusRecordHook | null;
+  /**
+   * Per-trace delivery context. Mutated by `beginAdapterDelivery` /
+   * `endAdapterDelivery`. The HubServer's `dispatchOutputBusDelta` sink
+   * reads from here to decide where (and whether) to forward a delta.
+   */
+  private readonly deliveryContextByTrace = new Map<string, OutputBusDeliveryContext>();
 
   constructor(options: OutputBusOptions = {}) {
     this.diffEngine = options.diffEngine ?? new DiffEngine();
@@ -107,6 +137,26 @@ export class OutputBus {
     this.adapterOutput = options.adapterOutput ?? null;
     this.websocketOutput = options.websocketOutput ?? null;
     this.recordOutput = options.recordOutput ?? null;
+  }
+
+  /** Register a delivery target for `traceId`. Idempotent overwrite. */
+  beginAdapterDelivery(traceId: string, ctx: OutputBusDeliveryContext): void {
+    this.deliveryContextByTrace.set(traceId, ctx);
+  }
+
+  /** Drop the delivery target for `traceId`. No-op if absent. */
+  endAdapterDelivery(traceId: string): void {
+    this.deliveryContextByTrace.delete(traceId);
+  }
+
+  /** Lookup, used by the HubServer dispatch sink. */
+  getAdapterDeliveryContext(traceId: string): OutputBusDeliveryContext | undefined {
+    return this.deliveryContextByTrace.get(traceId);
+  }
+
+  /** Drop everything — used by HubServer.close so we don't leak entries. */
+  clearAdapterDeliveryContexts(): void {
+    this.deliveryContextByTrace.clear();
   }
 
   setAdapterOutput(sink: OutputBusDispatchSink | null | undefined): void {

@@ -1039,6 +1039,29 @@ export class HubRouter {
 
     this.registry.setStatus(threadId, "running");
 
+    // mumu2 streaming: when a chatter role drives an agent run on behalf
+    // of a mumu2 user (its thread_id pattern is `chatter-mumu2-user-*`),
+    // register an OutputBus delivery context for this trace so each
+    // `"working"`-phase token delta is forwarded as `status:"partial"`
+    // HubResult down `message.reply_channel` (= ROLES_SOCKET, where the
+    // chatter role's onInboundResult picks them up). The final
+    // `"result"` / `"error"` delta is filtered out in
+    // `HubServer.dispatchOutputBusDelta` for `mode:"agent_stream"` so we
+    // don't duplicate the run-return final.
+    const isMumu2ChatterRun = threadId.startsWith("chatter-mumu2-user-");
+    let streamingDeliveryActive = false;
+    if (isMumu2ChatterRun) {
+      this.outputBus.beginAdapterDelivery(message.trace_id, {
+        threadId,
+        source: instance.agent_type,
+        timestamp: this.now().toISOString(),
+        replyChannels: [message.reply_channel],
+        historyBacked: false,
+        mode: "agent_stream"
+      });
+      streamingDeliveryActive = true;
+    }
+
     try {
       const spawnedAgent = this.instanceManager.spawnStreamAgent(
         threadId,
@@ -1101,6 +1124,9 @@ export class HubRouter {
       }
       throw error;
     } finally {
+      if (streamingDeliveryActive) {
+        this.outputBus.endAdapterDelivery(message.trace_id);
+      }
       if (process && process.exitCode === null && process.signalCode === null) {
         process.kill();
       }
