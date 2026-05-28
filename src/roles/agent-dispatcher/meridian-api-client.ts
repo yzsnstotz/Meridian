@@ -229,7 +229,9 @@ export function createMeridianApiClient(options: MeridianApiClientOptions = {}):
         );
       }
 
-      return raw.map((entry, index) => parseCredentialSummary(entry, index));
+      return raw
+        .map((entry) => parseCredentialSummary(entry))
+        .filter((entry): entry is MeridianCredentialSummary => entry !== null);
     }
   };
 }
@@ -519,39 +521,21 @@ async function getMeridianJson(
   return parsedBody;
 }
 
-function parseCredentialSummary(entry: unknown, index: number): MeridianCredentialSummary {
+function parseCredentialSummary(entry: unknown): MeridianCredentialSummary | null {
   if (!isPlainObject(entry)) {
-    throw new MeridianApiError(
-      `listCredentials failed: credentials[${index}] is not an object`
-    );
+    return null;
   }
-  const credential_id = readStringField(entry, "credential_id");
-  const credential_label = readStringField(entry, "credential_label");
-  const provider = readStringField(entry, "provider");
-  const kindRaw = entry.kind;
-  const owner_caller_id = readStringField(entry, "owner_caller_id");
-  const created_at = readStringField(entry, "created_at");
 
+  const credential_id = readStringField(entry, "credential_id");
   if (!credential_id) {
-    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing credential_id`);
+    return null;
   }
-  if (!credential_label) {
-    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing credential_label`);
-  }
-  if (!provider) {
-    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing provider`);
-  }
-  if (kindRaw !== "oauth" && kindRaw !== "api_key") {
-    throw new MeridianApiError(
-      `listCredentials failed: credentials[${index}] has invalid kind '${String(kindRaw)}'`
-    );
-  }
-  if (!owner_caller_id) {
-    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing owner_caller_id`);
-  }
-  if (!created_at) {
-    throw new MeridianApiError(`listCredentials failed: credentials[${index}] missing created_at`);
-  }
+
+  const credential_label = readStringField(entry, "credential_label") ?? credential_id;
+  const provider = readStringField(entry, "provider") ?? "";
+  const kindRaw = entry.kind;
+  const owner_caller_id = readStringField(entry, "owner_caller_id") ?? "";
+  const created_at = readStringField(entry, "created_at") ?? "";
 
   const is_default = entry.is_default === true;
   const last_used_at = typeof entry.last_used_at === "string" && entry.last_used_at.trim().length > 0
@@ -566,23 +550,18 @@ function parseCredentialSummary(entry: unknown, index: number): MeridianCredenti
     const base_url = readStringField(entry.api_key_metadata, "base_url");
     const model_id = readStringField(entry.api_key_metadata, "model_id");
     const env_var = readStringField(entry.api_key_metadata, "env_var");
-    if (!base_url || !model_id || !env_var) {
-      throw new MeridianApiError(
-        `listCredentials failed: credentials[${index}] api_key_metadata missing required fields`
-      );
+    if (base_url && model_id && env_var) {
+      api_key_metadata = { base_url, model_id, env_var };
     }
-    api_key_metadata = { base_url, model_id, env_var };
   } else if (entry.api_key_metadata !== null && entry.api_key_metadata !== undefined) {
-    throw new MeridianApiError(
-      `listCredentials failed: credentials[${index}] api_key_metadata must be object or null`
-    );
+    return null;
   }
 
   return {
     credential_id,
     credential_label,
     provider,
-    kind: kindRaw,
+    kind: kindRaw === "api_key" ? "api_key" : "oauth",
     owner_caller_id,
     is_default,
     created_at,
