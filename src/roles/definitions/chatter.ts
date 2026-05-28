@@ -163,6 +163,20 @@ export class ChatterRole implements BaseRole {
    */
   private pendingTurns: QueuedTurn[] = [];
 
+  /**
+   * mumu2 streaming: per-trace running buffer of Codex stdout content.
+   * Each `status:"partial"` HubResult arrives with the NEW incremental
+   * `delta.text` chunk in `result.content` (see meridian-hub
+   * `dispatchOutputBusDelta`). We accumulate the buffer here, extract
+   * the prose-half before `[OPS_JSON]`, and forward only the NEW prose
+   * suffix to the mumu2 `user_reply_channel` so the UI sees incremental
+   * chars without double-emitting. Cleared on the final HubResult.
+   */
+  private readonly mumu2StreamBufferByTrace = new Map<
+    string,
+    { full: string; lastProseLen: number }
+  >();
+
   constructor(
     threadId: string,
     config: ChatterRoleConfig,
@@ -827,21 +841,35 @@ export class ChatterRole implements BaseRole {
   }
 
   private async onAgentTurnResponse(result: HubResult): Promise<void> {
-    // Streaming partial: forward the prose half through the
-    // user_reply_channel as status:"partial" so the UI can render the
-    // agent's natural-language reply incrementally. Skip everything from
-    // [OPS_JSON] onward — that's structured ops still being typed.
-    // Partials don't clear the trace (final lands later).
+    // Streaming partial: each `result.content` carries the NEW incremental
+    // chunk of Codex stdout. Accumulate per-trace, extract prose up to
+    // `[OPS_JSON]`, and forward only the new prose-suffix as a partial
+    // frame to `user_reply_channel`. Partials don't clear the trace —
+    // the final HubResult lands later and runs the normal path.
     if (result.status === "partial" && this.isMumu2UserReplyChannel()) {
-      const proseSoFar = this.extractMumu2PartialProse(result.content);
-      if (proseSoFar.length > 0) {
+      const buf = this.mumu2StreamBufferByTrace.get(result.trace_id) ?? {
+        full: "",
+        lastProseLen: 0
+      };
+      buf.full += result.content ?? "";
+      const proseSoFar = this.extractMumu2PartialProse(buf.full);
+      if (proseSoFar.length > buf.lastProseLen) {
+        const proseIncrement = proseSoFar.slice(buf.lastProseLen);
+        buf.lastProseLen = proseSoFar.length;
+        this.mumu2StreamBufferByTrace.set(result.trace_id, buf);
         await this.deliverChatterReply(
-          proseSoFar,
+          proseIncrement,
           { ...(result.payload?.chatter ?? {}) },
           "partial"
         );
+      } else {
+        this.mumu2StreamBufferByTrace.set(result.trace_id, buf);
       }
       return;
+    }
+    // Final landed — drop the streaming buffer for this trace.
+    if (this.isMumu2UserReplyChannel()) {
+      this.mumu2StreamBufferByTrace.delete(result.trace_id);
     }
 
     const trace = this.sessionMgr!.getTrace(result.trace_id);
