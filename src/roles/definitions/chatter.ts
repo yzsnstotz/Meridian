@@ -853,6 +853,15 @@ export class ChatterRole implements BaseRole {
       };
       buf.full += result.content ?? "";
       const proseSoFar = this.extractMumu2PartialProse(buf.full);
+      this.ctx?.log.info("mumu2 streaming chatter: partial received", {
+        chatter_id: this.config.chatter_id,
+        trace_id: result.trace_id,
+        chunk_len: (result.content ?? "").length,
+        full_buf_len: buf.full.length,
+        prose_so_far_len: proseSoFar.length,
+        last_prose_len: buf.lastProseLen,
+        reply_channel: this.config.user_reply_channel.chat_id
+      });
       if (proseSoFar.length > buf.lastProseLen) {
         const proseIncrement = proseSoFar.slice(buf.lastProseLen);
         buf.lastProseLen = proseSoFar.length;
@@ -866,6 +875,14 @@ export class ChatterRole implements BaseRole {
         this.mumu2StreamBufferByTrace.set(result.trace_id, buf);
       }
       return;
+    }
+    if (this.isMumu2UserReplyChannel() && result.status !== "partial") {
+      this.ctx?.log.info("mumu2 streaming chatter: final received (not partial)", {
+        chatter_id: this.config.chatter_id,
+        trace_id: result.trace_id,
+        status: result.status,
+        content_len: (result.content ?? "").length
+      });
     }
     // Final landed — drop the streaming buffer for this trace.
     if (this.isMumu2UserReplyChannel()) {
