@@ -1067,25 +1067,6 @@ export class HubRouter {
         mode: "agent_stream"
       });
       streamingDeliveryActive = true;
-      this.log.info(
-        {
-          trace_id: message.trace_id,
-          thread_id: message.thread_id,
-          agent_thread_id: threadId,
-          reply_channel: message.reply_channel.chat_id,
-          reply_socket: message.reply_channel.socket_path ?? null
-        },
-        "mumu2 streaming: registered adapter delivery"
-      );
-    } else {
-      this.log.info(
-        {
-          trace_id: message.trace_id,
-          thread_id: message.thread_id,
-          agent_thread_id: threadId
-        },
-        "mumu2 streaming: gate did NOT fire (thread_id doesn't start with chatter-mumu2-user-)"
-      );
     }
 
     try {
