@@ -255,7 +255,7 @@ test("HubServer streams A2A output bus messages to subscribed sockets", async ()
     },
     async route(message: HubMessage): Promise<HubResult> {
       routed = true;
-      outputBus.pushDelta(message.trace_id, {
+      await outputBus.pushDelta(message.trace_id, {
         traceId: message.trace_id,
         phase: "working",
         text: liveText,

@@ -1039,20 +1039,27 @@ export class HubRouter {
 
     this.registry.setStatus(threadId, "running");
 
-    // mumu2 streaming: when a chatter role drives an agent run on behalf
-    // of a mumu2 user (its thread_id pattern is `chatter-mumu2-user-*`),
-    // register an OutputBus delivery context for this trace so each
-    // `"working"`-phase token delta is forwarded as `status:"partial"`
-    // HubResult down `message.reply_channel` (= ROLES_SOCKET, where the
-    // chatter role's onInboundResult picks them up). The final
-    // `"result"` / `"error"` delta is filtered out in
-    // `HubServer.dispatchOutputBusDelta` for `mode:"agent_stream"` so we
-    // don't duplicate the run-return final.
-    const isMumu2ChatterRun = threadId.startsWith("chatter-mumu2-user-");
+    // mumu2 streaming: a chatter role driving an agent run identifies
+    // itself via `message.thread_id` (the OUTBOUND HubMessage's thread_id
+    // is the chatter's own — `chatter-mumu2-user-*`). The resolved local
+    // `threadId` here is the agent process (codex/claude/gemini) thread
+    // which is NOT what we want to gate on, and NOT what we want stamped
+    // on the forwarded HubResult: stamping the agent thread breaks the
+    // downstream chatter's trace lookup AND breaks ADS's
+    // Mumu2ReplyRouter.wait (which is keyed by the chatter's thread_id).
+    //
+    // When matched, register an OutputBus delivery context so each
+    // `"working"`-phase Codex stdout chunk is forwarded as
+    // `status:"partial"` HubResult onto `message.reply_channel`
+    // (= ROLES_SOCKET, where the chatter role's onInboundResult picks
+    // them up). The final `"result"` / `"error"` delta is filtered out
+    // in `HubServer.dispatchOutputBusDelta` for `mode:"agent_stream"`
+    // so we don't duplicate the run-return final.
+    const isMumu2ChatterRun = message.thread_id.startsWith("chatter-mumu2-user-");
     let streamingDeliveryActive = false;
     if (isMumu2ChatterRun) {
       this.outputBus.beginAdapterDelivery(message.trace_id, {
-        threadId,
+        threadId: message.thread_id,
         source: instance.agent_type,
         timestamp: this.now().toISOString(),
         replyChannels: [message.reply_channel],
@@ -1078,7 +1085,13 @@ export class HubRouter {
       const stderrSummary = this.captureProcessStderr(spawnedAgent.process);
 
       for await (const delta of streamFromSpawn(spawnedAgent.stdout, parser)) {
-        this.outputBus.pushDelta(message.trace_id, delta);
+        // Awaiting blocks the loop until the adapter sink has fully
+        // delivered this delta to the reply_channel socket FIFO. That
+        // ordering is required for mumu2 streaming so partials never
+        // arrive after the run-return final. For non-streaming traces
+        // (no delivery context registered) the adapter sink is a no-op
+        // and this await resolves immediately.
+        await this.outputBus.pushDelta(message.trace_id, delta);
 
         if (typeof delta.text === "string") {
           if (delta.phase === "working") {

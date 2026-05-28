@@ -5,7 +5,7 @@ import { DefaultA2AAdapter } from "../shared/a2a-adapter";
 import { DiffEngine } from "../shared/diff-engine";
 import { OutputBus } from "./output-bus";
 
-test("OutputBus pushDelta converts to A2A and fan-outs to both sinks", () => {
+test("OutputBus pushDelta converts to A2A and fan-outs to both sinks", async () => {
   const adapterMessages: unknown[] = [];
   const websocketMessages: unknown[] = [];
   const records: unknown[] = [];
@@ -23,12 +23,14 @@ test("OutputBus pushDelta converts to A2A and fan-outs to both sinks", () => {
     }
   });
 
-  outputBus.pushDelta("trace-1", {
+  await outputBus.pushDelta("trace-1", {
     traceId: "stale-trace",
     phase: "working",
     text: "partial",
     final: false
   });
+  // Flush microtasks queued by the fire-and-forget websocket/record sinks.
+  await new Promise<void>((resolve) => setImmediate(resolve));
 
   assert.deepEqual(adapterMessages, [
     {
@@ -49,7 +51,7 @@ test("OutputBus pushDelta converts to A2A and fan-outs to both sinks", () => {
   assert.deepEqual(records, adapterMessages);
 });
 
-test("OutputBus pushSnapshot diffs snapshots before dispatching", () => {
+test("OutputBus pushSnapshot diffs snapshots before dispatching", async () => {
   const messages: Array<{ traceId: string; message: unknown }> = [];
   const outputBus = new OutputBus({
     adapterOutput: (traceId, message) => {
@@ -57,9 +59,9 @@ test("OutputBus pushSnapshot diffs snapshots before dispatching", () => {
     }
   });
 
-  outputBus.pushSnapshot("trace-1", "hello");
-  outputBus.pushSnapshot("trace-1", "hello world");
-  outputBus.pushSnapshot("trace-1", "hello world");
+  await outputBus.pushSnapshot("trace-1", "hello");
+  await outputBus.pushSnapshot("trace-1", "hello world");
+  await outputBus.pushSnapshot("trace-1", "hello world");
 
   assert.deepEqual(messages, [
     {
@@ -81,7 +83,7 @@ test("OutputBus pushSnapshot diffs snapshots before dispatching", () => {
   ]);
 });
 
-test("OutputBus finalize emits a final delta and clears DiffEngine state", () => {
+test("OutputBus finalize emits a final delta and clears DiffEngine state", async () => {
   const messages: Array<{ traceId: string; message: unknown }> = [];
   const outputBus = new OutputBus({
     adapterOutput: (traceId, message) => {
@@ -89,9 +91,9 @@ test("OutputBus finalize emits a final delta and clears DiffEngine state", () =>
     }
   });
 
-  outputBus.pushSnapshot("trace-1", "partial");
-  outputBus.finalize("trace-1", { status: "success", content: "done" });
-  outputBus.pushSnapshot("trace-1", "fresh start");
+  await outputBus.pushSnapshot("trace-1", "partial");
+  await outputBus.finalize("trace-1", { status: "success", content: "done" });
+  await outputBus.pushSnapshot("trace-1", "fresh start");
 
   assert.deepEqual(messages, [
     {
@@ -121,7 +123,7 @@ test("OutputBus finalize emits a final delta and clears DiffEngine state", () =>
   ]);
 });
 
-test("OutputBus finalize preserves error payloads", () => {
+test("OutputBus finalize preserves error payloads", async () => {
   const messages: unknown[] = [];
   const outputBus = new OutputBus({
     websocketOutput: (_traceId, message) => {
@@ -129,11 +131,12 @@ test("OutputBus finalize preserves error payloads", () => {
     }
   });
 
-  outputBus.finalize("trace-err", {
+  await outputBus.finalize("trace-err", {
     status: "error",
     content: "boom",
     data: { code: "E_FAIL" }
   });
+  await new Promise<void>((resolve) => setImmediate(resolve));
 
   assert.deepEqual(messages, [
     {
