@@ -171,20 +171,20 @@ export class OutputBus {
     this.recordOutput = hook ?? null;
   }
 
-  pushDelta(traceId: string, delta: OutputDelta): void {
-    this.dispatch({
+  async pushDelta(traceId: string, delta: OutputDelta): Promise<void> {
+    await this.dispatch({
       ...delta,
       traceId
     });
   }
 
-  pushSnapshot(traceId: string, snapshot: string): void {
+  async pushSnapshot(traceId: string, snapshot: string): Promise<void> {
     const text = this.diffEngine.diff(traceId, snapshot);
     if (text.length === 0) {
       return;
     }
 
-    this.dispatch({
+    await this.dispatch({
       traceId,
       phase: "working",
       text,
@@ -192,19 +192,26 @@ export class OutputBus {
     });
   }
 
-  finalize(traceId: string, result: unknown): void {
-    this.dispatch(normalizeFinalizeDelta(traceId, result));
+  async finalize(traceId: string, result: unknown): Promise<void> {
+    await this.dispatch(normalizeFinalizeDelta(traceId, result));
     this.diffEngine.clear(traceId);
   }
 
-  private dispatch(delta: OutputDelta): void {
+  private async dispatch(delta: OutputDelta): Promise<void> {
     if (delta.text === undefined && delta.data === undefined && !delta.final) {
       return;
     }
 
     const message = this.toA2AMessage(delta);
     this.fireRecordHook(delta.traceId, delta, message);
-    this.fireSink(this.adapterOutput, delta.traceId, message, delta);
+    // Adapter sink (= reply-channel writer) is AWAITED. When agent streaming
+    // is enabled for a trace, each delta must be fully delivered to the
+    // socket FIFO before the next one is pushed — otherwise the final
+    // HubResult (sent through the run-return path) can overtake in-flight
+    // partials and the consumer drops them as "no_pending".
+    // The websocket sink and record hook stay fire-and-forget — they are
+    // observability paths whose ordering doesn't gate streaming UX.
+    await this.fireSinkAwaited(this.adapterOutput, delta.traceId, message, delta);
     this.fireSink(this.websocketOutput, delta.traceId, message, delta);
   }
 
@@ -227,6 +234,23 @@ export class OutputBus {
     }
 
     void Promise.resolve(sink(traceId, message, delta));
+  }
+
+  private async fireSinkAwaited(
+    sink: OutputBusDispatchSink | null,
+    traceId: string,
+    message: A2AMessage,
+    delta: OutputDelta
+  ): Promise<void> {
+    if (!sink) {
+      return;
+    }
+    try {
+      await sink(traceId, message, delta);
+    } catch {
+      // Swallow — the sink's own error logging is authoritative; we must
+      // not abort the for-await loop on a flaky downstream channel.
+    }
   }
 
   private toA2AMessage(delta: OutputDelta): A2AMessage {
