@@ -283,12 +283,18 @@
   var oauthCancelBtn = document.getElementById("oauth-cancel-btn");
   var oauthStartBtn = document.getElementById("oauth-start-btn");
   var oauthCloseBtn = document.getElementById("oauth-close-btn");
+  var oauthModeHeadless = document.getElementById("oauth-mode-headless");
+  var oauthCodeBlock = document.getElementById("oauth-code-block");
+  var oauthUserCodeEl = document.getElementById("oauth-user-code");
+  var oauthCopyCodeBtn = document.getElementById("oauth-copy-code");
 
   var oauthState = {
     jobId: null,
     pollHandle: null,
     terminal: false,
-    lastShownUrl: null
+    lastShownUrl: null,
+    lastShownCode: null,
+    mode: "browser"
   };
   var OAUTH_POLL_MS = 1000;
   var OAUTH_TERMINAL_STATUSES = { completed: true, failed: true, cancelled: true, timeout: true };
@@ -306,13 +312,18 @@
     oauthState.jobId = null;
     oauthState.terminal = false;
     oauthState.lastShownUrl = null;
+    oauthState.lastShownCode = null;
+    oauthState.mode = "browser";
     if (oauthLabelInput) oauthLabelInput.value = "";
     if (oauthLabelError) oauthLabelError.textContent = "";
+    if (oauthModeHeadless) oauthModeHeadless.checked = false;
     if (oauthFormBlock) oauthFormBlock.style.display = "";
     if (oauthStatusBlock) oauthStatusBlock.style.display = "none";
     if (oauthUrlBlock) oauthUrlBlock.style.display = "none";
     if (oauthLoginUrlEl) oauthLoginUrlEl.textContent = "";
     if (oauthOpenUrlEl) oauthOpenUrlEl.removeAttribute("href");
+    if (oauthCodeBlock) oauthCodeBlock.style.display = "none";
+    if (oauthUserCodeEl) oauthUserCodeEl.textContent = "";
     if (oauthLogDetails) oauthLogDetails.style.display = "none";
     if (oauthLogExcerpt) oauthLogExcerpt.textContent = "";
     if (oauthStatusLabel) {
@@ -357,9 +368,16 @@
       oauthStatusLabel.textContent = status;
       oauthStatusLabel.className = "status-label s-" + status;
     }
+    var jobMode = (jobBody && jobBody.mode) || oauthState.mode || "browser";
+    oauthState.mode = jobMode;
+    var userCode = jobBody && jobBody.user_code;
     if (oauthStatusDetail) {
       if (status === "awaiting_browser") {
-        oauthStatusDetail.textContent = "Open the login URL below in your browser and complete the sign-in.";
+        if (jobMode === "device" || userCode || oauthState.lastShownCode) {
+          oauthStatusDetail.textContent = "Open the verification URL on any device, sign in, and enter the code below.";
+        } else {
+          oauthStatusDetail.textContent = "Open the login URL below in your browser and complete the sign-in.";
+        }
       } else if (status === "completed") {
         oauthStatusDetail.textContent = "Login complete. Credential saved.";
       } else if (status === "failed" || status === "timeout" || status === "cancelled") {
@@ -376,6 +394,13 @@
       oauthState.lastShownUrl = url;
     } else if (!url && oauthUrlBlock && !oauthState.lastShownUrl) {
       oauthUrlBlock.style.display = "none";
+    }
+    if (userCode && oauthCodeBlock && oauthUserCodeEl) {
+      oauthCodeBlock.style.display = "";
+      oauthUserCodeEl.textContent = userCode;
+      oauthState.lastShownCode = userCode;
+    } else if (!userCode && oauthCodeBlock && !oauthState.lastShownCode) {
+      oauthCodeBlock.style.display = "none";
     }
     var excerpt = jobBody && jobBody.log_excerpt;
     if (excerpt && oauthLogDetails && oauthLogExcerpt) {
@@ -423,11 +448,17 @@
     }
     if (oauthLabelError) oauthLabelError.textContent = "";
     if (oauthStartBtn) oauthStartBtn.disabled = true;
+    var mode = oauthModeHeadless && oauthModeHeadless.checked ? "device" : "browser";
+    oauthState.mode = mode;
+    var startBody = { credential_label: label };
+    // Only send `mode` when non-default to keep older hubs happy (they reject
+    // unknown keys via strict schema).
+    if (mode === "device") startBody.mode = "device";
 
     api("/api/credentials/oauth-login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ credential_label: label })
+      body: JSON.stringify(startBody)
     })
       .then(function (r) {
         var body = r.body || {};
@@ -475,6 +506,34 @@
   if (oauthStartBtn) oauthStartBtn.addEventListener("click", startOauthLogin);
   if (oauthCancelBtn) oauthCancelBtn.addEventListener("click", cancelOauthLogin);
   if (oauthCloseBtn) oauthCloseBtn.addEventListener("click", closeOauthDialog);
+  function copyTextToClipboard(text, btn) {
+    if (!text) return;
+    var prev = btn ? btn.textContent : null;
+    var done = function () {
+      if (!btn) return;
+      btn.textContent = "Copied";
+      setTimeout(function () { btn.textContent = prev || "Copy"; }, 1500);
+    };
+    var fallback = function () {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    };
+    if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+  if (oauthCopyCodeBtn) {
+    oauthCopyCodeBtn.addEventListener("click", function () {
+      var code = oauthUserCodeEl ? oauthUserCodeEl.textContent : "";
+      copyTextToClipboard(code, oauthCopyCodeBtn);
+    });
+  }
   if (oauthCopyUrlBtn) {
     oauthCopyUrlBtn.addEventListener("click", function () {
       var url = oauthLoginUrlEl ? oauthLoginUrlEl.textContent : "";

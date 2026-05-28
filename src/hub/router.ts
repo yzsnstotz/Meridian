@@ -310,7 +310,13 @@ const RegisterCredentialApiKeyPayloadSchema = z.object({
 // (server-side construction only).
 const OAuthLoginStartPayloadSchema = z
   .object({
-    credential_label: z.string().min(1).max(64)
+    credential_label: z.string().min(1).max(64),
+    // "browser" (default): localhost-callback OAuth — only works when the
+    // user's browser can reach the hub host. "device": codex device-code
+    // flow — works headlessly on remote deploys (AWS, etc.). The job appends
+    // `--device-auth` to codex login args server-side; never trusted from
+    // the wire beyond this enum.
+    mode: z.enum(["browser", "device"]).optional()
   })
   .strict();
 
@@ -2718,7 +2724,8 @@ export class HubRouter {
         credential_label: parsed.credential_label,
         // SECURITY: defaults come from server-side construction options, never from the wire.
         codexLoginCommand: this.defaultCodexLoginCommand,
-        codexLoginArgs: this.defaultCodexLoginArgs
+        codexLoginArgs: this.defaultCodexLoginArgs,
+        mode: parsed.mode
       });
       return this.buildResult(
         message,
@@ -2806,7 +2813,10 @@ export class HubRouter {
       JSON.stringify({
         job_id: parsed.job_id,
         status: job.status,
+        mode: job.mode,
         login_url: job.login_url ?? undefined,
+        verification_uri: job.verification_uri ?? undefined,
+        user_code: job.user_code ?? undefined,
         expires_at: job.expires_at ?? undefined,
         credential_id: job.credential_id ?? undefined,
         error_code: job.error_code ?? undefined,
