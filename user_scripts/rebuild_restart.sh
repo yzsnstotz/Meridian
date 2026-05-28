@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 
 # Rebuild Meridian and restart runtime services.
-# Usage: ./user_scripts/rebuild_restart.sh
+# Usage:
+#   ./user_scripts/rebuild_restart.sh
+#   ./user_scripts/rebuild_restart.sh --reset-state
 
 set -euo pipefail
 
@@ -71,9 +73,35 @@ sync_origin_main() {
 
 sync_origin_main "$@"
 
+RESET_STATE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset-state)
+      RESET_STATE=1
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: ./user_scripts/rebuild_restart.sh [--reset-state]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: ./user_scripts/rebuild_restart.sh [--reset-state]" >&2
+      exit 1
+      ;;
+  esac
+done
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required" >&2
   exit 1
+fi
+
+terminate_args=()
+restart_args=()
+if [[ "${RESET_STATE}" -eq 1 ]]; then
+  terminate_args+=("--reset-state")
+  restart_args+=("--reset-state")
 fi
 
 log "Building project"
@@ -87,10 +115,10 @@ log "Building project"
 # previous service crashed and left orphaned. terminate.sh now delegates the
 # agentapi sweep to kill_all_agentapi.sh.
 log "Terminating previous-generation services and stragglers"
-"${ROOT_DIR}/user_scripts/terminate.sh" || true
+"${ROOT_DIR}/user_scripts/terminate.sh" "${terminate_args[@]}" || true
 
 log "Restarting services"
-"${ROOT_DIR}/user_scripts/restart.sh"
+"${ROOT_DIR}/user_scripts/restart.sh" "${restart_args[@]}"
 
 if [[ -n "${MERIDIAN_REBUILD_SKIP_ROLES:-}" ]]; then
   log "Skipping meridian-roles restart (MERIDIAN_REBUILD_SKIP_ROLES set)"

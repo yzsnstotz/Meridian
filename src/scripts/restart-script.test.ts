@@ -6,6 +6,10 @@ import { test } from "node:test";
 const restartScriptPath = path.resolve(process.cwd(), "user_scripts/restart.sh");
 const terminateScriptPath = path.resolve(process.cwd(), "user_scripts/terminate.sh");
 const rebuildRestartScriptPath = path.resolve(process.cwd(), "user_scripts/rebuild_restart.sh");
+const rebuildRestartMeridianOnlyColdScriptPath = path.resolve(
+  process.cwd(),
+  "user_scripts/rebuild_restart_meridian_only_cold.sh"
+);
 
 async function readRestartScript(): Promise<string> {
   return fs.readFile(restartScriptPath, "utf8");
@@ -17,6 +21,10 @@ async function readTerminateScript(): Promise<string> {
 
 async function readRebuildRestartScript(): Promise<string> {
   return fs.readFile(rebuildRestartScriptPath, "utf8");
+}
+
+async function readRebuildRestartMeridianOnlyColdScript(): Promise<string> {
+  return fs.readFile(rebuildRestartMeridianOnlyColdScriptPath, "utf8");
 }
 
 test("rebuild_restart.sh syncs to origin/main before building and always relaunches services", async () => {
@@ -37,6 +45,27 @@ test("rebuild_restart.sh syncs to origin/main before building and always relaunc
   assert.ok(syncIndex >= 0 && syncIndex < buildIndex, "origin/main sync must happen before build");
   assert.ok(buildIndex >= 0 && buildIndex < terminateIndex, "build must complete before old services are killed");
   assert.ok(terminateIndex >= 0 && terminateIndex < restartIndex, "restart must happen after termination");
+});
+
+test("rebuild_restart.sh passes reset-state through to terminate and restart only when explicit", async () => {
+  const script = await readRebuildRestartScript();
+
+  assert.match(script, /RESET_STATE=0/);
+  assert.match(script, /--reset-state/);
+  assert.match(script, /terminate_args=\(\)/);
+  assert.match(script, /restart_args=\(\)/);
+  assert.match(script, /terminate_args\+=\("--reset-state"\)/);
+  assert.match(script, /restart_args\+=\("--reset-state"\)/);
+  assert.match(script, /"\$\{ROOT_DIR\}\/user_scripts\/terminate\.sh" "\$\{terminate_args\[@\]\}"/);
+  assert.match(script, /"\$\{ROOT_DIR\}\/user_scripts\/restart\.sh" "\$\{restart_args\[@\]\}"/);
+});
+
+test("rebuild_restart_meridian_only_cold.sh invokes the meridian-only chain with reset-state", async () => {
+  const script = await readRebuildRestartMeridianOnlyColdScript();
+
+  assert.match(script, /MERIDIAN_REBUILD_SKIP_ROLES=1/);
+  assert.match(script, /MERIDIAN_TERMINATE_SKIP_ROLES=1/);
+  assert.match(script, /rebuild_restart\.sh" --reset-state/);
 });
 
 test("restart.sh keep-agents PM2 mode avoids direct process kills before socket cleanup", async () => {
