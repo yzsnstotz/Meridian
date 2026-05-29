@@ -3417,3 +3417,75 @@ test("HubRouter isWithinRunCompletionCooldown returns true after run completes",
   // Simulate time passage beyond cooldown
   assert.equal(router.isWithinRunCompletionCooldown("cooldown_01", 5000, Date.now() + 6000), false);
 });
+
+import {
+  LEGACY_STREAMING_THREAD_ID_PREFIXES,
+  resolveStreamingDeliveryRequest
+} from "./router";
+
+test("resolveStreamingDeliveryRequest activates for typed flag across distinct callers", () => {
+  // Two unrelated callers with different thread_id shapes — proves the
+  // activation rule is identity-free.
+  const callerA = resolveStreamingDeliveryRequest({
+    streaming_delivery: true,
+    thread_id: "codex_177"
+  });
+  const callerB = resolveStreamingDeliveryRequest({
+    streaming_delivery: true,
+    thread_id: "agent-dispatcher-7c3f2e10"
+  });
+
+  assert.deepEqual(callerA, { activate: true, reason: "typed_flag" });
+  assert.deepEqual(callerB, { activate: true, reason: "typed_flag" });
+});
+
+test("resolveStreamingDeliveryRequest stays off when flag is absent and no legacy prefix matches", () => {
+  const decision = resolveStreamingDeliveryRequest({
+    streaming_delivery: undefined,
+    thread_id: "codex_42"
+  });
+
+  assert.deepEqual(decision, { activate: false, reason: "not_requested" });
+});
+
+test("resolveStreamingDeliveryRequest honors explicit streaming_delivery:false even on legacy-prefix threads", () => {
+  // Opt-out is authoritative: a caller that declares streaming_delivery
+  // false is not retroactively opted back in by its identifier shape.
+  const decision = resolveStreamingDeliveryRequest({
+    streaming_delivery: false,
+    thread_id: "chatter-mumu2-user-project-abc"
+  });
+
+  assert.deepEqual(decision, { activate: false, reason: "not_requested" });
+});
+
+test("resolveStreamingDeliveryRequest activates via legacy thread_id prefix with auditable reason", () => {
+  // Transitional shim — present until every caller covered by
+  // LEGACY_STREAMING_THREAD_ID_PREFIXES sets streaming_delivery on the
+  // wire. The decision must carry the matched prefix so the deprecation
+  // log identifies the migration target.
+  assert.equal(LEGACY_STREAMING_THREAD_ID_PREFIXES.includes("chatter-mumu2-user-"), true);
+
+  const decision = resolveStreamingDeliveryRequest({
+    streaming_delivery: undefined,
+    thread_id: "chatter-mumu2-user-project-7f"
+  });
+
+  assert.deepEqual(decision, {
+    activate: true,
+    reason: "legacy_thread_id_prefix",
+    legacy_prefix: "chatter-mumu2-user-"
+  });
+});
+
+test("resolveStreamingDeliveryRequest does not match a legacy prefix that is not a true thread_id prefix", () => {
+  // The prefix check is a literal startsWith, not a substring search. A
+  // thread_id that merely contains the legacy string mid-name (e.g. an
+  // internal naming collision) must not trip the shim.
+  const decision = resolveStreamingDeliveryRequest({
+    streaming_delivery: undefined,
+    thread_id: "log-chatter-mumu2-user-mirror"
+  });
+
+  assert.deepEqual(decision, { activate: false, reason: "not_requested" });
+});

@@ -558,6 +558,52 @@ function extractLatestCompleteSummaryBlock(content: string, traceId: string): st
   return latest;
 }
 
+/**
+ * Streaming-delivery activation decision.
+ *
+ * Per `laws/generic-infra-no-caller-identity-branching.md`, the hub gates
+ * agent-stream delivery on a typed envelope flag (`streaming_delivery`), not
+ * on patterns over identifier strings. Legacy callers that predate the flag
+ * are honored via a transitional shim and surface a deprecation log so the
+ * migration is auditable. New callers must set `streaming_delivery: true`.
+ */
+export type StreamingDeliveryDecision =
+  | { activate: false; reason: "not_requested" }
+  | { activate: true; reason: "typed_flag" }
+  | { activate: true; reason: "legacy_thread_id_prefix"; legacy_prefix: string };
+
+/**
+ * Identifier patterns honored only by the transitional compatibility shim
+ * in `resolveStreamingDeliveryRequest`. Each entry tracks a caller that
+ * predates the typed `streaming_delivery` envelope flag.
+ *
+ * Removal requirements (must hold for every prefix here before deletion):
+ * 1. Every external caller covered by the prefix sets
+ *    `streaming_delivery: true` on the inbound HubMessage.
+ * 2. No new caller has been onboarded onto streaming delivery without the
+ *    typed flag (the law forbids that).
+ */
+export const LEGACY_STREAMING_THREAD_ID_PREFIXES: readonly string[] = [
+  "chatter-mumu2-user-"
+] as const;
+
+export function resolveStreamingDeliveryRequest(
+  message: Pick<HubMessage, "streaming_delivery" | "thread_id">
+): StreamingDeliveryDecision {
+  if (message.streaming_delivery === true) {
+    return { activate: true, reason: "typed_flag" };
+  }
+  if (message.streaming_delivery === false) {
+    return { activate: false, reason: "not_requested" };
+  }
+  for (const prefix of LEGACY_STREAMING_THREAD_ID_PREFIXES) {
+    if (message.thread_id.startsWith(prefix)) {
+      return { activate: true, reason: "legacy_thread_id_prefix", legacy_prefix: prefix };
+    }
+  }
+  return { activate: false, reason: "not_requested" };
+}
+
 export class HubRouter {
   private readonly log = createLogger("hub");
   private readonly clientFactory: (threadId: string) => AgentClient;
@@ -1039,25 +1085,30 @@ export class HubRouter {
 
     this.registry.setStatus(threadId, "running");
 
-    // mumu2 streaming: a chatter role driving an agent run identifies
-    // itself via `message.thread_id` (the OUTBOUND HubMessage's thread_id
-    // is the chatter's own — `chatter-mumu2-user-*`). The resolved local
-    // `threadId` here is the agent process (codex/claude/gemini) thread
-    // which is NOT what we want to gate on, and NOT what we want stamped
-    // on the forwarded HubResult: stamping the agent thread breaks the
-    // downstream chatter's trace lookup AND breaks ADS's
-    // Mumu2ReplyRouter.wait (which is keyed by the chatter's thread_id).
-    //
-    // When matched, register an OutputBus delivery context so each
-    // `"working"`-phase Codex stdout chunk is forwarded as
-    // `status:"partial"` HubResult onto `message.reply_channel`
-    // (= ROLES_SOCKET, where the chatter role's onInboundResult picks
-    // them up). The final `"result"` / `"error"` delta is filtered out
-    // in `HubServer.dispatchOutputBusDelta` for `mode:"agent_stream"`
-    // so we don't duplicate the run-return final.
-    const isMumu2ChatterRun = message.thread_id.startsWith("chatter-mumu2-user-");
+    // Streaming delivery: when the inbound HubMessage opts in via
+    // `streaming_delivery: true`, register an OutputBus delivery context so
+    // each `"working"`-phase stdout chunk is forwarded as a
+    // `status:"partial"` HubResult onto `message.reply_channel`. The final
+    // `"result"` / `"error"` delta is filtered out in
+    // `HubServer.dispatchOutputBusDelta` for `mode:"agent_stream"` so we
+    // don't duplicate the run-return final. The forwarded HubResult is
+    // stamped with `message.thread_id` (the inbound envelope thread, e.g. a
+    // chatter role driving an agent run) — the resolved local `threadId`
+    // here is the agent process thread and is NOT a valid trace key for
+    // downstream routers that index by the inbound thread.
+    const streamingDecision = resolveStreamingDeliveryRequest(message);
+    if (streamingDecision.activate && streamingDecision.reason === "legacy_thread_id_prefix") {
+      this.log.warn(
+        {
+          thread_id: message.thread_id,
+          trace_id: message.trace_id,
+          legacy_prefix: streamingDecision.legacy_prefix
+        },
+        "streaming_delivery activated by legacy thread_id prefix; caller must declare streaming_delivery:true"
+      );
+    }
     let streamingDeliveryActive = false;
-    if (isMumu2ChatterRun) {
+    if (streamingDecision.activate) {
       this.outputBus.beginAdapterDelivery(message.trace_id, {
         threadId: message.thread_id,
         source: instance.agent_type,
