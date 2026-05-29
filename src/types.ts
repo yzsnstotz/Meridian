@@ -227,6 +227,7 @@ export const HubMessageSchema = z.object({
   mode: BridgeModeSchema,
   reply_channel: ReplyChannelSchema,
   suppress_reply: z.boolean().optional(),
+  streaming_delivery: z.boolean().optional(),
   caller: CallerIdentitySchema.optional()
 });
 export type HubMessage = z.input<typeof HubMessageSchema>;
