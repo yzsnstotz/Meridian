@@ -224,6 +224,41 @@ describe("ChatterRole — activation + spawn handshake", () => {
     expect(run.payload.credential_id).toBeUndefined();
   });
 
+  it("run dispatch carries streaming_delivery:true when the chatter is configured with a mumu2 user_reply_channel", async () => {
+    const root2 = realpathSync(mkdtempSync(path.join(tmpdir(), "chatter-mumu2-")));
+    const made = makeCtx();
+    const mumu2ReplyChannel: ReplyChannel = {
+      channel: "socket",
+      chat_id: "ads:mumu2:tenant-mumu2:project-7f",
+      socket_path: "/tmp/ads.sock"
+    };
+    const roleMumu2 = new ChatterRole(
+      "chatter-mumu2-user-project-7f",
+      makeConfig(root2, { user_reply_channel: mumu2ReplyChannel })
+    );
+    await roleMumu2.onActivate(made.ctx);
+    await roleMumu2.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = made.sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(roleMumu2, spawn, "claude_mumu2_01");
+    const run = made.sent.find((m) => m.intent === "run" && m.target === "claude_mumu2_01")!;
+    expect(run.streaming_delivery).toBe(true);
+  });
+
+  it("run dispatch OMITS streaming_delivery when the chatter's user_reply_channel is not a mumu2 channel", async () => {
+    // baseline (non-mumu2) chatter still uses ADS_REPLY_CHANNEL — must not
+    // opt into streaming, since non-mumu2 reply parsers do not expect
+    // status:"partial" frames.
+    await role.onInboundResult(
+      makeTurnResult("hi", { payload: { chatter: { mode: "session" } } })
+    );
+    const spawn = sent.find((m) => m.intent === "spawn")!;
+    await driveSpawnResponse(role, spawn, "claude_baseline_01");
+    const run = sent.find((m) => m.intent === "run" && m.target === "claude_baseline_01")!;
+    expect(run.streaming_delivery).toBeUndefined();
+  });
+
   it("post-bind turns dispatch immediately via intent:'run' (no new spawn)", async () => {
     await role.onInboundResult(
       makeTurnResult("first", { payload: { chatter: { mode: "session" } } })
