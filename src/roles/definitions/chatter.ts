@@ -1107,6 +1107,15 @@ export class ChatterRole implements BaseRole {
       ...(turn.chatter.diagnostics ? { diagnostics: turn.chatter.diagnostics } : {})
     });
 
+    // Streaming delivery: mumu2 chatters need agent stdout partials
+    // forwarded back as `status:"partial"` HubResults so the UI sees the
+    // streaming caret. Other chatters (legacy mumu, ADS direct) do not
+    // expect partials and would break their reply parser, so the opt-in
+    // is gated on the chatter's own configured user_reply_channel.
+    // Meridian hub gates the agent_stream delivery context on this
+    // typed flag per laws/generic-infra-no-caller-identity-branching.md;
+    // declaring it here removes the chatter from the legacy thread_id
+    // prefix shim.
     const runMsg: HubMessage = {
       trace_id: traceId,
       thread_id: this.threadId,
@@ -1117,7 +1126,8 @@ export class ChatterRole implements BaseRole {
       payload: { content: turn.content, attachments: turn.attachments, chatter: turn.chatter },
       mode: "bridge",
       reply_channel: ROLES_SOCKET_REPLY_CHANNEL,
-      suppress_reply: false
+      suppress_reply: false,
+      ...(this.isMumu2UserReplyChannel() ? { streaming_delivery: true } : {})
     };
 
     try {
