@@ -52,6 +52,17 @@ const SANDBOX_GATED_PATH_FIELDS: ReadonlyArray<keyof DispatchCodingJobArgs> = [
   "taskspec_path"
 ];
 
+// Mirrors `ChatterRole.isMumu2UserReplyChannel` in `definitions/chatter.ts`.
+// Caller-process internal branching on the chatter's own configured reply
+// channel — covered by the carve-out in
+// `meridian/laws/generic-infra-no-caller-identity-branching.md` (the law
+// gates hub-side infrastructure, not caller-internal config inspection).
+// Kept inline (not extracted to a shared helper) until a second caller
+// outside chatter needs the same decision; at that point promote it.
+function isMumu2UserReplyChannel(channel?: ReplyChannel): boolean {
+  return Boolean(channel && channel.channel === "socket" && channel.chat_id.startsWith("ads:mumu2:"));
+}
+
 export async function dispatchCodingJob(input: DispatchCodingJobInput): Promise<DispatchCodingJobResult> {
   for (const field of SANDBOX_GATED_PATH_FIELDS) {
     const value = input.args[field];
@@ -90,7 +101,8 @@ export async function dispatchCodingJob(input: DispatchCodingJobInput): Promise<
       chat_id: input.rolesServiceId ?? "service:meridian-roles",
       socket_path: input.rolesSocketPath
     },
-    suppress_reply: false
+    suppress_reply: false,
+    ...(isMumu2UserReplyChannel(input.userReplyChannel) ? { streaming_delivery: true } : {})
   };
 
   try {
