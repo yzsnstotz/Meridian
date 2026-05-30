@@ -55,6 +55,58 @@ describe("dispatchCodingJob", () => {
     expect(msg.suppress_reply).toBe(false);
   });
 
+  it("carries streaming_delivery:true when userReplyChannel is a mumu2 channel", async () => {
+    const deps = makeDeps(root);
+    const res = await dispatchCodingJob({
+      args: { instruction: "x" },
+      chatterThreadId: CHATTER_THREAD_ID,
+      rolesSocketPath: ROLES_SOCKET,
+      resolver: deps.resolver,
+      sessionMgr: deps.sessionMgr,
+      sendToHub: deps.sendToHub,
+      userReplyChannel: {
+        channel: "socket",
+        chat_id: "ads:mumu2:tenant-a:project-7f",
+        socket_path: "/tmp/ads.sock"
+      }
+    });
+    expect(res.ok).toBe(true);
+    expect(deps.sent[0].streaming_delivery).toBe(true);
+  });
+
+  it("OMITS streaming_delivery when userReplyChannel is not a mumu2 channel", async () => {
+    const deps = makeDeps(root);
+    const res = await dispatchCodingJob({
+      args: { instruction: "x" },
+      chatterThreadId: CHATTER_THREAD_ID,
+      rolesSocketPath: ROLES_SOCKET,
+      resolver: deps.resolver,
+      sessionMgr: deps.sessionMgr,
+      sendToHub: deps.sendToHub,
+      userReplyChannel: {
+        channel: "socket",
+        chat_id: "ads:mumu:tenant-a:project-7f",
+        socket_path: "/tmp/ads.sock"
+      }
+    });
+    expect(res.ok).toBe(true);
+    expect(deps.sent[0].streaming_delivery).toBeUndefined();
+  });
+
+  it("OMITS streaming_delivery when userReplyChannel is undefined", async () => {
+    const deps = makeDeps(root);
+    const res = await dispatchCodingJob({
+      args: { instruction: "x" },
+      chatterThreadId: CHATTER_THREAD_ID,
+      rolesSocketPath: ROLES_SOCKET,
+      resolver: deps.resolver,
+      sessionMgr: deps.sessionMgr,
+      sendToHub: deps.sendToHub
+    });
+    expect(res.ok).toBe(true);
+    expect(deps.sent[0].streaming_delivery).toBeUndefined();
+  });
+
   it("forwards credentialId as payload.credential_id when supplied", async () => {
     const deps = makeDeps(root);
     const res = await dispatchCodingJob({
