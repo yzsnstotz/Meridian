@@ -2,7 +2,19 @@ import type { BridgeMode, ReasoningEffort } from "../types";
 
 export const CLAUDE_AGENT_TYPE = "claude" as const;
 const CLAUDE_CLI_COMMAND = "claude";
-export const DEFAULT_CLAUDE_ALLOWED_TOOLS = ["Bash", "Edit", "Replace"] as const;
+// Claude Code's canonical tool names. The previous list `["Bash", "Edit",
+// "Replace"]` was missing `Write` (creating new files) and `Read` (reading
+// arbitrary files), and included the legacy `Replace` name that no current
+// version of the Claude CLI exposes. Skills that compose investigate +
+// taskspec + dispatch (e.g. `$bug-fix`) need to manufacture brand-new
+// markdown files like `bug_reports_input.md` and `investigation_report.md`;
+// without `Write` claude opus typically refuses to fall back to a Bash
+// heredoc and exits cleanly with zero on-disk output.
+//
+// Grep / Glob are added because the same skills routinely search the repo
+// to populate `investigation_context.md`. The previous omission forced
+// skills to shell out via Bash, which is slower and less reliable.
+export const DEFAULT_CLAUDE_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"] as const;
 
 export interface ClaudeAgentConfig {
   type: typeof CLAUDE_AGENT_TYPE;
