@@ -5,9 +5,17 @@ const IPC_SEND_TIMEOUT_MS = 5000;
 const IPC_REQUEST_TIMEOUT_MS = 120000;
 // /api/run can take much longer than the default IPC timeout: stream retries
 // (up to 3 × codex exec attempts) plus waitForAgentReply (600 × 500ms = 5 min).
-// Give the IPC socket enough headroom so the hub router's own timeouts govern
-// the response lifecycle instead of an early IPC socket timeout.
-const IPC_RUN_REQUEST_TIMEOUT_MS = 420000;
+// For the post-agentapi streaming-bridge path (codex/claude/gemini), the
+// only thing the hub waits on is the spawned provider exiting — and claude
+// opus driving a composed skill like `$bug-fix` (`$investigate` +
+// `$taskspec` + `$dispatch`) routinely runs 8-20 min before exit. The
+// previous 7-min cap caused those runs to fail-with-orphan on the web
+// side even after the hub completed them. Pick a value that fits the
+// slowest realistic opus skill turn (verified ADS bug-fix rounds at
+// ~12-18 min) with headroom; 30 min is the operational ceiling agreed
+// with the ADS team. If a skill genuinely needs longer, prefer breaking
+// it into multiple `run` turns rather than bumping this further.
+const IPC_RUN_REQUEST_TIMEOUT_MS = 1_800_000;
 
 export function sendIpcMessage<T extends object>(socketPath: string, payload: T): Promise<void> {
   return new Promise((resolve, reject) => {

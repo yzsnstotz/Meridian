@@ -5,7 +5,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
-import { buildClaudeStreamArgs } from "../agents/claude";
+import { buildClaudeStreamArgs, DEFAULT_CLAUDE_ALLOWED_TOOLS } from "../agents/claude";
 import { InstanceManager } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
 
@@ -560,7 +560,7 @@ test("spawnStreamAgent launches a provider CLI directly and pipes the prompt ove
     "--verbose",
     "--include-partial-messages",
     "--allowedTools",
-    "Bash Edit Replace",
+    DEFAULT_CLAUDE_ALLOWED_TOOLS.join(" "),
     "--model",
     "claude-3",
     "--dangerously-skip-permissions"
