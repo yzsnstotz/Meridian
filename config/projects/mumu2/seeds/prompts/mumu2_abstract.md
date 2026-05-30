@@ -17,7 +17,12 @@ ADS 在 user 消息里通过 `payload.chatter.prompt_parts[].text` 给你以下�
   ]
   ```
 
+- **`granularity`**：用户在 AbstractPage 上选好的"目标单位"，三选一：
+  - `cross_episodes`（默认） — 把每条 source（以及单条 source 内部有 "第N集 / EP01 / Season N" 等明显分段标记的部分）看作**独立样本**，抽**共有**的节奏/情绪 DNA。即使所有内容塞在一个文档里，也尽量按可识别的分段拆开再求共有。**不要**把多集硬拼成一条线性故事。
+  - `whole_piece` — 把所有 sources（或单条长 source）当作**一个完整作品**，抽整体弧线节奏。
+  - `single` — 只看一条最有代表性的 source（通常是第一条或最长的那条），抽单条 DNA。
 - 偶尔会附带 `lens_name`、`beat_labels` 等品类提示（来自 ADS 的 genre lens）。
+- 如果没收到 `granularity`，按 `cross_episodes` 处理。
 
 ## 你的输出格式（**严格**）
 
@@ -39,7 +44,10 @@ ADS 在 user 消息里通过 `payload.chatter.prompt_parts[].text` 给你以下�
 ```
 
 - **`beats` 数组长度至少 1**，正常是 3–6。
-- `beats` 必须捕捉 **多个来源的共有模式**，不要只总结其中一篇。
+- `beats` 的内容**必须符合 `granularity`**：
+  - `cross_episodes`：捕捉**跨来源/跨集**的共有模式，每拍用泛化语言（适用于多集），避免引用任何单集特有情节；
+  - `whole_piece`：可包含具体场景/节段（这是一条完整故事的总览）；
+  - `single`：基于那一条来源的节奏；其他来源即使收到也忽略。
 - `rationale` 用一句话说明本品类的"DNA"是什么、为什么这几拍。
 - **不要写文件，不要调用任何工具**。你的全部回答就是这一段 JSON。
 

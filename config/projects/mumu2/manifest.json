@@ -17,6 +17,7 @@
   ],
   "system_prompts": {
     "mumu2_chat": { "prompt_path": "seeds/prompts/mumu2_chat.md" },
-    "mumu2_abstract": { "prompt_path": "seeds/prompts/mumu2_abstract.md" }
+    "mumu2_abstract": { "prompt_path": "seeds/prompts/mumu2_abstract.md" },
+    "mumu2_dna_chat": { "prompt_path": "seeds/prompts/mumu2_dna_chat.md" }
   }
 }
