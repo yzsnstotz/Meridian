@@ -168,14 +168,14 @@ describe("runValidateManifestCli", () => {
     expect(readFileSync(VALID_MANIFEST, "utf8")).toBe(before);
   });
 
-  it("registers mumu2 world rules prompts with the expected op contract", async () => {
+  it("registers mumu2 production-layer prompts with the expected op contracts", async () => {
     const io = createIo();
 
     const exitCode = await runValidateManifestCli(["validate-manifest", MUMU2_MANIFEST], io.streams);
 
     expect(exitCode).toBe(0);
     expect(io.stderr()).toBe("");
-    expect(io.stdout()).toContain("system_prompts=9");
+    expect(io.stdout()).toContain("system_prompts=13");
 
     const manifest = JSON.parse(readFileSync(MUMU2_MANIFEST, "utf8")) as {
       system_prompts: Record<string, { prompt_path: string }>;
@@ -185,6 +185,18 @@ describe("runValidateManifestCli", () => {
     });
     expect(manifest.system_prompts.mumu2_promote_world_rules).toEqual({
       prompt_path: "seeds/prompts/mumu2_promote_world_rules.md"
+    });
+    expect(manifest.system_prompts.mumu2_chat_scenes).toEqual({
+      prompt_path: "seeds/prompts/mumu2_chat_scenes.md"
+    });
+    expect(manifest.system_prompts.mumu2_promote_scenes).toEqual({
+      prompt_path: "seeds/prompts/mumu2_promote_scenes.md"
+    });
+    expect(manifest.system_prompts.mumu2_chat_script).toEqual({
+      prompt_path: "seeds/prompts/mumu2_chat_script.md"
+    });
+    expect(manifest.system_prompts.mumu2_promote_script).toEqual({
+      prompt_path: "seeds/prompts/mumu2_promote_script.md"
     });
 
     const chatPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_chat_world_rules.md"), "utf8");
@@ -205,6 +217,48 @@ describe("runValidateManifestCli", () => {
     expect(promotePrompt).not.toContain('"update_world_rule"');
     expect(promotePrompt).not.toContain('"delete_world_rule"');
     expect(promotePrompt).toContain("何时主动调用 fetch_X 工具");
+
+    const chatScenesPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_chat_scenes.md"), "utf8");
+    expect(chatScenesPrompt).toContain('"active_slot"');
+    expect(chatScenesPrompt).toContain('"scenes"');
+    expect(chatScenesPrompt).toContain('"add_scene"');
+    expect(chatScenesPrompt).toContain('"update_scene"');
+    expect(chatScenesPrompt).toContain('"delete_scene"');
+    expect(chatScenesPrompt).toContain('"split_scene"');
+    expect(chatScenesPrompt).toContain("何时主动调用 fetch_X 工具");
+    expect(chatScenesPrompt).toContain("笔记本观察提案");
+
+    const promoteScenesPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_promote_scenes.md"), "utf8");
+    expect(promoteScenesPrompt).toContain('"active_slot"');
+    expect(promoteScenesPrompt).toContain('"scenes"');
+    expect(promoteScenesPrompt).toContain('"add_scene"');
+    expect(promoteScenesPrompt).not.toContain('"update_scene"');
+    expect(promoteScenesPrompt).not.toContain('"delete_scene"');
+    expect(promoteScenesPrompt).not.toContain('"split_scene"');
+    expect(promoteScenesPrompt).toContain("何时主动调用 fetch_X 工具");
+
+    const chatScriptPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_chat_script.md"), "utf8");
+    expect(chatScriptPrompt).toContain('"active_slot"');
+    expect(chatScriptPrompt).toContain('"script"');
+    expect(chatScriptPrompt).toContain('"set_script"');
+    expect(chatScriptPrompt).toContain('"patch_script"');
+    expect(chatScriptPrompt).toContain('"insert_block"');
+    expect(chatScriptPrompt).toContain('"replace_block"');
+    expect(chatScriptPrompt).toContain('"delete_block"');
+    expect(chatScriptPrompt).toContain("patch");
+    expect(chatScriptPrompt).toContain("不得包含 `scene_id`");
+    expect(chatScriptPrompt).toContain("何时主动调用 fetch_X 工具");
+    expect(chatScriptPrompt).toContain("笔记本观察提案");
+
+    const promoteScriptPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_promote_script.md"), "utf8");
+    expect(promoteScriptPrompt).toContain('"active_slot"');
+    expect(promoteScriptPrompt).toContain('"script"');
+    expect(promoteScriptPrompt).toContain('"set_script"');
+    expect(promoteScriptPrompt).not.toContain('"patch_script"');
+    expect(promoteScriptPrompt).not.toContain('"insert_block"');
+    expect(promoteScriptPrompt).not.toContain('"replace_block"');
+    expect(promoteScriptPrompt).not.toContain('"delete_block"');
+    expect(promoteScriptPrompt).toContain("何时主动调用 fetch_X 工具");
   });
 });
 
