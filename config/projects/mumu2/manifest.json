@@ -21,7 +21,20 @@
     "mumu2_dna_chat": { "prompt_path": "seeds/prompts/mumu2_dna_chat.md" },
     "mumu2_chat_cast": { "prompt_path": "seeds/prompts/mumu2_chat_cast.md" },
     "mumu2_chat_episode_briefs": { "prompt_path": "seeds/prompts/mumu2_chat_episode_briefs.md" },
+    "mumu2_chat_world_rules": { "prompt_path": "seeds/prompts/mumu2_chat_world_rules.md" },
+    "mumu2_chat_scenes": { "prompt_path": "seeds/prompts/mumu2_chat_scenes.md" },
+    "mumu2_chat_script": { "prompt_path": "seeds/prompts/mumu2_chat_script.md" },
+    "mumu2_chat_production": { "prompt_path": "seeds/prompts/mumu2_chat_production.md" },
     "mumu2_promote_cast": { "prompt_path": "seeds/prompts/mumu2_promote_cast.md" },
-    "mumu2_promote_episode_briefs": { "prompt_path": "seeds/prompts/mumu2_promote_episode_briefs.md" }
+    "mumu2_promote_episode_briefs": { "prompt_path": "seeds/prompts/mumu2_promote_episode_briefs.md" },
+    "mumu2_promote_world_rules": { "prompt_path": "seeds/prompts/mumu2_promote_world_rules.md" },
+    "mumu2_promote_scenes": { "prompt_path": "seeds/prompts/mumu2_promote_scenes.md" },
+    "mumu2_promote_script": { "prompt_path": "seeds/prompts/mumu2_promote_script.md" },
+    "mumu2_promote_cast_assets": { "prompt_path": "seeds/prompts/mumu2_promote_cast_assets.md" },
+    "mumu2_promote_location_assets": { "prompt_path": "seeds/prompts/mumu2_promote_location_assets.md" },
+    "mumu2_promote_prop_assets": { "prompt_path": "seeds/prompts/mumu2_promote_prop_assets.md" },
+    "mumu2_promote_sfx_assets": { "prompt_path": "seeds/prompts/mumu2_promote_sfx_assets.md" },
+    "mumu2_promote_shot_assets": { "prompt_path": "seeds/prompts/mumu2_promote_shot_assets.md" },
+    "mumu2_promote_continuity_anchors": { "prompt_path": "seeds/prompts/mumu2_promote_continuity_anchors.md" }
   }
 }
