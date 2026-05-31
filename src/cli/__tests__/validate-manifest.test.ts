@@ -13,6 +13,8 @@ const BROKEN_SCHEMA = path.join(FIXTURE_DIR, "broken-schema.json");
 const MISSING_PROMPT = path.join(FIXTURE_DIR, "missing-prompt.json");
 const BROKEN_SEED = path.join(FIXTURE_DIR, "broken-seed-manifest.json");
 const BROKEN_SEEDS = path.join(FIXTURE_DIR, "broken-seeds");
+const MUMU2_MANIFEST = path.join(__dirname, "../../../config/projects/mumu2/manifest.json");
+const MUMU2_PROMPTS = path.join(__dirname, "../../../config/projects/mumu2/seeds/prompts");
 
 describe("runValidateManifestCli", () => {
   it("validates a mumu skeleton manifest and seed files by absolute path", async () => {
@@ -164,6 +166,45 @@ describe("runValidateManifestCli", () => {
     await runValidateManifestCli(["validate-manifest", VALID_MANIFEST, VALID_SEEDS], createIo().streams);
 
     expect(readFileSync(VALID_MANIFEST, "utf8")).toBe(before);
+  });
+
+  it("registers mumu2 world rules prompts with the expected op contract", async () => {
+    const io = createIo();
+
+    const exitCode = await runValidateManifestCli(["validate-manifest", MUMU2_MANIFEST], io.streams);
+
+    expect(exitCode).toBe(0);
+    expect(io.stderr()).toBe("");
+    expect(io.stdout()).toContain("system_prompts=9");
+
+    const manifest = JSON.parse(readFileSync(MUMU2_MANIFEST, "utf8")) as {
+      system_prompts: Record<string, { prompt_path: string }>;
+    };
+    expect(manifest.system_prompts.mumu2_chat_world_rules).toEqual({
+      prompt_path: "seeds/prompts/mumu2_chat_world_rules.md"
+    });
+    expect(manifest.system_prompts.mumu2_promote_world_rules).toEqual({
+      prompt_path: "seeds/prompts/mumu2_promote_world_rules.md"
+    });
+
+    const chatPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_chat_world_rules.md"), "utf8");
+    expect(chatPrompt).toContain('"active_slot"');
+    expect(chatPrompt).toContain('"world_rules"');
+    expect(chatPrompt).toContain('"add_world_rule"');
+    expect(chatPrompt).toContain('"update_world_rule"');
+    expect(chatPrompt).toContain('"delete_world_rule"');
+    expect(chatPrompt).toContain("patch");
+    expect(chatPrompt).toContain("不得包含 `id`");
+    expect(chatPrompt).toContain("何时主动调用 fetch_X 工具");
+    expect(chatPrompt).toContain("笔记本观察提案");
+
+    const promotePrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_promote_world_rules.md"), "utf8");
+    expect(promotePrompt).toContain('"active_slot"');
+    expect(promotePrompt).toContain('"world_rules"');
+    expect(promotePrompt).toContain('"add_world_rule"');
+    expect(promotePrompt).not.toContain('"update_world_rule"');
+    expect(promotePrompt).not.toContain('"delete_world_rule"');
+    expect(promotePrompt).toContain("何时主动调用 fetch_X 工具");
   });
 });
 
