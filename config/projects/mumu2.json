@@ -5,7 +5,7 @@
   "manifest_path": "/etc/meridian-roles/projects/mumu2/manifest.json",
   "seeds_source_path": "/etc/meridian-roles/projects/mumu2/seeds",
   "allowed_modes": ["session", "stateless"],
-  "skill_allowlist": [],
+  "skill_allowlist": ["fetch_dna_template", "fetch_full_source"],
   "llm_agent_kind": "codex",
   "credential_id": "5728d575-14d6-4d60-9288-b79d29428712",
   "user_reply_channel_template": {
