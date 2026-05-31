@@ -877,6 +877,13 @@ export const ChatterRoleConfigSchema = z.object({
   manifest_path: z.string().refine((p) => p.startsWith("/"), "manifest_path must be absolute").optional(),
   allowed_modes: ChatterAllowedModesSchema,
   skill_allowlist: z.array(z.string().min(1)).default([]),
+  // Optional project binding. When set, the chatter resolves the matching
+  // project SkillManifest at activate time and registers each allowlisted
+  // skill (intersection of `skill_allowlist` and the manifest) into the
+  // dispatch map. Existing operator-provisioned chatters (which only use
+  // structured.* + chatter.* skills) omit this field and keep working
+  // unchanged — see `src/roles/chatter/skills/project-scoped/`.
+  project_id: z.string().min(1).optional(),
   // llm_agent_kind is intentionally unconstrained here: chatter is just a
   // thin pass-through to meridian-hub's spawn boundary, and the list of
   // accepted kinds is owned by meridian-hub (surfaced to the GUI via

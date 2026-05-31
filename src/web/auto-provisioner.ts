@@ -615,6 +615,10 @@ function buildChatterCreateBody(policy: InterpolatedProjectPolicy): {
       allowed_modes: policy.allowed_modes,
       skill_allowlist: policy.skill_allowlist,
       llm_agent_kind: policy.llm_agent_kind,
+      // Forward project_id so the chatter can resolve the matching
+      // SkillManifest at activate time (see registerProjectScopedSkills
+      // in chatter.ts). Auto-provisioned chatters are always project-bound.
+      project_id: policy.project_id,
       ...(policy.credential_id ? { credential_id: policy.credential_id } : {}),
       ...(seedsInit ? { seeds_init: seedsInit } : {}),
       user_reply_channel: policy.user_reply_channel

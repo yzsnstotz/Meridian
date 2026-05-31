@@ -62,6 +62,9 @@ import {
   type StructuredSkills,
   type StructuredSkillName
 } from "../chatter/skills/structured";
+import { registerProjectSkills } from "../chatter/skills/project-scoped/register-project-skills";
+import { getProjectManifest } from "../../projects/registry";
+import type { AdsHmacTransport } from "../../transport/ads-hmac";
 import {
   getDefaultMumuMemoryGitSyncQueue,
   isMumuUserMemoryRoot,
@@ -117,11 +120,33 @@ export type ChatterSocketWriter = (
   result: HubResult
 ) => Promise<void>;
 
+/**
+ * Builds a per-user HMAC-signed transport bound to the chatter's user_id
+ * (derived from `config.memory_folder`'s basename). Called by the chatter at
+ * activate time when a `project_id` is set, and re-invoked on each project-
+ * scoped skill dispatch so a key rotation in the underlying factory takes
+ * effect on the next call without re-registering handlers.
+ *
+ * Operators wire this from `src/main.ts` (or the equivalent role-runner
+ * bootstrap), reading `MERIDIAN_ROLES_ADS_HMAC_KEY`, `MERIDIAN_ROLES_ADS_BASE_URL`,
+ * and `MERIDIAN_ROLES_CALLER_ID` from the environment.
+ */
+export type AdsTransportFactory = (userId: string) => AdsHmacTransport;
+
 export interface ChatterRoleOptions {
   scheduleSelfInitiatedTurn?: ScheduleSelfInitiatedTurn;
   now?: () => Date;
   socketWriter?: ChatterSocketWriter;
   memoryGitSyncQueue?: MumuMemoryGitSyncQueueLike | false;
+  /**
+   * Optional. When provided AND the config carries a `project_id` AND the
+   * project's `skill_allowlist` is non-empty, the chatter resolves the
+   * project's `SkillManifest` at activate time and registers each
+   * allowlisted skill into the dispatch map. Omitting this factory disables
+   * project-scoped skills entirely (the chatter logs once and continues
+   * with structured.* + chatter.* only).
+   */
+  adsTransportFactory?: AdsTransportFactory;
 }
 
 type ChatterEnvelope = NonNullable<NonNullable<HubResult["payload"]>["chatter"]>;
@@ -230,6 +255,7 @@ export class ChatterRole implements BaseRole {
       }
     });
     this.skillHandlers.set("chatter.suggest_observation", (args) => this.handleSuggestObservation(args));
+    this.registerProjectScopedSkills(ctx);
     this.sessionMgr = new SessionManager(this.store);
     this.sessionMgr.rehydrate();
     this.sandboxPlan = buildSandboxSpawnPlan({
@@ -239,6 +265,54 @@ export class ChatterRole implements BaseRole {
       llmAgentKind: this.config.llm_agent_kind
     });
     this.sandboxPlan.materialize();
+  }
+
+  /**
+   * Wire project-scoped skills into the dispatch map. No-op when:
+   *   - `config.project_id` is unset (chatter is not bound to a project),
+   *   - `config.skill_allowlist` is empty (defense in depth: nothing to wire),
+   *   - `options.adsTransportFactory` is unset (operator did not opt in to
+   *     project-scoped skills; logged once at warn level so the operator
+   *     can see why a project skill never registered).
+   *
+   * The transport is bound to the user_id derived from `config.memory_folder`'s
+   * basename — the same derivation already used by `enqueueMemoryCommit`.
+   * The factory is invoked PER skill dispatch (not once at registration) so
+   * a future key rotation in the operator-supplied factory takes effect
+   * without re-activating the chatter.
+   */
+  private registerProjectScopedSkills(ctx: RoleContext): void {
+    const projectId = this.config.project_id;
+    if (!projectId) {
+      return;
+    }
+    if (!this.config.skill_allowlist || this.config.skill_allowlist.length === 0) {
+      return;
+    }
+    if (!this.options.adsTransportFactory) {
+      ctx.log.warn("chatter: project-scoped skills declared but no adsTransportFactory; skipping", {
+        chatter_id: this.config.chatter_id,
+        project_id: projectId
+      });
+      return;
+    }
+    const manifest = getProjectManifest(projectId);
+    if (!manifest) {
+      ctx.log.warn("chatter: project_id has no registered SkillManifest; skipping", {
+        chatter_id: this.config.chatter_id,
+        project_id: projectId
+      });
+      return;
+    }
+    const userId = pathBasename(this.config.memory_folder);
+    const factory = this.options.adsTransportFactory;
+    registerProjectSkills(this.skillHandlers, {
+      projectName: projectId,
+      allowlist: this.config.skill_allowlist,
+      manifest,
+      transportFactory: () => factory(userId),
+      log: ctx.log
+    });
   }
 
   async onDeactivate(): Promise<void> {
