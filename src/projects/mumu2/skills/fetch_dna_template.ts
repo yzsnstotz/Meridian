@@ -30,15 +30,17 @@ export const FetchDnaTemplateOutputSchema = z.record(z.string(), z.unknown());
 
 export type FetchDnaTemplateOutput = z.infer<typeof FetchDnaTemplateOutputSchema>;
 
+type FetchDnaTemplateResponseBody = {
+  kind?: string;
+  id?: string;
+  content?: Record<string, unknown>;
+  error?: string;
+};
+
 export interface FetchDnaTemplateTransportResponse {
   ok: boolean;
   status: number;
-  json(): Promise<{
-    kind?: string;
-    id?: string;
-    content?: Record<string, unknown>;
-    error?: string;
-  }>;
+  json(): Promise<unknown>;
 }
 
 export interface FetchDnaTemplateTransport {
@@ -59,16 +61,21 @@ export async function fetchDnaTemplate(
     id: validated.id
   });
   if (!res.ok) {
-    const body = await res
-      .json()
-      .catch(() => ({} as { error?: string }));
+    const body = asFetchDnaTemplateResponseBody(await res.json().catch(() => ({})));
     throw new Error(
       `fetch_dna_template:${body.error ?? `HTTP_${res.status}`}`
     );
   }
-  const body = await res.json();
+  const body = asFetchDnaTemplateResponseBody(await res.json());
   if (!body.content) {
     throw new Error("fetch_dna_template:MALFORMED_RESPONSE");
   }
   return body.content;
+}
+
+function asFetchDnaTemplateResponseBody(value: unknown): FetchDnaTemplateResponseBody {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as FetchDnaTemplateResponseBody;
 }
