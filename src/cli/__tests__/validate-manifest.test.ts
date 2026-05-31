@@ -175,7 +175,7 @@ describe("runValidateManifestCli", () => {
 
     expect(exitCode).toBe(0);
     expect(io.stderr()).toBe("");
-    expect(io.stdout()).toContain("system_prompts=13");
+    expect(io.stdout()).toContain("system_prompts=20");
 
     const manifest = JSON.parse(readFileSync(MUMU2_MANIFEST, "utf8")) as {
       system_prompts: Record<string, { prompt_path: string }>;
