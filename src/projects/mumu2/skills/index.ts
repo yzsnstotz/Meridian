@@ -7,14 +7,16 @@
  * by the chatter role's `handleAgentToolCall` (see
  * `src/roles/definitions/chatter.ts`).
  *
- * NOTE: as of P2.X.B.1 there is no project-scoped skill-registration plug
- * point inside the chatter role — only the always-available
- * `chatter.suggest_observation` and the `structured.*` family are wired into
- * `skillHandlers`. Wiring the project-scoped skills (including
- * `fetch_dna_template`) into the dispatcher is tracked separately as a
- * follow-up; this module is the canonical export surface those wires will
- * import from.
+ * `skillManifest` below is the canonical handler map consumed by
+ * `src/projects/registry.ts` and threaded through `registerProjectSkills`
+ * into the chatter's `skillHandlers` Map at activate time. Each handler
+ * binds the underlying skill function to the per-user `AdsHmacTransport`
+ * supplied by the dispatcher.
  */
+import type { SkillManifest } from "../../registry";
+import { fetchDnaTemplate } from "./fetch_dna_template";
+import { fetchFullSource } from "./fetch_full_source";
+
 export {
   fetchDnaTemplate,
   FetchDnaTemplateInputSchema,
@@ -27,3 +29,29 @@ export type {
   FetchDnaTemplateTransport,
   FetchDnaTemplateTransportResponse
 } from "./fetch_dna_template";
+
+export {
+  fetchFullSource,
+  FetchFullSourceInputSchema,
+  FetchFullSourceOutputSchema
+} from "./fetch_full_source";
+export type {
+  FetchFullSourceInput,
+  FetchFullSourceOutput,
+  FetchFullSourceDeps,
+  FetchFullSourceTransport,
+  FetchFullSourceTransportResponse
+} from "./fetch_full_source";
+
+/**
+ * mumu2 manifest. Each entry is a thin (transport, input) wrapper around the
+ * underlying skill function so the per-user transport is bound at invoke
+ * time, not at registration time. Keys MUST match
+ * `config/projects/mumu2.json#skill_allowlist`.
+ */
+export const skillManifest: SkillManifest = {
+  fetch_dna_template: (transport, input) =>
+    fetchDnaTemplate(input as Parameters<typeof fetchDnaTemplate>[0], { transport }),
+  fetch_full_source: (transport, input) =>
+    fetchFullSource(input as Parameters<typeof fetchFullSource>[0], { transport })
+};
