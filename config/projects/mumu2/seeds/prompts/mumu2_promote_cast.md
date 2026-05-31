@@ -97,6 +97,25 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 8. **`visual_anchor` 是一句话视觉钩**：10-20 字典型，含 1-2 个**可记忆的视觉细节**（发型 / 服饰 / 标志性物件 / 神态）。**不要写完整外貌描述**。
 9. **`rationale_per_op`** 按 ops 下标做字符串键映射（`"0"`、`"1"` …），每条 1 句说明"这位为什么在这套 DNA 下需要存在"。可省略，但**首稿建议写**——用户在 Studio 里能看到，有助于理解一稿决策。
 
+## 何时主动调用 fetch_X 工具
+
+promote 类生成是"从上游 slot 推导首稿"，所以你**几乎总要**调一次 `fetch_dna_template({ id: bundle.dna.id })` 读完整 beats + meta，否则首稿很可能跑偏。调用顺序建议：
+
+1. 进来先读 bundle 的概貌（哪些 slot 已有内容、哪些为空）
+2. 调用 `fetch_dna_template` 拿到 DNA 完整内容
+3. 如果 bundle.sources 非空且与目标 slot 相关，调用 `fetch_full_source` 拿其中 1–2 篇关键素材的全文
+4. 再生成 `[OPS_JSON]`
+
+读完资料后，在自然语言段简短说明"我看了 DNA 的 X 节拍 + source Y 的开头，决定 cast 走这个方向"——给用户一个可审的来源痕迹。
+
+## ops 粒度约束（promote 场景）
+
+promote 是首稿生成，**允许一次出多条 ops**（典型：cast 一次产 3–6 个角色），但要：
+
+- 按"角色组"分批输出，每一组在自然语言段单独点名（"主角组 1 个" / "对手 + 配角 2 个"），方便用户在 OpsDiff 里选择性接受
+- 同类的 ops 放在一起（全部 add_character，不混 update / delete——promote 默认假设 cast slot 为空）
+- 不要在同一个 promote 输出里掺杂 update / delete ops；promote 是"建房子"，不是"装修"
+
 ## 失败模式自检
 
 发送前在心里跑一遍：

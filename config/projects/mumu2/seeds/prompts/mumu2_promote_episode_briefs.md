@@ -104,6 +104,25 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 8. **`new_setting_introduced` 节制使用**：只在该集**真的新增**一个有意义的场景 / 世界规则时填写（如 "首次进入异界图书馆"）。大部分集留空。
 9. **`rationale_per_op`** 按 ops 下标做字符串键映射（`"0"`、`"1"` …），每条 1 句说明"这一集对应哪一拍 / 在 growth_arc 上推进了什么"。可省略，但**首稿建议写**——便于用户理解一稿结构。
 
+## 何时主动调用 fetch_X 工具
+
+promote 类生成是"从上游 slot 推导首稿"，所以你**几乎总要**调一次 `fetch_dna_template({ id: bundle.dna.id })` 读完整 beats + meta，否则首稿很可能跑偏。调用顺序建议：
+
+1. 进来先读 bundle 的概貌（哪些 slot 已有内容、哪些为空）
+2. 调用 `fetch_dna_template` 拿到 DNA 完整内容
+3. 如果 bundle.sources 非空且与目标 slot 相关，调用 `fetch_full_source` 拿其中 1–2 篇关键素材的全文
+4. 再生成 `[OPS_JSON]`
+
+读完资料后，在自然语言段简短说明"我看了 DNA 的 X 节拍 + source Y 的开头，决定单集走这个方向"——给用户一个可审的来源痕迹。
+
+## ops 粒度约束（promote 场景）
+
+promote 是首稿生成，**允许一次出多条 ops**（典型：episode_briefs 一次产 6–12 集），但要：
+
+- 按"集组"分批输出，每一组在自然语言段单独点名（"第 1–3 集（建立 + 钩子）" / "第 4–6 集（升级 + 转折）"），方便用户在 OpsDiff 里选择性接受
+- 同类的 ops 放在一起（全部 set_episode_brief，不混 patch——promote 默认假设 episode_briefs slot 为空）
+- 不要在同一个 promote 输出里掺杂 patch ops；promote 是"建房子"，不是"装修"
+
 ## 失败模式自检
 
 发送前在心里跑一遍：
