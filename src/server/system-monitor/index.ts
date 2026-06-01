@@ -221,6 +221,12 @@ export async function buildSystemMonitorSnapshot(options: BuildSystemMonitorOpti
   push(indicators, aboveIndicator("C5", "loop_detectors", "Watchdog stall-detection rate", logCount(logCounts, "watchdog_stall_detected"), "events", 10, 50, "dispatcher/run-tool-ipc-bridge-error-spawn-storm.md"));
   push(indicators, aboveIndicator("C6", "loop_detectors", "Launch-breaker trips", logCount(logCounts, "launch_breaker_tripped"), "events", 1, 3, "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md"));
   push(indicators, aboveIndicator("C7", "loop_detectors", "Worker-breaker trips", logCount(logCounts, "worker_breaker_tripped"), "events", 1, 3, "dispatcher/circuit-breaker-defense-in-depth-and-real-pause.md"));
+  // C8 — emitted once per (dispatch_plan, worker) when the watchdog detects a
+  // worker stuck on manual_intervention_required whose PM resolver is
+  // terminal (failed, or completed-and-escalated). Any non-zero count means
+  // at least one dispatcher needs a human action; the watchdog now skips
+  // recovery for that worker so the legacy 2-minute storm cannot recur.
+  push(indicators, aboveIndicator("C8", "loop_detectors", "Dispatcher PM-resolver exhausted (awaiting human)", logCount(logCounts, "dispatcher_pm_resolver_exhausted"), "events", 1, 5, "dispatcher/watchdog-pm-resolver-exhausted-self-loop.md"));
 
   push(indicators, belowIndicator("D1", "system_resources", "Disk free on log volume", diskStat.freeBytes, "bytes", 5 * 1024 * 1024 * 1024, 1024 * 1024 * 1024, "session/2026-05-18-enospc.md"));
   push(indicators, fileSizeIndicator("D2", "system_resources", "meridian-roles log size", rolesLogStat, "bytes", 100 * 1024 * 1024, 500 * 1024 * 1024, "session/2026-05-18-enospc.md"));

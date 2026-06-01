@@ -73,7 +73,7 @@ function appStateWithDispatchers(planPaths: string[]): AppState {
 }
 
 describe("buildSystemMonitorSnapshot", () => {
-  it("returns the full 38-indicator inventory and escalates red threshold crossings", async () => {
+  it("returns the full 39-indicator inventory and escalates red threshold crossings", async () => {
     const oldIso = "2026-05-18T01:00:00.000Z";
     const fixtureA = await createDispatcherFixture({
       version: 2,
@@ -230,8 +230,20 @@ describe("buildSystemMonitorSnapshot", () => {
     });
 
     expect(snapshot.polled_at).toBe("2026-05-18T02:48:33.000Z");
-    expect(snapshot.indicators).toHaveLength(38);
+    expect(snapshot.indicators).toHaveLength(39);
     expect(snapshot.any_red).toBe(true);
+
+    // C8 — emitted-once-per-(plan, worker) signal that a dispatcher's PM
+    // resolver is exhausted (failed or completed-and-escalated). No fixture
+    // log lines were planted for it here, so value is 0 / green.
+    expect(snapshot.indicators.find((i) => i.id === "C8")).toMatchObject({
+      group: "loop_detectors",
+      name: "Dispatcher PM-resolver exhausted (awaiting human)",
+      unit: "events",
+      value: 0,
+      state: "green",
+      source_learning: "dispatcher/watchdog-pm-resolver-exhausted-self-loop.md"
+    });
 
     // D6 fixture: 2 MB fnm_multishells block (above 1 MB yellow, below 10 MB red)
     expect(snapshot.indicators.find((i) => i.id === "D6")).toMatchObject({
