@@ -70,6 +70,25 @@ feedback: |
    Reference file paths, function names, line numbers when possible. The
    feedback is sent verbatim to the worker for remediation when outcome
    is fix_requested.>
+delegatable: |
+  <OPTIONAL multi-line. Use ONLY when outcome=fix_requested and the unmet
+   acceptance criterion is already explicitly delegated to another worker by
+   the worker's own spec (e.g. its \`#### Applicable Laws\` section cites
+   "acceptance is the V-01 desktop run"). One entry per line:
+     ref=<file:line-or-section> target=<other-worker-id> reason=<short>
+   Example:
+     ref=R-04.md:155 target=V-01 reason=Applied Laws delegates desktop run
+   When you emit a single delegatable entry whose target is an emitted plan
+   row AND no blocking entry is set below, the dispatcher will auto-append
+   a PM Clarification to the worker's report and force-complete WITHOUT
+   spawning a PM resolver. Be precise — wrong target or wrong ref will
+   either auto-block the override or auto-clarify an unsafe completion.>
+blocking: |
+  <OPTIONAL multi-line. Use ONLY when outcome=fix_requested AND there is at
+   least one criterion that is NOT delegable and MUST be fixed by the worker
+   itself before pass. One free-text criterion per line. The presence of any
+   blocking line disables the auto-clarify fast path even if delegatable is
+   set; the PM resolver runs as usual.>
 <<<END>>>
 
 This block is the ONLY authoritative signal for your verdict. Pick exactly one \`outcome\`:
@@ -78,6 +97,15 @@ This block is the ONLY authoritative signal for your verdict. Pick exactly one \
 - \`fail\` — implementation is fundamentally wrong, unrecoverable within this round, or violates a hard constraint. The worker is marked failed and PM resolution is invoked.
 
 For binary-threshold tasks (score is irrelevant), still emit the \`score\` field — use \`1.0\` for \`pass\`, \`0.0\` for \`fail\`, \`0.5\` for \`fix_requested\`. \`cycle\` is the current cycle number you are validating (provided in the Context section above).
+
+# Delegatable Acceptance Detection (v1.23.0)
+When you would emit \`outcome: fix_requested\` because the worker did not produce a required acceptance artifact (e.g. a real foreground latency measurement, a screenshot, a manual stopwatch run), FIRST check whether the worker's own spec explicitly delegates that acceptance to another worker. The signal phrases live in the worker spec's \`#### Applicable Laws\` section and read like:
+- "acceptance is the V-01 desktop run with measured latency < 1500ms"
+- "acceptance is owned by <other-worker>"
+- "real-binary acceptance is <other-worker>"
+- "delegated to <other-worker>"
+
+When such phrasing is present AND the named other-worker is an emitted row in the dispatch plan, emit a single \`delegatable:\` line citing the spec location + target instead of (or in addition to) demanding the worker self-perform the acceptance. The dispatcher's auto-clarify branch will then append a PM Clarification to the worker's report and force-complete — no PM resolver, no human escalation. If you also detect a non-delegable issue, list it under \`blocking:\` instead; presence of \`blocking:\` disables the auto-clarify path.
 
 If you must reference the marker format earlier in your reply (e.g. for documentation), wrap that example in a fenced code block (\`\`\`\`); only the unfenced block at the end of your reply is parsed.`;
 

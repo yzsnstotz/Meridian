@@ -4,8 +4,12 @@ import type { DispatchWorkerState, KillPolicy, ValidatorConfig } from "../../typ
 import type { LifecycleStore } from "./lifecycle-store";
 import {
   parseMeridianStatusMarker,
+  parseValidatorBlocking,
+  parseValidatorDelegatable,
+  type ValidatorDelegatableEntry,
   type ValidatorStatusMarker
 } from "./meridian-status-marker";
+import { appendPmClarification } from "./pm-clarification-writer";
 import type { MeridianApiClient, MeridianRunResult } from "./meridian-api-client";
 import type { DispatchContinuationPlanRow } from "./service-continuation";
 import {
@@ -743,6 +747,19 @@ async function handleValidatorMarker(
       return { status: "failed", score, reason: "validator returned fail outcome" };
     }
     case "fix_requested": {
+      // v1.23.0 — auto-clarify on single delegatable + no blocking + target in plan.
+      const autoClarified = await tryAutoClarifyDelegatable(
+        deps,
+        workerId,
+        marker,
+        worker,
+        validatorThreadId,
+        cycle
+      );
+      if (autoClarified) {
+        await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "passed");
+        return autoClarified;
+      }
       if (cycle >= maxCycles) {
         deps.lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted", {
           score,
@@ -764,6 +781,140 @@ async function handleValidatorMarker(
       throw new Error(`Unhandled validator marker outcome: ${_exhaustive as string}`);
     }
   }
+}
+
+/**
+ * v1.23.0 — Auto-clarify a `fix_requested` marker whose unmet criterion the
+ * worker's own spec already delegates to another planned worker. Returns a
+ * `passed` cycle outcome when all preconditions are met; returns null when the
+ * caller should fall through to the standard fix_requested handling.
+ *
+ * Preconditions (ALL must hold):
+ * 1. Marker has at least one delegatable entry (`delegatable: ref=… target=…`).
+ * 2. Marker has NO blocking entries (`blocking:` is empty / absent).
+ * 3. Exactly one delegatable entry is present (multiple delegations are
+ *    ambiguous and fall through to PM resolver).
+ * 4. The delegated `target` is an emitted row in this dispatch plan (resolved
+ *    via lifecycleStore.load().workers[target] !== undefined).
+ * 5. The worker has a non-empty `expected_outputs[0]` we can append to.
+ *
+ * On success the helper:
+ * - Appends a `## PM Clarification — Auto-delegated to <target>` section to
+ *   the worker's report file (idempotent).
+ * - Marks the worker validated via `transitionToValidated` with feedback that
+ *   includes the auto-clarify note + the original validator feedback.
+ * - Returns `{ status: "passed", score: 1.0 }` so the dispatcher continues.
+ */
+async function tryAutoClarifyDelegatable(
+  deps: ValidatorOrchestratorDeps,
+  workerId: string,
+  marker: ValidatorStatusMarker,
+  worker: DispatchWorkerState,
+  validatorThreadId: string,
+  cycle: number
+): Promise<ValidatorCycleOutcome | null> {
+  const blocking = parseValidatorBlocking(marker.blocking);
+  if (blocking.length > 0) {
+    deps.log.info("Validator auto-clarify skipped (blocking present)", {
+      event: "validator_auto_clarify_skipped",
+      worker_id: workerId,
+      reason: "blocking_present",
+      blocking_count: blocking.length
+    });
+    return null;
+  }
+
+  const delegatable = parseValidatorDelegatable(marker.delegatable);
+  if (delegatable.length === 0) {
+    return null;
+  }
+  if (delegatable.length > 1) {
+    deps.log.info("Validator auto-clarify skipped (ambiguous delegation)", {
+      event: "validator_auto_clarify_skipped",
+      worker_id: workerId,
+      reason: "multiple_delegatable_entries",
+      delegatable_count: delegatable.length
+    });
+    return null;
+  }
+
+  const entry: ValidatorDelegatableEntry = delegatable[0]!;
+  const state = deps.lifecycleStore.load();
+  const targetExists = Object.prototype.hasOwnProperty.call(state.workers, entry.target);
+  if (!targetExists) {
+    deps.log.warn("Validator auto-clarify rejected (target not in plan)", {
+      event: "validator_auto_clarify_rejected",
+      worker_id: workerId,
+      reason: "unknown_target",
+      delegatable_target: entry.target,
+      delegatable_ref: entry.ref
+    });
+    return null;
+  }
+  if (entry.target === workerId) {
+    deps.log.warn("Validator auto-clarify rejected (self-delegation)", {
+      event: "validator_auto_clarify_rejected",
+      worker_id: workerId,
+      reason: "self_delegation",
+      delegatable_ref: entry.ref
+    });
+    return null;
+  }
+
+  const reportPath = worker.expected_outputs?.[0];
+  if (!reportPath || reportPath.length === 0) {
+    deps.log.warn("Validator auto-clarify rejected (no expected_outputs)", {
+      event: "validator_auto_clarify_rejected",
+      worker_id: workerId,
+      reason: "no_report_path"
+    });
+    return null;
+  }
+
+  let clarifyResult: { appended: boolean; headingLine: string };
+  try {
+    clarifyResult = await appendPmClarification({
+      workerReportPath: reportPath,
+      workerId,
+      delegatable: entry,
+      validatorThreadId,
+      cycle,
+      validatorFeedback: marker.feedback
+    });
+  } catch (error) {
+    deps.log.warn("Validator auto-clarify failed during PM Clarification append", {
+      event: "validator_auto_clarify_write_error",
+      worker_id: workerId,
+      report_path: reportPath,
+      delegatable_target: entry.target,
+      error: asErrorMessage(error)
+    });
+    return null;
+  }
+
+  const clarifiedFeedback = [
+    `[Auto-clarified by validator-orchestrator at cycle ${cycle}: acceptance criterion delegated to ${entry.target} per ${entry.ref}.${entry.reason ? ` Reason: ${entry.reason}.` : ""} PM Clarification ${clarifyResult.appended ? "appended" : "already present"} at ${reportPath}.]`,
+    "",
+    marker.feedback ?? "(no validator feedback)"
+  ].join("\n");
+
+  deps.lifecycleStore.transitionToValidated(workerId, {
+    score: 1.0,
+    feedback: clarifiedFeedback,
+    validatorThreadId
+  });
+
+  deps.log.info("Validator auto-clarified fix_requested via delegatable", {
+    event: "validator_auto_clarified",
+    worker_id: workerId,
+    delegatable_target: entry.target,
+    delegatable_ref: entry.ref,
+    cycle,
+    pm_clarification_appended: clarifyResult.appended,
+    report_path: reportPath
+  });
+
+  return { status: "passed", score: 1.0 };
 }
 
 function defaultScoreForOutcome(outcome: ValidatorStatusMarker["outcome"]): number {

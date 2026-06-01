@@ -15,7 +15,9 @@ import {
 import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
 import {
   PM_RESOLVER_ACTIONS,
-  PM_RESOLVER_MARKER_OUTCOMES
+  PM_RESOLVER_MARKER_OUTCOMES,
+  type ValidatorBlockingEntry,
+  type ValidatorDelegatableEntry
 } from "./meridian-status-marker";
 import {
   createLifecycleThreadIdCollisionError,
@@ -32,6 +34,21 @@ export interface PmResolverIssueContext {
   message?: string;
   error?: string;
   source?: string;
+  /**
+   * v1.23.0 — validator-emitted structured delegatable entries from the
+   * worker's most recent validation cycle, when the dispatcher spawns this
+   * resolver because auto-clarify could NOT close the loop (multiple
+   * delegatables, missing target in plan, or mixed delegatable+blocking).
+   * When provided, the resolver prompt renders them so the PM agent can
+   * make the delegation decision instead of re-deriving it. Empty / absent
+   * means no validator delegation context applies.
+   */
+  delegatable?: readonly ValidatorDelegatableEntry[];
+  /**
+   * v1.23.0 — validator-emitted hard blockers that must be resolved by the
+   * worker itself (NOT delegable). Surfaced for the PM agent's planning.
+   */
+  blocking?: readonly ValidatorBlockingEntry[];
 }
 
 export interface PmResolverRequest {
@@ -312,6 +329,28 @@ export function buildPmResolverPrompt(request: PmResolverRequest): string {
   const workerIdPlaceholder = request.issue.workerId ?? "<worker_id>";
   const outcomeOptions = PM_RESOLVER_MARKER_OUTCOMES.join(" | ");
   const pmActionOptions = PM_RESOLVER_ACTIONS.join(" | ");
+  const delegatable = request.issue.delegatable ?? [];
+  const blocking = request.issue.blocking ?? [];
+  const delegatableSection = delegatable.length === 0
+    ? ""
+    : [
+        "",
+        "# Validator-Emitted Delegatable Acceptance Entries (v1.23.0)",
+        "The validator reported `fix_requested` and emitted the following delegatable entries. The dispatcher's auto-clarify branch did NOT close the loop on its own — typically because more than one delegatable was named, the target worker is not in the plan, or a hard blocker accompanied the delegation. Treat each line as a candidate delegation the validator already classified as remediable by another worker's acceptance:",
+        ...delegatable.map((entry, idx) => `  ${idx + 1}. ref=${entry.ref} target=${entry.target}${entry.reason ? ` reason=${entry.reason}` : ""}`),
+        "",
+        "When the correct call is to delegate (e.g. exactly one entry whose target you confirm in the plan), append a `## PM Clarification — Delegated to <target>` section to the worker's report file (cite ref + target + this dispatcher_id + your timestamp), then call `update-status ... --status completed` for this worker. Do NOT call `resume-worker --action retry` for a criterion that the worker spec itself delegates. When the correct call is to reject the delegation (target absent, wrong reference, scope misread), document why in a `notify` to the PM channels and use `resume-worker --action retry --force true` so the worker addresses the criterion itself."
+      ].join("\n");
+  const blockingSection = blocking.length === 0
+    ? ""
+    : [
+        "",
+        "# Validator-Emitted Hard Blockers (v1.23.0)",
+        "The validator listed the following criteria as NON-delegable; the worker itself must address them before any retry can pass:",
+        ...blocking.map((entry, idx) => `  ${idx + 1}. ${entry.criterion}`),
+        "",
+        "These take precedence over any delegatable entries — even if one delegation looks clean, a retry is still required to address the blockers."
+      ].join("\n");
 
   return [
     "# Role",
@@ -324,6 +363,8 @@ export function buildPmResolverPrompt(request: PmResolverRequest): string {
     `source: ${request.issue.source ?? "dispatcher"}`,
     `message: ${request.issue.message ?? ""}`,
     `error: ${request.issue.error ?? ""}`,
+    delegatableSection,
+    blockingSection,
     "",
     "# Runtime Paths",
     `dispatch_plan_path: ${config.dispatch_plan_path}`,

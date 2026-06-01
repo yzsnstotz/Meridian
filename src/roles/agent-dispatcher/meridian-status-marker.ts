@@ -34,7 +34,7 @@ import { z } from "zod";
 const MARKER_BEGIN = "<<<MERIDIAN-STATUS>>>";
 const MARKER_END = "<<<END>>>";
 
-const MULTILINE_STRING_FIELDS = new Set(["notes", "feedback", "error"]);
+const MULTILINE_STRING_FIELDS = new Set(["notes", "feedback", "error", "delegatable", "blocking"]);
 
 // Canonical role-outcome enums. Single-sourced here so the Zod schemas below
 // and the per-role preamble emitters in `tool-gateway/tools/run.ts` (and the
@@ -75,7 +75,17 @@ const ValidatorMarkerSchema = z.object({
   cycle: z.number().int().nonnegative().optional(),
   score: z.number().optional(),
   feedback: z.string().optional(),
-  notes: z.string().optional()
+  notes: z.string().optional(),
+  // v1.23.0 structured fix-request fields (optional, multi-line).
+  // `delegatable`: each non-empty line is `ref=<file:line-or-section> target=<worker_id> [reason=<short>]`.
+  // `blocking`:    each non-empty line is a free-text criterion that BLOCKS pass and is NOT delegable.
+  // The dispatcher's auto-clarify branch (validator-orchestrator) inspects
+  // these when outcome === fix_requested: a single delegatable entry whose
+  // target exists in the plan triggers auto-PM-Clarification + force-complete
+  // without spawning a PM resolver. Multiple delegatables, any blocking item,
+  // or an unresolved target fall through to the PM-resolver path verbatim.
+  delegatable: z.string().optional(),
+  blocking: z.string().optional()
 });
 
 const PmResolverMarkerSchema = z.object({
@@ -293,4 +303,72 @@ function coerceScalar(key: string, value: string): unknown {
     }
   }
   return value;
+}
+
+// ─── Validator delegatable / blocking parsers (v1.23.0) ────────────────────────
+
+export interface ValidatorDelegatableEntry {
+  /** Source citation, e.g. "R-04.md:155" or "R-04.md §Applied Laws". */
+  ref: string;
+  /** Target worker ID (e.g. "V-01"); must exist in the dispatch plan to auto-clarify. */
+  target: string;
+  /** Optional one-line reason for the delegation (free text). */
+  reason?: string;
+}
+
+export interface ValidatorBlockingEntry {
+  /** Free-text criterion that must be resolved before the worker can pass. */
+  criterion: string;
+}
+
+const DELEGATABLE_LINE_REGEX = /^\s*ref\s*=\s*(?<ref>\S+(?:\s+\S+)*?)\s+target\s*=\s*(?<target>\S+)(?:\s+reason\s*=\s*(?<reason>.*))?\s*$/;
+
+/**
+ * Parse a `delegatable: |` multi-line YAML-pipe value from the validator marker.
+ * Each non-empty line must match `ref=<citation> target=<worker_id> [reason=<text>]`.
+ * Lines that don't match are silently skipped (the orchestrator will not act on them).
+ *
+ * Returns the empty array for `undefined` / `null` / empty input — auto-clarify
+ * is only triggered when this returns exactly one entry whose target resolves
+ * to a known plan row.
+ */
+export function parseValidatorDelegatable(raw: string | undefined | null): ValidatorDelegatableEntry[] {
+  if (!raw || typeof raw !== "string") {
+    return [];
+  }
+  const out: ValidatorDelegatableEntry[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    const match = DELEGATABLE_LINE_REGEX.exec(trimmed);
+    if (!match || !match.groups) continue;
+    const ref = match.groups.ref?.trim();
+    const target = match.groups.target?.trim();
+    if (!ref || !target) continue;
+    const entry: ValidatorDelegatableEntry = { ref, target };
+    const reason = match.groups.reason?.trim();
+    if (reason && reason.length > 0) entry.reason = reason;
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Parse a `blocking: |` multi-line YAML-pipe value. Each non-empty line becomes
+ * one ValidatorBlockingEntry. Used by the orchestrator to refuse auto-clarify
+ * when at least one item is non-delegable: a worker may simultaneously report a
+ * delegatable item AND a hard blocker; the hard blocker wins and the PM resolver
+ * runs as usual.
+ */
+export function parseValidatorBlocking(raw: string | undefined | null): ValidatorBlockingEntry[] {
+  if (!raw || typeof raw !== "string") {
+    return [];
+  }
+  const out: ValidatorBlockingEntry[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    out.push({ criterion: trimmed });
+  }
+  return out;
 }
