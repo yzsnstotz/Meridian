@@ -27,6 +27,12 @@ export const MONITOR_LOG_PATTERNS: LogPatternDefinition[] = [
   { key: "watchdog_stall_detected", pattern: /Watchdog detected stalled dispatcher/i, windowMs: 5 * 60 * 1000 },
   { key: "launch_breaker_tripped", pattern: /DispatcherLaunchBreaker tripped/i, windowMs: 5 * 60 * 1000 },
   { key: "worker_breaker_tripped", pattern: /DispatcherWorkerBreaker tripped/i, windowMs: 30 * 60 * 1000 },
+  // Emitted once per (dispatch_plan, worker) by the dispatcher watchdog when
+  // a worker is stuck on manual_intervention_required and its PM resolver
+  // is terminal (failed, or completed-and-escalated). The 24h window keeps
+  // the signal visible while operator action is pending; any non-zero count
+  // means a dispatcher needs human attention.
+  { key: "dispatcher_pm_resolver_exhausted", pattern: /dispatcher_pm_resolver_exhausted/i, windowMs: 24 * 60 * 60 * 1000 },
   { key: "lifecycle_auto_force_complete", pattern: /lifecycle_auto_force_complete/i, windowMs: 24 * 60 * 60 * 1000 },
   // Hub log markers shipped by meridian-hub PR #90 (storm three-windows fix).
   // Routed to system-monitor cards G2/G3/G4 to verify the fix in production.

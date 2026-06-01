@@ -2662,6 +2662,230 @@ describe("continueDispatchWorker", () => {
   });
 });
 
+describe("ReconciliationWatchdog PM-resolver exhausted self-loop guard", () => {
+  // Reproduces agent-dispatcher-f0953280 / R-04 (skills-ux-h1, 2026-06-01).
+  // Without the fix the watchdog re-detected the stalled dispatcher every
+  // ~2 minutes for 12 days because the failed PM resolver kept the worker
+  // in the manual-intervention queue while the per-issue dedup blocked
+  // respawn. The fix has two halves we assert here:
+  //   1. resolveManualInterventionWorker now skips the worker — so the
+  //      onDispatcherStalled callback is never invoked (no
+  //      "Watchdog detected stalled dispatcher" log).
+  //   2. The watchdog emits the new structured log line
+  //      `dispatcher_pm_resolver_exhausted` exactly once per
+  //      (dispatchPlanPath, workerId) so the system-monitor card can
+  //      surface the dispatcher to the operator without flooding.
+
+  const PLAN_MARKDOWN = [
+    "| Status | Batch | Worker | Model | Depends_On | Task |",
+    "| --- | --- | --- | --- | --- | --- |",
+    "| ⛔ BLOCKED | 1 | R-04 | gpt-5.5::xhigh | R-01 | blocked task |",
+    ""
+  ].join("\n");
+
+  async function setupExhaustedPmResolverHarness() {
+    const harness = await createHarness("watchdog-exhausted-pm-");
+    const planPath = path.join(harness.directory, "dispatch_plan.md");
+    await fsp.writeFile(planPath, PLAN_MARKDOWN, "utf8");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: {
+        thread_id: "agent-dispatcher-f0953280",
+        started_at: "2026-05-31T06:45:59.788Z",
+        status: "running"
+      },
+      workers: {
+        "R-04": {
+          thread_id: "codex_438",
+          trace_id: null,
+          started_at: "2026-05-31T11:45:34.048Z",
+          last_seen_at: "2026-05-31T12:00:20.773Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 1
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_440",
+          status: "failed",
+          started_at: "2026-05-31T11:49:15.079Z",
+          last_seen_at: "2026-05-31T11:57:08.305Z",
+          agent_type: "codex",
+          model_id: null,
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "R-04",
+            message: "manual intervention required: R-04 reported a blocking failure",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null,
+          marker_outcome: "escalated",
+          marker_pm_action: "escalate_human"
+        }
+      ]
+    });
+    return { harness, planPath };
+  }
+
+  it("does not fire the stall-detection callback when PM resolver is exhausted", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const { harness, planPath } = await setupExhaustedPmResolverHarness();
+    const { hubClient } = createHubClient(() => ({
+      trace_id: "trace",
+      thread_id: "agent-dispatcher-f0953280",
+      source: "codex",
+      status: "success",
+      content: "",
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+    const onDispatcherStalled = vi.fn(async () => {});
+    const log = silentLog();
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [planPath],
+      hubClient,
+      log,
+      intervalMs: 60_000,
+      onDispatcherStalled
+    });
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    expect(onDispatcherStalled).not.toHaveBeenCalled();
+    expect(log.info).not.toHaveBeenCalledWith(
+      "Watchdog detected stalled dispatcher with recoverable workers",
+      expect.anything()
+    );
+    expect(harness.directory).toBeTruthy(); // silence unused warning
+  });
+
+  it("emits dispatcher_pm_resolver_exhausted exactly once per (plan, worker) across multiple sweeps", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const { planPath } = await setupExhaustedPmResolverHarness();
+    const { hubClient } = createHubClient(() => ({
+      trace_id: "trace",
+      thread_id: "agent-dispatcher-f0953280",
+      source: "codex",
+      status: "success",
+      content: "",
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+    const log = silentLog();
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [planPath],
+      hubClient,
+      log,
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    const exhaustedCalls = log.info.mock.calls.filter(
+      ([message]) => message === "dispatcher_pm_resolver_exhausted"
+    );
+    expect(exhaustedCalls).toHaveLength(1);
+    expect(exhaustedCalls[0]?.[1]).toEqual(expect.objectContaining({
+      event: "dispatcher_pm_resolver_exhausted",
+      dispatchPlanPath: planPath,
+      dispatcherThreadId: "agent-dispatcher-f0953280",
+      workerId: "R-04",
+      issueStatus: "manual_intervention_required"
+    }));
+  });
+
+  it("re-arms the one-shot log when the PM resolver transitions back to running (operator action)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const { harness, planPath } = await setupExhaustedPmResolverHarness();
+    const storePath = path.join(harness.directory, "dispatch_threads.json");
+    const store = new LifecycleStore(storePath);
+    const { hubClient } = createHubClient(() => ({
+      trace_id: "trace",
+      thread_id: "agent-dispatcher-f0953280",
+      source: "codex",
+      status: "success",
+      content: "",
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+    const log = silentLog();
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [planPath],
+      hubClient,
+      log,
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+    expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_pm_resolver_exhausted")).toHaveLength(1);
+
+    // Simulate operator action: a fresh PM resolver thread starts for the
+    // same issue (the worker is no longer exhausted).
+    const refreshed = store.load();
+    refreshed.pm_resolvers = [
+      ...(refreshed.pm_resolvers ?? []),
+      {
+        thread_id: "codex_900",
+        status: "running",
+        started_at: "2026-06-01T03:00:00.000Z",
+        last_seen_at: "2026-06-01T03:00:00.000Z",
+        agent_type: "codex",
+        model_id: null,
+        mode: "bridge",
+        auto_approve: true,
+        issue: {
+          status: "manual_intervention_required",
+          worker_id: "R-04",
+          message: "fresh attempt",
+          error: null,
+          source: "watchdog"
+        },
+        result: null,
+        error: null,
+        transport_error: null,
+        marker_outcome: null,
+        marker_pm_action: null
+      }
+    ];
+    store.save(refreshed);
+    await watchdog.sweep();
+
+    // Resolver back to failed → the key should be re-armed and the next
+    // sweep should emit exactly one more log line, not stay silent.
+    const reExhausted = store.load();
+    reExhausted.pm_resolvers = (reExhausted.pm_resolvers ?? []).map((resolver) =>
+      resolver.thread_id === "codex_900"
+        ? { ...resolver, status: "failed", last_seen_at: "2026-06-01T03:05:00.000Z" }
+        : resolver
+    );
+    store.save(reExhausted);
+    await watchdog.sweep();
+
+    expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_pm_resolver_exhausted")).toHaveLength(2);
+  });
+});
+
 async function createHarness(prefix = "watchdog-test-") {
   const directory = await fsp.mkdtemp(path.join(tmpdir(), prefix));
   tempDirectories.add(directory);

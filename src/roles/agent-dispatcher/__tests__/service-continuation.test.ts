@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isPmResolverExhaustedForManualIntervention,
   resolveEligibleServiceContinueWorkers,
+  resolveExhaustedPmResolverWorkers,
   resolveManualInterventionWorker,
   resolveServiceContinueWorker
 } from "../service-continuation";
-import type { DispatchThreadStateV2 } from "../../../types";
+import type { DispatchThreadStateV2, PmResolverLifecycleState } from "../../../types";
 
 describe("service continuation", () => {
   it("treats hyphen dependency placeholders as no dependencies", () => {
@@ -464,6 +466,144 @@ describe("service continuation", () => {
     });
 
     expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-44");
+  });
+
+  describe("PM-resolver exhausted skip (watchdog self-loop guard)", () => {
+    // Reproduces agent-dispatcher-f0953280 / R-04 self-loop: PM resolver
+    // thread for the same manual_intervention_required issue terminated
+    // (failed, or completed-and-escalated), the per-issue dedup blocks
+    // respawn, and the watchdog used to re-flag the worker every interval
+    // forever — 347K log lines over 12 days.
+
+    const buildResolver = (overrides: Partial<PmResolverLifecycleState> = {}): PmResolverLifecycleState => ({
+      thread_id: "pm-thread-x",
+      status: "failed",
+      started_at: "2026-05-31T11:49:15.079Z",
+      last_seen_at: "2026-05-31T11:57:08.305Z",
+      agent_type: "codex",
+      model_id: null,
+      mode: "bridge",
+      auto_approve: true,
+      issue: {
+        status: "manual_intervention_required",
+        worker_id: "R-04",
+        message: "manual intervention required",
+        error: null,
+        source: "watchdog"
+      },
+      result: null,
+      error: null,
+      transport_error: null,
+      marker_outcome: null,
+      marker_pm_action: null,
+      ...overrides
+    });
+
+    it("does not flag manual intervention when latest PM resolver thread is failed", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "failed" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBeNull();
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(true);
+      expect(resolveExhaustedPmResolverWorkers(rows, state)).toEqual(["R-04"]);
+    });
+
+    it("does not flag manual intervention when latest PM resolver completed with marker_outcome=escalated", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "completed", marker_outcome: "escalated", marker_pm_action: "escalate_human" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBeNull();
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(true);
+    });
+
+    it("still flags manual intervention when the latest PM resolver is still running", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "running" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveExhaustedPmResolverWorkers(rows, state)).toEqual([]);
+    });
+
+    it("still flags manual intervention when the resolver completed with marker_outcome=resolved (a different issue, then re-blocked)", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "completed", marker_outcome: "resolved", marker_pm_action: "retry" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+    });
+
+    it("uses the most recent PM resolver (by last_seen_at) when multiple exist for the same worker", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [
+        buildResolver({ thread_id: "pm-thread-old", status: "failed", last_seen_at: "2026-05-30T08:00:00.000Z" }),
+        buildResolver({ thread_id: "pm-thread-new", status: "running", last_seen_at: "2026-05-31T15:00:00.000Z" })
+      ];
+
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+    });
+
+    it("ignores PM resolvers whose issue.worker_id does not match", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [
+        buildResolver({ status: "failed", issue: { status: "manual_intervention_required", worker_id: "R-02", message: null, error: null, source: "watchdog" } })
+      ];
+
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+    });
+
+    it("ignores PM resolvers whose issue.status differs (a separate issue category)", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [
+        buildResolver({ status: "failed", issue: { status: "still_blocked", worker_id: "R-04", message: null, error: null, source: "dispatcher" } })
+      ];
+
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+    });
+
+    it("resolveExhaustedPmResolverWorkers returns all exhausted workers across rows", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "—" },
+        { status: "⛔ BLOCKED", batch: "1", worker: "M-09", model: "CODEX-XHIGH", depends_on: "—" },
+        { status: "⛔ BLOCKED", batch: "1", worker: "N-21", model: "CODEX-XHIGH", depends_on: "—" }
+      ];
+      const state = createLifecycleState({
+        "R-04": { status: "blocked" },
+        "M-09": { status: "blocked" },
+        "N-21": { status: "blocked" }
+      });
+      state.pm_resolvers = [
+        buildResolver({ thread_id: "pm-r04", status: "failed", issue: { status: "manual_intervention_required", worker_id: "R-04", message: null, error: null, source: "watchdog" } }),
+        buildResolver({ thread_id: "pm-m09", status: "completed", marker_outcome: "escalated", issue: { status: "manual_intervention_required", worker_id: "M-09", message: null, error: null, source: "watchdog" } }),
+        buildResolver({ thread_id: "pm-n21", status: "running", issue: { status: "manual_intervention_required", worker_id: "N-21", message: null, error: null, source: "watchdog" } })
+      ];
+
+      expect(resolveExhaustedPmResolverWorkers(rows, state).sort()).toEqual(["M-09", "R-04"]);
+    });
   });
 });
 

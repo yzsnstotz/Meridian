@@ -30,6 +30,7 @@ import {
 import {
   countEligiblePendingServiceContinueWorkersFromWorkerRows,
   isHumanDispatchRow,
+  resolveExhaustedPmResolverWorkersFromWorkerRows,
   resolveManualInterventionWorkerFromWorkerRows,
   resolveServiceContinueWorkerFromWorkerRows
 } from "./service-continuation";
@@ -121,6 +122,13 @@ export class ReconciliationWatchdog {
   // response body" — that string is NOT missing-thread evidence (the kill
   // outcome is unknown), so the sweep would otherwise retry every tick.
   private readonly cleanupKillTransportCooldownUntilMs = new Map<string, number>();
+  // One-shot dedup so a dispatcher whose recovery is permanently exhausted
+  // (PM resolver failed or escalated to a human and the per-issue dedup
+  // prevents respawn) emits `dispatcher_pm_resolver_exhausted` once per
+  // `(dispatchPlanPath, workerId)` instead of every interval. Cleared
+  // automatically when the predicate stops flagging the key — so a PM
+  // re-spawn or operator unblock re-arms the log on the next regression.
+  private readonly loggedExhaustedPmResolverKeys = new Set<string>();
   // Test seam — defaulting to Date.now keeps production behavior intact.
   private readonly now: () => number;
 
@@ -604,10 +612,6 @@ export class ReconciliationWatchdog {
     lifecycleStore: LifecycleStore,
     dispatchPlanPath: string
   ): Promise<void> {
-    if (!this.onDispatcherStalled) {
-      return;
-    }
-
     if (this.isDispatcherPaused) {
       try {
         if (await this.isDispatcherPaused(dispatchPlanPath)) {
@@ -622,7 +626,21 @@ export class ReconciliationWatchdog {
     }
 
     const state = lifecycleStore.load();
-    const { pendingWorkerCount, continueWorkerId } = await resolveRecoverableWorkerState(dispatchPlanPath, state);
+    const { pendingWorkerCount, continueWorkerId, exhaustedPmResolverWorkerIds } =
+      await resolveRecoverableWorkerState(dispatchPlanPath, state);
+
+    // Emit one structured log line per (dispatchPlanPath, workerId) tuple
+    // whose recovery path is exhausted. Without this, the stalled-dispatcher
+    // detector below either re-fires every tick on the same worker (when the
+    // skip was not yet applied) or stays silent forever (now that
+    // resolveManualInterventionWorker skips exhausted resolvers), and the
+    // operator has no signal that a dispatcher needs human action.
+    this.reportExhaustedPmResolvers(dispatchPlanPath, state, exhaustedPmResolverWorkerIds);
+
+    if (!this.onDispatcherStalled) {
+      return;
+    }
+
     if (pendingWorkerCount === 0 && !continueWorkerId) {
       return;
     }
@@ -692,6 +710,42 @@ export class ReconciliationWatchdog {
         dispatchPlanPath,
         error: asError(error).message
       });
+    }
+  }
+
+  private reportExhaustedPmResolvers(
+    dispatchPlanPath: string,
+    state: DispatchThreadStateV2,
+    exhaustedWorkerIds: string[]
+  ): void {
+    const activeKeys = new Set<string>();
+    const dispatcherThreadId = state.dispatcher.thread_id?.trim() ?? null;
+    for (const workerId of exhaustedWorkerIds) {
+      const key = `${dispatchPlanPath}::${workerId}`;
+      activeKeys.add(key);
+      if (this.loggedExhaustedPmResolverKeys.has(key)) {
+        continue;
+      }
+      this.loggedExhaustedPmResolverKeys.add(key);
+      this.log.info("dispatcher_pm_resolver_exhausted", {
+        event: "dispatcher_pm_resolver_exhausted",
+        dispatchPlanPath,
+        dispatcherThreadId,
+        workerId,
+        issueStatus: "manual_intervention_required",
+        hint: "PM resolver terminal without resolve; operator action required"
+      });
+    }
+    // Forget keys whose worker is no longer flagged as exhausted under this
+    // plan path — covers PM-resolver re-spawn after operator action, worker
+    // transition, or dispatcher pause/resume. Other dispatch_plan_paths
+    // are untouched so a sweep that skipped a plan (read error, missing
+    // markdown) does not silently re-arm its already-logged keys.
+    const planPrefix = `${dispatchPlanPath}::`;
+    for (const key of this.loggedExhaustedPmResolverKeys) {
+      if (key.startsWith(planPrefix) && !activeKeys.has(key)) {
+        this.loggedExhaustedPmResolverKeys.delete(key);
+      }
     }
   }
 }
@@ -786,7 +840,11 @@ function hasTerminalDispatcherControllerTurn(state: DispatchThreadStateV2): bool
 async function resolveRecoverableWorkerState(
   dispatchPlanPath: string,
   state: DispatchThreadStateV2
-): Promise<{ pendingWorkerCount: number; continueWorkerId: string | null }> {
+): Promise<{
+  pendingWorkerCount: number;
+  continueWorkerId: string | null;
+  exhaustedPmResolverWorkerIds: string[];
+}> {
   try {
     const markdown = await fs.readFile(dispatchPlanPath, "utf8");
     const rows = parseDispatchPlanRows(markdown);
@@ -795,12 +853,14 @@ async function resolveRecoverableWorkerState(
       ?? resolveManualInterventionWorkerFromWorkerRows(rows, state);
     return {
       pendingWorkerCount: countEligiblePendingServiceContinueWorkersFromWorkerRows(rows, state),
-      continueWorkerId
+      continueWorkerId,
+      exhaustedPmResolverWorkerIds: resolveExhaustedPmResolverWorkersFromWorkerRows(rows, state)
     };
   } catch {
     return {
       pendingWorkerCount: countWorkersInStatus(state, "pending"),
-      continueWorkerId: null
+      continueWorkerId: null,
+      exhaustedPmResolverWorkerIds: []
     };
   }
 }

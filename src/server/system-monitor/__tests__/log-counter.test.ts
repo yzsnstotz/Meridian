@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   countIsNotRegisteredPostHubInit,
   countPatternsInText,
-  HUB_RESTART_WINDOW_MS
+  HUB_RESTART_WINDOW_MS,
+  MONITOR_LOG_PATTERNS
 } from "../log-counter";
 
 const ONE_MIN = 60 * 1000;
@@ -125,5 +126,38 @@ describe("countIsNotRegisteredPostHubInit", () => {
 
     expect(countIsNotRegisteredPostHubInit(text, NOW, 10_000)).toBe(0);
     expect(countIsNotRegisteredPostHubInit(text, NOW, HUB_RESTART_WINDOW_MS)).toBe(1);
+  });
+});
+
+describe("MONITOR_LOG_PATTERNS — dispatcher_pm_resolver_exhausted", () => {
+  // Backs the new C8 system-monitor card. The pattern must match the
+  // structured log line the dispatcher watchdog emits when a worker is
+  // wedged on manual_intervention_required behind an exhausted PM
+  // resolver. The 24h window keeps the signal visible until the operator
+  // acts; any non-zero card value means a dispatcher needs attention.
+
+  const definition = MONITOR_LOG_PATTERNS.find((entry) => entry.key === "dispatcher_pm_resolver_exhausted");
+
+  it("is registered with a 24h window", () => {
+    expect(definition).toBeDefined();
+    expect(definition?.windowMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("matches the watchdog's structured emission line", () => {
+    const ts = new Date(NOW - 10 * ONE_MIN).toISOString();
+    const text = `${ts} INFO dispatcher_pm_resolver_exhausted { event: 'dispatcher_pm_resolver_exhausted', dispatchPlanPath: '/x/plan.md', workerId: 'R-04' }`;
+
+    const counts = countPatternsInText(text, NOW);
+
+    expect(counts.get("dispatcher_pm_resolver_exhausted")).toBe(1);
+  });
+
+  it("does not match unrelated watchdog stall lines", () => {
+    const ts = new Date(NOW - 5 * ONE_MIN).toISOString();
+    const text = `${ts} INFO Watchdog detected stalled dispatcher with recoverable workers { workerId: 'R-04' }`;
+
+    const counts = countPatternsInText(text, NOW);
+
+    expect(counts.get("dispatcher_pm_resolver_exhausted")).toBe(0);
   });
 });

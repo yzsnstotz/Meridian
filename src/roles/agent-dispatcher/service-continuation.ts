@@ -130,6 +130,20 @@ export function resolveManualInterventionWorker(
       continue;
     }
 
+    // PM-resolver exhausted: the watchdog already invoked a PM resolver for
+    // the same (worker, manual_intervention_required) issue and that
+    // resolver thread reached a terminal lifecycle state without resolving
+    // it (failed thread, or completed-and-escalated to a human). The
+    // dispatcher's per-issue dedup prevents spawning another PM resolver
+    // for the same issue, so re-flagging the worker as
+    // manual_intervention_required just causes the watchdog to detect the
+    // same stall every interval, fire onDispatcherStalled, log "PM resolver
+    // already requested", and repeat forever (observed: R-04 on
+    // agent-dispatcher-f0953280 emitting 347K storm lines over 12 days).
+    if (isPmResolverExhaustedForManualIntervention(lifecycleState, normalizedWorkerId)) {
+      continue;
+    }
+
     if (isBlockedDispatchStatus(row.status)) {
       return normalizedWorkerId;
     }
@@ -142,6 +156,105 @@ export function resolveManualInterventionWorker(
   }
 
   return null;
+}
+
+/**
+ * True when the most recent PM resolver targeting this worker's
+ * `manual_intervention_required` issue has reached a terminal lifecycle
+ * state without resolving it — i.e. its thread is `failed`, or it
+ * `completed` with `marker_outcome: "escalated"` (the PM agent's signal
+ * that a human must act). Once this is true, the dispatcher's per-issue
+ * dedup prevents a fresh resolver from spawning, so the watchdog should
+ * not keep re-detecting the same stall.
+ */
+export function isPmResolverExhaustedForManualIntervention(
+  lifecycleState: DispatchThreadStateV2,
+  workerId: string
+): boolean {
+  const resolvers = lifecycleState.pm_resolvers ?? [];
+  let latestIndex = -1;
+  let latestSeenMs = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < resolvers.length; i += 1) {
+    const resolver = resolvers[i]!;
+    if (resolver.issue.worker_id !== workerId) {
+      continue;
+    }
+    if (resolver.issue.status !== "manual_intervention_required") {
+      continue;
+    }
+    const seenMs = Date.parse(resolver.last_seen_at);
+    const sortKey = Number.isFinite(seenMs) ? seenMs : i;
+    if (sortKey <= latestSeenMs) {
+      continue;
+    }
+    latestSeenMs = sortKey;
+    latestIndex = i;
+  }
+  if (latestIndex < 0) {
+    return false;
+  }
+  const latest = resolvers[latestIndex]!;
+  if (latest.status === "failed") {
+    return true;
+  }
+  if (latest.status === "completed" && latest.marker_outcome === "escalated") {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The set of worker IDs that resolveManualInterventionWorker would skip
+ * solely because of an exhausted PM resolver. Used by the watchdog to
+ * emit a single state-transition log per (dispatch_plan, worker) so the
+ * operator knows the dispatcher needs human attention without flooding
+ * the log every poll.
+ */
+export function resolveExhaustedPmResolverWorkers(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): string[] {
+  const exhausted: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (isHumanDispatchRow(row)) {
+      continue;
+    }
+    const workerId = row.worker.trim();
+    if (!workerId || seen.has(workerId)) {
+      continue;
+    }
+    const workerState = resolveLifecycleWorkerState(lifecycleState, row.worker);
+    const wouldFlagManual = isBlockedDispatchStatus(row.status)
+      || workerState?.status === "blocked"
+      || (!!workerState?.hub_result && hubResultRequiresManualIntervention(workerState.hub_result));
+    if (!wouldFlagManual) {
+      continue;
+    }
+    if (!isPmResolverExhaustedForManualIntervention(lifecycleState, workerId)) {
+      continue;
+    }
+    exhausted.push(workerId);
+    seen.add(workerId);
+  }
+  return exhausted;
+}
+
+export function resolveExhaustedPmResolverWorkersFromWorkerRows(
+  rows: DispatchContinuationWorkerRow[],
+  lifecycleState: DispatchThreadStateV2
+): string[] {
+  return resolveExhaustedPmResolverWorkers(
+    rows.map((row) => ({
+      status: row.status,
+      batch: row.batch ?? null,
+      worker: row.worker_id,
+      model: row.model,
+      depends_on: row.depends_on,
+      notes: row.notes ?? null
+    })),
+    lifecycleState
+  );
 }
 
 export function resolveManualInterventionWorkerFromWorkerRows(
