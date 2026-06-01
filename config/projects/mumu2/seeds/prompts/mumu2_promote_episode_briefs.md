@@ -26,7 +26,7 @@ ADS 在每一次 promote 调度时，都会把这个项目在筹备室里挑定�
 ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `user_request`**，这是自动化调用）：
 
 - **`bundle`**：当前工作站的完整 v2 bundle（JSON）。重点 slot：
-  - `bundle.dna` — DNA 模板快照，含 `dna.meta`（`audience` / `tone` / `subgenre` / `hook_required` / `growth_arc`）。**这是 brief 必须对齐的基调**。
+  - `bundle.dna` — 当前固定为 `null`，不要从这里取 DNA；真实 DNA 在上面 「项目灵魂 + 脊柱」段的 **`project_dna`** prompt_part 里。
   - `bundle.world_rules[]` — 世界设定（P5 stub，目前为空）。
   - `bundle.cast[]` — 现有角色表。**brief 里引用的角色名应来自 cast**（如果 cast 为空就不要发明角色名）。
   - `bundle.episode_briefs[]` — **应为空**（promote 仅在空 slot 上被调用）。
@@ -37,7 +37,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 - **`current_blocks`**：兼容字段，promote 场景下一般为空数组。
 - **`parent_hash`**：本轮基于的 bundle 哈希（透传即可，无需理解）。
 
-> **注意：没有 `user_request`**。这是自动化首稿生成，没有用户指令需要遵循 / 冲突。你的任务是基于 `bundle.dna` + `bundle.beats` + `bundle.cast` 产出一份**称职的起点**，用户随后用 `mumu2_chat_episode_briefs` 迭代。
+> **注意：没有 `user_request`**。这是自动化首稿生成，没有用户指令需要遵循 / 冲突。你的任务是基于 `project_dna` + `bundle.beats` + `bundle.cast` 产出一份**称职的起点**，用户随后用 `mumu2_chat_episode_briefs` 迭代。
 
 ## 你的输出格式（**严格、两段式**）
 
@@ -82,7 +82,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 - **`protagonist_goal`** — 主角这一集想要什么。
 - **`antagonist_pressure`** — 对立面 / 阻力 / 反派施加的压力。
 - **`emotional_arc`** — 主角这一集的情绪起点 → 终点（如 "失落 → 决心"）。
-- **`ending_hook`** — 集末的悬念 / 开放问题，把观众拉到下一集。**若 `bundle.dna.hook_required === true`，每集都必须有非空 `ending_hook`**。
+- **`ending_hook`** — 集末的悬念 / 开放问题，把观众拉到下一集。**若 `project_dna.hook_required === true`，每集都必须有非空 `ending_hook`**。
 - **`new_setting_introduced`** — 这一集首次出现的场景 / 世界规则（可选；没新东西就空字符串或省略）。
 
 > 其它字段语义见 `mumu2_chat_episode_briefs.md`。
@@ -104,11 +104,11 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
    - **若 `bundle.beats` 为空**：自行按品类典型集数生成（短剧默认 8 集，抖音 1 集）。
    - 每集的 `core_conflict` / `emotional_arc` 应**反映其映射的 beat 的 `purpose` / `emotion_shape`**。
 4. **`hook_required` 强制**：
-   - 若 `bundle.dna.hook_required === true`（默认就是 true），**每一集都必须有非空 `ending_hook`**。
+   - 若 `project_dna.hook_required === true`（默认就是 true），**每一集都必须有非空 `ending_hook`**。
    - 最后一集的 `ending_hook` 可以是**闭合钩**（resolution / closure / 余韵 / 开放式收尾），不必是 cliffhanger，但**仍必须非空**。
    - 中间集都应是**升级 / 翻转 / 揭密** 型 cliffhanger，把观众推到下一集。
 5. **Growth arc 可视化**：
-   - 整组 brief 应**集体呈现**主角从 `bundle.dna.growth_arc` 起点到终点的轨迹。
+   - 整组 brief 应**集体呈现**主角从 `project_dna.growth_arc` 起点到终点的轨迹。
    - 每集的 `emotional_arc` 是这条总轨迹上的**一段切片**，相邻集之间应有递进 / 转折关系，不要重复同一种情绪起止。
 6. **Cast 引用一致性**：
    - **若 `bundle.cast` 非空**：在 `core_conflict` / `antagonist_pressure` / `protagonist_goal` 里引用具体名字时，**必须用 cast 里已有的角色名**（不要发明）。
@@ -122,7 +122,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 
 ## 何时主动调用 fetch_X 工具
 
-promote 类生成是"从上游 slot 推导首稿"，所以你**几乎总要**调一次 `fetch_dna_template({ id: bundle.dna.id })` 读完整 beats + meta，否则首稿很可能跑偏。调用顺序建议：
+promote 类生成是"从上游 slot 推导首稿"，所以你**几乎总要**调一次 `fetch_dna_template({ id: project_dna.id })` 读完整 beats + meta，否则首稿很可能跑偏。调用顺序建议：
 
 1. 进来先读 bundle 的概貌（哪些 slot 已有内容、哪些为空）
 2. 调用 `fetch_dna_template` 拿到 DNA 完整内容
@@ -150,11 +150,11 @@ promote 是首稿生成，**允许一次出多条 ops**（典型：episode_brief
 - **每个 `brief.episode_id` 与对应 `op.episode_id` 完全一致**？
 - `episode_id` 从 `"ep1"` 起严格递增、无跳号、命名格式统一？
 - 集数在品类对应的合理区间内（短剧 6-30，连线 1-5，抖音 1）？
-- **若 `bundle.dna.hook_required === true`，每一集** `ending_hook` **非空**（含最后一集）？
-- 整组 `emotional_arc` 集体呈现 `bundle.dna.growth_arc` 的起点 → 终点轨迹，相邻集有递进？
+- **若 `project_dna.hook_required === true`，每一集** `ending_hook` **非空**（含最后一集）？
+- 整组 `emotional_arc` 集体呈现 `project_dna.growth_arc` 的起点 → 终点轨迹，相邻集有递进？
 - 引用的角色名都来自 `bundle.cast`（若 cast 为空则用功能化代称，不发明名字）？
 - 与 `bundle.beats` 自洽，每集 `core_conflict` / `emotional_arc` 能映射到至少一拍（若 beats 非空）？
-- 与 `bundle.dna.meta` 自洽（`audience` / `tone` / `subgenre`）？
+- 与 `project_dna` 自洽（`audience` / `tone` / `subgenre`）？
 
 ## 旧格式兼容
 

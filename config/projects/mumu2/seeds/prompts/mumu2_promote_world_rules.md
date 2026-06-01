@@ -26,7 +26,7 @@ ADS 在每一次 promote 调度时，都会把这个项目在筹备室里挑定�
 ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `user_request`）：
 
 - **`bundle`**：当前工作站的完整 v2 bundle（JSON）。重点 slot：
-  - `bundle.dna` — DNA 模板快照，含 `dna.meta`（`audience` / `tone` / `subgenre` / `hook_required` / `growth_arc`）。这是你生成世界规则的首要依据。
+  - `bundle.dna` — 当前固定为 `null`，不要从这里取 DNA；真实 DNA 在上面 「项目灵魂 + 脊柱」段的 **`project_dna`** prompt_part 里。
   - `bundle.world_rules[]` — 应为空（promote 仅在空 slot 上被调用）。
   - `bundle.cast[]` — 角色表。若角色视觉锚点 / 能力 / 阵营已经出现，应反映到世界规则。
   - `bundle.episode_briefs[]` — 单集 briefs。若某集已经建立地点、能力、传说，规则应填入对应的 `established_in_episode`。
@@ -37,7 +37,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
 - **`current_blocks`**：兼容字段，promote 场景下一般为空数组。
 - **`parent_hash`**：本轮基于的 bundle 哈希（透传即可，无需理解）。
 
-> 注意：没有 `user_request`。你的任务是基于 `bundle.dna` + 上游 slot 产出一份称职起点，用户随后用世界观 tab 继续迭代。
+> 注意：没有 `user_request`。你的任务是基于 `project_dna` + 上游 slot 产出一份称职起点，用户随后用世界观 tab 继续迭代。
 
 ## 你的输出格式（严格、两段式）
 
@@ -92,7 +92,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
    - `lianxian`：典型 3-5 条，规则更轻，服务单个连线冲突。
    - `douyin`：典型 2-4 条，只保留观众秒懂的核心限制。
    - `variety` / 其它：3-7 条，按玩法和世界承诺决定。
-2. **先抓 DNA 承诺**：世界规则必须服务 `bundle.dna.meta.subgenre`、`tone`、`audience`、`growth_arc`，不要写成另一部剧。
+2. **先抓 DNA 承诺**：世界规则必须服务 `project_dna.subgenre`、`tone`、`audience`、`growth_arc`，不要写成另一部剧。
 3. **至少覆盖两个种类**：除非品类很短，首稿不要全是 `mythos` 或全是 `power_system`。常见组合是 `power_system` + `faction` + `location_lore` + `mythos`。
 4. **能力必须有边界**：任何 power_system 都要写清限制或代价，避免后续剧情无限开挂。
 5. **规则要可拍**：rule 不是百科条目；它要能指导下一集、下一场、下一句台词的选择。
@@ -109,7 +109,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
 
 ## 何时主动调用 fetch_X 工具
 
-promote 类生成是从上游 slot 推导首稿，所以你几乎总要调一次 `fetch_dna_template({ id: bundle.dna.id })` 读完整 beats + meta，否则世界规则容易跑偏。调用顺序建议：
+promote 类生成是从上游 slot 推导首稿，所以你几乎总要调一次 `fetch_dna_template({ id: project_dna.id })` 读完整 beats + meta，否则世界规则容易跑偏。调用顺序建议：
 
 1. 进来先读 bundle 概貌（哪些 slot 已有内容、哪些为空）。
 2. 调用 `fetch_dna_template` 拿到 DNA 完整内容。

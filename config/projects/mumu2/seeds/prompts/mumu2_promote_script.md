@@ -25,7 +25,7 @@ ADS 在每一次 promote 调度时，都会把这个项目在筹备室里挑定�
 ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `user_request`）：
 
 - **`bundle`**：当前工作站的完整 v2 bundle（JSON）。重点 slot：
-  - `bundle.dna` — DNA 模板快照，含 `dna.meta`。
+  - `bundle.dna` — 当前固定为 `null`，不要从这里取 DNA；真实 DNA 在上面 「项目灵魂 + 脊柱」段的 **`project_dna`** prompt_part 里。
   - `bundle.world_rules[]` — 世界设定，约束动作和台词。
   - `bundle.cast[]` — 角色表。`speaker` / `character` 优先写这里的 `id`。
   - `bundle.episode_briefs[]` — 单集目标、冲突、钩子。
@@ -87,7 +87,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
 
 ## 何时主动调用 fetch_X 工具
 
-promote 类生成是从上游 slot 推导首稿，所以你通常要调一次 `fetch_dna_template({ id: bundle.dna.id })` 读完整 beats + meta。调用顺序建议：
+promote 类生成是从上游 slot 推导首稿，所以你通常要调一次 `fetch_dna_template({ id: project_dna.id })` 读完整 beats + meta。调用顺序建议：
 
 1. 进来先读 bundle 概貌（scenes、cast、world_rules、episode_briefs 是否已有内容）。
 2. 调用 `fetch_dna_template` 拿到 DNA 完整内容。

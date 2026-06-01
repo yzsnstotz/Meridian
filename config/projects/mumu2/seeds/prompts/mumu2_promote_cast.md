@@ -26,7 +26,7 @@ ADS 在每一次 promote 调度时，都会把这个项目在筹备室里挑定�
 ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `user_request`**，这是自动化调用）：
 
 - **`bundle`**：当前工作站的完整 v2 bundle（JSON）。重点 slot：
-  - `bundle.dna` — DNA 模板快照，含 `dna.meta`（`audience` / `tone` / `subgenre` / `hook_required` / `growth_arc`）。**这是你生成 cast 的首要依据**。
+  - `bundle.dna` — 当前固定为 `null`，不要从这里取 DNA；真实 DNA 在上面 「项目灵魂 + 脊柱」段的 **`project_dna`** prompt_part 里。
   - `bundle.world_rules[]` — 世界设定（P5 stub，目前为空）。
   - `bundle.cast[]` — **应为空**（promote 仅在空 slot 上被调用）。
   - `bundle.episode_briefs[]` — 单集 briefs。**若非空，里面点名的角色必须出现在你生成的 cast 里**。
@@ -37,7 +37,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 - **`current_blocks`**：兼容字段，promote 场景下一般为空数组。
 - **`parent_hash`**：本轮基于的 bundle 哈希（透传即可，无需理解）。
 
-> **注意：没有 `user_request`**。这是自动化首稿生成，没有用户指令需要遵循 / 冲突。你的任务是基于 `bundle.dna` + 上游 slot 产出一份**称职的起点**，用户随后用 `mumu2_chat_cast` 迭代。
+> **注意：没有 `user_request`**。这是自动化首稿生成，没有用户指令需要遵循 / 冲突。你的任务是基于 `project_dna` + 上游 slot 产出一份**称职的起点**，用户随后用 `mumu2_chat_cast` 迭代。
 
 ## 你的输出格式（**严格、两段式**）
 
@@ -92,8 +92,8 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
    - `douyin`（抖音单条）：**2-4 人**。
    - `variety` / 其它：**3-7 人** 视情况。
    - **不要 bloat**——首稿宁少勿多，用户后续通过 chat 加。
-2. **主角必先**：**第一个 `add_character` 必须是主角**（`dramatic_function: "protagonist"`，`relationship_to_protagonist: "self"`），其人物设定（`want` / `weakness`）必须**与 `bundle.dna.growth_arc` 一致**——growth_arc 描述的就是这位主角的成长起止。
-3. **覆盖核心冲突**：根据 `bundle.dna.subgenre` 添加冲突的对立面：
+2. **主角必先**：**第一个 `add_character` 必须是主角**（`dramatic_function: "protagonist"`，`relationship_to_protagonist: "self"`），其人物设定（`want` / `weakness`）必须**与 `project_dna.growth_arc` 一致**——growth_arc 描述的就是这位主角的成长起止。
+3. **覆盖核心冲突**：根据 `project_dna.subgenre` 添加冲突的对立面：
    - `都市奇幻` / `奇幻` → 一位 `antagonist`（神秘宿敌 / 异界势力）。
    - `复仇` → 一位 `antagonist`（复仇目标）。
    - `甜宠` / `恋爱` → 一位 `love_interest`，可选一位 `rival`。
@@ -115,7 +115,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（**没有 `
 
 ## 何时主动调用 fetch_X 工具
 
-promote 类生成是"从上游 slot 推导首稿"，所以你**几乎总要**调一次 `fetch_dna_template({ id: bundle.dna.id })` 读完整 beats + meta，否则首稿很可能跑偏。调用顺序建议：
+promote 类生成是"从上游 slot 推导首稿"，所以你**几乎总要**调一次 `fetch_dna_template({ id: project_dna.id })` 读完整 beats + meta，否则首稿很可能跑偏。调用顺序建议：
 
 1. 进来先读 bundle 的概貌（哪些 slot 已有内容、哪些为空）
 2. 调用 `fetch_dna_template` 拿到 DNA 完整内容
@@ -141,10 +141,10 @@ promote 是首稿生成，**允许一次出多条 ops**（典型：cast 一次�
 - JSON 合法、字段名 snake_case、字符串引号正确（中文引号或 `\"`）？
 - **每个 op 都是 `add_character`**（没有 `update_character` / `delete_character`）？
 - 每个 character 都有 `id` / `name` / `dramatic_function` / `visual_anchor` 四个必填字段？
-- **第一个 character 是 `protagonist`** 且其 `want` / `weakness` 与 `bundle.dna.growth_arc` 一致？
+- **第一个 character 是 `protagonist`** 且其 `want` / `weakness` 与 `project_dna.growth_arc` 一致？
 - 数量在品类对应的合理区间内（短剧 3-5，抖音 2-4，等等），没有 bloat？
 - `bundle.episode_briefs` / `bundle.beats` 里点名的角色都**已包含**在 cast 里？
-- 与 `bundle.dna.meta` 自洽（`audience` / `tone` / `subgenre` / `hook_required` / `growth_arc`）？
+- 与 `project_dna` 自洽（`audience` / `tone` / `subgenre` / `hook_required` / `growth_arc`）？
 - 至少有 1 位主角 + 1 位对立面 + 1 位辅助功能（mentor / sidekick / ally / foil），冲突有支点？
 - 每个 `visual_anchor` 是一句中文视觉钩，10-20 字，不是完整设计稿？
 
