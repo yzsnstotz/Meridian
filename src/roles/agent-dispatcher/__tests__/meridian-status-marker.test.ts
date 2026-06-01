@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseMeridianStatusMarker } from "../meridian-status-marker";
+import {
+  parseMeridianStatusMarker,
+  parseValidatorBlocking,
+  parseValidatorDelegatable
+} from "../meridian-status-marker";
 
 describe("parseMeridianStatusMarker", () => {
   it("parses a well-formed worker marker at end of reply", () => {
@@ -296,5 +300,89 @@ describe("parseMeridianStatusMarker", () => {
     ].join("\n");
 
     expect(parseMeridianStatusMarker(reply)).toBeNull();
+  });
+
+  it("parses a validator marker with delegatable + blocking multi-line fields (v1.23.0)", () => {
+    const reply = [
+      "<<<MERIDIAN-STATUS>>>",
+      "role: validator",
+      "worker_id: R-04",
+      "outcome: fix_requested",
+      "cycle: 1",
+      "score: 0.5",
+      "feedback: |",
+      "  Real foreground measurement not provided.",
+      "delegatable: |",
+      "  ref=R-04.md:155 target=V-01 reason=Applied Laws delegates desktop run",
+      "blocking: |",
+      "  branch task/r-04 missing",
+      "<<<END>>>"
+    ].join("\n");
+
+    const parsed = parseMeridianStatusMarker(reply);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.role).toBe("validator");
+    if (parsed?.role !== "validator") return;
+    expect(parsed.outcome).toBe("fix_requested");
+    expect(parsed.delegatable).toBe("ref=R-04.md:155 target=V-01 reason=Applied Laws delegates desktop run");
+    expect(parsed.blocking).toBe("branch task/r-04 missing");
+  });
+});
+
+describe("parseValidatorDelegatable", () => {
+  it("returns empty array for undefined/null/empty input", () => {
+    expect(parseValidatorDelegatable(undefined)).toEqual([]);
+    expect(parseValidatorDelegatable(null)).toEqual([]);
+    expect(parseValidatorDelegatable("")).toEqual([]);
+    expect(parseValidatorDelegatable("   \n   ")).toEqual([]);
+  });
+
+  it("parses a single ref=target line", () => {
+    const raw = "ref=R-04.md:155 target=V-01";
+    expect(parseValidatorDelegatable(raw)).toEqual([{ ref: "R-04.md:155", target: "V-01" }]);
+  });
+
+  it("parses ref=target line with reason= tail", () => {
+    const raw = "ref=R-04.md:155 target=V-01 reason=Applied Laws delegates desktop run";
+    expect(parseValidatorDelegatable(raw)).toEqual([
+      {
+        ref: "R-04.md:155",
+        target: "V-01",
+        reason: "Applied Laws delegates desktop run"
+      }
+    ]);
+  });
+
+  it("parses multiple lines and skips empty / malformed lines", () => {
+    const raw = [
+      "ref=R-04.md:155 target=V-01",
+      "",
+      "this is not a valid delegatable line",
+      "ref=R-05.md:99 target=V-02 reason=second one"
+    ].join("\n");
+    expect(parseValidatorDelegatable(raw)).toEqual([
+      { ref: "R-04.md:155", target: "V-01" },
+      { ref: "R-05.md:99", target: "V-02", reason: "second one" }
+    ]);
+  });
+});
+
+describe("parseValidatorBlocking", () => {
+  it("returns empty array for undefined/null/empty input", () => {
+    expect(parseValidatorBlocking(undefined)).toEqual([]);
+    expect(parseValidatorBlocking(null)).toEqual([]);
+    expect(parseValidatorBlocking("")).toEqual([]);
+  });
+
+  it("splits each non-empty line into one criterion", () => {
+    const raw = [
+      "branch task/r-04 missing",
+      "",
+      "tests not green"
+    ].join("\n");
+    expect(parseValidatorBlocking(raw)).toEqual([
+      { criterion: "branch task/r-04 missing" },
+      { criterion: "tests not green" }
+    ]);
   });
 });
