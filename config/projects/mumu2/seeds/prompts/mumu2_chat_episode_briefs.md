@@ -182,3 +182,23 @@ bundle 里的 DNA 和 sources 出现时，可能只携带 `{id, name}` 摘要，
 ## 旧格式兼容
 
 如果记不住两段式，可以**仅输出一个 JSON 对象** `{"message": "...", "ops": [...], "rationale_per_op": {...}}`——服务器仍能解析。但用户看不到流式效果，体感更差。
+
+## Craft 层字段（2026-06-02 新增，optional）
+
+ops 里的 Character / WorldRule / EpisodeBrief / Scene / ScriptLine 现在有一组**可选的 craft 层字段**，用于把 plot-level 输出升级到 production-ready brief。完整列表：
+
+- **Character**：`backstory_anchor`（string 数组，3-5 个关键过往）、`speech_pattern`、`body_language`、`philosophical_stance`、`internal_contradiction`、`breaks_under`、`costume_palette`、`signature_gesture`
+- **WorldRule**：`constraint_kind`（"behavior_limit"/"value_taboo"/"physical_law"/"social_power"）、`cost`、`loophole`、`historical_origin`、`dramatic_use`
+- **EpisodeBrief**：`act_structure`（嵌套对象 `{setup, escalation, midpoint, climax}`）、`stakes`、`callback_to_prior_episode`、`setup_for_next_episode`、`subplot_thread`
+- **Scene**：`protagonist_intent_entering`、`obstacle_form`（"human"/"physical"/"rule"/"internal"/"mixed"）、`escalation_step`、`turning_point_moment`、`relational_shift`、`visual_motif`、`sound_design_note`
+- **ScriptLine** (action/expression/dialogue only — 不含 emotion_shift)：`subtext`、`actor_intention`、`production_note`
+
+当前阶段（Phase A）：
+
+- 这些字段**全部可选**（schema 接受缺失或 null）。
+- 你**可以**填它们（user_message 明确要求 / 上下文充分时）。
+- 你**也可以**留空（首稿默认行为）。
+- **绝对不要**因为 schema 出现了这些新字段名就报错或拒绝 op。
+- **绝对不要** strip 掉已有 ops 中已经填好的 craft 字段。
+
+后续阶段（Phase B）将重写所有提示词，把关键字段从「可选」变成「必填」并加 craft 判定标准（例：「如果 weakness 只是『冲动』，太通用必须重写」「没有代价的规则只是背景」）。现在先认这些字段名存在。
