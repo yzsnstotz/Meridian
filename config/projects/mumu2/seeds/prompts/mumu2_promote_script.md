@@ -77,13 +77,18 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
 ### 生成原则（核心）
 
 1. **必须基于 scenes**：没有 `bundle.scenes[]` 时不要硬写正文；自然语言段说明需要先生成场次，`ops` 写空数组。
-2. **每场 6-20 个 blocks**：短视频可更少；重点场可更多。宁可短而可演，不要写长篇散文。
-3. **动作 + 台词 + 情绪并重**：每场至少有 `action` 和 `dialogue`；关键场尽量加入 `expression` 或 `emotion_shift`。
-4. **speaker / character 用 id**：优先写 `bundle.cast[].id`，不要混写角色名。
-5. **台词可拍可说**：短句、带冲突、少解释；世界观信息尽量通过动作或对抗露出。
-6. **呼应场次 outcome**：`script.end_state` 必须与 scene 的 `outcome_state` 同向。
-7. **按场次顺序输出**：如果一次生成多场，按 `bundle.scenes[]` 顺序输出。
-8. **rationale 可审**：`rationale_per_op` 按下标解释这一场如何承接 scene 的戏剧目的。
+2. **覆盖所有 scenes**：这是 **首稿生成**，目标是把 `bundle.scenes[]` 的**每一个**场次都铺出一份剧本。**不要只挑前几场写**——除非场次特别多（>30 场），否则每一次调用都应该输出对应 `bundle.scenes.length` 条 `set_script` ops。如果场次数超过 30，按顺序覆盖**前 30 场**且在自然语言段说明「剩余 X 场需要再次调用」让用户知道下一步。
+3. **每场 8-20 个 blocks**：每场至少 8 个 blocks 才算"可拍"——少于 8 个会让导演无依据。重点场（first/last/cliff scenes）推荐 12-20 个。**不要为了图快每场只写 3-4 句**——稀薄的剧本下游 production 也没法 promote。
+4. **动作 + 台词 + 情绪三件套必须齐全**：每场剧本里至少包含：
+   - **>= 3 条 `action`**（行动 / 走位 / 镜头能落到的具体动作）
+   - **>= 2 条 `dialogue`**（核心对白；至少一条要带冲突或决定）
+   - **>= 1 条 `expression` 或 `emotion_shift`**（人物状态变化）
+   总共**至少 8 个 blocks**，超过 8 个时按需补充 action / dialogue / expression。
+5. **speaker / character 用 id**：优先写 `bundle.cast[].id`，不要混写角色名。
+6. **台词可拍可说**：短句、带冲突、少解释；世界观信息尽量通过动作或对抗露出。
+7. **呼应场次 outcome**：`script.end_state` 必须与 scene 的 `outcome_state` 同向。
+8. **按场次顺序输出**：按 `bundle.scenes[]` 的顺序逐个输出 `set_script`。
+9. **rationale 可审**：`rationale_per_op` 按下标解释这一场如何承接 scene 的戏剧目的。
 
 ## 何时主动调用 fetch_X 工具
 
@@ -98,11 +103,12 @@ promote 类生成是从上游 slot 推导首稿，所以你通常要调一次 `f
 
 ## ops 粒度约束（promote 场景）
 
-promote 是首稿生成，允许一次输出多条 ops（每场一条）。但要：
+promote 是首稿生成，**期望一次输出多条 ops（每场一条，覆盖所有场次）**：
 
-- 每个已有 scene 最多一条 `set_script`。
+- 每个已有 scene **恰好**一条 `set_script`（每场一份完整剧本）。
+- **覆盖 `bundle.scenes[]` 的全部场次**，不是只挑几场写。
 - 不要在剧本一稿里改场次、角色、世界观或 episode brief。
-- 如果场次很多，优先覆盖当前目标 episode 或当前打开的 scene；避免一次生成超过可审范围。
+- 如果 `bundle.scenes.length > 30`，**按顺序覆盖前 30 场**，并在自然语言段写：「这一轮覆盖了 ep1-ep3 共 30 场；剩余 X 场请重新点击 ✦ 重新生成 继续。」
 
 ## 失败模式自检
 
