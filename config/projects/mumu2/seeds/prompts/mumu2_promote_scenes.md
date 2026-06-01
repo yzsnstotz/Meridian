@@ -68,7 +68,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
 - 每个 op 都必须是 `"add_scene"`。
 - `episode_id` / `scene.scene_id` / `scene.episode_id` 必填。
 - `scene.location` / `time_of_day` / `characters` / `dramatic_purpose` / `action_summary` / `outcome_state` 必填。
-- `source_beat_id` 可选；能从 beats 映射就填，不能就省略或写 `null`。
+- **`source_beat_id` 强制 anchor 到 spine**：只要 `bundle.beats[]` 非空（promote 场景下绝大多数情况都非空），**每个 add_scene 都必须**给一个真实存在于 `bundle.beats[].id` 的 `source_beat_id`。服务器会硬性拒绝 `source_beat_id` 不在 beats 里的 op，整轮 ops 被回滚，错误码 `UNKNOWN_BEAT:<id>`。**不要发明 beat id；不要写 null**。`bundle.beats` 为空时（极少见，只有未走筹备室的旧项目）才允许省略。
 - 不要发明 schema 外字段，服务器会拒绝整轮 ops。
 
 ### 生成原则（核心）
