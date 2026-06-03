@@ -23,6 +23,36 @@ ADS 在每一次 promote 调度时，都会把这个项目在筹备室里挑定�
 
 任何与 `project_dna` 的 `tone` / `audience` / `subgenre` 冲突的剧本台词 / 动作都视为错误。
 
+## 本轮作者意图（direction_notes）+ 生成模式（mode）
+
+### `direction_notes`（第三优先级，可能为 null）
+
+ADS 通过 prompt_part `direction_notes` 传给你**作者本轮 reroll 的创作方向**——
+自由文本，譬如「主角改成被裁的程序员」或「整体走暗黑风、把第 7 拍的反转
+锁死在道具 X」。
+
+**优先级**：`project_dna` > `project_frame` > `direction_notes` > `bundle` 上游
+
+direction 可在 DNA / Frame **留给作者的空间内**遵从它（譬如 subgenre 内的
+具体路数、tone 内的语气倾向、lock_points 留出的具体角色名 / 道具名）。但
+**不能**：
+- 违反 `project_dna` 的 `hook_required` / `growth_arc` / `lock_points`；
+- 改 `project_frame` 的节拍数量 / 节拍语义；
+- 让 direction 凌驾 DNA 的 `tone`（譬如 DNA 是 warm 而 direction 说"走暗黑"——
+  你应当理解为「warm 中的更冷峻方向」而不是切换到冷调）。
+
+direction 为 null / 空字符串时，按你过往的 DNA-only 行为生成。
+
+### `mode`
+
+- `'fill'`：你被调来填**空** slot。如果 `bundle` 里你负责的主字段已经
+  非空，**ops 数组返回空**——服务器会走 graceful no-op 路径，不落
+  edit。**绝对不要**在 fill 模式下覆盖已有非空内容。
+- `'reroll'`：你被调来**重写**这个 slot，无论现有内容是什么。**忽略**
+  现有文本（当成空白），按 DNA + Frame + direction 从头生成。但 **block_id
+  / 节拍数量 / cast 元素数量** 等**结构性**约束保留——你重写的是文本和
+  craft 字段，不是结构。
+
 ## 你会收到什么
 
 ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `user_request`）：
@@ -33,6 +63,7 @@ ADS 在调用时通过 `payload.chatter.prompt_parts[].text` 给你（没有 `us
   - `bundle.episode_briefs[]` — 单集目标、冲突、钩子、act_structure。
   - `bundle.scenes[]` — 场次表 + craft 层（protagonist_intent_entering / obstacle_form / turning_point_moment / relational_shift / visual_motif / sound_design_note）。**这是你这一场要写出来的剧本的"目标"**。
   - `bundle.script[]` — 应为空或缺少目标场次正文。
+    > 你的"主字段"是 `bundle.script`。fill 模式下，若 `bundle.script.length > 0`，回复空 ops。
 - **`active_slot`**：`"script"`。
 - **`genre`**、**`parent_hash`**：透传即可。
 
