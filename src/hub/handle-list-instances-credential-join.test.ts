@@ -109,3 +109,56 @@ test("list response has credential_label=null when credential was revoked/delete
   assert.equal(t1.credential_id, "cred-MISSING");
   assert.equal(t1.credential_label, null);
 });
+
+test("list response hides credential_id + label when caller cannot access the credential", async () => {
+  // Mirror the /accounts visibility filter on the instance card. Otherwise a
+  // non-owner web caller sees the credential label on the card but not on the
+  // accounts page (observed bug: codex_72 card kept showing "snstotz-codex"
+  // even though the credential's owner-scope filter hid it from /accounts).
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "f4-"));
+  const store = new CredentialStore({
+    initialRecords: [makeCred("cred-A", "snstotz-codex", "meridian-roles")],
+    credentialsRoot: tmpdir
+  });
+  const registry = new InstanceRegistry();
+  registry.register(makeInstance("t1", "cred-A"));
+  const router = new HubRouter(registry, { credentialStore: store });
+
+  const writeCallerMsg = {
+    trace_id: "00000000-0000-4000-8000-000000000021",
+    thread_id: "t1",
+    actor_id: "a1",
+    intent: "list" as const,
+    target: "global",
+    mode: "stateless_call" as const,
+    payload: { content: "", attachments: [] },
+    reply_channel: { channel: "socket" as const, chat_id: "c1" },
+    caller: { caller_id: "alice", caller_label: "alice", caller_authority: "write" as const }
+  };
+  const result = await router.route(writeCallerMsg as any);
+  assert.equal(result.status, "success");
+  const list = parseList(result.content);
+  const t1 = list.find((i: any) => i.thread_id === "t1");
+  assert.ok(t1);
+  assert.equal(t1.credential_id, null, "non-owner non-admin should not see credential_id");
+  assert.equal(t1.credential_label, null, "non-owner non-admin should not see credential_label");
+});
+
+test("list response still emits label when caller is admin (full visibility)", async () => {
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "f4-"));
+  const store = new CredentialStore({
+    initialRecords: [makeCred("cred-A", "snstotz-codex", "meridian-roles")],
+    credentialsRoot: tmpdir
+  });
+  const registry = new InstanceRegistry();
+  registry.register(makeInstance("t1", "cred-A"));
+  const router = new HubRouter(registry, { credentialStore: store });
+
+  const result = await router.route(buildListMessage("any-admin") as any);
+  assert.equal(result.status, "success");
+  const list = parseList(result.content);
+  const t1 = list.find((i: any) => i.thread_id === "t1");
+  assert.ok(t1);
+  assert.equal(t1.credential_id, "cred-A");
+  assert.equal(t1.credential_label, "snstotz-codex");
+});
