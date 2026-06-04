@@ -1464,10 +1464,27 @@ export class HubRouter {
           break;
         }
       }
-      const credentialId = currentInstance.credential_id ?? null;
-      const credentialLabel = credentialId
-        ? (this.credentialStore?.get(credentialId)?.credential_label ?? null)
-        : null;
+      const rawCredentialId = currentInstance.credential_id ?? null;
+      // Apply the same caller-visibility filter as /api/credentials. Without
+      // this, credential_label leaks onto the instance card for callers who
+      // cannot see the credential on the accounts page — producing the
+      // observed mismatch where /accounts hides the row but the card still
+      // says "codex · <label>". When message.caller is absent the call is
+      // internal/admin → preserve existing behavior to avoid breaking
+      // ambient health/listing paths.
+      let credentialId: string | null = rawCredentialId;
+      let credentialLabel: string | null = null;
+      if (rawCredentialId && this.credentialStore) {
+        const record = this.credentialStore.get(rawCredentialId);
+        if (record) {
+          const caller = message.caller;
+          if (!caller || this.credentialStore.canCallerAccess(record, caller)) {
+            credentialLabel = record.credential_label;
+          } else {
+            credentialId = null;
+          }
+        }
+      }
       return {
         ...currentInstance,
         credential_id: credentialId,

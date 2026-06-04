@@ -884,13 +884,15 @@ export class WebInterfaceServer {
   private async handleInstancesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
     const result = HubResultSchema.parse(
-      await this.requestHub(
+      await this.requestHubForRequest(
+        request,
         this.buildHubMessage({
           sessionId,
           intent: "list",
           thread_id: "global",
           target: "all",
-          content: ""
+          content: "",
+          caller: this.extractInboundCaller(request)
         })
       )
     );
