@@ -6,7 +6,14 @@ import { buildCodexExecArgs, buildCodexResumeArgs, buildCodexSpawnArgs } from ".
 test("buildCodexSpawnArgs omits auto-approve flag by default", () => {
   const args = buildCodexSpawnArgs("bridge", null, "--socket=/tmp/codex.sock");
 
-  assert.deepEqual(args, ["server", "--type=codex", "--socket=/tmp/codex.sock", "--", "codex"]);
+  assert.deepEqual(args, [
+    "server",
+    "--type=codex",
+    "--socket=/tmp/codex.sock",
+    "--",
+    "codex",
+    "--skip-git-repo-check"
+  ]);
   assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
 
@@ -23,7 +30,8 @@ test("buildCodexSpawnArgs appends auto-approve flag when requested", () => {
     'model_reasoning_effort="xhigh"',
     "--model",
     "gpt-5.4",
-    "--dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--skip-git-repo-check"
   ]);
 });
 
@@ -41,7 +49,8 @@ test("buildCodexSpawnArgs uses read-only sandbox when requested", () => {
     "--model",
     "gpt-5.4",
     "--sandbox",
-    "read-only"
+    "read-only",
+    "--skip-git-repo-check"
   ]);
   assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
@@ -57,7 +66,8 @@ test("buildCodexExecArgs enables direct JSON streaming mode", () => {
     'model_reasoning_effort="xhigh"',
     "--model",
     "gpt-5.4",
-    "--dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--skip-git-repo-check"
   ]);
 });
 
@@ -106,7 +116,8 @@ test("buildCodexResumeArgs resumes an existing exec session", () => {
     'model_reasoning_effort="xhigh"',
     "--model",
     "gpt-5.4",
-    "--dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--skip-git-repo-check"
   ]);
 });
 

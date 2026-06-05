@@ -234,11 +234,12 @@ test("describeSpawnInvocation exposes the codex-exec command for streaming-bridg
     'model_reasoning_effort="high"',
     "--model",
     "gpt-5.4",
-    "--dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--skip-git-repo-check"
   ]);
   assert.equal(
     invocation.provider_append,
-    'codex exec --json -c model_reasoning_effort="high" --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox'
+    'codex exec --json -c model_reasoning_effort="high" --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check'
   );
 
   await manager.kill(threadId);
@@ -392,7 +393,8 @@ test("spawn forwards selected model and reasoning effort into the streaming-brid
     'model_reasoning_effort="xhigh"',
     "--model",
     "gpt-5.4",
-    "--dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--skip-git-repo-check"
   ]);
 
   await manager.kill(threadId);
