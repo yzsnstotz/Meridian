@@ -38,9 +38,14 @@ export function buildCodexSpawnArgs(
     args.push("--model", modelId);
   }
   if (sandboxMode === "read-only") {
-    args.push("--sandbox", "read-only");
+    args.push("--sandbox", "read-only", "--skip-git-repo-check");
   } else if (autoApprove === true) {
-    args.push("--dangerously-bypass-approvals-and-sandbox");
+    args.push("--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
+  } else {
+    // codex CLI enforces a trusted-directory check independently of approval
+    // and sandbox flags. Worktrees under ~/.worktrees are not pre-trusted, so
+    // every spawn path needs the explicit bypass.
+    args.push("--skip-git-repo-check");
   }
   return args;
 }
@@ -63,8 +68,9 @@ export function buildCodexExecArgs(
     args.push("--sandbox", "read-only", "--skip-git-repo-check");
   } else {
     // codex exec --json is always headless (stdin/stdout); it cannot prompt for
-    // approvals and will reject untrusted directories without this flag.
-    args.push("--dangerously-bypass-approvals-and-sandbox");
+    // approvals and will reject untrusted directories. The bypass flag covers
+    // approvals/sandbox but does NOT cover the trust check on its own.
+    args.push("--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
   }
   return args;
 }
@@ -87,8 +93,9 @@ export function buildCodexResumeArgs(
     // trusted-directory prompt under a read-only sandbox.
     args.push("--sandbox", "read-only", "--skip-git-repo-check");
   } else {
-    // Same as buildCodexExecArgs: headless exec always needs the bypass flag.
-    args.push("--dangerously-bypass-approvals-and-sandbox");
+    // Same as buildCodexExecArgs: bypass covers approvals/sandbox but not the
+    // trusted-directory check — pass both so untrusted worktrees don't abort.
+    args.push("--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
   }
   return args;
 }
