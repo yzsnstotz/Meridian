@@ -1810,6 +1810,8 @@ async function getRole(
     });
   }
 
+  sessionLog = sanitizeDispatcherSessionLogLines(sessionLog);
+
   const workerDetails = buildDispatchWorkerDetails(
     lifecycleState,
     dispatchPlanRows,
@@ -3850,7 +3852,7 @@ async function loadDispatcherSessionLog(
 
   try {
     const detail = await getThreadDetail(dispatcherThreadId);
-    const lines = splitLogLines(detail);
+    const lines = sanitizeDispatcherSessionLogLines(splitLogLines(detail));
     if (handleMissingDispatcherThreadEvidence(
       fallbackContext.dispatchPlanPath,
       dispatcherThreadId,
@@ -4179,8 +4181,8 @@ async function loadPmResolverLiveDetail(
       PM_RESOLVER_DETAIL_TIMEOUT_MS,
       `PM resolver detail timed out after ${PM_RESOLVER_DETAIL_TIMEOUT_MS}ms`
     );
-    const lines = splitLogLines(detail);
-    return isEmptyCachedDetailResponse(lines) ? null : detail;
+    const lines = sanitizeDispatcherSessionLogLines(splitLogLines(detail));
+    return isEmptyCachedDetailResponse(lines) ? null : lines.join("\n");
   } catch (error) {
     context.log.warn("Failed to fetch PM resolver detail", {
       thread_id: entry.thread_id,
@@ -4768,6 +4770,22 @@ function splitLogLines(content: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter((line, index, lines) => line.length > 0 || (index > 0 && lines[index - 1] !== ""));
+}
+
+export function sanitizeDispatcherSessionLogLines(lines: string[]): string[] {
+  return lines.map(sanitizeDispatcherSessionLogText);
+}
+
+function sanitizeDispatcherSessionLogText(value: string): string {
+  return value
+    .replace(/\.ccb\/history\/[^\s`"')]+/g, "[local handoff metadata path]")
+    .replace(/\.ccb\/history\b/g, "[local handoff metadata dir]")
+    .replace(/\.ccb\//g, "[local metadata dir]/")
+    .replace(/\.ccb\b/g, "[local metadata dir]")
+    .replace(/\bCCB\/autoflow\b/g, "local handoff/session")
+    .replace(/\bCCB history\b/gi, "local handoff metadata")
+    .replace(/\bccb-/gi, "local-metadata-")
+    .replace(/\bccb\b/gi, "local handoff metadata");
 }
 
 function parseDispatchPlanRows(markdown: string): DispatchPlanRow[] {
