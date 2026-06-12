@@ -349,6 +349,16 @@ describe("resume-worker tool", () => {
             attachments: [],
             timestamp: "2026-04-05T00:10:00.000Z"
           },
+          validation: {
+            current_cycle: 0,
+            max_fix_cycles: 5,
+            validator_thread_id: null,
+            last_score: null,
+            last_feedback: null,
+            history: [],
+            spawn_failure_count: 3,
+            last_spawn_failure_at: "2026-04-05T00:11:00.000Z"
+          },
           command_preamble: null,
           retry_count: 0
         }
@@ -423,11 +433,81 @@ describe("resume-worker tool", () => {
 
     // Lifecycle: completed, hub_result cleared so subsequent saves do not
     // re-derive the plan status from the stale block signal.
-    expect(harness.lifecycleStore.load().workers["N-04"]).toMatchObject({
+    const recoveredWorker = harness.lifecycleStore.load().workers["N-04"];
+    expect(recoveredWorker).toMatchObject({
       status: "completed",
       hub_result: null
     });
+    expect(recoveredWorker).not.toHaveProperty("validation");
     // Plan markdown stays ✅ even after a follow-up no-op save triggers syncPlanView.
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ✅ | 2 | N-04 | Resume Worker Tool |");
+
+    harness.lifecycleStore.save(harness.lifecycleStore.load());
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ✅ | 2 | N-04 | Resume Worker Tool |");
+  });
+
+  it("force-complete can clear stale hub_result when the old thread cannot be killed because the bootstrap key is unavailable", async () => {
+    const harness = await createHarness();
+    harness.lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-04-05T00:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-456",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-04-05T00:00:00.000Z",
+          last_seen_at: "2026-04-05T00:10:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: {
+            trace_id: "11111111-1111-4111-8111-111111111111",
+            thread_id: "worker-thread-456",
+            source: "codex",
+            status: "success",
+            run_state: "completed",
+            content: "Smoke test is blocked by the wrapper allowlist; operator verified the replacement evidence.",
+            attachments: [],
+            timestamp: "2026-04-05T00:10:00.000Z"
+          },
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      last_reconciled_at: null
+    });
+
+    const result = await executeResumeWorkerAction(
+      {
+        planPath: harness.planPath,
+        workerId: "N-04",
+        action: "force-complete",
+        force: true
+      },
+      {
+        lifecycleStoreFactory: () => harness.lifecycleStore,
+        killThread: async () => ({ ok: false, error: "bootstrap_key_missing" })
+      }
+    );
+
+    expect(result).toMatchObject({
+      worker: "N-04",
+      action: "force-complete",
+      status: "completed",
+      thread_id: "worker-thread-456",
+      thread_killed: false,
+      retry_count: 0,
+      kill_error: "bootstrap_key_missing"
+    });
+    const recoveredWorker = harness.lifecycleStore.load().workers["N-04"];
+    expect(recoveredWorker).toMatchObject({
+      status: "completed",
+      hub_result: null
+    });
+    expect(recoveredWorker).not.toHaveProperty("validation");
     await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ✅ | 2 | N-04 | Resume Worker Tool |");
 
     harness.lifecycleStore.save(harness.lifecycleStore.load());

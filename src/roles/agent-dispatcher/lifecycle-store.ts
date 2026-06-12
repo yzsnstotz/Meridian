@@ -455,6 +455,7 @@ export class LifecycleStore {
     trigger: string,
     options: {
       clearHubResult?: boolean;
+      clearValidation?: boolean;
       incrementRetryCount?: boolean;
       resetRetryCount?: boolean;
       appliedModelId?: string;
@@ -469,7 +470,7 @@ export class LifecycleStore {
 
     const baseRetryCount = options.resetRetryCount ? 0 : (worker.retry_count ?? 0);
     const shouldIncrementRetryCount = options.incrementRetryCount === true && status === "pending";
-    state.workers[workerId] = {
+    const nextWorker: DispatchWorkerState = {
       ...worker,
       last_seen_at: this.now(),
       status,
@@ -480,6 +481,10 @@ export class LifecycleStore {
         : {}),
       retry_count: shouldIncrementRetryCount ? baseRetryCount + 1 : baseRetryCount
     };
+    if (options.clearValidation) {
+      delete nextWorker.validation;
+    }
+    state.workers[workerId] = nextWorker;
 
     this.logTransition(workerId, worker.status, status, trigger);
     reconcilePmResolversForRecoveredWorker(state, workerId, this.log, this.now);
