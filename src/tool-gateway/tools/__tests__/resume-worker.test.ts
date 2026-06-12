@@ -52,6 +52,67 @@ describe("resume-worker tool", () => {
     await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool |");
   });
 
+  it("does not reset a running worker when killing the recorded thread fails", async () => {
+    const harness = await createHarness();
+    const killThread = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "bootstrap_key_missing"
+    });
+
+    await expect(executeResumeWorkerAction(
+      {
+        planPath: harness.planPath,
+        workerId: "N-04",
+        action: "retry"
+      },
+      {
+        lifecycleStoreFactory: () => harness.lifecycleStore,
+        killThread
+      }
+    )).rejects.toThrow(
+      'Cannot retry worker "N-04": failed to stop recorded thread worker-thread-456: bootstrap_key_missing. Worker status was not changed.'
+    );
+
+    expect(killThread).toHaveBeenCalledWith("worker-thread-456");
+    expect(harness.lifecycleStore.load().workers["N-04"]).toMatchObject({
+      status: "running",
+      thread_id: "worker-thread-456",
+      hub_result: null,
+      retry_count: 0
+    });
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| 🔄 | 2 | N-04 | Resume Worker Tool |");
+  });
+
+  it("treats a missing recorded thread as already stopped before retry", async () => {
+    const harness = await createHarness();
+
+    const result = await executeResumeWorkerAction(
+      {
+        planPath: harness.planPath,
+        workerId: "N-04",
+        action: "retry"
+      },
+      {
+        lifecycleStoreFactory: () => harness.lifecycleStore,
+        killThread: async () => ({
+          ok: false,
+          error: "kill failed: Routing failed: No registered agent instance found for thread_id=worker-thread-456"
+        })
+      }
+    );
+
+    expect(result).toEqual({
+      worker: "N-04",
+      action: "retry",
+      status: "pending",
+      thread_id: "worker-thread-456",
+      thread_killed: true,
+      retry_count: 0
+    });
+    expect(harness.lifecycleStore.load().workers["N-04"]?.status).toBe("pending");
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool |");
+  });
+
   it("resets retry_count on each manual retry so permanently-failed workers can be redone", async () => {
     const harness = await createHarness();
 

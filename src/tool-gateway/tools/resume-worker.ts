@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { LifecycleStore, hubResultContainsFailureSignal, isNonCompletionContent } from "../../roles/agent-dispatcher/lifecycle-store";
+import { isMissingThreadEvidence } from "../../roles/agent-dispatcher/missing-thread";
 import type { LifecycleStatus } from "../../types";
 import killTool from "./kill";
 import { executeUpdateWorkerStatusAction, updateWorkerStatusInMarkdown } from "./update-status";
@@ -165,6 +166,25 @@ export async function executeResumeWorkerAction(
   }
 
   const priorFailureReason = extractPriorFailureReason(worker);
+  const threadId = worker.thread_id;
+  let threadKilled = false;
+
+  if (threadId) {
+    const killResult = await deps.killThread(threadId);
+    if (killResult.ok) {
+      threadKilled = true;
+    } else {
+      const killError = killResult.error ?? "Kill failed";
+      if (isMissingThreadEvidence(killError)) {
+        threadKilled = true;
+      } else {
+        throw new Error(
+          `Cannot ${args.action} worker "${args.workerId}": failed to stop recorded thread ${threadId}: ` +
+          `${killError}. Worker status was not changed.`
+        );
+      }
+    }
+  }
 
   const nextStatus = mapActionToStatus(args.action);
   const autoIncrementRetryCount = args.action === "retry" && args.incrementRetryCountOnRetry === true;
@@ -212,15 +232,6 @@ export async function executeResumeWorkerAction(
   const updatedState = lifecycleStore.load();
   const retryCount = updatedState.workers[args.workerId]?.retry_count ?? 0;
 
-  let killError: string | undefined;
-  let threadKilled = false;
-  const threadId = worker.thread_id;
-  if (threadId) {
-    const killResult = await deps.killThread(threadId);
-    threadKilled = killResult.ok;
-    killError = killResult.ok ? undefined : killResult.error ?? "Kill failed";
-  }
-
   return {
     worker: args.workerId,
     action: args.action,
@@ -228,8 +239,7 @@ export async function executeResumeWorkerAction(
     thread_id: threadId,
     thread_killed: threadKilled,
     retry_count: retryCount,
-    ...(priorFailureReason ? { prior_failure_reason: priorFailureReason } : {}),
-    ...(killError ? { kill_error: killError } : {})
+    ...(priorFailureReason ? { prior_failure_reason: priorFailureReason } : {})
   };
 }
 
