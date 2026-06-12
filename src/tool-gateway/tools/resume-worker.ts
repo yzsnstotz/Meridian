@@ -168,15 +168,19 @@ export async function executeResumeWorkerAction(
   const priorFailureReason = extractPriorFailureReason(worker);
   const threadId = worker.thread_id;
   let threadKilled = false;
+  let killError: string | undefined;
 
   if (threadId) {
     const killResult = await deps.killThread(threadId);
     if (killResult.ok) {
       threadKilled = true;
     } else {
-      const killError = killResult.error ?? "Kill failed";
+      killError = killResult.error ?? "Kill failed";
       if (isMissingThreadEvidence(killError)) {
         threadKilled = true;
+        killError = undefined;
+      } else if (args.action === "force-complete" && args.force === true && isBootstrapKeyMissingEvidence(killError)) {
+        threadKilled = false;
       } else {
         throw new Error(
           `Cannot ${args.action} worker "${args.workerId}": failed to stop recorded thread ${threadId}: ` +
@@ -217,6 +221,7 @@ export async function executeResumeWorkerAction(
       `resume_worker:${args.action}`,
       {
         clearHubResult: clearFailureResult,
+        clearValidation: args.action === "force-complete" || args.action === "skip",
         incrementRetryCount: autoIncrementRetryCount,
         resetRetryCount: args.action === "retry" && !autoIncrementRetryCount
       }
@@ -239,8 +244,13 @@ export async function executeResumeWorkerAction(
     thread_id: threadId,
     thread_killed: threadKilled,
     retry_count: retryCount,
+    ...(killError ? { kill_error: killError } : {}),
     ...(priorFailureReason ? { prior_failure_reason: priorFailureReason } : {})
   };
+}
+
+function isBootstrapKeyMissingEvidence(message: string | null | undefined): boolean {
+  return message?.trim() === "bootstrap_key_missing";
 }
 
 function mapActionToStatus(action: ResumeWorkerAction): LifecycleStatus {
