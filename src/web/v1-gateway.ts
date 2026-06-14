@@ -10,6 +10,7 @@ import { completeClaude, matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
 import { completeCodex, matchesCodex, CODEX_MODELS } from "./gateway/codex";
 import { completeGemini, matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
 import type { ChatCompletionRequest, CompletionResult } from "./gateway/shared";
+import { getProvidersStatus, startLogin, renderLoginPage, type ProviderId } from "./gateway/login";
 
 const PORT = Number(process.env.MERIDIAN_GATEWAY_PORT ?? process.env.PORT ?? 8789);
 const HOST = process.env.MERIDIAN_GATEWAY_HOST ?? "127.0.0.1";
@@ -73,6 +74,19 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   res.end(JSON.stringify(body));
 }
 
+function sendHtml(res: http.ServerResponse, status: number, html: string): void {
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", ...CORS_HEADERS });
+  res.end(html);
+}
+
+/** The actual bound port (handles ephemeral `PORT=0`), falling back to PORT. */
+function boundPort(): number {
+  const addr = server.address();
+  return addr && typeof addr === "object" ? addr.port : PORT;
+}
+
+const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
+
 const server = http.createServer((request, response) => {
   void (async () => {
     const url = new URL(request.url ?? "/", `http://${HOST}:${PORT}`);
@@ -83,6 +97,19 @@ const server = http.createServer((request, response) => {
       }
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, { status: "ok", providers: ["claude", "codex", "gemini"] });
+      }
+      // ── Login / onboarding GUI (strictly additive; does not touch /v1) ──────
+      if (request.method === "GET" && url.pathname === "/") {
+        return sendHtml(response, 200, renderLoginPage(boundPort()));
+      }
+      if (request.method === "GET" && url.pathname === "/providers/status") {
+        return sendJson(response, 200, await getProvidersStatus());
+      }
+      {
+        const m = request.method === "POST" ? LOGIN_ROUTE_RE.exec(url.pathname) : null;
+        if (m) {
+          return sendJson(response, 200, await startLogin(m[1] as ProviderId));
+        }
       }
       if (request.method === "GET" && url.pathname === "/v1/models") {
         return sendJson(response, 200, {
