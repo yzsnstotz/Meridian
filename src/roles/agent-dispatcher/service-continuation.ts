@@ -14,6 +14,7 @@ export interface DispatchContinuationPlanRow {
   model: string | null;
   depends_on: string | string[];
   notes?: string | null;
+  branch?: string | null;
 }
 
 export interface DispatchContinuationWorkerRow {

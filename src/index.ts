@@ -1817,7 +1817,8 @@ function toContinuationRow(row: DispatchPlanWorkerRow): DispatchContinuationPlan
     worker: row.worker_id,
     model: row.model,
     depends_on: row.depends_on,
-    notes: row.notes
+    notes: row.notes,
+    ...(row.branch ? { branch: row.branch } : {})
   };
 }
 

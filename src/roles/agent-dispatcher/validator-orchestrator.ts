@@ -167,7 +167,7 @@ export async function executeValidationCycle(
 
   const thresholdType = validatorConfig.threshold_type ?? "score";
   const baseBranch = validatorConfig.base_branch;
-  const taskBranch = resolveTaskBranch(workerId);
+  const taskBranch = resolveTaskBranch(workerId, planRow);
   const cycle = validation.current_cycle + 1;
 
   const promptContext: ValidatorPromptContext = {
@@ -930,9 +930,22 @@ function defaultScoreForOutcome(outcome: ValidatorStatusMarker["outcome"]): numb
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
 
-function resolveTaskBranch(workerId: string): string {
-  // Convention: worker branches use the worker ID as the branch name suffix
+function resolveTaskBranch(workerId: string, planRow: DispatchContinuationPlanRow): string {
+  const explicitBranch = normalizePlanBranch(planRow.branch);
+  if (explicitBranch) {
+    return explicitBranch;
+  }
+
+  // Legacy fallback for older dispatch plans that do not expose a Branch column.
   return `task/${workerId.toLowerCase()}`;
+}
+
+function normalizePlanBranch(branch: string | null | undefined): string | null {
+  const trimmed = branch?.trim().replace(/^`|`$/gu, "") ?? "";
+  if (!trimmed || trimmed === "-" || trimmed === "—" || /^n\/a$/iu.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }
 
 function isCompletedRunResult(runResult: MeridianRunResult): boolean {

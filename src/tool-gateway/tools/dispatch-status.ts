@@ -28,6 +28,7 @@ export interface DispatchPlanWorkerRow {
   depends_on: string[];
   prds_to_attach: string | null;
   notes: string | null;
+  branch?: string | null;
 }
 
 export type DispatchActiveOwnerKind = "worker" | "validator" | "pm_resolver";
@@ -227,6 +228,7 @@ export function parseDispatchPlanRows(markdown: string): DispatchPlanWorkerRow[]
     const dependsOnColumn = findNormalizedHeaderIndex(normalizedHeaders, ["depends_on", "depends", "dependencies"]);
     const prdsColumn = findNormalizedHeaderIndex(normalizedHeaders, ["prds_to_attach", "prds", "prd"]);
     const notesColumn = findNormalizedHeaderIndex(normalizedHeaders, ["notes", "note"]);
+    const branchColumn = findNormalizedHeaderIndex(normalizedHeaders, ["branch", "git_branch", "task_branch"]);
     const rows: DispatchPlanWorkerRow[] = [];
 
     for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
@@ -235,6 +237,7 @@ export function parseDispatchPlanRows(markdown: string): DispatchPlanWorkerRow[]
         break;
       }
 
+      const branch = readOptionalCell(rowCells, branchColumn);
       rows.push({
         status: rowCells[statusColumn],
         batch: rowCells[batchColumn],
@@ -243,7 +246,8 @@ export function parseDispatchPlanRows(markdown: string): DispatchPlanWorkerRow[]
         model: readOptionalCell(rowCells, modelColumn),
         depends_on: parseDependsOn(readOptionalCell(rowCells, dependsOnColumn)),
         prds_to_attach: readOptionalCell(rowCells, prdsColumn),
-        notes: readOptionalCell(rowCells, notesColumn)
+        notes: readOptionalCell(rowCells, notesColumn),
+        ...(branch ? { branch } : {})
       });
     }
 
