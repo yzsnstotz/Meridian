@@ -75,12 +75,20 @@ function rotateKey(): string {
   return apiKey;
 }
 
-/** True when the request carries `Authorization: Bearer <current key>` exactly. */
+/**
+ * True when the request carries the current API key. OpenAI clients send it as
+ * `Authorization: Bearer <key>`; Anthropic clients (and anything hitting the
+ * /v1/messages surface) send it as `x-api-key: <key>`. Accept either so both
+ * wire formats authenticate against the same generated key.
+ */
 function isAuthorized(request: http.IncomingMessage): boolean {
   const header = request.headers["authorization"];
-  if (typeof header !== "string") return false;
-  const m = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return !!m && m[1].trim() === apiKey;
+  if (typeof header === "string") {
+    const m = /^Bearer\s+(.+)$/i.exec(header.trim());
+    if (m && m[1].trim() === apiKey) return true;
+  }
+  const xApiKey = request.headers["x-api-key"];
+  return typeof xApiKey === "string" && xApiKey.trim() === apiKey;
 }
 
 /**
@@ -225,17 +233,26 @@ const server = http.createServer((request, response) => {
             });
           }
           const id = normalizeModel(decodeURIComponent(m[1]));
-          const status = await getProvidersStatus();
-          const found = connectedModels(status).find((entry) => entry.id === id);
-          if (!found) {
+          if (!id) {
             return sendJson(response, 404, {
-              error: {
-                message: `model '${id}' not found or its provider is not signed in`,
-                type: "not_found",
-              },
+              error: { message: "model id is required", type: "not_found" },
             });
           }
-          return sendJson(response, 200, found);
+          // Health-check semantics: a valid key + a reachable gateway is 200.
+          // clawso's "Test connection" probes reachability + credential, NOT
+          // model availability — so we deliberately do NOT 404 a model whose
+          // CLI isn't signed in yet (login state shows in the GUI, and the
+          // login-aware /v1/models list already filters the catalog). The CLI
+          // validates the model id at completion time. Owner is best-effort
+          // from the routing matchers.
+          const owner =
+            MODEL_OWNER[id] ??
+            (matchesGemini(id)
+              ? "gemini-subscription"
+              : matchesCodex(id)
+                ? "openai-subscription"
+                : "anthropic-subscription");
+          return sendJson(response, 200, { id, object: "model", owned_by: owner });
         }
       }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
