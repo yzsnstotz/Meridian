@@ -74,6 +74,118 @@ help - Show command usage
 
 For `codex` threads, Meridian queries `codex app-server` first (uses Codex login/session auth), and only falls back to `OPENAI_API_KEY` if app-server model listing is unavailable.
 
+## Email Loop Runtime Integration
+
+External services such as Email Loop should use the Meridian Web API instead of
+scraping Hub pages.
+
+Discovery:
+
+```bash
+curl -H "Authorization: Bearer $WEB_GUI_TOKEN" \
+  -H "X-Meridian-Caller-Id: email-loop" \
+  -H "X-Meridian-Caller-Key: $MERIDIAN_EMAIL_LOOP_CALLER_KEY" \
+  "$MERIDIAN_HTTP/api/runtime/catalog"
+```
+
+CLI equivalent:
+
+```bash
+meridian runtime catalog
+```
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "providers": [
+    {
+      "provider": "codex",
+      "label": "Codex",
+      "status": "available",
+      "capabilities": { "oauth": true, "api_key": true, "model_list": true },
+      "default_credential_id": "host-default-codex",
+      "credentials": [
+        {
+          "provider": "codex",
+          "credential_id": "host-default-codex",
+          "label": "Default (codex)",
+          "kind": "oauth",
+          "status": "active",
+          "is_default": false,
+          "is_host_default": true
+        }
+      ],
+      "models": [{ "id": "gpt-5.4", "label": "GPT-5.4" }],
+      "error": null
+    },
+    {
+      "provider": "claude",
+      "label": "Claude",
+      "status": "unavailable",
+      "capabilities": { "oauth": false, "api_key": false, "model_list": true },
+      "default_credential_id": "host-default-claude",
+      "credentials": [
+        {
+          "provider": "claude",
+          "credential_id": "host-default-claude",
+          "label": "Default (claude)",
+          "kind": "oauth",
+          "status": "active",
+          "is_default": false,
+          "is_host_default": true
+        }
+      ],
+      "models": [],
+      "error": {
+        "code": "model_list_unavailable",
+        "message": "No API key configured for provider=claude"
+      }
+    }
+  ],
+  "credentials": [
+    {
+      "provider": "codex",
+      "credential_id": "host-default-codex",
+      "label": "Default (codex)",
+      "kind": "oauth",
+      "status": "active",
+      "is_default": false,
+      "is_host_default": true
+    },
+    {
+      "provider": "claude",
+      "credential_id": "host-default-claude",
+      "label": "Default (claude)",
+      "kind": "oauth",
+      "status": "active",
+      "is_default": false,
+      "is_host_default": true
+    }
+  ],
+  "defaults": {
+    "codex": "host-default-codex",
+    "claude": "host-default-claude"
+  }
+}
+```
+
+Credential/account operations:
+
+```bash
+meridian credentials list
+meridian credentials oauth-start --label "Email Loop Codex" --mode device
+meridian credentials oauth-poll <job-id>
+meridian credentials oauth-cancel <job-id>
+meridian credentials api-key --label "Email Loop API" --base-url https://api.openai.com/v1 --model gpt-5.4 --env-var OPENAI_API_KEY --key "$OPENAI_API_KEY"
+meridian credentials set-default <credential-id>
+meridian credentials revoke <credential-id> --yes
+```
+
+To start work with a selected runtime, use the returned `provider`, model `id`,
+and optional `credential_id` with the existing spawn API or CLI.
+
 ## Telegram Webhook Mode
 
 Leave `WEBHOOK_URL` empty to keep long polling. To enable webhook mode, set a public HTTPS URL that ends at the base webhook path, for example:

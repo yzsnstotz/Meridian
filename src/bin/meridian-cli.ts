@@ -26,6 +26,8 @@ const EXIT_NOT_FOUND = 4;
 const COMMANDS: Record<string, string> = {
   spawn: "Launch an agent instance",
   models: "List selectable models for a provider",
+  runtime: "Discover runtime providers, credentials, and models",
+  credentials: "Manage credential accounts",
   kill: "Terminate an agent thread",
   interrupt: "Interrupt the active run without terminating the thread",
   stop: "Alias for interrupt",
@@ -134,6 +136,21 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
     case "models":
       hint(deps, "Usage: meridian models <provider>");
       hint(deps, "   or: meridian models --provider <claude|codex|gemini|cursor>");
+      return;
+    case "runtime":
+      hint(deps, "Usage: meridian runtime catalog");
+      return;
+    case "credentials":
+      hint(deps, "Usage: meridian credentials <subcommand> [options]");
+      hint(deps, "");
+      hint(deps, "Subcommands:");
+      hint(deps, "  list");
+      hint(deps, "  oauth-start --label <label> [--mode browser|device]");
+      hint(deps, "  oauth-poll <job-id>");
+      hint(deps, "  oauth-cancel <job-id>");
+      hint(deps, "  api-key --label <label> --base-url <url> --model <model-id> --env-var <name> --key <value>");
+      hint(deps, "  set-default <credential-id>");
+      hint(deps, "  revoke <credential-id> [--yes]");
       return;
     case "kill":
       hint(deps, "Usage: meridian kill <thread-id>");
@@ -423,8 +440,18 @@ async function requestApiBody(
   route: string,
   body?: unknown
 ): Promise<unknown> {
+  return requestApiBodyWithStatuses(deps, method, route, body, [200]);
+}
+
+async function requestApiBodyWithStatuses(
+  deps: CliDependencies,
+  method: string,
+  route: string,
+  body: unknown,
+  okStatuses: number[]
+): Promise<unknown> {
   const response = await requestApiResponse(deps, method, route, body);
-  if (response.statusCode !== 200) {
+  if (!okStatuses.includes(response.statusCode)) {
     const message = normalizeApiErrorMessage(response, `Meridian API request failed (${method} ${route})`);
     throw new CliError(exitCodeForApiStatus(response.statusCode, message), message);
   }
@@ -543,6 +570,19 @@ async function handleModels(args: string[], deps: CliDependencies): Promise<void
     provider: catalog.provider,
     models: catalog.models
   });
+}
+
+async function handleRuntime(args: string[], deps: CliDependencies): Promise<void> {
+  const [subcommand, ...extra] = args;
+  if (subcommand !== "catalog" || extra.length > 0) {
+    throw new CliError(EXIT_INVALID_ARGS, "runtime requires subcommand: catalog");
+  }
+
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "GET", "/api/runtime/catalog"),
+    "Meridian API returned an unexpected runtime catalog payload"
+  );
+  jsonOut(deps, body);
 }
 
 async function handleKill(args: string[], deps: CliDependencies): Promise<void> {
@@ -691,6 +731,197 @@ async function handleHealth(deps: CliDependencies): Promise<void> {
     deps,
     requireJsonRecord(await requestApiBody(deps, "GET", "/api/health"), "Meridian API returned an unexpected health payload")
   );
+}
+
+function parseOAuthMode(raw: string | undefined): "browser" | "device" | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "browser" || normalized === "device") {
+    return normalized;
+  }
+  throw new CliError(EXIT_INVALID_ARGS, `Unsupported OAuth mode: ${raw}`);
+}
+
+function redactSecretFromJson(value: unknown, secret: string | undefined): unknown {
+  if (!secret) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.split(secret).join("[redacted]");
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSecretFromJson(entry, secret));
+  }
+  if (isJsonRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, redactSecretFromJson(entry, secret)])
+    );
+  }
+  return value;
+}
+
+function expectSinglePositional(parsed: ParsedArgs, subcommand: string): string {
+  if (parsed.positionals.length !== 1 || !parsed.positionals[0]?.trim()) {
+    throw new CliError(EXIT_INVALID_ARGS, `credentials ${subcommand} requires exactly one id`);
+  }
+  return parsed.positionals[0].trim();
+}
+
+async function handleCredentialsList(args: string[], deps: CliDependencies): Promise<void> {
+  if (args.length > 0) {
+    throw new CliError(EXIT_INVALID_ARGS, "credentials list does not accept positional arguments");
+  }
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "GET", "/api/credentials"),
+    "Meridian API returned an unexpected credentials payload"
+  );
+  jsonOut(deps, body);
+}
+
+async function handleCredentialsOAuthStart(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  if (parsed.positionals.length > 0) {
+    throw new CliError(EXIT_INVALID_ARGS, "credentials oauth-start does not accept positional arguments");
+  }
+  const label = expectStringOption(parsed, "label");
+  if (!label) {
+    throw new CliError(EXIT_INVALID_ARGS, "--label is required for credentials oauth-start");
+  }
+  const mode = parseOAuthMode(expectStringOption(parsed, "mode"));
+  const body = requireJsonRecord(
+    await requestApiBodyWithStatuses(
+      deps,
+      "POST",
+      "/api/credentials/oauth-login",
+      {
+        credential_label: label,
+        ...(mode ? { mode } : {})
+      },
+      [200, 202]
+    ),
+    "Meridian API returned an unexpected OAuth start payload"
+  );
+  jsonOut(deps, body);
+}
+
+async function handleCredentialsOAuthPoll(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  const jobId = expectSinglePositional(parsed, "oauth-poll");
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "GET", `/api/credentials/oauth-login/${encodeURIComponent(jobId)}`),
+    "Meridian API returned an unexpected OAuth poll payload"
+  );
+  jsonOut(deps, body);
+}
+
+async function handleCredentialsOAuthCancel(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  const jobId = expectSinglePositional(parsed, "oauth-cancel");
+  await requestApiBodyWithStatuses(
+    deps,
+    "DELETE",
+    `/api/credentials/oauth-login/${encodeURIComponent(jobId)}`,
+    undefined,
+    [200, 202, 204]
+  );
+  jsonOut(deps, { ok: true, cancelled: true, job_id: jobId });
+}
+
+async function handleCredentialsApiKey(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  if (parsed.positionals.length > 0) {
+    throw new CliError(EXIT_INVALID_ARGS, "credentials api-key does not accept positional arguments");
+  }
+  const label = expectStringOption(parsed, "label");
+  const baseUrl = expectStringOption(parsed, "base-url");
+  const model = expectStringOption(parsed, "model");
+  const envVar = expectStringOption(parsed, "env-var");
+  const key = expectStringOption(parsed, "key");
+  for (const [name, value] of Object.entries({ label, "base-url": baseUrl, model, "env-var": envVar, key })) {
+    if (!value) {
+      throw new CliError(EXIT_INVALID_ARGS, `--${name} is required for credentials api-key`);
+    }
+  }
+
+  const body = requireJsonRecord(
+    await requestApiBodyWithStatuses(
+      deps,
+      "POST",
+      "/api/credentials/api-key",
+      {
+        credential_label: label,
+        base_url: baseUrl,
+        model_id: model,
+        env_var: envVar,
+        key_value: key
+      },
+      [200, 201]
+    ),
+    "Meridian API returned an unexpected API-key credential payload"
+  );
+  jsonOut(deps, redactSecretFromJson(body, key) as JsonRecord);
+}
+
+async function handleCredentialsSetDefault(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  const credentialId = expectSinglePositional(parsed, "set-default");
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "POST", `/api/credentials/${encodeURIComponent(credentialId)}/default`),
+    "Meridian API returned an unexpected set-default payload"
+  );
+  jsonOut(deps, body);
+}
+
+async function handleCredentialsRevoke(args: string[], deps: CliDependencies): Promise<void> {
+  const parsed = parseArgs(args);
+  const credentialId = expectSinglePositional(parsed, "revoke");
+  const autoConfirm = parsed.options.get("yes") === true;
+  const confirmed = await confirmAction(deps, `Revoke credential '${credentialId}'? This cannot be undone.`, autoConfirm);
+  if (!confirmed) {
+    hint(deps, "Aborted.");
+    jsonOut(deps, { ok: false, cancelled: true, credential_id: credentialId });
+    return;
+  }
+
+  const body = requireJsonRecord(
+    await requestApiBody(deps, "DELETE", `/api/credentials/${encodeURIComponent(credentialId)}`),
+    "Meridian API returned an unexpected revoke payload"
+  );
+  jsonOut(deps, body);
+}
+
+async function handleCredentials(args: string[], deps: CliDependencies): Promise<void> {
+  const [subcommand, ...subArgs] = args;
+  switch (subcommand) {
+    case "list":
+      await handleCredentialsList(subArgs, deps);
+      return;
+    case "oauth-start":
+      await handleCredentialsOAuthStart(subArgs, deps);
+      return;
+    case "oauth-poll":
+      await handleCredentialsOAuthPoll(subArgs, deps);
+      return;
+    case "oauth-cancel":
+      await handleCredentialsOAuthCancel(subArgs, deps);
+      return;
+    case "api-key":
+      await handleCredentialsApiKey(subArgs, deps);
+      return;
+    case "set-default":
+      await handleCredentialsSetDefault(subArgs, deps);
+      return;
+    case "revoke":
+      await handleCredentialsRevoke(subArgs, deps);
+      return;
+    default:
+      throw new CliError(
+        EXIT_INVALID_ARGS,
+        `unknown credentials subcommand: ${subcommand ?? ""}. Use: list, oauth-start, oauth-poll, oauth-cancel, api-key, set-default, revoke`
+      );
+  }
 }
 
 async function confirmAction(deps: CliDependencies, message: string, autoConfirm: boolean): Promise<boolean> {
@@ -941,6 +1172,12 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
       return EXIT_SUCCESS;
     case "models":
       await handleModels(commandArgs, deps);
+      return EXIT_SUCCESS;
+    case "runtime":
+      await handleRuntime(commandArgs, deps);
+      return EXIT_SUCCESS;
+    case "credentials":
+      await handleCredentials(commandArgs, deps);
       return EXIT_SUCCESS;
     case "kill":
       await handleKill(commandArgs, deps);

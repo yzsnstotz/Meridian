@@ -240,6 +240,82 @@ interface ProviderModelCatalogLookup {
   listModels(provider: AgentType): Promise<ProviderModelCatalogResult>;
 }
 
+type RuntimeCredentialAccount = {
+  provider: string;
+  credential_id: string;
+  label: string;
+  kind: string;
+  status: "active" | "revoked";
+  is_default: boolean;
+  is_host_default: boolean;
+  revoked_at: string | null;
+  created_at: string | null;
+  last_used_at: string | null;
+  api_key_metadata: unknown;
+};
+
+const RUNTIME_CATALOG_PROVIDERS: AgentType[] = ["codex", "claude", "gemini", "cursor"];
+
+function runtimeProviderLabel(provider: AgentType): string {
+  switch (provider) {
+    case "codex":
+      return "Codex";
+    case "claude":
+      return "Claude";
+    case "gemini":
+      return "Gemini";
+    case "cursor":
+      return "Cursor";
+  }
+}
+
+function runtimeCredentialCapabilities(provider: AgentType): { oauth: boolean; api_key: boolean; model_list: boolean } {
+  switch (provider) {
+    case "codex":
+      return { oauth: true, api_key: true, model_list: true };
+    case "claude":
+    case "gemini":
+    case "cursor":
+      return { oauth: false, api_key: false, model_list: true };
+  }
+}
+
+function normalizeRuntimeCredential(raw: unknown): RuntimeCredentialAccount | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const provider = typeof record.provider === "string" ? record.provider : "";
+  const credentialId = typeof record.credential_id === "string" ? record.credential_id : "";
+  const label =
+    typeof record.credential_label === "string" && record.credential_label.trim()
+      ? record.credential_label.trim()
+      : typeof record.label === "string" && record.label.trim()
+        ? record.label.trim()
+        : credentialId;
+  const revokedAt = typeof record.revoked_at === "string" ? record.revoked_at : null;
+  if (!provider || !credentialId) {
+    return null;
+  }
+
+  return {
+    provider,
+    credential_id: credentialId,
+    label,
+    kind: typeof record.kind === "string" ? record.kind : "unknown",
+    status: revokedAt ? "revoked" : "active",
+    is_default: record.is_default === true,
+    is_host_default: record.is_host_default === true,
+    revoked_at: revokedAt,
+    created_at: typeof record.created_at === "string" ? record.created_at : null,
+    last_used_at: typeof record.last_used_at === "string" ? record.last_used_at : null,
+    api_key_metadata:
+      record.api_key_metadata && typeof record.api_key_metadata === "object" && !Array.isArray(record.api_key_metadata)
+        ? record.api_key_metadata
+        : null
+  };
+}
+
 function parseCookies(cookieHeader: string | undefined): Map<string, string> {
   const cookies = new Map<string, string>();
   if (!cookieHeader) {
@@ -772,6 +848,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/capabilities" && request.method === "GET") {
       await this.handleCapabilitiesRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/runtime/catalog" && request.method === "GET") {
+      await this.handleRuntimeCatalogRequest(request, response);
       return;
     }
 
@@ -2152,6 +2233,84 @@ export class WebInterfaceServer {
       return;
     }
     this.respondJson(response, 200, JSON.parse(result.content) as unknown);
+  }
+
+  private async handleRuntimeCatalogRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const credentialResult = HubResultSchema.parse(
+      await this.requestHubForRequest(
+        request,
+        this.buildHubMessage({
+          sessionId,
+          intent: "list_credentials",
+          thread_id: "global",
+          target: "global",
+          content: "",
+          caller: this.extractInboundCaller(request)
+        })
+      )
+    );
+    if (credentialResult.status !== "success") {
+      const body = this.parseCredentialErrorBody(credentialResult.content);
+      this.respondJson(response, this.credentialErrorStatus(body.error_code), body);
+      return;
+    }
+
+    const rawCredentialPayload = JSON.parse(credentialResult.content) as Record<string, unknown>;
+    const credentials = (Array.isArray(rawCredentialPayload.credentials) ? rawCredentialPayload.credentials : [])
+      .map((entry) => normalizeRuntimeCredential(entry))
+      .filter((entry): entry is RuntimeCredentialAccount => entry !== null);
+
+    const providers = await Promise.all(
+      RUNTIME_CATALOG_PROVIDERS.map(async (provider) => {
+        const providerCredentials = credentials.filter((credential) => credential.provider === provider);
+        const defaultCredential =
+          providerCredentials.find((credential) => credential.is_default && credential.status === "active") ??
+          providerCredentials.find((credential) => credential.is_host_default && credential.status === "active") ??
+          null;
+
+        try {
+          const catalog = await this.providerModelCatalog.listModels(provider);
+          return {
+            provider,
+            label: runtimeProviderLabel(provider),
+            status: "available",
+            capabilities: runtimeCredentialCapabilities(provider),
+            credentials: providerCredentials,
+            default_credential_id: defaultCredential?.credential_id ?? null,
+            models: catalog.models,
+            error: null
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return {
+            provider,
+            label: runtimeProviderLabel(provider),
+            status: "unavailable",
+            capabilities: runtimeCredentialCapabilities(provider),
+            credentials: providerCredentials,
+            default_credential_id: defaultCredential?.credential_id ?? null,
+            models: [],
+            error: {
+              code: "model_list_unavailable",
+              message
+            }
+          };
+        }
+      })
+    );
+
+    this.respondJson(response, 200, {
+      ok: true,
+      providers,
+      credentials,
+      defaults: Object.fromEntries(
+        providers.map((provider) => [provider.provider, provider.default_credential_id])
+      )
+    });
   }
 
   private async handleRevokeCredentialRequest(
