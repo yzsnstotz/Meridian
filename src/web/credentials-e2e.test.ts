@@ -11,7 +11,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as wait } from "node:timers/promises";
 
-import type { HubMessage } from "../types";
+import type { AgentType, HubMessage, ProviderModel } from "../types";
 
 // Process-wide env: must be set before importing the web server / hub modules.
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
@@ -41,7 +41,19 @@ interface RealHub {
   oauthRegistry: any;
 }
 
-async function bootRealHub(): Promise<RealHub> {
+interface BootRealHubOptions {
+  discoverHostDefaults?: () => Array<{
+    credential_id: string;
+    credential_label: string;
+    provider: "codex" | "claude";
+    codex_home_path: string;
+  }>;
+  providerModelCatalog?: {
+    listModels(provider: AgentType): Promise<{ provider: AgentType; models: ProviderModel[] }>;
+  };
+}
+
+async function bootRealHub(options: BootRealHubOptions = {}): Promise<RealHub> {
   const { WebInterfaceServer } = await webServerModulePromise;
   const { HubRouter } = await hubRouterModulePromise;
   const { InstanceRegistry } = await registryModulePromise;
@@ -59,7 +71,8 @@ async function bootRealHub(): Promise<RealHub> {
 
   const credentialStore = new CredentialStore({
     initialRecords: [],
-    credentialsRoot
+    credentialsRoot,
+    ...(options.discoverHostDefaults ? { discoverHostDefaults: options.discoverHostDefaults } : {})
   });
   const oauthRegistry = new OAuthLoginJobRegistry();
 
@@ -79,7 +92,8 @@ async function bootRealHub(): Promise<RealHub> {
     listenHost: "127.0.0.1",
     token: TOKEN,
     staticDir,
-    routerOverride: router
+    routerOverride: router,
+    ...(options.providerModelCatalog ? { providerModelCatalog: options.providerModelCatalog } : {})
   });
   await server.start();
   const addr = server.address();
@@ -126,6 +140,12 @@ async function listCredentials(baseUrl: string, callerId: string): Promise<{ sta
   return { status: resp.status, json: await resp.json() };
 }
 
+async function runtimeCatalog(baseUrl: string, callerId: string): Promise<{ status: number; json: any; raw: string }> {
+  const resp = await fetch(`${baseUrl}/api/runtime/catalog`, { headers: headers(callerId) });
+  const raw = await resp.text();
+  return { status: resp.status, json: JSON.parse(raw), raw };
+}
+
 // ---- Functional tests ----
 
 test("E2E 1: API key happy path — create, list, revoke", async () => {
@@ -160,6 +180,88 @@ test("E2E 1: API key happy path — create, list, revoke", async () => {
     const after = (list2.json.credentials ?? []).find((c: any) => c.credential_id === credId);
     assert.ok(after, "revoked credential still listed to owner");
     assert.ok(after.revoked_at, "revoked_at should be populated after DELETE");
+  } finally {
+    await hub.stop();
+  }
+});
+
+test("E2E 1A: runtime catalog includes host defaults, stored credentials, models, and partial provider errors", async () => {
+  const providerModelCatalog = {
+    async listModels(provider: AgentType) {
+      if (provider === "claude") {
+        throw new Error("No API key configured for provider=claude");
+      }
+      return {
+        provider,
+        models: provider === "codex"
+          ? [{ id: "gpt-5.4", label: "GPT-5.4" }]
+          : []
+      };
+    }
+  };
+  const hub = await bootRealHub({
+    discoverHostDefaults: () => [
+      {
+        credential_id: "host-default-codex",
+        credential_label: "Default (codex)",
+        provider: "codex",
+        codex_home_path: "/host/.codex"
+      },
+      {
+        credential_id: "host-default-claude",
+        credential_label: "Default (claude)",
+        provider: "claude",
+        codex_home_path: "/host/.claude"
+      }
+    ],
+    providerModelCatalog
+  });
+  try {
+    const secret = "sk-runtime-catalog-secret";
+    const create = await createApiKey(hub.baseUrl, "alice", {
+      credential_label: "openai-work",
+      base_url: "https://api.openai.com/v1",
+      model_id: "gpt-5.4",
+      env_var: "OPENAI_API_KEY",
+      key_value: secret
+    });
+    assert.equal(create.status, 201);
+
+    const catalog = await runtimeCatalog(hub.baseUrl, "alice");
+    assert.equal(catalog.status, 200);
+    assert.equal(catalog.json.ok, true);
+    assert.equal(catalog.raw.includes(secret), false, "runtime catalog must never echo API key values");
+
+    const credentials = catalog.json.credentials ?? [];
+    const credentialIds = new Set(credentials.map((c: any) => c.credential_id));
+    assert.ok(credentialIds.has("host-default-codex"), "missing host-default-codex account");
+    assert.ok(credentialIds.has("host-default-claude"), "missing host-default-claude account");
+    assert.ok(credentialIds.has(create.json.credential_id), "missing stored API-key account");
+
+    const stored = credentials.find((c: any) => c.credential_id === create.json.credential_id);
+    assert.equal(stored.label, "openai-work");
+    assert.equal(stored.kind, "api_key");
+    assert.equal(stored.is_host_default, false);
+    assert.equal(stored.status, "active");
+    assert.equal(stored.api_key_metadata.env_var, "OPENAI_API_KEY");
+    assert.equal(stored.api_key_metadata.model_id, "gpt-5.4");
+
+    const codex = catalog.json.providers.find((p: any) => p.provider === "codex");
+    assert.ok(codex, "missing codex provider entry");
+    assert.equal(codex.status, "available");
+    assert.deepEqual(codex.models, [{ id: "gpt-5.4", label: "GPT-5.4" }]);
+    assert.equal(codex.capabilities.oauth, true);
+    assert.equal(codex.capabilities.api_key, true);
+    assert.equal(codex.capabilities.model_list, true);
+    assert.ok(codex.credentials.some((c: any) => c.credential_id === "host-default-codex"));
+    assert.ok(codex.credentials.some((c: any) => c.credential_id === create.json.credential_id));
+
+    const claude = catalog.json.providers.find((p: any) => p.provider === "claude");
+    assert.ok(claude, "missing claude provider entry");
+    assert.equal(claude.status, "unavailable");
+    assert.deepEqual(claude.models, []);
+    assert.match(claude.error.message, /No API key configured for provider=claude/);
+    assert.ok(claude.credentials.some((c: any) => c.credential_id === "host-default-claude"));
   } finally {
     await hub.stop();
   }

@@ -207,6 +207,200 @@ test("runCli models lists selectable models for a provider without socket transp
   });
 });
 
+test("runCli runtime catalog fetches the Email Loop catalog endpoint", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  const catalog = {
+    ok: true,
+    providers: [
+      {
+        provider: "codex",
+        label: "Codex",
+        status: "available",
+        capabilities: { oauth: true, api_key: true, model_list: true },
+        credentials: [],
+        models: [{ id: "gpt-5.4", label: "GPT-5.4" }],
+        error: null
+      }
+    ],
+    credentials: []
+  };
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: catalog
+    };
+  };
+
+  const exitCode = await runCli(["runtime", "catalog"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [{ method: "GET", route: "/api/runtime/catalog", body: undefined }]);
+  assert.deepEqual(JSON.parse(harness.stdout()), catalog);
+  assert.equal(harness.stderr(), "");
+});
+
+test("runCli credentials list fetches credential accounts", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  const body = {
+    credentials: [
+      {
+        credential_id: "host-default-codex",
+        credential_label: "Default (codex)",
+        provider: "codex",
+        kind: "oauth",
+        is_host_default: true
+      }
+    ]
+  };
+  harness.deps.hubHttpRequest = async (method: string, route: string, requestBody?: unknown) => {
+    harness.httpCalls.push({ method, route, body: requestBody });
+    return {
+      statusCode: 200,
+      headers: {},
+      body
+    };
+  };
+
+  const exitCode = await runCli(["credentials", "list"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [{ method: "GET", route: "/api/credentials", body: undefined }]);
+  assert.deepEqual(JSON.parse(harness.stdout()), body);
+});
+
+test("runCli credentials oauth-start sends only label and mode", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 202,
+      headers: {},
+      body: { job_id: "job-1", status: "pending" }
+    };
+  };
+
+  const exitCode = await runCli(["credentials", "oauth-start", "--label", "Work Codex", "--mode", "device"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/credentials/oauth-login",
+      body: { credential_label: "Work Codex", mode: "device" }
+    }
+  ]);
+  assert.deepEqual(JSON.parse(harness.stdout()), { job_id: "job-1", status: "pending" });
+});
+
+test("runCli credentials oauth-poll and oauth-cancel address the job endpoint", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    if (method === "DELETE") {
+      return { statusCode: 204, headers: {}, body: null };
+    }
+    return {
+      statusCode: 200,
+      headers: {},
+      body: { job_id: "job-1", status: "awaiting_browser", login_url: "https://example.test/login" }
+    };
+  };
+
+  assert.equal(await runCli(["credentials", "oauth-poll", "job-1"], harness.deps), 0);
+  assert.equal(await runCli(["credentials", "oauth-cancel", "job-1"], harness.deps), 0);
+
+  assert.deepEqual(harness.httpCalls, [
+    { method: "GET", route: "/api/credentials/oauth-login/job-1", body: undefined },
+    { method: "DELETE", route: "/api/credentials/oauth-login/job-1", body: undefined }
+  ]);
+  const outputs = harness.stdout().trim().split(/\n(?=\{)/).map((chunk) => JSON.parse(chunk));
+  assert.deepEqual(outputs, [
+    { job_id: "job-1", status: "awaiting_browser", login_url: "https://example.test/login" },
+    { ok: true, cancelled: true, job_id: "job-1" }
+  ]);
+});
+
+test("runCli credentials api-key registers a key without echoing the secret", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  const secret = "sk-cli-secret";
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 201,
+      headers: {},
+      body: { credential_id: "cred-1" }
+    };
+  };
+
+  const exitCode = await runCli(
+    [
+      "credentials",
+      "api-key",
+      "--label",
+      "OpenAI Work",
+      "--base-url",
+      "https://api.openai.com/v1",
+      "--model",
+      "gpt-5.4",
+      "--env-var",
+      "OPENAI_API_KEY",
+      "--key",
+      secret
+    ],
+    harness.deps
+  );
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(harness.httpCalls, [
+    {
+      method: "POST",
+      route: "/api/credentials/api-key",
+      body: {
+        credential_label: "OpenAI Work",
+        base_url: "https://api.openai.com/v1",
+        model_id: "gpt-5.4",
+        env_var: "OPENAI_API_KEY",
+        key_value: secret
+      }
+    }
+  ]);
+  assert.deepEqual(JSON.parse(harness.stdout()), { credential_id: "cred-1" });
+  assert.equal(harness.stdout().includes(secret), false);
+});
+
+test("runCli credentials set-default and revoke call account mutation endpoints", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const harness = createCliDeps();
+  harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
+    harness.httpCalls.push({ method, route, body });
+    return {
+      statusCode: 200,
+      headers: {},
+      body: method === "POST" ? { credential_id: "cred-1", is_default: true } : { credential_id: "cred-1", revoked: true }
+    };
+  };
+
+  assert.equal(await runCli(["credentials", "set-default", "cred-1"], harness.deps), 0);
+  assert.equal(await runCli(["credentials", "revoke", "cred-1", "--yes"], harness.deps), 0);
+
+  assert.deepEqual(harness.httpCalls, [
+    { method: "POST", route: "/api/credentials/cred-1/default", body: undefined },
+    { method: "DELETE", route: "/api/credentials/cred-1", body: undefined }
+  ]);
+  const outputs = harness.stdout().trim().split(/\n(?=\{)/).map((chunk) => JSON.parse(chunk));
+  assert.deepEqual(outputs, [
+    { credential_id: "cred-1", is_default: true },
+    { credential_id: "cred-1", revoked: true }
+  ]);
+});
+
 test("runCli interrupt posts to non-destructive interrupt endpoint", async () => {
   const { runCli } = await meridianCliModulePromise;
   const harness = createCliDeps();

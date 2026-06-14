@@ -76,6 +76,50 @@ meridian spawn gemini --mode bridge --workdir /Users/yzliu/work/sandbox
 meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
 ```
 
+### `meridian models <provider>`
+
+List selectable models for one provider.
+
+Example:
+
+```bash
+meridian models codex
+```
+
+### `meridian runtime catalog`
+
+Discover the provider/account/model catalog that external integrations can use
+to present runtime choices without scraping the Hub UI.
+
+Example:
+
+```bash
+meridian runtime catalog
+```
+
+The command proxies `GET /api/runtime/catalog` and returns JSON containing:
+- `providers[]`: provider id, label, status, account-operation capabilities, visible credentials, default credential id, selectable models, and per-provider error
+- `credentials[]`: flattened visible account list with provider, credential id, label, kind, active/revoked status, default flags, host-default flag, and API-key metadata
+- `defaults`: provider to selected/default credential id
+
+### `meridian credentials <subcommand>`
+
+Manage credential accounts through the Meridian Web API. Commands emit JSON on
+stdout. `credentials api-key` sends the key to the server but never prints the
+key value in CLI output.
+
+Subcommands:
+
+```bash
+meridian credentials list
+meridian credentials oauth-start --label "Work Codex" --mode device
+meridian credentials oauth-poll <job-id>
+meridian credentials oauth-cancel <job-id>
+meridian credentials api-key --label "OpenAI Work" --base-url https://api.openai.com/v1 --model gpt-5.4 --env-var OPENAI_API_KEY --key "$OPENAI_API_KEY"
+meridian credentials set-default <credential-id>
+meridian credentials revoke <credential-id> --yes
+```
+
 ### `meridian kill <thread-id>`
 
 Terminate a running thread.
@@ -144,6 +188,13 @@ meridian health
 Start a worker with explicit provider + model:
 
 ```bash
+meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
+```
+
+Discover accounts and models before spawning:
+
+```bash
+meridian runtime catalog
 meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
 ```
 

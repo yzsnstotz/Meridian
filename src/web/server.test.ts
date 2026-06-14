@@ -6,7 +6,6 @@ import path from "node:path";
 import { test } from "node:test";
 import type { Socket } from "node:net";
 
-import { config } from "../config";
 import { ProviderCapabilityListSchema, ProviderCapabilitySchema, type HubMessage, type ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
@@ -14,6 +13,7 @@ process.env.ALLOWED_USER_IDS ??= "123456789";
 process.env.MERIDIAN_DISABLE_WEB_AUTOSTART = "true";
 
 const webServerModulePromise = import("./server");
+const { config } = require("../config") as typeof import("../config");
 
 class FakeHubSocket extends Duplex {
   written = "";
