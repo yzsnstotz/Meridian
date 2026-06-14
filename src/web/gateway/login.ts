@@ -787,7 +787,7 @@ export function renderLoginPage(port: number): string {
       </div>
       <div class="title">
         <h1>Meridian Gateway</h1>
-        <p>Local OpenAI-compatible endpoint</p>
+        <p>Local OpenAI- &amp; Anthropic-compatible endpoint</p>
       </div>
       <span class="pill" id="runPill"><span class="dot"></span>Running</span>
     </header>
@@ -861,8 +861,9 @@ export function renderLoginPage(port: number): string {
           </button>
         </div>
         <p class="endpoint-note" id="rotateNote" style="display:none;color:var(--accent)">New key generated — update this key in your client.</p>
-        <p class="endpoint-note">Use this base URL and the API key below in your OpenAI-compatible client.</p>
-        <p class="endpoint-note">Each model needs its matching subscription connected above.</p>
+        <p class="endpoint-note"><b>OpenAI-compatible</b> clients: use this Base URL — the gateway serves <code>/chat/completions</code> + <code>/models</code>. In Clawso, add it as a <b>Custom (OpenAI-compatible)</b> provider with this Base URL and the key.</p>
+        <p class="endpoint-note"><b>Anthropic-compatible</b> clients: same Base URL — the gateway also serves <code>/messages</code>.</p>
+        <p class="endpoint-note">The key works as either <kbd>Authorization: Bearer &lt;key&gt;</kbd> (OpenAI) or <kbd>x-api-key: &lt;key&gt;</kbd> (Anthropic). Each model needs its matching subscription connected above.</p>
       </div>
     </section>
 
