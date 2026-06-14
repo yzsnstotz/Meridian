@@ -39,6 +39,27 @@ test("createGeminiStreamParser maps fixture events to working and final deltas",
     {
       traceId: "90918503-8e03-4289-8696-eaf65e2508b6",
       phase: "result",
+      data: {
+        total_tokens: 10112,
+        input_tokens: 9896,
+        output_tokens: 49,
+        cached: 0,
+        input: 9896,
+        duration_ms: 3204,
+        tool_calls: 0,
+        models: {
+          "gemini-2.5-flash-lite": {
+            total_tokens: 2740,
+            input_tokens: 2537,
+            output_tokens: 36
+          },
+          "gemini-3-flash-preview": {
+            total_tokens: 7372,
+            input_tokens: 7359,
+            output_tokens: 13
+          }
+        }
+      },
       final: true
     }
   ]);

@@ -39,6 +39,10 @@ test("parseClaudeEvent maps fixture events to working and final deltas", async (
       traceId: "a8a2f72a-1698-43d9-a2f2-f0284db30689",
       phase: "result",
       text: "Hello! How can I help you today?",
+      data: {
+        input_tokens: 2,
+        output_tokens: 12
+      },
       final: true
     }
   ]);

@@ -45,6 +45,7 @@ export function parseGeminiEvent(event: unknown): OutputDelta | null {
     return {
       traceId,
       phase: asString(record.status) === "success" ? "result" : "error",
+      ...(record.stats !== undefined ? { data: record.stats } : {}),
       final: true
     };
   }

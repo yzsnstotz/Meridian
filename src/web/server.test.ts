@@ -685,6 +685,99 @@ test("Web Interface Server returns explicit not-found for invalid progress threa
   });
 });
 
+test("Web Interface Server records run usage meters for scoped queries", async () => {
+  const logDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-usage-"));
+  let jobId = "";
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const runResponse = await fetch(`${baseUrl}/api/run?token=secret-token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-email-loop-tenant-id": "tenant-email-loop-test"
+        },
+        body: JSON.stringify({
+          thread_id: "codex_01",
+          content: JSON.stringify({
+            tenantId: "tenant-from-prompt",
+            roleType: "mail-manager",
+            mailboxId: "mailbox-nobuaki"
+          })
+        })
+      });
+      assert.equal(runResponse.status, 200);
+      const runPayload = (await runResponse.json()) as { trace_id: string };
+      jobId = runPayload.trace_id;
+
+      const tenantResponse = await fetch(
+        `${baseUrl}/api/usage?token=secret-token&kind=tenant&id=tenant-email-loop-test`
+      );
+      assert.equal(tenantResponse.status, 200);
+      const tenantPayload = (await tenantResponse.json()) as {
+        usage: {
+          meters: Array<Record<string, unknown>>;
+          total: Record<string, unknown>;
+        };
+      };
+      assert.equal(tenantPayload.usage.meters.length, 1);
+      assert.equal(tenantPayload.usage.total.totalTokens, 230);
+      assert.equal(tenantPayload.usage.total.inputTokens, 100);
+      assert.equal(tenantPayload.usage.total.cachedInputTokens, 40);
+      assert.equal(tenantPayload.usage.total.outputTokens, 80);
+      assert.equal(tenantPayload.usage.total.reasoningTokens, 10);
+
+      const meter = tenantPayload.usage.meters[0];
+      assert.equal(meter?.tenantId, "tenant-email-loop-test");
+      assert.equal(meter?.provider, "codex");
+      assert.equal(meter?.model, "gpt-5.5");
+      assert.equal(meter?.credentialId, "cred-nobuaki");
+      assert.equal(meter?.roleId, "mail-manager");
+      assert.equal(meter?.mailboxId, "mailbox-nobuaki");
+
+      const [jobResponse, providerResponse, modelResponse] = await Promise.all([
+        fetch(`${baseUrl}/api/usage?token=secret-token&kind=job&id=${jobId}`),
+        fetch(`${baseUrl}/api/usage?token=secret-token&kind=provider&id=codex`),
+        fetch(`${baseUrl}/api/usage?token=secret-token&kind=model&id=${encodeURIComponent("gpt-5.5")}`)
+      ]);
+      assert.equal(jobResponse.status, 200);
+      assert.equal(providerResponse.status, 200);
+      assert.equal(modelResponse.status, 200);
+      assert.equal(((await jobResponse.json()) as { usage: { total: { totalTokens: number } } }).usage.total.totalTokens, 230);
+      assert.equal(
+        ((await providerResponse.json()) as { usage: { total: { totalTokens: number } } }).usage.total.totalTokens,
+        230
+      );
+      assert.equal(((await modelResponse.json()) as { usage: { total: { totalTokens: number } } }).usage.total.totalTokens, 230);
+    }, {
+      logDir,
+      requestHubRun: async (message: HubMessage) => {
+        assert.equal(message.intent, "run");
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_01",
+          source: "codex",
+          model_id: "gpt-5.5",
+          credential_id: "cred-nobuaki",
+          status: "success",
+          content: "done",
+          usage: {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            output_tokens: 80,
+            reasoning_output_tokens: 10,
+            total_tokens: 230
+          },
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+  } finally {
+    await fs.promises.rm(logDir, { recursive: true, force: true });
+  }
+});
+
 test("Web Interface Server returns history thread index and model catalog", async () => {
   const seenIntents: string[] = [];
   await withServer(async ({ baseUrl }) => {

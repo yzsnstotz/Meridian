@@ -22,6 +22,7 @@ import {
   type ProviderModelCatalogResult
 } from "../shared/model-catalog";
 import { shapeHistoryPayload } from "../shared/history-payload";
+import { UsageLedger, type UsageScopeKind } from "./usage-ledger";
 import {
   AgentTypeSchema,
   FileAttachmentSchema,
@@ -166,6 +167,11 @@ const registerCallerBodySchema = z.object({
 
 const callerAuthorityBodySchema = z.object({
   caller_authority: CallerAuthoritySchema
+});
+
+const usageQuerySchema = z.object({
+  kind: z.enum(["tenant", "user", "mailbox", "role", "job", "provider", "model", "campaign"]),
+  id: z.string().min(1)
 });
 
 function coerceProgressSnapshot(result: HubResult) {
@@ -543,6 +549,7 @@ export class WebInterfaceServer {
   private readonly providerModelCatalog: ProviderModelCatalogLookup;
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
   private readonly logger: WebInterfaceLogger;
+  private readonly usageLedger: UsageLedger;
   private server: http.Server | https.Server | null = null;
   private loopbackSentinels: Array<http.Server | https.Server> = [];
 
@@ -594,6 +601,7 @@ export class WebInterfaceServer {
     this.providerModelCatalog = options.providerModelCatalog ?? new SharedProviderModelCatalog();
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
+    this.usageLedger = new UsageLedger(path.join(this.logDir, "usage-ledger.jsonl"));
 
     if (this.enabled && !this.token) {
       throw new Error("WEB_GUI_TOKEN is required when Web Interface Server is enabled");
@@ -733,6 +741,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/health" && request.method === "GET") {
       await this.handleHealthRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/usage" && request.method === "GET") {
+      await this.handleUsageRequest(request, response);
       return;
     }
 
@@ -1220,6 +1233,7 @@ export class WebInterfaceServer {
           { run: true }
         )
       );
+      await this.recordUsageForRunRequest(request, result, body.content);
 
       this.respondJson(response, 200, {
         ...result,
@@ -1992,6 +2006,51 @@ export class WebInterfaceServer {
       return this.requestHubAsCaller(message, auth, options);
     }
     return options.run ? this.requestHubRun(message) : this.requestHub(message);
+  }
+
+  private async handleUsageRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const query = usageQuerySchema.parse(Object.fromEntries(requestUrl.searchParams.entries()));
+    this.respondJson(response, 200, {
+      usage: this.usageLedger.snapshot({ kind: query.kind as UsageScopeKind, id: query.id })
+    });
+  }
+
+  private async recordUsageForRunRequest(
+    request: http.IncomingMessage,
+    result: HubResult,
+    content: string
+  ): Promise<void> {
+    if (result.status !== "success") {
+      return;
+    }
+
+    try {
+      await this.usageLedger.recordRun(result, {
+        content,
+        tenantId: this.readFirstHeader(request, ["x-meridian-tenant-id", "x-email-loop-tenant-id"]),
+        userId: this.readFirstHeader(request, ["x-meridian-user-id", "x-email-loop-user-id"]),
+        mailboxId: this.readFirstHeader(request, ["x-meridian-mailbox-id", "x-email-loop-mailbox-id"]),
+        roleId: this.readFirstHeader(request, ["x-meridian-role-id", "x-email-loop-role-id", "x-email-loop-role-type"]),
+        campaignId: this.readFirstHeader(request, ["x-meridian-campaign-id", "x-email-loop-campaign-id"])
+      });
+    } catch (error) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error), trace_id: result.trace_id },
+        "Failed to record usage meter"
+      );
+    }
+  }
+
+  private readFirstHeader(request: http.IncomingMessage, names: readonly string[]): string | undefined {
+    for (const name of names) {
+      const raw = request.headers[name];
+      const value = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+    return undefined;
   }
 
   private async requestHubWithCallerIdentity(

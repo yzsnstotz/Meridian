@@ -99,6 +99,7 @@ type AgentReplyWaitResult =
 interface StreamRunResult {
   content: string;
   attachmentResults: AttachmentResult[];
+  usage?: Record<string, unknown>;
 }
 
 interface SessionAttachmentMetadata {
@@ -903,7 +904,10 @@ export class HubRouter {
         }
         const content = this.formatRunContent(instance.thread_id, streamContent.content);
         const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
-          attachmentResults: streamContent.attachmentResults
+          attachmentResults: streamContent.attachmentResults,
+          usage: streamContent.usage,
+          modelId: instance.model_id,
+          credentialId: instance.credential_id ?? null
         });
         this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
         return result;
@@ -1174,13 +1178,15 @@ export class HubRouter {
       if (finalDelta.phase === "error") {
         return {
           content: finalDelta.text ?? explicitResultText ?? (streamedText || "Task failed."),
-          attachmentResults
+          attachmentResults,
+          usage: this.extractStreamUsage(finalDelta)
         };
       }
 
       return {
         content: explicitResultText ?? (streamedText || "Task completed."),
-        attachmentResults
+        attachmentResults,
+        usage: this.extractStreamUsage(finalDelta)
       };
     } catch (error) {
       if (this.isRunInterrupted(threadId, message.trace_id)) {
@@ -4575,6 +4581,12 @@ export class HubRouter {
     return content;
   }
 
+  private extractStreamUsage(delta: OutputDelta): Record<string, unknown> | undefined {
+    return typeof delta.data === "object" && delta.data !== null
+      ? (delta.data as Record<string, unknown>)
+      : undefined;
+  }
+
   private buildPendingRunResult(
     message: HubMessage,
     source: AgentType,
@@ -4659,15 +4671,21 @@ export class HubRouter {
       attachmentResults?: AttachmentResult[];
       telegramInlineKeyboard?: HubResult["telegram_inline_keyboard"];
       runState?: HubResult["run_state"];
+      usage?: Record<string, unknown>;
+      modelId?: string;
+      credentialId?: string | null;
     }
   ): HubResult {
     return HubResultSchema.parse({
       trace_id: message.trace_id,
       thread_id: threadIdOverride ?? message.thread_id,
       source,
+      model_id: options?.modelId,
+      credential_id: options?.credentialId,
       status,
       run_state: options?.runState,
       content,
+      usage: options?.usage,
       attachments: options?.attachments ?? [],
       attachment_results: options?.attachmentResults?.length ? options.attachmentResults : undefined,
       telegram_inline_keyboard: options?.telegramInlineKeyboard,
