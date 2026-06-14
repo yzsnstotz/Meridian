@@ -195,6 +195,17 @@ const AGENT_ROLES = new Set(["agent", "assistant"]);
 // At ~1KB per entry that's ~5MB per active thread in memory, which is fine
 // given the small per-host thread count.
 const THREAD_HISTORY_LIMIT = 5000;
+const CALLER_LAST_SEEN_PERSIST_INTERVAL_MS = 60_000;
+const ROUTE_LEVEL_PERSIST_SKIPPED_INTENTS = new Set<string>([
+  "status",
+  "list",
+  "list_models",
+  "detail",
+  "history",
+  "list_callers",
+  "list_credentials",
+  "monitor_manual_update"
+]);
 const ATTACHMENT_INLINE_CHAR_LIMIT = 12_000;
 const ATTACHMENT_TOTAL_INLINE_CHAR_LIMIT = 40_000;
 
@@ -741,7 +752,9 @@ export class HubRouter {
 
     try {
       const result = await this.routeByIntent(message);
-      this.persistStateSafely();
+      if (!ROUTE_LEVEL_PERSIST_SKIPPED_INTENTS.has(message.intent)) {
+        this.persistStateSafely();
+      }
       const latencyMs = Date.now() - startedAt;
       this.log.info(
         {
@@ -779,7 +792,9 @@ export class HubRouter {
         },
         "Hub routing failed"
       );
-      this.persistStateSafely();
+      if (!ROUTE_LEVEL_PERSIST_SKIPPED_INTENTS.has(message.intent)) {
+        this.persistStateSafely();
+      }
       return this.buildResult(
         message,
         "error",
@@ -1349,9 +1364,12 @@ export class HubRouter {
 
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
+    const before = this.registry.get(threadId);
     const status = await this.instanceManager.status(threadId);
     this.recordCallerInteraction(threadId, message, { adoptMissingSpawnedBy: true });
-    this.persistStateSafely();
+    if (this.didPersistentInstanceChange(before, status.instance)) {
+      this.persistStateSafely();
+    }
     const content = this.appendAttachmentSummary(JSON.stringify(status, null, 2), status.instance.thread_id);
     return this.buildResult(
       message,
@@ -1436,8 +1454,9 @@ export class HubRouter {
           this.scheduleZombieEviction(currentInstance);
         } else {
           try {
+            const before = this.registry.get(currentInstance.thread_id);
             currentInstance = (await this.instanceManager.status(currentInstance.thread_id)).instance;
-            __statusRefreshed = true;
+            __statusRefreshed = this.didPersistentInstanceChange(before, currentInstance) || __statusRefreshed;
           } catch (error) {
             this.log.debug(
               {
@@ -1839,7 +1858,6 @@ export class HubRouter {
       undefined;
     if (requestedThread) {
       this.recordCallerInteraction(requestedThread, message, { adoptMissingSpawnedBy: true });
-      this.persistStateSafely();
     }
     const historyDetail = this.resolveConversationDetailRecord(requestedTrace, requestedThread);
     if (historyDetail) {
@@ -2403,7 +2421,10 @@ export class HubRouter {
     const registry = this.requireCallerRegistry();
     const record = registry.verify(auth.caller_id, auth.caller_key);
     if (record) {
-      registry.touchLastSeen(record.caller_id);
+      const now = this.now();
+      if (this.shouldTouchCallerLastSeen(record, now)) {
+        registry.touchLastSeen(record.caller_id, now.toISOString());
+      }
       const injected: CallerIdentity = {
         caller_id: record.caller_id,
         caller_label: record.caller_label,
@@ -2419,6 +2440,34 @@ export class HubRouter {
       return { ok: false, errorResult: this.buildAuthErrorResult(message, "caller_unknown") };
     }
     return { ok: false, errorResult: this.buildAuthErrorResult(message, "caller_invalid") };
+  }
+
+  private shouldTouchCallerLastSeen(record: CallerRecord, now: Date): boolean {
+    if (!record.last_seen_at) {
+      return true;
+    }
+    const lastSeenAtMs = Date.parse(record.last_seen_at);
+    if (Number.isNaN(lastSeenAtMs)) {
+      return true;
+    }
+    return now.getTime() - lastSeenAtMs >= CALLER_LAST_SEEN_PERSIST_INTERVAL_MS;
+  }
+
+  private didPersistentInstanceChange(
+    before: AgentInstance | undefined,
+    after: AgentInstance | undefined
+  ): boolean {
+    if (!before || !after) {
+      return before !== after;
+    }
+    return (
+      before.status !== after.status ||
+      before.model_id !== after.model_id ||
+      before.reasoning_effort !== after.reasoning_effort ||
+      before.codexSessionId !== after.codexSessionId ||
+      before.pid !== after.pid ||
+      before.socket_path !== after.socket_path
+    );
   }
 
   private checkCallerAuthority(message: HubMessage, record: CallerRecord): HubResult | null {

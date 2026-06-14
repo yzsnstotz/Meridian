@@ -8,9 +8,28 @@ import {
   loadPersistedHubState,
   migrateLegacyConversationHistoryV2ToV3,
   PersistedHubStateV3Schema,
+  prunePersistedConversationHistory,
   type CallerRecord,
+  type PersistedConversationHistoryEntry,
   type PersistedHubStateV3
 } from "./state-store";
+
+function buildHistoryEntries(threadId: string, timestamps: string[]): PersistedConversationHistoryEntry[] {
+  return timestamps.map((timestamp, index) => ({
+    id: `${threadId}-${index + 1}`,
+    sequence: index + 1,
+    event_kind: index === 0 ? "user_send" : "progress",
+    source: index === 0 ? "user" : "codex",
+    content: `entry ${index + 1} for ${threadId} with enough text to require truncation`,
+    details_text: `details ${index + 1} for ${threadId} with enough text to require truncation`,
+    raw_content: `raw ${index + 1} for ${threadId} with enough text to require truncation`,
+    trace_id: "2f461d95-0157-4f90-bb4d-a63f2bfb1ed8",
+    timestamp,
+    replace_key: null,
+    caller_id: null,
+    caller_label: null
+  }));
+}
 
 test("loadPersistedHubState preserves migrated approval prompts alongside terminal input and final reply", () => {
   const statePath = `/tmp/meridian-state-store-${process.pid}-${Date.now()}.json`;
@@ -230,6 +249,44 @@ test("v3 fixture with populated caller fields round-trips through schema unchang
   assert.equal(reparsed.callers?.[0]?.caller_id, "meridian-web");
   assert.equal(reparsed.conversation_history?.thread_a?.[0]?.caller_id, "meridian-web");
   assert.equal(reparsed.conversation_history?.thread_a?.[0]?.caller_label, "Meridian Web");
+});
+
+test("prunePersistedConversationHistory keeps active and recent threads with bounded entry payloads", () => {
+  const activeOld = buildHistoryEntries("active-old", [
+    "2026-04-01T00:00:00.000Z",
+    "2026-04-01T00:01:00.000Z",
+    "2026-04-01T00:02:00.000Z"
+  ]);
+  const recentOne = buildHistoryEntries("recent-1", ["2026-04-03T00:00:00.000Z"]);
+  const recentTwo = buildHistoryEntries("recent-2", ["2026-04-02T00:00:00.000Z"]);
+  const oldInactive = buildHistoryEntries("old-inactive", ["2026-03-01T00:00:00.000Z"]);
+
+  const pruned = prunePersistedConversationHistory(
+    {
+      "active-old": activeOld,
+      "recent-1": recentOne,
+      "recent-2": recentTwo,
+      "old-inactive": oldInactive
+    },
+    {
+      activeThreadIds: new Set(["active-old"]),
+      recentInactiveThreadLimit: 2,
+      entryLimitPerThread: 2,
+      maxTextFieldChars: 24
+    }
+  );
+
+  assert.deepEqual(
+    Object.keys(pruned).sort(),
+    ["active-old", "recent-1", "recent-2"]
+  );
+  assert.deepEqual(
+    pruned["active-old"]?.map((entry) => entry.sequence),
+    [2, 3]
+  );
+  assert.equal(pruned["old-inactive"], undefined);
+  assert.ok((pruned["active-old"]?.[1]?.content ?? "").length <= 24);
+  assert.match(pruned["active-old"]?.[1]?.content ?? "", /\[History truncat/);
 });
 
 test("migrateLegacyConversationHistoryV2ToV3 is idempotent on a v3 state", () => {

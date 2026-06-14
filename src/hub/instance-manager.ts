@@ -284,7 +284,70 @@ export class InstanceManager {
       throw new Error(`Failed to capture stdio for stream agent thread_id=${threadId}`);
     }
 
-    child.stdin.end(prompt);
+    // P-4 from the 2026-06-05 stuck-recovery handoff: codex (and similar
+    // child agents that consume the prompt via stdin) intermittently exited
+    // with `exit_code=1: Reading prompt from stdin from buffered reader`
+    // on the codex-darwin-arm64 binary, wedging the round because the
+    // worker row stayed `running` with no marker. The pre-fix flow was
+    // `child.stdin.end(prompt)` — a single call that pushes the prompt
+    // onto the writable stream buffer and immediately schedules a close.
+    // Two failure modes the patch below addresses:
+    //
+    //   1. Silent EPIPE / EOF: if the child exits during spawn-up (failed
+    //      sandbox check, missing binary signature, expired credential)
+    //      the kernel sends EPIPE on our write. Without an `error` listener
+    //      attached BEFORE the write, Node treats it as an unhandled
+    //      stream error and the failure shows up only as a generic
+    //      `exit_code=1` with the codex-side stderr providing the only
+    //      diagnostic. Attaching the listener BEFORE writing converts the
+    //      failure into a structured `stream_stdin_write_failed` log entry
+    //      that the watchdog reaper (P-1) can correlate with.
+    //
+    //   2. Close-before-flush ordering: `.end(chunk)` is documented to
+    //      flush remaining writes before closing, but a synchronous
+    //      `.write(chunk); .end()` separation guarantees the `write`
+    //      callback fires before the close handshake. We explicitly use
+    //      the two-step form with a callback that closes stdin only after
+    //      the prompt has fully landed in the OS pipe buffer, so codex's
+    //      `read_to_string` never observes a partial write followed by
+    //      EOF.
+    //
+    // The behavior under success is identical to the old `.end(prompt)`
+    // form — the prompt is written, stdin is closed, codex reads to EOF
+    // and runs. The defensive guards only surface in the failure cases.
+    child.stdin.once("error", (err) => {
+      this.log.warn(
+        {
+          operation: "stream_stdin_write_failed",
+          trace_id: traceId ?? null,
+          thread_id: threadId,
+          agent_type: agentType,
+          err: err instanceof Error ? err.message : String(err)
+        },
+        "Child stdin write failed during stream agent launch"
+      );
+    });
+    child.stdin.write(prompt, "utf8", (writeError) => {
+      if (writeError) {
+        this.log.warn(
+          {
+            operation: "stream_stdin_write_failed",
+            trace_id: traceId ?? null,
+            thread_id: threadId,
+            agent_type: agentType,
+            err: writeError.message
+          },
+          "Child stdin write callback reported error"
+        );
+        if (child.stdin && !child.stdin.destroyed) {
+          child.stdin.end();
+        }
+        return;
+      }
+      if (child.stdin && !child.stdin.destroyed) {
+        child.stdin.end();
+      }
+    });
     return {
       stdout: child.stdout,
       process: child

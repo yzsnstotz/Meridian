@@ -3163,6 +3163,53 @@ test("HubRouter exposes conversation history after a run", async () => {
   assert.equal(parsed[1]?.replace_key, null);
 });
 
+test("HubRouter does not persist state after read-only history routes", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "history_readonly_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: null,
+    pid: null,
+    status: "running",
+    created_at: new Date().toISOString()
+  });
+
+  let snapshotCount = 0;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => {
+      snapshotCount += 1;
+      return {
+        version: 4,
+        updated_at: new Date().toISOString(),
+        instances: registry.list(),
+        session_bindings: {}
+      };
+    },
+    getAttachedThread: () => null,
+    list: () => registry.list(),
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    isThreadAttachableBySession: () => true
+  };
+  const router = new HubRouter(registry, {
+    instanceManager: fakeInstanceManager as never,
+    statePath: `/tmp/meridian-router-readonly-${process.pid}-${Date.now()}.json`
+  });
+
+  const result = await router.route(
+    baseMessage({
+      intent: "history",
+      thread_id: "history_readonly_01",
+      target: "history_readonly_01",
+      payload: { content: "", attachments: [] }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(snapshotCount, 0);
+});
+
 test("HubRouter shapes oversized thread history when bootstrap hints are provided", async () => {
   const registry = new InstanceRegistry();
   registry.register({
