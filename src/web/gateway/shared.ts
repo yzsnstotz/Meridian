@@ -29,6 +29,23 @@ export interface CompletionResult {
   errorMessage?: string;
 }
 
+/**
+ * Strip a leading vendor/provider prefix from a model id.
+ *
+ * clawso namespaces every provider's models as `<providerId>/<model>` (e.g.
+ * `custom-meridian-gateway/gpt-5.5`) for its failover + agent-bridge registry,
+ * and may send that namespaced id straight to the endpoint. None of the real
+ * upstream model ids we serve contain a `/` (claude-opus-4-8, gpt-5.5,
+ * gemini-2.5-pro), so any `/` is an outer prefix: keep only the last segment.
+ * Without this, `custom-meridian-gateway/gpt-5.5` fails every `^gpt`/`^gemini`
+ * matcher and silently misroutes to the Claude default.
+ */
+export function normalizeModel(model: string | undefined): string | undefined {
+  if (!model) return model;
+  const i = model.lastIndexOf("/");
+  return i >= 0 ? model.slice(i + 1) : model;
+}
+
 export function contentToText(content: ChatMessage["content"]): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

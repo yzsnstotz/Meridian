@@ -14,6 +14,7 @@ import { matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
 import { matchesCodex, CODEX_MODELS } from "./gateway/codex";
 import { matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
 import type { ChatCompletionRequest } from "./gateway/shared";
+import { normalizeModel } from "./gateway/shared";
 import { complete } from "./gateway/router";
 import { streamChatCompletion } from "./gateway/streaming";
 import {
@@ -160,6 +161,7 @@ function boundPort(): number {
 
 const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
 const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/install$/;
+const MODEL_RETRIEVE_RE = /^\/v1\/models\/(.+)$/;
 
 const server = http.createServer((request, response) => {
   void (async () => {
@@ -207,6 +209,35 @@ const server = http.createServer((request, response) => {
         const status = await getProvidersStatus();
         return sendJson(response, 200, { object: "list", data: connectedModels(status) });
       }
+      {
+        // OpenAI "retrieve model" — GET /v1/models/{id}. clawso's custom-provider
+        // "Test connection" probe (check_llm_provider_health → probe_openai_model)
+        // does GET {base}/v1/models/{model} with the stored Bearer key; without
+        // this route it 404s and the connection check fails. Key-enforced so a
+        // wrong/empty key surfaces as 401 (clawso maps 401/403 → "invalid
+        // credential", 2xx → healthy). The id is normalized so a namespaced
+        // `custom-meridian-gateway/gpt-5.5` resolves to the bare model.
+        const m = request.method === "GET" ? MODEL_RETRIEVE_RE.exec(url.pathname) : null;
+        if (m) {
+          if (!isAuthorized(request)) {
+            return sendJson(response, 401, {
+              error: { message: "invalid API key", type: "authentication_error" },
+            });
+          }
+          const id = normalizeModel(decodeURIComponent(m[1]));
+          const status = await getProvidersStatus();
+          const found = connectedModels(status).find((entry) => entry.id === id);
+          if (!found) {
+            return sendJson(response, 404, {
+              error: {
+                message: `model '${id}' not found or its provider is not signed in`,
+                type: "not_found",
+              },
+            });
+          }
+          return sendJson(response, 200, found);
+        }
+      }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
         // Key-enforced route. /v1/models, /health, /, /providers/* stay open.
         if (!isAuthorized(request)) {
@@ -221,6 +252,9 @@ const server = http.createServer((request, response) => {
         } catch {
           return sendJson(response, 400, { error: { message: "invalid JSON body", type: "invalid_request_error" } });
         }
+        // Strip any `<providerId>/` namespace clawso prepends so the request
+        // routes to the right CLI instead of misrouting to the Claude default.
+        parsed.model = normalizeModel(parsed.model);
         // Streaming path: emit OpenAI-compatible SSE chunks. Validate the body
         // shape first so a bad request still gets a clean JSON 400 (not SSE).
         if (parsed.stream) {
@@ -251,6 +285,8 @@ const server = http.createServer((request, response) => {
             error: { type: "invalid_request_error", message: "invalid JSON body" },
           });
         }
+        // Same namespace-strip as /v1/chat/completions.
+        parsed.model = normalizeModel(parsed.model);
         if (parsed.stream) {
           if (!Array.isArray(parsed.messages) || parsed.messages.length === 0) {
             return sendJson(response, 400, {
