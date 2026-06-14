@@ -10,10 +10,17 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { completeClaude, matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
-import { completeCodex, matchesCodex, CODEX_MODELS } from "./gateway/codex";
-import { completeGemini, matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
-import type { ChatCompletionRequest, CompletionResult } from "./gateway/shared";
+import { matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
+import { matchesCodex, CODEX_MODELS } from "./gateway/codex";
+import { matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
+import type { ChatCompletionRequest } from "./gateway/shared";
+import { complete } from "./gateway/router";
+import { streamChatCompletion } from "./gateway/streaming";
+import {
+  handleAnthropicMessages,
+  streamAnthropicMessages,
+  type AnthropicMessagesRequest,
+} from "./gateway/anthropic";
 import { getProvidersStatus, startLogin, installProvider, ensureSpawnPath, renderLoginPage, type ProviderId } from "./gateway/login";
 
 const PORT = Number(process.env.MERIDIAN_GATEWAY_PORT ?? process.env.PORT ?? 8789);
@@ -93,19 +100,12 @@ function connectedModels(status: { claude: { connected: boolean }; codex: { conn
   return out;
 }
 
-function complete(req: ChatCompletionRequest): Promise<CompletionResult> {
-  if (matchesCodex(req.model)) return completeCodex(req);
-  if (matchesGemini(req.model)) return completeGemini(req);
-  return completeClaude(req); // default + all claude*
-}
-
 async function handleChatCompletion(req: ChatCompletionRequest): Promise<{ status: number; body: unknown }> {
   if (!Array.isArray(req.messages) || req.messages.length === 0) {
     return { status: 400, body: { error: { message: "messages[] required", type: "invalid_request_error" } } };
   }
-  if (req.stream) {
-    return { status: 501, body: { error: { message: "streaming not implemented yet (P2)", type: "not_implemented" } } };
-  }
+  // Streaming (req.stream === true) is handled directly in the route below via
+  // streamChatCompletion(); this non-stream path is unchanged.
   const out = await complete(req);
   if (out.isError) {
     return { status: 502, body: { error: { message: out.errorMessage ?? "upstream error", type: "upstream_error" } } };
@@ -208,7 +208,7 @@ const server = http.createServer((request, response) => {
         return sendJson(response, 200, { object: "list", data: connectedModels(status) });
       }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
-        // The ONLY enforced route. /v1/models, /health, /, /providers/* stay open.
+        // Key-enforced route. /v1/models, /health, /, /providers/* stay open.
         if (!isAuthorized(request)) {
           return sendJson(response, 401, {
             error: { message: "invalid API key", type: "authentication_error" },
@@ -221,7 +221,46 @@ const server = http.createServer((request, response) => {
         } catch {
           return sendJson(response, 400, { error: { message: "invalid JSON body", type: "invalid_request_error" } });
         }
+        // Streaming path: emit OpenAI-compatible SSE chunks. Validate the body
+        // shape first so a bad request still gets a clean JSON 400 (not SSE).
+        if (parsed.stream) {
+          if (!Array.isArray(parsed.messages) || parsed.messages.length === 0) {
+            return sendJson(response, 400, {
+              error: { message: "messages[] required", type: "invalid_request_error" },
+            });
+          }
+          return await streamChatCompletion(response, parsed);
+        }
         const { status, body } = await handleChatCompletion(parsed);
+        return sendJson(response, status, body);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/messages") {
+        // Anthropic-native messages endpoint. Key-enforced, same as /v1/chat.
+        if (!isAuthorized(request)) {
+          return sendJson(response, 401, {
+            error: { message: "invalid API key", type: "authentication_error" },
+          });
+        }
+        const raw = await readBody(request);
+        let parsed: AnthropicMessagesRequest;
+        try {
+          parsed = JSON.parse(raw) as AnthropicMessagesRequest;
+        } catch {
+          return sendJson(response, 400, {
+            type: "error",
+            error: { type: "invalid_request_error", message: "invalid JSON body" },
+          });
+        }
+        if (parsed.stream) {
+          if (!Array.isArray(parsed.messages) || parsed.messages.length === 0) {
+            return sendJson(response, 400, {
+              type: "error",
+              error: { type: "invalid_request_error", message: "messages[] required" },
+            });
+          }
+          return await streamAnthropicMessages(response, parsed);
+        }
+        const { status, body } = await handleAnthropicMessages(parsed);
         return sendJson(response, status, body);
       }
       return sendJson(response, 404, { error: { message: `no route ${request.method} ${url.pathname}`, type: "not_found" } });

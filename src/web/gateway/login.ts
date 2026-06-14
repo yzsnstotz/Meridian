@@ -14,7 +14,7 @@
 // commands + credential files); only POST /providers/:id/login spawns a CLI,
 // and it does so detached so the browser flow never blocks the gateway.
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
 import { claudeAgentConfig } from "../../agents/claude";
@@ -359,6 +359,154 @@ function startBrowserLogin(command: string, args: string[]): Promise<LoginResult
   });
 }
 
+// ── gemini login (the special case) ─────────────────────────────────────────
+//
+// gemini-cli has no `auth`/`login` subcommand. Its only OAuth path is the
+// first-run "Login with Google" flow, which behaves like this:
+//
+//   1. If ~/.gemini/settings.json has NO `security.auth.selectedType`, an
+//      INTERACTIVE launch shows a TUI menu asking you to pick an auth method.
+//      A non-TTY/headless spawn can't drive that menu. Pre-seeding the auth
+//      method to "oauth-personal" makes gemini SKIP the menu and go straight
+//      to the Google OAuth flow.
+//   2. With the auth method set, `gemini -p "<prompt>"` (headless) and no
+//      `NO_BROWSER` env reaches the browser-launch branch: it prints
+//      "Opening authentication page in your browser. Do you want to continue?
+//      [Y/n]:" on stdout, waits for a `y`, then starts a localhost OAuth
+//      callback server and calls the platform "open" to launch the Google
+//      consent page in the default browser. Completing it in the browser
+//      writes ~/.gemini/oauth_creds.json — which detectGemini() already reads.
+//   3. If NO_BROWSER is set OR the session is judged non-interactive *and*
+//      browser launch is suppressed, it instead throws a fatal "manual
+//      authorization required" error. So we must NOT set NO_BROWSER and must
+//      feed `y\n` on stdin to clear the consent prompt.
+//
+// We feed `y\n` on stdin to auto-accept the consent prompt, scan stdout/stderr
+// for the printed auth URL (so the GUI can offer a fallback link), and detach
+// so the OAuth callback server + browser flow outlive this request. The GUI's
+// existing status poll flips the card to Connected once oauth_creds.json lands.
+
+const GEMINI_AUTH_OAUTH_PERSONAL = "oauth-personal";
+
+/**
+ * Ensure ~/.gemini/settings.json declares an auth method so gemini skips its
+ * interactive auth-method menu. STRICTLY non-destructive:
+ *   • reads any existing settings.json,
+ *   • returns early WITHOUT writing if security.auth.selectedType is already
+ *     set (we never change an existing user choice),
+ *   • backs the file up to settings.json.mgw-bak before writing,
+ *   • only ADDS the missing nested key, preserving every other field.
+ * Returns true if a usable auth method is present (pre-existing or just added),
+ * false only if we couldn't establish one (in which case login falls back to a
+ * manual hint). Never throws.
+ */
+export function ensureGeminiAuthMethod(): boolean {
+  try {
+    const dir = join(homedir(), ".gemini");
+    const settingsPath = join(dir, "settings.json");
+    let settings: Record<string, unknown> = {};
+    if (existsSync(settingsPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
+        if (parsed && typeof parsed === "object") settings = parsed as Record<string, unknown>;
+      } catch {
+        // Corrupt/unparseable settings.json: do NOT overwrite the user's file.
+        return false;
+      }
+    }
+    const security = (settings.security ?? {}) as Record<string, unknown>;
+    const auth = (security.auth ?? {}) as Record<string, unknown>;
+    // Already chosen? Leave it exactly as-is (additive-only contract).
+    if (typeof auth.selectedType === "string" && auth.selectedType.length > 0) {
+      return true;
+    }
+    // Add only the missing key, preserving sibling fields.
+    auth.selectedType = GEMINI_AUTH_OAUTH_PERSONAL;
+    security.auth = auth;
+    settings.security = security;
+    mkdirSync(dir, { recursive: true });
+    // Back up an existing file before our additive write.
+    if (existsSync(settingsPath)) {
+      try {
+        copyFileSync(settingsPath, settingsPath + ".mgw-bak");
+      } catch {
+        // Backup is best-effort; the write itself is still purely additive.
+      }
+    }
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kick off gemini's first-run Google OAuth from the GUI. Pre-seeds the auth
+ * method (non-destructively), then spawns a detached headless `gemini -p`
+ * which opens the Google consent page in the browser. We auto-answer the
+ * consent prompt with `y`, scan briefly for the printed auth URL, then detach.
+ */
+function startGeminiLogin(): Promise<LoginResult> {
+  if (!ensureGeminiAuthMethod()) {
+    // Couldn't establish an auth method (e.g. unreadable settings.json) → guide.
+    return Promise.resolve({
+      manual: true,
+      hint: `Open a terminal and run \`${geminiAgentConfig.command}\`, then choose ‘Login with Google’. This page updates automatically once you’re signed in.`,
+    });
+  }
+  return new Promise((resolve) => {
+    let url: string | undefined;
+    let resolved = false;
+    const finish = (): void => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        child.unref();
+      } catch {
+        // ignore
+      }
+      resolve({ started: true, url });
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      // Headless prompt so gemini authenticates immediately; piped stdio so we
+      // can answer the consent prompt and scan for the auth URL. Detached so
+      // the OAuth callback server + browser flow survive this request. We do
+      // NOT set NO_BROWSER, so gemini opens the browser itself.
+      child = spawn(geminiAgentConfig.command, ["-p", "hello"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
+      });
+    } catch {
+      resolve({
+        manual: true,
+        hint: `Open a terminal and run \`${geminiAgentConfig.command}\`, then choose ‘Login with Google’. This page updates automatically once you’re signed in.`,
+      });
+      return;
+    }
+    // Auto-accept the "Opening authentication page… continue? [Y/n]" prompt.
+    try {
+      child.stdin?.write("y\n");
+      child.stdin?.end();
+    } catch {
+      // ignore — if stdin isn't writable the consent default ([Y]) still helps
+    }
+    const scan = (chunk: Buffer): void => {
+      const m = URL_RE.exec(chunk.toString());
+      if (m && !url) {
+        url = m[1];
+        finish();
+      }
+    };
+    child.stdout?.on("data", scan);
+    child.stderr?.on("data", scan);
+    child.on("error", () => finish());
+    // Detach after a short capture window even if no URL was echoed (gemini may
+    // open the browser without printing a copyable URL).
+    setTimeout(finish, 3000);
+  });
+}
+
 export async function startLogin(id: ProviderId): Promise<LoginResult> {
   if (id === "claude") {
     return startBrowserLogin(claudeAgentConfig.command, ["auth", "login"]);
@@ -366,11 +514,8 @@ export async function startLogin(id: ProviderId): Promise<LoginResult> {
   if (id === "codex") {
     return startBrowserLogin(codexAgentConfig.command, ["login"]);
   }
-  // gemini has no headless login command.
-  return {
-    manual: true,
-    hint: `Run \`${geminiAgentConfig.command}\` once and choose ‘Login with Google’ to connect.`,
-  };
+  // gemini: no `login` subcommand — drive its first-run Google OAuth instead.
+  return startGeminiLogin();
 }
 
 // ── GUI ───────────────────────────────────────────────────────────────────────
