@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { isApprovalPrompt, normalizeApprovalAction, parseApprovalSummaryFromRawContent } from "../shared/approval";
+import { truncateHistoryText } from "../shared/history-payload";
 import { AgentInstanceSchema, CallerAuthoritySchema, type AgentInstance } from "../types";
 
 export const CallerRecordSchema = z.object({
@@ -142,6 +143,116 @@ type PersistedHubStateV2 = z.input<typeof PersistedHubStateV2Schema>;
 export type PersistedHubState = z.input<typeof PersistedHubStateSchema>;
 export type PersistedPushSubscription = z.input<typeof PersistedPushSubscriptionSchema>;
 export type PersistedConversationHistoryEntry = z.input<typeof PersistedConversationHistoryEntrySchema>;
+
+export const PERSISTED_HISTORY_RECENT_INACTIVE_THREAD_LIMIT = 128;
+export const PERSISTED_HISTORY_ENTRY_LIMIT_PER_THREAD = 200;
+export const PERSISTED_HISTORY_TEXT_FIELD_CHAR_LIMIT = 64_000;
+
+export interface PersistedConversationHistoryPruneOptions {
+  activeThreadIds?: ReadonlySet<string> | readonly string[];
+  recentInactiveThreadLimit?: number;
+  entryLimitPerThread?: number;
+  maxTextFieldChars?: number;
+}
+
+function normalizeActiveThreadIds(activeThreadIds: PersistedConversationHistoryPruneOptions["activeThreadIds"]): Set<string> {
+  if (!activeThreadIds) {
+    return new Set();
+  }
+  return new Set(
+    Array.from(activeThreadIds)
+      .map((threadId) => threadId.trim())
+      .filter(Boolean)
+  );
+}
+
+function comparePersistedHistoryEntries(
+  left: PersistedConversationHistoryEntry,
+  right: PersistedConversationHistoryEntry
+): number {
+  return left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp);
+}
+
+function latestPersistedHistoryTimestamp(entries: readonly PersistedConversationHistoryEntry[]): string {
+  return entries.reduce((latest, entry) => (entry.timestamp > latest ? entry.timestamp : latest), "");
+}
+
+function prunePersistedHistoryEntryText(
+  entry: PersistedConversationHistoryEntry,
+  maxTextFieldChars: number | undefined
+): PersistedConversationHistoryEntry {
+  if (maxTextFieldChars === undefined) {
+    return { ...entry };
+  }
+  return {
+    ...entry,
+    content: truncateHistoryText(entry.content, maxTextFieldChars),
+    details_text: truncateHistoryText(entry.details_text, maxTextFieldChars),
+    raw_content: truncateHistoryText(entry.raw_content, maxTextFieldChars)
+  };
+}
+
+export function prunePersistedConversationHistory(
+  conversationHistory: Record<string, PersistedConversationHistoryEntry[]> = {},
+  options: PersistedConversationHistoryPruneOptions = {}
+): Record<string, PersistedConversationHistoryEntry[]> {
+  const activeThreadIds = normalizeActiveThreadIds(options.activeThreadIds);
+  const recentInactiveThreadLimit = Math.max(
+    0,
+    options.recentInactiveThreadLimit ?? PERSISTED_HISTORY_RECENT_INACTIVE_THREAD_LIMIT
+  );
+  const entryLimitPerThread = Math.max(
+    0,
+    options.entryLimitPerThread ?? PERSISTED_HISTORY_ENTRY_LIMIT_PER_THREAD
+  );
+  const maxTextFieldChars = options.maxTextFieldChars ?? PERSISTED_HISTORY_TEXT_FIELD_CHAR_LIMIT;
+
+  const candidates = Object.entries(conversationHistory ?? {})
+    .map(([threadId, entries]) => ({
+      threadId,
+      entries: [...(entries ?? [])].sort(comparePersistedHistoryEntries),
+      active: activeThreadIds.has(threadId),
+      latestTimestamp: latestPersistedHistoryTimestamp(entries ?? [])
+    }))
+    .filter((candidate) => candidate.entries.length > 0);
+
+  const selectedThreadIds = new Set<string>();
+  for (const candidate of candidates) {
+    if (candidate.active) {
+      selectedThreadIds.add(candidate.threadId);
+    }
+  }
+
+  const recentInactive = candidates
+    .filter((candidate) => !candidate.active)
+    .sort((left, right) =>
+      right.latestTimestamp.localeCompare(left.latestTimestamp) || left.threadId.localeCompare(right.threadId)
+    )
+    .slice(0, recentInactiveThreadLimit);
+
+  for (const candidate of recentInactive) {
+    selectedThreadIds.add(candidate.threadId);
+  }
+
+  const pruned: Record<string, PersistedConversationHistoryEntry[]> = {};
+  for (const candidate of candidates) {
+    if (!selectedThreadIds.has(candidate.threadId)) {
+      continue;
+    }
+    const boundedEntries =
+      entryLimitPerThread > 0
+        ? candidate.entries.slice(-entryLimitPerThread)
+        : [];
+    if (boundedEntries.length === 0) {
+      continue;
+    }
+    pruned[candidate.threadId] = boundedEntries.map((entry) =>
+      prunePersistedHistoryEntryText(entry, maxTextFieldChars)
+    );
+  }
+
+  return pruned;
+}
 
 function isSupersededByFinalReplyEventKind(eventKind: ConversationEventKind): eventKind is "progress" {
   return eventKind === "progress";
@@ -357,13 +468,14 @@ export function buildPersistedHubState(
   callers: CallerRecord[] = [],
   credentials: CredentialRecord[] = []
 ): PersistedHubState {
+  const activeThreadIds = new Set(instances.map((instance) => instance.thread_id));
   return PersistedHubStateSchema.parse({
     version: 4,
     updated_at: nowIso,
     instances,
     session_bindings: sessionBindings,
     push_subscriptions: pushSubscriptions,
-    conversation_history: conversationHistory,
+    conversation_history: prunePersistedConversationHistory(conversationHistory, { activeThreadIds }),
     callers,
     credentials
   });
