@@ -54,6 +54,7 @@ export function parseClaudeEvent(event: unknown): OutputDelta | null {
       traceId,
       phase: record.is_error === true ? "error" : "result",
       text: asString(record.result),
+      ...(record.usage !== undefined ? { data: record.usage } : {}),
       final: true
     };
   }
