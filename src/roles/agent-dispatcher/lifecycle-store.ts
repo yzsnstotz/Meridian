@@ -33,6 +33,47 @@ const DISPATCH_THREADS_FILENAME = "dispatch_threads.json";
 const DISPATCHER_WORKER_ID = "DISPATCHER";
 export const PM_RESOLVER_LIVENESS_GRACE_MS = 90 * 1000;
 
+// How long a worker may sit at `status=running` without its `last_seen_at`
+// advancing before the watchdog treats the row as a silent-death candidate.
+// Codex stdin transport failures (e.g. `Direct stream process failed
+// (exit_code=1): Reading prompt from stdin`) can kill the agentapi process
+// without ever delivering a <<<MERIDIAN-STATUS>>> marker; the row stays
+// `running` and the dispatcher refuses to advance. The reap is conjunctive —
+// only fires together with `isAgentapiProcessAliveForThread` returning false
+// AND a hub liveness probe that does not report `running` — so legitimate
+// long-running workers are NOT misclassified.
+export const WORKER_HEARTBEAT_STALE_THRESHOLD_MS = 30 * 60 * 1000;
+
+// Grace window the watchdog gives a PM resolver entry whose run rejected with
+// a transport-class error (hub overload, IPC drop, request timeout) before
+// demoting the entry to `failed` so the dispatcher can spawn a fresh PM.
+// Short enough that a wedged round recovers within a couple of sweep ticks;
+// long enough that a one-off transient hiccup does not flap a PM session that
+// would otherwise complete on its own.
+export const PM_RESOLVER_TRANSPORT_STALL_GRACE_MS = 60 * 1000;
+
+// Cap on how many times the watchdog will demote consecutive transport-
+// stalled PM resolver entries for the same worker. After this many bounded
+// retries we revert to the original "preserve for human takeover" behavior
+// so a sustained hub-overload window cannot trigger a respawn storm. The
+// resulting state surfaces to the operator as `manual_intervention_required`
+// via the existing exhausted-PM-resolver detector.
+export const PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES = 3;
+
+// Prefix the watchdog tags onto `entry.error` when it demotes a transport-
+// stalled PM resolver entry. Used by the retry counter so we can distinguish
+// watchdog-driven transport-stall demotions from envelope-mapped real PM
+// failures.
+export const PM_RESOLVER_TRANSPORT_STALL_ERROR_PREFIX = "transport_stall_demoted_by_watchdog:";
+
+// A PM resolver that still has no result, no transport error, and no
+// last_seen_at movement after this window is treated as no-progress stale.
+// This catches the silent shape where the Hub still reports the thread as
+// running but the agent never emits a final reply and permanently closes the
+// dispatcher relaunch gate.
+export const PM_RESOLVER_NO_PROGRESS_STALE_MS = 10 * 60 * 1000;
+export const PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX = "no_progress_demoted_by_watchdog:";
+
 // Validator spawn/run failure backoff. After this many consecutive failures
 // (validator spawn errors, run errors, parse errors — anything that ends in
 // clearValidatorStart), the worker enters backoff: watchdog and the validation
@@ -64,6 +105,38 @@ export function isValidatorSpawnBackoffActive(
   return nowMs - lastFailureMs < VALIDATOR_SPAWN_FAILURE_BACKOFF_MS;
 }
 
+/**
+ * Predicate the watchdog reap path uses to decide whether a worker row's
+ * heartbeat (its `last_seen_at`) has gone silent for long enough that a
+ * silent-death scenario is plausible. The reap is conjunctive — this is one
+ * of three signals, the others being `isAgentapiProcessAliveForThread` and a
+ * hub liveness probe.
+ *
+ * Only `running` workers are considered; other statuses are inert here. Falls
+ * back to `started_at` when `last_seen_at` is malformed so a brand-new row
+ * with a missing heartbeat clock does not get reaped instantly.
+ */
+export function isWorkerHeartbeatStale(
+  worker: Pick<DispatchWorkerState, "started_at" | "last_seen_at" | "status">,
+  nowMs: number = Date.now(),
+  thresholdMs: number = WORKER_HEARTBEAT_STALE_THRESHOLD_MS
+): boolean {
+  if (worker.status !== "running") {
+    return false;
+  }
+  const startedAtMs = Date.parse(worker.started_at);
+  const lastSeenMs = Date.parse(worker.last_seen_at);
+  const referenceMs = Number.isNaN(lastSeenMs)
+    ? startedAtMs
+    : Number.isNaN(startedAtMs)
+      ? lastSeenMs
+      : Math.max(startedAtMs, lastSeenMs);
+  if (Number.isNaN(referenceMs)) {
+    return false;
+  }
+  return nowMs - referenceMs >= thresholdMs;
+}
+
 export function isPmResolverLivenessGraceActive(
   entry: Pick<PmResolverLifecycleState, "started_at" | "last_seen_at" | "result">,
   nowMs: number = Date.now()
@@ -83,6 +156,32 @@ export function isPmResolverLivenessGraceActive(
     : Math.max(startedAtMs, lastSeenAtMs);
 
   return nowMs - observedAtMs < PM_RESOLVER_LIVENESS_GRACE_MS;
+}
+
+export function isPmResolverNoProgressStale(
+  entry: Pick<PmResolverLifecycleState, "started_at" | "last_seen_at" | "result" | "status" | "transport_error">,
+  nowMs: number = Date.now(),
+  thresholdMs: number = PM_RESOLVER_NO_PROGRESS_STALE_MS
+): boolean {
+  if (entry.status !== "running") {
+    return false;
+  }
+  if (entry.result || entry.transport_error) {
+    return false;
+  }
+
+  const startedAtMs = Date.parse(entry.started_at);
+  const lastSeenAtMs = entry.last_seen_at ? Date.parse(entry.last_seen_at) : NaN;
+  const observedAtMs = Number.isNaN(lastSeenAtMs)
+    ? startedAtMs
+    : Number.isNaN(startedAtMs)
+      ? lastSeenAtMs
+      : Math.max(startedAtMs, lastSeenAtMs);
+  if (Number.isNaN(observedAtMs)) {
+    return false;
+  }
+
+  return nowMs - observedAtMs >= thresholdMs;
 }
 
 const LegacyWorkerThreadEntrySchema = z.object({
@@ -446,6 +545,47 @@ export class LifecycleStore {
     };
 
     this.logTransition(workerId, worker.status, "abandoned", reason);
+    this.save(state);
+  }
+
+  /**
+   * Watchdog reap for silent-death workers. Used when the agentapi process is
+   * gone, the hub thread is not reporting `running`, and the row's heartbeat
+   * is past `WORKER_HEARTBEAT_STALE_THRESHOLD_MS`. Flips a `running` worker
+   * to `failed` so the dispatcher's normal continue-tick can spawn a PM
+   * resolver or relaunch. Idempotent: only acts on `running` rows so two
+   * concurrent sweep ticks or an operator manual reap converge instead of
+   * thrashing a terminal row. PM resolver reconciliation is intentionally
+   * NOT triggered here — a freshly reaped worker is going INTO a failed
+   * state, so any PM resolver tied to it should remain as-is until the next
+   * recovery (worker → completed/running) reconciles it.
+   */
+  markWorkerReaped(workerId: string, reason: string): void {
+    const state = this.load();
+    const worker = state.workers[workerId];
+    if (!worker) {
+      throw new Error(`Worker not found in lifecycle state: ${workerId}`);
+    }
+
+    if (worker.status !== "running") {
+      return;
+    }
+
+    const nowIso = this.now();
+    state.workers[workerId] = {
+      ...worker,
+      status: "failed",
+      last_seen_at: nowIso
+    };
+
+    this.logTransition(workerId, worker.status, "failed", "watchdog_reaped");
+    this.log.info("Worker reaped after silent stall", {
+      event: "worker_heartbeat_reaped",
+      worker_id: workerId,
+      thread_id: worker.thread_id,
+      last_seen_at: worker.last_seen_at,
+      reason
+    });
     this.save(state);
   }
 
@@ -1008,6 +1148,82 @@ export class LifecycleStore {
         signal_source: "envelope",
         result: entry.status,
         reason
+      });
+    });
+  }
+
+  /**
+   * Watchdog demotion path for PM resolver entries whose run is still stuck
+   * on a transport-class error past `PM_RESOLVER_TRANSPORT_STALL_GRACE_MS`.
+   * Flips the entry to `failed` so the dispatcher can spawn a fresh PM, tags
+   * the failure with `PM_RESOLVER_TRANSPORT_STALL_ERROR_PREFIX` so the retry
+   * counter can distinguish watchdog-driven demotions from real PM failures,
+   * and clears `transport_error` (the demoted thread is no longer the path
+   * the operator should talk into). Best-effort — `appendPmResolverReportHistory`
+   * still runs so the worker report keeps the audit trail.
+   */
+  markPmResolverTransportStallDemotion(
+    threadId: string,
+    transportError: string,
+    retryCount: number
+  ): void {
+    this.mutate((state) => {
+      const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
+      if (!entry || entry.status !== "running") {
+        return;
+      }
+
+      const reconciled = reconcilePmStatusAgainstWorkerState(state, entry, "failed");
+      const taggedError = `${PM_RESOLVER_TRANSPORT_STALL_ERROR_PREFIX} attempt=${retryCount + 1} reason=${transportError}`;
+      entry.status = reconciled;
+      entry.last_seen_at = this.now();
+      entry.error = reconciled === "failed" ? taggedError : null;
+      entry.transport_error = null;
+      appendPmResolverReportHistory(state, entry, taggedError);
+
+      this.log.info("PM resolver demoted after transport-stall grace", {
+        event: "pm_resolver_transport_stall_demotion",
+        thread_id: threadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        retry_count: retryCount,
+        max_retries: PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES,
+        signal_source: "envelope",
+        result: entry.status,
+        transport_error: transportError
+      });
+    });
+  }
+
+  /**
+   * Demote a PM resolver that is still recorded as `running` but has made no
+   * observable progress for the no-progress stale window. Unlike transport
+   * stalls, there is no explicit run rejection to preserve for GUI takeover;
+   * the stale entry is actively blocking replacement PM launch.
+   */
+  markPmResolverNoProgressDemotion(threadId: string, reason: string): void {
+    this.mutate((state) => {
+      const entry = ensurePmResolverEntries(state).find((candidate) => candidate.thread_id === threadId);
+      if (!entry || entry.status !== "running") {
+        return;
+      }
+
+      const reconciled = reconcilePmStatusAgainstWorkerState(state, entry, "failed");
+      const taggedError = reason.startsWith(PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX)
+        ? reason
+        : `${PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX} ${reason}`;
+      entry.status = reconciled;
+      entry.last_seen_at = this.now();
+      entry.error = reconciled === "failed" ? taggedError : null;
+      entry.transport_error = null;
+      appendPmResolverReportHistory(state, entry, taggedError);
+
+      this.log.info("PM resolver demoted after no-progress stale window", {
+        event: "pm_resolver_no_progress_demotion",
+        thread_id: threadId,
+        worker_id: entry.issue?.worker_id ?? null,
+        signal_source: "envelope",
+        result: entry.status,
+        reason: taggedError
       });
     });
   }
@@ -1860,7 +2076,8 @@ export function isNonCompletionContent(content: string): boolean {
  */
 export function findActivePmResolversForWorker(
   state: Pick<DispatchThreadStateV2, "pm_resolvers">,
-  workerId: string | null | undefined
+  workerId: string | null | undefined,
+  nowMs: number = Date.now()
 ): PmResolverLifecycleState[] {
   const trimmed = workerId?.trim();
   if (!trimmed) {
@@ -1869,14 +2086,49 @@ export function findActivePmResolversForWorker(
   return (state.pm_resolvers ?? []).filter((entry) =>
     entry.status === "running"
     && (entry.issue?.worker_id ?? "").trim() === trimmed
+    && !isPmResolverNoProgressStale(entry, nowMs)
   );
 }
 
 export function hasActivePmResolverForWorker(
   state: Pick<DispatchThreadStateV2, "pm_resolvers">,
-  workerId: string | null | undefined
+  workerId: string | null | undefined,
+  nowMs: number = Date.now()
 ): boolean {
-  return findActivePmResolversForWorker(state, workerId).length > 0;
+  return findActivePmResolversForWorker(state, workerId, nowMs).length > 0;
+}
+
+/**
+ * Count prior PM resolver entries that the watchdog already demoted on a
+ * transport-stall grace for the given `workerId`. The watchdog uses this as
+ * the retry counter: while the count is below
+ * `PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES` we keep demoting new transport-
+ * stalled entries so the dispatcher can respawn a PM, but once we hit the
+ * cap we revert to preserving the entry so the operator can take over via
+ * the GUI talk-box. The discrimination is the
+ * `PM_RESOLVER_TRANSPORT_STALL_ERROR_PREFIX` tag on `entry.error` — only
+ * watchdog-driven demotions count, not envelope-mapped real PM failures.
+ */
+export function countPmResolverTransportStallDemotions(
+  state: Pick<DispatchThreadStateV2, "pm_resolvers">,
+  workerId: string | null | undefined
+): number {
+  const trimmed = workerId?.trim();
+  if (!trimmed) {
+    return 0;
+  }
+  return (state.pm_resolvers ?? []).reduce((count, entry) => {
+    if ((entry.issue?.worker_id ?? "").trim() !== trimmed) {
+      return count;
+    }
+    if (entry.status !== "failed") {
+      return count;
+    }
+    if (!entry.error?.startsWith(PM_RESOLVER_TRANSPORT_STALL_ERROR_PREFIX)) {
+      return count;
+    }
+    return count + 1;
+  }, 0);
 }
 
 export function isExplicitCompletionContent(content: string): boolean {

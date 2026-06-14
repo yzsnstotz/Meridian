@@ -13,6 +13,7 @@ import { buildPmResolverPrompt, startPmResolver } from "../pm-resolver";
 import { MERIDIAN_TOOL_DISPLAY_COMMAND } from "../tool-entrypoint";
 import { AgentDispatcherConfigSchema } from "../../../types";
 import type { MeridianApiClient } from "../meridian-api-client";
+import * as activeToolProcess from "../active-tool-process";
 
 describe("buildPmResolverPrompt", () => {
   const config = AgentDispatcherConfigSchema.parse({
@@ -143,7 +144,7 @@ describe("buildPmResolverPrompt", () => {
     }
   });
 
-  it("retains the PM thread on a transport-class run rejection so a human can take over", async () => {
+  it("retains the PM thread on a transport-class run rejection when the agentapi process is still alive", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-stall-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -163,6 +164,7 @@ describe("buildPmResolverPrompt", () => {
       kill,
       listCredentials: vi.fn().mockResolvedValue([])
     };
+    const liveProcessSpy = vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread").mockReturnValue(true);
 
     try {
       await startPmResolver({
@@ -196,6 +198,67 @@ describe("buildPmResolverPrompt", () => {
             marker_outcome: null,
             marker_pm_action: null,
             error: null
+          })
+        ]);
+      });
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      liveProcessSpy.mockRestore();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records PM resolver failure when the run handoff rejects with missing-thread evidence", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-pm-resolver-missing-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+
+    await fs.writeFile(dispatchPlanPath, [
+      "| Status | Batch | Worker | Task | Model | Depends On |",
+      "|--------|-------|--------|------|-------|------------|",
+      "| ⛔ BLOCKED | 1 | BATCH-1-GATE | Verify gates | CODEX | — |"
+    ].join("\n"), "utf8");
+
+    const kill = vi.fn(async () => ({ threadId: "pm-thread-missing", status: "killed", raw: {} }));
+    const meridianApi: MeridianApiClient = {
+      spawn: async () => ({ threadId: "pm-thread-missing" }),
+      run: async () => {
+        throw new Error("run failed: Routing failed: No registered agent instance found for thread_id=pm-thread-missing");
+      },
+      kill,
+      listCredentials: vi.fn().mockResolvedValue([])
+    };
+
+    try {
+      await startPmResolver({
+        dispatcherId: "agent-dispatcher-pm",
+        config: {
+          ...config,
+          dispatch_plan_path: dispatchPlanPath
+        },
+        issue: {
+          status: "manual_intervention_required",
+          workerId: "BATCH-1-GATE",
+          source: "watchdog",
+          message: "Blocked gate needs PM"
+        }
+      }, { meridianApi });
+
+      await waitForExpect(async () => {
+        const state = JSON.parse(await fs.readFile(sidecarPath, "utf8")) as {
+          pm_resolvers?: Array<{
+            thread_id: string;
+            status: string;
+            transport_error?: string | null;
+            error?: string | null;
+          }>;
+        };
+        expect(state.pm_resolvers).toEqual([
+          expect.objectContaining({
+            thread_id: "pm-thread-missing",
+            status: "failed",
+            transport_error: null,
+            error: expect.stringContaining("No registered agent instance found for thread_id=pm-thread-missing")
           })
         ]);
       });

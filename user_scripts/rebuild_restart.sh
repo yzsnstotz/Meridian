@@ -6,13 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LOG_DIR="$ROOT_DIR/logs"
 PID_FILE="$LOG_DIR/meridian-roles.pid"
-TMUX_SESSION_FILE="$LOG_DIR/meridian-roles.tmux-session"
 RUN_LOG="$LOG_DIR/meridian-roles.out.log"
 GUI_PORT="${GUI_PORT:-7701}"
 GUI_LISTEN_HOST="${GUI_LISTEN_HOST:-0.0.0.0}"
 ROLES_SOCKET_PATH="${ROLES_SOCKET_PATH:-/tmp/meridian-roles.sock}"
-HUB_SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-core.sock}"
-ENSURE_MERIDIAN_HUB="${ENSURE_MERIDIAN_HUB:-true}"
+PM2_APP_NAME="${PM2_APP_NAME:-meridian-roles}"
 
 mkdir -p "$LOG_DIR"
 
@@ -22,6 +20,37 @@ echo "meridian-roles rebuild_restart: ROOT_DIR=$ROOT_DIR" >&2
 echo "meridian-roles rebuild_restart: CWD=$(pwd) USER=$(id -un) UID=$(id -u) GID=$(id -g)" >&2
 echo "meridian-roles rebuild_restart: node=$(command -v node 2>/dev/null || echo MISSING) npm=$(command -v npm 2>/dev/null || echo MISSING)" >&2
 echo "meridian-roles rebuild_restart: node_version=$(node -v 2>/dev/null || echo MISSING) npm_version=$(npm -v 2>/dev/null || echo MISSING)" >&2
+
+find_pm2_binary() {
+  local candidate
+  if candidate="$(command -v pm2 2>/dev/null)" && [[ -n "${candidate}" ]]; then
+    printf '%s' "${candidate}"
+    return 0
+  fi
+  # Do not glob fnm_multishells; that directory can accumulate thousands of
+  # entries and freeze maintenance scripts under a minimal launchd PATH.
+  for candidate in \
+    "${HOME}/.local/share/fnm/node-versions"/*/installation/bin/pm2 \
+    /opt/homebrew/bin/pm2 \
+    /usr/local/bin/pm2 \
+    /usr/bin/pm2; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+pm2_daemon_running() {
+  pgrep -f 'PM2.*ProcessContainerFork\.js' >/dev/null 2>&1 ||
+    pgrep -f 'PM2 v.*: God Daemon' >/dev/null 2>&1
+}
+
+PM2_BIN="$(find_pm2_binary || true)"
+if [[ -z "${PM2_BIN}" ]] && pm2_daemon_running; then
+  echo "meridian-roles rebuild_restart: WARNING PM2 daemon is running but pm2 binary is not on PATH or fallback paths" >&2
+fi
 
 sync_origin_main() {
   if [[ "${MERIDIAN_ROLES_REBUILD_SKIP_GIT_SYNC:-}" == "1" ]]; then
@@ -122,7 +151,6 @@ fi
 export GUI_PORT
 export GUI_LISTEN_HOST
 export ROLES_SOCKET_PATH
-export HUB_SOCKET_PATH
 if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
   export MERIDIAN_INTERNAL_BOOTSTRAP_KEY
 fi
@@ -150,29 +178,8 @@ reset_roles_state() {
   fi
 }
 
-shell_escape() {
-  printf '%q' "$1"
-}
-
-kill_tmux_session() {
-  local session_name="$1"
-  if [[ -z "$session_name" ]] || ! command -v tmux >/dev/null 2>&1; then
-    return 0
-  fi
-  if tmux has-session -t "$session_name" 2>/dev/null; then
-    echo "Stopping tmux session: ${session_name}"
-    tmux kill-session -t "$session_name" >/dev/null 2>&1 || true
-  fi
-}
-
 service_launcher_is_alive() {
   local pid="${1:-}"
-  local session_name="${2:-}"
-
-  if [[ -n "$session_name" ]] && command -v tmux >/dev/null 2>&1; then
-    tmux has-session -t "$session_name" 2>/dev/null
-    return $?
-  fi
 
   if [[ -n "$pid" ]]; then
     kill -0 "$pid" 2>/dev/null
@@ -213,11 +220,9 @@ repo_owned_pids() {
 # Lists PIDs whose argv references this repo's runtime — directly via an
 # absolute entrypoint path ("${ROOT_DIR}/dist/index.js"), or via a relative
 # argv whose cwd resolves to "${ROOT_DIR}". Mirrors Meridian's
-# user_scripts/restart.sh::runtime_pids_for_service. See terminate.sh's copy
-# of this helper for the full rationale (the previous pgrep regex matched the
-# tmux server but not the actual npm/node processes spawned inside it, so the
-# pre-rebuild kill step was a no-op and the new `npm start` hit EADDRINUSE on
-# port 7701).
+# user_scripts/restart.sh::runtime_pids_for_service. The old pgrep regex
+# missed relative `npm start` and `node dist/index.js` children, so the
+# pre-rebuild kill step was a no-op and the new process hit EADDRINUSE.
 runtime_pids_for_service() {
   local npm_script="$1"
   shift
@@ -269,6 +274,50 @@ kill_runtime_service() {
   fi
 }
 
+delete_pm2_service() {
+  if [[ -z "${PM2_BIN}" ]]; then
+    return 0
+  fi
+
+  "${PM2_BIN}" delete "${PM2_APP_NAME}" >/dev/null 2>&1 || true
+}
+
+pm2_service_pid() {
+  if [[ -z "${PM2_BIN}" ]]; then
+    return 0
+  fi
+
+  local pid
+  pid="$("${PM2_BIN}" pid "${PM2_APP_NAME}" 2>/dev/null || true)"
+  if [[ "${pid}" =~ ^[0-9]+$ ]] && [[ "${pid}" != "0" ]]; then
+    printf '%s\n' "${pid}"
+  fi
+}
+
+pm2_service_is_alive() {
+  local pid
+  pid="$(pm2_service_pid)"
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+start_service() {
+  if [[ -n "${PM2_BIN}" ]] && "${PM2_BIN}" ping >/dev/null 2>&1; then
+    echo "Starting meridian-roles with PM2 (${PM2_BIN})..."
+    (
+      cd "$ROOT_DIR"
+      "${PM2_BIN}" start npm --name "${PM2_APP_NAME}" --cwd "$ROOT_DIR" -- start >/dev/null
+    )
+    launch_mode="pm2"
+    new_pid="$(pm2_service_pid)"
+    return 0
+  fi
+
+  echo "Starting meridian-roles with nohup fallback..."
+  nohup "${START_CMD[@]}" < /dev/null >> "$RUN_LOG" 2>&1 &
+  new_pid=$!
+  launch_mode="nohup"
+}
+
 find_repo_port_listener_pids() {
   local pids
   if ! command -v lsof >/dev/null 2>&1; then
@@ -301,79 +350,6 @@ kill_repo_port_listeners() {
   fi
 }
 
-hub_socket_reachable() {
-  if [[ ! -S "${HUB_SOCKET_PATH}" ]]; then
-    return 1
-  fi
-
-  node -e '
-const net = require("node:net");
-const socketPath = process.argv[1];
-const socket = net.createConnection(socketPath);
-const timer = setTimeout(() => {
-  socket.destroy();
-  process.exit(1);
-}, 1000);
-socket.once("connect", () => {
-  clearTimeout(timer);
-  socket.end();
-  process.exit(0);
-});
-socket.once("error", () => {
-  clearTimeout(timer);
-  process.exit(1);
-});
-' "${HUB_SOCKET_PATH}" >/dev/null 2>&1
-}
-
-ensure_meridian_hub_socket() {
-  if [[ "${ENSURE_MERIDIAN_HUB}" == "false" ]]; then
-    return 0
-  fi
-
-  if hub_socket_reachable; then
-    return 0
-  fi
-
-  # When the outer chain (Meridian/user_scripts/rebuild_restart.sh) already
-  # restarted Meridian, a missing hub socket here is a real failure — not a
-  # recoverable condition. Recursively invoking ./user_scripts/restart.sh
-  # --keep-agents from this point is the named hang suspect in
-  # maintenance-hub-restart-pm2-and-socket-race.md's open follow-up: pm2 reload
-  # races against the running hub, /tmp/hub-core.sock cleanup gets skipped under
-  # keep-agents mode, and the loop never converges. Fail fast instead so the
-  # operator sees the real cause.
-  if [[ -n "${MERIDIAN_HUB_ALREADY_RESTARTED:-}" ]]; then
-    echo "Meridian Hub socket missing at ${HUB_SOCKET_PATH} after outer chain already restarted Meridian; refusing recursive restart (set MERIDIAN_HUB_ALREADY_RESTARTED= to override)." >&2
-    return 1
-  fi
-
-  local restart_script="$ROOT_DIR/_meridian_hub/user_scripts/restart.sh"
-  if [[ ! -x "$restart_script" ]]; then
-    echo "Meridian Hub socket is missing or unreachable at ${HUB_SOCKET_PATH}, and restart script was not found: ${restart_script}" >&2
-    return 1
-  fi
-
-  echo "Meridian Hub socket missing or unreachable at ${HUB_SOCKET_PATH}; restarting Meridian runtime with --keep-agents..."
-  # timeout 180 caps the recursive restart so a stuck pm2 reload cannot hang
-  # the parent maintenance-hub action beyond its budget. Picked to comfortably
-  # cover Meridian/restart.sh's own 30s wait_for_hub_socket plus pm2 reload.
-  (
-    cd "$ROOT_DIR/_meridian_hub"
-    HUB_SOCKET_PATH="$HUB_SOCKET_PATH" timeout 180 ./user_scripts/restart.sh --keep-agents
-  )
-
-  for _ in $(seq 1 30); do
-    if hub_socket_reachable; then
-      return 0
-    fi
-    sleep 1
-  done
-
-  echo "Meridian Hub socket still unreachable after runtime restart: ${HUB_SOCKET_PATH}" >&2
-  return 1
-}
-
 if [[ -f "$PID_FILE" ]]; then
   old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
@@ -396,16 +372,11 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 
-if [[ -f "$TMUX_SESSION_FILE" ]]; then
-  old_session="$(cat "$TMUX_SESSION_FILE" 2>/dev/null || true)"
-  kill_tmux_session "$old_session"
-  rm -f "$TMUX_SESSION_FILE"
-fi
-
 # Identify processes by cwd, not by argv-substring. `npm start` and the
 # `node dist/index.js` it spawns both run with cwd=${ROOT_DIR} but neither has
 # an absolute ROOT_DIR in argv — a pgrep regex would silently miss them and
 # the next `npm start` below would hit EADDRINUSE on port 7701.
+delete_pm2_service
 kill_runtime_service "meridian-roles" "start" "src/index.ts" "dist/index.js"
 kill_repo_port_listeners
 
@@ -441,37 +412,17 @@ elif [[ -f "$ROOT_DIR/package-lock.json" ]] && \
   npm ci
 fi
 
-ensure_meridian_hub_socket
-
 echo "Building meridian-roles..."
 npm run build
 
 START_CMD=(npm start)
-TMUX_SESSION_NAME="meridian_roles_service_$(id -u)"
 new_pid=""
-launch_mode="nohup"
-health_session_name=""
+launch_mode=""
 
-echo "meridian-roles rebuild_restart: listen_host=${GUI_LISTEN_HOST} gui_port=${GUI_PORT} socket=${ROLES_SOCKET_PATH} hub_socket=${HUB_SOCKET_PATH}" >&2
+echo "meridian-roles rebuild_restart: listen_host=${GUI_LISTEN_HOST} gui_port=${GUI_PORT} socket=${ROLES_SOCKET_PATH}" >&2
 echo "meridian-roles rebuild_restart: start_command=${START_CMD[*]}" >&2
 
-echo "Starting meridian-roles in background..."
-if command -v tmux >/dev/null 2>&1; then
-  bootstrap_export=""
-  if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
-    bootstrap_export=" MERIDIAN_INTERNAL_BOOTSTRAP_KEY=$(shell_escape "$MERIDIAN_INTERNAL_BOOTSTRAP_KEY")"
-  fi
-  tmux_command="cd $(shell_escape "$ROOT_DIR") && export GUI_PORT=$(shell_escape "$GUI_PORT") GUI_LISTEN_HOST=$(shell_escape "$GUI_LISTEN_HOST") ROLES_SOCKET_PATH=$(shell_escape "$ROLES_SOCKET_PATH") HUB_SOCKET_PATH=$(shell_escape "$HUB_SOCKET_PATH")${bootstrap_export} && exec npm start >> $(shell_escape "$RUN_LOG") 2>&1"
-  kill_tmux_session "$TMUX_SESSION_NAME"
-  tmux new-session -d -s "$TMUX_SESSION_NAME" "$tmux_command"
-  printf '%s\n' "$TMUX_SESSION_NAME" > "$TMUX_SESSION_FILE"
-  new_pid="$(tmux display-message -p -t "$TMUX_SESSION_NAME" '#{pane_pid}' 2>/dev/null || true)"
-  launch_mode="tmux"
-  health_session_name="$TMUX_SESSION_NAME"
-else
-  nohup "${START_CMD[@]}" < /dev/null >> "$RUN_LOG" 2>&1 &
-  new_pid=$!
-fi
+start_service
 
 if [[ -n "$new_pid" ]]; then
   echo "$new_pid" > "$PID_FILE"
@@ -479,8 +430,8 @@ else
   rm -f "$PID_FILE"
 fi
 
-echo "Waiting for meridian-roles to become healthy (http://127.0.0.1:${GUI_PORT}/, socket: ${ROLES_SOCKET_PATH}, hub socket: ${HUB_SOCKET_PATH})..."
-echo "meridian-roles rebuild_restart: launch_mode=${launch_mode}${new_pid:+ pid=${new_pid}}${health_session_name:+ session=${health_session_name}}" >&2
+echo "Waiting for meridian-roles to become healthy (http://127.0.0.1:${GUI_PORT}/, socket: ${ROLES_SOCKET_PATH})..."
+echo "meridian-roles rebuild_restart: launch_mode=${launch_mode}${new_pid:+ pid=${new_pid}}" >&2
 
 healthy="false"
 healthy_streak=0
@@ -490,12 +441,16 @@ HEALTH_MAX_ATTEMPTS="${HEALTH_MAX_ATTEMPTS:-90}"
 HEALTH_STREAK_REQUIRED="${HEALTH_STREAK_REQUIRED:-3}"
 for _ in $(seq 1 "${HEALTH_MAX_ATTEMPTS}"); do
   launcher_alive="true"
-  if ! service_launcher_is_alive "$new_pid" "$health_session_name"; then
+  if [[ "${launch_mode}" == "pm2" ]]; then
+    if ! pm2_service_is_alive; then
+      launcher_alive="false"
+    fi
+  elif ! service_launcher_is_alive "$new_pid"; then
     launcher_alive="false"
   fi
 
   if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "http://127.0.0.1:${GUI_PORT}/" >/dev/null 2>&1; then
-    if [[ -S "${ROLES_SOCKET_PATH}" ]] && hub_socket_reachable; then
+    if [[ -S "${ROLES_SOCKET_PATH}" ]]; then
       healthy_streak=$((healthy_streak + 1))
       if [[ "$healthy_streak" -ge "${HEALTH_STREAK_REQUIRED}" ]]; then
         healthy="true"
@@ -528,10 +483,6 @@ if [[ "${healthy}" == "true" ]]; then
 fi
 
 echo "Failed to start meridian-roles (health check did not pass). Check log: $RUN_LOG" >&2
-if [[ "${launch_mode}" == "tmux" ]]; then
-  kill_tmux_session "$TMUX_SESSION_NAME"
-  rm -f "$TMUX_SESSION_FILE"
-fi
 kill_repo_port_listeners
 if [[ -f "$RUN_LOG" ]]; then
   echo "--- last 200 lines of $RUN_LOG ---" >&2

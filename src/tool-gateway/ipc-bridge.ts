@@ -3,8 +3,7 @@
  *
  * After R-05 the tool-gateway no longer opens direct Hub sockets for
  * cross-service Meridian operations. Spawn/run/kill go through the
- * Meridian HTTP API client; notify uses the HTTP relay with a file-relay
- * fallback. This module retains only the HTTP relay transport.
+ * Meridian HTTP API client; notify uses this HTTP relay transport.
  */
 
 import { randomUUID } from "node:crypto";

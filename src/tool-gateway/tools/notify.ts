@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 
 import { ReplyChannelSchema, type HubMessage, type HubResult, type ReplyChannel } from "../../types";
-import { sendViaFileRelay } from "../file-relay";
 import { sendViaHttpRelay } from "../ipc-bridge";
 import type { ToolDefinition, ToolResult } from "../registry";
 
@@ -144,16 +143,7 @@ function toPriority(urgency: string | undefined): number {
 }
 
 async function sendNotifyViaApi(message: HubMessage): Promise<HubResult> {
-  try {
-    return await sendViaHttpRelay(message, NOTIFY_TIMEOUT_MS);
-  } catch (httpError) {
-    console.warn("Notify HTTP relay failed; falling back to file relay", {
-      trace_id: message.trace_id,
-      error: asError(httpError).message
-    });
-
-    return sendViaFileRelay(message, NOTIFY_TIMEOUT_MS);
-  }
+  return sendViaHttpRelay(message, NOTIFY_TIMEOUT_MS);
 }
 
 function requireParam(value: string | undefined): string | null {

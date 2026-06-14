@@ -132,6 +132,46 @@ describe("role config handlers", () => {
     });
   });
 
+  it("dedups a second /api/agent-dispatcher/start call for the same dispatch_plan_path", async () => {
+    // P-3: the /issues automation cron used to /start the same round twice and
+    // get two distinct dispatcher_role_ids both bound to one
+    // dispatch_threads.json — worker spawns then attributed to either role at
+    // random and the GUI/log filter keyed off dispatcher_role_id broke
+    // (handoff 2026-06-05 r22). Two /start calls with the same
+    // dispatch_plan_path must converge on the same dispatcher_id.
+    const harness = createHarness();
+    const startBody = {
+      dispatch_plan_path: "/tmp/dispatch_plan-dedup.md",
+      command_file_path: "/tmp/agent_dispatch_command-dedup.md",
+      user_reply_channel: {
+        channel: "telegram",
+        chat_id: "telegram:ops"
+      },
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always"
+    };
+
+    const first = await invokeJson<{
+      ok: true;
+      dispatcher_id: string;
+      dispatcher_thread_id: string;
+      deduped?: "active" | "resumed";
+    }>(harness.roleHandlers, "POST", "/api/agent-dispatcher/start", startBody);
+    expect(first.deduped).toBeUndefined();
+
+    const second = await invokeJson<{
+      ok: true;
+      dispatcher_id: string;
+      dispatcher_thread_id: string;
+      deduped?: "active" | "resumed";
+    }>(harness.roleHandlers, "POST", "/api/agent-dispatcher/start", startBody);
+
+    expect(second.dispatcher_id).toBe(first.dispatcher_id);
+    expect(second.dispatcher_thread_id).toBe(first.dispatcher_thread_id);
+    expect(second.deduped).toBe("active");
+  });
+
   it("returns a prompt preview for the agent-dispatcher start form", async () => {
     const harness = createHarness();
 
@@ -494,7 +534,7 @@ describe("role config handlers", () => {
           thread_id: "codex_07",
           status: "running",
           started_at: "2026-05-11T21:03:28.935Z",
-          last_seen_at: "2026-05-11T21:03:28.935Z",
+          last_seen_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
           agent_type: "codex",
           model_id: "gpt-5.5",
           mode: "bridge",
@@ -1103,7 +1143,7 @@ describe("role config handlers", () => {
           ]
         }
       });
-      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-e2e");
+      expect(attachToThread).not.toHaveBeenCalled();
 
       await expect(updateStatusTool.execute({
         plan: dispatchPlanPath,
@@ -1705,7 +1745,7 @@ describe("role config handlers", () => {
           thread_id: "pm-thread-c01",
           status: "running",
           started_at: "2026-05-09T04:00:46.316Z",
-          last_seen_at: "2026-05-09T04:00:46.316Z",
+          last_seen_at: new Date().toISOString(),
           agent_type: "codex",
           model_id: null,
           mode: "bridge",
@@ -1795,8 +1835,8 @@ describe("role config handlers", () => {
         {
           thread_id: "pm-thread-c01-orphan",
           status: "running",
-          started_at: "2026-05-13T04:00:46.316Z",
-          last_seen_at: "2026-05-13T04:00:46.316Z",
+          started_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          last_seen_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
           agent_type: "codex",
           model_id: null,
           mode: "bridge",
@@ -1832,6 +1872,12 @@ describe("role config handlers", () => {
       }
       throw new Error(`unexpected hub request: ${message.intent} ${message.target}`);
     });
+    const killSpy = vi.spyOn(killTool, "execute").mockResolvedValue({
+      ok: true,
+      data: {
+        thread_id: "worker-thread-c01"
+      }
+    });
 
     try {
       const harness = createHarness(
@@ -1839,7 +1885,7 @@ describe("role config handlers", () => {
         undefined,
         [],
         null,
-        null,
+        new Error("attach failed: No registered agent instance found for thread_id=pm-thread-c01-orphan"),
         sendHubRequest,
         null,
         launchDispatchWorker
@@ -1861,6 +1907,9 @@ describe("role config handlers", () => {
       });
 
       expect(launchDispatchWorker).toHaveBeenCalledTimes(1);
+      expect(killSpy).toHaveBeenCalledWith({
+        thread_id: "worker-thread-c01"
+      });
       const after = lifecycleStore.load();
       const orphanPm = after.pm_resolvers?.find((entry) => entry.thread_id === "pm-thread-c01-orphan");
       // Eviction transitions the PM out of `running`. The exact terminal
@@ -1873,6 +1922,7 @@ describe("role config handlers", () => {
       expect(orphanPm?.status).not.toBe("running");
       expect(["failed", "completed"]).toContain(orphanPm?.status);
     } finally {
+      killSpy.mockRestore();
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -1919,7 +1969,7 @@ describe("role config handlers", () => {
           thread_id: "pm-thread-c01-live",
           status: "running",
           started_at: "2026-05-13T04:00:46.316Z",
-          last_seen_at: "2026-05-13T04:00:46.316Z",
+          last_seen_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
           agent_type: "codex",
           model_id: null,
           mode: "bridge",
@@ -4922,7 +4972,7 @@ describe("role config handlers", () => {
           ])
         }
       });
-      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
+      expect(attachToThread).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -5519,7 +5569,7 @@ describe("role config handlers", () => {
     }
   });
 
-  it("demotes dispatcher lifecycle state during detail fetch when attach reports the thread missing", async () => {
+  it("demotes dispatcher lifecycle state during detail fetch when detail reports the thread missing", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-missing-detail-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -5546,12 +5596,13 @@ describe("role config handlers", () => {
     });
 
     try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
       const harness = createHarness(
         undefined,
         undefined,
         [],
-        "unused",
-        new Error("attach failed: No registered agent instance found for thread_id=dispatcher-thread-123")
+        "Routing failed: No registered agent instance found for thread_id=dispatcher-thread-123",
+        attachToThread
       );
 
       await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-missing-detail", dispatchPlanPath);
@@ -5576,6 +5627,7 @@ describe("role config handlers", () => {
           })
         ])
       );
+      expect(attachToThread).not.toHaveBeenCalled();
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -5613,12 +5665,13 @@ describe("role config handlers", () => {
     });
 
     try {
+      const attachToThread = vi.fn().mockResolvedValue(undefined);
       const harness = createHarness(
         undefined,
         undefined,
         [],
-        "unused",
-        new Error("attach failed: No registered agent instance found for thread_id=dispatcher-thread-123")
+        "Routing failed: No registered agent instance found for thread_id=dispatcher-thread-123",
+        attachToThread
       );
 
       await createAgentDispatcherRole(harness.roleHandlers, "agent-dispatcher-synthetic-worker", dispatchPlanPath);
@@ -5630,6 +5683,7 @@ describe("role config handlers", () => {
         current_worker: null,
         dispatch_details: []
       });
+      expect(attachToThread).not.toHaveBeenCalled();
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -5698,7 +5752,7 @@ describe("role config handlers", () => {
           "Dispatcher detail cache is empty. Send a new request to the dispatcher, then refresh this page."
         ]
       });
-      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
+      expect(attachToThread).not.toHaveBeenCalled();
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -5780,7 +5834,7 @@ describe("role config handlers", () => {
           "The next eligible worker is R-11."
         ])
       });
-      expect(attachToThread).toHaveBeenCalledWith("dispatcher-thread-123");
+      expect(attachToThread).not.toHaveBeenCalled();
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -6426,7 +6480,7 @@ describe("role config handlers", () => {
     });
   });
 
-  it("logs attach failures with dispatcher thread and role context", async () => {
+  it("does not attach dispatcher session while serving read-only role detail", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-agent-dispatcher-attach-log-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
     const sidecarPath = path.join(tempDir, "dispatch_threads.json");
@@ -6471,13 +6525,9 @@ describe("role config handlers", () => {
       await expect(invokeJson(harness.roleHandlers, "GET", "/api/role/agent-dispatcher-attach-log")).resolves.toMatchObject({
         thread_id: "agent-dispatcher-attach-log"
       });
-      expect(harness.log.warn).toHaveBeenCalledWith(
+      expect(harness.log.warn).not.toHaveBeenCalledWith(
         "Failed to attach dispatcher session before detail fetch",
-        expect.objectContaining({
-          thread_id: "dispatcher-thread-123",
-          role_id: "agent-dispatcher-attach-log",
-          error: "attach failed"
-        })
+        expect.anything()
       );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

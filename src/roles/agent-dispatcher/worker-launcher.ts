@@ -1,4 +1,7 @@
-import type { KillPolicy } from "../../types";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+
+import type { HubResult, KillPolicy } from "../../types";
 import { resolveRequiredDispatchRepoRoot } from "./dispatch-paths";
 import {
   createMeridianApiClient,
@@ -15,6 +18,9 @@ import {
 } from "./thread-id-reservation";
 import runTool from "../../tool-gateway/tools/run";
 import { parseModelIdWithEffort } from "../../tool-gateway/tools/spawn";
+import { LifecycleStore } from "./lifecycle-store";
+import { isAgentapiProcessAliveForThread } from "./active-tool-process";
+import { isHubTransportEvidence, isMissingThreadEvidence } from "./missing-thread";
 
 export interface LaunchDispatchWorkerConfig {
   agentType: string;
@@ -56,6 +62,7 @@ export interface LaunchDispatchWorkerResult {
 export interface DispatchRunHandoffRequest {
   threadId: string;
   commandFilePath: string;
+  dispatchPlanPath: string;
   workerId: string;
   killPolicy?: KillPolicy;
   validationMaxFixCycles?: number;
@@ -180,6 +187,7 @@ export async function launchDispatchWorker(
   const handoffRequest: DispatchRunHandoffRequest = {
     threadId,
     commandFilePath: config.commandFilePath,
+    dispatchPlanPath: config.dispatchPlanPath,
     workerId: config.workerId,
     killPolicy: config.killPolicy,
     validationMaxFixCycles: config.validationMaxFixCycles,
@@ -211,17 +219,87 @@ export async function launchDispatchWorker(
       deps.onBackgroundRunError(resolvedError, handoffRequest);
       return;
     }
-    console.warn("dispatch worker background run failed", {
-      workerId: handoffRequest.workerId,
-      threadId: handoffRequest.threadId,
-      error: resolvedError.message
-    });
+    handleDefaultBackgroundRunError(resolvedError, handoffRequest);
   });
 
   return {
     ok: true,
     threadId
   };
+}
+
+function handleDefaultBackgroundRunError(
+  error: Error,
+  request: DispatchRunHandoffRequest
+): void {
+  const missingThread = isMissingThreadEvidence(error.message);
+  const transportClass = isHubTransportEvidence(error.message);
+  const agentapiProcessAlive = !missingThread && isAgentapiProcessAliveForThread(request.threadId);
+
+  if (transportClass && agentapiProcessAlive) {
+    console.warn("dispatch worker background run transport stalled; retaining running worker for live thread probe", {
+      workerId: request.workerId,
+      threadId: request.threadId,
+      error: error.message
+    });
+    return;
+  }
+
+  try {
+    recordBackgroundRunFailure(request, error.message);
+  } catch (recordError) {
+    console.warn("dispatch worker background run failed", {
+      workerId: request.workerId,
+      threadId: request.threadId,
+      error: error.message,
+      lifecycleError: asError(recordError).message
+    });
+    return;
+  }
+
+  console.warn("dispatch worker background run failed; lifecycle recorded synthetic failure", {
+    workerId: request.workerId,
+    threadId: request.threadId,
+    missingThread,
+    transportClass,
+    agentapiProcessAlive,
+    error: error.message
+  });
+}
+
+function recordBackgroundRunFailure(
+  request: DispatchRunHandoffRequest,
+  errorMessage: string
+): void {
+  const store = new LifecycleStore(path.join(path.dirname(request.dispatchPlanPath), "dispatch_threads.json"), {
+    dispatchPlanPath: request.dispatchPlanPath
+  });
+  const state = store.load();
+  const existingWorker = state.workers[request.workerId];
+
+  if (existingWorker && existingWorker.thread_id !== request.threadId) {
+    return;
+  }
+
+  if (existingWorker && existingWorker.status !== "running") {
+    return;
+  }
+
+  if (!existingWorker) {
+    store.recordWorkerLaunchInitiated(request.workerId, request.threadId);
+  }
+
+  const syntheticResult: HubResult = {
+    trace_id: randomUUID(),
+    thread_id: request.threadId,
+    source: "roles",
+    status: "error",
+    run_state: "timeout",
+    content: `dispatch run handoff failed for worker ${request.workerId} on ${request.threadId}: ${errorMessage}`,
+    attachments: [],
+    timestamp: new Date().toISOString()
+  };
+  store.recordWorkerResult(request.workerId, syntheticResult);
 }
 
 const SPAWN_RETRY_DELAYS_MS = [3_000, 8_000];

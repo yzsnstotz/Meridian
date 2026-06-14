@@ -27,6 +27,8 @@ import {
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
 import { MERIDIAN_TOOL_DISPLAY_COMMAND } from "./tool-entrypoint";
+import { isAgentapiProcessAliveForThread } from "./active-tool-process";
+import { isHubTransportEvidence, isMissingThreadEvidence } from "./missing-thread";
 
 export interface PmResolverIssueContext {
   status: string;
@@ -99,7 +101,7 @@ export interface PmResolverDeps {
   log?: Pick<typeof console, "warn">;
   lifecycleStore?: Pick<
     LifecycleStore,
-    "recordPmResolverStart" | "recordPmResolverResult" | "recordPmResolverTransportStall"
+    "recordPmResolverStart" | "recordPmResolverResult" | "recordPmResolverTransportStall" | "recordPmResolverFailure"
   >;
 }
 
@@ -150,20 +152,34 @@ export async function startPmResolver(
     safeRecordPmResolverResult(lifecycleStore, spawnedThreadId, result, deps.log);
     void safeKillPmResolver(meridianApi, spawnedThreadId, request.dispatcherId, deps.log);
   }).catch((error) => {
-    // Transport-class rejection (hub overload, Meridian-API unreachable,
-    // request timeout, IPC drop). The PM agent process may still be alive;
-    // retain the thread so a human can take over via the GUI talk-box, and
-    // record the transport stall WITHOUT flipping lifecycle status to
-    // "failed". The reconciler still promotes this entry to "completed" if
-    // the target worker reaches a healthy state via human-resolve, retry,
-    // or other recovery paths.
     const errorMessage = error instanceof Error ? error.message : String(error);
-    deps.log?.warn("PM resolver run rejected; retaining thread for human takeover", {
+    const missingThread = isMissingThreadEvidence(errorMessage);
+    const transportClass = isHubTransportEvidence(errorMessage);
+    const agentapiProcessAlive = !missingThread && isAgentapiProcessAliveForThread(spawnedThreadId);
+
+    if (transportClass && agentapiProcessAlive) {
+      // Transport-class rejection (hub overload, Meridian-API unreachable,
+      // request timeout, IPC drop) with a confirmed live process. Retain the
+      // thread so a human can take over via the GUI talk-box, and record the
+      // transport stall WITHOUT flipping lifecycle status to "failed".
+      deps.log?.warn("PM resolver run rejected; retaining live thread for human takeover", {
+        dispatcherId: request.dispatcherId,
+        threadId: spawnedThreadId,
+        error: errorMessage
+      });
+      safeRecordPmResolverTransportStall(lifecycleStore, spawnedThreadId, errorMessage, deps.log);
+      return;
+    }
+
+    deps.log?.warn("PM resolver run rejected; recording lifecycle failure", {
       dispatcherId: request.dispatcherId,
       threadId: spawnedThreadId,
+      missingThread,
+      transportClass,
+      agentapiProcessAlive,
       error: errorMessage
     });
-    safeRecordPmResolverTransportStall(lifecycleStore, spawnedThreadId, errorMessage, deps.log);
+    safeRecordPmResolverFailure(lifecycleStore, spawnedThreadId, errorMessage, deps.log);
   });
 
   return {
@@ -312,6 +328,22 @@ function safeRecordPmResolverTransportStall(
     lifecycleStore.recordPmResolverTransportStall(threadId, errorMessage);
   } catch (error) {
     log?.warn("Failed to record PM resolver transport stall", {
+      threadId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+function safeRecordPmResolverFailure(
+  lifecycleStore: Pick<LifecycleStore, "recordPmResolverFailure">,
+  threadId: string,
+  errorMessage: string,
+  log: PmResolverDeps["log"]
+): void {
+  try {
+    lifecycleStore.recordPmResolverFailure(threadId, errorMessage);
+  } catch (error) {
+    log?.warn("Failed to record PM resolver failure", {
       threadId,
       error: error instanceof Error ? error.message : String(error)
     });

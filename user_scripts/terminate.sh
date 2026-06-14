@@ -6,25 +6,43 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LOG_DIR="$ROOT_DIR/logs"
 PID_FILE="$LOG_DIR/meridian-roles.pid"
-TMUX_SESSION_FILE="$LOG_DIR/meridian-roles.tmux-session"
 GUI_PORT="${GUI_PORT:-7701}"
 ROLES_SOCKET_PATH="${ROLES_SOCKET_PATH:-/tmp/meridian-roles.sock}"
+PM2_APP_NAME="${PM2_APP_NAME:-meridian-roles}"
 
 mkdir -p "$LOG_DIR"
 cd "$ROOT_DIR"
 
 echo "meridian-roles terminate: ROOT_DIR=$ROOT_DIR" >&2
 
-kill_tmux_session() {
-  local session_name="$1"
-  if [[ -z "$session_name" ]] || ! command -v tmux >/dev/null 2>&1; then
+find_pm2_binary() {
+  local candidate
+  if candidate="$(command -v pm2 2>/dev/null)" && [[ -n "${candidate}" ]]; then
+    printf '%s' "${candidate}"
     return 0
   fi
-  if tmux has-session -t "$session_name" 2>/dev/null; then
-    echo "Stopping tmux session: ${session_name}"
-    tmux kill-session -t "$session_name" >/dev/null 2>&1 || true
-  fi
+  for candidate in \
+    "${HOME}/.local/share/fnm/node-versions"/*/installation/bin/pm2 \
+    /opt/homebrew/bin/pm2 \
+    /usr/local/bin/pm2 \
+    /usr/bin/pm2; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
 }
+
+pm2_daemon_running() {
+  pgrep -f 'PM2.*ProcessContainerFork\.js' >/dev/null 2>&1 ||
+    pgrep -f 'PM2 v.*: God Daemon' >/dev/null 2>&1
+}
+
+PM2_BIN="$(find_pm2_binary || true)"
+if [[ -z "${PM2_BIN}" ]] && pm2_daemon_running; then
+  echo "meridian-roles terminate: WARNING PM2 daemon is running but pm2 binary is not on PATH or fallback paths" >&2
+fi
 
 canonical_cwd() {
   local directory="$1"
@@ -59,11 +77,10 @@ repo_owned_pids() {
 # argv whose cwd resolves to "${ROOT_DIR}". Mirrors Meridian's
 # user_scripts/restart.sh::runtime_pids_for_service so the Maintenance Hub
 # "Terminate" button at http://127.0.0.1:8765/ reliably catches the listener
-# process. The previous pgrep regex ("${ROOT_DIR}.*npm start") only matched
-# the tmux server's command line (which embeds the inline shell snippet) and
-# did NOT match `npm start` or `node dist/index.js` — npm's invocation has no
-# absolute repo path in argv. So whenever the PID file pointed at a stale pid,
-# the safety net was a no-op and the listener stayed alive after "Terminate".
+# process. The previous pgrep regex ("${ROOT_DIR}.*npm start") did NOT match
+# relative `npm start` or `node dist/index.js`, because neither has an absolute
+# repo path in argv. So whenever the PID file pointed at a stale pid, the
+# safety net was a no-op and the listener stayed alive after "Terminate".
 runtime_pids_for_service() {
   local npm_script="$1"
   shift
@@ -113,6 +130,14 @@ kill_runtime_service() {
     # kill_pids already prints "Stopping ${label}: ${pids}" — don't double-log.
     kill_pids "${label}" ${pids}
   fi
+}
+
+delete_pm2_service() {
+  if [[ -z "${PM2_BIN}" ]]; then
+    return 0
+  fi
+
+  "${PM2_BIN}" delete "${PM2_APP_NAME}" >/dev/null 2>&1 || true
 }
 
 find_repo_port_listener_pids() {
@@ -173,19 +198,8 @@ terminate_pid_file_process() {
   rm -f "$PID_FILE"
 }
 
-terminate_tmux_session() {
-  if [[ ! -f "$TMUX_SESSION_FILE" ]]; then
-    return 0
-  fi
-
-  local old_session
-  old_session="$(cat "$TMUX_SESSION_FILE" 2>/dev/null || true)"
-  kill_tmux_session "$old_session"
-  rm -f "$TMUX_SESSION_FILE"
-}
-
 terminate_pid_file_process
-terminate_tmux_session
+delete_pm2_service
 
 # Identify processes by cwd, not by argv-substring. `npm start` and the
 # `node dist/index.js` it spawns both run with cwd=${ROOT_DIR} but neither has

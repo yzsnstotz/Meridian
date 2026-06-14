@@ -7,10 +7,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DispatchThreadStateV2, HubResult } from "../../../types";
 import {
+  findActivePmResolversForWorker,
+  isPmResolverNoProgressStale,
   isValidatorSpawnBackoffActive,
+  isWorkerHeartbeatStale,
   LifecycleStore,
+  PM_RESOLVER_NO_PROGRESS_STALE_MS,
   VALIDATOR_SPAWN_FAILURE_BACKOFF_MS,
   VALIDATOR_SPAWN_FAILURE_BACKOFF_THRESHOLD,
+  WORKER_HEARTBEAT_STALE_THRESHOLD_MS,
   buildEmptyDispatchThreadStateV2
 } from "../lifecycle-store";
 
@@ -1223,6 +1228,80 @@ describe("LifecycleStore", () => {
     expect(harness.store.load().workers["N-01"]?.status).toBe("abandoned");
   });
 
+  it("reaps a running worker into failed with markWorkerReaped", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-06", "worker-thread-stuck", "11111111-1111-4111-8111-111111111111", []);
+
+    harness.store.markWorkerReaped(
+      "W-06",
+      "watchdog_reaped: heartbeat_stale; agentapi_process_missing; hub_status=missing"
+    );
+
+    expect(harness.store.load().workers["W-06"]?.status).toBe("failed");
+  });
+
+  it("markWorkerReaped is idempotent on non-running workers", async () => {
+    const harness = await createHarness();
+    harness.store.recordWorkerStart("W-07", "worker-thread-done", "22222222-2222-4222-8222-222222222222", []);
+    harness.store.setWorkerStatus("W-07", "completed", "test_setup");
+
+    harness.store.markWorkerReaped("W-07", "should-not-apply");
+
+    expect(harness.store.load().workers["W-07"]?.status).toBe("completed");
+  });
+
+  it("markWorkerReaped throws when worker is unknown", async () => {
+    const harness = await createHarness();
+    expect(() => harness.store.markWorkerReaped("MISSING", "x"))
+      .toThrowError(/Worker not found/);
+  });
+
+  it("isWorkerHeartbeatStale returns true when last_seen_at is older than threshold", () => {
+    const nowMs = Date.parse("2026-04-03T14:00:00.000Z");
+    const worker = {
+      started_at: "2026-04-03T08:00:00.000Z",
+      last_seen_at: "2026-04-03T13:00:00.000Z",
+      status: "running" as const
+    };
+    expect(isWorkerHeartbeatStale(worker, nowMs)).toBe(true);
+  });
+
+  it("isWorkerHeartbeatStale returns false when last_seen_at is recent", () => {
+    const nowMs = Date.parse("2026-04-03T14:00:00.000Z");
+    const worker = {
+      started_at: "2026-04-03T13:55:00.000Z",
+      last_seen_at: "2026-04-03T13:59:30.000Z",
+      status: "running" as const
+    };
+    expect(isWorkerHeartbeatStale(worker, nowMs)).toBe(false);
+  });
+
+  it("isWorkerHeartbeatStale ignores non-running workers", () => {
+    const nowMs = Date.parse("2026-04-03T14:00:00.000Z");
+    const worker = {
+      started_at: "2026-04-03T08:00:00.000Z",
+      last_seen_at: "2026-04-03T08:30:00.000Z",
+      status: "completed" as const
+    };
+    expect(isWorkerHeartbeatStale(worker, nowMs)).toBe(false);
+  });
+
+  it("isWorkerHeartbeatStale uses the threshold constant by default", () => {
+    const nowMs = Date.parse("2026-04-03T14:00:00.000Z");
+    const stillFreshAt = new Date(nowMs - WORKER_HEARTBEAT_STALE_THRESHOLD_MS + 1_000).toISOString();
+    const justStaleAt = new Date(nowMs - WORKER_HEARTBEAT_STALE_THRESHOLD_MS - 1_000).toISOString();
+    expect(isWorkerHeartbeatStale({
+      started_at: stillFreshAt,
+      last_seen_at: stillFreshAt,
+      status: "running"
+    }, nowMs)).toBe(false);
+    expect(isWorkerHeartbeatStale({
+      started_at: justStaleAt,
+      last_seen_at: justStaleAt,
+      status: "running"
+    }, nowMs)).toBe(true);
+  });
+
   it("renders skipped workers as ⛔ SKIPPED in the dispatch plan", async () => {
     const harness = await createHarness({
       dispatchPlanPath: path.join(tmpdir(), "meridian-roles-custom-plan", `dispatch-plan-skipped-${Date.now()}.md`),
@@ -1966,6 +2045,43 @@ describe("LifecycleStore", () => {
     harness.store.recordPmResolverFailure("pm-thread-c01", "any failure reason");
     const stateFailed = harness.store.load();
     expect(findActivePmResolversForWorker(stateFailed, "C-01")).toHaveLength(0);
+  });
+
+  it("findActivePmResolversForWorker ignores stale no-progress PM resolver entries", () => {
+    const startedAt = "2026-04-03T12:00:00.000Z";
+    const nowMs = Date.parse(startedAt) + PM_RESOLVER_NO_PROGRESS_STALE_MS;
+    const state = {
+      ...buildEmptyDispatchThreadStateV2(),
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-stale-no-progress",
+          status: "running" as const,
+          started_at: startedAt,
+          last_seen_at: startedAt,
+          agent_type: "codex" as const,
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge" as const,
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required" as const,
+            worker_id: "C-01",
+            message: "manual intervention required",
+            error: null,
+            source: "watchdog" as const
+          },
+          result: null,
+          error: null,
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
+        }
+      ]
+    };
+
+    expect(isPmResolverNoProgressStale(state.pm_resolvers[0], nowMs - 1)).toBe(false);
+    expect(findActivePmResolversForWorker(state, "C-01", nowMs - 1)).toHaveLength(1);
+    expect(isPmResolverNoProgressStale(state.pm_resolvers[0], nowMs)).toBe(true);
+    expect(findActivePmResolversForWorker(state, "C-01", nowMs)).toHaveLength(0);
   });
 
   it("appends PM resolver replies to the target worker report", async () => {

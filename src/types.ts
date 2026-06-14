@@ -20,7 +20,7 @@ export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
 // Mirrors the meridian-hub BridgeMode contract. `pane_bridge` was removed
 // 2026-05-21 (meridian-hub PR #93): operators standardized on telegram + a2a
-// (`bridge`) and the tmux-pane-attach surface was unused. The Stateful*
+// (`bridge`) and the pane-attach surface was unused. The Stateful*
 // variant exists to forbid `stateless_call` at call sites that need a
 // persistent thread reservation.
 export const StatefulBridgeModeSchema = z.enum(["bridge"]);

@@ -17,7 +17,7 @@ describe("user_scripts/rebuild_restart.sh", () => {
     const syncIndex = script.indexOf('sync_origin_main "$@"');
     const killIndex = script.indexOf('kill_runtime_service "meridian-roles"');
     const buildIndex = script.indexOf('echo "Building meridian-roles..."');
-    const startIndex = script.indexOf('echo "Starting meridian-roles in background..."');
+    const startIndex = script.indexOf("start_service\n");
 
     expect(syncIndex).toBeGreaterThanOrEqual(0);
     expect(syncIndex).toBeLessThan(killIndex);
@@ -44,15 +44,19 @@ describe("user_scripts/rebuild_restart.sh", () => {
     expect(script).toContain('exec "${ROOT_DIR}/user_scripts/rebuild_restart.sh" --reset-state');
   });
 
-  it("exports and health-checks the Meridian Hub socket before declaring roles healthy", async () => {
+  it("starts roles through PM2 when available without tmux or a Hub socket health gate", async () => {
     const script = await fs.readFile(path.resolve(__dirname, "../../user_scripts/rebuild_restart.sh"), "utf8");
 
-    expect(script).toContain('HUB_SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-core.sock}"');
-    expect(script).toContain("export HUB_SOCKET_PATH");
-    expect(script).toContain("hub_socket_reachable");
-    expect(script).toContain("ensure_meridian_hub_socket");
-    expect(script).toContain('if hub_socket_reachable; then');
-    expect(script).toContain("HUB_SOCKET_PATH=$(shell_escape");
+    expect(script).toContain("find_pm2_binary()");
+    expect(script).toContain('PM2_APP_NAME="${PM2_APP_NAME:-meridian-roles}"');
+    expect(script).toContain('start npm --name "${PM2_APP_NAME}" --cwd "$ROOT_DIR" -- start');
+    expect(script).toContain('nohup "${START_CMD[@]}"');
+    expect(script).toContain('[[ -S "${ROLES_SOCKET_PATH}" ]]');
+    expect(script).not.toContain("tmux new-session");
+    expect(script).not.toContain("TMUX_SESSION_FILE");
+    expect(script).not.toContain("hub_socket_reachable");
+    expect(script).not.toContain("ensure_meridian_hub_socket");
+    expect(script).not.toContain("HUB_SOCKET_PATH=$(shell_escape");
   });
 
   // The Maintenance Hub "Rebuild & restart" button is the post-pull entry
@@ -82,6 +86,9 @@ describe("user_scripts/terminate.sh", () => {
     const script = await fs.readFile(scriptPath, "utf8");
 
     expect(script).toContain("terminate");
+    expect(script).toContain("find_pm2_binary()");
+    expect(script).toContain('PM2_APP_NAME="${PM2_APP_NAME:-meridian-roles}"');
+    expect(script).toContain('delete_pm2_service');
     expect(script).toContain("kill_repo_port_listeners");
     expect(script).not.toContain("npm run build");
   });
@@ -92,15 +99,12 @@ describe("user_scripts/terminate.sh", () => {
 // expect them to actually kill the running meridian-roles process. Before
 // this fix the safety-net step was `pgrep -f
 // "${ROOT_DIR}/src/index.ts|${ROOT_DIR}/dist/index.js|${ROOT_DIR}.*tsx
-// src/index.ts|${ROOT_DIR}.*npm (run )?start"`. That pattern only matched
-// the tmux server's command line (which embeds the inline shell snippet
-// `tmux new-session` was invoked with) — it did NOT match the actual
-// `npm start` or `node dist/index.js` processes spawned inside the session,
-// because neither has an absolute ROOT_DIR in argv. Whenever the PID file
-// pointed at a stale pid (or wasn't written), terminate became a no-op and
-// rebuild's pre-launch kill was a no-op (the next `npm start` then hit
-// EADDRINUSE on port 7701). Resolve by cwd instead of argv, mirroring
-// Meridian's own `runtime_pids_for_service`.
+// src/index.ts|${ROOT_DIR}.*npm (run )?start"`. That pattern did NOT match
+// relative `npm start` or `node dist/index.js`, because neither has an
+// absolute ROOT_DIR in argv. Whenever the PID file pointed at a stale pid (or
+// wasn't written), terminate became a no-op and rebuild's pre-launch kill was
+// a no-op (the next `npm start` then hit EADDRINUSE on port 7701). Resolve by
+// cwd instead of argv, mirroring Meridian's own `runtime_pids_for_service`.
 describe.each([
   ["user_scripts/terminate.sh"],
   ["user_scripts/rebuild_restart.sh"]
@@ -121,5 +125,6 @@ describe.each([
     expect(script).not.toMatch(/\$\{ROOT_DIR\}\.\*npm \(run \)\?start/);
     expect(script).not.toMatch(/\$\{ROOT_DIR\}\.\*tsx src\/index\.ts/);
     expect(script).not.toMatch(/kill_by_pattern\s+"\$\{ROOT_DIR\}/);
+    expect(script).not.toContain("tmux new-session");
   });
 });

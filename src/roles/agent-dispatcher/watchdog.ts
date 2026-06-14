@@ -16,9 +16,17 @@ import { isAgentapiProcessAliveForThread } from "./active-tool-process";
 import { autoResolve } from "./auto-resolver";
 import { runAutoForceCompleteSweep } from "./auto-force-complete-reconciler";
 import {
+  countPmResolverTransportStallDemotions,
   isPmResolverLivenessGraceActive,
+  isPmResolverNoProgressStale,
   isValidatorSpawnBackoffActive,
-  LifecycleStore
+  isWorkerHeartbeatStale,
+  LifecycleStore,
+  PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX,
+  PM_RESOLVER_NO_PROGRESS_STALE_MS,
+  PM_RESOLVER_TRANSPORT_STALL_GRACE_MS,
+  PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES,
+  WORKER_HEARTBEAT_STALE_THRESHOLD_MS
 } from "./lifecycle-store";
 import { isHubTransportEvidence, isMissingThreadEvidence } from "./missing-thread";
 import {
@@ -233,6 +241,8 @@ export class ReconciliationWatchdog {
 
         await this.reconcilePmResolverLiveness(lifecycleStore, dispatchPlanPath);
 
+        await this.reconcileWorkerHeartbeats(lifecycleStore, dispatchPlanPath);
+
         await this.cleanupTerminalWorkerThreads(lifecycleStore, dispatchPlanPath, dispatchPlanPaths);
 
         if (this.autoForceCompleteEnabled) {
@@ -371,26 +381,72 @@ export class ReconciliationWatchdog {
         continue;
       }
 
-      // `recordPmResolverTransportStall` (pm-resolver.ts) explicitly retains
-      // the thread on a transport-class run rejection (hub overload, request
-      // timeout, IPC drop) so the operator can take over via the GUI
-      // talk-box. The PM agent never attached, so a hub probe here will
-      // always return `missing` and demote to `failed` — letting the
-      // watchdog / pm-resolve handler spawn a fresh PM that hits the same
-      // overloaded hub and re-stalls. Observed on
-      // agent-dispatcher-67f6a3fc V-01-A as a 2-minute PM respawn storm
-      // (codex_08→codex_10→codex_11, all on the same `Request timed out —
-      // the hub may be overloaded.` rejection). Preserve transport-stalled
-      // entries; the operator surfaces `transport_error` in the GUI and
-      // resolves via talk-box, retry, or human-resolve.
+      // `recordPmResolverTransportStall` (pm-resolver.ts) retains the thread
+      // on a transport-class run rejection (hub overload, request timeout,
+      // IPC drop) so the operator can take over via the GUI talk-box.
+      // Originally the watchdog preserved transport-stalled entries
+      // indefinitely; that left rounds wedged for hours when nobody noticed
+      // the GUI prompt (see r10 codex_936, r25 codex_1122 from the
+      // 2026-06-05 stuck-recovery handoff). The bounded demotion below
+      // restores progress without re-introducing the original respawn storm:
+      //
+      //   1. Per entry, give the run `PM_RESOLVER_TRANSPORT_STALL_GRACE_MS`
+      //      to recover or for an operator to take over.
+      //   2. After the grace, count prior watchdog-driven demotions for the
+      //      same workerId. While under
+      //      `PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES`, demote so the
+      //      dispatcher can spawn a fresh PM that hits a (hopefully) healthier
+      //      hub window.
+      //   3. Once the cap is hit, revert to the original behavior — preserve
+      //      the entry, surface `transport_error` to the GUI, and let the
+      //      exhausted-PM-resolver detector page the operator.
+      //
+      // The cap matters: agent-dispatcher-67f6a3fc V-01-A produced a
+      // codex_08→codex_10→codex_11 respawn storm against an overloaded hub.
+      // Bounded retries (3 by default) drain the wedge in real recovery
+      // scenarios without re-introducing that pathology.
       if (entry.transport_error) {
-        this.log.info("Watchdog: PM resolver transport-stalled; preserving entry for human takeover", {
-          event: "watchdog_pm_resolver_transport_stall_preserved",
-          dispatchPlanPath,
-          pm_thread_id: pmThreadId,
-          worker_id: entry.issue?.worker_id ?? null,
-          transport_error: entry.transport_error
-        });
+        const lastSeenMs = Date.parse(entry.last_seen_at);
+        const elapsedMs = Number.isNaN(lastSeenMs) ? Infinity : nowMs - lastSeenMs;
+        const transportError = entry.transport_error;
+        if (elapsedMs < PM_RESOLVER_TRANSPORT_STALL_GRACE_MS) {
+          this.log.info("Watchdog: PM resolver transport-stalled, inside grace window", {
+            event: "watchdog_pm_resolver_transport_stall_grace_preserved",
+            dispatchPlanPath,
+            pm_thread_id: pmThreadId,
+            worker_id: entry.issue?.worker_id ?? null,
+            elapsed_ms: Number.isFinite(elapsedMs) ? elapsedMs : null,
+            grace_ms: PM_RESOLVER_TRANSPORT_STALL_GRACE_MS,
+            transport_error: transportError
+          });
+          continue;
+        }
+
+        const priorDemotions = countPmResolverTransportStallDemotions(state, entry.issue?.worker_id);
+        if (priorDemotions >= PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES) {
+          this.log.info("Watchdog: PM resolver transport-stalled; retry cap reached, preserving entry for human takeover", {
+            event: "watchdog_pm_resolver_transport_stall_retry_exhausted",
+            dispatchPlanPath,
+            pm_thread_id: pmThreadId,
+            worker_id: entry.issue?.worker_id ?? null,
+            prior_demotions: priorDemotions,
+            max_retries: PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES,
+            transport_error: transportError
+          });
+          continue;
+        }
+
+        try {
+          lifecycleStore.markPmResolverTransportStallDemotion(pmThreadId, transportError, priorDemotions);
+        } catch (error) {
+          this.log.warn("Watchdog: failed to demote transport-stalled PM resolver", {
+            event: "watchdog_pm_resolver_transport_stall_demote_error",
+            dispatchPlanPath,
+            pm_thread_id: pmThreadId,
+            worker_id: entry.issue?.worker_id ?? null,
+            error: asError(error).message
+          });
+        }
         continue;
       }
 
@@ -406,6 +462,67 @@ export class ReconciliationWatchdog {
           worker_id: entry.issue?.worker_id ?? null,
           error: asError(error).message
         });
+        continue;
+      }
+
+      if (isPmResolverNoProgressStale(entry, nowMs)) {
+        const reason = `${PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX} hub_status=${observationKind}; last_seen_at=${entry.last_seen_at}; threshold_ms=${PM_RESOLVER_NO_PROGRESS_STALE_MS}`;
+        try {
+          lifecycleStore.markPmResolverNoProgressDemotion(pmThreadId, reason);
+        } catch (error) {
+          this.log.warn("Watchdog: failed to demote no-progress PM resolver", {
+            event: "watchdog_pm_resolver_no_progress_demote_error",
+            dispatchPlanPath,
+            pm_thread_id: pmThreadId,
+            worker_id: entry.issue?.worker_id ?? null,
+            observed_status: observationKind,
+            error: asError(error).message
+          });
+          continue;
+        }
+
+        try {
+          await this.killThread(pmThreadId);
+          this.log.info("Watchdog: stale no-progress PM resolver killed", {
+            event: "watchdog_pm_resolver_no_progress_kill",
+            dispatchPlanPath,
+            pm_thread_id: pmThreadId,
+            worker_id: entry.issue?.worker_id ?? null,
+            observed_status: observationKind
+          });
+        } catch (error) {
+          const message = asError(error).message;
+          if (isMissingThreadEvidence(message)) {
+            this.log.info("Watchdog: stale no-progress PM resolver already missing during kill", {
+              event: "watchdog_pm_resolver_no_progress_kill_missing",
+              dispatchPlanPath,
+              pm_thread_id: pmThreadId,
+              worker_id: entry.issue?.worker_id ?? null,
+              observed_status: observationKind,
+              error: message
+            });
+            continue;
+          }
+          if (isHubTransportEvidence(message)) {
+            this.log.info("Watchdog: stale no-progress PM resolver demoted; kill deferred by hub transport", {
+              event: "watchdog_pm_resolver_no_progress_kill_transport_stall",
+              dispatchPlanPath,
+              pm_thread_id: pmThreadId,
+              worker_id: entry.issue?.worker_id ?? null,
+              observed_status: observationKind,
+              error: message
+            });
+            continue;
+          }
+          this.log.warn("Watchdog: stale no-progress PM resolver kill failed", {
+            event: "watchdog_pm_resolver_no_progress_kill_error",
+            dispatchPlanPath,
+            pm_thread_id: pmThreadId,
+            worker_id: entry.issue?.worker_id ?? null,
+            observed_status: observationKind,
+            error: message
+          });
+        }
         continue;
       }
 
@@ -432,6 +549,116 @@ export class ReconciliationWatchdog {
         pm_thread_id: pmThreadId,
         worker_id: entry.issue?.worker_id ?? null,
         observed_status: observationKind
+      });
+    }
+  }
+
+  /**
+   * Steady-state reaper for silent-death worker threads. Mirrors
+   * `reconcilePmResolverLiveness` but for workers: when a Codex stdin
+   * transport bug (or any other silent agentapi death) leaves a worker row at
+   * `status=running` with no marker delivered, the dispatcher refuses to
+   * advance — `continue` returns `still_blocked: running worker(s)` and the
+   * round wedges. Per-tick, for each `running` worker we require ALL three of:
+   *
+   *   1. `last_seen_at` past `WORKER_HEARTBEAT_STALE_THRESHOLD_MS`
+   *   2. `isAgentapiProcessAliveForThread` returns false (no live ps signature
+   *      matching `agentapi-<thread_id>.sock`)
+   *   3. hub liveness probe returns `missing`/`failed`/`idle`/`completed`
+   *      — anything other than `running`
+   *
+   * before flipping the row to `failed`. The triple-gate makes legitimate
+   * long-running workers safe: a healthy worker either advances `last_seen_at`
+   * via reconciler hub_result, has a live ps process, or the hub still
+   * reports it `running`. The reaped worker then becomes eligible for normal
+   * PM-resolver spawn / retry on the next continue tick.
+   */
+  private async reconcileWorkerHeartbeats(
+    lifecycleStore: LifecycleStore,
+    dispatchPlanPath: string
+  ): Promise<void> {
+    let state: DispatchThreadStateV2;
+    try {
+      state = lifecycleStore.load();
+    } catch (error) {
+      this.log.warn("Watchdog: failed to read lifecycle state for worker heartbeat sweep", {
+        dispatchPlanPath,
+        error: asError(error).message
+      });
+      return;
+    }
+
+    const nowMs = this.now();
+    for (const [workerId, worker] of Object.entries(state.workers)) {
+      if (workerId === DISPATCHER_WORKER_ID) {
+        continue;
+      }
+      if (worker.status !== "running") {
+        continue;
+      }
+      const threadId = worker.thread_id?.trim();
+      if (!threadId) {
+        continue;
+      }
+      if (!isWorkerHeartbeatStale(worker, nowMs)) {
+        continue;
+      }
+      if (isAgentapiProcessAliveForThread(threadId)) {
+        this.log.info("Watchdog: worker heartbeat stale but agentapi process alive; preserving", {
+          event: "watchdog_worker_heartbeat_codex_alive",
+          dispatchPlanPath,
+          worker_id: workerId,
+          thread_id: threadId,
+          last_seen_at: worker.last_seen_at
+        });
+        continue;
+      }
+
+      let observationKind: "missing" | "failed" | "running" | "idle" | "completed";
+      try {
+        const observation = await queryHubThreadObservation(this.hubClient, threadId);
+        observationKind = observation.kind;
+      } catch (error) {
+        this.log.warn("Watchdog: worker heartbeat liveness probe failed", {
+          event: "watchdog_worker_heartbeat_probe_error",
+          dispatchPlanPath,
+          worker_id: workerId,
+          thread_id: threadId,
+          error: asError(error).message
+        });
+        continue;
+      }
+
+      if (observationKind === "running") {
+        // Hub still believes the worker thread is live — that disagrees with
+        // our agentapi-process probe, but defer to the hub since killing a
+        // worker the hub still routes to would interrupt in-flight work.
+        // Reconciler / next sweep will either see the agentapi come back or
+        // the hub flip to missing.
+        continue;
+      }
+
+      const reason = `watchdog_reaped: heartbeat_stale (last_seen_at=${worker.last_seen_at}, threshold_ms=${WORKER_HEARTBEAT_STALE_THRESHOLD_MS}); agentapi_process_missing; hub_status=${observationKind}`;
+      try {
+        lifecycleStore.markWorkerReaped(workerId, reason);
+      } catch (error) {
+        this.log.warn("Watchdog: failed to mark worker reaped", {
+          event: "watchdog_worker_reaped_save_error",
+          dispatchPlanPath,
+          worker_id: workerId,
+          thread_id: threadId,
+          error: asError(error).message
+        });
+        continue;
+      }
+      this.log.info("Watchdog: reaped silent worker thread", {
+        event: "watchdog_worker_reaped",
+        dispatchPlanPath,
+        worker_id: workerId,
+        thread_id: threadId,
+        last_seen_at: worker.last_seen_at,
+        hub_status: observationKind,
+        threshold_ms: WORKER_HEARTBEAT_STALE_THRESHOLD_MS
       });
     }
   }

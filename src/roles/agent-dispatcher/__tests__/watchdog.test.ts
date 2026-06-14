@@ -9,7 +9,11 @@ import type { HubMessage, HubResult } from "../../../types";
 import killTool from "../../../tool-gateway/tools/kill";
 import * as activeToolProcess from "../active-tool-process";
 import { continueDispatchWorker } from "../continue-worker";
-import { buildEmptyDispatchThreadStateV2, LifecycleStore } from "../lifecycle-store";
+import {
+  buildEmptyDispatchThreadStateV2,
+  LifecycleStore,
+  PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX
+} from "../lifecycle-store";
 import { reconciliationFs } from "../reconciler";
 import { ReconciliationWatchdog } from "../watchdog";
 
@@ -2113,8 +2117,8 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
         {
           thread_id: "pm-thread-orphan",
           status: "running",
-          started_at: "2026-04-03T12:30:00.000Z",
-          last_seen_at: "2026-04-03T12:30:00.000Z",
+          started_at: "2026-04-03T13:55:00.000Z",
+          last_seen_at: "2026-04-03T13:55:00.000Z",
           agent_type: "codex",
           model_id: "gpt-5.5 xhigh",
           mode: "bridge",
@@ -2189,8 +2193,8 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
         {
           thread_id: "pm-thread-live",
           status: "running",
-          started_at: "2026-04-03T12:30:00.000Z",
-          last_seen_at: "2026-04-03T12:30:00.000Z",
+          started_at: "2026-04-03T13:55:00.000Z",
+          last_seen_at: "2026-04-03T13:55:00.000Z",
           agent_type: "codex",
           model_id: "gpt-5.5 xhigh",
           mode: "bridge",
@@ -2231,6 +2235,76 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
     expect(aliveSpy).not.toHaveBeenCalled();
   });
 
+  it("demotes a stale no-progress PM resolver even when the hub still reports running", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-no-progress",
+          status: "running",
+          started_at: "2026-04-03T13:30:00.000Z",
+          last_seen_at: "2026-04-03T13:30:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "dispatcher"
+          },
+          result: null,
+          error: null,
+          transport_error: null,
+          marker_outcome: null,
+          marker_pm_action: null
+        }
+      ]
+    });
+
+    const { hubClient } = createHubClient((message) => buildStatusResult(message.target, "running"));
+    const killThread = vi.fn<(threadId: string) => Promise<void>>().mockResolvedValue();
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000,
+      killThread
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find((e) => e.thread_id === "pm-thread-no-progress");
+    expect(entry?.status).toBe("failed");
+    expect(entry?.error).toMatch(new RegExp(`^${PM_RESOLVER_NO_PROGRESS_ERROR_PREFIX}`));
+    expect(killThread).toHaveBeenCalledWith("pm-thread-no-progress");
+  });
+
   // Regression: agent-dispatcher-67f6a3fc V-01-A 2026-05-15 PM respawn storm.
   // `recordPmResolverTransportStall` retains a `running` entry with
   // `transport_error` set when meridianApi.run rejects with hub-overload /
@@ -2238,10 +2312,14 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
   // returns `missing` and the unguarded sweep used to demote the entry to
   // `failed`. That re-opened the watchdog/pm-resolve respawn gate, which
   // spawned a fresh PM that hit the same overloaded hub and re-stalled —
-  // observed as codex_08→codex_10→codex_11 stacked within 4 minutes. The
-  // sweep must now honor the transport-stall retention so the operator can
-  // take over via the GUI talk-box.
-  it("preserves a transport-stalled PM resolver without probing hub", async () => {
+  // observed as codex_08→codex_10→codex_11 stacked within 4 minutes.
+  //
+  // Bounded-retry contract (P-2 from the 2026-06-05 stuck-recovery handoff):
+  // inside the `PM_RESOLVER_TRANSPORT_STALL_GRACE_MS` grace we preserve as
+  // before; past the grace we demote so the dispatcher can spawn a fresh PM
+  // — until we hit `PM_RESOLVER_TRANSPORT_STALL_MAX_RETRIES`, at which point
+  // we revert to the original preserve-for-human-takeover behavior.
+  it("preserves a transport-stalled PM resolver while inside the grace window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
@@ -2267,8 +2345,9 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
         {
           thread_id: "pm-thread-transport-stalled",
           status: "running",
-          started_at: "2026-04-03T12:30:00.000Z",
-          last_seen_at: "2026-04-03T12:30:00.000Z",
+          started_at: "2026-04-03T13:59:45.000Z",
+          // Inside 60s grace from FIXED_NOW (14:00:00).
+          last_seen_at: "2026-04-03T13:59:45.000Z",
           agent_type: "codex",
           model_id: "gpt-5.5 xhigh",
           mode: "bridge",
@@ -2289,8 +2368,8 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
       ]
     });
 
-    const hubSend = vi.fn();
-    const { hubClient } = createHubClient(hubSend as never);
+    const hubSend = vi.fn((message: HubMessage) => buildStatusResult(message.target ?? "", "running"));
+    const { hubClient } = createHubClient(hubSend);
     const aliveSpy = vi.spyOn(activeToolProcess, "isAgentapiProcessAliveForThread");
 
     const watchdog = new ReconciliationWatchdog({
@@ -2317,6 +2396,178 @@ describe("ReconciliationWatchdog PM resolver liveness sweep", () => {
     );
     expect(pmTargetedCalls).toHaveLength(0);
     expect(aliveSpy).not.toHaveBeenCalled();
+  });
+
+  it("demotes a transport-stalled PM resolver past the grace window when retries remain", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "pm-thread-transport-stale",
+          status: "running",
+          started_at: "2026-04-03T12:30:00.000Z",
+          // 90 minutes past FIXED_NOW — far past the 60s grace.
+          last_seen_at: "2026-04-03T12:30:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: "run failed: Request timed out — the hub may be overloaded.",
+          marker_outcome: null,
+          marker_pm_action: null
+        }
+      ]
+    });
+
+    const hubSend = vi.fn((message: HubMessage) => buildStatusResult(message.target ?? "", "running"));
+    const { hubClient } = createHubClient(hubSend);
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find(
+      (e) => e.thread_id === "pm-thread-transport-stale"
+    );
+    expect(entry?.status).toBe("failed");
+    expect(entry?.transport_error).toBeNull();
+    expect(entry?.error).toMatch(/^transport_stall_demoted_by_watchdog:/);
+    const pmTargetedCalls = hubSend.mock.calls.filter(
+      ([message]) => (message as { target?: string } | undefined)?.target === "pm-thread-transport-stale"
+    );
+    expect(pmTargetedCalls).toHaveLength(0);
+  });
+
+  it("preserves a transport-stalled PM resolver once the retry cap is reached", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    const priorDemotion = (suffix: string, lastSeenAt: string) => ({
+      thread_id: `pm-thread-prior-${suffix}`,
+      status: "failed" as const,
+      started_at: "2026-04-03T12:30:00.000Z",
+      last_seen_at: lastSeenAt,
+      agent_type: "codex",
+      model_id: "gpt-5.5 xhigh",
+      mode: "bridge",
+      auto_approve: true,
+      issue: {
+        status: "manual_intervention_required",
+        worker_id: "W-01",
+        message: "manual intervention required",
+        error: null,
+        source: "watchdog"
+      },
+      result: null,
+      error: "transport_stall_demoted_by_watchdog: attempt=1 reason=run failed: timeout",
+      transport_error: null,
+      marker_outcome: null,
+      marker_pm_action: null
+    });
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+      workers: {
+        "W-01": {
+          thread_id: "w-thread-01",
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "blocked",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: [
+        priorDemotion("a", "2026-04-03T12:31:00.000Z"),
+        priorDemotion("b", "2026-04-03T12:35:00.000Z"),
+        priorDemotion("c", "2026-04-03T12:40:00.000Z"),
+        {
+          thread_id: "pm-thread-transport-stale-final",
+          status: "running",
+          started_at: "2026-04-03T12:45:00.000Z",
+          last_seen_at: "2026-04-03T12:45:00.000Z",
+          agent_type: "codex",
+          model_id: "gpt-5.5 xhigh",
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "W-01",
+            message: "manual intervention required",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: "run failed: Request timed out — the hub may be overloaded.",
+          marker_outcome: null,
+          marker_pm_action: null
+        }
+      ]
+    });
+
+    const { hubClient } = createHubClient(() => buildStatusResult("ignored", "running"));
+
+    const watchdog = new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [
+        path.join(harness.directory, "dispatch_plan.md")
+      ],
+      hubClient,
+      log: silentLog(),
+      intervalMs: 60_000
+    });
+
+    await watchdog.sweep();
+
+    const nextState = store.load();
+    const entry = (nextState.pm_resolvers ?? []).find(
+      (e) => e.thread_id === "pm-thread-transport-stale-final"
+    );
+    expect(entry?.status).toBe("running");
+    expect(entry?.transport_error).toBe(
+      "run failed: Request timed out — the hub may be overloaded."
+    );
   });
 });
 

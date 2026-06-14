@@ -784,7 +784,65 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     ok: true;
     dispatcher_id: string;
     dispatcher_thread_id: string;
+    deduped?: "resumed" | "active";
   }> {
+    // Dedup gate (P-3 from 2026-06-05 stuck-recovery handoff): the /issues
+    // automation cron observed duplicate dispatchers for the same dispatch
+    // round — e.g. agent-dispatcher-fa2523c3 (paused) and agent-dispatcher-
+    // 107cbd9b (active) both pointing at the same TaskSpec, sharing one
+    // dispatch_threads.json on disk. Worker spawns then attribute under
+    // whichever role the lifecycle store's path resolver picks, breaking any
+    // GUI/log filter keyed off `dispatcher_role_id`. Before we let
+    // activateRole spawn a fresh dispatcher, check whether a persisted role
+    // for the same dispatch_plan_path already exists and is either active or
+    // recoverable-via-resume.
+    const dedupTarget = await findExistingDispatcherForStartBody(body);
+    if (dedupTarget) {
+      if (dedupTarget.status === PAUSED_ROLE_STATUS) {
+        await setAgentDispatcherStatus(dedupTarget.threadId, "active").catch((error) => {
+          log.warn("Auto-resume of paused dispatcher dedup failed; falling through to start", {
+            threadId: dedupTarget.threadId,
+            error: getErrorMessage(error)
+          });
+        });
+        const resumedRole = options.runner.getRole(dedupTarget.threadId);
+        const dispatcherThreadId = resumedRole ? extractDispatcherThreadId(resumedRole) : null;
+        if (dispatcherThreadId) {
+          log.info("Dispatcher start deduped onto resumed paused role", {
+            dispatcher_id: dedupTarget.threadId,
+            dispatcher_thread_id: dispatcherThreadId,
+            dispatch_plan_path: dedupTarget.dispatchPlanPath
+          });
+          return {
+            ok: true,
+            dispatcher_id: dedupTarget.threadId,
+            dispatcher_thread_id: dispatcherThreadId,
+            deduped: "resumed"
+          };
+        }
+      } else if (dedupTarget.status === "active") {
+        const activeRole = options.runner.getRole(dedupTarget.threadId);
+        const dispatcherThreadId = activeRole ? extractDispatcherThreadId(activeRole) : null;
+        if (dispatcherThreadId) {
+          log.info("Dispatcher start deduped onto already-active role", {
+            dispatcher_id: dedupTarget.threadId,
+            dispatcher_thread_id: dispatcherThreadId,
+            dispatch_plan_path: dedupTarget.dispatchPlanPath
+          });
+          return {
+            ok: true,
+            dispatcher_id: dedupTarget.threadId,
+            dispatcher_thread_id: dispatcherThreadId,
+            deduped: "active"
+          };
+        }
+      }
+      // Persisted role exists but is in a terminal/non-recoverable status
+      // (failed/abandoned), or resume produced no dispatcher thread id — fall
+      // through to the original spawn path so the caller still gets a usable
+      // dispatcher.
+    }
+
     const { threadId, roleType, role } = await activateRole(body, "agent-dispatcher");
     if (roleType !== "agent-dispatcher") {
       activeRoles.delete(threadId);
@@ -804,6 +862,58 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       dispatcher_id: threadId,
       dispatcher_thread_id: dispatcherThreadId
     };
+  }
+
+  /**
+   * Look up a persisted agent-dispatcher role that targets the same
+   * `dispatch_plan_path` as the incoming start request body. Returns the
+   * first match (by persistence order) so callers always converge on the
+   * same dedup target across repeated /api/agent-dispatcher/start calls.
+   * Returns `null` when the body cannot be parsed (let the canonical
+   * validation path reject), when the body omits `dispatch_plan_path`, or
+   * when no persisted dispatcher targets that path.
+   */
+  async function findExistingDispatcherForStartBody(body: unknown): Promise<{
+    threadId: string;
+    status: string;
+    dispatchPlanPath: string;
+  } | null> {
+    let parsedBody: ReturnType<typeof normalizeCreateBody>;
+    try {
+      parsedBody = normalizeCreateBody(body, "agent-dispatcher");
+    } catch {
+      return null;
+    }
+    const config = parsedBody.config as AgentDispatcherConfig;
+    const dispatchPlanPath = config.dispatch_plan_path?.trim();
+    if (!dispatchPlanPath) {
+      return null;
+    }
+
+    const state = await loadState(stateStore);
+    for (const role of state.roles) {
+      if (role.roleType !== "agent-dispatcher") {
+        continue;
+      }
+      const existingConfig = parseAgentDispatcherConfig(role.config);
+      if (!existingConfig) {
+        continue;
+      }
+      if (existingConfig.dispatch_plan_path?.trim() !== dispatchPlanPath) {
+        continue;
+      }
+      // Skip the candidate role only if the persisted status is one the
+      // caller would explicitly want to bypass (e.g. an abandoned role that
+      // failed start-up). isReconcilableAgentDispatcherRoleStatus already
+      // filters those when resuming, so leave the failure-mode interpretation
+      // there and just surface the candidate here.
+      return {
+        threadId: role.threadId,
+        status: role.status,
+        dispatchPlanPath
+      };
+    }
+    return null;
   }
 
   async function startAgentDispatcherHubSession(threadId: string): Promise<StartAgentDispatcherHubSessionResponse> {
@@ -1763,7 +1873,6 @@ async function getRole(
   const sessionLogResult = await loadDispatcherSessionLog(
     dispatcherThreadId,
     options.getThreadDetail,
-    options.attachToThread,
     {
       currentWorker,
       currentWorkerEntry,
@@ -3803,7 +3912,6 @@ export async function enrichDispatchPlanRows(
 async function loadDispatcherSessionLog(
   dispatcherThreadId: string | null,
   getThreadDetail: ((threadId: string) => Promise<string>) | undefined,
-  attachToThread: ((threadId: string) => Promise<void>) | undefined,
   fallbackContext: {
     currentWorker: string | null;
     currentWorkerEntry: DispatchWorkerState | null;
@@ -3821,33 +3929,6 @@ async function loadDispatcherSessionLog(
       lines: fallbackLog,
       dispatcherMissing: false
     };
-  }
-
-  if (attachToThread) {
-    try {
-      await attachToThread(dispatcherThreadId);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      log.warn("Failed to attach dispatcher session before detail fetch", {
-        thread_id: dispatcherThreadId,
-        role_id: fallbackContext.roleId,
-        error: message
-      });
-      if (handleMissingDispatcherThreadEvidence(
-        fallbackContext.dispatchPlanPath,
-        dispatcherThreadId,
-        message,
-        fallbackContext.roleId,
-        "detail-attach",
-        log
-      )) {
-        await onDispatcherMissing?.();
-        return {
-          lines: buildPersistedDispatcherSessionLog(fallbackContext, dispatcherThreadId) ?? buildMissingDispatcherSessionLog(fallbackContext),
-          dispatcherMissing: true
-        };
-      }
-    }
   }
 
   try {

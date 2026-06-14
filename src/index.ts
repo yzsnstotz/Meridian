@@ -10,7 +10,10 @@ import {
   DispatcherWorkerBreaker,
   computeWorkerLifecycleSig
 } from "./roles/agent-dispatcher/circuit-breaker";
-import { LifecycleStore } from "./roles/agent-dispatcher/lifecycle-store";
+import {
+  isPmResolverNoProgressStale,
+  LifecycleStore
+} from "./roles/agent-dispatcher/lifecycle-store";
 import { parseMeridianStatusMarker } from "./roles/agent-dispatcher/meridian-status-marker";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
@@ -26,7 +29,6 @@ import {
   isValidatorResultPassing
 } from "./roles/agent-dispatcher/validator-orchestrator";
 import { ReconciliationWatchdog } from "./roles/agent-dispatcher/watchdog";
-import { FileRelayWatcher } from "./tool-gateway/file-relay";
 import killTool from "./tool-gateway/tools/kill";
 import { parseDispatchPlanRows, type DispatchPlanWorkerRow } from "./tool-gateway/tools/dispatch-status";
 import { AgentDispatcherRole } from "./roles/definitions/agent-dispatcher";
@@ -347,8 +349,6 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     }
   });
 
-  const fileRelay = new FileRelayWatcher();
-
   await httpServer.listen();
   void client.start().catch((error) => {
     if (error instanceof Error && error.message === "A2A client stopped before register_service completed") {
@@ -357,11 +357,9 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
     log.warn("A2A client background start failed", error);
   });
   watchdog.start();
-  await fileRelay.start();
 
   return {
     async close(): Promise<void> {
-      fileRelay.stop();
       watchdog.stop();
       await Promise.allSettled([httpServer.close(), resultServer.close(), client.stop()]);
     }
@@ -1245,7 +1243,8 @@ export async function maybeStartPmResolverForWatchdogRecovery(
 
 export function hasPmResolverHandledCurrentWorkerIssue(
   state: Pick<DispatchThreadStateV2, "workers" | "pm_resolvers">,
-  workerId: string | null | undefined
+  workerId: string | null | undefined,
+  nowMs: number = Date.now()
 ): boolean {
   const normalizedWorkerId = workerId?.trim();
   if (!normalizedWorkerId) {
@@ -1309,6 +1308,10 @@ export function hasPmResolverHandledCurrentWorkerIssue(
     }
 
     if (entry.status === "failed") {
+      return false;
+    }
+
+    if (isPmResolverNoProgressStale(entry, nowMs)) {
       return false;
     }
 

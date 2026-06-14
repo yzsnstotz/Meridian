@@ -56,6 +56,7 @@ describe("launchDispatchWorker", () => {
     expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
       threadId: "worker-thread-123",
       commandFilePath: harness.commandFilePath,
+      dispatchPlanPath: harness.dispatchPlanPath,
       workerId: "N-01",
       killPolicy: "always",
       appliedModelId: "gpt-5.4",
@@ -237,6 +238,48 @@ describe("launchDispatchWorker", () => {
     }) as DispatchRunHandoffRequest);
   });
 
+  it("records a failed worker when the background handoff rejects with missing-thread evidence", async () => {
+    const harness = await createHarness({
+      gitRoot: true,
+      nestedDocsBranch: true
+    });
+    const store = new LifecycleStore(path.join(path.dirname(harness.dispatchPlanPath), "dispatch_threads.json"), {
+      dispatchPlanPath: harness.dispatchPlanPath
+    });
+    let rejectHandoff!: (error: Error) => void;
+    const dispatchRunHandoff = vi.fn(async () => {
+      await new Promise<void>((_resolve, reject) => {
+        rejectHandoff = reject;
+      });
+    });
+
+    const result = await launchDispatchWorker(
+      buildConfig(harness.dispatchPlanPath, harness.commandFilePath, harness.expectedSpawnDir),
+      {
+        ...harness.deps,
+        dispatchRunHandoff
+      }
+    );
+    store.recordWorkerLaunchInitiated("N-01", "worker-thread-123");
+
+    rejectHandoff(new Error("run failed: Routing failed: No registered agent instance found for thread_id=worker-thread-123"));
+    await flushMicrotasks();
+
+    const worker = store.load().workers["N-01"];
+    expect(worker).toEqual(expect.objectContaining({
+      thread_id: "worker-thread-123",
+      status: "failed",
+      hub_result: expect.objectContaining({
+        status: "error",
+        content: expect.stringContaining("No registered agent instance found for thread_id=worker-thread-123")
+      })
+    }));
+    expect(result).toEqual({
+      ok: true,
+      threadId: "worker-thread-123"
+    });
+  });
+
   it("refuses to hand off a second worker to the same active thread id", async () => {
     const harness = await createHarness({
       gitRoot: true,
@@ -305,6 +348,7 @@ describe("launchDispatchWorker", () => {
     expect(harness.dispatchRunHandoff).toHaveBeenLastCalledWith({
       threadId: "worker-thread-fresh",
       commandFilePath: harness.commandFilePath,
+      dispatchPlanPath: harness.dispatchPlanPath,
       workerId: "N-02",
       killPolicy: "always",
       appliedModelId: "gpt-5.4",
@@ -379,6 +423,7 @@ describe("launchDispatchWorker", () => {
     expect(harness.dispatchRunHandoff).toHaveBeenCalledWith({
       threadId: "worker-thread-fresh",
       commandFilePath: harness.commandFilePath,
+      dispatchPlanPath: harness.dispatchPlanPath,
       workerId: "BATCH-2-GATE",
       killPolicy: "always",
       appliedModelId: "gpt-5.4",
