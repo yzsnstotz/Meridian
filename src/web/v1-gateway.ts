@@ -62,8 +62,14 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+const CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type",
+};
+
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" });
+  res.writeHead(status, { "content-type": "application/json", ...CORS_HEADERS });
   res.end(JSON.stringify(body));
 }
 
@@ -71,6 +77,10 @@ const server = http.createServer((request, response) => {
   void (async () => {
     const url = new URL(request.url ?? "/", `http://${HOST}:${PORT}`);
     try {
+      if (request.method === "OPTIONS") {
+        response.writeHead(204, CORS_HEADERS);
+        return response.end();
+      }
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, { status: "ok", providers: ["claude", "codex", "gemini"] });
       }
