@@ -13,10 +13,10 @@
 // NOTHING here touches /health or /v1/*. Detection is read-only (status
 // commands + credential files); only POST /providers/:id/login spawns a CLI,
 // and it does so detached so the browser flow never blocks the gateway.
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { claudeAgentConfig } from "../../agents/claude";
 import { codexAgentConfig } from "../../agents/codex";
 import { geminiAgentConfig } from "../../agents/gemini";
@@ -24,6 +24,9 @@ import { geminiAgentConfig } from "../../agents/gemini";
 export type ProviderId = "claude" | "codex" | "gemini";
 
 export interface ProviderState {
+  /** The backing CLI binary is resolvable on PATH (installed on this machine). */
+  installed: boolean;
+  /** The CLI is installed AND signed in (its subscription can serve /v1). */
   connected: boolean;
   detail?: string;
 }
@@ -39,6 +42,103 @@ export interface LoginResult {
   manual?: boolean;
   url?: string;
   hint?: string;
+}
+
+export interface InstallResult {
+  installed: boolean;
+  error?: string;
+  command?: string;
+}
+
+// ── CLI → npm-global package map ───────────────────────────────────────────────
+//
+// Each coding-agent CLI ships as an npm-global package. `bin` is the binary the
+// gateway resolves on PATH (and matches the agent config `command`); `pkg` is
+// the `@scope/name` installed via `npm install -g <pkg>`.
+interface ProviderPackage {
+  bin: string;
+  pkg: string;
+}
+
+const PROVIDER_PACKAGES: Record<ProviderId, ProviderPackage> = {
+  claude: { bin: claudeAgentConfig.command, pkg: "@anthropic-ai/claude-code" },
+  codex: { bin: codexAgentConfig.command, pkg: "@openai/codex" },
+  gemini: { bin: geminiAgentConfig.command, pkg: "@google/gemini-cli" },
+};
+
+/** The `npm install -g <pkg>` command string for a provider (GUI fallback). */
+export function installCommandFor(id: ProviderId): string {
+  return `npm install -g ${PROVIDER_PACKAGES[id].pkg}`;
+}
+
+// ── PATH augmentation (the openclaw spawn-PATH lesson) ─────────────────────────
+//
+// A freshly `npm install -g`'d CLI lands in the npm global bin dir, which is not
+// necessarily on the PATH this process inherited (especially under a launcher /
+// GUI / fnm shim). Resolve that dir once at startup and PREPEND it — plus a few
+// common locations — so every subsequent spawn (status detection, login, /v1
+// completions, and install-then-login chaining) finds both pre-existing and
+// just-installed binaries. We never drop existing entries.
+
+/** Resolve the npm global bin dir, or null if npm isn't available. */
+function npmGlobalBinDir(): string | null {
+  try {
+    // `npm bin -g` was removed in npm v9+, so derive it from the prefix.
+    const prefix = execFileSync("npm", ["prefix", "-g"], {
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!prefix) return null;
+    // On Windows the bin lives at the prefix root; elsewhere at <prefix>/bin.
+    return process.platform === "win32" ? prefix : join(prefix, "bin");
+  } catch {
+    return null;
+  }
+}
+
+let pathAugmented = false;
+let lastAugmentedBinDir: string | null = null;
+
+/**
+ * Prepend the npm global bin dir (plus common dirs) to process.env.PATH, once.
+ * Idempotent: safe to call repeatedly. Returns the npm global bin dir that was
+ * prepended (or null if npm wasn't resolvable), so the caller can log/verify.
+ */
+export function ensureSpawnPath(): string | null {
+  if (pathAugmented) return lastAugmentedBinDir;
+  pathAugmented = true;
+  const binDir = npmGlobalBinDir();
+  lastAugmentedBinDir = binDir;
+  const candidates = [
+    binDir,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    join(homedir(), ".local", "bin"),
+  ].filter((p): p is string => !!p);
+  const existing = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const prepend = candidates.filter((p) => !existing.includes(p));
+  if (prepend.length > 0) {
+    process.env.PATH = [...prepend, ...existing].join(delimiter);
+  }
+  return binDir;
+}
+
+/** True when `command -v <bin>` resolves the binary on the (augmented) PATH. */
+function isInstalled(bin: string): boolean {
+  ensureSpawnPath();
+  try {
+    // `command -v` is POSIX; on Windows fall back to `where`. We run through a
+    // shell so PATH lookup matches what spawn() will later do.
+    if (process.platform === "win32") {
+      execFileSync("where", [bin], { stdio: "ignore", timeout: 8000 });
+    } else {
+      execFileSync("/bin/sh", ["-c", `command -v ${bin}`], { stdio: "ignore", timeout: 8000 });
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Run a short-lived command and resolve its exit code + captured output. */
@@ -81,39 +181,45 @@ function runProbe(command: string, args: string[], timeoutMs = 8000): Promise<{ 
  * print a human line. Fall back to ~/.claude/.credentials.json existing.
  */
 async function detectClaude(): Promise<ProviderState> {
-  const { code, out } = await runProbe(claudeAgentConfig.command, ["auth", "status"]);
-  const text = out.trim();
-  if (code === 0 && text) {
-    try {
-      const j = JSON.parse(text) as { loggedIn?: boolean; email?: string; subscriptionType?: string };
-      if (j.loggedIn) {
-        const plan = j.subscriptionType ? `${j.subscriptionType} plan` : undefined;
-        const detail = [j.email, plan].filter(Boolean).join(" · ") || "Signed in";
-        return { connected: true, detail };
-      }
-    } catch {
-      // non-JSON output: look for an affirmative signal
-      if (/logged ?in|signed ?in|authenticated/i.test(text) && !/not /i.test(text)) {
-        return { connected: true, detail: text.split("\n")[0]?.slice(0, 80) };
+  const installed = isInstalled(PROVIDER_PACKAGES.claude.bin);
+  if (installed) {
+    const { code, out } = await runProbe(claudeAgentConfig.command, ["auth", "status"]);
+    const text = out.trim();
+    if (code === 0 && text) {
+      try {
+        const j = JSON.parse(text) as { loggedIn?: boolean; email?: string; subscriptionType?: string };
+        if (j.loggedIn) {
+          const plan = j.subscriptionType ? `${j.subscriptionType} plan` : undefined;
+          const detail = [j.email, plan].filter(Boolean).join(" · ") || "Signed in";
+          return { installed, connected: true, detail };
+        }
+      } catch {
+        // non-JSON output: look for an affirmative signal
+        if (/logged ?in|signed ?in|authenticated/i.test(text) && !/not /i.test(text)) {
+          return { installed, connected: true, detail: text.split("\n")[0]?.slice(0, 80) };
+        }
       }
     }
   }
   // Fallback: credentials file present means a prior successful OAuth login.
   const credPath = join(homedir(), ".claude", ".credentials.json");
   if (existsSync(credPath)) {
-    return { connected: true, detail: "Signed in" };
+    return { installed, connected: true, detail: "Signed in" };
   }
-  return { connected: false };
+  return { installed, connected: false };
 }
 
 /** codex: `codex login status` → "Logged in ..." means connected. */
 async function detectCodex(): Promise<ProviderState> {
-  const { out } = await runProbe(codexAgentConfig.command, ["login", "status"]);
-  const line = out.trim().split("\n").find((l) => l.trim().length > 0)?.trim();
-  if (line && /logged in/i.test(line) && !/not logged in/i.test(line)) {
-    return { connected: true, detail: line };
+  const installed = isInstalled(PROVIDER_PACKAGES.codex.bin);
+  if (installed) {
+    const { out } = await runProbe(codexAgentConfig.command, ["login", "status"]);
+    const line = out.trim().split("\n").find((l) => l.trim().length > 0)?.trim();
+    if (line && /logged in/i.test(line) && !/not logged in/i.test(line)) {
+      return { installed, connected: true, detail: line };
+    }
   }
-  return { connected: false };
+  return { installed, connected: false };
 }
 
 /**
@@ -122,8 +228,9 @@ async function detectCodex(): Promise<ProviderState> {
  * an expired access token that can be silently refreshed still counts).
  */
 async function detectGemini(): Promise<ProviderState> {
+  const installed = isInstalled(PROVIDER_PACKAGES.gemini.bin);
   const credPath = join(homedir(), ".gemini", "oauth_creds.json");
-  if (!existsSync(credPath)) return { connected: false };
+  if (!existsSync(credPath)) return { installed, connected: false };
   try {
     const creds = JSON.parse(readFileSync(credPath, "utf8")) as {
       expiry_date?: number;
@@ -135,17 +242,75 @@ async function detectGemini(): Promise<ProviderState> {
       const detail = future
         ? `Authorized · token valid until ${new Date(creds.expiry_date as number).toLocaleString()}`
         : "Authorized · auto-refreshing";
-      return { connected: true, detail };
+      return { installed, connected: true, detail };
     }
-    return { connected: false };
+    return { installed, connected: false };
   } catch {
-    return { connected: false };
+    return { installed, connected: false };
   }
 }
 
 export async function getProvidersStatus(): Promise<ProvidersStatus> {
+  ensureSpawnPath();
   const [claude, codex, gemini] = await Promise.all([detectClaude(), detectCodex(), detectGemini()]);
   return { claude, codex, gemini };
+}
+
+// ── Install (one-click CLI setup) ──────────────────────────────────────────────
+//
+// Runs `npm install -g <pkg>` for one provider so a non-technical user never
+// needs a terminal. npm-global installs can be slow, so the timeout is generous.
+// On any failure (e.g. EACCES on a sudo-only prefix) we return the exact command
+// so the GUI can offer a copy-the-command fallback.
+export function installProvider(id: ProviderId, timeoutMs = 300000): Promise<InstallResult> {
+  const { pkg } = PROVIDER_PACKAGES[id];
+  const command = installCommandFor(id);
+  ensureSpawnPath();
+  return new Promise((resolve) => {
+    let out = "";
+    let settled = false;
+    let child: ReturnType<typeof spawn>;
+    const finish = (result: InstallResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const shortError = (fallback: string): string => {
+      const line = out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => /npm error|EACCES|EPERM|permission denied|not permitted|code E/i.test(l))
+        .pop();
+      return (line || out.trim().split("\n").slice(-1)[0] || fallback).slice(0, 240);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already exited
+      }
+      finish({ installed: false, error: "Install timed out", command });
+    }, timeoutMs);
+    try {
+      child = spawn("npm", ["install", "-g", pkg], { stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      finish({ installed: false, error: "npm is not available", command });
+      return;
+    }
+    child.stdout?.on("data", (d) => (out += d.toString()));
+    child.stderr?.on("data", (d) => (out += d.toString()));
+    child.on("error", () => finish({ installed: false, error: shortError("Failed to launch npm"), command }));
+    child.on("close", (code) => {
+      if (code === 0) {
+        // Re-confirm the binary is now resolvable on the augmented PATH.
+        const ok = isInstalled(PROVIDER_PACKAGES[id].bin);
+        if (ok) return finish({ installed: true });
+        return finish({ installed: false, error: shortError("Installed, but the CLI was not found on PATH"), command });
+      }
+      finish({ installed: false, error: shortError(`npm exited with code ${code}`), command });
+    });
+  });
 }
 
 // ── Login kick-off ───────────────────────────────────────────────────────────
@@ -379,6 +544,27 @@ export function renderLoginPage(port: number): string {
     font-size: 12.5px; background: var(--bg); border: 1px solid var(--border);
     border-radius: 6px; padding: 1px 6px;
   }
+  .hintbox .cmd-row {
+    display: flex; gap: 8px; align-items: stretch; margin-top: 9px;
+  }
+  .hintbox .cmd {
+    flex: 1 1 auto; min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 12px; background: var(--bg); border: 1px solid var(--border-strong);
+    border-radius: 8px; padding: 7px 10px; color: var(--text);
+    overflow-x: auto; white-space: nowrap;
+  }
+  .hintbox button.cmd-copy {
+    appearance: none; flex: none; cursor: pointer; font: inherit; font-weight: 600; font-size: 12px;
+    border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text);
+    border-radius: 8px; padding: 0 12px;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+  }
+  .hintbox button.cmd-copy:hover { border-color: var(--accent); color: var(--accent); }
+  .hintbox button.cmd-copy.done { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .hintbox button.cmd-copy svg { width: 13px; height: 13px; }
+  .hintbox .err { color: var(--text); }
   .hintbox .spin {
     display: inline-block; width: 12px; height: 12px; margin-right: 7px; vertical-align: -1px;
     border: 2px solid var(--border-strong); border-top-color: var(--accent);
@@ -553,7 +739,18 @@ export function renderLoginPage(port: number): string {
     "openai-subscription":    { id: "codex",  label: "ChatGPT" },
     "gemini-subscription":    { id: "gemini", label: "Gemini" }
   };
+  var LABELS = { claude: "Claude", codex: "ChatGPT", gemini: "Gemini" };
+  // The npm-global package for each provider's CLI — used only for the manual
+  // copy-the-command fallback shown when automatic install fails.
+  var PACKAGES = {
+    claude: "@anthropic-ai/claude-code",
+    codex:  "@openai/codex",
+    gemini: "@google/gemini-cli"
+  };
   var pollTimers = {};
+  // While a card is mid-setup/connect we suppress status re-renders that would
+  // clobber the spinner/hint with a stale "Set up"/"Connect" button.
+  var busy = {};
 
   function el(card, sel) { return card.querySelector(sel); }
   function cardFor(id) { return document.querySelector('.card[data-id="' + id + '"]'); }
@@ -565,22 +762,35 @@ export function renderLoginPage(port: number): string {
   function renderProvider(id, state) {
     var card = cardFor(id);
     if (!card) return;
+    // Don't stomp on an in-flight setup/connect (spinner + hint) for this card.
+    if (busy[id]) return;
     var statText = el(card, ".stat-text");
     var detail = el(card, ".detail");
     var actions = el(card, ".actions");
+    var installed = !state || state.installed !== false; // default true if field absent
     if (state && state.connected) {
       card.classList.add("connected");
       statText.textContent = "Connected";
       detail.textContent = state.detail || "";
       detail.style.display = state.detail ? "" : "none";
       actions.innerHTML = okBadge();
+      hideHint(id);
       stopPoll(id);
+    } else if (!installed) {
+      // CLI isn't installed on this machine → one-click "Set up" (install).
+      card.classList.remove("connected");
+      statText.textContent = "Not installed";
+      detail.textContent = (state && state.detail) || "";
+      detail.style.display = (state && state.detail) ? "" : "none";
+      actions.innerHTML = '<button class="btn" type="button">Set up</button>';
+      actions.querySelector("button").addEventListener("click", function () { setUp(id); });
     } else {
+      // Installed but not connected → existing "Connect" (login only).
       card.classList.remove("connected");
       statText.textContent = "Not connected";
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
-      if (!actions.querySelector("button")) {
+      if (!actions.querySelector("button.btn")) {
         actions.innerHTML = '<button class="btn" type="button">Connect</button>';
         actions.querySelector("button").addEventListener("click", function () { connect(id); });
       }
@@ -594,15 +804,73 @@ export function renderLoginPage(port: number): string {
     box.innerHTML = (withSpinner ? '<span class="spin"></span>' : "") + html;
     box.classList.add("show");
   }
+  function hideHint(id) {
+    var card = cardFor(id);
+    if (!card) return;
+    var box = el(card, ".hintbox");
+    box.classList.remove("show");
+    box.innerHTML = "";
+  }
 
-  function connect(id) {
+  var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+  // Manual install fallback: short message + the exact command with a copy button.
+  function showInstallFallback(id, errMsg, command) {
+    var card = cardFor(id);
+    if (!card) return;
+    var cmd = command || ("npm install -g " + (PACKAGES[id] || ""));
+    var lead = "Couldn’t install automatically — run this once:";
+    var extra = errMsg ? '<div class="err" style="margin-top:7px;font-size:12px;color:var(--faint)">' + esc(errMsg) + "</div>" : "";
+    showHint(id,
+      esc(lead) +
+      '<div class="cmd-row"><span class="cmd">' + esc(cmd) + '</span>' +
+      '<button class="cmd-copy" type="button">' + COPY_ICON + '<span class="cmd-copy-label">Copy</span></button></div>' +
+      extra,
+      false);
+    var btn = el(card, ".hintbox .cmd-copy");
+    if (btn) btn.addEventListener("click", function () { copyText(cmd, btn); });
+    // Restore the Set-up button so the user can retry the automatic path too.
+    var actions = el(card, ".actions");
+    actions.innerHTML = '<button class="btn" type="button">Set up</button>';
+    actions.querySelector("button").addEventListener("click", function () { setUp(id); });
+  }
+
+  // ── Set up: install the CLI, then chain straight into login ──────────────────
+  function setUp(id) {
     var card = cardFor(id);
     var btn = card && el(card, ".actions button");
+    busy[id] = true;
+    if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
+    showHint(id, "Installing " + (LABELS[id] || id) + "… this can take a minute.", true);
+    fetch("/providers/" + id + "/install", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res && res.installed) {
+          // Installed — chain into the existing browser login flow.
+          connect(id, true);
+        } else {
+          busy[id] = false;
+          showInstallFallback(id, res && res.error, res && res.command);
+        }
+      })
+      .catch(function () {
+        busy[id] = false;
+        showInstallFallback(id, "Network error while installing.", null);
+      });
+  }
+
+  // chained = true when called straight after a successful install (no button
+  // to flip, hint already shown).
+  function connect(id, chained) {
+    var card = cardFor(id);
+    var btn = card && el(card, ".actions button.btn");
+    busy[id] = true;
     if (btn) { btn.disabled = true; btn.textContent = "Opening…"; }
     fetch("/providers/" + id + "/login", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (res && res.manual) {
+          busy[id] = false;
           showHint(id, (res.hint || "Sign in manually to connect."), false);
           if (btn) { btn.disabled = false; btn.textContent = "Connect"; }
           startPoll(id);
@@ -613,9 +881,12 @@ export function renderLoginPage(port: number): string {
           msg += ' If it didn’t open, <a href="' + res.url + '" target="_blank" rel="noopener">use this link</a>.';
         }
         showHint(id, msg, true);
+        // Allow status polling to take over the card now that login is in flight.
+        busy[id] = false;
         startPoll(id);
       })
       .catch(function () {
+        busy[id] = false;
         showHint(id, "Couldn’t start sign-in. Please try again.", false);
         if (btn) { btn.disabled = false; btn.textContent = "Connect"; }
       });

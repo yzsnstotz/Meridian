@@ -14,7 +14,7 @@ import { completeClaude, matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
 import { completeCodex, matchesCodex, CODEX_MODELS } from "./gateway/codex";
 import { completeGemini, matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
 import type { ChatCompletionRequest, CompletionResult } from "./gateway/shared";
-import { getProvidersStatus, startLogin, renderLoginPage, type ProviderId } from "./gateway/login";
+import { getProvidersStatus, startLogin, installProvider, ensureSpawnPath, renderLoginPage, type ProviderId } from "./gateway/login";
 
 const PORT = Number(process.env.MERIDIAN_GATEWAY_PORT ?? process.env.PORT ?? 8789);
 const HOST = process.env.MERIDIAN_GATEWAY_HOST ?? "127.0.0.1";
@@ -159,6 +159,7 @@ function boundPort(): number {
 }
 
 const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
+const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/install$/;
 
 const server = http.createServer((request, response) => {
   void (async () => {
@@ -182,6 +183,15 @@ const server = http.createServer((request, response) => {
         const m = request.method === "POST" ? LOGIN_ROUTE_RE.exec(url.pathname) : null;
         if (m) {
           return sendJson(response, 200, await startLogin(m[1] as ProviderId));
+        }
+      }
+      {
+        // One-click CLI install (npm install -g <pkg>) so a non-technical user
+        // never needs a terminal. Slow by nature; installProvider has its own
+        // generous timeout. On failure it returns the command for a GUI fallback.
+        const m = request.method === "POST" ? INSTALL_ROUTE_RE.exec(url.pathname) : null;
+        if (m) {
+          return sendJson(response, 200, await installProvider(m[1] as ProviderId));
         }
       }
       // API key endpoints (open — the GUI reads/rotates from inside the iframe).
@@ -221,7 +231,16 @@ const server = http.createServer((request, response) => {
   })();
 });
 
+// Resolve + prepend the npm global bin dir (plus common dirs) to PATH ONCE at
+// startup so every subsequent spawn — status detection, login, /v1 completions,
+// and freshly `npm install -g`'d CLIs — can find its binary. (The openclaw
+// spawn-PATH lesson: a launcher/GUI-inherited PATH often omits the npm global
+// bin dir, leaving just-installed CLIs unspawnable.)
+const npmBinDir = ensureSpawnPath();
+
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`[meridian-gateway] /v1 listening on http://${HOST}:${PORT}`);
+  // eslint-disable-next-line no-console
+  console.log(`[meridian-gateway] PATH augmented with npm global bin dir: ${npmBinDir ?? "(npm not resolvable)"}`);
 });
