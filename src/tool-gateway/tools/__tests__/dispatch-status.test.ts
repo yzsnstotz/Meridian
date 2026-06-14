@@ -69,6 +69,29 @@ describe("dispatch-status tool", () => {
     ]);
   });
 
+  it("preserves the explicit Branch column when present", () => {
+    expect(parseDispatchPlanRows([
+      "# Dispatch Plan",
+      "",
+      "| Status | Worker | Batch | Model | Depends On | Branch | Task |",
+      "|--------|--------|-------|-------|------------|--------|------|",
+      "| ✅ | W-01 | 1 | CODEX | PRE-FLIGHT | bug-fix-2026-06-r36/W-01-skill-scan-id | Sanitize IDs |",
+      ""
+    ].join("\n"))).toEqual([
+      {
+        status: "✅",
+        batch: "1",
+        worker_id: "W-01",
+        task: "Sanitize IDs",
+        model: "CODEX",
+        depends_on: ["PRE-FLIGHT"],
+        prds_to_attach: null,
+        notes: null,
+        branch: "bug-fix-2026-06-r36/W-01-skill-scan-id"
+      }
+    ]);
+  });
+
   it("marks running workers as stale from dispatch_threads.json last_seen_at", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-05T01:00:00.000Z"));

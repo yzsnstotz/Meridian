@@ -60,6 +60,39 @@ describe("executeValidationCycle", () => {
     });
   });
 
+  it("uses the dispatch plan branch column instead of a synthetic task branch", async () => {
+    const contexts: Array<{ taskBranch: string }> = [];
+    const harness = await createHarness({
+      buildPrompt: (context) => {
+        contexts.push({ taskBranch: context.taskBranch });
+        return buildDefaultValidatorPrompt(context);
+      }
+    });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-plan-branch" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-plan-branch",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.9,"feedback":"branch accepted"}',
+      raw: {}
+    });
+
+    const outcome = await executeValidationCycle(
+      harness.deps,
+      "N-02",
+      {
+        ...buildPlanRow(),
+        branch: "bug-fix-2026-06-r36/W-01-skill-scan-id"
+      } as DispatchContinuationPlanRow
+    );
+
+    expect(outcome).toEqual({
+      status: "passed",
+      score: 0.9
+    });
+    expect(contexts[0]?.taskBranch).toBe("bug-fix-2026-06-r36/W-01-skill-scan-id");
+  });
+
   it("requests fixes for binary validation when the validator is not positive", async () => {
     const harness = await createHarness({
       validatorConfig: {
@@ -1224,6 +1257,7 @@ async function createHarness(options: {
   killPolicy?: "always" | "on_success" | "never";
   validatorConfig?: Partial<ValidatorConfig>;
   fallbackHeuristicsEnabled?: boolean;
+  buildPrompt?: ValidatorOrchestratorDeps["buildPrompt"];
 } = {}): Promise<{
   lifecycleStore: LifecycleStore;
   deps: ValidatorOrchestratorDeps;
@@ -1315,6 +1349,7 @@ async function createHarness(options: {
       spawnDir: directory,
       dispatchPlanPath,
       taskspecPath: null,
+      ...(options.buildPrompt ? { buildPrompt: options.buildPrompt } : {}),
       ...(options.fallbackHeuristicsEnabled === undefined
         ? {}
         : { fallbackHeuristicsEnabled: options.fallbackHeuristicsEnabled }),
