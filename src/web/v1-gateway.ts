@@ -6,6 +6,10 @@
 // *subscription* serves completions without API keys and without the banned
 // direct-OAuth-proxy approach.
 import http from "node:http";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { completeClaude, matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
 import { completeCodex, matchesCodex, CODEX_MODELS } from "./gateway/codex";
 import { completeGemini, matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
@@ -19,6 +23,75 @@ const MODEL_OWNER: Record<string, string> = {};
 for (const m of CLAUDE_MODELS) MODEL_OWNER[m] = "anthropic-subscription";
 for (const m of CODEX_MODELS) MODEL_OWNER[m] = "openai-subscription";
 for (const m of GEMINI_MODELS) MODEL_OWNER[m] = "gemini-subscription";
+
+// ── API key (generated, persisted, enforced, rotatable) ────────────────────────
+//
+// A real key gives non-technical users an OpenAI-shaped credential instead of
+// the confusing "type anything" behaviour. It's loaded (or generated) on
+// startup and held in memory; only POST /v1/chat/completions enforces it.
+const KEY_DIR = join(homedir(), ".meridian-gateway");
+const KEY_PATH = join(KEY_DIR, "gateway-key");
+
+/** Generate a fresh key in the `mgw-` + 32-hex-char format. */
+function generateKey(): string {
+  return `mgw-${randomBytes(16).toString("hex")}`;
+}
+
+/** Persist the key to $HOME/.meridian-gateway/gateway-key (dir 0700, file 0600). */
+function persistKey(key: string): void {
+  mkdirSync(KEY_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(KEY_PATH, `${key}\n`, { mode: 0o600 });
+}
+
+/** Load the on-disk key, or generate + persist a new one if absent/empty. */
+function loadOrCreateKey(): string {
+  if (existsSync(KEY_PATH)) {
+    try {
+      const existing = readFileSync(KEY_PATH, "utf8").trim();
+      if (existing) return existing;
+    } catch {
+      // unreadable → fall through and regenerate
+    }
+  }
+  const fresh = generateKey();
+  persistKey(fresh);
+  return fresh;
+}
+
+let apiKey = loadOrCreateKey();
+
+/** Regenerate + persist a new key, replacing the in-memory one. */
+function rotateKey(): string {
+  apiKey = generateKey();
+  persistKey(apiKey);
+  return apiKey;
+}
+
+/** True when the request carries `Authorization: Bearer <current key>` exactly. */
+function isAuthorized(request: http.IncomingMessage): boolean {
+  const header = request.headers["authorization"];
+  if (typeof header !== "string") return false;
+  const m = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return !!m && m[1].trim() === apiKey;
+}
+
+/**
+ * Models filtered by which backing CLI is currently signed in. Used by
+ * /v1/models so a client's "refresh models" only ever lists usable models.
+ */
+function connectedModels(status: { claude: { connected: boolean }; codex: { connected: boolean }; gemini: { connected: boolean } }): Array<{ id: string; object: "model"; owned_by: string }> {
+  const out: Array<{ id: string; object: "model"; owned_by: string }> = [];
+  for (const id of Object.keys(MODEL_OWNER)) {
+    let provider: ProviderId;
+    if (matchesGemini(id)) provider = "gemini";
+    else if (matchesCodex(id)) provider = "codex";
+    else if (matchesClaude(id)) provider = "claude";
+    else continue;
+    if (!status[provider].connected) continue;
+    out.push({ id, object: "model", owned_by: MODEL_OWNER[id] });
+  }
+  return out;
+}
 
 function complete(req: ChatCompletionRequest): Promise<CompletionResult> {
   if (matchesCodex(req.model)) return completeCodex(req);
@@ -111,13 +184,26 @@ const server = http.createServer((request, response) => {
           return sendJson(response, 200, await startLogin(m[1] as ProviderId));
         }
       }
+      // API key endpoints (open — the GUI reads/rotates from inside the iframe).
+      if (request.method === "GET" && url.pathname === "/key") {
+        return sendJson(response, 200, { key: apiKey });
+      }
+      if (request.method === "POST" && url.pathname === "/key/rotate") {
+        return sendJson(response, 200, { key: rotateKey() });
+      }
       if (request.method === "GET" && url.pathname === "/v1/models") {
-        return sendJson(response, 200, {
-          object: "list",
-          data: Object.keys(MODEL_OWNER).map((id) => ({ id, object: "model", owned_by: MODEL_OWNER[id] })),
-        });
+        // Login-aware: only advertise models whose backing CLI is connected, so
+        // a client's "refresh models" shows only what it can actually call.
+        const status = await getProvidersStatus();
+        return sendJson(response, 200, { object: "list", data: connectedModels(status) });
       }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
+        // The ONLY enforced route. /v1/models, /health, /, /providers/* stay open.
+        if (!isAuthorized(request)) {
+          return sendJson(response, 401, {
+            error: { message: "invalid API key", type: "authentication_error" },
+          });
+        }
         const raw = await readBody(request);
         let parsed: ChatCompletionRequest;
         try {

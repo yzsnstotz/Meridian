@@ -278,9 +278,9 @@ export function renderLoginPage(port: number): string {
     font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    padding: 28px 20px 56px;
+    padding: 28px clamp(20px, 4vw, 44px) 56px;
   }
-  .wrap { max-width: 660px; margin: 0 auto; }
+  .wrap { width: 100%; max-width: 1040px; margin: 0 auto; }
 
   header.top {
     display: flex; align-items: center; gap: 12px;
@@ -313,30 +313,42 @@ export function renderLoginPage(port: number): string {
   .sec-head h2 { font-size: 13px; font-weight: 640; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0; }
   .sec-head p { margin: 4px 0 0; font-size: 13px; color: var(--faint); }
 
-  .cards { display: grid; gap: 12px; }
+  .cards {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    align-items: start;
+  }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 16px 18px;
-    display: flex; align-items: center; gap: 14px;
-    transition: border-color .15s ease;
+    box-shadow: var(--shadow); padding: 18px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "ico head" "body body" "actions actions";
+    align-items: center; column-gap: 14px; row-gap: 12px;
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
   }
+  .card:hover { border-color: var(--border-strong); }
+  .card.connected { border-color: color-mix(in srgb, var(--ok) 30%, var(--border)); }
   .card .ico {
+    grid-area: ico;
     width: 42px; height: 42px; border-radius: 12px; flex: none;
     display: grid; place-items: center; font-weight: 700; font-size: 16px; color: #fff;
   }
   .ico.claude { background: var(--claude); }
   .ico.codex  { background: var(--codex); }
   .ico.gemini { background: var(--gemini); }
-  .card .body { flex: 1 1 auto; min-width: 0; }
-  .card .name { font-weight: 640; font-size: 15px; }
+  .card .head { grid-area: head; min-width: 0; }
+  .card .body { grid-area: body; min-width: 0; }
+  .card .name { font-weight: 640; font-size: 15.5px; }
   .card .stat { display: inline-flex; align-items: center; gap: 7px; margin-top: 3px; font-size: 13px; color: var(--muted); }
   .card .stat .sdot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
   .card.connected .stat .sdot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
   .card .detail {
-    margin-top: 4px; font-size: 12.5px; color: var(--faint);
+    margin-top: 2px; font-size: 12.5px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
   }
-  .card .actions { flex: none; }
+  .card .actions { grid-area: actions; display: flex; }
+  .card .actions button.btn, .card .actions .badge-ok { width: 100%; justify-content: center; }
 
   button.btn {
     appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 600;
@@ -378,7 +390,13 @@ export function renderLoginPage(port: number): string {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     box-shadow: var(--shadow); padding: 18px;
   }
-  .endpoint-row { display: flex; gap: 10px; align-items: stretch; }
+  .field-label {
+    font-size: 11.5px; font-weight: 640; letter-spacing: .03em; text-transform: uppercase;
+    color: var(--faint); margin: 0 2px 7px;
+  }
+  .endpoint-row { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
+  button.copy.rotate { min-width: 96px; }
+  button.copy.rotate:hover { border-color: var(--accent); color: var(--accent); }
   .endpoint-url {
     flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: 14px;
@@ -451,9 +469,11 @@ export function renderLoginPage(port: number): string {
       <div class="cards" id="cards">
         <div class="card claude" data-id="claude">
           <div class="ico claude">C</div>
-          <div class="body">
+          <div class="head">
             <div class="name">Claude</div>
             <div class="stat"><span class="sdot"></span><span class="stat-text">Checking…</span></div>
+          </div>
+          <div class="body">
             <div class="detail"></div>
             <div class="hintbox"></div>
           </div>
@@ -461,9 +481,11 @@ export function renderLoginPage(port: number): string {
         </div>
         <div class="card codex" data-id="codex">
           <div class="ico codex">O</div>
-          <div class="body">
+          <div class="head">
             <div class="name">ChatGPT <span style="color:var(--faint);font-weight:500;font-size:13px">(Codex)</span></div>
             <div class="stat"><span class="sdot"></span><span class="stat-text">Checking…</span></div>
+          </div>
+          <div class="body">
             <div class="detail"></div>
             <div class="hintbox"></div>
           </div>
@@ -471,9 +493,11 @@ export function renderLoginPage(port: number): string {
         </div>
         <div class="card gemini" data-id="gemini">
           <div class="ico gemini">G</div>
-          <div class="body">
+          <div class="head">
             <div class="name">Gemini</div>
             <div class="stat"><span class="sdot"></span><span class="stat-text">Checking…</span></div>
+          </div>
+          <div class="body">
             <div class="detail"></div>
             <div class="hintbox"></div>
           </div>
@@ -485,6 +509,7 @@ export function renderLoginPage(port: number): string {
     <section>
       <div class="sec-head"><h2>Your endpoint</h2></div>
       <div class="endpoint-card">
+        <div class="field-label">Base URL</div>
         <div class="endpoint-row">
           <div class="endpoint-url" id="endpointUrl">${endpoint}</div>
           <button class="copy" id="copyBtn" type="button">
@@ -492,7 +517,20 @@ export function renderLoginPage(port: number): string {
             <span class="copy-label">Copy</span>
           </button>
         </div>
-        <p class="endpoint-note">Point any OpenAI-compatible app at this base URL. Any text works as the API key — it runs locally and isn’t authenticated.</p>
+        <div class="field-label" style="margin-top:14px">API key</div>
+        <div class="endpoint-row">
+          <div class="endpoint-url" id="apiKeyField">—</div>
+          <button class="copy" id="copyKeyBtn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span class="copy-label">Copy</span>
+          </button>
+          <button class="copy rotate" id="rotateKeyBtn" type="button" title="Generate a new key">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            <span class="rotate-label">Rotate</span>
+          </button>
+        </div>
+        <p class="endpoint-note" id="rotateNote" style="display:none;color:var(--accent)">New key generated — update this key in your client.</p>
+        <p class="endpoint-note">Use this base URL and the API key below in your OpenAI-compatible client.</p>
         <p class="endpoint-note">Each model needs its matching subscription connected above.</p>
       </div>
     </section>
@@ -626,22 +664,22 @@ export function renderLoginPage(port: number): string {
     });
   }
 
-  // Copy endpoint.
-  var copyBtn = document.getElementById("copyBtn");
-  copyBtn.addEventListener("click", function () {
-    var url = document.getElementById("endpointUrl").textContent.trim();
-    var label = copyBtn.querySelector(".copy-label");
+  // Generic copy-to-clipboard for the endpoint + key fields. Shows a transient
+  // "Copied!" state on the triggering button.
+  function copyText(text, btn) {
+    var label = btn.querySelector(".copy-label");
+    var prev = label ? label.textContent : "";
     var mark = function () {
-      copyBtn.classList.add("done");
-      label.textContent = "Copied!";
-      setTimeout(function () { copyBtn.classList.remove("done"); label.textContent = "Copy"; }, 1600);
+      btn.classList.add("done");
+      if (label) label.textContent = "Copied!";
+      setTimeout(function () { btn.classList.remove("done"); if (label) label.textContent = prev; }, 1600);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url).then(mark, function () { legacyCopy(url, mark); });
+      navigator.clipboard.writeText(text).then(mark, function () { legacyCopy(text, mark); });
     } else {
-      legacyCopy(url, mark);
+      legacyCopy(text, mark);
     }
-  });
+  }
   function legacyCopy(text, cb) {
     try {
       var ta = document.createElement("textarea");
@@ -651,9 +689,56 @@ export function renderLoginPage(port: number): string {
     } catch (e) { /* clipboard unavailable in this iframe */ }
   }
 
+  // Copy endpoint base URL.
+  var copyBtn = document.getElementById("copyBtn");
+  copyBtn.addEventListener("click", function () {
+    copyText(document.getElementById("endpointUrl").textContent.trim(), copyBtn);
+  });
+
+  // ── API key: load, copy, rotate ─────────────────────────────────────────────
+  var apiKeyField = document.getElementById("apiKeyField");
+  var copyKeyBtn = document.getElementById("copyKeyBtn");
+  var rotateKeyBtn = document.getElementById("rotateKeyBtn");
+  var rotateNote = document.getElementById("rotateNote");
+  var currentKey = "";
+
+  function setKey(k) {
+    currentKey = k || "";
+    apiKeyField.textContent = currentKey || "—";
+  }
+
+  function loadKey() {
+    fetch("/key")
+      .then(function (r) { return r.json(); })
+      .then(function (res) { setKey(res && res.key); })
+      .catch(function () { /* leave placeholder if unreachable */ });
+  }
+
+  copyKeyBtn.addEventListener("click", function () {
+    if (currentKey) copyText(currentKey, copyKeyBtn);
+  });
+
+  rotateKeyBtn.addEventListener("click", function () {
+    var rlabel = rotateKeyBtn.querySelector(".rotate-label");
+    rotateKeyBtn.disabled = true;
+    if (rlabel) rlabel.textContent = "…";
+    fetch("/key/rotate", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        setKey(res && res.key);
+        if (rotateNote) rotateNote.style.display = "";
+      })
+      .catch(function () { /* keep the old displayed key on failure */ })
+      .then(function () {
+        rotateKeyBtn.disabled = false;
+        if (rlabel) rlabel.textContent = "Rotate";
+      });
+  });
+
   // Initial load + gentle idle auto-refresh (independent of per-provider polls).
   refreshStatus(true);
   loadModels();
+  loadKey();
   setInterval(function () { refreshStatus(true); }, IDLE_REFRESH_MS);
 })();
 </script>
