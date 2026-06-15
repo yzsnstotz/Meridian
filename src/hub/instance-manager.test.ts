@@ -572,6 +572,47 @@ test("spawnStreamAgent launches a provider CLI directly and pipes the prompt ove
   assert.equal(child.stdin.read()?.toString("utf8"), "Summarize this");
 });
 
+test("spawnStreamAgent injects managed codex credential env into the provider CLI", () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_credential_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_credential_01.sock",
+    working_dir: "/tmp",
+    pid: 999,
+    status: "idle",
+    created_at: new Date().toISOString(),
+    credential_id: "cred-nobuaki"
+  });
+
+  const spawnCalls: Array<{ command: string; args: string[]; options?: { env?: NodeJS.ProcessEnv } }> = [];
+  const child = new FakeChildProcess(3302);
+  const manager = new InstanceManager(registry, {
+    spawnFn: ((command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+      spawnCalls.push({ command, args, options });
+      return child as never;
+    }) as never
+  });
+
+  manager.spawnStreamAgent(
+    "codex_credential_01",
+    "codex",
+    ["codex", "exec", "--json"],
+    "Use managed auth",
+    "trace-credential",
+    {
+      credential_id: "cred-nobuaki",
+      provider: "codex",
+      codex_home: "/tmp/managed-nobuaki-codex-home",
+      env_overrides: {},
+      is_host_default: false
+    }
+  );
+
+  assert.equal(spawnCalls[0]?.options?.env?.CODEX_HOME, "/tmp/managed-nobuaki-codex-home");
+});
+
 test("interrupt sends raw Escape through AgentAPI for bridge threads without unregistering thread", async () => {
   const registry = new InstanceRegistry();
   registry.register({

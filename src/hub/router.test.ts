@@ -7,6 +7,7 @@ process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
 
 import { config } from "../config";
 import type { HubMessage } from "../types";
+import { CredentialStore } from "./credential-store";
 import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { HubRouter } from "./router";
@@ -174,6 +175,103 @@ test("HubRouter run skips summary protocol injection when instance supports stre
   assert.equal(spawnPrompt, "ship it");
   assert.doesNotMatch(spawnPrompt, /MERIDIAN_SUMMARY_/);
   assert.equal(connectCount, 0);
+});
+
+test("HubRouter resolves an instance credential before direct streaming run", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({
+    thread_id: "codex_stream_credential_01",
+    agent_type: "codex",
+    mode: "bridge",
+    socket_path: "/tmp/agentapi-codex_stream_credential_01.sock",
+    pid: 112,
+    status: "idle",
+    supportsStream: true,
+    credential_id: "cred-nobuaki",
+    created_at: new Date().toISOString()
+  });
+
+  const credentialStore = new CredentialStore({
+    credentialsRoot: "/tmp/meridian-router-test-credentials",
+    initialRecords: [
+      {
+        credential_id: "cred-nobuaki",
+        credential_label: "nobuaki",
+        provider: "codex",
+        kind: "oauth",
+        owner_caller_id: "meridian-web",
+        codex_home_path: "/tmp/managed-nobuaki-codex-home",
+        is_default: false,
+        is_host_default: false,
+        revoked_at: null,
+        last_used_at: null,
+        created_at: new Date().toISOString()
+      }
+    ]
+  });
+  let streamCredentialHome: string | undefined;
+  const fakeInstanceManager = {
+    rehydrateFromState: async () => ({ restored_thread_ids: [], pruned_thread_ids: [] }),
+    snapshotState: () => ({
+      version: 1,
+      updated_at: new Date().toISOString(),
+      instances: registry.list(),
+      session_bindings: {}
+    }),
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    spawnStreamAgent: (
+      _threadId: string,
+      _agentType: string,
+      _args: string[],
+      _prompt: string,
+      _traceId?: string | null,
+      resolvedCredential?: { codex_home?: string }
+    ) => {
+      streamCredentialHome = resolvedCredential?.codex_home;
+      return {
+        stdout: Readable.from([
+          [
+            '{"type":"thread.started","thread_id":"codex-session-credential"}',
+            '{"type":"item.completed","thread_id":"codex-session-credential","item":{"id":"msg-credential","type":"agent_message","text":"ok"}}',
+            '{"type":"turn.completed","thread_id":"codex-session-credential","usage":{"total_tokens":4}}'
+          ].join("\n") + "\n"
+        ]),
+        process: createClosedProcess()
+      };
+    }
+  };
+
+  const router = new HubRouter(registry, {
+    credentialStore,
+    instanceManager: fakeInstanceManager as never,
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      sendMessage: async () => ({ ok: true }),
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+
+  const result = await router.route(
+    baseMessage({
+      trace_id: "12121212-1212-4121-8121-121212121212",
+      thread_id: "codex_stream_credential_01",
+      target: "codex_stream_credential_01",
+      caller: {
+        caller_id: "meridian-web",
+        caller_label: "Meridian Web",
+        caller_authority: "write"
+      },
+      payload: {
+        content: "use managed credential",
+        attachments: []
+      }
+    })
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(streamCredentialHome, "/tmp/managed-nobuaki-codex-home");
 });
 
 test("HubRouter interrupt stops the active stream run without unregistering the thread", async () => {

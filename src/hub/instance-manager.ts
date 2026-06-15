@@ -248,7 +248,8 @@ export class InstanceManager {
     agentType: AgentType,
     args: string[],
     prompt: string,
-    traceId?: string | null
+    traceId?: string | null,
+    resolvedCredential?: ResolvedCredential | null
   ): StreamSpawnResult {
     if (args.length === 0 || !args[0]) {
       throw new Error(`Cannot spawn stream agent for thread_id=${threadId}: missing command`);
@@ -256,7 +257,7 @@ export class InstanceManager {
 
     const instance = this.registry.get(threadId);
     const spawnWorkdir = this.resolveWorkdir(instance?.working_dir ?? this.agentWorkdir);
-    const childEnv = this.buildChildEnv();
+    const childEnv = this.buildChildEnv(resolvedCredential ?? null);
     const [command, ...commandArgs] = args;
 
     this.log.info(
@@ -268,6 +269,7 @@ export class InstanceManager {
         working_directory: spawnWorkdir,
         command,
         args: commandArgs,
+        credential_id: resolvedCredential?.credential_id ?? instance?.credential_id ?? null,
         child_path: this.summarizePath(childEnv.PATH)
       },
       "Launching direct stream agent process"
