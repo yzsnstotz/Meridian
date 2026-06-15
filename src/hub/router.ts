@@ -1040,10 +1040,12 @@ export class HubRouter {
   private async tryHandleStreamRun(message: HubMessage, threadId: string): Promise<StreamRunResult | null> {
     const maxAttempts = 3;
     let lastError: unknown = null;
+    const instance = this.resolveInstance(threadId);
+    const resolvedCredential = this.resolveRunCredential(instance, message);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        return await this.runStreamAttempt(message, threadId);
+        return await this.runStreamAttempt(message, threadId, resolvedCredential);
       } catch (error) {
         lastError = error;
         if (error instanceof RunInterruptedError) {
@@ -1074,7 +1076,25 @@ export class HubRouter {
       : new Error(String(lastError ?? "stream run failed after retries"));
   }
 
-  private async runStreamAttempt(message: HubMessage, threadId: string): Promise<StreamRunResult> {
+  private resolveRunCredential(instance: AgentInstance, message: HubMessage): ResolvedCredential | null {
+    const credentialId = instance.credential_id ?? null;
+    if (!credentialId) {
+      return null;
+    }
+    if (!this.credentialStore) {
+      throw new Error(`CredentialStore not configured for stream run credential_id=${credentialId}`);
+    }
+    if (!message.caller) {
+      throw new Error(`stream run with credential_id=${credentialId} requires an authenticated caller`);
+    }
+    return this.credentialStore.resolve(credentialId, message.caller);
+  }
+
+  private async runStreamAttempt(
+    message: HubMessage,
+    threadId: string,
+    resolvedCredential: ResolvedCredential | null
+  ): Promise<StreamRunResult> {
     const instance = this.resolveInstance(threadId);
     const transformedAttachments = await transformAttachments(message.payload.attachments ?? [], instance.agent_type);
     const textAttachments = transformedAttachments.transformed.filter(
@@ -1145,7 +1165,8 @@ export class HubRouter {
         instance.agent_type,
         args,
         prompt,
-        message.trace_id
+        message.trace_id,
+        resolvedCredential
       );
       process = spawnedAgent.process;
       const activeRun = this.activeRunsByThread.get(threadId);
