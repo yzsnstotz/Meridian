@@ -497,6 +497,31 @@ describe("service continuation", () => {
     expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
   });
 
+  it("does not auto-retry an abandoned worker after validator max cycles are exhausted", () => {
+    const rows = [
+      { status: "⚠️ ABANDONED", batch: "4", worker: "R-07", model: "CODEX", depends_on: "R-03,R-04,R-05,R-06" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "R-07": {
+        status: "abandoned",
+        retry_count: 0,
+        validation: {
+          current_cycle: 18,
+          max_fix_cycles: 5,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "max cycles exhausted",
+          history: [],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveEligibleServiceContinueWorkers(rows, lifecycleState, { limit: 2 })).toEqual([]);
+  });
+
   it("still flags manual intervention for a failed worker that has not exhausted max cycles", () => {
     // Worker reached `failed` via a non-validator path (e.g. transport
     // error, hit_limit, outcome:failed marker) before the validator could

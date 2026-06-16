@@ -10,7 +10,7 @@ import {
   resolveDispatchModelMapFromMarkdown,
   resolveImplicitDispatchModelOverride
 } from "./model-routing";
-import { isHumanDispatchRow } from "./service-continuation";
+import { hasExhaustedValidationCycles, isHumanDispatchRow } from "./service-continuation";
 import { isValidationEnabledForWorker } from "./validator-orchestrator";
 import { launchDispatchWorker, type LaunchDispatchWorkerConfig, type LaunchDispatchWorkerResult } from "./worker-launcher";
 import { executeResumeWorkerAction } from "../../tool-gateway/tools/resume-worker";
@@ -125,6 +125,17 @@ export async function continueDispatchWorker(
         ok: true,
         workerId,
         threadId: currentWorkerState.thread_id
+      };
+    }
+
+    if (
+      (currentWorkerState?.status === "failed" || currentWorkerState?.status === "abandoned")
+      && hasExhaustedValidationCycles(currentWorkerState)
+    ) {
+      return {
+        ok: false,
+        workerId,
+        error: `validation max cycles exhausted for worker ${workerId}`
       };
     }
 
