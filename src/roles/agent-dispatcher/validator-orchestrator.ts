@@ -69,6 +69,7 @@ const VALIDATE_THRESHOLD_PATTERN = /\bvalidate\s*:\s*threshold\s*=\s*([\d.]+)/i;
 
 const EXCLUDED_MODEL_CODES = new Set(["HUMAN", "PM"]);
 const VALIDATOR_SPAWN_MAX_ATTEMPTS = 3;
+const STALE_OUTPUT_ARTIFACT_FEEDBACK_ERROR = "stale output artifact returned after feedback delivery";
 
 // Transport-class patterns: when meridianApi.run rejects with one of these,
 // the validator agent was spawned successfully but the hub/transport closed
@@ -169,6 +170,22 @@ export async function executeValidationCycle(
   const baseBranch = validatorConfig.base_branch;
   const taskBranch = resolveTaskBranch(workerId, planRow);
   const cycle = validation.current_cycle + 1;
+
+  if (isValidationCycleBudgetExhausted(validation)) {
+    log.warn("Validator cycle budget already exhausted; failing worker without spawning validator", {
+      event: "validator_cycle_budget_exhausted_pre_spawn",
+      worker_id: workerId,
+      current_cycle: validation.current_cycle,
+      max_fix_cycles: validation.max_fix_cycles
+    });
+    lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted");
+    await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "failed");
+    return {
+      status: "failed",
+      score: validation.last_score ?? 0,
+      reason: `max validation cycles exhausted (${validation.max_fix_cycles})`
+    };
+  }
 
   const promptContext: ValidatorPromptContext = {
     workerId,
@@ -303,6 +320,24 @@ export async function applyValidatorVerdictFromContent(
     ? resolveThresholdForWorker(validatorConfig, planRow)
     : null;
   const cycle = validation.current_cycle + 1;
+
+  if (isValidationCycleBudgetExhausted(validation)) {
+    log.warn("Validator verdict ignored because cycle budget is already exhausted", {
+      event: "validator_cycle_budget_exhausted_verdict",
+      worker_id: workerId,
+      validator_thread_id: validatorThreadId,
+      current_cycle: validation.current_cycle,
+      max_fix_cycles: validation.max_fix_cycles
+    });
+    lifecycleStore.transitionToValidationFailed(workerId, "max_cycles_exhausted");
+    await safeKill(deps.meridianApi, validatorThreadId, log);
+    await safeKillRetainedWorkerAfterValidation(deps, worker.thread_id, "failed");
+    return {
+      status: "failed",
+      score: validation.last_score ?? 0,
+      reason: `max validation cycles exhausted (${validation.max_fix_cycles})`
+    };
+  }
 
   const marker = parseMeridianStatusMarker(content);
 
@@ -536,6 +571,24 @@ export async function deliverValidatorFeedback(
       threadId: worker.thread_id,
       content: feedbackMessage
     });
+    if (isStaleOutputArtifactRunResult(runResult)) {
+      log.warn("Validator feedback returned stale output artifact; clearing worker thread for relaunch", {
+        event: "validator_feedback_stale_output_artifact",
+        worker_id: workerId,
+        worker_thread_id: worker.thread_id,
+        cycle: validation.current_cycle
+      });
+      const latestWorker = lifecycleStore.load().workers[workerId];
+      if (latestWorker?.status === "running") {
+        lifecycleStore.setWorkerStatus(workerId, "fix_requested", "validator_feedback_stale_output");
+      }
+      lifecycleStore.clearWorkerThreadForRelaunch(workerId, "validator_feedback_stale_output");
+      return {
+        delivered: false,
+        reason: "delivery_error",
+        error: STALE_OUTPUT_ARTIFACT_FEEDBACK_ERROR
+      };
+    }
     log.info("Validator feedback delivered", {
       event: "validator_feedback_delivered",
       worker_id: workerId,
@@ -952,6 +1005,21 @@ function isCompletedRunResult(runResult: MeridianRunResult): boolean {
   const status = runResult.status.trim().toLowerCase();
   const runState = runResult.runState?.trim().toLowerCase();
   return status === "success" && (!runState || runState === "completed");
+}
+
+function isValidationCycleBudgetExhausted(
+  validation: NonNullable<DispatchWorkerState["validation"]>
+): boolean {
+  return validation.max_fix_cycles > 0 && validation.current_cycle >= validation.max_fix_cycles;
+}
+
+function isStaleOutputArtifactRunResult(runResult: MeridianRunResult): boolean {
+  const rawSource = runResult.raw.source;
+  if (typeof rawSource === "string" && rawSource.trim().toLowerCase() === "output_artifact") {
+    return true;
+  }
+
+  return /^Recovered\s+\S+\s+result from output artifact:/i.test(runResult.content?.trim() ?? "");
 }
 
 async function safeKill(

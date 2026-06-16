@@ -256,7 +256,7 @@ describe("executeValidationCycle", () => {
     }));
   });
 
-  it("retries validator spawn when Meridian recycles a terminal worker thread id", async () => {
+  it("accepts validator spawn when Meridian recycles a terminal worker thread id", async () => {
     const harness = await createHarness({
       validatorConfig: {
         agent_type: "codex",
@@ -276,11 +276,9 @@ describe("executeValidationCycle", () => {
       retry_count: 0
     };
     harness.lifecycleStore.save(state);
-    harness.spawn
-      .mockResolvedValueOnce({ threadId: "codex_40" })
-      .mockResolvedValueOnce({ threadId: "validator-thread-fresh" });
+    harness.spawn.mockResolvedValueOnce({ threadId: "codex_40" });
     harness.run.mockResolvedValueOnce({
-      threadId: "validator-thread-fresh",
+      threadId: "codex_40",
       status: "success",
       runState: "completed",
       content: '{"score":0.91,"feedback":"accepted"}',
@@ -293,13 +291,12 @@ describe("executeValidationCycle", () => {
       status: "passed",
       score: 0.91
     });
-    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
     expect(harness.run).toHaveBeenCalledWith(expect.objectContaining({
-      threadId: "validator-thread-fresh"
+      threadId: "codex_40"
     }));
-    expect(harness.kill).toHaveBeenCalledWith("codex_40");
     expect(harness.lifecycleStore.load().workers["N-02"]?.validation?.history[0]?.validator_thread_id)
-      .toBe("validator-thread-fresh");
+      .toBe("codex_40");
   });
 
   it("kills the retained worker thread after validation passes when kill policy allows success cleanup", async () => {
@@ -377,6 +374,56 @@ describe("executeValidationCycle", () => {
     });
     expect(harness.kill).toHaveBeenCalledWith("validator-thread-3");
     expect(harness.kill).toHaveBeenCalledWith("worker-thread-n02");
+  });
+
+  it("fails without spawning another validator when validation cycles are already exhausted", async () => {
+    const harness = await createHarness({ killPolicy: "always" });
+    const state = harness.lifecycleStore.load();
+    state.workers["N-02"]!.validation = {
+      current_cycle: 3,
+      max_fix_cycles: 3,
+      validator_thread_id: null,
+      last_score: 0.5,
+      last_feedback: "Previous max-cycle feedback",
+      history: [
+        {
+          cycle: 1,
+          score: 0.5,
+          feedback: "Cycle 1 feedback",
+          validator_thread_id: "validator-thread-1",
+          timestamp: "2026-04-27T00:11:00.000Z"
+        },
+        {
+          cycle: 2,
+          score: 0.5,
+          feedback: "Cycle 2 feedback",
+          validator_thread_id: "validator-thread-2",
+          timestamp: "2026-04-27T00:12:00.000Z"
+        },
+        {
+          cycle: 3,
+          score: 0.5,
+          feedback: "Cycle 3 feedback",
+          validator_thread_id: "validator-thread-3",
+          timestamp: "2026-04-27T00:13:00.000Z"
+        }
+      ]
+    };
+    harness.lifecycleStore.save(state);
+
+    const outcome = await executeValidationCycle(harness.deps, "N-02", buildPlanRow());
+
+    expect(outcome).toEqual({
+      status: "failed",
+      score: 0.5,
+      reason: "max validation cycles exhausted (3)"
+    });
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("failed");
+    expect(worker?.validation?.current_cycle).toBe(3);
+    expect(worker?.validation?.history).toHaveLength(3);
+    expect(harness.spawn).not.toHaveBeenCalled();
+    expect(harness.run).not.toHaveBeenCalled();
   });
 
   describe("feedback delivery transport-class rejection", () => {
@@ -512,6 +559,55 @@ describe("executeValidationCycle", () => {
       threadId: "worker-thread-n02",
       content: expect.stringContaining("Fix the missing symbol map.")
     }));
+  });
+
+  it("clears the worker thread for relaunch when feedback delivery returns stale output artifact content", async () => {
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-02"]!.status = "fix_requested";
+    state.workers["N-02"]!.validation = {
+      current_cycle: 1,
+      max_fix_cycles: 3,
+      validator_thread_id: null,
+      last_score: 0.62,
+      last_feedback: "Fix the missing symbol map.",
+      history: [
+        {
+          cycle: 1,
+          score: 0.62,
+          feedback: "Fix the missing symbol map.",
+          validator_thread_id: "validator-thread-1",
+          timestamp: "2026-04-27T00:11:00.000Z"
+        }
+      ]
+    };
+    harness.lifecycleStore.save(state);
+    harness.run.mockResolvedValueOnce({
+      threadId: "worker-thread-n02",
+      status: "success",
+      runState: "completed",
+      content: [
+        "Recovered N-02 result from output artifact: /tmp/report.md",
+        "",
+        "# N-02 Worker Report",
+        "No new attempt was written."
+      ].join("\n"),
+      raw: {
+        source: "output_artifact"
+      }
+    });
+
+    await expect(deliverValidatorFeedback(harness.deps, "N-02")).resolves.toEqual({
+      delivered: false,
+      reason: "delivery_error",
+      error: "stale output artifact returned after feedback delivery"
+    });
+
+    const worker = harness.lifecycleStore.load().workers["N-02"];
+    expect(worker?.status).toBe("fix_requested");
+    expect(worker?.thread_id).toBe("");
+    expect(worker?.validation?.current_cycle).toBe(1);
+    expect(worker?.validation?.history).toHaveLength(1);
   });
 
   it("transitions to validated when the validator marker outcome is pass", async () => {
