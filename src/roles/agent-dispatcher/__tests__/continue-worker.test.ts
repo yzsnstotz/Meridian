@@ -392,10 +392,9 @@ describe("continueDispatchWorker", () => {
           trace_id: "11111111-1111-4111-8111-111111111111",
           started_at: "2026-04-05T00:00:00.000Z",
           last_seen_at: "2026-04-05T00:10:00.000Z",
-          // Status is `abandoned` (not `running`) so the new
-          // running-with-thread short-circuit doesn't fire and we still
-          // exercise the relaunch path that the persisted override is
-          // meant to flow through.
+          // Status is not `running` so the running-with-thread short-circuit
+          // doesn't fire, while the plan row below stays launchable without
+          // invoking the real resume-worker gateway.
           status: "abandoned",
           expected_outputs: [],
           hub_result: null,
@@ -432,7 +431,7 @@ describe("continueDispatchWorker", () => {
           base_branch: "main"
         }
       },
-      [{ status: "⚠️ ABANDONED", worker: "N-04", model: "CODEX-HIGH", notes: "Single module" }],
+      [{ status: "⬜", worker: "N-04", model: "CODEX-HIGH", notes: "Single module" }],
       "N-04",
       launchWorker
     );
@@ -505,5 +504,82 @@ describe("continueDispatchWorker", () => {
       workerId: "C-01",
       threadId: "worker-thread-already-running"
     });
+  });
+
+  it("does not relaunch an abandoned worker after validator max cycles are exhausted", async () => {
+    const { dir, commandPath, planPath } = await createTempDispatchPlan();
+    const sidecarPath = path.join(dir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, {
+      dispatchPlanPath: planPath
+    });
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-exhausted",
+        started_at: "2026-06-16T11:40:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "N-04": {
+          thread_id: "worker-thread-exhausted",
+          trace_id: "11111111-1111-4111-8111-111111111111",
+          started_at: "2026-06-16T11:40:00.000Z",
+          last_seen_at: "2026-06-16T11:42:00.000Z",
+          status: "abandoned",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          validation: {
+            current_cycle: 18,
+            max_fix_cycles: 5,
+            validator_thread_id: null,
+            last_score: 0.5,
+            last_feedback: "max cycles exhausted",
+            history: [],
+            spawn_failure_count: 0,
+            last_spawn_failure_at: null
+          }
+        }
+      },
+      last_reconciled_at: null
+    });
+    const launchWorker = vi.fn().mockResolvedValue({
+      ok: true,
+      threadId: "worker-thread-should-not-launch"
+    });
+
+    const result = await continueDispatchWorker(
+      {
+        dispatch_plan_path: planPath,
+        command_file_path: commandPath,
+        mode: "bridge",
+        agent_type: "codex",
+        kill_policy: "always",
+        auto_approve: true,
+        dispatch_repo_root: dir,
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          auto_approve: false,
+          threshold_type: "score",
+          pass_threshold: 0.8,
+          max_fix_cycles: 5,
+          base_branch: "main"
+        }
+      },
+      [{ status: "⚠️ ABANDONED", worker: "N-04", model: "CODEX-HIGH" }],
+      "N-04",
+      launchWorker
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      workerId: "N-04",
+      error: "validation max cycles exhausted for worker N-04"
+    });
+    expect(launchWorker).not.toHaveBeenCalled();
+    expect(lifecycleStore.load().workers["N-04"]?.retry_count).toBe(0);
   });
 });

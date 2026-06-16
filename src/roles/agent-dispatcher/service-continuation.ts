@@ -448,7 +448,7 @@ function isImplicitContinueRow(
     return false;
   }
 
-  if (worker?.status === "failed" && hasExhaustedValidationCycles(worker)) {
+  if (hasExhaustedValidationCycles(worker)) {
     return false;
   }
 
@@ -537,7 +537,7 @@ function isRetryableTerminalWorker(lifecycleState: DispatchThreadStateV2, worker
     return false;
   }
 
-  if (workerState?.status === "failed" && hasExhaustedValidationCycles(workerState)) {
+  if (hasExhaustedValidationCycles(workerState)) {
     return false;
   }
 
@@ -548,7 +548,7 @@ function isRetryableTerminalWorker(lifecycleState: DispatchThreadStateV2, worker
   return (workerState?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
 }
 
-function hasExhaustedValidationCycles(workerState: DispatchThreadStateV2["workers"][string] | undefined): boolean {
+export function hasExhaustedValidationCycles(workerState: DispatchThreadStateV2["workers"][string] | undefined): boolean {
   const validation = workerState?.validation;
   if (!validation || validation.max_fix_cycles <= 0) {
     return false;
