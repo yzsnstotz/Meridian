@@ -126,7 +126,7 @@ export function resolveManualInterventionWorker(
     // 1.5h because Phase 1 of `processValidationQueue` never ran).
     if (
       workerState?.status === "failed"
-      && (workerState.validation?.history?.length ?? 0) >= (workerState.validation?.max_fix_cycles ?? Infinity)
+      && hasExhaustedValidationCycles(workerState)
     ) {
       continue;
     }
@@ -448,6 +448,10 @@ function isImplicitContinueRow(
     return false;
   }
 
+  if (worker?.status === "failed" && hasExhaustedValidationCycles(worker)) {
+    return false;
+  }
+
   // Validation-owned workers are not eligible for implicit continuation.
   // The validator orchestrator manages their lifecycle.
   if (worker?.status === "awaiting_validation" || worker?.status === "fix_requested") {
@@ -533,11 +537,25 @@ function isRetryableTerminalWorker(lifecycleState: DispatchThreadStateV2, worker
     return false;
   }
 
+  if (workerState?.status === "failed" && hasExhaustedValidationCycles(workerState)) {
+    return false;
+  }
+
   if (workerState?.hub_result && hubResultRequiresManualIntervention(workerState.hub_result)) {
     return false;
   }
 
   return (workerState?.retry_count ?? 0) < MAX_AUTOMATIC_RECOVERY_RETRIES;
+}
+
+function hasExhaustedValidationCycles(workerState: DispatchThreadStateV2["workers"][string] | undefined): boolean {
+  const validation = workerState?.validation;
+  if (!validation || validation.max_fix_cycles <= 0) {
+    return false;
+  }
+
+  const completedCycles = Math.max(validation.current_cycle, validation.history.length);
+  return completedCycles >= validation.max_fix_cycles;
 }
 
 function hubResultRequiresManualIntervention(
