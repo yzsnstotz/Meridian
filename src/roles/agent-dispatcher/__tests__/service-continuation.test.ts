@@ -441,6 +441,62 @@ describe("service continuation", () => {
     expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
   });
 
+  it("does not auto-retry a validator-decided failed worker after max cycles are exhausted", () => {
+    const rows = [
+      { status: "❌", batch: "4", worker: "R-07", model: "CODEX", depends_on: "R-03,R-04,R-05,R-06" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "R-07": {
+        status: "failed",
+        retry_count: 0,
+        validation: {
+          current_cycle: 18,
+          max_fix_cycles: 5,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "same blockers after repeated validation",
+          history: Array.from({ length: 18 }, (_, index) => ({
+            cycle: index + 1,
+            score: 0.5,
+            feedback: `feedback ${index + 1}`,
+            validator_thread_id: `validator-${index + 1}`,
+            timestamp: "2026-06-16T11:12:11.852Z"
+          })),
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveEligibleServiceContinueWorkers(rows, lifecycleState, { limit: 2 })).toEqual([]);
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not implicitly continue a stale running row after validator max cycles are exhausted", () => {
+    const rows = [
+      { status: "🔄", batch: "4", worker: "R-07", model: "CODEX", depends_on: "R-03,R-04,R-05,R-06" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "R-07": {
+        status: "failed",
+        retry_count: 0,
+        validation: {
+          current_cycle: 5,
+          max_fix_cycles: 5,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "max cycles exhausted",
+          history: [],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+  });
+
   it("still flags manual intervention for a failed worker that has not exhausted max cycles", () => {
     // Worker reached `failed` via a non-validator path (e.g. transport
     // error, hit_limit, outcome:failed marker) before the validator could
