@@ -2307,6 +2307,110 @@ describe("role config handlers", () => {
     }
   });
 
+  it("continues past a force-completed worker without revalidating the same commit", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-force-complete-no-revalidate-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async () => ({
+      ok: true,
+      threadId: "worker-thread-r08"
+    }));
+    const fetchSpy = vi.fn((input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      const url = input instanceof Request
+        ? input.url
+        : input instanceof URL
+          ? input.href
+          : input.toString();
+      throw new Error(`unexpected Meridian API request: ${new URL(url).pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      "| ✅ | 4 | R-07 | Force-completed validated task | CODEX-XHIGH | R-03, R-04 | TaskSpec | operator override |",
+      "| ⬜ | 4 | R-08 | Next eligible worker | CODEX-XHIGH | R-07 | TaskSpec | should launch |"
+    ].join("\n"), "utf8");
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: "dispatcher-thread-123",
+        started_at: "2026-06-16T12:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "R-07": buildLifecycleWorker({
+          thread_id: "worker-thread-r07",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null
+        })
+      },
+      last_reconciled_at: null
+    });
+
+    try {
+      const harness = createHarness(
+        undefined,
+        undefined,
+        [],
+        null,
+        null,
+        null,
+        null,
+        launchDispatchWorker
+      );
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-force-complete-no-revalidate",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:ops"
+          }
+        ],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        validator: {
+          enabled: true,
+          agent_type: "codex",
+          mode: "bridge",
+          pass_threshold: 0.85,
+          max_fix_cycles: 5,
+          base_branch: "main"
+        }
+      });
+
+      await expect(invokeJson(
+        harness.roleHandlers,
+        "POST",
+        "/api/agent-dispatcher/agent-dispatcher-force-complete-no-revalidate/continue"
+      )).resolves.toMatchObject({
+        ok: true,
+        status: "continued",
+        message: "continued: R-08",
+        worker: "R-08"
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(launchDispatchWorker).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: "R-08",
+        dispatchPlanPath
+      }));
+      expect(lifecycleStore.load().workers["R-07"]?.status).toBe("completed");
+      expect(lifecycleStore.load().workers["R-08"]?.status).toBe("running");
+    } finally {
+      vi.unstubAllGlobals();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("kills orphaned worker threads and restores dispatch files when continue hits a detached run bootstrap failure", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-bootstrap-failure-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");

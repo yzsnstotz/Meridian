@@ -3305,6 +3305,15 @@ function resolveCompletedWorkerValidationDisposition(
     return null;
   }
 
+  // Operator overrides (update-status completed, resume-worker force-complete,
+  // PM force_complete) authoritatively mark the plan row ✅ without a numeric
+  // validator score. Do not send those rows back through validation just
+  // because role-level validation is enabled; that revalidates the same commit
+  // after manual recovery and can block the dispatcher from moving on.
+  if (row.status.trim() === "✅" && (!worker.validation || typeof worker.validation.last_score !== "number")) {
+    return null;
+  }
+
   if (!worker.validation) {
     return "awaiting_validation";
   }
