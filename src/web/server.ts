@@ -86,6 +86,19 @@ const spawnRequestBodySchema = z.object({
   credential_id: z.string().min(1).optional()
 });
 
+const directTextTestBodySchema = z.object({
+  type: AgentTypeSchema.optional(),
+  provider: AgentTypeSchema.optional(),
+  content: z.string().min(1, "content is required"),
+  model_id: z.string().min(1).optional(),
+  effort: ReasoningEffortSchema.optional(),
+  /** GUI picker path or direct absolute directory override. */
+  repo: z.string().optional(),
+  /** Absolute working directory for the temporary test agent. */
+  spawn_dir: z.string().optional(),
+  credential_id: z.string().min(1).optional()
+});
+
 const filesQuerySchema = z.object({
   thread_id: z.string().min(1),
   depth: z.coerce.number().int().min(1).max(12).default(6)
@@ -377,6 +390,33 @@ function normalizeThreadSelector(threadId: string | undefined): { thread_id: str
     thread_id: normalized,
     target: normalized
   };
+}
+
+function extractSpawnedThreadId(result: HubResult): string {
+  if (result.thread_id && result.thread_id !== "pending") {
+    return result.thread_id;
+  }
+
+  try {
+    const parsed = JSON.parse(result.content) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      if (typeof record.thread_id === "string" && record.thread_id.trim()) {
+        return record.thread_id.trim();
+      }
+      const instance = record.instance;
+      if (instance && typeof instance === "object") {
+        const instanceRecord = instance as Record<string, unknown>;
+        if (typeof instanceRecord.thread_id === "string" && instanceRecord.thread_id.trim()) {
+          return instanceRecord.thread_id.trim();
+        }
+      }
+    }
+  } catch {
+    // Fall through to the shaped error below.
+  }
+
+  throw new Error("Hub spawn response did not include a thread_id");
 }
 
 function parseInstancesContent(content: string): unknown[] {
@@ -771,6 +811,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/run" && request.method === "POST") {
       await this.handleRunRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/direct_text_test" && request.method === "POST") {
+      await this.handleDirectTextTestRequest(request, response);
       return;
     }
 
@@ -1244,6 +1289,125 @@ export class WebInterfaceServer {
     }
   }
 
+  private async handleDirectTextTestRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    const sessionId = this.resolveSessionId(request, this.getRequestUrl(request), response);
+    const body = directTextTestBodySchema.parse(await this.readJsonBody(request));
+    if (body.provider && body.type && body.provider !== body.type) {
+      this.respondJson(response, 400, { error: "provider and type must match when both are supplied" });
+      return;
+    }
+
+    const provider = body.provider ?? body.type ?? "codex";
+    const modelReference = parseModelReference(body.model_id, body.effort);
+    const mode = provider === "codex" ? "stateless_call" : "bridge";
+    let spawnDir: string | undefined;
+    try {
+      spawnDir = await this.resolveSpawnDirectoryForSpawnRequest(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.respondJson(response, 400, { error: message });
+      return;
+    }
+
+    let threadId: string | null = null;
+    try {
+      const spawnResult = HubResultSchema.parse(
+        await this.requestHubForRequest(
+          request,
+          this.buildHubMessage({
+            sessionId,
+            intent: "spawn",
+            thread_id: "pending",
+            target: provider,
+            content: "",
+            mode,
+            autoApprove: false,
+            spawnDir,
+            modelId: modelReference.modelId,
+            effort: modelReference.reasoningEffort,
+            sandboxMode: provider === "codex" ? "read-only" : undefined,
+            credentialId: body.credential_id,
+            caller: this.extractInboundCaller(request)
+          })
+        )
+      );
+      if (spawnResult.status !== "success") {
+        this.respondJson(response, 502, {
+          ok: false,
+          provider,
+          status: spawnResult.status,
+          error: this.friendlyErrorMessage(spawnResult.content)
+        });
+        return;
+      }
+
+      threadId = extractSpawnedThreadId(spawnResult);
+      const runResult = HubResultSchema.parse(
+        await this.requestHubForRequest(
+          request,
+          this.buildHubMessage({
+            sessionId,
+            intent: "run",
+            thread_id: threadId,
+            target: threadId,
+            content: body.content,
+            mode
+          }),
+          { run: true }
+        )
+      );
+      await this.recordUsageForRunRequest(request, runResult, body.content);
+
+      if (runResult.status !== "success") {
+        this.respondJson(response, 502, {
+          ok: false,
+          provider,
+          thread_id: runResult.thread_id,
+          status: runResult.status,
+          run_state: runResult.run_state ?? null,
+          error: this.friendlyErrorMessage(runResult.content),
+          content: runResult.content
+        });
+        return;
+      }
+
+      this.respondJson(response, 200, {
+        ok: true,
+        provider,
+        thread_id: runResult.thread_id,
+        status: runResult.status,
+        run_state: runResult.run_state ?? null,
+        model_id: runResult.model_id ?? modelReference.modelId ?? null,
+        credential_id: runResult.credential_id ?? body.credential_id ?? null,
+        content: runResult.content,
+        usage: runResult.usage ?? null
+      });
+    } finally {
+      if (threadId) {
+        try {
+          await this.requestHubForRequest(
+            request,
+            this.buildHubMessage({
+              sessionId,
+              intent: "kill",
+              thread_id: threadId,
+              target: threadId,
+              content: ""
+            })
+          );
+        } catch (error) {
+          this.logger.warn(
+            { thread_id: threadId, err: error instanceof Error ? error.message : String(error) },
+            "Direct text test cleanup failed"
+          );
+        }
+      }
+    }
+  }
+
   private async handleThreadActionRequest(
     request: http.IncomingMessage,
     response: http.ServerResponse,
@@ -1340,7 +1504,7 @@ export class WebInterfaceServer {
    * `spawn_dir` values may point anywhere on the host. Hub receives `spawn_dir` in the message payload.
    */
   private async resolveSpawnDirectoryForSpawnRequest(
-    body: z.infer<typeof spawnRequestBodySchema>
+    body: { repo?: string; spawn_dir?: string }
   ): Promise<string | undefined> {
     const root = path.resolve(config.AGENT_WORKDIR);
     const rawSpawnDir = body.spawn_dir?.trim();

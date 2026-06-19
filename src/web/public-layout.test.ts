@@ -550,6 +550,9 @@ test("hub layout exposes provider selection and persists spawn preferences", asy
   assert.match(indexHtml, /id="btn-spawn-workspace"/);
   assert.match(indexHtml, /\/api\/models\?provider=/);
   assert.match(indexHtml, /\/api\/spawn_repos\/browse/);
+  assert.match(indexHtml, /id="direct-test-prompt"/);
+  assert.match(indexHtml, /id="btn-direct-test"/);
+  assert.match(indexHtml, /\/api\/direct_text_test/);
   assert.match(indexHtml, /SPAWN_PROVIDER_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_MODE_STORAGE_KEY/);
   assert.match(indexHtml, /SPAWN_MODEL_STORAGE_KEY/);

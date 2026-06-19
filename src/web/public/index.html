@@ -117,6 +117,36 @@
       box-sizing: border-box;
       justify-content: flex-start;
     }
+    .direct-test-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem 0.875rem;
+      align-items: stretch;
+      width: 100%;
+    }
+    .direct-test-input {
+      min-width: 0;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--border-color);
+      border-radius: 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-color);
+      font-size: 0.875rem;
+      font-family: inherit;
+    }
+    .direct-test-input:focus {
+      outline: 2px solid rgba(59, 130, 246, 0.45);
+      outline-offset: 1px;
+    }
+    .direct-test-result {
+      min-height: 1.1rem;
+      color: var(--text-dim);
+      font-size: 0.8125rem;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .direct-test-result.ok { color: var(--success-color); }
+    .direct-test-result.error { color: var(--error-color); }
     .btn-workspace {
       min-width: 0;
       padding: 0.75rem 0.9rem;
@@ -524,6 +554,15 @@
     .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
     .btn-primary:active { transform: translateY(0); }
     .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: rgba(59, 130, 246, 0.12);
+      color: #dbeafe;
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      white-space: nowrap;
+    }
+    .btn-secondary:hover { background: rgba(59, 130, 246, 0.2); transform: translateY(-1px); }
+    .btn-secondary:active { transform: translateY(0); }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
     .card-grid {
       display: grid;
@@ -1160,6 +1199,9 @@
       .spawn-row-bottom-grid {
         grid-template-columns: 1fr;
       }
+      .direct-test-row {
+        grid-template-columns: 1fr;
+      }
       #app { padding: 1rem; padding-bottom: 5rem; }
       .card-grid { grid-template-columns: 1fr; gap: 0.75rem; }
       header { padding: calc(1rem + var(--safe-area-inset-top)) 1rem 1rem; }
@@ -1254,6 +1296,21 @@
                 </label>
               </div>
             </div>
+            <div class="direct-test-row">
+              <input
+                id="direct-test-prompt"
+                class="direct-test-input"
+                type="text"
+                aria-label="Direct text test prompt"
+                placeholder="Direct text test prompt"
+                value="Reply with a short confirmation."
+              />
+              <button type="button" id="btn-direct-test" class="btn btn-secondary" title="Run the selected CLI with this prompt">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg>
+                Test CLI
+              </button>
+            </div>
+            <div id="direct-test-result" class="direct-test-result" role="status" aria-live="polite"></div>
           </div>
         </div>
         <div id="refresh-indicator" class="toolbar-live" style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.5rem;">
@@ -1436,6 +1493,9 @@
       var loadingEl = document.getElementById("loading");
       var emptyStateEl = document.getElementById("empty-state");
       var btnSpawn = document.getElementById("btn-spawn");
+      var directTestPromptEl = document.getElementById("direct-test-prompt");
+      var btnDirectTest = document.getElementById("btn-direct-test");
+      var directTestResultEl = document.getElementById("direct-test-result");
       var logOverviewSubtitleEl = document.getElementById("log-overview-subtitle");
       var logTotalSizeEl = document.getElementById("log-total-size");
       var logFileCountEl = document.getElementById("log-file-count");
@@ -2799,7 +2859,84 @@
           .finally(function () { btnSpawn.disabled = false; });
       }
 
+      function setDirectTestResult(kind, text) {
+        if (!directTestResultEl) return;
+        directTestResultEl.className = "direct-test-result" + (kind ? " " + kind : "");
+        directTestResultEl.textContent = text || "";
+      }
+
+      function buildSelectedAgentPayload() {
+        var repoPayload = {};
+        if (spawnRepoRelative && String(spawnRepoRelative).trim()) {
+          repoPayload.repo = String(spawnRepoRelative).trim();
+        }
+        var selectedModelId = spawnModelEl && String(spawnModelEl.value || "").trim();
+        var selectedEffort = spawnEffortEl && String(spawnEffortEl.value || "").trim();
+        var parsedModel = parseModelReferenceWithEffort(selectedModelId, selectedEffort);
+        var modelPayload = {};
+        if (parsedModel.modelId) {
+          modelPayload.model_id = parsedModel.modelId;
+        }
+        if (parsedModel.reasoningEffort) {
+          modelPayload.effort = parsedModel.reasoningEffort;
+        }
+        var credentialPayload = {};
+        var selectedCredentialId = spawnCredentialEl && String(spawnCredentialEl.value || "").trim();
+        if (selectedCredentialId) {
+          credentialPayload.credential_id = selectedCredentialId;
+        }
+        return Object.assign({
+          provider: providerEl && providerEl.value ? providerEl.value : "codex"
+        }, repoPayload, modelPayload, credentialPayload);
+      }
+
+      function directTextTest() {
+        if (!window.MeridianWeb.ensureToken()) return;
+        var promptText = directTestPromptEl && String(directTestPromptEl.value || "").trim();
+        if (!promptText) {
+          setDirectTestResult("error", "Prompt required.");
+          return;
+        }
+        saveSpawnPreferences();
+        if (btnDirectTest) btnDirectTest.disabled = true;
+        setDirectTestResult("", "Running direct test...");
+        window.MeridianWeb.fetchWithAuth("/api/direct_text_test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign(buildSelectedAgentPayload(), {
+            content: promptText
+          }))
+        })
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok || body.ok === false) {
+                setDirectTestResult("error", body.error || body.content || "Direct test failed.");
+                return;
+              }
+              var label = (body.provider || "CLI") + (body.model_id ? " · " + body.model_id : "");
+              setDirectTestResult("ok", label + ": " + (body.content || "Completed."));
+            });
+          })
+          .catch(function () {
+            setDirectTestResult("error", "Network error during direct test.");
+          })
+          .finally(function () {
+            if (btnDirectTest) btnDirectTest.disabled = false;
+          });
+      }
+
       btnSpawn.addEventListener("click", spawn);
+      if (btnDirectTest) {
+        btnDirectTest.addEventListener("click", directTextTest);
+      }
+      if (directTestPromptEl) {
+        directTestPromptEl.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            directTextTest();
+          }
+        });
+      }
       if (closeStatelessCardsBtn) {
         closeStatelessCardsBtn.addEventListener("click", function () {
           closeAllStatelessCards(lastRenderedInstances);
