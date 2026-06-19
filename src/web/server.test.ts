@@ -778,6 +778,104 @@ test("Web Interface Server records run usage meters for scoped queries", async (
   }
 });
 
+test("Web Interface Server direct text test spawns, runs, and cleans up selected CLI", async () => {
+  const seenMessages: HubMessage[] = [];
+
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/direct_text_test?token=secret-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "codex",
+        model_id: "gpt-5.4",
+        effort: "xhigh",
+        credential_id: "cred-codex-1",
+        content: "Reply with exactly: gateway ok"
+      })
+    });
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      ok: boolean;
+      provider: string;
+      model_id: string;
+      credential_id: string | null;
+      thread_id: string;
+      status: string;
+      content: string;
+    };
+
+    assert.equal(payload.ok, true);
+    assert.equal(payload.provider, "codex");
+    assert.equal(payload.model_id, "gpt-5.4");
+    assert.equal(payload.credential_id, "cred-codex-1");
+    assert.equal(payload.thread_id, "codex_stateless_test_01");
+    assert.equal(payload.status, "success");
+    assert.equal(payload.content, "gateway ok");
+  }, {
+    requestHub: async (message: HubMessage) => {
+      seenMessages.push(message);
+      if (message.intent === "spawn") {
+        assert.equal(message.target, "codex");
+        assert.equal(message.mode, "stateless_call");
+        assert.equal(message.payload.model_id, "gpt-5.4");
+        assert.equal(message.payload.effort, "xhigh");
+        assert.equal(message.payload.credential_id, "cred-codex-1");
+        assert.equal(message.payload.sandbox_mode, "read-only");
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_stateless_test_01",
+          source: "codex",
+          status: "success",
+          content: JSON.stringify({ thread_id: "codex_stateless_test_01" }),
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+      if (message.intent === "kill") {
+        assert.equal(message.thread_id, "codex_stateless_test_01");
+        assert.equal(message.target, "codex_stateless_test_01");
+        return {
+          trace_id: message.trace_id,
+          thread_id: "codex_stateless_test_01",
+          source: "codex",
+          status: "success",
+          content: "Agent instance codex_stateless_test_01 killed",
+          attachments: [],
+          timestamp: new Date().toISOString()
+        };
+      }
+      throw new Error(`unexpected requestHub intent=${message.intent}`);
+    },
+    requestHubRun: async (message: HubMessage) => {
+      seenMessages.push(message);
+      assert.equal(message.intent, "run");
+      assert.equal(message.thread_id, "codex_stateless_test_01");
+      assert.equal(message.target, "codex_stateless_test_01");
+      assert.equal(message.mode, "stateless_call");
+      assert.equal(message.payload.content, "Reply with exactly: gateway ok");
+      return {
+        trace_id: message.trace_id,
+        thread_id: "codex_stateless_test_01",
+        source: "codex",
+        model_id: "gpt-5.4",
+        credential_id: "cred-codex-1",
+        status: "success",
+        run_state: "completed",
+        content: "gateway ok",
+        usage: { total_tokens: 9 },
+        attachments: [],
+        timestamp: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.deepEqual(
+    seenMessages.map((message) => message.intent),
+    ["spawn", "run", "kill"]
+  );
+});
+
 test("Web Interface Server returns history thread index and model catalog", async () => {
   const seenIntents: string[] = [];
   await withServer(async ({ baseUrl }) => {

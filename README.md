@@ -1,5 +1,40 @@
 # Meridian Phase 0
 
+## Meridian Gateway Service
+
+`meridian-gateway` is Meridian's OpenAI-compatible HTTP front door for logged-in
+CLI subscriptions. It exposes `/v1/chat/completions`, `/v1/models`, and
+Anthropic-compatible `/v1/messages` routes, then routes each request to the
+matching local CLI provider: Codex, Claude, or Gemini. The service is designed
+for tools that already know the OpenAI or Anthropic wire format but should use
+the user's existing subscription login instead of direct provider API keys.
+
+Start it locally:
+
+```bash
+MERIDIAN_GATEWAY_PORT=8789 npx tsx src/web/v1-gateway.ts
+```
+
+On first start it creates an API key at
+`~/.meridian-gateway/gateway-key`. Use that key as `Authorization: Bearer
+<key>` for OpenAI-compatible calls, or as `x-api-key: <key>` for
+Anthropic-compatible calls. The root page and `/providers/*` login routes help
+connect or install the backing CLIs; `/v1/models` lists only models whose
+provider is currently connected.
+
+Example:
+
+```bash
+KEY="$(cat ~/.meridian-gateway/gateway-key)"
+curl http://127.0.0.1:8789/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.4",
+    "messages": [{ "role": "user", "content": "Say gateway ok." }]
+  }'
+```
+
 ## Telegram Bot Registration (T-03)
 1. Open `@BotFather` in Telegram and run `/newbot`.
 1. Save the generated token and set `TELEGRAM_BOT_TOKEN` in `.env`.
