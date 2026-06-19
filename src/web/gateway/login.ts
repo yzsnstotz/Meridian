@@ -14,7 +14,7 @@
 // commands + credential files); only POST /providers/:id/login spawns a CLI,
 // and it does so detached so the browser flow never blocks the gateway.
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, renameSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
 import { claudeAgentConfig } from "../../agents/claude";
@@ -58,6 +58,13 @@ export interface InstallResult {
   installed: boolean;
   error?: string;
   command?: string;
+}
+
+export interface LogoutResult {
+  ok: boolean;
+  detail?: string;
+  command?: string;
+  error?: string;
 }
 
 export interface ProviderAuthSummary {
@@ -190,6 +197,8 @@ function runProbe(command: string, args: string[], timeoutMs = 8000): Promise<{ 
     child.on("close", (code) => done(code));
   });
 }
+
+type ProbeRunner = typeof runProbe;
 
 // ── Per-provider detection ──────────────────────────────────────────────────
 
@@ -438,6 +447,98 @@ export function installProvider(id: ProviderId, timeoutMs = 300000): Promise<Ins
     });
   });
 }
+
+// ── Logout / account switch ──────────────────────────────────────────────────
+
+interface LogoutDeps {
+  homeDir?: string;
+  now?: () => Date;
+  run?: ProbeRunner;
+}
+
+const PROVIDER_LOGOUT_COMMANDS: Record<ProviderId, string[][]> = {
+  claude: [["auth", "logout"]],
+  codex: [["logout"], ["login", "logout"]],
+  gemini: [],
+};
+
+function credentialFilesFor(id: ProviderId, homeDir: string): string[] {
+  if (id === "claude") {
+    return [
+      join(homeDir, ".claude", ".credentials.json"),
+      join(homeDir, ".claude", "credentials.json"),
+    ];
+  }
+  if (id === "codex") return [join(homeDir, ".codex", "auth.json")];
+  return [join(homeDir, ".gemini", "oauth_creds.json")];
+}
+
+function displayLocalPath(filePath: string, homeDir: string): string {
+  const homeWithSlash = homeDir.endsWith("/") ? homeDir : homeDir + "/";
+  return filePath.startsWith(homeWithSlash) ? "~/" + filePath.slice(homeWithSlash.length) : filePath;
+}
+
+function backupCredentialFile(filePath: string, homeDir: string, now: Date): LogoutResult | null {
+  if (!existsSync(filePath)) return null;
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  let backupPath = `${filePath}.logged-out-${stamp}`;
+  let suffix = 2;
+  while (existsSync(backupPath)) {
+    backupPath = `${filePath}.logged-out-${stamp}-${suffix}`;
+    suffix += 1;
+  }
+  try {
+    renameSync(filePath, backupPath);
+    return {
+      ok: true,
+      detail: `Signed out. Previous credential file backed up as ${displayLocalPath(backupPath, homeDir)}.`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not move credential file: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+function commandText(command: string, args: string[]): string {
+  return [command, ...args].join(" ");
+}
+
+export async function logoutProvider(id: ProviderId, deps: LogoutDeps = {}): Promise<LogoutResult> {
+  ensureSpawnPath();
+  const run = deps.run ?? runProbe;
+  const homeDir = deps.homeDir ?? homedir();
+  const now = deps.now ?? (() => new Date());
+  const command = PROVIDER_PACKAGES[id].bin;
+
+  for (const args of PROVIDER_LOGOUT_COMMANDS[id]) {
+    const result = await run(command, args, 12000);
+    if (result.code === 0) {
+      return {
+        ok: true,
+        detail: `Signed out with ${LABELS_FOR_RESULT[id]} CLI.`,
+        command: commandText(command, args),
+      };
+    }
+  }
+
+  for (const filePath of credentialFilesFor(id, homeDir)) {
+    const result = backupCredentialFile(filePath, homeDir, now());
+    if (result) return result;
+  }
+
+  return {
+    ok: true,
+    detail: "No local session file was found. You can connect again to choose an account.",
+  };
+}
+
+const LABELS_FOR_RESULT: Record<ProviderId, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+};
 
 // ── Login kick-off ───────────────────────────────────────────────────────────
 
@@ -744,6 +845,35 @@ export function renderLoginPage(port: number): string {
   }
   @keyframes ping { 0% { transform: scale(.6); opacity: .5; } 100% { transform: scale(2.2); opacity: 0; } }
 
+  .tabs {
+    display: inline-flex;
+    gap: 4px;
+    margin: -8px 2px 24px;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .tab-btn {
+    appearance: none;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    padding: 7px 14px;
+  }
+  .tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+  }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
   section { margin-bottom: 22px; }
   .sec-head { margin: 0 2px 11px; }
   .sec-head h2 { font-size: 13px; font-weight: 640; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0; }
@@ -801,8 +931,13 @@ export function renderLoginPage(port: number): string {
     white-space: nowrap;
   }
   .card .fact.warn { color: #b7791f; border-color: rgba(183,121,31,.35); }
-  .card .actions { grid-area: actions; display: flex; }
+  .card .actions { grid-area: actions; display: flex; gap: 8px; align-items: stretch; }
   .card .actions button.btn, .card .actions .badge-ok { width: 100%; justify-content: center; }
+  .card.connected .actions .badge-ok {
+    flex: 1 1 auto;
+    min-width: 0;
+    border-radius: 10px;
+  }
 
   button.btn {
     appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 600;
@@ -815,6 +950,15 @@ export function renderLoginPage(port: number): string {
   .card.claude  button.btn { background: var(--claude); }
   .card.codex   button.btn { background: var(--codex); }
   .card.gemini  button.btn { background: var(--gemini); }
+  button.logout-btn {
+    appearance: none; flex: 0 0 auto; min-width: 92px; cursor: pointer; font: inherit; font-weight: 600;
+    border-radius: 10px; padding: 8px 13px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--border-strong);
+    transition: background .12s ease, border-color .12s ease, color .12s ease, transform .04s ease;
+  }
+  button.logout-btn:hover { border-color: var(--accent); color: var(--accent); }
+  button.logout-btn:active { transform: translateY(1px); }
+  button.logout-btn:disabled { opacity: .55; cursor: default; transform: none; }
   .badge-ok {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 13px; font-weight: 600; color: var(--ok);
@@ -974,10 +1118,60 @@ export function renderLoginPage(port: number): string {
     line-height: 1.5;
   }
   .model-errors b { color: var(--muted); }
+  .usage-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .usage-table-wrap { width: 100%; overflow-x: auto; }
+  table.usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 680px;
+  }
+  .usage-table th,
+  .usage-table td {
+    padding: 11px 14px;
+    border-top: 1px solid var(--border);
+    text-align: left;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .usage-table tr:first-child th { border-top: 0; }
+  .usage-table th {
+    color: var(--faint);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+  }
+  .usage-table td {
+    color: var(--text);
+    font-size: 13px;
+  }
+  .usage-table .number { text-align: right; font-variant-numeric: tabular-nums; }
+  .usage-table .model {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-weight: 650;
+  }
+  .usage-provider {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-weight: 650;
+  }
+  .usage-provider::before {
+    content: "";
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .usage-provider.claude::before { background: var(--claude); }
+  .usage-provider.codex::before { background: var(--codex); }
+  .usage-provider.gemini::before { background: var(--gemini); }
+  .usage-empty { padding: 18px 16px; color: var(--faint); font-size: 13.5px; }
   footer { margin: 30px 2px 0; text-align: center; font-size: 12px; color: var(--faint); }
   @media (max-width: 760px) {
     .test-grid { grid-template-columns: 1fr; }
     .test-grid button { width: 100%; }
+    .tabs { display: flex; }
+    .tab-btn { flex: 1 1 0; }
   }
 </style>
 </head>
@@ -997,6 +1191,12 @@ export function renderLoginPage(port: number): string {
       <span class="pill" id="runPill"><span class="dot"></span>Running</span>
     </header>
 
+    <nav class="tabs" aria-label="Gateway pages">
+      <button class="tab-btn active" type="button" data-tab="setup">Setup</button>
+      <button class="tab-btn" type="button" data-tab="usage">Usage</button>
+    </nav>
+
+    <div class="tab-panel active" id="setupPanel">
     <section>
       <div class="sec-head">
         <h2>Connect your AI subscriptions</h2>
@@ -1101,6 +1301,26 @@ export function renderLoginPage(port: number): string {
       <div class="sec-head"><h2>Models</h2></div>
       <div class="models" id="models"><div class="empty">Loading models…</div></div>
     </section>
+    </div>
+
+    <div class="tab-panel" id="usagePanel">
+      <section>
+        <div class="sec-head"><h2>Supplier totals</h2></div>
+        <div class="usage-card">
+          <div class="usage-table-wrap" id="usageSummary">
+            <div class="usage-empty">No usage recorded yet.</div>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div class="sec-head"><h2>Request log</h2></div>
+        <div class="usage-card">
+          <div class="usage-table-wrap" id="usageLog">
+            <div class="usage-empty">No usage recorded yet.</div>
+          </div>
+        </div>
+      </section>
+    </div>
 
     <footer>Served locally by Meridian Gateway · this page never leaves your machine</footer>
   </div>
@@ -1128,6 +1348,7 @@ export function renderLoginPage(port: number): string {
   // clobber the spinner/hint with a stale "Set up"/"Connect" button.
   var busy = {};
   var modelCache = [];
+  var activeTab = "setup";
 
   function el(card, sel) { return card.querySelector(sel); }
   function cardFor(id) { return document.querySelector('.card[data-id="' + id + '"]'); }
@@ -1174,7 +1395,8 @@ export function renderLoginPage(port: number): string {
       detail.textContent = state.detail || "";
       detail.style.display = state.detail ? "" : "none";
       renderFacts(card, state);
-      actions.innerHTML = okBadge();
+      actions.innerHTML = okBadge() + '<button class="logout-btn" type="button">Log out</button>';
+      actions.querySelector(".logout-btn").addEventListener("click", function () { logout(id); });
       hideHint(id);
       stopPoll(id);
     } else if (!installed) {
@@ -1295,6 +1517,35 @@ export function renderLoginPage(port: number): string {
       });
   }
 
+  function logout(id) {
+    var card = cardFor(id);
+    var btn = card && el(card, ".actions .logout-btn");
+    busy[id] = true;
+    stopPoll(id);
+    if (btn) { btn.disabled = true; btn.textContent = "Signing out…"; }
+    showHint(id, "Signing out of " + (LABELS[id] || id) + "…", true);
+    fetch("/providers/" + id + "/logout", { method: "POST" })
+      .then(function (r) {
+        return r.json().then(function (res) { return { ok: r.ok, res: res }; });
+      })
+      .then(function (payload) {
+        busy[id] = false;
+        var res = payload.res || {};
+        if (payload.ok && res.ok !== false) {
+          showHint(id, esc(res.detail || "Signed out. Connect again to choose an account."), false);
+          refreshStatus(true).then(function () { loadModels(); });
+          return;
+        }
+        showHint(id, esc(res.error || "Couldn’t sign out. Please try again."), false);
+        refreshStatus(true);
+      })
+      .catch(function () {
+        busy[id] = false;
+        showHint(id, "Couldn’t sign out. Please try again.", false);
+        refreshStatus(true);
+      });
+  }
+
   function startPoll(id) {
     stopPoll(id);
     pollTimers[id] = setInterval(function () { refreshStatus(true); }, POLL_MS);
@@ -1363,6 +1614,100 @@ export function renderLoginPage(port: number): string {
       });
   }
 
+  function fmtTokens(value) {
+    var n = Number(value || 0);
+    return n.toLocaleString();
+  }
+
+  function fmtDuration(value) {
+    var n = Number(value || 0);
+    return n.toLocaleString() + " ms";
+  }
+
+  function fmtTime(value) {
+    if (!value) return "—";
+    try {
+      return new Date(value).toLocaleString();
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  function providerChip(provider) {
+    var label = LABELS[provider] || provider || "Unknown";
+    return '<span class="usage-provider ' + esc(provider || "") + '">' + esc(label) + '</span>';
+  }
+
+  function renderUsageSummary(rows) {
+    var box = document.getElementById("usageSummary");
+    rows = rows || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="usage-empty">No usage recorded yet.</div>';
+      return;
+    }
+    box.innerHTML = '<table class="usage-table"><thead><tr>' +
+      '<th>Supplier</th><th class="number">Requests</th><th class="number">Input</th>' +
+      '<th class="number">Output</th><th class="number">Token total</th>' +
+      '<th class="number">Avg response</th><th>Latest</th></tr></thead><tbody>' +
+      rows.map(function (row) {
+        return '<tr><td>' + providerChip(row.provider) + '</td>' +
+          '<td class="number">' + fmtTokens(row.requests) + '</td>' +
+          '<td class="number">' + fmtTokens(row.promptTokens) + '</td>' +
+          '<td class="number">' + fmtTokens(row.completionTokens) + '</td>' +
+          '<td class="number">' + fmtTokens(row.totalTokens) + '</td>' +
+          '<td class="number">' + fmtDuration(row.averageDurationMs) + '</td>' +
+          '<td>' + esc(fmtTime(row.latestAt)) + '</td></tr>';
+      }).join("") + '</tbody></table>';
+  }
+
+  function renderUsageLog(rows) {
+    var box = document.getElementById("usageLog");
+    rows = rows || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="usage-empty">No usage recorded yet.</div>';
+      return;
+    }
+    box.innerHTML = '<table class="usage-table"><thead><tr>' +
+      '<th>Time</th><th>Supplier</th><th>Model</th><th>Surface</th>' +
+      '<th class="number">Input</th><th class="number">Output</th><th class="number">Token total</th>' +
+      '<th class="number">Response time</th></tr></thead><tbody>' +
+      rows.map(function (row) {
+        return '<tr><td>' + esc(fmtTime(row.timestamp)) + '</td>' +
+          '<td>' + providerChip(row.provider) + '</td>' +
+          '<td class="model">' + esc(row.model || "—") + '</td>' +
+          '<td>' + esc(row.surface || "—") + '</td>' +
+          '<td class="number">' + fmtTokens(row.promptTokens) + '</td>' +
+          '<td class="number">' + fmtTokens(row.completionTokens) + '</td>' +
+          '<td class="number">' + fmtTokens(row.totalTokens) + '</td>' +
+          '<td class="number">' + fmtDuration(row.durationMs) + '</td></tr>';
+      }).join("") + '</tbody></table>';
+  }
+
+  function renderUsage(data) {
+    renderUsageSummary((data && data.summary) || []);
+    renderUsageLog((data && data.log) || []);
+  }
+
+  function loadUsage() {
+    fetch("/usage")
+      .then(function (r) { return r.json(); })
+      .then(renderUsage)
+      .catch(function () {
+        document.getElementById("usageSummary").innerHTML = '<div class="usage-empty">Couldn’t load usage.</div>';
+        document.getElementById("usageLog").innerHTML = '<div class="usage-empty">Couldn’t load usage.</div>';
+      });
+  }
+
+  function switchTab(name) {
+    activeTab = name || "setup";
+    Array.prototype.forEach.call(document.querySelectorAll(".tab-btn"), function (btn) {
+      btn.classList.toggle("active", btn.getAttribute("data-tab") === activeTab);
+    });
+    document.getElementById("setupPanel").classList.toggle("active", activeTab === "setup");
+    document.getElementById("usagePanel").classList.toggle("active", activeTab === "usage");
+    if (activeTab === "usage") loadUsage();
+  }
+
   function setTestResult(html, isError) {
     var result = document.getElementById("testResult");
     if (!result) return;
@@ -1401,6 +1746,7 @@ export function renderLoginPage(port: number): string {
         if (res && res.ok) {
           var meta = (LABELS[provider] || provider) + (res.model ? " · " + res.model : "");
           setTestResult('<span class="meta">' + esc(meta) + '</span>' + esc(res.text || ""), false);
+          loadUsage();
         } else {
           setTestResult('<span class="meta">' + esc(LABELS[provider] || provider) + '</span>' + esc((res && res.error) || "CLI test failed."), true);
         }
@@ -1463,6 +1809,11 @@ export function renderLoginPage(port: number): string {
       if (event.key === "Enter") runDirectTest();
     });
   }
+  Array.prototype.forEach.call(document.querySelectorAll(".tab-btn"), function (btn) {
+    btn.addEventListener("click", function () {
+      switchTab(btn.getAttribute("data-tab") || "setup");
+    });
+  });
 
   // ── API key: load, copy, rotate ─────────────────────────────────────────────
   var apiKeyField = document.getElementById("apiKeyField");
@@ -1509,6 +1860,7 @@ export function renderLoginPage(port: number): string {
   loadModels();
   loadKey();
   setInterval(function () { refreshStatus(true); }, IDLE_REFRESH_MS);
+  setInterval(function () { if (activeTab === "usage") loadUsage(); }, IDLE_REFRESH_MS);
 })();
 </script>
 </body>

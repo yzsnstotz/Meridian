@@ -13,7 +13,7 @@ import type http from "node:http";
 import { completeCodex, matchesCodex } from "./codex";
 import { completeGemini, matchesGemini } from "./gemini";
 import { streamClaude } from "./claude";
-import type { ChatCompletionRequest, FinishReason } from "./shared";
+import type { ChatCompletionRequest, CompletionResult, FinishReason } from "./shared";
 
 const SSE_HEADERS = {
   "content-type": "text/event-stream; charset=utf-8",
@@ -54,7 +54,7 @@ function sseChunk(
  * Stream a chat completion as OpenAI-compatible SSE. The caller has already
  * validated auth + the request body and has NOT written any headers yet.
  */
-export async function streamChatCompletion(res: http.ServerResponse, req: ChatCompletionRequest): Promise<void> {
+export async function streamChatCompletion(res: http.ServerResponse, req: ChatCompletionRequest): Promise<CompletionResult | null> {
   res.writeHead(200, SSE_HEADERS);
   const id = chunkId();
   const created = Math.floor(Date.now() / 1000);
@@ -69,6 +69,7 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
   if (!matchesCodex(req.model) && !matchesGemini(req.model)) {
     let finalModel = requestedModel;
     let finalReason: FinishReason = "stop";
+    let usage = { promptTokens: 0, completionTokens: 0 };
     let errored: Error | null = null;
     await streamClaude(req, {
       onDelta: (text) => {
@@ -77,6 +78,7 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
       onDone: (info) => {
         finalModel = info.model;
         finalReason = info.finishReason;
+        usage = info.usage;
       },
       onError: (err) => {
         errored = err;
@@ -90,7 +92,14 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
     sseChunk(res, id, created, finalModel, {}, finalReason);
     res.write("data: [DONE]\n\n");
     res.end();
-    return;
+    return {
+      text: "",
+      model: finalModel,
+      finishReason: finalReason,
+      usage,
+      isError: !!errored,
+      errorMessage: errored ? (errored as Error).message : undefined
+    };
   }
 
   // ── codex / gemini: buffered fallback (single content chunk) ──────────────
@@ -100,10 +109,11 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
     sseChunk(res, id, created, out.model, {}, "stop");
     res.write("data: [DONE]\n\n");
     res.end();
-    return;
+    return out;
   }
   if (out.text) sseChunk(res, id, created, out.model, { content: out.text }, null);
   sseChunk(res, id, created, out.model, {}, out.finishReason);
   res.write("data: [DONE]\n\n");
   res.end();
+  return out;
 }

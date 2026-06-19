@@ -18,7 +18,7 @@ import { completeCodex, matchesCodex } from "./codex";
 import { completeGemini, matchesGemini } from "./gemini";
 import { streamClaude } from "./claude";
 import { complete } from "./router";
-import { contentToText, type ChatMessage, type ChatCompletionRequest, type FinishReason } from "./shared";
+import { contentToText, type ChatMessage, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // ── Anthropic request shape ───────────────────────────────────────────────────
 type AnthropicContentBlock = { type?: string; text?: string };
@@ -85,6 +85,7 @@ export function toChatRequest(body: AnthropicMessagesRequest): ChatCompletionReq
 export interface AnthropicResult {
   status: number;
   body: unknown;
+  completion?: CompletionResult;
 }
 
 /** Build the non-stream Anthropic message object (or an Anthropic-shaped error). */
@@ -104,6 +105,7 @@ export async function handleAnthropicMessages(body: AnthropicMessagesRequest): P
   }
   return {
     status: 200,
+    completion: out,
     body: {
       id: messageId(),
       type: "message",
@@ -127,7 +129,7 @@ function sse(res: http.ServerResponse, event: string, data: unknown): void {
  * `stream:true`. Headers are written here; the caller must not have started the
  * response.
  */
-export async function streamAnthropicMessages(res: http.ServerResponse, body: AnthropicMessagesRequest): Promise<void> {
+export async function streamAnthropicMessages(res: http.ServerResponse, body: AnthropicMessagesRequest): Promise<CompletionResult | null> {
   res.writeHead(200, SSE_HEADERS);
   const id = messageId();
   const requestedModel = body.model ?? "claude";
@@ -165,6 +167,8 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
   let stopReason: "end_turn" | "max_tokens" | "tool_use" = "end_turn";
   let outputTokens = 0;
   let inputTokens = 0;
+  let finalModel = requestedModel;
+  let completion: CompletionResult | null = null;
 
   if (!matchesCodex(body.model) && !matchesGemini(body.model)) {
     // claude: real token streaming
@@ -175,6 +179,13 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
         stopReason = toAnthropicStop(info.finishReason);
         outputTokens = info.usage.completionTokens;
         inputTokens = info.usage.promptTokens;
+        finalModel = info.model;
+        completion = {
+          text: "",
+          model: info.model,
+          finishReason: info.finishReason,
+          usage: info.usage
+        };
       },
       onError: (err) => {
         errored = err;
@@ -184,6 +195,7 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
   } else {
     // codex / gemini: buffered single-block fallback
     const out = await (matchesCodex(body.model) ? completeCodex(chatReq) : completeGemini(chatReq));
+    finalModel = out.model;
     if (out.isError) {
       emitTextDelta(`[error: ${out.errorMessage ?? "upstream error"}]`);
     } else {
@@ -191,6 +203,7 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
       stopReason = toAnthropicStop(out.finishReason);
       outputTokens = out.usage.completionTokens;
       inputTokens = out.usage.promptTokens;
+      completion = out;
     }
   }
 
@@ -202,4 +215,12 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
   });
   sse(res, "message_stop", { type: "message_stop" });
   res.end();
+  return completion ?? {
+    text: "",
+    model: finalModel,
+    finishReason: stopReason === "max_tokens" ? "length" : stopReason === "tool_use" ? "tool_calls" : "stop",
+    usage: { promptTokens: inputTokens, completionTokens: outputTokens },
+    isError: inputTokens === 0 && outputTokens === 0,
+    errorMessage: inputTokens === 0 && outputTokens === 0 ? "stream ended without usage" : undefined
+  };
 }
