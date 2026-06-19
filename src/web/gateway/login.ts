@@ -29,6 +29,16 @@ export interface ProviderState {
   /** The CLI is installed AND signed in (its subscription can serve /v1). */
   connected: boolean;
   detail?: string;
+  /** Safe account identity surfaced by the provider, never raw token material. */
+  account?: string;
+  /** Subscription/plan tier when the provider exposes it through a status API. */
+  subscription?: string;
+  /** Authentication method such as Claude.ai, ChatGPT, or Google OAuth. */
+  auth?: string;
+  /** Non-secret credential/account identifier, useful when email is absent. */
+  credential?: string;
+  /** Explicit reason a dimension cannot be shown for this provider. */
+  limitation?: string;
 }
 
 export interface ProvidersStatus {
@@ -48,6 +58,14 @@ export interface InstallResult {
   installed: boolean;
   error?: string;
   command?: string;
+}
+
+export interface ProviderAuthSummary {
+  account?: string;
+  subscription?: string;
+  auth?: string;
+  credential?: string;
+  limitation?: string;
 }
 
 // ── CLI → npm-global package map ───────────────────────────────────────────────
@@ -175,6 +193,86 @@ function runProbe(command: string, args: string[], timeoutMs = 8000): Promise<{ 
 
 // ── Per-provider detection ──────────────────────────────────────────────────
 
+function decodeJwtPayload(token: unknown): Record<string, unknown> | null {
+  if (typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (payload.length % 4) payload += "=";
+    const decoded = Buffer.from(payload, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function jwtAccount(token: unknown): string | undefined {
+  const payload = decodeJwtPayload(token);
+  const email = payload?.email;
+  if (typeof email === "string" && email.trim()) return email.trim();
+  const preferredUsername = payload?.preferred_username;
+  if (typeof preferredUsername === "string" && preferredUsername.trim()) return preferredUsername.trim();
+  const subject = payload?.sub;
+  return typeof subject === "string" && subject.trim() ? `subject ${subject.trim()}` : undefined;
+}
+
+function safeJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function objectProp(record: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = record[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringProp(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+export function summarizeCodexAuthJson(raw: string): ProviderAuthSummary {
+  const parsed = safeJsonObject(raw);
+  if (!parsed) {
+    return { limitation: "Codex OAuth file could not be parsed." };
+  }
+  const tokens = objectProp(parsed, "tokens");
+  const authMode = stringProp(parsed, "auth_mode");
+  const accountId = stringProp(tokens, "account_id");
+  return {
+    account: jwtAccount(tokens?.id_token),
+    auth: authMode === "chatgpt" ? "ChatGPT" : authMode,
+    credential: accountId ? `account ${accountId}` : undefined,
+    limitation: "Subscription tier is not exposed by Codex CLI status."
+  };
+}
+
+export function summarizeGeminiAuthJson(raw: string): ProviderAuthSummary {
+  const parsed = safeJsonObject(raw);
+  if (!parsed) {
+    return { limitation: "Gemini OAuth file could not be parsed." };
+  }
+  const expiry = typeof parsed.expiry_date === "number" ? parsed.expiry_date : undefined;
+  const refreshToken = stringProp(parsed, "refresh_token");
+  const credential = expiry && expiry > Date.now()
+    ? `token valid until ${new Date(expiry).toLocaleString()}`
+    : refreshToken
+      ? "refresh token available"
+      : undefined;
+  return {
+    account: jwtAccount(parsed.id_token),
+    auth: "Google OAuth",
+    credential,
+    limitation: "Subscription tier is not exposed by Gemini CLI status."
+  };
+}
+
 /**
  * claude: `claude auth status` (exit 0 + signed-in signal). Modern CLI prints
  * a JSON object ({ loggedIn, email, subscriptionType, ... }); older builds
@@ -187,11 +285,25 @@ async function detectClaude(): Promise<ProviderState> {
     const text = out.trim();
     if (code === 0 && text) {
       try {
-        const j = JSON.parse(text) as { loggedIn?: boolean; email?: string; subscriptionType?: string };
+        const j = JSON.parse(text) as {
+          loggedIn?: boolean;
+          email?: string;
+          subscriptionType?: string;
+          authMethod?: string;
+          orgName?: string;
+        };
         if (j.loggedIn) {
           const plan = j.subscriptionType ? `${j.subscriptionType} plan` : undefined;
           const detail = [j.email, plan].filter(Boolean).join(" · ") || "Signed in";
-          return { installed, connected: true, detail };
+          return {
+            installed,
+            connected: true,
+            detail,
+            account: j.email,
+            subscription: plan,
+            auth: j.authMethod,
+            credential: j.orgName
+          };
         }
       } catch {
         // non-JSON output: look for an affirmative signal
@@ -212,14 +324,21 @@ async function detectClaude(): Promise<ProviderState> {
 /** codex: `codex login status` → "Logged in ..." means connected. */
 async function detectCodex(): Promise<ProviderState> {
   const installed = isInstalled(PROVIDER_PACKAGES.codex.bin);
+  const authPath = join(homedir(), ".codex", "auth.json");
+  const summary = existsSync(authPath) ? summarizeCodexAuthJson(readFileSync(authPath, "utf8")) : {};
   if (installed) {
     const { out } = await runProbe(codexAgentConfig.command, ["login", "status"]);
     const line = out.trim().split("\n").find((l) => l.trim().length > 0)?.trim();
     if (line && /logged in/i.test(line) && !/not logged in/i.test(line)) {
-      return { installed, connected: true, detail: line };
+      return {
+        installed,
+        connected: true,
+        detail: [summary.account, summary.auth || line].filter(Boolean).join(" · ") || line,
+        ...summary
+      };
     }
   }
-  return { installed, connected: false };
+  return { installed, connected: false, ...summary };
 }
 
 /**
@@ -232,7 +351,9 @@ async function detectGemini(): Promise<ProviderState> {
   const credPath = join(homedir(), ".gemini", "oauth_creds.json");
   if (!existsSync(credPath)) return { installed, connected: false };
   try {
-    const creds = JSON.parse(readFileSync(credPath, "utf8")) as {
+    const raw = readFileSync(credPath, "utf8");
+    const summary = summarizeGeminiAuthJson(raw);
+    const creds = JSON.parse(raw) as {
       expiry_date?: number;
       refresh_token?: string;
     };
@@ -240,11 +361,16 @@ async function detectGemini(): Promise<ProviderState> {
     const refreshable = typeof creds.refresh_token === "string" && creds.refresh_token.length > 0;
     if (future || refreshable) {
       const detail = future
-        ? `Authorized · token valid until ${new Date(creds.expiry_date as number).toLocaleString()}`
-        : "Authorized · auto-refreshing";
-      return { installed, connected: true, detail };
+        ? [summary.account, `token valid until ${new Date(creds.expiry_date as number).toLocaleString()}`].filter(Boolean).join(" · ")
+        : [summary.account, "auto-refreshing"].filter(Boolean).join(" · ");
+      return {
+        installed,
+        connected: true,
+        detail,
+        ...summary
+      };
     }
-    return { installed, connected: false };
+    return { installed, connected: false, ...summary };
   } catch {
     return { installed, connected: false };
   }
@@ -657,6 +783,24 @@ export function renderLoginPage(port: number): string {
     margin-top: 2px; font-size: 12.5px; color: var(--faint);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
   }
+  .card .facts {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px;
+  }
+  .card .fact {
+    max-width: 100%;
+    min-width: 0;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 11.5px;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card .fact.warn { color: #b7791f; border-color: rgba(183,121,31,.35); }
   .card .actions { grid-area: actions; display: flex; }
   .card .actions button.btn, .card .actions .badge-ok { width: 100%; justify-content: center; }
 
@@ -751,6 +895,55 @@ export function renderLoginPage(port: number): string {
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px;
   }
 
+  .test-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 18px;
+  }
+  .test-grid {
+    display: grid;
+    grid-template-columns: minmax(130px, .55fr) minmax(180px, 1fr) minmax(220px, 2fr) auto;
+    gap: 10px;
+    align-items: stretch;
+  }
+  .test-grid select,
+  .test-grid input {
+    width: 100%;
+    min-height: 42px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+    padding: 0 12px;
+  }
+  .test-grid button {
+    min-height: 42px;
+    white-space: nowrap;
+  }
+  .test-result {
+    display: none;
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel-2);
+    padding: 12px 13px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .test-result.show { display: block; }
+  .test-result.error { border-color: rgba(220,38,38,.35); color: #dc2626; }
+  .test-result .meta {
+    display: block;
+    color: var(--faint);
+    font-size: 11.5px;
+    margin-bottom: 5px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+  }
+
   .models {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     box-shadow: var(--shadow); overflow: hidden;
@@ -773,7 +966,19 @@ export function renderLoginPage(port: number): string {
   .by.codex  { color: var(--codex);  border-color: color-mix(in srgb, var(--codex) 35%, var(--border)); }
   .by.gemini { color: var(--gemini); border-color: color-mix(in srgb, var(--gemini) 35%, var(--border)); }
   .empty { padding: 18px 16px; color: var(--faint); font-size: 13.5px; }
+  .model-errors {
+    border-top: 1px solid var(--border);
+    padding: 12px 16px;
+    color: var(--faint);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .model-errors b { color: var(--muted); }
   footer { margin: 30px 2px 0; text-align: center; font-size: 12px; color: var(--faint); }
+  @media (max-width: 760px) {
+    .test-grid { grid-template-columns: 1fr; }
+    .test-grid button { width: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -806,6 +1011,7 @@ export function renderLoginPage(port: number): string {
           </div>
           <div class="body">
             <div class="detail"></div>
+            <div class="facts"></div>
             <div class="hintbox"></div>
           </div>
           <div class="actions"></div>
@@ -818,6 +1024,7 @@ export function renderLoginPage(port: number): string {
           </div>
           <div class="body">
             <div class="detail"></div>
+            <div class="facts"></div>
             <div class="hintbox"></div>
           </div>
           <div class="actions"></div>
@@ -830,6 +1037,7 @@ export function renderLoginPage(port: number): string {
           </div>
           <div class="body">
             <div class="detail"></div>
+            <div class="facts"></div>
             <div class="hintbox"></div>
           </div>
           <div class="actions"></div>
@@ -868,6 +1076,28 @@ export function renderLoginPage(port: number): string {
     </section>
 
     <section>
+      <div class="sec-head">
+        <h2>Direct CLI test</h2>
+        <p>Send one prompt through a selected local CLI and model to verify that account can answer now.</p>
+      </div>
+      <div class="test-card">
+        <div class="test-grid">
+          <select id="testProvider" aria-label="Provider">
+            <option value="claude">Claude</option>
+            <option value="codex">ChatGPT (Codex)</option>
+            <option value="gemini">Gemini</option>
+          </select>
+          <select id="testModel" aria-label="Model">
+            <option value="">Provider default</option>
+          </select>
+          <input id="testPrompt" type="text" value="Reply with one short confirmation." aria-label="Test prompt" />
+          <button class="btn" id="runTestBtn" type="button">Test CLI</button>
+        </div>
+        <div class="test-result" id="testResult"></div>
+      </div>
+    </section>
+
+    <section>
       <div class="sec-head"><h2>Models</h2></div>
       <div class="models" id="models"><div class="empty">Loading models…</div></div>
     </section>
@@ -897,12 +1127,36 @@ export function renderLoginPage(port: number): string {
   // While a card is mid-setup/connect we suppress status re-renders that would
   // clobber the spinner/hint with a stale "Set up"/"Connect" button.
   var busy = {};
+  var modelCache = [];
 
   function el(card, sel) { return card.querySelector(sel); }
   function cardFor(id) { return document.querySelector('.card[data-id="' + id + '"]'); }
+  function providerForOwner(owner) {
+    var backed = BACKED_BY[owner || ""];
+    return backed && backed.id ? backed.id : "";
+  }
 
   function okBadge() {
     return '<span class="badge-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Connected</span>';
+  }
+
+  function fact(label, value, warn) {
+    if (!value) return "";
+    return '<span class="fact' + (warn ? " warn" : "") + '" title="' + esc(label + ": " + value) + '">' + esc(label + ": " + value) + '</span>';
+  }
+
+  function renderFacts(card, state) {
+    var facts = el(card, ".facts");
+    if (!facts) return;
+    var html = [
+      fact("Account", state && state.account),
+      fact("Plan", state && state.subscription),
+      fact("Auth", state && state.auth),
+      fact("Credential", state && state.credential),
+      fact("Note", state && state.limitation, true)
+    ].filter(Boolean).join("");
+    facts.innerHTML = html;
+    facts.style.display = html ? "" : "none";
   }
 
   function renderProvider(id, state) {
@@ -919,6 +1173,7 @@ export function renderLoginPage(port: number): string {
       statText.textContent = "Connected";
       detail.textContent = state.detail || "";
       detail.style.display = state.detail ? "" : "none";
+      renderFacts(card, state);
       actions.innerHTML = okBadge();
       hideHint(id);
       stopPoll(id);
@@ -928,6 +1183,7 @@ export function renderLoginPage(port: number): string {
       statText.textContent = "Not installed";
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
+      renderFacts(card, state);
       actions.innerHTML = '<button class="btn" type="button">Set up</button>';
       actions.querySelector("button").addEventListener("click", function () { setUp(id); });
     } else {
@@ -936,6 +1192,7 @@ export function renderLoginPage(port: number): string {
       statText.textContent = "Not connected";
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
+      renderFacts(card, state);
       if (!actions.querySelector("button.btn")) {
         actions.innerHTML = '<button class="btn" type="button">Connect</button>';
         actions.querySelector("button").addEventListener("click", function () { connect(id); });
@@ -1058,12 +1315,43 @@ export function renderLoginPage(port: number): string {
   function renderModels(data) {
     var box = document.getElementById("models");
     var list = (data && data.data) || [];
-    if (!list.length) { box.innerHTML = '<div class="empty">No models available.</div>'; return; }
+    var errors = data && data.errors ? data.errors : null;
+    modelCache = list;
+    populateTestModels();
+    var errorHtml = renderModelErrors(errors);
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">No live models available from connected providers.</div>' + errorHtml;
+      return;
+    }
     box.innerHTML = list.map(function (m) {
       var b = BACKED_BY[m.owned_by] || { id: "", label: (m.owned_by || "?") };
       return '<div class="model-row"><span class="mid">' + esc(m.id) + '</span>' +
              '<span class="by ' + b.id + '">' + esc(b.label) + '</span></div>';
+    }).join("") + errorHtml;
+  }
+
+  function renderModelErrors(errors) {
+    if (!errors) return "";
+    var rows = ["claude", "codex", "gemini"].map(function (id) {
+      return errors[id] ? '<div><b>' + esc(LABELS[id] || id) + '</b>: ' + esc(errors[id]) + '</div>' : "";
+    }).filter(Boolean);
+    return rows.length ? '<div class="model-errors">' + rows.join("") + '</div>' : "";
+  }
+
+  function populateTestModels() {
+    var providerEl = document.getElementById("testProvider");
+    var modelEl = document.getElementById("testModel");
+    if (!providerEl || !modelEl) return;
+    var provider = providerEl.value || "claude";
+    var current = modelEl.value;
+    var matching = modelCache.filter(function (m) { return providerForOwner(m.owned_by) === provider; });
+    var html = '<option value="">Provider default</option>' + matching.map(function (m) {
+      return '<option value="' + esc(m.id) + '">' + esc(m.id) + '</option>';
     }).join("");
+    modelEl.innerHTML = html;
+    if (current && matching.some(function (m) { return m.id === current; })) {
+      modelEl.value = current;
+    }
   }
 
   function loadModels() {
@@ -1072,6 +1360,59 @@ export function renderLoginPage(port: number): string {
       .then(renderModels)
       .catch(function () {
         document.getElementById("models").innerHTML = '<div class="empty">Couldn’t load models — is the gateway still running?</div>';
+      });
+  }
+
+  function setTestResult(html, isError) {
+    var result = document.getElementById("testResult");
+    if (!result) return;
+    result.innerHTML = html;
+    result.classList.add("show");
+    if (isError) result.classList.add("error");
+    else result.classList.remove("error");
+  }
+
+  function runDirectTest() {
+    var providerEl = document.getElementById("testProvider");
+    var modelEl = document.getElementById("testModel");
+    var promptEl = document.getElementById("testPrompt");
+    var btn = document.getElementById("runTestBtn");
+    var provider = providerEl && providerEl.value ? providerEl.value : "claude";
+    var prompt = promptEl && promptEl.value ? promptEl.value.trim() : "";
+    if (!prompt) {
+      setTestResult('<span class="meta">Input needed</span>Prompt is required.', true);
+      return;
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Testing…";
+    }
+    setTestResult('<span class="meta">Running ' + esc(LABELS[provider] || provider) + '</span>Waiting for the local CLI response…', false);
+    fetch('/providers/' + provider + '/test', {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: prompt,
+        model: modelEl && modelEl.value ? modelEl.value : undefined
+      })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res && res.ok) {
+          var meta = (LABELS[provider] || provider) + (res.model ? " · " + res.model : "");
+          setTestResult('<span class="meta">' + esc(meta) + '</span>' + esc(res.text || ""), false);
+        } else {
+          setTestResult('<span class="meta">' + esc(LABELS[provider] || provider) + '</span>' + esc((res && res.error) || "CLI test failed."), true);
+        }
+      })
+      .catch(function (err) {
+        setTestResult('<span class="meta">Request failed</span>' + esc(err && err.message ? err.message : "Network error"), true);
+      })
+      .then(function () {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "Test CLI";
+        }
       });
   }
 
@@ -1111,6 +1452,17 @@ export function renderLoginPage(port: number): string {
   copyBtn.addEventListener("click", function () {
     copyText(document.getElementById("endpointUrl").textContent.trim(), copyBtn);
   });
+
+  var testProviderEl = document.getElementById("testProvider");
+  var runTestBtn = document.getElementById("runTestBtn");
+  var testPromptEl = document.getElementById("testPrompt");
+  if (testProviderEl) testProviderEl.addEventListener("change", populateTestModels);
+  if (runTestBtn) runTestBtn.addEventListener("click", runDirectTest);
+  if (testPromptEl) {
+    testPromptEl.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") runDirectTest();
+    });
+  }
 
   // ── API key: load, copy, rotate ─────────────────────────────────────────────
   var apiKeyField = document.getElementById("apiKeyField");

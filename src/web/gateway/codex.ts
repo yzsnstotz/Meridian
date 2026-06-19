@@ -17,14 +17,12 @@ import { join } from "node:path";
 import { codexAgentConfig } from "../../agents/codex";
 import { buildPrompt, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
-// Only `gpt-5.5` is accepted on a ChatGPT subscription via `codex exec`
-// (the -codex / -mini variants 400 with "not supported when using Codex with a
-// ChatGPT account"). The CLI's own config.toml default is also gpt-5.5, so we
-// deliberately do NOT forward a `-m` flag and let codex pick the subscription
-// model — this list is what the gateway advertises / normalizes against.
-export const CODEX_MODELS = ["gpt-5.5"];
+// Kept for old imports only. The Gateway no longer advertises this static list:
+// `/v1/models` asks `ProviderModelCatalog`, which in turn asks `codex app-server`
+// for the signed-in ChatGPT account's currently selectable models.
+export const CODEX_MODELS: string[] = [];
 
-const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const DEFAULT_CODEX_MODEL = "codex-default";
 
 export function matchesCodex(model: string | undefined): boolean {
   return !!model && /^(gpt|o\d|codex|chatgpt)/i.test(model);
@@ -103,8 +101,10 @@ export async function completeCodex(req: ChatCompletionRequest): Promise<Complet
     "--skip-git-repo-check",
     "-C",
     workDir,
-    "-", // read the prompt from stdin
   ];
+  const requestedModel = req.model && matchesCodex(req.model) ? req.model : undefined;
+  if (requestedModel) args.push("--model", requestedModel);
+  args.push("-"); // read the prompt from stdin
 
   try {
     const parsed = await new Promise<CodexParsed>((resolve, reject) => {
@@ -136,7 +136,7 @@ export async function completeCodex(req: ChatCompletionRequest): Promise<Complet
       child.stdin.end();
     });
 
-    const model = req.model && matchesCodex(req.model) ? req.model : DEFAULT_CODEX_MODEL;
+    const model = requestedModel ?? DEFAULT_CODEX_MODEL;
     const isError = !!parsed.errorMessage;
     return {
       text: isError ? "" : parsed.text,

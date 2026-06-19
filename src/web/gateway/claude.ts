@@ -5,7 +5,9 @@ import { spawn } from "node:child_process";
 import { claudeAgentConfig } from "../../agents/claude";
 import { buildPrompt, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
-export const CLAUDE_MODELS = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+// Kept for old imports only. Gateway model advertisement is live via
+// ProviderModelCatalog rather than hardcoded Claude CLI guesses.
+export const CLAUDE_MODELS: string[] = [];
 
 export function matchesClaude(model: string | undefined): boolean {
   return !model || /^claude/i.test(model);
