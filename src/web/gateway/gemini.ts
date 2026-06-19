@@ -15,9 +15,9 @@ import { spawn } from "node:child_process";
 import { geminiAgentConfig } from "../../agents/gemini";
 import { buildPrompt, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
-// Real model ids served by the subscription (validated via read-only probes,
-// 2026-06). `gemini-3.1-pro-preview` is the account default.
-export const GEMINI_MODELS = ["gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"];
+// Kept for old imports only. Gateway model advertisement is live via
+// ProviderModelCatalog rather than hardcoded Gemini CLI guesses.
+export const GEMINI_MODELS: string[] = [];
 
 export function matchesGemini(model: string | undefined): boolean {
   return !!model && /^gemini/i.test(model);

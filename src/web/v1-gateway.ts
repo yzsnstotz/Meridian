@@ -10,9 +10,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { matchesClaude, CLAUDE_MODELS } from "./gateway/claude";
-import { matchesCodex, CODEX_MODELS } from "./gateway/codex";
-import { matchesGemini, GEMINI_MODELS } from "./gateway/gemini";
+import { ProviderModelCatalog } from "../shared/model-catalog";
+import { matchesClaude } from "./gateway/claude";
+import { matchesCodex } from "./gateway/codex";
+import { matchesGemini } from "./gateway/gemini";
 import type { ChatCompletionRequest } from "./gateway/shared";
 import { normalizeModel } from "./gateway/shared";
 import { complete } from "./gateway/router";
@@ -23,14 +24,13 @@ import {
   type AnthropicMessagesRequest,
 } from "./gateway/anthropic";
 import { getProvidersStatus, startLogin, installProvider, ensureSpawnPath, renderLoginPage, type ProviderId } from "./gateway/login";
+import { listGatewayModels, ownerForProvider } from "./gateway/model-list";
+import { runGatewayDirectTest } from "./gateway/direct-test";
 
 const PORT = Number(process.env.MERIDIAN_GATEWAY_PORT ?? process.env.PORT ?? 8789);
 const HOST = process.env.MERIDIAN_GATEWAY_HOST ?? "127.0.0.1";
 
-const MODEL_OWNER: Record<string, string> = {};
-for (const m of CLAUDE_MODELS) MODEL_OWNER[m] = "anthropic-subscription";
-for (const m of CODEX_MODELS) MODEL_OWNER[m] = "openai-subscription";
-for (const m of GEMINI_MODELS) MODEL_OWNER[m] = "gemini-subscription";
+const gatewayModelCatalog = new ProviderModelCatalog();
 
 // ── API key (generated, persisted, enforced, rotatable) ────────────────────────
 //
@@ -89,24 +89,6 @@ function isAuthorized(request: http.IncomingMessage): boolean {
   }
   const xApiKey = request.headers["x-api-key"];
   return typeof xApiKey === "string" && xApiKey.trim() === apiKey;
-}
-
-/**
- * Models filtered by which backing CLI is currently signed in. Used by
- * /v1/models so a client's "refresh models" only ever lists usable models.
- */
-function connectedModels(status: { claude: { connected: boolean }; codex: { connected: boolean }; gemini: { connected: boolean } }): Array<{ id: string; object: "model"; owned_by: string }> {
-  const out: Array<{ id: string; object: "model"; owned_by: string }> = [];
-  for (const id of Object.keys(MODEL_OWNER)) {
-    let provider: ProviderId;
-    if (matchesGemini(id)) provider = "gemini";
-    else if (matchesCodex(id)) provider = "codex";
-    else if (matchesClaude(id)) provider = "claude";
-    else continue;
-    if (!status[provider].connected) continue;
-    out.push({ id, object: "model", owned_by: MODEL_OWNER[id] });
-  }
-  return out;
 }
 
 async function handleChatCompletion(req: ChatCompletionRequest): Promise<{ status: number; body: unknown }> {
@@ -169,6 +151,7 @@ function boundPort(): number {
 
 const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
 const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/install$/;
+const TEST_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/test$/;
 const MODEL_RETRIEVE_RE = /^\/v1\/models\/(.+)$/;
 
 const server = http.createServer((request, response) => {
@@ -204,6 +187,20 @@ const server = http.createServer((request, response) => {
           return sendJson(response, 200, await installProvider(m[1] as ProviderId));
         }
       }
+      {
+        const m = request.method === "POST" ? TEST_ROUTE_RE.exec(url.pathname) : null;
+        if (m) {
+          const raw = await readBody(request);
+          let parsed: unknown;
+          try {
+            parsed = raw ? JSON.parse(raw) : {};
+          } catch {
+            return sendJson(response, 400, { ok: false, error: "invalid JSON body" });
+          }
+          const result = await runGatewayDirectTest(m[1] as ProviderId, parsed && typeof parsed === "object" ? parsed : {});
+          return sendJson(response, result.ok ? 200 : 502, result);
+        }
+      }
       // API key endpoints (open — the GUI reads/rotates from inside the iframe).
       if (request.method === "GET" && url.pathname === "/key") {
         return sendJson(response, 200, { key: apiKey });
@@ -212,10 +209,8 @@ const server = http.createServer((request, response) => {
         return sendJson(response, 200, { key: rotateKey() });
       }
       if (request.method === "GET" && url.pathname === "/v1/models") {
-        // Login-aware: only advertise models whose backing CLI is connected, so
-        // a client's "refresh models" shows only what it can actually call.
         const status = await getProvidersStatus();
-        return sendJson(response, 200, { object: "list", data: connectedModels(status) });
+        return sendJson(response, 200, await listGatewayModels(status, gatewayModelCatalog));
       }
       {
         // OpenAI "retrieve model" — GET /v1/models/{id}. clawso's custom-provider
@@ -246,12 +241,13 @@ const server = http.createServer((request, response) => {
           // validates the model id at completion time. Owner is best-effort
           // from the routing matchers.
           const owner =
-            MODEL_OWNER[id] ??
-            (matchesGemini(id)
+            matchesGemini(id)
               ? "gemini-subscription"
               : matchesCodex(id)
                 ? "openai-subscription"
-                : "anthropic-subscription");
+                : matchesClaude(id)
+                  ? "anthropic-subscription"
+                  : ownerForProvider("claude");
           return sendJson(response, 200, { id, object: "model", owned_by: owner });
         }
       }
@@ -331,8 +327,6 @@ const server = http.createServer((request, response) => {
 const npmBinDir = ensureSpawnPath();
 
 server.listen(PORT, HOST, () => {
-  // eslint-disable-next-line no-console
   console.log(`[meridian-gateway] /v1 listening on http://${HOST}:${PORT}`);
-  // eslint-disable-next-line no-console
   console.log(`[meridian-gateway] PATH augmented with npm global bin dir: ${npmBinDir ?? "(npm not resolvable)"}`);
 });

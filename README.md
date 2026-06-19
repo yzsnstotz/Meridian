@@ -7,7 +7,11 @@ CLI subscriptions. It exposes `/v1/chat/completions`, `/v1/models`, and
 Anthropic-compatible `/v1/messages` routes, then routes each request to the
 matching local CLI provider: Codex, Claude, or Gemini. The service is designed
 for tools that already know the OpenAI or Anthropic wire format but should use
-the user's existing subscription login instead of direct provider API keys.
+the user's existing subscription login instead of direct provider API keys. The
+root Gateway page is the operator surface: connect each CLI, inspect the safe
+account details each provider exposes, run a direct text test against a chosen
+CLI/model, copy the generated API key, and see the live model catalog that the
+Gateway can actually advertise.
 
 Start it locally:
 
@@ -19,8 +23,11 @@ On first start it creates an API key at
 `~/.meridian-gateway/gateway-key`. Use that key as `Authorization: Bearer
 <key>` for OpenAI-compatible calls, or as `x-api-key: <key>` for
 Anthropic-compatible calls. The root page and `/providers/*` login routes help
-connect or install the backing CLIs; `/v1/models` lists only models whose
-provider is currently connected.
+connect or install the backing CLIs. `/v1/models` is intentionally live rather
+than a hardcoded table: Codex is sourced from `codex app-server`/local Codex
+catalog fallbacks, and API-backed catalogs are used when configured. Providers
+whose CLIs do not expose a model-list/status dimension report that limitation
+instead of advertising stale model IDs.
 
 Example:
 
