@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
-import { renderLoginPage, summarizeCodexAuthJson, summarizeGeminiAuthJson } from "./login";
+import { logoutProvider, renderLoginPage, summarizeCodexAuthJson, summarizeGeminiAuthJson } from "./login";
 
 function jwtWith(payload: Record<string, unknown>): string {
   return [
@@ -20,6 +23,63 @@ test("renderLoginPage includes direct CLI test controls on the Gateway GUI", () 
   assert.match(html, /id="runTestBtn"/);
   assert.match(html, /\/providers\//);
   assert.match(html, /provider\s*\+\s*['"]\/test/);
+});
+
+test("renderLoginPage includes a usage tab with summary and log tables", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /data-tab="usage"/);
+  assert.match(html, /id="usageSummary"/);
+  assert.match(html, /id="usageLog"/);
+  assert.match(html, /Token total/);
+  assert.match(html, /Response time/);
+  assert.match(html, /fetch\(["']\/usage["']\)/);
+});
+
+test("renderLoginPage includes connected-provider logout controls", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /\/providers\/"\s*\+\s*id\s*\+\s*"\/logout/);
+  assert.match(html, /function logout/);
+  assert.match(html, /Log out/);
+});
+
+test("logoutProvider backs up Codex auth file when CLI logout is unavailable", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "meridian-gateway-logout-"));
+  const authDir = join(homeDir, ".codex");
+  const authPath = join(authDir, "auth.json");
+  mkdirSync(authDir, { recursive: true });
+  writeFileSync(authPath, JSON.stringify({ tokens: { refresh_token: "secret" } }), "utf8");
+
+  const result = await logoutProvider("codex", {
+    homeDir,
+    now: () => new Date("2026-06-20T01:02:03.456Z"),
+    run: async () => ({ code: 1, out: "unknown command" }),
+  });
+
+  const backupPath = join(authDir, "auth.json.logged-out-2026-06-20T01-02-03-456Z");
+  assert.equal(result.ok, true);
+  assert.equal(existsSync(authPath), false);
+  assert.equal(readFileSync(backupPath, "utf8"), JSON.stringify({ tokens: { refresh_token: "secret" } }));
+  assert.match(result.detail ?? "", /backed up/);
+  assert.doesNotMatch(result.detail ?? "", /secret/);
+});
+
+test("logoutProvider uses provider logout command when it succeeds", async () => {
+  const result = await logoutProvider("claude", {
+    homeDir: mkdtempSync(join(tmpdir(), "meridian-gateway-logout-")),
+    run: async (command, args) => {
+      assert.equal(command, "claude");
+      assert.deepEqual(args, ["auth", "logout"]);
+      return { code: 0, out: "logged out" };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    detail: "Signed out with Claude CLI.",
+    command: "claude auth logout",
+  });
 });
 
 test("summarizeCodexAuthJson exposes safe account dimensions without token values", () => {

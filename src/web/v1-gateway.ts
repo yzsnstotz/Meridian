@@ -14,18 +14,19 @@ import { ProviderModelCatalog } from "../shared/model-catalog";
 import { matchesClaude } from "./gateway/claude";
 import { matchesCodex } from "./gateway/codex";
 import { matchesGemini } from "./gateway/gemini";
-import type { ChatCompletionRequest } from "./gateway/shared";
+import type { ChatCompletionRequest, CompletionResult } from "./gateway/shared";
 import { normalizeModel } from "./gateway/shared";
-import { complete } from "./gateway/router";
+import { complete, providerForModel } from "./gateway/router";
 import { streamChatCompletion } from "./gateway/streaming";
 import {
   handleAnthropicMessages,
   streamAnthropicMessages,
   type AnthropicMessagesRequest,
 } from "./gateway/anthropic";
-import { getProvidersStatus, startLogin, installProvider, ensureSpawnPath, renderLoginPage, type ProviderId } from "./gateway/login";
+import { getProvidersStatus, startLogin, installProvider, logoutProvider, ensureSpawnPath, renderLoginPage, type ProviderId } from "./gateway/login";
 import { listGatewayModels, ownerForProvider } from "./gateway/model-list";
 import { runGatewayDirectTest } from "./gateway/direct-test";
+import { GatewayUsageLedger, type GatewayUsageSurface } from "./gateway/usage-ledger";
 
 const PORT = Number(process.env.MERIDIAN_GATEWAY_PORT ?? process.env.PORT ?? 8789);
 const HOST = process.env.MERIDIAN_GATEWAY_HOST ?? "127.0.0.1";
@@ -39,6 +40,8 @@ const gatewayModelCatalog = new ProviderModelCatalog();
 // startup and held in memory; only POST /v1/chat/completions enforces it.
 const KEY_DIR = join(homedir(), ".meridian-gateway");
 const KEY_PATH = join(KEY_DIR, "gateway-key");
+const USAGE_PATH = join(KEY_DIR, "usage.jsonl");
+const usageLedger = new GatewayUsageLedger(USAGE_PATH);
 
 /** Generate a fresh key in the `mgw-` + 32-hex-char format. */
 function generateKey(): string {
@@ -91,7 +94,28 @@ function isAuthorized(request: http.IncomingMessage): boolean {
   return typeof xApiKey === "string" && xApiKey.trim() === apiKey;
 }
 
-async function handleChatCompletion(req: ChatCompletionRequest): Promise<{ status: number; body: unknown }> {
+async function recordCompletionUsage(
+  surface: GatewayUsageSurface,
+  completion: CompletionResult | null | undefined,
+  startedAt: number,
+  providerOverride?: ProviderId
+): Promise<void> {
+  if (!completion || completion.isError) return;
+  try {
+    await usageLedger.record({
+      provider: providerOverride ?? providerForModel(completion.model),
+      model: completion.model,
+      surface,
+      promptTokens: completion.usage.promptTokens,
+      completionTokens: completion.usage.completionTokens,
+      durationMs: Date.now() - startedAt
+    });
+  } catch {
+    // Local usage history should never make a successful model call fail.
+  }
+}
+
+async function handleChatCompletion(req: ChatCompletionRequest): Promise<{ status: number; body: unknown; completion?: CompletionResult }> {
   if (!Array.isArray(req.messages) || req.messages.length === 0) {
     return { status: 400, body: { error: { message: "messages[] required", type: "invalid_request_error" } } };
   }
@@ -103,6 +127,7 @@ async function handleChatCompletion(req: ChatCompletionRequest): Promise<{ statu
   }
   return {
     status: 200,
+    completion: out,
     body: {
       id: `chatcmpl-${Date.now().toString(36)}`,
       object: "chat.completion",
@@ -151,6 +176,7 @@ function boundPort(): number {
 
 const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
 const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/install$/;
+const LOGOUT_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/logout$/;
 const TEST_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/test$/;
 const MODEL_RETRIEVE_RE = /^\/v1\/models\/(.+)$/;
 
@@ -188,8 +214,16 @@ const server = http.createServer((request, response) => {
         }
       }
       {
+        const m = request.method === "POST" ? LOGOUT_ROUTE_RE.exec(url.pathname) : null;
+        if (m) {
+          const result = await logoutProvider(m[1] as ProviderId);
+          return sendJson(response, result.ok ? 200 : 500, result);
+        }
+      }
+      {
         const m = request.method === "POST" ? TEST_ROUTE_RE.exec(url.pathname) : null;
         if (m) {
+          const startedAt = Date.now();
           const raw = await readBody(request);
           let parsed: unknown;
           try {
@@ -197,7 +231,18 @@ const server = http.createServer((request, response) => {
           } catch {
             return sendJson(response, 400, { ok: false, error: "invalid JSON body" });
           }
-          const result = await runGatewayDirectTest(m[1] as ProviderId, parsed && typeof parsed === "object" ? parsed : {});
+          const provider = m[1] as ProviderId;
+          const result = await runGatewayDirectTest(provider, parsed && typeof parsed === "object" ? parsed : {});
+          if (result.ok && result.usage) {
+            await usageLedger.record({
+              provider,
+              model: result.model || provider,
+              surface: "direct-test",
+              promptTokens: result.usage.prompt_tokens,
+              completionTokens: result.usage.completion_tokens,
+              durationMs: Date.now() - startedAt
+            }).catch(() => undefined);
+          }
           return sendJson(response, result.ok ? 200 : 502, result);
         }
       }
@@ -211,6 +256,10 @@ const server = http.createServer((request, response) => {
       if (request.method === "GET" && url.pathname === "/v1/models") {
         const status = await getProvidersStatus();
         return sendJson(response, 200, await listGatewayModels(status, gatewayModelCatalog));
+      }
+      if (request.method === "GET" && url.pathname === "/usage") {
+        const rawLimit = Number(url.searchParams.get("limit") ?? 200);
+        return sendJson(response, 200, usageLedger.snapshot({ limit: Number.isFinite(rawLimit) ? rawLimit : 200 }));
       }
       {
         // OpenAI "retrieve model" — GET /v1/models/{id}. clawso's custom-provider
@@ -276,9 +325,14 @@ const server = http.createServer((request, response) => {
               error: { message: "messages[] required", type: "invalid_request_error" },
             });
           }
-          return await streamChatCompletion(response, parsed);
+          const startedAt = Date.now();
+          const completion = await streamChatCompletion(response, parsed);
+          await recordCompletionUsage("openai-chat-stream", completion, startedAt);
+          return;
         }
-        const { status, body } = await handleChatCompletion(parsed);
+        const startedAt = Date.now();
+        const { status, body, completion } = await handleChatCompletion(parsed);
+        await recordCompletionUsage("openai-chat", completion, startedAt);
         return sendJson(response, status, body);
       }
       if (request.method === "POST" && url.pathname === "/v1/messages") {
@@ -307,9 +361,14 @@ const server = http.createServer((request, response) => {
               error: { type: "invalid_request_error", message: "messages[] required" },
             });
           }
-          return await streamAnthropicMessages(response, parsed);
+          const startedAt = Date.now();
+          const completion = await streamAnthropicMessages(response, parsed);
+          await recordCompletionUsage("anthropic-messages-stream", completion, startedAt);
+          return;
         }
-        const { status, body } = await handleAnthropicMessages(parsed);
+        const startedAt = Date.now();
+        const { status, body, completion } = await handleAnthropicMessages(parsed);
+        await recordCompletionUsage("anthropic-messages", completion, startedAt);
         return sendJson(response, status, body);
       }
       return sendJson(response, 404, { error: { message: `no route ${request.method} ${url.pathname}`, type: "not_found" } });
