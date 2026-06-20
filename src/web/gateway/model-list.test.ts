@@ -64,3 +64,24 @@ test("listGatewayModels reports per-provider catalog failures without falling ba
     gemini: "Gemini live catalog unavailable"
   });
 });
+
+test("listGatewayModels rewrites REST API-key catalog errors for OAuth-backed providers", async () => {
+  const status: ProvidersStatus = {
+    claude: { installed: true, connected: true },
+    codex: { installed: true, connected: false },
+    gemini: { installed: true, connected: true }
+  };
+  const catalog = {
+    async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+      throw new Error(`No API key configured for provider=${provider}`);
+    }
+  };
+
+  const result = await listGatewayModels(status, catalog);
+
+  assert.deepEqual(result.data, []);
+  assert.deepEqual(result.errors, {
+    claude: "Claude OAuth is connected, but the local CLI did not expose a model catalog.",
+    gemini: "Gemini OAuth is connected, but the local CLI did not expose a model catalog."
+  });
+});
