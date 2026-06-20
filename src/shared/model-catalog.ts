@@ -31,8 +31,10 @@ interface CodexCachedModelRecord {
   visibility?: unknown;
 }
 
-export interface ProviderModelCatalogResult {
-  provider: AgentType;
+export type ProviderModelCatalogProvider = AgentType | "antigravity";
+
+export interface ProviderModelCatalogResult<TProvider extends ProviderModelCatalogProvider = ProviderModelCatalogProvider> {
+  provider: TProvider;
   models: ProviderModel[];
 }
 
@@ -145,6 +147,78 @@ function parseGeminiCliModelIds(raw: string): string[] {
   return Array.from(ids);
 }
 
+function isSelectableAntigravityModelId(id: string): boolean {
+  const lower = id.toLowerCase();
+  if (!/^(gemini-|auto-gemini-|claude-|gpt-|codex-|o\d|antigravity-)/.test(lower)) {
+    return false;
+  }
+  return !/(embedding|text-embedding|image|tts|whisper|search)/.test(lower);
+}
+
+function antigravityGatewayId(id: string): string {
+  return id.toLowerCase().startsWith("antigravity/") ? id : `antigravity/${id}`;
+}
+
+function antigravityBareId(id: string): string {
+  return id.replace(/^models\//i, "").replace(/^antigravity\//i, "").trim();
+}
+
+function parseAntigravityJsonModels(value: unknown): ProviderModel[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => parseAntigravityJsonModels(entry));
+  }
+  if (!isRecord(value)) {
+    if (typeof value !== "string") return [];
+    const id = antigravityBareId(value);
+    return id && isSelectableAntigravityModelId(id)
+      ? [{ id: antigravityGatewayId(id), label: formatModelLabel(id) }]
+      : [];
+  }
+
+  const nested = Array.isArray(value.models)
+    ? value.models
+    : Array.isArray(value.data)
+      ? value.data
+      : undefined;
+  if (nested) return parseAntigravityJsonModels(nested);
+
+  const candidate = [value.id, value.model, value.name, value.slug]
+    .find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  if (!candidate) return [];
+  const id = antigravityBareId(candidate);
+  if (!id || !isSelectableAntigravityModelId(id)) return [];
+  const displayName = [value.displayName, value.display_name, value.label, value.title]
+    .find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  return [{ id: antigravityGatewayId(id), label: displayName?.trim() || formatModelLabel(id) }];
+}
+
+function parseAntigravityTextModels(raw: string): ProviderModel[] {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      if (/^(available\s+models?|models?|model\s+id|id|name)\b[:\s]*$/i.test(line)) return [];
+      const normalized = line
+        .replace(/^[*\-•\d.)\s]+/, "")
+        .replace(/^`|`$/g, "")
+        .trim();
+      const id = antigravityBareId((normalized.split(/\s+/)[0] ?? "").replace(/[,;:]$/, ""));
+      if (!id || !isSelectableAntigravityModelId(id)) return [];
+      return [{ id: antigravityGatewayId(id), label: formatModelLabel(id) }];
+    });
+}
+
+function parseAntigravityModels(raw: string): ProviderModel[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  try {
+    return sortAndDeduplicateModels(parseAntigravityJsonModels(JSON.parse(trimmed) as unknown));
+  } catch {
+    return sortAndDeduplicateModels(parseAntigravityTextModels(raw));
+  }
+}
+
 export class ProviderModelCatalog {
   private readonly fetchFn: typeof fetch;
   private readonly execFileFn: ExecFileFn;
@@ -181,7 +255,9 @@ export class ProviderModelCatalog {
     this.codexModelsCachePath = options.codexModelsCachePath ?? path.join(os.homedir(), ".codex", "models_cache.json");
   }
 
-  async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+  async listModels<TProvider extends ProviderModelCatalogProvider>(
+    provider: TProvider
+  ): Promise<ProviderModelCatalogResult<TProvider>> {
     switch (provider) {
       case "codex":
         return {
@@ -202,6 +278,11 @@ export class ProviderModelCatalog {
         return {
           provider,
           models: await this.listCursorModels()
+        };
+      case "antigravity":
+        return {
+          provider,
+          models: await this.listAntigravityModels()
         };
     }
   }
@@ -605,6 +686,20 @@ export class ProviderModelCatalog {
       throw new Error("Gemini returned no interactive models");
     }
     return sortAndDeduplicateModels(models);
+  }
+
+  private async listAntigravityModels(): Promise<ProviderModel[]> {
+    await this.resolveCommandPath("agy");
+    const { stdout } = await this.execFileFn(
+      "agy",
+      ["models"],
+      { timeout: CLI_DISCOVERY_TIMEOUT_MS, maxBuffer: 512 * 1024 }
+    );
+    const models = parseAntigravityModels(stdout);
+    if (models.length === 0) {
+      throw new Error("Antigravity CLI returned no selectable models");
+    }
+    return models;
   }
 
   private async listCursorModels(): Promise<ProviderModel[]> {

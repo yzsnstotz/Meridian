@@ -11,9 +11,10 @@
 //                content_block_stop → message_delta → message_stop
 //
 //   • claude  → real incremental token streaming (content_block_delta per slice).
-//   • codex/gemini → buffered: run the one-shot, then emit the whole text as a
+//   • codex/gemini/antigravity → buffered: run the one-shot, then emit the whole text as a
 //     single content_block_delta (see the buffered-fallback caveat).
 import type http from "node:http";
+import { completeAntigravity, matchesAntigravity } from "./antigravity";
 import { completeCodex, matchesCodex } from "./codex";
 import { completeGemini, matchesGemini } from "./gemini";
 import { streamClaude } from "./claude";
@@ -170,7 +171,7 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
   let finalModel = requestedModel;
   let completion: CompletionResult | null = null;
 
-  if (!matchesCodex(body.model) && !matchesGemini(body.model)) {
+  if (!matchesAntigravity(body.model) && !matchesCodex(body.model) && !matchesGemini(body.model)) {
     // claude: real token streaming
     let errored: Error | null = null;
     await streamClaude(chatReq, {
@@ -193,8 +194,12 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
     });
     if (errored) emitTextDelta(`\n[error: ${(errored as Error).message}]`);
   } else {
-    // codex / gemini: buffered single-block fallback
-    const out = await (matchesCodex(body.model) ? completeCodex(chatReq) : completeGemini(chatReq));
+    // codex / gemini / antigravity: buffered single-block fallback
+    const out = await (matchesAntigravity(body.model)
+      ? completeAntigravity(chatReq)
+      : matchesCodex(body.model)
+        ? completeCodex(chatReq)
+        : completeGemini(chatReq));
     finalModel = out.model;
     if (out.isError) {
       emitTextDelta(`[error: ${out.errorMessage ?? "upstream error"}]`);

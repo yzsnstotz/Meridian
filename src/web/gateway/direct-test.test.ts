@@ -23,6 +23,10 @@ test("runGatewayDirectTest sends the prompt to the explicitly chosen provider", 
     gemini: async (): Promise<CompletionResult> => {
       calls.push("gemini");
       throw new Error("wrong provider");
+    },
+    antigravity: async (): Promise<CompletionResult> => {
+      calls.push("antigravity");
+      throw new Error("wrong provider");
     }
   };
 
@@ -60,7 +64,10 @@ test("runGatewayDirectTest returns upstream provider errors as a structured resu
         usage: { promptTokens: 0, completionTokens: 0 },
         isError: true,
         errorMessage: "Gemini CLI rejected this account"
-      })
+      }),
+      antigravity: async () => {
+        throw new Error("wrong provider");
+      }
     }
   );
 
@@ -89,6 +96,9 @@ test("runGatewayDirectTest explains Gemini unsupported-client OAuth failures wit
           "To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google.\n" +
           "    at throwIneligibleOrProjectIdError (bundle.js:277252:11)"
         );
+      },
+      antigravity: async () => {
+        throw new Error("wrong provider");
       }
     }
   );
@@ -116,6 +126,9 @@ test("runGatewayDirectTest explains Claude model rejection without raw JSON enve
       },
       gemini: async () => {
         throw new Error("wrong provider");
+      },
+      antigravity: async () => {
+        throw new Error("wrong provider");
       }
     }
   );
@@ -126,4 +139,32 @@ test("runGatewayDirectTest explains Claude model rejection without raw JSON enve
   assert.match(result.error ?? "", /Claude rejected the selected model/);
   assert.match(result.error ?? "", /claude-haiku-3-5/);
   assert.doesNotMatch(result.error ?? "", /"type":"result"|api_error_status/);
+});
+
+test("runGatewayDirectTest explains broken Antigravity app shims without shell noise", async () => {
+  const result = await runGatewayDirectTest(
+    "antigravity",
+    { prompt: "Say ok", model: "antigravity/gemini-3-pro" },
+    {
+      claude: async () => {
+        throw new Error("wrong provider");
+      },
+      codex: async () => {
+        throw new Error("wrong provider");
+      },
+      gemini: async () => {
+        throw new Error("wrong provider");
+      },
+      antigravity: async () => {
+        throw new Error(
+          "/opt/homebrew/bin/agy: line 2: /Applications/Antigravity.app/Contents/Resources/app/bin/antigravity: No such file or directory"
+        );
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.provider, "antigravity");
+  assert.match(result.error ?? "", /Antigravity CLI shim is installed but the Antigravity app binary is missing/);
+  assert.doesNotMatch(result.error ?? "", /line 2|Contents\/Resources/);
 });

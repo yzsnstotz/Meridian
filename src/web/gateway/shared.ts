@@ -1,5 +1,5 @@
 // Meridian Gateway — shared types + helpers for the per-provider modules.
-// Each provider (claude/codex/gemini) drives its real OAuth-logged-in CLI in
+// Each provider (claude/codex/gemini/antigravity) drives its real OAuth-logged-in CLI in
 // one-shot mode and returns a normalized CompletionResult. The HTTP layer
 // (v1-gateway.ts) shapes that into OpenAI / Anthropic wire formats.
 
@@ -35,13 +35,21 @@ export interface CompletionResult {
  * clawso namespaces every provider's models as `<providerId>/<model>` (e.g.
  * `custom-meridian-gateway/gpt-5.5`) for its failover + agent-bridge registry,
  * and may send that namespaced id straight to the endpoint. None of the real
- * upstream model ids we serve contain a `/` (claude-opus-4-8, gpt-5.5,
- * gemini-2.5-pro), so any `/` is an outer prefix: keep only the last segment.
+ * upstream model ids we serve usually contain no `/` (claude-opus-4-8,
+ * gpt-5.5, gemini-2.5-pro), so any `/` is an outer prefix: keep only the last
+ * segment. Antigravity is the exception: it deliberately uses
+ * `antigravity/<agy-model>` so Gemini-looking model ids sourced from `agy`
+ * still route to Antigravity instead of the legacy gemini CLI.
  * Without this, `custom-meridian-gateway/gpt-5.5` fails every `^gpt`/`^gemini`
  * matcher and silently misroutes to the Claude default.
  */
 export function normalizeModel(model: string | undefined): string | undefined {
   if (!model) return model;
+  const parts = model.split("/");
+  const antigravityIndex = parts.findIndex((part) => part.toLowerCase() === "antigravity");
+  if (antigravityIndex >= 0 && antigravityIndex < parts.length - 1) {
+    return parts.slice(antigravityIndex).join("/");
+  }
   const i = model.lastIndexOf("/");
   return i >= 0 ? model.slice(i + 1) : model;
 }

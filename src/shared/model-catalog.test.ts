@@ -243,6 +243,40 @@ test("ProviderModelCatalog loads Gemini models from local CLI bundle constants",
   ]);
 });
 
+test("ProviderModelCatalog loads Antigravity models from agy models", async () => {
+  const catalog = new ProviderModelCatalog({
+    realpathFn: async (filePath) => filePath,
+    execFileFn: async (file, args) => {
+      if (file === "/bin/sh" && args.join(" ").includes("command -v agy")) {
+        return { stdout: "/opt/homebrew/bin/agy\n", stderr: "" };
+      }
+      if (file === "agy" && args.join(" ") === "models") {
+        return {
+          stdout: [
+            "Available models:",
+            "- gemini-3-pro",
+            "- gemini-2.5-flash",
+            "- text-embedding-004"
+          ].join("\n"),
+          stderr: ""
+        };
+      }
+      throw new Error(`unexpected command ${file} ${args.join(" ")}`);
+    },
+    fetchFn: async () => {
+      throw new Error("fetch should not be called for Antigravity OAuth model list");
+    }
+  });
+
+  const result = await catalog.listModels("antigravity");
+
+  assert.equal(result.provider, "antigravity");
+  assert.deepEqual(result.models, [
+    { id: "antigravity/gemini-2.5-flash", label: "Gemini-2.5-Flash" },
+    { id: "antigravity/gemini-3-pro", label: "Gemini-3-Pro" }
+  ]);
+});
+
 test("ProviderModelCatalog parses Cursor CLI output", async () => {
   const catalog = new ProviderModelCatalog({
     execFileFn: async () => ({

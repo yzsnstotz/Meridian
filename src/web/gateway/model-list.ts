@@ -1,5 +1,5 @@
-import type { ProviderModelCatalogResult } from "../../shared/model-catalog";
-import type { AgentType, ProviderModel } from "../../types";
+import type { ProviderModelCatalogProvider, ProviderModelCatalogResult } from "../../shared/model-catalog";
+import type { ProviderModel } from "../../types";
 import type { ProvidersStatus, ProviderId } from "./login";
 
 export interface GatewayModel {
@@ -16,14 +16,15 @@ export interface GatewayModelList {
 }
 
 export interface GatewayModelCatalog {
-  listModels(provider: AgentType): Promise<ProviderModelCatalogResult>;
+  listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult>;
 }
 
-const PROVIDERS: ProviderId[] = ["claude", "codex", "gemini"];
+const PROVIDERS: ProviderId[] = ["claude", "codex", "gemini", "antigravity"];
 const LABELS: Record<ProviderId, string> = {
   claude: "Claude",
   codex: "ChatGPT",
   gemini: "Gemini",
+  antigravity: "Antigravity",
 };
 
 export function ownerForProvider(provider: ProviderId): string {
@@ -34,6 +35,8 @@ export function ownerForProvider(provider: ProviderId): string {
       return "openai-subscription";
     case "gemini":
       return "gemini-subscription";
+    case "antigravity":
+      return "antigravity-subscription";
   }
 }
 
@@ -47,7 +50,7 @@ function modelToGateway(provider: ProviderId, model: ProviderModel): GatewayMode
 
 function gatewayModelCatalogError(provider: ProviderId, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/No API key configured for provider=(claude|gemini)/i.test(message)) {
+  if (/No API key configured for provider=(claude|gemini|antigravity)/i.test(message)) {
     return `${LABELS[provider]} OAuth is connected, but the local CLI did not expose a model catalog.`;
   }
   return message;

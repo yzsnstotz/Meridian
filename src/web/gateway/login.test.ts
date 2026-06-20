@@ -71,6 +71,16 @@ test("renderLoginPage includes model refresh controls", () => {
   assert.match(html, /モデルを更新/);
 });
 
+test("renderLoginPage includes Antigravity as an independent provider", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /data-id="antigravity"/);
+  assert.match(html, /class="ico antigravity">A/);
+  assert.match(html, /<option value="antigravity">Antigravity<\/option>/);
+  assert.match(html, /"antigravity-subscription":\s*\{\s*id:\s*"antigravity",\s*label:\s*"Antigravity"/);
+  assert.match(html, /--antigravity:/);
+});
+
 test("getProviderCliVersion detects installed and latest npm versions", async () => {
   const calls: string[] = [];
   const result = await getProviderCliVersion("gemini", {
@@ -96,6 +106,25 @@ test("getProviderCliVersion detects installed and latest npm versions", async ()
     latestVersion: "0.47.0",
     updateAvailable: true
   });
+});
+
+test("getProviderCliVersion reports a broken Antigravity app shim as not usable", async () => {
+  const result = await getProviderCliVersion("antigravity", {
+    installed: () => true,
+    run: async (command) => {
+      assert.equal(command, "agy");
+      return {
+        code: 1,
+        out: "/opt/homebrew/bin/agy: line 2: /Applications/Antigravity.app/Contents/Resources/app/bin/antigravity: No such file or directory"
+      };
+    }
+  });
+
+  assert.equal(result.installed, false);
+  assert.equal(result.command, "agy");
+  assert.equal(result.packageName, "Google Antigravity app");
+  assert.equal(result.updateCommand, "open https://antigravity.google/download");
+  assert.match(result.error ?? "", /Antigravity app.*not available|No such file/i);
 });
 
 test("renderLoginPage keeps provider cards equal height", () => {

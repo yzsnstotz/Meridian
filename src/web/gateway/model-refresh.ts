@@ -4,7 +4,8 @@ import path from "node:path";
 
 import type { ProviderModelCatalogResult } from "../../shared/model-catalog";
 import { ProviderModelCatalog } from "../../shared/model-catalog";
-import type { AgentType, ProviderModel } from "../../types";
+import type { ProviderModel } from "../../types";
+import { completeAntigravity } from "./antigravity";
 import { completeClaude } from "./claude";
 import { completeCodex } from "./codex";
 import { completeGemini } from "./gemini";
@@ -46,17 +47,19 @@ export interface GatewayModelRegistryOptions {
   now?: () => Date;
 }
 
-const PROVIDERS: ProviderId[] = ["claude", "codex", "gemini"];
-const CLI_PROVIDERS: ProviderId[] = ["claude", "gemini"];
+const PROVIDERS: ProviderId[] = ["claude", "codex", "gemini", "antigravity"];
+const CLI_PROVIDERS: ProviderId[] = ["claude", "gemini", "antigravity"];
 const LABELS: Record<ProviderId, string> = {
   claude: "Claude",
   codex: "ChatGPT",
-  gemini: "Gemini"
+  gemini: "Gemini",
+  antigravity: "Antigravity"
 };
 const DEFAULT_CACHE_PATH = path.join(os.homedir(), ".meridian-gateway", "models-cache.json");
 const PROBE_PROMPT = "Reply with exactly OK.";
 
 const DEFAULT_COMPLETIONS: Record<ProviderId, ProbeCompletion> = {
+  antigravity: completeAntigravity,
   claude: completeClaude,
   codex: completeCodex,
   gemini: completeGemini
@@ -67,7 +70,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isProvider(value: string): value is ProviderId {
-  return value === "claude" || value === "codex" || value === "gemini";
+  return value === "claude" || value === "codex" || value === "gemini" || value === "antigravity";
 }
 
 function dedupeModels(models: ProviderModel[]): ProviderModel[] {
@@ -142,7 +145,7 @@ function noVerifiedModelsMessage(provider: ProviderId): string {
 
 function normalizeCatalogError(provider: ProviderId, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/No API key configured for provider=(claude|gemini)/i.test(message)) {
+  if (/No API key configured for provider=(claude|gemini|antigravity)/i.test(message)) {
     return `${LABELS[provider]} OAuth is connected, but the local CLI did not expose model candidates.`;
   }
   return message;
@@ -251,7 +254,7 @@ export class GatewayModelRegistry {
 
   private async refreshCodexProvider(provider: ProviderId, refreshedAt: string): Promise<CachedProviderModels> {
     try {
-      const result = await this.catalog.listModels(provider as AgentType);
+      const result = await this.catalog.listModels(provider);
       return {
         provider,
         refreshedAt,
@@ -278,7 +281,7 @@ export class GatewayModelRegistry {
 
     let candidates: ProviderModelCatalogResult;
     try {
-      candidates = await this.catalog.listModels(provider as AgentType);
+      candidates = await this.catalog.listModels(provider);
     } catch (error) {
       return {
         provider,

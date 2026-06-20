@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ProviderModelCatalog } from "../shared/model-catalog";
+import { matchesAntigravity } from "./gateway/antigravity";
 import { matchesClaude } from "./gateway/claude";
 import { matchesCodex } from "./gateway/codex";
 import { matchesGemini } from "./gateway/gemini";
@@ -186,11 +187,11 @@ function boundPort(): number {
   return addr && typeof addr === "object" ? addr.port : PORT;
 }
 
-const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
-const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/install$/;
-const UPDATE_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/update$/;
-const LOGOUT_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/logout$/;
-const TEST_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/test$/;
+const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/login$/;
+const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/install$/;
+const UPDATE_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/update$/;
+const LOGOUT_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/logout$/;
+const TEST_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/test$/;
 const MODEL_RETRIEVE_RE = /^\/v1\/models\/(.+)$/;
 
 const server = http.createServer((request, response) => {
@@ -202,7 +203,7 @@ const server = http.createServer((request, response) => {
         return response.end();
       }
       if (request.method === "GET" && url.pathname === "/health") {
-        return sendJson(response, 200, { status: "ok", providers: ["claude", "codex", "gemini"] });
+        return sendJson(response, 200, { status: "ok", providers: ["claude", "codex", "gemini", "antigravity"] });
       }
       // ── Login / onboarding GUI (strictly additive; does not touch /v1) ──────
       if (request.method === "GET" && url.pathname === "/") {
@@ -317,7 +318,9 @@ const server = http.createServer((request, response) => {
           // validates the model id at completion time. Owner is best-effort
           // from the routing matchers.
           const owner =
-            matchesGemini(id)
+            matchesAntigravity(id)
+              ? "antigravity-subscription"
+              : matchesGemini(id)
               ? "gemini-subscription"
               : matchesCodex(id)
                 ? "openai-subscription"
