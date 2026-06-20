@@ -71,3 +71,59 @@ test("runGatewayDirectTest returns upstream provider errors as a structured resu
     error: "Gemini CLI rejected this account"
   });
 });
+
+test("runGatewayDirectTest explains Gemini unsupported-client OAuth failures without stack traces", async () => {
+  const result = await runGatewayDirectTest(
+    "gemini",
+    { prompt: "Say ok", model: "gemini-2.5-pro" },
+    {
+      claude: async () => {
+        throw new Error("wrong provider");
+      },
+      codex: async () => {
+        throw new Error("wrong provider");
+      },
+      gemini: async () => {
+        throw new Error(
+          "gemini exited 1: Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. " +
+          "To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google.\n" +
+          "    at throwIneligibleOrProjectIdError (bundle.js:277252:11)"
+        );
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.provider, "gemini");
+  assert.equal(result.model, "gemini-2.5-pro");
+  assert.match(result.error ?? "", /Gemini CLI reports this account or tier is no longer supported/);
+  assert.match(result.error ?? "", /https:\/\/antigravity\.google/);
+  assert.doesNotMatch(result.error ?? "", /throwIneligibleOrProjectIdError|bundle\.js/);
+});
+
+test("runGatewayDirectTest explains Claude model rejection without raw JSON envelope", async () => {
+  const result = await runGatewayDirectTest(
+    "claude",
+    { prompt: "Say ok", model: "claude-haiku-3-5" },
+    {
+      claude: async () => {
+        throw new Error(
+          'claude exited 1: {"type":"result","is_error":true,"api_error_status":404,"result":"There\\u0027s an issue with the selected model (claude-haiku-3-5). It may not exist or you may not have access to it. Run --model to pick a different model."}'
+        );
+      },
+      codex: async () => {
+        throw new Error("wrong provider");
+      },
+      gemini: async () => {
+        throw new Error("wrong provider");
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.provider, "claude");
+  assert.equal(result.model, "claude-haiku-3-5");
+  assert.match(result.error ?? "", /Claude rejected the selected model/);
+  assert.match(result.error ?? "", /claude-haiku-3-5/);
+  assert.doesNotMatch(result.error ?? "", /"type":"result"|api_error_status/);
+});

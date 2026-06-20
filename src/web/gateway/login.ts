@@ -60,6 +60,23 @@ export interface InstallResult {
   command?: string;
 }
 
+export interface ProviderCliVersionState {
+  installed: boolean;
+  command: string;
+  packageName: string;
+  updateCommand: string;
+  installedVersion?: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  error?: string;
+}
+
+export interface ProvidersCliVersions {
+  claude: ProviderCliVersionState;
+  codex: ProviderCliVersionState;
+  gemini: ProviderCliVersionState;
+}
+
 export interface LogoutResult {
   ok: boolean;
   detail?: string;
@@ -199,6 +216,76 @@ function runProbe(command: string, args: string[], timeoutMs = 8000): Promise<{ 
 }
 
 type ProbeRunner = typeof runProbe;
+
+interface CliVersionDeps {
+  installed?: (bin: string) => boolean;
+  run?: ProbeRunner;
+}
+
+function parseVersionText(raw: string): string | undefined {
+  const text = raw.trim().replace(/^"|"$/g, "");
+  const match = /\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/.exec(text);
+  return match?.[1];
+}
+
+function compareVersions(left: string, right: string): number {
+  const l = left.split(/[.+-]/).slice(0, 3).map((part) => Number(part) || 0);
+  const r = right.split(/[.+-]/).slice(0, 3).map((part) => Number(part) || 0);
+  for (let i = 0; i < 3; i += 1) {
+    if ((l[i] ?? 0) > (r[i] ?? 0)) return 1;
+    if ((l[i] ?? 0) < (r[i] ?? 0)) return -1;
+  }
+  return 0;
+}
+
+function probeError(out: string, fallback: string): string {
+  return (out.trim().split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() || fallback).slice(0, 220);
+}
+
+export async function getProviderCliVersion(id: ProviderId, deps: CliVersionDeps = {}): Promise<ProviderCliVersionState> {
+  ensureSpawnPath();
+  const { bin, pkg } = PROVIDER_PACKAGES[id];
+  const run = deps.run ?? runProbe;
+  const installed = (deps.installed ?? isInstalled)(bin);
+  const state: ProviderCliVersionState = {
+    installed,
+    command: bin,
+    packageName: pkg,
+    updateCommand: installCommandFor(id),
+    updateAvailable: false
+  };
+
+  if (installed) {
+    const versionResult = await run(bin, ["--version"], 12000);
+    if (versionResult.code === 0) {
+      state.installedVersion = parseVersionText(versionResult.out);
+    } else {
+      state.error = probeError(versionResult.out, "Could not read installed CLI version.");
+    }
+  }
+
+  const latestResult = await run("npm", ["view", pkg, "version", "--json"], 15000);
+  if (latestResult.code === 0) {
+    state.latestVersion = parseVersionText(latestResult.out);
+  } else if (!state.error) {
+    state.error = probeError(latestResult.out, "Could not check latest npm version.");
+  }
+
+  if (state.installedVersion && state.latestVersion) {
+    state.updateAvailable = compareVersions(state.installedVersion, state.latestVersion) < 0;
+  }
+
+  return state;
+}
+
+export async function getProvidersCliVersions(): Promise<ProvidersCliVersions> {
+  const [claude, codex, gemini] = await Promise.all([
+    getProviderCliVersion("claude"),
+    getProviderCliVersion("codex"),
+    getProviderCliVersion("gemini")
+  ]);
+  return { claude, codex, gemini };
+}
 
 // ── Per-provider detection ──────────────────────────────────────────────────
 
@@ -446,6 +533,15 @@ export function installProvider(id: ProviderId, timeoutMs = 300000): Promise<Ins
       finish({ installed: false, error: shortError(`npm exited with code ${code}`), command });
     });
   });
+}
+
+export async function updateProviderCli(id: ProviderId, timeoutMs = 300000): Promise<InstallResult & { version?: ProviderCliVersionState }> {
+  const result = await installProvider(id, timeoutMs);
+  if (!result.installed) return result;
+  return {
+    ...result,
+    version: await getProviderCliVersion(id)
+  };
 }
 
 // ── Logout / account switch ──────────────────────────────────────────────────
@@ -817,7 +913,7 @@ export function renderLoginPage(port: number): string {
     text-rendering: optimizeLegibility;
     padding: 28px clamp(20px, 4vw, 44px) 56px;
   }
-  .wrap { width: 100%; max-width: 1040px; margin: 0 auto; }
+  .wrap { width: 100%; max-width: 1040px; min-width: 0; margin: 0 auto; }
 
   header.top {
     display: flex; align-items: center; gap: 12px;
@@ -930,6 +1026,7 @@ export function renderLoginPage(port: number): string {
     grid-template-areas: "ico head" "body body" "actions actions";
     align-items: start; column-gap: 14px; row-gap: 12px;
     min-height: 294px;
+    min-width: 0;
     transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
   }
   .card:hover { border-color: var(--border-strong); }
@@ -970,7 +1067,7 @@ export function renderLoginPage(port: number): string {
     white-space: nowrap;
   }
   .card .fact.warn { color: #b7791f; border-color: rgba(183,121,31,.35); }
-  .card .actions { grid-area: actions; display: flex; gap: 8px; align-items: stretch; align-self: end; }
+  .card .actions { grid-area: actions; display: flex; gap: 8px; align-items: stretch; align-self: end; flex-wrap: wrap; }
   .card .actions button.btn, .card .actions .badge-ok { width: 100%; justify-content: center; }
   .card.connected .actions .badge-ok {
     flex: 1 1 auto;
@@ -989,15 +1086,20 @@ export function renderLoginPage(port: number): string {
   .card.claude  button.btn { background: var(--claude); }
   .card.codex   button.btn { background: var(--codex); }
   .card.gemini  button.btn { background: var(--gemini); }
-  button.logout-btn {
-    appearance: none; flex: 0 0 auto; min-width: 92px; cursor: pointer; font: inherit; font-weight: 600;
+  button.logout-btn,
+  button.update-btn {
+    appearance: none; flex: 1 1 92px; min-width: 92px; cursor: pointer; font: inherit; font-weight: 600;
     border-radius: 10px; padding: 8px 13px; color: var(--muted); background: var(--panel-2);
     border: 1px solid var(--border-strong);
     transition: background .12s ease, border-color .12s ease, color .12s ease, transform .04s ease;
   }
-  button.logout-btn:hover { border-color: var(--accent); color: var(--accent); }
-  button.logout-btn:active { transform: translateY(1px); }
-  button.logout-btn:disabled { opacity: .55; cursor: default; transform: none; }
+  button.update-btn { color: var(--accent); }
+  button.logout-btn:hover,
+  button.update-btn:hover { border-color: var(--accent); color: var(--accent); }
+  button.logout-btn:active,
+  button.update-btn:active { transform: translateY(1px); }
+  button.logout-btn:disabled,
+  button.update-btn:disabled { opacity: .55; cursor: default; transform: none; }
   .badge-ok {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 13px; font-weight: 600; color: var(--ok);
@@ -1209,12 +1311,18 @@ export function renderLoginPage(port: number): string {
   @media (max-width: 760px) {
     .test-grid { grid-template-columns: 1fr; }
     .test-grid button { width: 100%; }
-    .tabs { display: flex; }
+    .tabs { display: flex; width: 100%; max-width: 100%; }
     .tab-btn { flex: 1 1 0; }
   }
   @media (max-width: 640px) {
+    body { overflow-x: hidden; }
+    .wrap { max-width: 100%; overflow-x: hidden; }
     header.top { align-items: flex-start; flex-wrap: wrap; }
     .top-actions { width: 100%; justify-content: flex-start; margin-left: 50px; }
+    .cards { grid-template-columns: minmax(0, 1fr); }
+    .card .actions { flex-direction: column; }
+    button.logout-btn,
+    button.update-btn { width: 100%; }
   }
 </style>
 </head>
@@ -1383,6 +1491,7 @@ export function renderLoginPage(port: number): string {
   "use strict";
   var POLL_MS = 2000;
   var IDLE_REFRESH_MS = 6000;
+  var VERSION_REFRESH_MS = 120000;
   var BACKED_BY = {
     "anthropic-subscription": { id: "claude", label: "Claude" },
     "openai-subscription":    { id: "codex",  label: "ChatGPT" },
@@ -1401,6 +1510,7 @@ export function renderLoginPage(port: number): string {
   // clobber the spinner/hint with a stale "Set up"/"Connect" button.
   var busy = {};
   var modelCache = [];
+  var versionCache = {};
   var activeTab = "setup";
   var lastStatus = null;
   var lastModelPayload = null;
@@ -1452,13 +1562,19 @@ export function renderLoginPage(port: number): string {
       setUp: "Set up",
       connect: "Connect",
       logOut: "Log out",
+      updateCli: "Update CLI",
       installing: "Installing…",
+      updatingCli: "Updating…",
       opening: "Opening…",
       signingOut: "Signing out…",
       testing: "Testing…",
       installingHint: "Installing {provider}… this can take a minute.",
+      updateCliHint: "Updating {provider} CLI… this can take a minute.",
+      updatedCli: "{provider} CLI updated.",
       installFallbackLead: "Couldn’t install automatically — run this once:",
+      updateFallbackLead: "Couldn’t update automatically — run this once:",
       installNetworkError: "Network error while installing.",
+      updateNetworkError: "Network error while updating.",
       manualSignIn: "Sign in manually to connect.",
       openingBrowser: "Opening your browser — finish signing in there; this updates automatically.",
       openingBrowserLink: " If it didn’t open, <a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">use this link</a>.",
@@ -1478,6 +1594,8 @@ export function renderLoginPage(port: number): string {
       factAuth: "Auth",
       factCredential: "Credential",
       factNote: "Note",
+      factCli: "CLI",
+      cliLatestVersion: "latest {version}",
       unknown: "Unknown",
       durationMs: "{value} ms",
       usageSupplier: "Supplier",
@@ -1539,13 +1657,19 @@ export function renderLoginPage(port: number): string {
       setUp: "设置",
       connect: "连接",
       logOut: "登出",
+      updateCli: "更新 CLI",
       installing: "安装中…",
+      updatingCli: "更新中…",
       opening: "打开中…",
       signingOut: "登出中…",
       testing: "测试中…",
       installingHint: "正在安装 {provider}… 可能需要一分钟。",
+      updateCliHint: "正在更新 {provider} CLI… 可能需要一分钟。",
+      updatedCli: "{provider} CLI 已更新。",
       installFallbackLead: "无法自动安装，请先运行一次：",
+      updateFallbackLead: "无法自动更新，请先运行一次：",
       installNetworkError: "安装时出现网络错误。",
+      updateNetworkError: "更新时出现网络错误。",
       manualSignIn: "请手动登录以完成连接。",
       openingBrowser: "正在打开浏览器，请在浏览器中完成登录；此处会自动更新。",
       openingBrowserLink: " 如果没有打开，<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">使用此链接</a>。",
@@ -1565,6 +1689,8 @@ export function renderLoginPage(port: number): string {
       factAuth: "授权",
       factCredential: "凭据",
       factNote: "备注",
+      factCli: "CLI",
+      cliLatestVersion: "最新 {version}",
       unknown: "未知",
       durationMs: "{value} 毫秒",
       usageSupplier: "供应商",
@@ -1626,13 +1752,19 @@ export function renderLoginPage(port: number): string {
       setUp: "設定",
       connect: "接続",
       logOut: "ログアウト",
+      updateCli: "CLI を更新",
       installing: "インストール中…",
+      updatingCli: "更新中…",
       opening: "起動中…",
       signingOut: "ログアウト中…",
       testing: "テスト中…",
       installingHint: "{provider} をインストールしています… 1 分ほどかかることがあります。",
+      updateCliHint: "{provider} CLI を更新しています… 1 分ほどかかることがあります。",
+      updatedCli: "{provider} CLI を更新しました。",
       installFallbackLead: "自動インストールできませんでした。これを一度実行してください:",
+      updateFallbackLead: "自動更新できませんでした。これを一度実行してください:",
       installNetworkError: "インストール中にネットワークエラーが発生しました。",
+      updateNetworkError: "更新中にネットワークエラーが発生しました。",
       manualSignIn: "接続するには手動でログインしてください。",
       openingBrowser: "ブラウザを開いています。そこでログインを完了してください。この画面は自動更新されます。",
       openingBrowserLink: " 開かない場合は、<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">このリンク</a>を使ってください。",
@@ -1652,6 +1784,8 @@ export function renderLoginPage(port: number): string {
       factAuth: "認証",
       factCredential: "資格情報",
       factNote: "注記",
+      factCli: "CLI",
+      cliLatestVersion: "最新 {version}",
       unknown: "不明",
       durationMs: "{value} ms",
       usageSupplier: "プロバイダー",
@@ -1769,14 +1903,42 @@ export function renderLoginPage(port: number): string {
     return '<span class="fact' + (warn ? " warn" : "") + '" title="' + esc(label + ": " + value) + '">' + esc(label + ": " + value) + '</span>';
   }
 
-  function renderFacts(card, state) {
+  function versionState(id) {
+    return versionCache && versionCache[id] ? versionCache[id] : null;
+  }
+
+  function cliVersionFact(id) {
+    var version = versionState(id);
+    if (!version) return "";
+    if (version.installedVersion && version.latestVersion && version.updateAvailable) {
+      return version.installedVersion + " -> " + version.latestVersion;
+    }
+    if (version.installedVersion) return version.installedVersion;
+    if (version.latestVersion) return t("cliLatestVersion", { version: version.latestVersion });
+    return "";
+  }
+
+  function updateButton(id) {
+    var version = versionState(id);
+    if (!version || !version.updateAvailable) return "";
+    return '<button class="update-btn" type="button">' + esc(t("updateCli")) + '</button>';
+  }
+
+  function bindUpdateButton(card, id) {
+    var btn = el(card, ".actions .update-btn");
+    if (btn) btn.addEventListener("click", function () { updateCli(id); });
+  }
+
+  function renderFacts(card, id, state) {
     var facts = el(card, ".facts");
     if (!facts) return;
+    var version = versionState(id);
     var html = [
       fact(t("factAccount"), state && state.account),
       fact(t("factPlan"), state && state.subscription),
       fact(t("factAuth"), state && state.auth),
       fact(t("factCredential"), state && state.credential),
+      fact(t("factCli"), cliVersionFact(id), version && version.updateAvailable),
       fact(t("factNote"), state && state.limitation, true)
     ].filter(Boolean).join("");
     facts.innerHTML = html;
@@ -1797,8 +1959,9 @@ export function renderLoginPage(port: number): string {
       statText.textContent = t("connected");
       detail.textContent = state.detail || "";
       detail.style.display = state.detail ? "" : "none";
-      renderFacts(card, state);
-      actions.innerHTML = okBadge() + '<button class="logout-btn" type="button">' + esc(t("logOut")) + '</button>';
+      renderFacts(card, id, state);
+      actions.innerHTML = okBadge() + updateButton(id) + '<button class="logout-btn" type="button">' + esc(t("logOut")) + '</button>';
+      bindUpdateButton(card, id);
       actions.querySelector(".logout-btn").addEventListener("click", function () { logout(id); });
       hideHint(id);
       stopPoll(id);
@@ -1808,7 +1971,7 @@ export function renderLoginPage(port: number): string {
       statText.textContent = t("notInstalled");
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
-      renderFacts(card, state);
+      renderFacts(card, id, state);
       actions.innerHTML = '<button class="btn" type="button">' + esc(t("setUp")) + '</button>';
       actions.querySelector("button").addEventListener("click", function () { setUp(id); });
     } else {
@@ -1817,15 +1980,10 @@ export function renderLoginPage(port: number): string {
       statText.textContent = t("notConnected");
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
-      renderFacts(card, state);
-      var connectButton = actions.querySelector("button.btn");
-      if (!connectButton) {
-        actions.innerHTML = '<button class="btn" type="button">' + esc(t("connect")) + '</button>';
-        connectButton = actions.querySelector("button");
-        connectButton.addEventListener("click", function () { connect(id); });
-      } else {
-        connectButton.textContent = t("connect");
-      }
+      renderFacts(card, id, state);
+      actions.innerHTML = '<button class="btn" type="button">' + esc(t("connect")) + '</button>' + updateButton(id);
+      actions.querySelector(".btn").addEventListener("click", function () { connect(id); });
+      bindUpdateButton(card, id);
     }
   }
 
@@ -1846,12 +2004,11 @@ export function renderLoginPage(port: number): string {
 
   var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 
-  // Manual install fallback: short message + the exact command with a copy button.
-  function showInstallFallback(id, errMsg, command) {
+  // Manual command fallback: short message + the exact command with a copy button.
+  function showCommandFallback(id, lead, errMsg, command) {
     var card = cardFor(id);
     if (!card) return;
     var cmd = command || ("npm install -g " + (PACKAGES[id] || ""));
-    var lead = t("installFallbackLead");
     var extra = errMsg ? '<div class="err" style="margin-top:7px;font-size:12px;color:var(--faint)">' + esc(errMsg) + "</div>" : "";
     showHint(id,
       esc(lead) +
@@ -1861,10 +2018,55 @@ export function renderLoginPage(port: number): string {
       false);
     var btn = el(card, ".hintbox .cmd-copy");
     if (btn) btn.addEventListener("click", function () { copyText(cmd, btn); });
+  }
+
+  // Manual install fallback: restore the Set-up button so the user can retry too.
+  function showInstallFallback(id, errMsg, command) {
+    var card = cardFor(id);
+    if (!card) return;
+    showCommandFallback(id, t("installFallbackLead"), errMsg, command);
     // Restore the Set-up button so the user can retry the automatic path too.
     var actions = el(card, ".actions");
     actions.innerHTML = '<button class="btn" type="button">' + esc(t("setUp")) + '</button>';
     actions.querySelector("button").addEventListener("click", function () { setUp(id); });
+  }
+
+  function rerenderProvider(id) {
+    if (lastStatus && lastStatus[id]) renderProvider(id, lastStatus[id]);
+  }
+
+  function updateCli(id) {
+    var card = cardFor(id);
+    var btn = card && el(card, ".actions .update-btn");
+    var version = versionState(id);
+    busy[id] = true;
+    if (btn) { btn.disabled = true; btn.textContent = t("updatingCli"); }
+    showHint(id, t("updateCliHint", { provider: LABELS[id] || id }), true);
+    fetch("/providers/" + id + "/update", { method: "POST" })
+      .then(function (r) {
+        return r.json().then(function (res) { return { ok: r.ok, res: res }; });
+      })
+      .then(function (payload) {
+        var res = payload.res || {};
+        if (payload.ok && res.installed) {
+          if (res.version) versionCache[id] = res.version;
+          Promise.all([loadVersions(), refreshStatus(true)]).then(function () {
+            busy[id] = false;
+            rerenderProvider(id);
+            showHint(id, esc(t("updatedCli", { provider: LABELS[id] || id })), false);
+            loadModels();
+          });
+          return;
+        }
+        busy[id] = false;
+        rerenderProvider(id);
+        showCommandFallback(id, t("updateFallbackLead"), res.error, res.command || (version && version.updateCommand));
+      })
+      .catch(function () {
+        busy[id] = false;
+        rerenderProvider(id);
+        showCommandFallback(id, t("updateFallbackLead"), t("updateNetworkError"), version && version.updateCommand);
+      });
   }
 
   // ── Set up: install the CLI, then chain straight into login ──────────────────
@@ -1879,6 +2081,7 @@ export function renderLoginPage(port: number): string {
       .then(function (res) {
         if (res && res.installed) {
           // Installed — chain into the existing browser login flow.
+          loadVersions();
           connect(id, true);
         } else {
           busy[id] = false;
@@ -1969,6 +2172,19 @@ export function renderLoginPage(port: number): string {
         ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, s[id]); });
       })
       .catch(function () { if (!quiet) { /* keep last known state on transient errors */ } });
+  }
+
+  function loadVersions() {
+    return fetch("/providers/versions")
+      .then(function (r) { return r.json(); })
+      .then(function (versions) {
+        versionCache = versions || {};
+        if (lastStatus) {
+          ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, lastStatus[id]); });
+        }
+        return versions;
+      })
+      .catch(function () { return null; });
   }
 
   function renderModels(data) {
@@ -2270,9 +2486,11 @@ export function renderLoginPage(port: number): string {
   // Initial load + gentle idle auto-refresh (independent of per-provider polls).
   applyLanguage();
   refreshStatus(true);
+  loadVersions();
   loadModels();
   loadKey();
   setInterval(function () { refreshStatus(true); }, IDLE_REFRESH_MS);
+  setInterval(loadVersions, VERSION_REFRESH_MS);
   setInterval(function () { if (activeTab === "usage") loadUsage(); }, IDLE_REFRESH_MS);
 })();
 </script>

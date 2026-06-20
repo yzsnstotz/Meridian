@@ -23,7 +23,17 @@ import {
   streamAnthropicMessages,
   type AnthropicMessagesRequest,
 } from "./gateway/anthropic";
-import { getProvidersStatus, startLogin, installProvider, logoutProvider, ensureSpawnPath, renderLoginPage, type ProviderId } from "./gateway/login";
+import {
+  getProvidersStatus,
+  getProvidersCliVersions,
+  startLogin,
+  installProvider,
+  updateProviderCli,
+  logoutProvider,
+  ensureSpawnPath,
+  renderLoginPage,
+  type ProviderId
+} from "./gateway/login";
 import { listGatewayModels, ownerForProvider } from "./gateway/model-list";
 import { runGatewayDirectTest } from "./gateway/direct-test";
 import { GatewayUsageLedger, type GatewayUsageSurface } from "./gateway/usage-ledger";
@@ -176,6 +186,7 @@ function boundPort(): number {
 
 const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/login$/;
 const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/install$/;
+const UPDATE_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/update$/;
 const LOGOUT_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/logout$/;
 const TEST_ROUTE_RE = /^\/providers\/(claude|codex|gemini)\/test$/;
 const MODEL_RETRIEVE_RE = /^\/v1\/models\/(.+)$/;
@@ -198,6 +209,9 @@ const server = http.createServer((request, response) => {
       if (request.method === "GET" && url.pathname === "/providers/status") {
         return sendJson(response, 200, await getProvidersStatus());
       }
+      if (request.method === "GET" && url.pathname === "/providers/versions") {
+        return sendJson(response, 200, await getProvidersCliVersions());
+      }
       {
         const m = request.method === "POST" ? LOGIN_ROUTE_RE.exec(url.pathname) : null;
         if (m) {
@@ -211,6 +225,13 @@ const server = http.createServer((request, response) => {
         const m = request.method === "POST" ? INSTALL_ROUTE_RE.exec(url.pathname) : null;
         if (m) {
           return sendJson(response, 200, await installProvider(m[1] as ProviderId));
+        }
+      }
+      {
+        const m = request.method === "POST" ? UPDATE_ROUTE_RE.exec(url.pathname) : null;
+        if (m) {
+          const result = await updateProviderCli(m[1] as ProviderId);
+          return sendJson(response, result.installed ? 200 : 500, result);
         }
       }
       {
