@@ -113,7 +113,7 @@ const PROVIDER_PACKAGES: Record<ProviderId, ProviderPackage> = {
   antigravity: {
     bin: "agy",
     pkg: "Google Antigravity app",
-    installCommand: "open https://antigravity.google/download",
+    installCommand: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
     npmManaged: false
   },
 };
@@ -255,7 +255,7 @@ function probeError(out: string, fallback: string): string {
 
 function normalizeAntigravityCliError(out: string, fallback: string): string {
   if (/Antigravity\.app|Contents\/Resources\/app\/bin\/antigravity|No such file or directory/i.test(out)) {
-    return "Antigravity app binary is not available. Install or reinstall Antigravity from https://antigravity.google/download.";
+    return "Antigravity app binary is not available. Use Install CLI or Update CLI from the Antigravity provider card.";
   }
   return probeError(out, fallback);
 }
@@ -547,82 +547,67 @@ export async function getProvidersStatus(): Promise<ProvidersStatus> {
 
 // ── Install (one-click CLI setup) ──────────────────────────────────────────────
 //
-// Runs `npm install -g <pkg>` for one provider so a non-technical user never
-// needs a terminal. npm-global installs can be slow, so the timeout is generous.
-// On any failure (e.g. EACCES on a sudo-only prefix) we return the exact command
-// so the GUI can offer a copy-the-command fallback.
-export function installProvider(id: ProviderId, timeoutMs = 300000): Promise<InstallResult> {
-  const { pkg } = PROVIDER_PACKAGES[id];
-  const command = installCommandFor(id);
-  ensureSpawnPath();
-  if (PROVIDER_PACKAGES[id].npmManaged === false) {
-    return Promise.resolve({
-      installed: false,
-      error: "Install Antigravity from Google, then reopen this page and refresh models.",
-      command
-    });
+// Runs the provider's official installer so a non-technical user never needs a
+// terminal. npm-global installs can be slow, and Antigravity's installer
+// downloads a binary + configures PATH, so the timeout is generous. On any
+// failure (e.g. EACCES on a sudo-only prefix) we return the exact command so the
+// GUI can offer a copy-the-command fallback.
+type InstallDeps = CliVersionDeps;
+
+function installerInvocationFor(id: ProviderId): { command: string; args: string[] } {
+  const { pkg, npmManaged } = PROVIDER_PACKAGES[id];
+  if (npmManaged === false) {
+    return { command: "/bin/sh", args: ["-c", installCommandFor(id)] };
   }
-  return new Promise((resolve) => {
-    let out = "";
-    let settled = false;
-    let child: ReturnType<typeof spawn>;
-    const finish = (result: InstallResult): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const shortError = (fallback: string): string => {
-      const line = out
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => /npm error|EACCES|EPERM|permission denied|not permitted|code E/i.test(l))
-        .pop();
-      return (line || out.trim().split("\n").slice(-1)[0] || fallback).slice(0, 240);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already exited
-      }
-      finish({ installed: false, error: "Install timed out", command });
-    }, timeoutMs);
-    try {
-      child = spawn("npm", ["install", "-g", pkg], { stdio: ["ignore", "pipe", "pipe"] });
-    } catch {
-      finish({ installed: false, error: "npm is not available", command });
-      return;
-    }
-    child.stdout?.on("data", (d) => (out += d.toString()));
-    child.stderr?.on("data", (d) => (out += d.toString()));
-    child.on("error", () => finish({ installed: false, error: shortError("Failed to launch npm"), command }));
-    child.on("close", (code) => {
-      if (code === 0) {
-        // Re-confirm the binary is now resolvable on the augmented PATH.
-        const ok = isInstalled(PROVIDER_PACKAGES[id].bin);
-        if (ok) return finish({ installed: true });
-        return finish({ installed: false, error: shortError("Installed, but the CLI was not found on PATH"), command });
-      }
-      finish({ installed: false, error: shortError(`npm exited with code ${code}`), command });
-    });
-  });
+  return { command: "npm", args: ["install", "-g", pkg] };
 }
 
-export async function updateProviderCli(id: ProviderId, timeoutMs = 300000): Promise<InstallResult & { version?: ProviderCliVersionState }> {
-  if (PROVIDER_PACKAGES[id].npmManaged === false) {
+function installError(out: string, fallback: string): string {
+  const line = out
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /npm error|EACCES|EPERM|permission denied|not permitted|code E|failed|error/i.test(l))
+    .pop();
+  return (line || out.trim().split("\n").slice(-1)[0] || fallback).slice(0, 240);
+}
+
+export async function installProvider(id: ProviderId, timeoutMs = 300000, deps: InstallDeps = {}): Promise<InstallResult> {
+  const { bin } = PROVIDER_PACKAGES[id];
+  const command = installCommandFor(id);
+  const run = deps.run ?? runProbe;
+  const installed = deps.installed ?? isInstalled;
+  const installer = installerInvocationFor(id);
+  ensureSpawnPath();
+  const result = await run(installer.command, installer.args, timeoutMs);
+  if (result.code === 0) {
+    // Re-confirm the binary is now resolvable on the augmented PATH.
+    if (installed(bin)) return { installed: true };
     return {
       installed: false,
-      error: "Antigravity updates are delivered by the Antigravity app. Open the download page to install the current build.",
-      command: installCommandFor(id),
-      version: await getProviderCliVersion(id)
+      error: installError(result.out, "Installed, but the CLI was not found on PATH"),
+      command
     };
   }
-  const result = await installProvider(id, timeoutMs);
+  if (result.code === null) {
+    return {
+      installed: false,
+      error: installError(result.out, "Install timed out or the installer could not be launched"),
+      command
+    };
+  }
+  return {
+    installed: false,
+    error: installError(result.out, `Installer exited with code ${result.code}`),
+    command
+  };
+}
+
+export async function updateProviderCli(id: ProviderId, timeoutMs = 300000, deps: InstallDeps = {}): Promise<InstallResult & { version?: ProviderCliVersionState }> {
+  const result = await installProvider(id, timeoutMs, deps);
   if (!result.installed) return result;
   return {
     ...result,
-    version: await getProviderCliVersion(id)
+    version: await getProviderCliVersion(id, deps)
   };
 }
 
@@ -1655,7 +1640,7 @@ export function renderLoginPage(port: number): string {
     claude: "npm install -g @anthropic-ai/claude-code",
     codex: "npm install -g @openai/codex",
     gemini: "npm install -g @google/gemini-cli",
-    antigravity: "open https://antigravity.google/download"
+    antigravity: "curl -fsSL https://antigravity.google/cli/install.sh | bash"
   };
   var pollTimers = {};
   // While a card is mid-setup/connect we suppress status re-renders that would
@@ -1727,6 +1712,8 @@ export function renderLoginPage(port: number): string {
       testing: "Testing…",
       installingHint: "Installing {provider}… this can take a minute.",
       updateCliHint: "Updating {provider} CLI… this can take a minute.",
+      antigravityInstallHint: "Installing Antigravity with Google's official CLI installer:",
+      antigravityUpdateHint: "Updating Antigravity with Google's official CLI installer:",
       updatedCli: "{provider} CLI updated.",
       installFallbackLead: "Couldn’t install automatically — run this once:",
       updateFallbackLead: "Couldn’t update automatically — run this once:",
@@ -1828,6 +1815,8 @@ export function renderLoginPage(port: number): string {
       testing: "测试中…",
       installingHint: "正在安装 {provider}… 可能需要一分钟。",
       updateCliHint: "正在更新 {provider} CLI… 可能需要一分钟。",
+      antigravityInstallHint: "正在使用 Google 官方 CLI 安装器安装 Antigravity：",
+      antigravityUpdateHint: "正在使用 Google 官方 CLI 安装器更新 Antigravity：",
       updatedCli: "{provider} CLI 已更新。",
       installFallbackLead: "无法自动安装，请先运行一次：",
       updateFallbackLead: "无法自动更新，请先运行一次：",
@@ -1929,6 +1918,8 @@ export function renderLoginPage(port: number): string {
       testing: "テスト中…",
       installingHint: "{provider} をインストールしています… 1 分ほどかかることがあります。",
       updateCliHint: "{provider} CLI を更新しています… 1 分ほどかかることがあります。",
+      antigravityInstallHint: "Google 公式 CLI インストーラーで Antigravity をインストールしています:",
+      antigravityUpdateHint: "Google 公式 CLI インストーラーで Antigravity を更新しています:",
       updatedCli: "{provider} CLI を更新しました。",
       installFallbackLead: "自動インストールできませんでした。これを一度実行してください:",
       updateFallbackLead: "自動更新できませんでした。これを一度実行してください:",
@@ -2202,6 +2193,15 @@ export function renderLoginPage(port: number): string {
     actions.querySelector("button").addEventListener("click", function () { setUp(id); });
   }
 
+  function installProgressHint(id, updating) {
+    if (id !== "antigravity") {
+      return t(updating ? "updateCliHint" : "installingHint", { provider: LABELS[id] || id });
+    }
+    var key = updating ? "antigravityUpdateHint" : "antigravityInstallHint";
+    var cmd = INSTALL_COMMANDS[id];
+    return esc(t(key)) + '<div class="cmd-row"><span class="cmd">' + esc(cmd) + '</span></div>';
+  }
+
   function rerenderProvider(id) {
     if (lastStatus && lastStatus[id]) renderProvider(id, lastStatus[id]);
   }
@@ -2212,7 +2212,7 @@ export function renderLoginPage(port: number): string {
     var version = versionState(id);
     busy[id] = true;
     if (btn) { btn.disabled = true; btn.textContent = t("updatingCli"); }
-    showHint(id, t("updateCliHint", { provider: LABELS[id] || id }), true);
+    showHint(id, installProgressHint(id, true), true);
     fetch("/providers/" + id + "/update", { method: "POST" })
       .then(function (r) {
         return r.json().then(function (res) { return { ok: r.ok, res: res }; });
@@ -2246,7 +2246,7 @@ export function renderLoginPage(port: number): string {
     var btn = card && el(card, ".actions button");
     busy[id] = true;
     if (btn) { btn.disabled = true; btn.textContent = t("installing"); }
-    showHint(id, t("installingHint", { provider: LABELS[id] || id }), true);
+    showHint(id, installProgressHint(id, false), true);
     fetch("/providers/" + id + "/install", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (res) {

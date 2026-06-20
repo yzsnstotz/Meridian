@@ -6,10 +6,12 @@ import { test } from "node:test";
 
 import {
   getProviderCliVersion,
+  installProvider,
   logoutProvider,
   renderLoginPage,
   summarizeCodexAuthJson,
-  summarizeGeminiAuthJson
+  summarizeGeminiAuthJson,
+  updateProviderCli
 } from "./login";
 
 function jwtWith(payload: Record<string, unknown>): string {
@@ -78,6 +80,8 @@ test("renderLoginPage includes Antigravity as an independent provider", () => {
   assert.match(html, /class="ico antigravity">A/);
   assert.match(html, /<option value="antigravity">Antigravity<\/option>/);
   assert.match(html, /"antigravity-subscription":\s*\{\s*id:\s*"antigravity",\s*label:\s*"Antigravity"/);
+  assert.match(html, /curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh \| bash/);
+  assert.match(html, /antigravityInstallHint/);
   assert.match(html, /--antigravity:/);
 });
 
@@ -123,8 +127,44 @@ test("getProviderCliVersion reports a broken Antigravity app shim as not usable"
   assert.equal(result.installed, false);
   assert.equal(result.command, "agy");
   assert.equal(result.packageName, "Google Antigravity app");
-  assert.equal(result.updateCommand, "open https://antigravity.google/download");
+  assert.equal(result.updateCommand, "curl -fsSL https://antigravity.google/cli/install.sh | bash");
   assert.match(result.error ?? "", /Antigravity app.*not available|No such file/i);
+});
+
+test("installProvider runs the official Antigravity installer and verifies agy is usable", async () => {
+  const calls: string[] = [];
+  const result = await installProvider("antigravity", 1000, {
+    installed: (bin) => bin === "agy",
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { code: 0, out: "Antigravity CLI binary placed successfully\n" };
+    }
+  });
+
+  assert.deepEqual(calls, [
+    "/bin/sh -c curl -fsSL https://antigravity.google/cli/install.sh | bash"
+  ]);
+  assert.deepEqual(result, { installed: true });
+});
+
+test("updateProviderCli runs the Antigravity installer and returns a fresh version probe", async () => {
+  const calls: string[] = [];
+  const result = await updateProviderCli("antigravity", 1000, {
+    installed: (bin) => bin === "agy",
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "agy") return { code: 0, out: "1.0.7\n" };
+      return { code: 0, out: "updated\n" };
+    }
+  });
+
+  assert.deepEqual(calls, [
+    "/bin/sh -c curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    "agy --version"
+  ]);
+  assert.equal(result.installed, true);
+  assert.equal(result.version?.installed, true);
+  assert.equal(result.version?.installedVersion, "1.0.7");
 });
 
 test("renderLoginPage keeps provider cards equal height", () => {
