@@ -129,7 +129,7 @@ test("ProviderModelCatalog surfaces Codex app-server failure when no OpenAI fall
   );
 });
 
-test("ProviderModelCatalog loads Claude models from local CLI binary strings", async () => {
+test("ProviderModelCatalog loads Claude model candidates from local CLI binary strings", async () => {
   const catalog = new ProviderModelCatalog({
     realpathFn: async (filePath) => filePath,
     execFileFn: async (file, args) => {
@@ -160,7 +160,9 @@ test("ProviderModelCatalog loads Claude models from local CLI binary strings", a
 
   assert.equal(result.provider, "claude");
   assert.deepEqual(result.models, [
+    { id: "claude-haiku-3-5", label: "Claude-Haiku-3-5" },
     { id: "claude-opus-4-7", label: "Claude-Opus-4-7" },
+    { id: "claude-sonnet-3-7", label: "Claude-Sonnet-3-7" },
     { id: "claude-sonnet-4-6", label: "Claude-Sonnet-4-6" }
   ]);
 });

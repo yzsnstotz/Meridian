@@ -122,17 +122,11 @@ function modelRecordsFromIds(ids: string[]): ProviderModel[] {
   );
 }
 
-function isSelectableClaudeCliModelId(id: string): boolean {
-  const match = /^claude-(?:opus|sonnet|haiku)-(\d+)(?:[._-]|$)/i.exec(id.trim());
-  if (!match) return false;
-  return Number(match[1]) >= 4;
-}
-
 function parseClaudeCliModelIds(raw: string): string[] {
   const ids = new Set<string>();
   for (const match of raw.matchAll(/\bclaude-(?:opus|sonnet|haiku)-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\b/g)) {
     const id = match[0].trim();
-    if (id && isSelectableClaudeCliModelId(id)) ids.add(id);
+    if (id) ids.add(id);
   }
   return Array.from(ids);
 }
