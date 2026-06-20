@@ -23,6 +23,18 @@ function antigravityModelId(model: string | undefined): string | undefined {
   return model && matchesAntigravity(model) ? model.replace(/^antigravity\//i, "") : undefined;
 }
 
+function estimateTokenCount(value: string): number {
+  const text = value.trim();
+  if (!text) return 0;
+  const cjkChars = text.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g)?.length ?? 0;
+  const withoutCjk = text.replace(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g, " ");
+  const pieces = withoutCjk.match(/[A-Za-z0-9_]+|[^\sA-Za-z0-9_]/g) ?? [];
+  const nonCjkTokens = pieces.reduce((sum, piece) => {
+    return sum + (/^[A-Za-z0-9_]+$/.test(piece) ? Math.ceil(piece.length / 4) : 1);
+  }, 0);
+  return Math.max(1, cjkChars + nonCjkTokens);
+}
+
 export async function completeAntigravity(req: ChatCompletionRequest): Promise<CompletionResult> {
   const { system, prompt } = buildPrompt(req.messages);
   const fullPrompt = system ? `System: ${system}\n\n${prompt}` : prompt;
@@ -70,7 +82,10 @@ export async function completeAntigravity(req: ChatCompletionRequest): Promise<C
       text: stdout.trim(),
       model: req.model ?? DEFAULT_ANTIGRAVITY_MODEL,
       finishReason: "stop",
-      usage: { promptTokens: 0, completionTokens: 0 }
+      usage: {
+        promptTokens: estimateTokenCount(fullPrompt),
+        completionTokens: estimateTokenCount(stdout)
+      }
     };
   } finally {
     try {
