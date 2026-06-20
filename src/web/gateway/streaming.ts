@@ -6,10 +6,11 @@
 // `data: [DONE]`.
 //
 //   • claude  → real incremental token streaming via streamClaude().
-//   • codex/gemini → their one-shots aren't cleanly incremental, so we run the
+//   • codex/gemini/antigravity → their one-shots aren't cleanly incremental, so we run the
 //     existing non-stream completion and emit the whole result as a single
 //     `delta.content` chunk (still valid SSE; see the buffered-fallback caveat).
 import type http from "node:http";
+import { completeAntigravity, matchesAntigravity } from "./antigravity";
 import { completeCodex, matchesCodex } from "./codex";
 import { completeGemini, matchesGemini } from "./gemini";
 import { streamClaude } from "./claude";
@@ -59,14 +60,14 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
   const id = chunkId();
   const created = Math.floor(Date.now() / 1000);
   // Provisional model label for the role chunk; refined on the final chunk for
-  // claude (the CLI reports the resolved model id) but stable for codex/gemini.
+  // claude (the CLI reports the resolved model id) but stable for buffered providers.
   const requestedModel = req.model ?? "claude";
 
   // Opening chunk: announce the assistant role (OpenAI convention).
   sseChunk(res, id, created, requestedModel, { role: "assistant" }, null);
 
   // ── claude: real token streaming ──────────────────────────────────────────
-  if (!matchesCodex(req.model) && !matchesGemini(req.model)) {
+  if (!matchesAntigravity(req.model) && !matchesCodex(req.model) && !matchesGemini(req.model)) {
     let finalModel = requestedModel;
     let finalReason: FinishReason = "stop";
     let usage = { promptTokens: 0, completionTokens: 0 };
@@ -102,8 +103,12 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
     };
   }
 
-  // ── codex / gemini: buffered fallback (single content chunk) ──────────────
-  const out = await (matchesCodex(req.model) ? completeCodex(req) : completeGemini(req));
+  // ── codex / gemini / antigravity: buffered fallback (single content chunk)
+  const out = await (matchesAntigravity(req.model)
+    ? completeAntigravity(req)
+    : matchesCodex(req.model)
+      ? completeCodex(req)
+      : completeGemini(req));
   if (out.isError) {
     sseChunk(res, id, created, out.model, { content: `[error: ${out.errorMessage ?? "upstream error"}]` }, null);
     sseChunk(res, id, created, out.model, {}, "stop");

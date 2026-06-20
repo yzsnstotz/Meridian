@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { ProviderModelCatalogResult } from "../../shared/model-catalog";
-import type { AgentType } from "../../types";
+import type { ProviderModelCatalogProvider, ProviderModelCatalogResult } from "../../shared/model-catalog";
 import { listGatewayModels } from "./model-list";
 import type { ProvidersStatus } from "./login";
 
@@ -10,11 +9,12 @@ test("listGatewayModels uses live catalog results instead of static gateway cons
   const status: ProvidersStatus = {
     claude: { installed: true, connected: true },
     codex: { installed: true, connected: true },
-    gemini: { installed: true, connected: false }
+    gemini: { installed: true, connected: false },
+    antigravity: { installed: true, connected: true }
   };
-  const calls: AgentType[] = [];
+  const calls: ProviderModelCatalogProvider[] = [];
   const catalog = {
-    async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+    async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
       calls.push(provider);
       if (provider === "claude") {
         return { provider, models: [{ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" }] };
@@ -22,15 +22,19 @@ test("listGatewayModels uses live catalog results instead of static gateway cons
       if (provider === "codex") {
         return { provider, models: [{ id: "gpt-live-codex", label: "GPT Live Codex" }] };
       }
+      if (provider === "antigravity") {
+        return { provider, models: [{ id: "antigravity/gemini-3-pro", label: "Gemini 3 Pro" }] };
+      }
       throw new Error(`unexpected provider ${provider}`);
     }
   };
 
   const result = await listGatewayModels(status, catalog);
 
-  assert.deepEqual(calls, ["claude", "codex"]);
+  assert.deepEqual(calls, ["claude", "codex", "antigravity"]);
   assert.deepEqual(result.data, [
     { id: "claude-sonnet-4-6", object: "model", owned_by: "anthropic-subscription" },
+    { id: "antigravity/gemini-3-pro", object: "model", owned_by: "antigravity-subscription" },
     { id: "gpt-live-codex", object: "model", owned_by: "openai-subscription" }
   ]);
   assert.equal(result.errors, undefined);
@@ -42,10 +46,11 @@ test("listGatewayModels reports per-provider catalog failures without falling ba
   const status: ProvidersStatus = {
     claude: { installed: true, connected: true },
     codex: { installed: true, connected: false },
-    gemini: { installed: true, connected: true }
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: false }
   };
   const catalog = {
-    async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+    async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
       if (provider === "claude") {
         throw new Error("Claude CLI does not expose a model catalog");
       }
@@ -69,10 +74,11 @@ test("listGatewayModels rewrites REST API-key catalog errors for OAuth-backed pr
   const status: ProvidersStatus = {
     claude: { installed: true, connected: true },
     codex: { installed: true, connected: false },
-    gemini: { installed: true, connected: true }
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: true }
   };
   const catalog = {
-    async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+    async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
       throw new Error(`No API key configured for provider=${provider}`);
     }
   };
@@ -82,6 +88,7 @@ test("listGatewayModels rewrites REST API-key catalog errors for OAuth-backed pr
   assert.deepEqual(result.data, []);
   assert.deepEqual(result.errors, {
     claude: "Claude OAuth is connected, but the local CLI did not expose a model catalog.",
-    gemini: "Gemini OAuth is connected, but the local CLI did not expose a model catalog."
+    gemini: "Gemini OAuth is connected, but the local CLI did not expose a model catalog.",
+    antigravity: "Antigravity OAuth is connected, but the local CLI did not expose a model catalog."
   });
 });

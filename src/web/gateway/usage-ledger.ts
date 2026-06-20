@@ -57,7 +57,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function providerId(value: unknown): ProviderId | undefined {
-  return value === "claude" || value === "codex" || value === "gemini" ? value : undefined;
+  return value === "claude" || value === "codex" || value === "gemini" || value === "antigravity" ? value : undefined;
 }
 
 function text(value: unknown): string | undefined {

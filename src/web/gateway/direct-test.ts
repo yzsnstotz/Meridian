@@ -1,3 +1,4 @@
+import { completeAntigravity } from "./antigravity";
 import { completeClaude } from "./claude";
 import { completeCodex } from "./codex";
 import { completeGemini } from "./gemini";
@@ -26,9 +27,11 @@ export interface GatewayDirectTestCompletions {
   claude: (req: ChatCompletionRequest) => Promise<CompletionResult>;
   codex: (req: ChatCompletionRequest) => Promise<CompletionResult>;
   gemini: (req: ChatCompletionRequest) => Promise<CompletionResult>;
+  antigravity: (req: ChatCompletionRequest) => Promise<CompletionResult>;
 }
 
 const DEFAULT_COMPLETIONS: GatewayDirectTestCompletions = {
+  antigravity: completeAntigravity,
   claude: completeClaude,
   codex: completeCodex,
   gemini: completeGemini
@@ -40,6 +43,10 @@ function selectedClaudeModelFromError(message: string, fallback?: string): strin
 }
 
 export function normalizeDirectTestError(provider: ProviderId, message: string, model?: string): string {
+  if (provider === "antigravity" && /Antigravity\.app|Contents\/Resources\/app\/bin\/antigravity|No such file or directory/i.test(message)) {
+    return "Antigravity CLI shim is installed but the Antigravity app binary is missing. " +
+      "Install or reinstall Antigravity from https://antigravity.google/download, then run Refresh models again.";
+  }
   if (provider === "gemini" && /IneligibleTierError|UNSUPPORTED_CLIENT|migrate to the Antigravity/i.test(message)) {
     return "Gemini CLI reports this account or tier is no longer supported by the Gemini CLI client. " +
       "Use Update CLI from the provider card if an update is available; if it still fails, migrate this account to Antigravity: https://antigravity.google.";

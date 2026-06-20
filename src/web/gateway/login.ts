@@ -7,7 +7,7 @@
 //
 // Routes added here (all wired from v1-gateway.ts):
 //   GET  /                       → the GUI HTML
-//   GET  /providers/status       → { claude, codex, gemini } connection state
+//   GET  /providers/status       → { claude, codex, gemini, antigravity } connection state
 //   POST /providers/:id/login    → kick off (or describe) sign-in for one CLI
 //
 // NOTHING here touches /health or /v1/*. Detection is read-only (status
@@ -21,7 +21,7 @@ import { claudeAgentConfig } from "../../agents/claude";
 import { codexAgentConfig } from "../../agents/codex";
 import { geminiAgentConfig } from "../../agents/gemini";
 
-export type ProviderId = "claude" | "codex" | "gemini";
+export type ProviderId = "claude" | "codex" | "gemini" | "antigravity";
 
 export interface ProviderState {
   /** The backing CLI binary is resolvable on PATH (installed on this machine). */
@@ -45,6 +45,7 @@ export interface ProvidersStatus {
   claude: ProviderState;
   codex: ProviderState;
   gemini: ProviderState;
+  antigravity: ProviderState;
 }
 
 export interface LoginResult {
@@ -75,6 +76,7 @@ export interface ProvidersCliVersions {
   claude: ProviderCliVersionState;
   codex: ProviderCliVersionState;
   gemini: ProviderCliVersionState;
+  antigravity: ProviderCliVersionState;
 }
 
 export interface LogoutResult {
@@ -100,16 +102,25 @@ export interface ProviderAuthSummary {
 interface ProviderPackage {
   bin: string;
   pkg: string;
+  installCommand?: string;
+  npmManaged?: boolean;
 }
 
 const PROVIDER_PACKAGES: Record<ProviderId, ProviderPackage> = {
   claude: { bin: claudeAgentConfig.command, pkg: "@anthropic-ai/claude-code" },
   codex: { bin: codexAgentConfig.command, pkg: "@openai/codex" },
   gemini: { bin: geminiAgentConfig.command, pkg: "@google/gemini-cli" },
+  antigravity: {
+    bin: "agy",
+    pkg: "Google Antigravity app",
+    installCommand: "open https://antigravity.google/download",
+    npmManaged: false
+  },
 };
 
 /** The `npm install -g <pkg>` command string for a provider (GUI fallback). */
 export function installCommandFor(id: ProviderId): string {
+  if (PROVIDER_PACKAGES[id].installCommand) return PROVIDER_PACKAGES[id].installCommand;
   return `npm install -g ${PROVIDER_PACKAGES[id].pkg}`;
 }
 
@@ -242,6 +253,13 @@ function probeError(out: string, fallback: string): string {
   return (out.trim().split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() || fallback).slice(0, 220);
 }
 
+function normalizeAntigravityCliError(out: string, fallback: string): string {
+  if (/Antigravity\.app|Contents\/Resources\/app\/bin\/antigravity|No such file or directory/i.test(out)) {
+    return "Antigravity app binary is not available. Install or reinstall Antigravity from https://antigravity.google/download.";
+  }
+  return probeError(out, fallback);
+}
+
 export async function getProviderCliVersion(id: ProviderId, deps: CliVersionDeps = {}): Promise<ProviderCliVersionState> {
   ensureSpawnPath();
   const { bin, pkg } = PROVIDER_PACKAGES[id];
@@ -254,6 +272,18 @@ export async function getProviderCliVersion(id: ProviderId, deps: CliVersionDeps
     updateCommand: installCommandFor(id),
     updateAvailable: false
   };
+
+  if (id === "antigravity") {
+    if (!installed) return state;
+    const versionResult = await run(bin, ["--version"], 12000);
+    if (versionResult.code === 0) {
+      state.installedVersion = parseVersionText(versionResult.out) ?? probeError(versionResult.out, "installed");
+      return state;
+    }
+    state.installed = false;
+    state.error = normalizeAntigravityCliError(versionResult.out, "Could not launch Antigravity CLI.");
+    return state;
+  }
 
   if (installed) {
     const versionResult = await run(bin, ["--version"], 12000);
@@ -279,12 +309,13 @@ export async function getProviderCliVersion(id: ProviderId, deps: CliVersionDeps
 }
 
 export async function getProvidersCliVersions(): Promise<ProvidersCliVersions> {
-  const [claude, codex, gemini] = await Promise.all([
+  const [claude, codex, gemini, antigravity] = await Promise.all([
     getProviderCliVersion("claude"),
     getProviderCliVersion("codex"),
-    getProviderCliVersion("gemini")
+    getProviderCliVersion("gemini"),
+    getProviderCliVersion("antigravity")
   ]);
-  return { claude, codex, gemini };
+  return { claude, codex, gemini, antigravity };
 }
 
 // ── Per-provider detection ──────────────────────────────────────────────────
@@ -472,10 +503,46 @@ async function detectGemini(): Promise<ProviderState> {
   }
 }
 
+async function detectAntigravity(): Promise<ProviderState> {
+  if (!isInstalled(PROVIDER_PACKAGES.antigravity.bin)) {
+    return { installed: false, connected: false };
+  }
+  const version = await runProbe(PROVIDER_PACKAGES.antigravity.bin, ["--version"], 12000);
+  if (version.code !== 0) {
+    return {
+      installed: false,
+      connected: false,
+      detail: normalizeAntigravityCliError(version.out, "Antigravity CLI could not be launched.")
+    };
+  }
+  const models = await runProbe(PROVIDER_PACKAGES.antigravity.bin, ["models"], 12000);
+  if (models.code === 0 && models.out.trim().length > 0) {
+    return {
+      installed: true,
+      connected: true,
+      detail: "Authorized · models available",
+      auth: "Antigravity",
+      limitation: "Subscription tier is not exposed by Antigravity CLI status."
+    };
+  }
+  return {
+    installed: true,
+    connected: false,
+    detail: probeError(models.out, "Sign in with Antigravity"),
+    auth: "Antigravity",
+    limitation: "Subscription tier is not exposed by Antigravity CLI status."
+  };
+}
+
 export async function getProvidersStatus(): Promise<ProvidersStatus> {
   ensureSpawnPath();
-  const [claude, codex, gemini] = await Promise.all([detectClaude(), detectCodex(), detectGemini()]);
-  return { claude, codex, gemini };
+  const [claude, codex, gemini, antigravity] = await Promise.all([
+    detectClaude(),
+    detectCodex(),
+    detectGemini(),
+    detectAntigravity()
+  ]);
+  return { claude, codex, gemini, antigravity };
 }
 
 // ── Install (one-click CLI setup) ──────────────────────────────────────────────
@@ -488,6 +555,13 @@ export function installProvider(id: ProviderId, timeoutMs = 300000): Promise<Ins
   const { pkg } = PROVIDER_PACKAGES[id];
   const command = installCommandFor(id);
   ensureSpawnPath();
+  if (PROVIDER_PACKAGES[id].npmManaged === false) {
+    return Promise.resolve({
+      installed: false,
+      error: "Install Antigravity from Google, then reopen this page and refresh models.",
+      command
+    });
+  }
   return new Promise((resolve) => {
     let out = "";
     let settled = false;
@@ -536,6 +610,14 @@ export function installProvider(id: ProviderId, timeoutMs = 300000): Promise<Ins
 }
 
 export async function updateProviderCli(id: ProviderId, timeoutMs = 300000): Promise<InstallResult & { version?: ProviderCliVersionState }> {
+  if (PROVIDER_PACKAGES[id].npmManaged === false) {
+    return {
+      installed: false,
+      error: "Antigravity updates are delivered by the Antigravity app. Open the download page to install the current build.",
+      command: installCommandFor(id),
+      version: await getProviderCliVersion(id)
+    };
+  }
   const result = await installProvider(id, timeoutMs);
   if (!result.installed) return result;
   return {
@@ -556,6 +638,7 @@ const PROVIDER_LOGOUT_COMMANDS: Record<ProviderId, string[][]> = {
   claude: [["auth", "logout"]],
   codex: [["logout"], ["login", "logout"]],
   gemini: [],
+  antigravity: [["logout"], ["auth", "logout"]],
 };
 
 function credentialFilesFor(id: ProviderId, homeDir: string): string[] {
@@ -566,7 +649,13 @@ function credentialFilesFor(id: ProviderId, homeDir: string): string[] {
     ];
   }
   if (id === "codex") return [join(homeDir, ".codex", "auth.json")];
-  return [join(homeDir, ".gemini", "oauth_creds.json")];
+  if (id === "gemini") return [join(homeDir, ".gemini", "oauth_creds.json")];
+  return [
+    join(homeDir, ".antigravity", "auth.json"),
+    join(homeDir, ".antigravity", "oauth_creds.json"),
+    join(homeDir, ".config", "antigravity", "auth.json"),
+    join(homeDir, ".config", "antigravity", "credentials.json"),
+  ];
 }
 
 function displayLocalPath(filePath: string, homeDir: string): string {
@@ -634,6 +723,7 @@ const LABELS_FOR_RESULT: Record<ProviderId, string> = {
   claude: "Claude",
   codex: "Codex",
   gemini: "Gemini",
+  antigravity: "Antigravity",
 };
 
 // ── Login kick-off ───────────────────────────────────────────────────────────
@@ -837,6 +927,9 @@ export async function startLogin(id: ProviderId): Promise<LoginResult> {
   if (id === "codex") {
     return startBrowserLogin(codexAgentConfig.command, ["login"]);
   }
+  if (id === "antigravity") {
+    return startBrowserLogin(PROVIDER_PACKAGES.antigravity.bin, []);
+  }
   // gemini: no `login` subcommand — drive its first-run Google OAuth instead.
   return startGeminiLogin();
 }
@@ -881,6 +974,7 @@ export function renderLoginPage(port: number): string {
     --claude: #d97757;
     --codex: #10a37f;
     --gemini: #4285f4;
+    --antigravity: #f59e0b;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -901,6 +995,7 @@ export function renderLoginPage(port: number): string {
       --claude: #e08a6b;
       --codex: #2bbf99;
       --gemini: #5b9bff;
+      --antigravity: #fbbf24;
     }
   }
   * { box-sizing: border-box; }
@@ -1046,6 +1141,7 @@ export function renderLoginPage(port: number): string {
   .ico.claude { background: var(--claude); }
   .ico.codex  { background: var(--codex); }
   .ico.gemini { background: var(--gemini); }
+  .ico.antigravity { background: var(--antigravity); }
   .card .head { grid-area: head; min-width: 0; align-self: center; }
   .card .body { grid-area: body; min-width: 0; align-self: stretch; }
   .card .name { font-weight: 640; font-size: 15.5px; }
@@ -1093,6 +1189,7 @@ export function renderLoginPage(port: number): string {
   .card.claude  button.btn { background: var(--claude); }
   .card.codex   button.btn { background: var(--codex); }
   .card.gemini  button.btn { background: var(--gemini); }
+  .card.antigravity button.btn { background: var(--antigravity); }
   button.logout-btn,
   button.update-btn {
     appearance: none; flex: 1 1 92px; min-width: 92px; cursor: pointer; font: inherit; font-weight: 600;
@@ -1274,6 +1371,7 @@ export function renderLoginPage(port: number): string {
   .by.claude { color: var(--claude); border-color: color-mix(in srgb, var(--claude) 35%, var(--border)); }
   .by.codex  { color: var(--codex);  border-color: color-mix(in srgb, var(--codex) 35%, var(--border)); }
   .by.gemini { color: var(--gemini); border-color: color-mix(in srgb, var(--gemini) 35%, var(--border)); }
+  .by.antigravity { color: var(--antigravity); border-color: color-mix(in srgb, var(--antigravity) 35%, var(--border)); }
   .empty { padding: 18px 16px; color: var(--faint); font-size: 13.5px; }
   .model-errors {
     border-top: 1px solid var(--border);
@@ -1330,6 +1428,7 @@ export function renderLoginPage(port: number): string {
   .usage-provider.claude::before { background: var(--claude); }
   .usage-provider.codex::before { background: var(--codex); }
   .usage-provider.gemini::before { background: var(--gemini); }
+  .usage-provider.antigravity::before { background: var(--antigravity); }
   .usage-empty { padding: 18px 16px; color: var(--faint); font-size: 13.5px; }
   footer { margin: 30px 2px 0; text-align: center; font-size: 12px; color: var(--faint); }
   @media (max-width: 760px) {
@@ -1427,6 +1526,19 @@ export function renderLoginPage(port: number): string {
           </div>
           <div class="actions"></div>
         </div>
+        <div class="card antigravity" data-id="antigravity">
+          <div class="ico antigravity">A</div>
+          <div class="head">
+            <div class="name">Antigravity</div>
+            <div class="stat"><span class="sdot"></span><span class="stat-text" data-i18n="checking">Checking…</span></div>
+          </div>
+          <div class="body">
+            <div class="detail"></div>
+            <div class="facts"></div>
+            <div class="hintbox"></div>
+          </div>
+          <div class="actions"></div>
+        </div>
       </div>
     </section>
 
@@ -1471,6 +1583,7 @@ export function renderLoginPage(port: number): string {
             <option value="claude">Claude</option>
             <option value="codex">ChatGPT (Codex)</option>
             <option value="gemini">Gemini</option>
+            <option value="antigravity">Antigravity</option>
           </select>
           <select id="testModel" aria-label="Model" data-i18n-aria="modelAria">
             <option value="" data-i18n="providerDefault">Provider default</option>
@@ -1525,15 +1638,24 @@ export function renderLoginPage(port: number): string {
   var BACKED_BY = {
     "anthropic-subscription": { id: "claude", label: "Claude" },
     "openai-subscription":    { id: "codex",  label: "ChatGPT" },
-    "gemini-subscription":    { id: "gemini", label: "Gemini" }
+    "gemini-subscription":    { id: "gemini", label: "Gemini" },
+    "antigravity-subscription": { id: "antigravity", label: "Antigravity" }
   };
-  var LABELS = { claude: "Claude", codex: "ChatGPT", gemini: "Gemini" };
+  var PROVIDERS = ["claude", "codex", "gemini", "antigravity"];
+  var LABELS = { claude: "Claude", codex: "ChatGPT", gemini: "Gemini", antigravity: "Antigravity" };
   // The npm-global package for each provider's CLI — used only for the manual
   // copy-the-command fallback shown when automatic install fails.
   var PACKAGES = {
     claude: "@anthropic-ai/claude-code",
     codex:  "@openai/codex",
-    gemini: "@google/gemini-cli"
+    gemini: "@google/gemini-cli",
+    antigravity: "Google Antigravity app"
+  };
+  var INSTALL_COMMANDS = {
+    claude: "npm install -g @anthropic-ai/claude-code",
+    codex: "npm install -g @openai/codex",
+    gemini: "npm install -g @google/gemini-cli",
+    antigravity: "open https://antigravity.google/download"
   };
   var pollTimers = {};
   // While a card is mid-setup/connect we suppress status re-renders that would
@@ -1645,7 +1767,8 @@ export function renderLoginPage(port: number): string {
       usageSurface: "Surface",
       usageResponseTime: "Response time",
       codexLimitation: "Subscription tier is not exposed by Codex CLI status.",
-      geminiLimitation: "Subscription tier is not exposed by Gemini CLI status."
+      geminiLimitation: "Subscription tier is not exposed by Gemini CLI status.",
+      antigravityLimitation: "Subscription tier is not exposed by Antigravity CLI status."
     },
     "zh-CN": {
       pageTitle: "Meridian Gateway",
@@ -1745,7 +1868,8 @@ export function renderLoginPage(port: number): string {
       usageSurface: "接口",
       usageResponseTime: "响应时间",
       codexLimitation: "Codex CLI 状态未暴露订阅套餐。",
-      geminiLimitation: "Gemini CLI 状态未暴露订阅套餐。"
+      geminiLimitation: "Gemini CLI 状态未暴露订阅套餐。",
+      antigravityLimitation: "Antigravity CLI 状态未暴露订阅套餐。"
     },
     ja: {
       pageTitle: "Meridian Gateway",
@@ -1845,7 +1969,8 @@ export function renderLoginPage(port: number): string {
       usageSurface: "サーフェス",
       usageResponseTime: "応答時間",
       codexLimitation: "Codex CLI の状態にはサブスクリプション種別が表示されません。",
-      geminiLimitation: "Gemini CLI の状態にはサブスクリプション種別が表示されません。"
+      geminiLimitation: "Gemini CLI の状態にはサブスクリプション種別が表示されません。",
+      antigravityLimitation: "Antigravity CLI の状態にはサブスクリプション種別が表示されません。"
     }
   };
   var currentLang = readStoredLanguage();
@@ -1895,6 +2020,7 @@ export function renderLoginPage(port: number): string {
     var normalized = String(value);
     if (normalized === I18N.en.codexLimitation) return t("codexLimitation");
     if (normalized === I18N.en.geminiLimitation) return t("geminiLimitation");
+    if (normalized === I18N.en.antigravityLimitation) return t("antigravityLimitation");
     return value;
   }
 
@@ -1921,7 +2047,7 @@ export function renderLoginPage(port: number): string {
     }
     populateTestModels();
     if (lastStatus) {
-      ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, lastStatus[id]); });
+      PROVIDERS.forEach(function (id) { renderProvider(id, lastStatus[id]); });
     }
     if (lastModelPayload) renderModels(lastModelPayload);
     if (lastUsagePayload) renderUsage(lastUsagePayload);
@@ -2053,7 +2179,7 @@ export function renderLoginPage(port: number): string {
   function showCommandFallback(id, lead, errMsg, command) {
     var card = cardFor(id);
     if (!card) return;
-    var cmd = command || ("npm install -g " + (PACKAGES[id] || ""));
+    var cmd = command || INSTALL_COMMANDS[id] || ("npm install -g " + (PACKAGES[id] || ""));
     var extra = errMsg ? '<div class="err" style="margin-top:7px;font-size:12px;color:var(--faint)">' + esc(errMsg) + "</div>" : "";
     showHint(id,
       esc(lead) +
@@ -2214,7 +2340,7 @@ export function renderLoginPage(port: number): string {
       .then(function (r) { return r.json(); })
       .then(function (s) {
         lastStatus = s;
-        ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, s[id]); });
+        PROVIDERS.forEach(function (id) { renderProvider(id, s[id]); });
       })
       .catch(function () { if (!quiet) { /* keep last known state on transient errors */ } });
   }
@@ -2225,7 +2351,7 @@ export function renderLoginPage(port: number): string {
       .then(function (versions) {
         versionCache = versions || {};
         if (lastStatus) {
-          ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, lastStatus[id]); });
+          PROVIDERS.forEach(function (id) { renderProvider(id, lastStatus[id]); });
         }
         return versions;
       })
@@ -2258,7 +2384,7 @@ export function renderLoginPage(port: number): string {
 
   function renderModelErrors(errors) {
     if (!errors) return "";
-    var rows = ["claude", "codex", "gemini"].map(function (id) {
+    var rows = PROVIDERS.map(function (id) {
       return errors[id] ? '<div><b>' + esc(LABELS[id] || id) + '</b>: ' + esc(errors[id]) + '</div>' : "";
     }).filter(Boolean);
     return rows.length ? '<div class="model-errors">' + rows.join("") + '</div>' : "";

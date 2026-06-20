@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import type { ProviderModelCatalogResult } from "../../shared/model-catalog";
-import type { AgentType } from "../../types";
+import type { ProviderModelCatalogProvider, ProviderModelCatalogResult } from "../../shared/model-catalog";
 import type { ChatCompletionRequest, CompletionResult } from "./shared";
 import type { ProvidersStatus } from "./login";
 import { GatewayModelRegistry } from "./model-refresh";
@@ -15,6 +14,7 @@ function status(overrides: Partial<ProvidersStatus> = {}): ProvidersStatus {
     claude: { installed: true, connected: false },
     codex: { installed: true, connected: false },
     gemini: { installed: true, connected: false },
+    antigravity: { installed: true, connected: false },
     ...overrides
   };
 }
@@ -40,11 +40,11 @@ function rejected(model: string | undefined, message = "model unavailable"): Com
 }
 
 test("GatewayModelRegistry does not expose unverified Claude and Gemini candidates before refresh", async () => {
-  const catalogCalls: AgentType[] = [];
+  const catalogCalls: ProviderModelCatalogProvider[] = [];
   const registry = new GatewayModelRegistry({
     cachePath: join(mkdtempSync(join(tmpdir(), "meridian-model-cache-")), "models.json"),
     catalog: {
-      async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+      async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
         catalogCalls.push(provider);
         return {
           provider,
@@ -72,7 +72,7 @@ test("GatewayModelRegistry refreshes and caches only successfully probed CLI mod
     cachePath,
     now: () => new Date("2026-06-20T01:02:03.000Z"),
     catalog: {
-      async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+      async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
         if (provider === "claude") {
           return {
             provider,
@@ -91,6 +91,15 @@ test("GatewayModelRegistry refreshes and caches only successfully probed CLI mod
             ]
           };
         }
+        if (provider === "antigravity") {
+          return {
+            provider,
+            models: [
+              { id: "antigravity/gemini-3-pro", label: "Gemini 3 Pro" },
+              { id: "antigravity/gemini-dead", label: "Gemini Dead" }
+            ]
+          };
+        }
         throw new Error(`unexpected provider ${provider}`);
       }
     },
@@ -106,20 +115,29 @@ test("GatewayModelRegistry refreshes and caches only successfully probed CLI mod
         return req.model === "gemini-2.5-pro"
           ? ok(req.model)
           : rejected(req.model, "model not found");
+      },
+      antigravity: async (req: ChatCompletionRequest) => {
+        probed.push(`antigravity:${req.model ?? ""}`);
+        return req.model === "antigravity/gemini-3-pro"
+          ? ok(req.model)
+          : rejected(req.model, "model not found");
       }
     }
   });
 
   const refreshed = await registry.refresh(status({
     claude: { installed: true, connected: true },
-    gemini: { installed: true, connected: true }
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: true }
   }));
 
   assert.deepEqual(probed, [
     "claude:claude-haiku-3-5",
     "claude:claude-sonnet-4-6",
     "gemini:gemini-2.5-pro",
-    "gemini:gemini-old"
+    "gemini:gemini-old",
+    "antigravity:antigravity/gemini-3-pro",
+    "antigravity:antigravity/gemini-dead"
   ]);
   assert.deepEqual(refreshed.providers.claude?.models, [
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" }
@@ -127,16 +145,22 @@ test("GatewayModelRegistry refreshes and caches only successfully probed CLI mod
   assert.deepEqual(refreshed.providers.gemini?.models, [
     { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" }
   ]);
+  assert.deepEqual(refreshed.providers.antigravity?.models, [
+    { id: "antigravity/gemini-3-pro", label: "Gemini 3 Pro" }
+  ]);
   assert.equal(existsSync(cachePath), true);
   assert.match(readFileSync(cachePath, "utf8"), /claude-sonnet-4-6/);
   assert.doesNotMatch(readFileSync(cachePath, "utf8"), /claude-haiku-3-5/);
+  assert.match(readFileSync(cachePath, "utf8"), /antigravity\/gemini-3-pro/);
 
   const listed = await registry.list(status({
     claude: { installed: true, connected: true },
-    gemini: { installed: true, connected: true }
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: true }
   }));
   assert.deepEqual(listed.data, [
     { id: "claude-sonnet-4-6", object: "model", owned_by: "anthropic-subscription" },
+    { id: "antigravity/gemini-3-pro", object: "model", owned_by: "antigravity-subscription" },
     { id: "gemini-2.5-pro", object: "model", owned_by: "gemini-subscription" }
   ]);
   assert.equal(listed.errors, undefined);
@@ -146,7 +170,7 @@ test("GatewayModelRegistry marks Gemini unsupported-client accounts unavailable 
   const registry = new GatewayModelRegistry({
     cachePath: join(mkdtempSync(join(tmpdir(), "meridian-model-cache-")), "models.json"),
     catalog: {
-      async listModels(provider: AgentType): Promise<ProviderModelCatalogResult> {
+      async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
         assert.equal(provider, "gemini");
         return {
           provider,
