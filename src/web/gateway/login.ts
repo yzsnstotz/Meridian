@@ -832,8 +832,45 @@ export function renderLoginPage(port: number): string {
   .logo svg { width: 21px; height: 21px; }
   .title h1 { font-size: 19px; font-weight: 680; margin: 0; letter-spacing: -.01em; }
   .title p { margin: 1px 0 0; font-size: 12.5px; color: var(--faint); }
+  .top-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .language-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--faint);
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .language-control select {
+    appearance: none;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 650;
+    min-height: 31px;
+    padding: 0 28px 0 11px;
+    cursor: pointer;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 13px,
+      calc(100% - 9px) 13px;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
   .pill {
-    margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+    display: inline-flex; align-items: center; gap: 7px;
     font-size: 12px; font-weight: 600; color: var(--ok);
     background: var(--ok-bg); border-radius: 999px; padding: 6px 12px 6px 10px;
     white-space: nowrap;
@@ -882,15 +919,17 @@ export function renderLoginPage(port: number): string {
   .cards {
     display: grid; gap: 14px;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    align-items: start;
+    align-items: stretch;
   }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     box-shadow: var(--shadow); padding: 18px;
     display: grid;
     grid-template-columns: auto 1fr;
+    grid-template-rows: auto minmax(88px, 1fr) auto;
     grid-template-areas: "ico head" "body body" "actions actions";
-    align-items: center; column-gap: 14px; row-gap: 12px;
+    align-items: start; column-gap: 14px; row-gap: 12px;
+    min-height: 294px;
     transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
   }
   .card:hover { border-color: var(--border-strong); }
@@ -903,8 +942,8 @@ export function renderLoginPage(port: number): string {
   .ico.claude { background: var(--claude); }
   .ico.codex  { background: var(--codex); }
   .ico.gemini { background: var(--gemini); }
-  .card .head { grid-area: head; min-width: 0; }
-  .card .body { grid-area: body; min-width: 0; }
+  .card .head { grid-area: head; min-width: 0; align-self: center; }
+  .card .body { grid-area: body; min-width: 0; align-self: stretch; }
   .card .name { font-weight: 640; font-size: 15.5px; }
   .card .stat { display: inline-flex; align-items: center; gap: 7px; margin-top: 3px; font-size: 13px; color: var(--muted); }
   .card .stat .sdot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
@@ -931,7 +970,7 @@ export function renderLoginPage(port: number): string {
     white-space: nowrap;
   }
   .card .fact.warn { color: #b7791f; border-color: rgba(183,121,31,.35); }
-  .card .actions { grid-area: actions; display: flex; gap: 8px; align-items: stretch; }
+  .card .actions { grid-area: actions; display: flex; gap: 8px; align-items: stretch; align-self: end; }
   .card .actions button.btn, .card .actions .badge-ok { width: 100%; justify-content: center; }
   .card.connected .actions .badge-ok {
     flex: 1 1 auto;
@@ -1173,6 +1212,10 @@ export function renderLoginPage(port: number): string {
     .tabs { display: flex; }
     .tab-btn { flex: 1 1 0; }
   }
+  @media (max-width: 640px) {
+    header.top { align-items: flex-start; flex-wrap: wrap; }
+    .top-actions { width: 100%; justify-content: flex-start; margin-left: 50px; }
+  }
 </style>
 </head>
 <body>
@@ -1186,28 +1229,38 @@ export function renderLoginPage(port: number): string {
       </div>
       <div class="title">
         <h1>Meridian Gateway</h1>
-        <p>Local OpenAI- &amp; Anthropic-compatible endpoint</p>
+        <p data-i18n="subtitle">Local OpenAI- &amp; Anthropic-compatible endpoint</p>
       </div>
-      <span class="pill" id="runPill"><span class="dot"></span>Running</span>
+      <div class="top-actions">
+        <label class="language-control" for="languageSelect">
+          <span data-i18n="languageLabel">Language</span>
+          <select id="languageSelect" data-i18n-aria="languageLabel" aria-label="Language">
+            <option value="en">English</option>
+            <option value="zh-CN">中文</option>
+            <option value="ja">日本語</option>
+          </select>
+        </label>
+        <span class="pill" id="runPill"><span class="dot"></span><span data-i18n="running">Running</span></span>
+      </div>
     </header>
 
-    <nav class="tabs" aria-label="Gateway pages">
-      <button class="tab-btn active" type="button" data-tab="setup">Setup</button>
-      <button class="tab-btn" type="button" data-tab="usage">Usage</button>
+    <nav class="tabs" aria-label="Gateway pages" data-i18n-aria="gatewayPages">
+      <button class="tab-btn active" type="button" data-tab="setup" data-i18n="tabSetup">Setup</button>
+      <button class="tab-btn" type="button" data-tab="usage" data-i18n="tabUsage">Usage</button>
     </nav>
 
     <div class="tab-panel active" id="setupPanel">
     <section>
       <div class="sec-head">
-        <h2>Connect your AI subscriptions</h2>
-        <p>Sign in to the subscriptions you already pay for. Each model below uses its matching account — no API keys needed.</p>
+        <h2 data-i18n="connectTitle">Connect your AI subscriptions</h2>
+        <p data-i18n="connectCopy">Sign in to the subscriptions you already pay for. Each model below uses its matching account — no API keys needed.</p>
       </div>
       <div class="cards" id="cards">
         <div class="card claude" data-id="claude">
           <div class="ico claude">C</div>
           <div class="head">
             <div class="name">Claude</div>
-            <div class="stat"><span class="sdot"></span><span class="stat-text">Checking…</span></div>
+            <div class="stat"><span class="sdot"></span><span class="stat-text" data-i18n="checking">Checking…</span></div>
           </div>
           <div class="body">
             <div class="detail"></div>
@@ -1220,7 +1273,7 @@ export function renderLoginPage(port: number): string {
           <div class="ico codex">O</div>
           <div class="head">
             <div class="name">ChatGPT <span style="color:var(--faint);font-weight:500;font-size:13px">(Codex)</span></div>
-            <div class="stat"><span class="sdot"></span><span class="stat-text">Checking…</span></div>
+            <div class="stat"><span class="sdot"></span><span class="stat-text" data-i18n="checking">Checking…</span></div>
           </div>
           <div class="body">
             <div class="detail"></div>
@@ -1233,7 +1286,7 @@ export function renderLoginPage(port: number): string {
           <div class="ico gemini">G</div>
           <div class="head">
             <div class="name">Gemini</div>
-            <div class="stat"><span class="sdot"></span><span class="stat-text">Checking…</span></div>
+            <div class="stat"><span class="sdot"></span><span class="stat-text" data-i18n="checking">Checking…</span></div>
           </div>
           <div class="body">
             <div class="detail"></div>
@@ -1246,83 +1299,83 @@ export function renderLoginPage(port: number): string {
     </section>
 
     <section>
-      <div class="sec-head"><h2>Your endpoint</h2></div>
+      <div class="sec-head"><h2 data-i18n="endpointTitle">Your endpoint</h2></div>
       <div class="endpoint-card">
-        <div class="field-label">Base URL</div>
+        <div class="field-label" data-i18n="baseUrl">Base URL</div>
         <div class="endpoint-row">
           <div class="endpoint-url" id="endpointUrl">${endpoint}</div>
           <button class="copy" id="copyBtn" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            <span class="copy-label">Copy</span>
+            <span class="copy-label" data-i18n="copy">Copy</span>
           </button>
         </div>
-        <div class="field-label" style="margin-top:14px">API key</div>
+        <div class="field-label" style="margin-top:14px" data-i18n="apiKey">API key</div>
         <div class="endpoint-row">
           <div class="endpoint-url" id="apiKeyField">—</div>
           <button class="copy" id="copyKeyBtn" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            <span class="copy-label">Copy</span>
+            <span class="copy-label" data-i18n="copy">Copy</span>
           </button>
-          <button class="copy rotate" id="rotateKeyBtn" type="button" title="Generate a new key">
+          <button class="copy rotate" id="rotateKeyBtn" type="button" title="Generate a new key" data-i18n-title="rotateTitle">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-            <span class="rotate-label">Rotate</span>
+            <span class="rotate-label" data-i18n="rotate">Rotate</span>
           </button>
         </div>
-        <p class="endpoint-note" id="rotateNote" style="display:none;color:var(--accent)">New key generated — update this key in your client.</p>
-        <p class="endpoint-note"><b>OpenAI-compatible</b> clients: use this Base URL — the gateway serves <code>/chat/completions</code> + <code>/models</code>. In Clawso, add it as a <b>Custom (OpenAI-compatible)</b> provider with this Base URL and the key.</p>
-        <p class="endpoint-note"><b>Anthropic-compatible</b> clients: same Base URL — the gateway also serves <code>/messages</code>.</p>
-        <p class="endpoint-note">The key works as either <kbd>Authorization: Bearer &lt;key&gt;</kbd> (OpenAI) or <kbd>x-api-key: &lt;key&gt;</kbd> (Anthropic). Each model needs its matching subscription connected above.</p>
+        <p class="endpoint-note" id="rotateNote" style="display:none;color:var(--accent)" data-i18n="rotateNote">New key generated — update this key in your client.</p>
+        <p class="endpoint-note" data-i18n-html="endpointOpenAi"><b>OpenAI-compatible</b> clients: use this Base URL — the gateway serves <code>/chat/completions</code> + <code>/models</code>. In Clawso, add it as a <b>Custom (OpenAI-compatible)</b> provider with this Base URL and the key.</p>
+        <p class="endpoint-note" data-i18n-html="endpointAnthropic"><b>Anthropic-compatible</b> clients: same Base URL — the gateway also serves <code>/messages</code>.</p>
+        <p class="endpoint-note" data-i18n-html="endpointKeyHelp">The key works as either <kbd>Authorization: Bearer &lt;key&gt;</kbd> (OpenAI) or <kbd>x-api-key: &lt;key&gt;</kbd> (Anthropic). Each model needs its matching subscription connected above.</p>
       </div>
     </section>
 
     <section>
       <div class="sec-head">
-        <h2>Direct CLI test</h2>
-        <p>Send one prompt through a selected local CLI and model to verify that account can answer now.</p>
+        <h2 data-i18n="directTestTitle">Direct CLI test</h2>
+        <p data-i18n="directTestCopy">Send one prompt through a selected local CLI and model to verify that account can answer now.</p>
       </div>
       <div class="test-card">
         <div class="test-grid">
-          <select id="testProvider" aria-label="Provider">
+          <select id="testProvider" aria-label="Provider" data-i18n-aria="providerAria">
             <option value="claude">Claude</option>
             <option value="codex">ChatGPT (Codex)</option>
             <option value="gemini">Gemini</option>
           </select>
-          <select id="testModel" aria-label="Model">
-            <option value="">Provider default</option>
+          <select id="testModel" aria-label="Model" data-i18n-aria="modelAria">
+            <option value="" data-i18n="providerDefault">Provider default</option>
           </select>
-          <input id="testPrompt" type="text" value="Reply with one short confirmation." aria-label="Test prompt" />
-          <button class="btn" id="runTestBtn" type="button">Test CLI</button>
+          <input id="testPrompt" type="text" value="Reply with one short confirmation." aria-label="Test prompt" data-i18n-aria="testPromptAria" />
+          <button class="btn" id="runTestBtn" type="button" data-i18n="testCli">Test CLI</button>
         </div>
         <div class="test-result" id="testResult"></div>
       </div>
     </section>
 
     <section>
-      <div class="sec-head"><h2>Models</h2></div>
-      <div class="models" id="models"><div class="empty">Loading models…</div></div>
+      <div class="sec-head"><h2 data-i18n="modelsTitle">Models</h2></div>
+      <div class="models" id="models"><div class="empty" data-i18n="loadingModels">Loading models…</div></div>
     </section>
     </div>
 
     <div class="tab-panel" id="usagePanel">
       <section>
-        <div class="sec-head"><h2>Supplier totals</h2></div>
+        <div class="sec-head"><h2 data-i18n="supplierTotals">Supplier totals</h2></div>
         <div class="usage-card">
           <div class="usage-table-wrap" id="usageSummary">
-            <div class="usage-empty">No usage recorded yet.</div>
+            <div class="usage-empty" data-i18n="noUsage">No usage recorded yet.</div>
           </div>
         </div>
       </section>
       <section>
-        <div class="sec-head"><h2>Request log</h2></div>
+        <div class="sec-head"><h2 data-i18n="requestLog">Request log</h2></div>
         <div class="usage-card">
           <div class="usage-table-wrap" id="usageLog">
-            <div class="usage-empty">No usage recorded yet.</div>
+            <div class="usage-empty" data-i18n="noUsage">No usage recorded yet.</div>
           </div>
         </div>
       </section>
     </div>
 
-    <footer>Served locally by Meridian Gateway · this page never leaves your machine</footer>
+    <footer data-i18n="footer">Served locally by Meridian Gateway · this page never leaves your machine</footer>
   </div>
 
 <script>
@@ -1349,6 +1402,274 @@ export function renderLoginPage(port: number): string {
   var busy = {};
   var modelCache = [];
   var activeTab = "setup";
+  var lastStatus = null;
+  var lastModelPayload = null;
+  var lastUsagePayload = null;
+  var LANG_STORAGE_KEY = "meridian.gateway.language";
+  var I18N = {
+    en: {
+      pageTitle: "Meridian Gateway",
+      subtitle: "Local OpenAI- & Anthropic-compatible endpoint",
+      languageLabel: "Language",
+      running: "Running",
+      gatewayPages: "Gateway pages",
+      tabSetup: "Setup",
+      tabUsage: "Usage",
+      connectTitle: "Connect your AI subscriptions",
+      connectCopy: "Sign in to the subscriptions you already pay for. Each model below uses its matching account — no API keys needed.",
+      checking: "Checking…",
+      endpointTitle: "Your endpoint",
+      baseUrl: "Base URL",
+      apiKey: "API key",
+      copy: "Copy",
+      copied: "Copied!",
+      rotate: "Rotate",
+      rotateTitle: "Generate a new key",
+      rotateNote: "New key generated — update this key in your client.",
+      endpointOpenAi: "<b>OpenAI-compatible</b> clients: use this Base URL — the gateway serves <code>/chat/completions</code> + <code>/models</code>. In Clawso, add it as a <b>Custom (OpenAI-compatible)</b> provider with this Base URL and the key.",
+      endpointAnthropic: "<b>Anthropic-compatible</b> clients: same Base URL — the gateway also serves <code>/messages</code>.",
+      endpointKeyHelp: "The key works as either <kbd>Authorization: Bearer &lt;key&gt;</kbd> (OpenAI) or <kbd>x-api-key: &lt;key&gt;</kbd> (Anthropic). Each model needs its matching subscription connected above.",
+      directTestTitle: "Direct CLI test",
+      directTestCopy: "Send one prompt through a selected local CLI and model to verify that account can answer now.",
+      providerAria: "Provider",
+      modelAria: "Model",
+      providerDefault: "Provider default",
+      testPromptAria: "Test prompt",
+      testPromptDefault: "Reply with one short confirmation.",
+      testCli: "Test CLI",
+      modelsTitle: "Models",
+      loadingModels: "Loading models…",
+      noModels: "No live models available from connected providers.",
+      modelsLoadFailed: "Couldn’t load models — is the gateway still running?",
+      supplierTotals: "Supplier totals",
+      requestLog: "Request log",
+      noUsage: "No usage recorded yet.",
+      usageLoadFailed: "Couldn’t load usage.",
+      footer: "Served locally by Meridian Gateway · this page never leaves your machine",
+      connected: "Connected",
+      notInstalled: "Not installed",
+      notConnected: "Not connected",
+      setUp: "Set up",
+      connect: "Connect",
+      logOut: "Log out",
+      installing: "Installing…",
+      opening: "Opening…",
+      signingOut: "Signing out…",
+      testing: "Testing…",
+      installingHint: "Installing {provider}… this can take a minute.",
+      installFallbackLead: "Couldn’t install automatically — run this once:",
+      installNetworkError: "Network error while installing.",
+      manualSignIn: "Sign in manually to connect.",
+      openingBrowser: "Opening your browser — finish signing in there; this updates automatically.",
+      openingBrowserLink: " If it didn’t open, <a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">use this link</a>.",
+      signInFailed: "Couldn’t start sign-in. Please try again.",
+      signingOutHint: "Signing out of {provider}…",
+      signedOut: "Signed out. Connect again to choose an account.",
+      signOutFailed: "Couldn’t sign out. Please try again.",
+      inputNeeded: "Input needed",
+      promptRequired: "Prompt is required.",
+      runningProvider: "Running {provider}",
+      waitingForCli: "Waiting for the local CLI response…",
+      cliTestFailed: "CLI test failed.",
+      requestFailed: "Request failed",
+      networkError: "Network error",
+      factAccount: "Account",
+      factPlan: "Plan",
+      factAuth: "Auth",
+      factCredential: "Credential",
+      factNote: "Note",
+      unknown: "Unknown",
+      durationMs: "{value} ms",
+      usageSupplier: "Supplier",
+      usageRequests: "Requests",
+      usageInput: "Input",
+      usageOutput: "Output",
+      usageTokenTotal: "Token total",
+      usageAvgResponse: "Avg response",
+      usageLatest: "Latest",
+      usageTime: "Time",
+      usageModel: "Model",
+      usageSurface: "Surface",
+      usageResponseTime: "Response time",
+      codexLimitation: "Subscription tier is not exposed by Codex CLI status.",
+      geminiLimitation: "Subscription tier is not exposed by Gemini CLI status."
+    },
+    "zh-CN": {
+      pageTitle: "Meridian Gateway",
+      subtitle: "本地 OpenAI 与 Anthropic 兼容端点",
+      languageLabel: "语言",
+      running: "运行中",
+      gatewayPages: "Gateway 页面",
+      tabSetup: "设置",
+      tabUsage: "用量",
+      connectTitle: "连接你的 AI 订阅",
+      connectCopy: "登录你已经付费的订阅。下面的每个模型都会使用对应账号，无需 API key。",
+      checking: "检查中…",
+      endpointTitle: "你的端点",
+      baseUrl: "Base URL",
+      apiKey: "访问密钥",
+      copy: "复制",
+      copied: "已复制",
+      rotate: "轮换",
+      rotateTitle: "生成新密钥",
+      rotateNote: "已生成新密钥，请在客户端更新。",
+      endpointOpenAi: "<b>OpenAI 兼容</b>客户端：使用这个 Base URL。Gateway 提供 <code>/chat/completions</code> 和 <code>/models</code>。在 Clawso 中，将它添加为 <b>Custom (OpenAI-compatible)</b> provider，并填入此 Base URL 与密钥。",
+      endpointAnthropic: "<b>Anthropic 兼容</b>客户端：使用同一个 Base URL。Gateway 也提供 <code>/messages</code>。",
+      endpointKeyHelp: "密钥可作为 <kbd>Authorization: Bearer &lt;key&gt;</kbd> (OpenAI) 或 <kbd>x-api-key: &lt;key&gt;</kbd> (Anthropic) 使用。每个模型都需要先连接上方对应的订阅账号。",
+      directTestTitle: "直接 CLI 测试",
+      directTestCopy: "选择本地 CLI 和模型发送一次 prompt，确认该账号现在可以正常回答。",
+      providerAria: "供应商",
+      modelAria: "模型",
+      providerDefault: "供应商默认",
+      testPromptAria: "测试 prompt",
+      testPromptDefault: "请用一句简短的话确认。",
+      testCli: "测试 CLI",
+      modelsTitle: "模型",
+      loadingModels: "正在加载模型…",
+      noModels: "已连接供应商暂无可用实时模型。",
+      modelsLoadFailed: "无法加载模型，Gateway 还在运行吗？",
+      supplierTotals: "供应商汇总",
+      requestLog: "请求日志",
+      noUsage: "尚未记录用量。",
+      usageLoadFailed: "无法加载用量。",
+      footer: "由 Meridian Gateway 本地提供服务 · 此页面不会离开你的机器",
+      connected: "已连接",
+      notInstalled: "未安装",
+      notConnected: "未连接",
+      setUp: "设置",
+      connect: "连接",
+      logOut: "登出",
+      installing: "安装中…",
+      opening: "打开中…",
+      signingOut: "登出中…",
+      testing: "测试中…",
+      installingHint: "正在安装 {provider}… 可能需要一分钟。",
+      installFallbackLead: "无法自动安装，请先运行一次：",
+      installNetworkError: "安装时出现网络错误。",
+      manualSignIn: "请手动登录以完成连接。",
+      openingBrowser: "正在打开浏览器，请在浏览器中完成登录；此处会自动更新。",
+      openingBrowserLink: " 如果没有打开，<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">使用此链接</a>。",
+      signInFailed: "无法启动登录，请重试。",
+      signingOutHint: "正在登出 {provider}…",
+      signedOut: "已登出。再次连接即可选择账号。",
+      signOutFailed: "无法登出，请重试。",
+      inputNeeded: "需要输入",
+      promptRequired: "Prompt 不能为空。",
+      runningProvider: "正在运行 {provider}",
+      waitingForCli: "等待本地 CLI 返回…",
+      cliTestFailed: "CLI 测试失败。",
+      requestFailed: "请求失败",
+      networkError: "网络错误",
+      factAccount: "账号",
+      factPlan: "套餐",
+      factAuth: "授权",
+      factCredential: "凭据",
+      factNote: "备注",
+      unknown: "未知",
+      durationMs: "{value} 毫秒",
+      usageSupplier: "供应商",
+      usageRequests: "请求数",
+      usageInput: "输入",
+      usageOutput: "输出",
+      usageTokenTotal: "Token 总计",
+      usageAvgResponse: "平均响应",
+      usageLatest: "最近",
+      usageTime: "时间",
+      usageModel: "模型",
+      usageSurface: "接口",
+      usageResponseTime: "响应时间",
+      codexLimitation: "Codex CLI 状态未暴露订阅套餐。",
+      geminiLimitation: "Gemini CLI 状态未暴露订阅套餐。"
+    },
+    ja: {
+      pageTitle: "Meridian Gateway",
+      subtitle: "ローカルの OpenAI / Anthropic 互換エンドポイント",
+      languageLabel: "言語",
+      running: "稼働中",
+      gatewayPages: "Gateway ページ",
+      tabSetup: "設定",
+      tabUsage: "使用量",
+      connectTitle: "AI サブスクリプションを接続",
+      connectCopy: "すでに支払っているサブスクリプションにログインします。各モデルは対応するアカウントを使うため、API key は不要です。",
+      checking: "確認中…",
+      endpointTitle: "エンドポイント",
+      baseUrl: "Base URL",
+      apiKey: "アクセスキー",
+      copy: "コピー",
+      copied: "コピー済み",
+      rotate: "更新",
+      rotateTitle: "新しいキーを生成",
+      rotateNote: "新しいキーを生成しました。クライアント側のキーを更新してください。",
+      endpointOpenAi: "<b>OpenAI 互換</b>クライアント: この Base URL を使用します。Gateway は <code>/chat/completions</code> と <code>/models</code> を提供します。Clawso では <b>Custom (OpenAI-compatible)</b> provider として追加し、この Base URL とキーを設定してください。",
+      endpointAnthropic: "<b>Anthropic 互換</b>クライアント: 同じ Base URL を使用します。Gateway は <code>/messages</code> も提供します。",
+      endpointKeyHelp: "キーは <kbd>Authorization: Bearer &lt;key&gt;</kbd> (OpenAI) または <kbd>x-api-key: &lt;key&gt;</kbd> (Anthropic) として使えます。各モデルには、上で対応するサブスクリプション接続が必要です。",
+      directTestTitle: "CLI 直接テスト",
+      directTestCopy: "ローカル CLI とモデルを選び、1 回だけ prompt を送って、そのアカウントが今応答できるか確認します。",
+      providerAria: "プロバイダー",
+      modelAria: "モデル",
+      providerDefault: "プロバイダー既定",
+      testPromptAria: "テスト prompt",
+      testPromptDefault: "短い確認文を一文で返してください。",
+      testCli: "CLI をテスト",
+      modelsTitle: "モデル",
+      loadingModels: "モデルを読み込み中…",
+      noModels: "接続済みプロバイダーから利用可能なライブモデルはありません。",
+      modelsLoadFailed: "モデルを読み込めませんでした。Gateway はまだ稼働していますか？",
+      supplierTotals: "プロバイダー合計",
+      requestLog: "リクエストログ",
+      noUsage: "使用量はまだ記録されていません。",
+      usageLoadFailed: "使用量を読み込めませんでした。",
+      footer: "Meridian Gateway がローカルで提供しています · このページはあなたのマシン外へ送信されません",
+      connected: "接続済み",
+      notInstalled: "未インストール",
+      notConnected: "未接続",
+      setUp: "設定",
+      connect: "接続",
+      logOut: "ログアウト",
+      installing: "インストール中…",
+      opening: "起動中…",
+      signingOut: "ログアウト中…",
+      testing: "テスト中…",
+      installingHint: "{provider} をインストールしています… 1 分ほどかかることがあります。",
+      installFallbackLead: "自動インストールできませんでした。これを一度実行してください:",
+      installNetworkError: "インストール中にネットワークエラーが発生しました。",
+      manualSignIn: "接続するには手動でログインしてください。",
+      openingBrowser: "ブラウザを開いています。そこでログインを完了してください。この画面は自動更新されます。",
+      openingBrowserLink: " 開かない場合は、<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">このリンク</a>を使ってください。",
+      signInFailed: "サインインを開始できませんでした。もう一度お試しください。",
+      signingOutHint: "{provider} からログアウトしています…",
+      signedOut: "ログアウトしました。別アカウントを選ぶには再接続してください。",
+      signOutFailed: "ログアウトできませんでした。もう一度お試しください。",
+      inputNeeded: "入力が必要です",
+      promptRequired: "Prompt は必須です。",
+      runningProvider: "{provider} を実行中",
+      waitingForCli: "ローカル CLI の応答を待っています…",
+      cliTestFailed: "CLI テストに失敗しました。",
+      requestFailed: "リクエスト失敗",
+      networkError: "ネットワークエラー",
+      factAccount: "アカウント",
+      factPlan: "プラン",
+      factAuth: "認証",
+      factCredential: "資格情報",
+      factNote: "注記",
+      unknown: "不明",
+      durationMs: "{value} ms",
+      usageSupplier: "プロバイダー",
+      usageRequests: "リクエスト",
+      usageInput: "入力",
+      usageOutput: "出力",
+      usageTokenTotal: "Token 合計",
+      usageAvgResponse: "平均応答",
+      usageLatest: "最新",
+      usageTime: "時刻",
+      usageModel: "モデル",
+      usageSurface: "サーフェス",
+      usageResponseTime: "応答時間",
+      codexLimitation: "Codex CLI の状態にはサブスクリプション種別が表示されません。",
+      geminiLimitation: "Gemini CLI の状態にはサブスクリプション種別が表示されません。"
+    }
+  };
+  var currentLang = readStoredLanguage();
 
   function el(card, sel) { return card.querySelector(sel); }
   function cardFor(id) { return document.querySelector('.card[data-id="' + id + '"]'); }
@@ -1357,12 +1678,94 @@ export function renderLoginPage(port: number): string {
     return backed && backed.id ? backed.id : "";
   }
 
+  function locale() {
+    if (currentLang === "zh-CN") return "zh-CN";
+    if (currentLang === "ja") return "ja-JP";
+    return "en-US";
+  }
+
+  function readStoredLanguage() {
+    try {
+      var saved = window.localStorage && window.localStorage.getItem(LANG_STORAGE_KEY);
+      if (saved && I18N[saved]) return saved;
+      var browserLang = (navigator.language || "").toLowerCase();
+      if (browserLang.indexOf("zh") === 0) return "zh-CN";
+      if (browserLang.indexOf("ja") === 0) return "ja";
+    } catch (e) {
+      // localStorage may be unavailable in hardened browser contexts.
+    }
+    return "en";
+  }
+
+  function t(key, vars) {
+    var text = (I18N[currentLang] && I18N[currentLang][key]) || I18N.en[key] || key;
+    if (vars) {
+      Object.keys(vars).forEach(function (name) {
+        text = text.replace(new RegExp("\\{" + name + "\\}", "g"), String(vars[name]));
+      });
+    }
+    return text;
+  }
+
+  function defaultPromptValues() {
+    return Object.keys(I18N).map(function (lang) { return I18N[lang].testPromptDefault; });
+  }
+
+  function localizeKnownValue(value) {
+    if (!value) return value;
+    var normalized = String(value);
+    if (normalized === I18N.en.codexLimitation) return t("codexLimitation");
+    if (normalized === I18N.en.geminiLimitation) return t("geminiLimitation");
+    return value;
+  }
+
+  function applyLanguage() {
+    document.documentElement.lang = currentLang;
+    document.title = t("pageTitle");
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (node) {
+      node.textContent = t(node.getAttribute("data-i18n"));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-html]"), function (node) {
+      node.innerHTML = t(node.getAttribute("data-i18n-html"));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-title]"), function (node) {
+      node.setAttribute("title", t(node.getAttribute("data-i18n-title")));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-aria]"), function (node) {
+      node.setAttribute("aria-label", t(node.getAttribute("data-i18n-aria")));
+    });
+    var langSelect = document.getElementById("languageSelect");
+    if (langSelect) langSelect.value = currentLang;
+    var testPrompt = document.getElementById("testPrompt");
+    if (testPrompt && (!testPrompt.value || defaultPromptValues().indexOf(testPrompt.value) !== -1)) {
+      testPrompt.value = t("testPromptDefault");
+    }
+    populateTestModels();
+    if (lastStatus) {
+      ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, lastStatus[id]); });
+    }
+    if (lastModelPayload) renderModels(lastModelPayload);
+    if (lastUsagePayload) renderUsage(lastUsagePayload);
+  }
+
+  function setLanguage(lang) {
+    if (!I18N[lang]) lang = "en";
+    currentLang = lang;
+    try {
+      if (window.localStorage) window.localStorage.setItem(LANG_STORAGE_KEY, currentLang);
+    } catch (e) {
+      // Ignore persistence failures; the selector still works for this page.
+    }
+    applyLanguage();
+  }
+
   function okBadge() {
-    return '<span class="badge-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Connected</span>';
+    return '<span class="badge-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' + esc(t("connected")) + '</span>';
   }
 
   function fact(label, value, warn) {
     if (!value) return "";
+    value = localizeKnownValue(value);
     return '<span class="fact' + (warn ? " warn" : "") + '" title="' + esc(label + ": " + value) + '">' + esc(label + ": " + value) + '</span>';
   }
 
@@ -1370,11 +1773,11 @@ export function renderLoginPage(port: number): string {
     var facts = el(card, ".facts");
     if (!facts) return;
     var html = [
-      fact("Account", state && state.account),
-      fact("Plan", state && state.subscription),
-      fact("Auth", state && state.auth),
-      fact("Credential", state && state.credential),
-      fact("Note", state && state.limitation, true)
+      fact(t("factAccount"), state && state.account),
+      fact(t("factPlan"), state && state.subscription),
+      fact(t("factAuth"), state && state.auth),
+      fact(t("factCredential"), state && state.credential),
+      fact(t("factNote"), state && state.limitation, true)
     ].filter(Boolean).join("");
     facts.innerHTML = html;
     facts.style.display = html ? "" : "none";
@@ -1391,33 +1794,37 @@ export function renderLoginPage(port: number): string {
     var installed = !state || state.installed !== false; // default true if field absent
     if (state && state.connected) {
       card.classList.add("connected");
-      statText.textContent = "Connected";
+      statText.textContent = t("connected");
       detail.textContent = state.detail || "";
       detail.style.display = state.detail ? "" : "none";
       renderFacts(card, state);
-      actions.innerHTML = okBadge() + '<button class="logout-btn" type="button">Log out</button>';
+      actions.innerHTML = okBadge() + '<button class="logout-btn" type="button">' + esc(t("logOut")) + '</button>';
       actions.querySelector(".logout-btn").addEventListener("click", function () { logout(id); });
       hideHint(id);
       stopPoll(id);
     } else if (!installed) {
       // CLI isn't installed on this machine → one-click "Set up" (install).
       card.classList.remove("connected");
-      statText.textContent = "Not installed";
+      statText.textContent = t("notInstalled");
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
       renderFacts(card, state);
-      actions.innerHTML = '<button class="btn" type="button">Set up</button>';
+      actions.innerHTML = '<button class="btn" type="button">' + esc(t("setUp")) + '</button>';
       actions.querySelector("button").addEventListener("click", function () { setUp(id); });
     } else {
       // Installed but not connected → existing "Connect" (login only).
       card.classList.remove("connected");
-      statText.textContent = "Not connected";
+      statText.textContent = t("notConnected");
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
       renderFacts(card, state);
-      if (!actions.querySelector("button.btn")) {
-        actions.innerHTML = '<button class="btn" type="button">Connect</button>';
-        actions.querySelector("button").addEventListener("click", function () { connect(id); });
+      var connectButton = actions.querySelector("button.btn");
+      if (!connectButton) {
+        actions.innerHTML = '<button class="btn" type="button">' + esc(t("connect")) + '</button>';
+        connectButton = actions.querySelector("button");
+        connectButton.addEventListener("click", function () { connect(id); });
+      } else {
+        connectButton.textContent = t("connect");
       }
     }
   }
@@ -1444,19 +1851,19 @@ export function renderLoginPage(port: number): string {
     var card = cardFor(id);
     if (!card) return;
     var cmd = command || ("npm install -g " + (PACKAGES[id] || ""));
-    var lead = "Couldn’t install automatically — run this once:";
+    var lead = t("installFallbackLead");
     var extra = errMsg ? '<div class="err" style="margin-top:7px;font-size:12px;color:var(--faint)">' + esc(errMsg) + "</div>" : "";
     showHint(id,
       esc(lead) +
       '<div class="cmd-row"><span class="cmd">' + esc(cmd) + '</span>' +
-      '<button class="cmd-copy" type="button">' + COPY_ICON + '<span class="cmd-copy-label">Copy</span></button></div>' +
+      '<button class="cmd-copy" type="button">' + COPY_ICON + '<span class="cmd-copy-label">' + esc(t("copy")) + '</span></button></div>' +
       extra,
       false);
     var btn = el(card, ".hintbox .cmd-copy");
     if (btn) btn.addEventListener("click", function () { copyText(cmd, btn); });
     // Restore the Set-up button so the user can retry the automatic path too.
     var actions = el(card, ".actions");
-    actions.innerHTML = '<button class="btn" type="button">Set up</button>';
+    actions.innerHTML = '<button class="btn" type="button">' + esc(t("setUp")) + '</button>';
     actions.querySelector("button").addEventListener("click", function () { setUp(id); });
   }
 
@@ -1465,8 +1872,8 @@ export function renderLoginPage(port: number): string {
     var card = cardFor(id);
     var btn = card && el(card, ".actions button");
     busy[id] = true;
-    if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
-    showHint(id, "Installing " + (LABELS[id] || id) + "… this can take a minute.", true);
+    if (btn) { btn.disabled = true; btn.textContent = t("installing"); }
+    showHint(id, t("installingHint", { provider: LABELS[id] || id }), true);
     fetch("/providers/" + id + "/install", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (res) {
@@ -1480,7 +1887,7 @@ export function renderLoginPage(port: number): string {
       })
       .catch(function () {
         busy[id] = false;
-        showInstallFallback(id, "Network error while installing.", null);
+        showInstallFallback(id, t("installNetworkError"), null);
       });
   }
 
@@ -1490,20 +1897,20 @@ export function renderLoginPage(port: number): string {
     var card = cardFor(id);
     var btn = card && el(card, ".actions button.btn");
     busy[id] = true;
-    if (btn) { btn.disabled = true; btn.textContent = "Opening…"; }
+    if (btn) { btn.disabled = true; btn.textContent = t("opening"); }
     fetch("/providers/" + id + "/login", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (res && res.manual) {
           busy[id] = false;
-          showHint(id, (res.hint || "Sign in manually to connect."), false);
-          if (btn) { btn.disabled = false; btn.textContent = "Connect"; }
+          showHint(id, (res.hint || t("manualSignIn")), false);
+          if (btn) { btn.disabled = false; btn.textContent = t("connect"); }
           startPoll(id);
           return;
         }
-        var msg = "Opening your browser — finish signing in there; this updates automatically.";
+        var msg = t("openingBrowser");
         if (res && res.url) {
-          msg += ' If it didn’t open, <a href="' + res.url + '" target="_blank" rel="noopener">use this link</a>.';
+          msg += t("openingBrowserLink", { url: esc(res.url) });
         }
         showHint(id, msg, true);
         // Allow status polling to take over the card now that login is in flight.
@@ -1512,8 +1919,8 @@ export function renderLoginPage(port: number): string {
       })
       .catch(function () {
         busy[id] = false;
-        showHint(id, "Couldn’t start sign-in. Please try again.", false);
-        if (btn) { btn.disabled = false; btn.textContent = "Connect"; }
+        showHint(id, t("signInFailed"), false);
+        if (btn) { btn.disabled = false; btn.textContent = t("connect"); }
       });
   }
 
@@ -1522,8 +1929,8 @@ export function renderLoginPage(port: number): string {
     var btn = card && el(card, ".actions .logout-btn");
     busy[id] = true;
     stopPoll(id);
-    if (btn) { btn.disabled = true; btn.textContent = "Signing out…"; }
-    showHint(id, "Signing out of " + (LABELS[id] || id) + "…", true);
+    if (btn) { btn.disabled = true; btn.textContent = t("signingOut"); }
+    showHint(id, t("signingOutHint", { provider: LABELS[id] || id }), true);
     fetch("/providers/" + id + "/logout", { method: "POST" })
       .then(function (r) {
         return r.json().then(function (res) { return { ok: r.ok, res: res }; });
@@ -1532,16 +1939,16 @@ export function renderLoginPage(port: number): string {
         busy[id] = false;
         var res = payload.res || {};
         if (payload.ok && res.ok !== false) {
-          showHint(id, esc(res.detail || "Signed out. Connect again to choose an account."), false);
+          showHint(id, esc(localizeKnownValue(res.detail || t("signedOut"))), false);
           refreshStatus(true).then(function () { loadModels(); });
           return;
         }
-        showHint(id, esc(res.error || "Couldn’t sign out. Please try again."), false);
+        showHint(id, esc(res.error || t("signOutFailed")), false);
         refreshStatus(true);
       })
       .catch(function () {
         busy[id] = false;
-        showHint(id, "Couldn’t sign out. Please try again.", false);
+        showHint(id, t("signOutFailed"), false);
         refreshStatus(true);
       });
   }
@@ -1558,6 +1965,7 @@ export function renderLoginPage(port: number): string {
     return fetch("/providers/status")
       .then(function (r) { return r.json(); })
       .then(function (s) {
+        lastStatus = s;
         ["claude", "codex", "gemini"].forEach(function (id) { renderProvider(id, s[id]); });
       })
       .catch(function () { if (!quiet) { /* keep last known state on transient errors */ } });
@@ -1567,11 +1975,12 @@ export function renderLoginPage(port: number): string {
     var box = document.getElementById("models");
     var list = (data && data.data) || [];
     var errors = data && data.errors ? data.errors : null;
+    lastModelPayload = data;
     modelCache = list;
     populateTestModels();
     var errorHtml = renderModelErrors(errors);
     if (!list.length) {
-      box.innerHTML = '<div class="empty">No live models available from connected providers.</div>' + errorHtml;
+      box.innerHTML = '<div class="empty">' + esc(t("noModels")) + '</div>' + errorHtml;
       return;
     }
     box.innerHTML = list.map(function (m) {
@@ -1596,7 +2005,7 @@ export function renderLoginPage(port: number): string {
     var provider = providerEl.value || "claude";
     var current = modelEl.value;
     var matching = modelCache.filter(function (m) { return providerForOwner(m.owned_by) === provider; });
-    var html = '<option value="">Provider default</option>' + matching.map(function (m) {
+    var html = '<option value="">' + esc(t("providerDefault")) + '</option>' + matching.map(function (m) {
       return '<option value="' + esc(m.id) + '">' + esc(m.id) + '</option>';
     }).join("");
     modelEl.innerHTML = html;
@@ -1610,31 +2019,31 @@ export function renderLoginPage(port: number): string {
       .then(function (r) { return r.json(); })
       .then(renderModels)
       .catch(function () {
-        document.getElementById("models").innerHTML = '<div class="empty">Couldn’t load models — is the gateway still running?</div>';
+        document.getElementById("models").innerHTML = '<div class="empty">' + esc(t("modelsLoadFailed")) + '</div>';
       });
   }
 
   function fmtTokens(value) {
     var n = Number(value || 0);
-    return n.toLocaleString();
+    return n.toLocaleString(locale());
   }
 
   function fmtDuration(value) {
     var n = Number(value || 0);
-    return n.toLocaleString() + " ms";
+    return t("durationMs", { value: n.toLocaleString(locale()) });
   }
 
   function fmtTime(value) {
     if (!value) return "—";
     try {
-      return new Date(value).toLocaleString();
+      return new Date(value).toLocaleString(locale());
     } catch (e) {
       return String(value);
     }
   }
 
   function providerChip(provider) {
-    var label = LABELS[provider] || provider || "Unknown";
+    var label = LABELS[provider] || provider || t("unknown");
     return '<span class="usage-provider ' + esc(provider || "") + '">' + esc(label) + '</span>';
   }
 
@@ -1642,13 +2051,13 @@ export function renderLoginPage(port: number): string {
     var box = document.getElementById("usageSummary");
     rows = rows || [];
     if (!rows.length) {
-      box.innerHTML = '<div class="usage-empty">No usage recorded yet.</div>';
+      box.innerHTML = '<div class="usage-empty">' + esc(t("noUsage")) + '</div>';
       return;
     }
     box.innerHTML = '<table class="usage-table"><thead><tr>' +
-      '<th>Supplier</th><th class="number">Requests</th><th class="number">Input</th>' +
-      '<th class="number">Output</th><th class="number">Token total</th>' +
-      '<th class="number">Avg response</th><th>Latest</th></tr></thead><tbody>' +
+      '<th>' + esc(t("usageSupplier")) + '</th><th class="number">' + esc(t("usageRequests")) + '</th><th class="number">' + esc(t("usageInput")) + '</th>' +
+      '<th class="number">' + esc(t("usageOutput")) + '</th><th class="number">' + esc(t("usageTokenTotal")) + '</th>' +
+      '<th class="number">' + esc(t("usageAvgResponse")) + '</th><th>' + esc(t("usageLatest")) + '</th></tr></thead><tbody>' +
       rows.map(function (row) {
         return '<tr><td>' + providerChip(row.provider) + '</td>' +
           '<td class="number">' + fmtTokens(row.requests) + '</td>' +
@@ -1664,13 +2073,13 @@ export function renderLoginPage(port: number): string {
     var box = document.getElementById("usageLog");
     rows = rows || [];
     if (!rows.length) {
-      box.innerHTML = '<div class="usage-empty">No usage recorded yet.</div>';
+      box.innerHTML = '<div class="usage-empty">' + esc(t("noUsage")) + '</div>';
       return;
     }
     box.innerHTML = '<table class="usage-table"><thead><tr>' +
-      '<th>Time</th><th>Supplier</th><th>Model</th><th>Surface</th>' +
-      '<th class="number">Input</th><th class="number">Output</th><th class="number">Token total</th>' +
-      '<th class="number">Response time</th></tr></thead><tbody>' +
+      '<th>' + esc(t("usageTime")) + '</th><th>' + esc(t("usageSupplier")) + '</th><th>' + esc(t("usageModel")) + '</th><th>' + esc(t("usageSurface")) + '</th>' +
+      '<th class="number">' + esc(t("usageInput")) + '</th><th class="number">' + esc(t("usageOutput")) + '</th><th class="number">' + esc(t("usageTokenTotal")) + '</th>' +
+      '<th class="number">' + esc(t("usageResponseTime")) + '</th></tr></thead><tbody>' +
       rows.map(function (row) {
         return '<tr><td>' + esc(fmtTime(row.timestamp)) + '</td>' +
           '<td>' + providerChip(row.provider) + '</td>' +
@@ -1684,6 +2093,7 @@ export function renderLoginPage(port: number): string {
   }
 
   function renderUsage(data) {
+    lastUsagePayload = data;
     renderUsageSummary((data && data.summary) || []);
     renderUsageLog((data && data.log) || []);
   }
@@ -1693,8 +2103,8 @@ export function renderLoginPage(port: number): string {
       .then(function (r) { return r.json(); })
       .then(renderUsage)
       .catch(function () {
-        document.getElementById("usageSummary").innerHTML = '<div class="usage-empty">Couldn’t load usage.</div>';
-        document.getElementById("usageLog").innerHTML = '<div class="usage-empty">Couldn’t load usage.</div>';
+        document.getElementById("usageSummary").innerHTML = '<div class="usage-empty">' + esc(t("usageLoadFailed")) + '</div>';
+        document.getElementById("usageLog").innerHTML = '<div class="usage-empty">' + esc(t("usageLoadFailed")) + '</div>';
       });
   }
 
@@ -1725,14 +2135,14 @@ export function renderLoginPage(port: number): string {
     var provider = providerEl && providerEl.value ? providerEl.value : "claude";
     var prompt = promptEl && promptEl.value ? promptEl.value.trim() : "";
     if (!prompt) {
-      setTestResult('<span class="meta">Input needed</span>Prompt is required.', true);
+      setTestResult('<span class="meta">' + esc(t("inputNeeded")) + '</span>' + esc(t("promptRequired")), true);
       return;
     }
     if (btn) {
       btn.disabled = true;
-      btn.textContent = "Testing…";
+      btn.textContent = t("testing");
     }
-    setTestResult('<span class="meta">Running ' + esc(LABELS[provider] || provider) + '</span>Waiting for the local CLI response…', false);
+    setTestResult('<span class="meta">' + esc(t("runningProvider", { provider: LABELS[provider] || provider })) + '</span>' + esc(t("waitingForCli")), false);
     fetch('/providers/' + provider + '/test', {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1748,16 +2158,16 @@ export function renderLoginPage(port: number): string {
           setTestResult('<span class="meta">' + esc(meta) + '</span>' + esc(res.text || ""), false);
           loadUsage();
         } else {
-          setTestResult('<span class="meta">' + esc(LABELS[provider] || provider) + '</span>' + esc((res && res.error) || "CLI test failed."), true);
+          setTestResult('<span class="meta">' + esc(LABELS[provider] || provider) + '</span>' + esc((res && res.error) || t("cliTestFailed")), true);
         }
       })
       .catch(function (err) {
-        setTestResult('<span class="meta">Request failed</span>' + esc(err && err.message ? err.message : "Network error"), true);
+        setTestResult('<span class="meta">' + esc(t("requestFailed")) + '</span>' + esc(err && err.message ? err.message : t("networkError")), true);
       })
       .then(function () {
         if (btn) {
           btn.disabled = false;
-          btn.textContent = "Test CLI";
+          btn.textContent = t("testCli");
         }
       });
   }
@@ -1771,11 +2181,11 @@ export function renderLoginPage(port: number): string {
   // Generic copy-to-clipboard for the endpoint + key fields. Shows a transient
   // "Copied!" state on the triggering button.
   function copyText(text, btn) {
-    var label = btn.querySelector(".copy-label");
+    var label = btn.querySelector(".copy-label, .cmd-copy-label");
     var prev = label ? label.textContent : "";
     var mark = function () {
       btn.classList.add("done");
-      if (label) label.textContent = "Copied!";
+      if (label) label.textContent = t("copied");
       setTimeout(function () { btn.classList.remove("done"); if (label) label.textContent = prev; }, 1600);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1802,6 +2212,8 @@ export function renderLoginPage(port: number): string {
   var testProviderEl = document.getElementById("testProvider");
   var runTestBtn = document.getElementById("runTestBtn");
   var testPromptEl = document.getElementById("testPrompt");
+  var languageSelect = document.getElementById("languageSelect");
+  if (languageSelect) languageSelect.addEventListener("change", function () { setLanguage(languageSelect.value); });
   if (testProviderEl) testProviderEl.addEventListener("change", populateTestModels);
   if (runTestBtn) runTestBtn.addEventListener("click", runDirectTest);
   if (testPromptEl) {
@@ -1851,11 +2263,12 @@ export function renderLoginPage(port: number): string {
       .catch(function () { /* keep the old displayed key on failure */ })
       .then(function () {
         rotateKeyBtn.disabled = false;
-        if (rlabel) rlabel.textContent = "Rotate";
+        if (rlabel) rlabel.textContent = t("rotate");
       });
   });
 
   // Initial load + gentle idle auto-refresh (independent of per-provider polls).
+  applyLanguage();
   refreshStatus(true);
   loadModels();
   loadKey();

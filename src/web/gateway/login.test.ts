@@ -44,6 +44,27 @@ test("renderLoginPage includes connected-provider logout controls", () => {
   assert.match(html, /Log out/);
 });
 
+test("renderLoginPage keeps provider cards equal height", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /\.cards\s*\{[^}]*align-items:\s*stretch;/s);
+  assert.match(html, /\.card\s*\{[^}]*grid-template-rows:\s*auto minmax\(88px, 1fr\) auto;/s);
+  assert.match(html, /\.card\s*\{[^}]*min-height:\s*294px;/s);
+  assert.match(html, /\.card \.actions\s*\{[^}]*align-self:\s*end;/s);
+});
+
+test("renderLoginPage includes English, Chinese, and Japanese language options", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /id="languageSelect"/);
+  assert.match(html, /value="en">English/);
+  assert.match(html, /value="zh-CN">中文/);
+  assert.match(html, /value="ja">日本語/);
+  assert.match(html, /meridian\.gateway\.language/);
+  assert.match(html, /连接你的 AI 订阅/);
+  assert.match(html, /AI サブスクリプションを接続/);
+});
+
 test("logoutProvider backs up Codex auth file when CLI logout is unavailable", async () => {
   const homeDir = mkdtempSync(join(tmpdir(), "meridian-gateway-logout-"));
   const authDir = join(homeDir, ".codex");
