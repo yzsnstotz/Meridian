@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { logoutProvider, renderLoginPage, summarizeCodexAuthJson, summarizeGeminiAuthJson } from "./login";
+import {
+  getProviderCliVersion,
+  logoutProvider,
+  renderLoginPage,
+  summarizeCodexAuthJson,
+  summarizeGeminiAuthJson
+} from "./login";
 
 function jwtWith(payload: Record<string, unknown>): string {
   return [
@@ -44,13 +50,53 @@ test("renderLoginPage includes connected-provider logout controls", () => {
   assert.match(html, /Log out/);
 });
 
+test("renderLoginPage includes CLI version and update controls", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /\/providers\/versions/);
+  assert.match(html, /\/providers\/"\s*\+\s*id\s*\+\s*"\/update/);
+  assert.match(html, /function updateCli/);
+  assert.match(html, /Update CLI/);
+  assert.match(html, /factCli/);
+});
+
+test("getProviderCliVersion detects installed and latest npm versions", async () => {
+  const calls: string[] = [];
+  const result = await getProviderCliVersion("gemini", {
+    installed: () => true,
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "gemini") return { code: 0, out: "0.37.0\n" };
+      if (command === "npm") return { code: 0, out: '"0.47.0"\n' };
+      return { code: 1, out: "unexpected" };
+    }
+  });
+
+  assert.deepEqual(calls, [
+    "gemini --version",
+    "npm view @google/gemini-cli version --json"
+  ]);
+  assert.deepEqual(result, {
+    installed: true,
+    command: "gemini",
+    packageName: "@google/gemini-cli",
+    updateCommand: "npm install -g @google/gemini-cli",
+    installedVersion: "0.37.0",
+    latestVersion: "0.47.0",
+    updateAvailable: true
+  });
+});
+
 test("renderLoginPage keeps provider cards equal height", () => {
   const html = renderLoginPage(8789);
 
   assert.match(html, /\.cards\s*\{[^}]*align-items:\s*stretch;/s);
   assert.match(html, /\.card\s*\{[^}]*grid-template-rows:\s*auto minmax\(88px, 1fr\) auto;/s);
   assert.match(html, /\.card\s*\{[^}]*min-height:\s*294px;/s);
+  assert.match(html, /\.card\s*\{[^}]*min-width:\s*0;/s);
   assert.match(html, /\.card \.actions\s*\{[^}]*align-self:\s*end;/s);
+  assert.match(html, /\.tabs\s*\{\s*display:\s*flex;\s*width:\s*100%;\s*max-width:\s*100%;\s*\}/);
+  assert.match(html, /@media \(max-width: 640px\)[\s\S]*\.cards\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\);/);
 });
 
 test("renderLoginPage includes English, Chinese, and Japanese language options", () => {

@@ -142,6 +142,8 @@ test("ProviderModelCatalog loads Claude models from local CLI binary strings", a
             "claude-opus-4-7",
             "claude-sonnet-4-6",
             "claude-sonnet-4-6",
+            "claude-haiku-3-5",
+            "claude-sonnet-3-7",
             "not-a-claude-model"
           ].join("\n"),
           stderr: ""

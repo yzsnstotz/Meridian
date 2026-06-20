@@ -34,6 +34,27 @@ const DEFAULT_COMPLETIONS: GatewayDirectTestCompletions = {
   gemini: completeGemini
 };
 
+function selectedClaudeModelFromError(message: string, fallback?: string): string | undefined {
+  const match = /selected model \(([^)]+)\)/i.exec(message);
+  return match?.[1] ?? fallback;
+}
+
+function normalizeDirectTestError(provider: ProviderId, message: string, model?: string): string {
+  if (provider === "gemini" && /IneligibleTierError|UNSUPPORTED_CLIENT|migrate to the Antigravity/i.test(message)) {
+    return "Gemini CLI reports this account or tier is no longer supported by the Gemini CLI client. " +
+      "Use Update CLI from the provider card if an update is available; if it still fails, migrate this account to Antigravity: https://antigravity.google.";
+  }
+  if (
+    provider === "claude" &&
+    /api_error_status"?\s*:?\s*404|selected model|may not exist or you may not have access/i.test(message)
+  ) {
+    const rejectedModel = selectedClaudeModelFromError(message, model);
+    return `Claude rejected the selected model${rejectedModel ? ` (${rejectedModel})` : ""}. ` +
+      "Choose Provider default or another model from the refreshed list.";
+  }
+  return message;
+}
+
 export async function runGatewayDirectTest(
   provider: ProviderId,
   body: GatewayDirectTestBody,
@@ -56,7 +77,7 @@ export async function runGatewayDirectTest(
         ok: false,
         provider,
         model: result.model || model,
-        error: result.errorMessage || "Provider CLI returned an error."
+        error: normalizeDirectTestError(provider, result.errorMessage || "Provider CLI returned an error.", result.model || model)
       };
     }
     const promptTokens = result.usage.promptTokens;
@@ -77,7 +98,7 @@ export async function runGatewayDirectTest(
       ok: false,
       provider,
       model,
-      error: error instanceof Error ? error.message : String(error)
+      error: normalizeDirectTestError(provider, error instanceof Error ? error.message : String(error), model)
     };
   }
 }
