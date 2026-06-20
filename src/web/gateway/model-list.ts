@@ -19,6 +19,11 @@ export interface GatewayModelCatalog {
 }
 
 const PROVIDERS: ProviderId[] = ["claude", "codex", "gemini"];
+const LABELS: Record<ProviderId, string> = {
+  claude: "Claude",
+  codex: "ChatGPT",
+  gemini: "Gemini",
+};
 
 export function ownerForProvider(provider: ProviderId): string {
   switch (provider) {
@@ -39,6 +44,14 @@ function modelToGateway(provider: ProviderId, model: ProviderModel): GatewayMode
   };
 }
 
+function gatewayModelCatalogError(provider: ProviderId, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/No API key configured for provider=(claude|gemini)/i.test(message)) {
+    return `${LABELS[provider]} OAuth is connected, but the local CLI did not expose a model catalog.`;
+  }
+  return message;
+}
+
 export async function listGatewayModels(
   status: ProvidersStatus,
   catalog: GatewayModelCatalog
@@ -52,7 +65,7 @@ export async function listGatewayModels(
       const result = await catalog.listModels(provider);
       data.push(...result.models.map((model) => modelToGateway(provider, model)));
     } catch (error) {
-      errors[provider] = error instanceof Error ? error.message : String(error);
+      errors[provider] = gatewayModelCatalogError(provider, error);
     }
   }
 

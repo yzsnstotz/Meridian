@@ -12,9 +12,11 @@ type ExecFileResult = { stdout: string; stderr: string };
 type ExecFileFn = (
   file: string,
   args: string[],
-  options?: { env?: NodeJS.ProcessEnv; timeout?: number; killSignal?: NodeJS.Signals }
+  options?: { env?: NodeJS.ProcessEnv; timeout?: number; killSignal?: NodeJS.Signals; maxBuffer?: number }
 ) => Promise<ExecFileResult>;
 type ReadFileFn = (filePath: string, encoding: BufferEncoding) => Promise<string>;
+type ReadDirFn = (dirPath: string, options?: { recursive?: boolean }) => Promise<string[]>;
+type RealPathFn = (filePath: string) => Promise<string>;
 
 interface CodexModelRecord {
   id?: unknown;
@@ -43,6 +45,8 @@ export interface ProviderModelCatalogOptions {
   geminiApiKey?: string;
   cursorApiKey?: string;
   codexModelsCachePath?: string;
+  readdirFn?: ReadDirFn;
+  realpathFn?: RealPathFn;
 }
 
 const OPENAI_MODEL_PREFIXES = ["gpt-", "codex-", "o1", "o3", "o4"];
@@ -64,6 +68,7 @@ const OPENAI_MODEL_EXCLUDES = [
 const CODEX_APP_SERVER_INIT_REQUEST_ID = "meridian-codex-init";
 const CODEX_APP_SERVER_MODEL_LIST_REQUEST_ID = "meridian-codex-model-list";
 const CODEX_APP_SERVER_MODEL_LIST_LIMIT = 200;
+const CLI_DISCOVERY_TIMEOUT_MS = 8000;
 // Outer safety net on the Node side. Coreutils `timeout 15` kills the inner
 // pipeline; this gives Node a few extra seconds to drain stdout before
 // SIGTERM-ing the immediate child.
@@ -104,10 +109,48 @@ function expectApiKey(provider: AgentType, value: string | undefined): string {
   return value;
 }
 
+function isShellSafeCommand(command: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(command);
+}
+
+function modelRecordsFromIds(ids: string[]): ProviderModel[] {
+  return sortAndDeduplicateModels(
+    ids.map((id) => ({
+      id,
+      label: formatModelLabel(id)
+    }))
+  );
+}
+
+function parseClaudeCliModelIds(raw: string): string[] {
+  const ids = new Set<string>();
+  for (const match of raw.matchAll(/\bclaude-(?:opus|sonnet|haiku)-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\b/g)) {
+    const id = match[0].trim();
+    if (id) ids.add(id);
+  }
+  return Array.from(ids);
+}
+
+function parseGeminiCliModelIds(raw: string): string[] {
+  const ids = new Set<string>();
+  const constantRe = /\b(?:PREVIEW|DEFAULT)_GEMINI[A-Z0-9_]*MODEL(?:_AUTO)?\s*=\s*"([^"]+)"/g;
+  for (const match of raw.matchAll(constantRe)) {
+    const id = match[1]?.trim();
+    if (!id) continue;
+    const lower = id.toLowerCase();
+    if (!(lower.startsWith("gemini-") || lower.startsWith("auto-gemini-"))) continue;
+    if (lower.includes("embedding")) continue;
+    ids.add(id);
+  }
+  return Array.from(ids);
+}
+
 export class ProviderModelCatalog {
   private readonly fetchFn: typeof fetch;
   private readonly execFileFn: ExecFileFn;
   private readonly readFileFn: ReadFileFn;
+  private readonly readdirFn: ReadDirFn;
+  private readonly realpathFn: RealPathFn;
   private readonly openAiApiKey: string | undefined;
   private readonly anthropicApiKey: string | undefined;
   private readonly geminiApiKey: string | undefined;
@@ -126,6 +169,11 @@ export class ProviderModelCatalog {
         };
       });
     this.readFileFn = options.readFileFn ?? fs.readFile;
+    this.readdirFn = options.readdirFn ?? (async (dirPath, options) => {
+      const entries = await fs.readdir(dirPath, options);
+      return entries.map((entry) => entry.toString());
+    });
+    this.realpathFn = options.realpathFn ?? fs.realpath;
     this.openAiApiKey = options.openAiApiKey ?? config.OPENAI_API_KEY;
     this.anthropicApiKey = options.anthropicApiKey ?? config.ANTHROPIC_API_KEY;
     this.geminiApiKey = options.geminiApiKey ?? config.GEMINI_API_KEY;
@@ -343,6 +391,90 @@ export class ProviderModelCatalog {
     return sortAndDeduplicateModels(models);
   }
 
+  private async resolveCommandPath(command: string): Promise<string> {
+    if (!isShellSafeCommand(command)) {
+      throw new Error(`unsafe command name: ${command}`);
+    }
+    const { stdout } = await this.execFileFn(
+      "/bin/sh",
+      ["-lc", `command -v ${command}`],
+      { timeout: CLI_DISCOVERY_TIMEOUT_MS }
+    );
+    const firstLine = stdout.trim().split(/\r?\n/).find((line) => line.trim().length > 0)?.trim();
+    if (!firstLine) {
+      throw new Error(`${command} CLI was not found on PATH`);
+    }
+    return this.realpathFn(firstLine);
+  }
+
+  private async listClaudeModelsViaCli(): Promise<ProviderModel[]> {
+    const cliPath = await this.resolveCommandPath("claude");
+    const { stdout } = await this.execFileFn(
+      "/bin/sh",
+      [
+        "-lc",
+        [
+          "strings \"$1\"",
+          "grep -Eo 'claude-(opus|sonnet|haiku)-[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]|claude-(opus|sonnet|haiku)-[A-Za-z0-9]'",
+          "sort -u"
+        ].join(" | "),
+        "sh",
+        cliPath
+      ],
+      { timeout: CLI_DISCOVERY_TIMEOUT_MS, maxBuffer: 512 * 1024 }
+    );
+    const ids = parseClaudeCliModelIds(stdout);
+    if (ids.length === 0) {
+      throw new Error("Claude CLI did not expose model identifiers");
+    }
+    return modelRecordsFromIds(ids);
+  }
+
+  private async packageRootForCliFile(cliPath: string, expectedName: string): Promise<string> {
+    let dir = path.dirname(cliPath);
+    let candidate: string | null = null;
+    for (let i = 0; i < 6; i += 1) {
+      try {
+        const raw = await this.readFileFn(path.join(dir, "package.json"), "utf8");
+        const parsed = JSON.parse(raw) as { name?: unknown };
+        if (parsed.name === expectedName) candidate = dir;
+      } catch {
+        // keep walking up
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return candidate ?? path.dirname(cliPath);
+  }
+
+  private async listGeminiModelsViaCli(): Promise<ProviderModel[]> {
+    const cliPath = await this.resolveCommandPath("gemini");
+    const packageRoot = await this.packageRootForCliFile(cliPath, "@google/gemini-cli");
+    const entries = await this.readdirFn(packageRoot, { recursive: true });
+    const modelSourceFiles = entries.filter((entry) => {
+      if (!(entry.endsWith(".js") || entry.endsWith(".d.ts"))) return false;
+      if (entry.includes("node_modules") && !entry.includes(`node_modules${path.sep}@google${path.sep}gemini-cli-core${path.sep}`)) {
+        return false;
+      }
+      return true;
+    });
+    if (modelSourceFiles.length === 0) {
+      throw new Error("Gemini CLI package contains no model source files");
+    }
+
+    const ids = new Set<string>();
+    await Promise.all(modelSourceFiles.map(async (entry) => {
+      const raw = await this.readFileFn(path.join(packageRoot, entry), "utf8");
+      for (const id of parseGeminiCliModelIds(raw)) ids.add(id);
+    }));
+
+    if (ids.size === 0) {
+      throw new Error("Gemini CLI bundle did not expose model identifiers");
+    }
+    return modelRecordsFromIds(Array.from(ids));
+  }
+
   private async listOpenAiModels(): Promise<ProviderModel[]> {
     const apiKey = expectApiKey("codex", this.openAiApiKey);
     const response = await this.fetchFn("https://api.openai.com/v1/models", {
@@ -385,6 +517,15 @@ export class ProviderModelCatalog {
   }
 
   private async listAnthropicModels(): Promise<ProviderModel[]> {
+    try {
+      return await this.listClaudeModelsViaCli();
+    } catch (cliError) {
+      if (!this.anthropicApiKey) {
+        const cliMessage = cliError instanceof Error ? cliError.message : String(cliError);
+        throw new Error(`Claude CLI model catalog unavailable: ${cliMessage}`);
+      }
+    }
+
     const apiKey = expectApiKey("claude", this.anthropicApiKey);
     const response = await this.fetchFn("https://api.anthropic.com/v1/models", {
       headers: {
@@ -421,6 +562,15 @@ export class ProviderModelCatalog {
   }
 
   private async listGeminiModels(): Promise<ProviderModel[]> {
+    try {
+      return await this.listGeminiModelsViaCli();
+    } catch (cliError) {
+      if (!this.geminiApiKey) {
+        const cliMessage = cliError instanceof Error ? cliError.message : String(cliError);
+        throw new Error(`Gemini CLI model catalog unavailable: ${cliMessage}`);
+      }
+    }
+
     const apiKey = expectApiKey("gemini", this.geminiApiKey);
     const response = await this.fetchFn(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
     if (!response.ok) {
